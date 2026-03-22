@@ -76,13 +76,6 @@ interface RouteItem {
   routeColor: string | null;
   tripsCount: number | null;
 }
-interface ShapeVariant {
-  shapeId: string;
-  directionId: number;
-  headsign: string | null;
-  tripsCount: number;
-  sampleTripId: string;
-}
 interface GtfsStop {
   id: string; stopId: string; stopName: string; stopCode: string | null;
   stopLat: number; stopLon: number; tripsCount: number;
@@ -124,12 +117,6 @@ export default function Dashboard() {
   const [routeList, setRouteList] = useState<RouteItem[]>([]);
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
   const [routeSearch, setRouteSearch] = useState("");
-
-  // Shape variant filter (third level: line → direction → variant)
-  const [variantsMap, setVariantsMap] = useState<Record<string, ShapeVariant[]>>({});
-  const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
-  const [expandedRouteId, setExpandedRouteId] = useState<string | null>(null);
-  const [loadingVariants, setLoadingVariants] = useState<string | null>(null);
 
   // Direction + time range + day filters
   const [selectedDirection, setSelectedDirection] = useState<0 | 1 | null>(null);
@@ -213,32 +200,23 @@ export default function Dashboard() {
     return () => clearTimeout(t);
   }, [hourFrom, hourTo, dayFilter]);
 
-  // Fetch shapes — use shapeIds when specific variants selected, else routeIds
+  // Fetch shapes — use timeBandRouteIds when no explicit routes selected
   const shapesFetchKey = useMemo(
     () => {
-      if (selectedShapeIds.length > 0) {
-        return "shapes:" + [...selectedShapeIds].sort().join(",") + "|" + hourFrom + "-" + hourTo + "|" + dayFilter;
-      }
       const eff = selectedRouteIds.length > 0 ? selectedRouteIds : (timeBandRouteIds ?? []);
       return [...eff].sort().join(",") + "|" + (selectedDirection ?? "") + "|" + hourFrom + "-" + hourTo + "|" + dayFilter;
     },
-    [selectedShapeIds, selectedRouteIds, selectedDirection, timeBandRouteIds, hourFrom, hourTo, dayFilter]
+    [selectedRouteIds, selectedDirection, timeBandRouteIds, hourFrom, hourTo, dayFilter]
   );
   useEffect(() => {
     if (!layers.gtfsShapes) return;
     setShapesGeojson(null);
+    const eff = selectedRouteIds.length > 0 ? selectedRouteIds : (timeBandRouteIds ?? []);
+    // Pass the midpoint hour so the API applies the right congestion model
     const midHour = Math.round((hourFrom + hourTo) / 2);
     const params = new URLSearchParams({ segmented: "true", hour: String(midHour) });
-
-    if (selectedShapeIds.length > 0) {
-      // Specific shape variants selected — use shapeIds directly
-      params.set("shapeIds", selectedShapeIds.join(","));
-    } else {
-      const eff = selectedRouteIds.length > 0 ? selectedRouteIds : (timeBandRouteIds ?? []);
-      if (eff.length > 0) params.set("routeIds", eff.join(","));
-      if (selectedDirection !== null) params.set("directionId", String(selectedDirection));
-    }
-
+    if (eff.length > 0) params.set("routeIds", eff.join(","));
+    if (selectedDirection !== null) params.set("directionId", String(selectedDirection));
     fetch(`${getApiBase()}/api/gtfs/shapes/geojson?${params}`, { cache: "no-store" })
       .then(r => r.json())
       .then(d => setShapesGeojson(d))
@@ -371,44 +349,6 @@ export default function Dashboard() {
   const toggleRoute = useCallback((routeId: string) => {
     setSelectedRouteIds(prev =>
       prev.includes(routeId) ? prev.filter(id => id !== routeId) : [...prev, routeId]
-    );
-    // When deselecting a route, clear its variant selections
-    setSelectedShapeIds(prev => {
-      const routeShapes = (variantsMap[routeId] || []).map(v => v.shapeId);
-      return prev.filter(s => !routeShapes.includes(s));
-    });
-    // Collapse variant panel if this route was expanded
-    setExpandedRouteId(prev => prev === routeId ? null : prev);
-  }, [variantsMap]);
-
-  // Load variants when a route is expanded
-  const loadVariants = useCallback((routeId: string) => {
-    if (expandedRouteId === routeId) { setExpandedRouteId(null); return; }
-    setExpandedRouteId(routeId);
-    // Skip fetch if already cached
-    if (variantsMap[routeId]) return;
-    setLoadingVariants(routeId);
-    const params = new URLSearchParams();
-    if (selectedDirection !== null) params.set("directionId", String(selectedDirection));
-    fetch(`${getApiBase()}/api/gtfs/routes/${routeId}/variants?${params}`, { cache: "no-store" })
-      .then(r => r.json())
-      .then(d => {
-        setVariantsMap(prev => ({ ...prev, [routeId]: d.variants || [] }));
-        setLoadingVariants(null);
-      })
-      .catch(() => setLoadingVariants(null));
-  }, [expandedRouteId, variantsMap, selectedDirection]);
-
-  // Invalidate variants cache when direction changes
-  useEffect(() => {
-    setVariantsMap({});
-    setSelectedShapeIds([]);
-    setExpandedRouteId(null);
-  }, [selectedDirection]);
-
-  const toggleShapeVariant = useCallback((shapeId: string) => {
-    setSelectedShapeIds(prev =>
-      prev.includes(shapeId) ? prev.filter(s => s !== shapeId) : [...prev, shapeId]
     );
   }, []);
 
@@ -715,8 +655,8 @@ export default function Dashboard() {
                     Filtra Linee GTFS
                   </span>
                   <div className="flex items-center gap-2">
-                    {(selectedRouteIds.length > 0 || selectedDirection !== null || selectedShapeIds.length > 0) && (
-                      <button onClick={() => { setSelectedRouteIds([]); setSelectedDirection(null); setSelectedShapeIds([]); setExpandedRouteId(null); setVariantsMap({}); }}
+                    {(selectedRouteIds.length > 0 || selectedDirection !== null) && (
+                      <button onClick={() => { setSelectedRouteIds([]); setSelectedDirection(null); }}
                         className="text-[10px] text-muted-foreground hover:text-foreground underline">
                         Reset
                       </button>
@@ -764,12 +704,11 @@ export default function Dashboard() {
                   <div className="text-[10px] text-primary bg-primary/10 rounded px-2 py-1">
                     {selectedRouteIds.length} {selectedRouteIds.length === 1 ? "linea selezionata" : "linee selezionate"}
                     {selectedDirection !== null && ` · ${selectedDirection === 0 ? "Andata" : "Ritorno"}`}
-                    {selectedShapeIds.length > 0 && ` · ${selectedShapeIds.length} percors${selectedShapeIds.length === 1 ? "o" : "i"}`}
                   </div>
                 )}
 
-                {/* Route list with expandable variants */}
-                <div className="max-h-64 overflow-y-auto space-y-0.5 pr-1">
+                {/* Route list */}
+                <div className="max-h-52 overflow-y-auto space-y-0.5 pr-1">
                   {filteredRoutes.length === 0 && (
                     <p className="text-xs text-muted-foreground text-center py-4">
                       {routeList.length === 0 ? "Carica un feed GTFS per vedere le linee" : "Nessun risultato"}
@@ -777,88 +716,24 @@ export default function Dashboard() {
                   )}
                   {filteredRoutes.map(route => {
                     const isSelected = selectedRouteIds.includes(route.routeId);
-                    const isExpanded = expandedRouteId === route.routeId;
                     const color = route.routeColor || "#6b7280";
-                    const variants = variantsMap[route.routeId] || [];
-                    const dirVariants = selectedDirection !== null
-                      ? variants.filter(v => v.directionId === selectedDirection)
-                      : variants;
                     return (
-                      <div key={route.routeId}>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => toggleRoute(route.routeId)}
-                            className={`flex-1 flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${
-                              isSelected ? "bg-primary/15 border border-primary/30" : "hover:bg-muted/70 border border-transparent"
-                            }`}
-                          >
-                            <div className="w-3 h-3 rounded-full shrink-0 border border-black/20" style={{ backgroundColor: color }} />
-                            <span className="text-xs font-semibold shrink-0 w-8 truncate">{route.routeShortName || route.routeId}</span>
-                            <span className="text-[10px] text-muted-foreground truncate flex-1">
-                              {route.routeLongName || ""}
-                            </span>
-                            {route.tripsCount != null && (
-                              <span className="text-[10px] text-muted-foreground shrink-0">{route.tripsCount}↗</span>
-                            )}
-                          </button>
-                          {/* Expand button for variants */}
-                          {isSelected && (
-                            <button
-                              onClick={() => loadVariants(route.routeId)}
-                              className={`shrink-0 p-1 rounded-md transition-colors ${
-                                isExpanded ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                              }`}
-                              title="Mostra varianti percorso"
-                            >
-                              {loadingVariants === route.routeId ? (
-                                <span className="w-3.5 h-3.5 block border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-                              ) : isExpanded ? (
-                                <ChevronUp className="w-3.5 h-3.5" />
-                              ) : (
-                                <ChevronDown className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          )}
-                        </div>
-                        {/* Variants sub-list */}
-                        {isSelected && isExpanded && dirVariants.length > 0 && (
-                          <div className="ml-5 pl-2 border-l-2 border-border/30 mt-0.5 mb-1 space-y-0.5">
-                            <p className="text-[9px] text-muted-foreground uppercase tracking-wide font-semibold py-0.5">
-                              {dirVariants.length} percors{dirVariants.length === 1 ? "o" : "i"} distint{dirVariants.length === 1 ? "o" : "i"}
-                            </p>
-                            {dirVariants.map((v, idx) => {
-                              const isShapeSelected = selectedShapeIds.includes(v.shapeId);
-                              return (
-                                <button
-                                  key={v.shapeId}
-                                  onClick={() => toggleShapeVariant(v.shapeId)}
-                                  className={`w-full flex items-start gap-1.5 px-2 py-1 rounded-md text-left transition-colors text-[10px] ${
-                                    isShapeSelected
-                                      ? "bg-primary/15 border border-primary/30"
-                                      : "hover:bg-muted/60 border border-transparent"
-                                  }`}
-                                >
-                                  <Route className="w-3 h-3 shrink-0 mt-0.5 text-muted-foreground" />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="font-medium truncate">
-                                      {v.headsign || `Percorso ${idx + 1}`}
-                                    </div>
-                                    <div className="text-muted-foreground">
-                                      {v.directionId === 0 ? "→ And." : "← Rit."} · {v.tripsCount} cors{v.tripsCount === 1 ? "a" : "e"}
-                                    </div>
-                                  </div>
-                                  {isShapeSelected && (
-                                    <span className="text-primary text-xs">✓</span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
+                      <button
+                        key={route.routeId}
+                        onClick={() => toggleRoute(route.routeId)}
+                        className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                          isSelected ? "bg-primary/15 border border-primary/30" : "hover:bg-muted/70 border border-transparent"
+                        }`}
+                      >
+                        <div className="w-3 h-3 rounded-full shrink-0 border border-black/20" style={{ backgroundColor: color }} />
+                        <span className="text-xs font-semibold shrink-0 w-8 truncate">{route.routeShortName || route.routeId}</span>
+                        <span className="text-[10px] text-muted-foreground truncate flex-1">
+                          {route.routeLongName || ""}
+                        </span>
+                        {route.tripsCount != null && (
+                          <span className="text-[10px] text-muted-foreground shrink-0">{route.tripsCount}↗</span>
                         )}
-                        {isSelected && isExpanded && dirVariants.length === 0 && loadingVariants !== route.routeId && (
-                          <p className="ml-5 pl-2 text-[10px] text-muted-foreground italic py-1">Nessuna variante trovata</p>
-                        )}
-                      </div>
+                      </button>
                     );
                   })}
                 </div>
