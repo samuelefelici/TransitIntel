@@ -53,6 +53,11 @@ const POI_CATEGORY_IT: Record<string, string> = {
   leisure:    "⚽ Svago / Sport",
   office:     "🏛️ Ufficio / P.A.",
   transit:    "🚌 Hub Trasporti",
+  workplace:  "🏢 Aziende / Uffici",
+  worship:    "⛪ Luoghi di Culto",
+  elderly:    "🏠 RSA / Case Riposo",
+  parking:    "🅿️ Parcheggi",
+  tourism:    "🏛️ Turismo / Cultura",
 };
 const POI_COLOR: Record<string, string> = {
   hospital:   "#ef4444",
@@ -62,6 +67,11 @@ const POI_COLOR: Record<string, string> = {
   leisure:    "#22c55e",
   office:     "#3b82f6",
   transit:    "#06b6d4",
+  workplace:  "#64748b",
+  worship:    "#d946ef",
+  elderly:    "#f43f5e",
+  parking:    "#94a3b8",
+  tourism:    "#14b8a6",
 };
 
 function congestionLabel(c: number): { text: string; color: string } {

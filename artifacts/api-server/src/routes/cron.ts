@@ -29,6 +29,11 @@ const GOOGLE_PLACES_CATEGORIES: Array<{
   { category: "leisure",    types: ["stadium", "sports_complex", "amusement_park", "aquarium"] },
   { category: "office",     types: ["city_hall", "courthouse", "local_government_office", "police"] },
   { category: "transit",    types: ["transit_station", "train_station", "bus_station", "airport"] },
+  { category: "workplace",  types: ["accounting", "insurance_agency", "lawyer"], keyword: "uffici azienda" },
+  { category: "worship",    types: ["church", "mosque", "synagogue", "hindu_temple"] },
+  { category: "elderly",    types: ["nursing_home"], keyword: "casa di riposo RSA" },
+  { category: "parking",    types: ["parking"], keyword: "parcheggio scambiatore" },
+  { category: "tourism",    types: ["museum", "tourist_attraction", "lodging", "art_gallery"] },
 ];
 
 // Province centro + surrounding towns to search around (lat, lng, radius metres)
@@ -312,6 +317,36 @@ export async function syncPoiFromOsm(): Promise<{ inserted: number; categories: 
            way["aeroway"="aerodrome"](${BBOX_OVERPASS});
            node["amenity"="bus_station"](${BBOX_OVERPASS});
            node["public_transport"="station"](${BBOX_OVERPASS});`,
+    },
+    {
+      category: "workplace",
+      ql: `node["office"~"company|insurance|it|financial|estate_agent"](${BBOX_OVERPASS});
+           way["office"~"company|insurance|it|financial"](${BBOX_OVERPASS});
+           node["building"="commercial"]["name"](${BBOX_OVERPASS});
+           way["building"="commercial"]["name"](${BBOX_OVERPASS});`,
+    },
+    {
+      category: "worship",
+      ql: `node["amenity"="place_of_worship"](${BBOX_OVERPASS});
+           way["amenity"="place_of_worship"](${BBOX_OVERPASS});`,
+    },
+    {
+      category: "elderly",
+      ql: `node["amenity"~"nursing_home|social_facility"](${BBOX_OVERPASS});
+           way["amenity"~"nursing_home|social_facility"](${BBOX_OVERPASS});
+           node["social_facility"~"group_home|nursing_home|assisted_living"](${BBOX_OVERPASS});`,
+    },
+    {
+      category: "parking",
+      ql: `node["amenity"="parking"]["name"](${BBOX_OVERPASS});
+           way["amenity"="parking"]["name"](${BBOX_OVERPASS});
+           node["amenity"="parking"]["park_ride"="yes"](${BBOX_OVERPASS});`,
+    },
+    {
+      category: "tourism",
+      ql: `node["tourism"~"museum|attraction|gallery|viewpoint"](${BBOX_OVERPASS});
+           way["tourism"~"museum|attraction"](${BBOX_OVERPASS});
+           node["tourism"~"hotel|hostel"]["stars"](${BBOX_OVERPASS});`,
     },
   ];
 

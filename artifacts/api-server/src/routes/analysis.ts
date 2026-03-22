@@ -471,6 +471,11 @@ router.get("/territory/overview", async (req, res) => {
       office:     "Uffici e Servizi",
       shopping:   "Commercio",
       industrial: "Zone Industriali",
+      workplace:  "Aziende e Uffici",
+      worship:    "Luoghi di Culto",
+      elderly:    "RSA e Case Riposo",
+      parking:    "Parcheggi",
+      tourism:    "Turismo e Cultura",
     };
     const CATEGORY_COLORS: Record<string, string> = {
       hospital:   "#ef4444",
@@ -480,6 +485,11 @@ router.get("/territory/overview", async (req, res) => {
       office:     "#3b82f6",
       shopping:   "#a855f7",
       industrial: "#f97316",
+      workplace:  "#64748b",
+      worship:    "#d946ef",
+      elderly:    "#f43f5e",
+      parking:    "#94a3b8",
+      tourism:    "#14b8a6",
     };
     const poiByCategory = (poiRows.rows as any[]).map(r => ({
       category: r.category,
