@@ -8,6 +8,7 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, Cell, LabelList
 } from "recharts";
+import { getApiBase } from "@/lib/api";
 
 interface TerritoryData {
   stats: {
@@ -58,7 +59,7 @@ export default function Territory() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch("/api/territory/overview")
+    fetch(`${getApiBase()}/api/territory/overview`)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false); })
       .catch(() => { setError("Errore nel caricamento dei dati."); setLoading(false); });
