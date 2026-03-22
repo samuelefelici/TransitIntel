@@ -6,7 +6,7 @@ services:
     name: transitintel-api
     runtime: node
     plan: free
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    buildCommand: pnpm install --prod=false && pnpm run build:deploy
     startCommand: node artifacts/api-server/dist/index.cjs
     envVars:
       - key: DATABASE_URL
