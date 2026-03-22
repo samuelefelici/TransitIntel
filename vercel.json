@@ -1,6 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
+  "installCommand": "pnpm install",
+  "buildCommand": "pnpm -w run typecheck:libs && pnpm --filter @workspace/transitintel run build",
+  "outputDirectory": "artifacts/transitintel/dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
