@@ -224,7 +224,7 @@ export default function SyncPage() {
                       className="shrink-0"
                     >
                       {isRunning ? (
-                        <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />In corso...</>
+                        <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />In corso…</>
                       ) : !ready ? (
                         <><Clock className="w-3.5 h-3.5 mr-1.5" />{st?.cooldownRemaining}s</>
                       ) : (

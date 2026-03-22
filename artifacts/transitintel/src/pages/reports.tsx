@@ -12,8 +12,8 @@ export default function Reports() {
 
   const handleExport = () => {
     toast({
-      title: "Export Started",
-      description: "Demand analysis report is being generated.",
+      title: "Esportazione avviata",
+      description: "Il report di analisi domanda è in fase di generazione.",
     });
   };
 
@@ -21,11 +21,11 @@ export default function Reports() {
     <div className="max-w-7xl mx-auto space-y-8 pb-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-4xl font-display font-bold text-foreground">Demand Analysis</h1>
-          <p className="text-muted-foreground mt-2">Identify critical gaps in the transit network.</p>
+          <h1 className="text-4xl font-display font-bold text-foreground">Analisi Domanda</h1>
+          <p className="text-muted-foreground mt-2">Individua le criticità nella rete di trasporto.</p>
         </div>
         <Button onClick={handleExport} className="gap-2 shrink-0">
-          <Download className="w-4 h-4" /> Export Report
+          <Download className="w-4 h-4" /> Esporta Report
         </Button>
       </div>
 
@@ -33,10 +33,10 @@ export default function Reports() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-destructive">
             <AlertTriangle className="w-5 h-5" /> 
-            Underserved High-Demand Areas
+            Aree ad Alta Domanda Scoperte
           </CardTitle>
           <CardDescription>
-            Zones with high population/POI density but no stops within 400m.
+            Zone con alta densità abitativa/POI ma senza fermate entro 400 m.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -44,18 +44,18 @@ export default function Reports() {
             <Table>
               <TableHeader className="bg-background/80">
                 <TableRow>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Demand Score</TableHead>
-                  <TableHead>Nearest Stop</TableHead>
-                  <TableHead>Affected Pop.</TableHead>
-                  <TableHead>Key Drivers</TableHead>
+                  <TableHead>Posizione</TableHead>
+                  <TableHead>Punteggio Domanda</TableHead>
+                  <TableHead>Fermata più vicina</TableHead>
+                  <TableHead>Pop. coinvolta</TableHead>
+                  <TableHead>Attrattori principali</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {!underserved?.data ? (
-                  <TableRow><TableCell colSpan={5} className="text-center py-8">Analyzing network gaps...</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={5} className="text-center py-8">Analisi copertura in corso…</TableCell></TableRow>
                 ) : underserved.data.length === 0 ? (
-                  <TableRow><TableCell colSpan={5} className="text-center py-8 text-green-500 font-medium">No critical underserved areas found. Excellent coverage!</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={5} className="text-center py-8 text-green-500 font-medium">Nessuna area critica scoperta. Copertura eccellente!</TableCell></TableRow>
                 ) : (
                   underserved.data.map((area, idx) => (
                     <TableRow key={area.cellId || idx} className="hover:bg-white/5">

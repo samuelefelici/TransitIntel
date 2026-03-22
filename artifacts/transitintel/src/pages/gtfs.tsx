@@ -64,7 +64,8 @@ const ROUTE_TYPE_LABEL: Record<number, string> = {
 
 const CAT_LABEL: Record<string, string> = {
   school: "Scuole", hospital: "Ospedali", shopping: "Commercio",
-  industrial: "Industria", leisure: "Sport/Svago", office: "Uffici", transit: "Hub transit",
+  industrial: "Industria", leisure: "Sport/Svago", office: "Uffici", transit: "Hub trasporti",
+  workplace: "Aziende", worship: "Culto", elderly: "RSA", parking: "Parcheggi", tourism: "Cultura",
 };
 
 function ScoreGauge({ score }: { score: number }) {
@@ -435,7 +436,7 @@ function AnalysisTab({ feedId }: { feedId: string | null }) {
                       className="shrink-0 text-xs border-0"
                       style={{ backgroundColor: `${SCORE_COLOR(s.serviceScore)}20`, color: SCORE_COLOR(s.serviceScore) }}
                     >
-                      Score {Math.round(s.serviceScore)}
+                      Punt. {Math.round(s.serviceScore)}
                     </Badge>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-xs">
@@ -702,7 +703,7 @@ export default function GtfsPage() {
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            {tab === "upload" ? "Feed & Upload" : "Analisi Qualità"}
+            {tab === "upload" ? "Feed & Caricamento" : "Analisi Qualità"}
           </button>
         ))}
       </div>

@@ -479,7 +479,7 @@ export default function Dashboard() {
               onClick={() => { setHourFrom(4); setHourTo(26); setDayFilter("tutti"); }}
               className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-primary transition-colors ml-1"
             >
-              Reset
+              Ripristina
             </button>
           )}
         </div>
@@ -688,7 +688,7 @@ export default function Dashboard() {
                     {(selectedRouteIds.length > 0 || selectedDirection !== null) && (
                       <button onClick={() => { setSelectedRouteIds([]); setSelectedDirection(null); }}
                         className="text-[10px] text-muted-foreground hover:text-foreground underline">
-                        Reset
+                        Ripristina
                       </button>
                     )}
                     <button onClick={() => setShowRouteFilter(false)}
@@ -875,7 +875,7 @@ export default function Dashboard() {
             >
               <span className="flex items-center gap-2 text-sm font-semibold">
                 <Layers className="w-4 h-4 text-primary" />
-                Layer Mappa
+                Livelli Mappa
               </span>
               {layersCollapsed ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronUp className="w-4 h-4 text-muted-foreground" />}
             </button>
@@ -1156,7 +1156,7 @@ function PopupContent({ popup }: { popup: MapPopup }) {
             </div>
             <div>
               <div className="flex justify-between text-xs mb-1">
-                <span className="text-gray-400">Score servizio</span>
+                <span className="text-gray-400">Punteggio servizio</span>
                 <span className="font-bold text-xs" style={{ color: scoreColor }}>{scoreLabel} ({Math.round(score)})</span>
               </div>
               <div className="h-2 bg-gray-200 rounded-full overflow-hidden">

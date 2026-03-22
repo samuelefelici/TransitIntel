@@ -13,7 +13,7 @@ const NAV_ITEMS = [
   { href: "/territory", label: "Territorio", icon: Map },
   { href: "/stops", label: "Fermate & Linee", icon: MapPin },
   { href: "/demand", label: "Analisi Domanda", icon: BarChart3 },
-  { href: "/gtfs", label: "Import GTFS", icon: FileArchive },
+  { href: "/gtfs", label: "Importa GTFS", icon: FileArchive },
   { href: "/sync", label: "Sincronizza Dati", icon: RefreshCw },
 ];
 

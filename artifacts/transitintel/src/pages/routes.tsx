@@ -188,7 +188,7 @@ export default function Routes() {
           }}
             title="Espandi a intervallo mensile"
             className="text-[10px] text-muted-foreground/50 hover:text-muted-foreground border border-dashed border-border/30 rounded px-1.5 py-0.5 transition-colors">
-            + range
+            + intervallo
           </button>
         ) : (
           <>

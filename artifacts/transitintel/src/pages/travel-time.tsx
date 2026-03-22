@@ -409,7 +409,7 @@ export default function TravelTime() {
             onClick={() => { setHourFrom(4); setHourTo(26); }}
             className="shrink-0 text-[10px] text-muted-foreground/60 hover:text-primary transition-colors ml-1"
           >
-            Reset orario
+            Ripristina orario
           </button>
         )}
 
@@ -531,7 +531,7 @@ export default function TravelTime() {
                 {schedule?.routeShortName ?? selectedRoute.routeShortName}
               </span>
               <span className="text-sm text-muted-foreground">
-                {scheduleLoading ? "Caricamento..." : filteredTrips.length > 0 ? `${filteredTrips.length} corse` : ""}
+                {scheduleLoading ? "Caricamento…" : filteredTrips.length > 0 ? `${filteredTrips.length} corse` : ""}
               </span>
               {hasHourFilter && (
                 <Badge variant="secondary" className="text-xs">
@@ -572,7 +572,7 @@ export default function TravelTime() {
           {scheduleLoading && (
             <div className="h-48 flex flex-col items-center justify-center gap-3">
               <div className="w-6 h-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-muted-foreground animate-pulse">Caricamento corse...</p>
+              <p className="text-sm text-muted-foreground animate-pulse">Caricamento corse…</p>
             </div>
           )}
 
@@ -675,7 +675,7 @@ export default function TravelTime() {
                 {visualLoading && (
                   <div className="flex flex-col items-center justify-center h-48 gap-3">
                     <div className="w-7 h-7 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-                    <p className="text-sm text-muted-foreground">Caricamento dettaglio...</p>
+                    <p className="text-sm text-muted-foreground">Caricamento dettaglio…</p>
                   </div>
                 )}
                 {!visualLoading && tripVisual && (
@@ -868,7 +868,7 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
                   <th className="px-3 py-2 text-left font-medium">Dist.</th>
                   <th className="px-3 py-2 text-left font-medium">Tempo</th>
                   <th className="px-3 py-2 text-left font-medium">Vel. sched.</th>
-                  <th className="px-3 py-2 text-left font-medium">Freeflow</th>
+                  <th className="px-3 py-2 text-left font-medium">Flusso libero</th>
                   <th className="px-3 py-2 text-left font-medium">Rallent.</th>
                 </tr>
               </thead>
@@ -1007,7 +1007,7 @@ function RouteLineDiagram({ visual }: { visual: TripVisual }) {
                   {tooltip.seg.scheduledMin.toFixed(1)} min • {tooltip.seg.distanceKm} km
                 </text>
                 <text x={Math.min(Math.max(tooltip.x - 90, 2), SVG_W - 182) + 8} y={30} fontSize={10} fill="#94a3b8">
-                  Sched. {tooltip.seg.scheduledSpeedKmh} km/h | FF {tooltip.seg.freeflowKmh != null ? `${tooltip.seg.freeflowKmh} km/h` : "n/d"}
+                  Orar. {tooltip.seg.scheduledSpeedKmh} km/h | FL {tooltip.seg.freeflowKmh != null ? `${tooltip.seg.freeflowKmh} km/h` : "n/d"}
                 </text>
                 <text x={Math.min(Math.max(tooltip.x - 90, 2), SVG_W - 182) + 8} y={48} fontSize={10}
                   fill={tooltip.seg.delayPct !== null ? delayColor(tooltip.seg.delayPct) : "#94a3b8"} fontWeight={600}>
