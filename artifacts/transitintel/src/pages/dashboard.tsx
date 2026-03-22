@@ -586,7 +586,7 @@ export default function Dashboard() {
               "circle-color": ["interpolate",["linear"],["get","congestion"],0,"#22c55e",0.3,"#84cc16",0.5,"#eab308",0.7,"#f97316",1,"#ef4444"],
               "circle-opacity": 0.92,
               "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff30",
+              "circle-stroke-color": "rgba(255, 255, 255, 0.19)",
             }} />
           </Source>
         )}
