@@ -2,10 +2,10 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import Map, { Source, Layer, Popup, MapMouseEvent, MapRef } from "react-map-gl/mapbox";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Activity, MapPin, AlertTriangle, Layers, Users,
+  Activity, MapPin, AlertTriangle, Layers,
   Building2, Satellite, Sun, SlidersHorizontal,
   Search, X, ChevronDown, ChevronUp, Star, Clock,
-  Bus, Route, TrendingUp,
+  Bus, Route,
 } from "lucide-react";
 
 import {
@@ -37,6 +37,9 @@ interface GtfsSummary {
   weekdayTrips: number;
   saturdayTrips: number;
   sundayTrips: number;
+  weekdayKm?: number;
+  saturdayKm?: number;
+  sundayKm?: number;
   firstDeparture?: string;
   lastArrival?: string;
   topRoutes: { name: string; color: string; trips: number }[];
@@ -782,8 +785,31 @@ export default function Dashboard() {
                 <div className="grid grid-cols-2 gap-2">
                   <StatBox label="Linee totali"   value={gtfsSummary?.totalRoutes?.toString() ?? "--"} icon={<Route className="w-3.5 h-3.5" />}  color="text-blue-400" />
                   <StatBox label="Fermate"         value={gtfsSummary?.totalStops != null ? gtfsSummary.totalStops.toLocaleString("it-IT") : "--"} icon={<MapPin className="w-3.5 h-3.5" />}  color="text-cyan-400" />
-                  <StatBox label="Corse (feriali)" value={gtfsSummary?.weekdayTrips != null ? gtfsSummary.weekdayTrips.toLocaleString("it-IT") : "--"} icon={<Bus className="w-3.5 h-3.5" />} color="text-green-400" />
-                  <StatBox label="Corse (sabato)"  value={gtfsSummary?.saturdayTrips != null ? gtfsSummary.saturdayTrips.toLocaleString("it-IT") : "--"} icon={<TrendingUp className="w-3.5 h-3.5" />} color="text-amber-400" />
+                </div>
+                {/* Corse e km per tipo giorno */}
+                <div className="rounded-lg border border-border/40 overflow-hidden">
+                  <table className="w-full text-[10px]">
+                    <thead>
+                      <tr className="bg-muted/30 text-muted-foreground">
+                        <th className="text-left px-2 py-1 font-medium">Tipo</th>
+                        <th className="text-right px-2 py-1 font-medium">Corse</th>
+                        <th className="text-right px-2 py-1 font-medium">Km</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/20">
+                      {([
+                        { label: "Feriale",  trips: gtfsSummary?.weekdayTrips,  km: gtfsSummary?.weekdayKm,  color: "text-green-400" },
+                        { label: "Sabato",   trips: gtfsSummary?.saturdayTrips, km: gtfsSummary?.saturdayKm, color: "text-amber-400" },
+                        { label: "Festivo",  trips: gtfsSummary?.sundayTrips,   km: gtfsSummary?.sundayKm,   color: "text-rose-400" },
+                      ] as const).map(row => (
+                        <tr key={row.label}>
+                          <td className={`px-2 py-1 font-semibold ${row.color}`}>{row.label}</td>
+                          <td className="text-right px-2 py-1 font-mono">{row.trips != null ? row.trips.toLocaleString("it-IT") : "--"}</td>
+                          <td className="text-right px-2 py-1 font-mono">{row.km != null ? row.km.toLocaleString("it-IT") : "--"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
                 {/* Orario servizio */}
                 {gtfsSummary?.firstDeparture && (
@@ -794,17 +820,6 @@ export default function Dashboard() {
                     <span className="font-mono font-semibold text-foreground">{gtfsSummary.lastArrival?.substring(0,5)}</span>
                   </div>
                 )}
-                {/* Copertura population */}
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[10px] text-muted-foreground">
-                    <span className="flex items-center gap-1"><Users className="w-3 h-3" /> Copertura pop.</span>
-                    <span>{statsData?.coveragePercent?.toFixed(1) ?? 0}%</span>
-                  </div>
-                  <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                    <div className="h-full bg-primary rounded-full transition-all duration-700"
-                      style={{ width: `${statsData?.coveragePercent ?? 0}%` }} />
-                  </div>
-                </div>
                 {/* Traffico */}
                 {statsData?.avgCongestion != null && (
                   <div className="flex items-center justify-between text-[10px]">

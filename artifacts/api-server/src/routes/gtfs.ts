@@ -422,6 +422,7 @@ router.get("/gtfs/summary", async (req, res) => {
     const feedId = await getLatestFeedId();
     if (!feedId) return res.json({ available: false });
 
+    // ── 1. Basic counts + calendar DOW + hours ──────────────────
     const [routeCount, stopCount, tripCount, calDows, hoursRow] = await Promise.all([
       db.execute(sql`SELECT COUNT(DISTINCT route_id)::int AS n FROM gtfs_routes WHERE feed_id = ${feedId}`),
       db.execute(sql`SELECT COUNT(*)::int AS n FROM gtfs_stops WHERE feed_id = ${feedId}`),
@@ -441,6 +442,7 @@ router.get("/gtfs/summary", async (req, res) => {
       `),
     ]);
 
+    // ── 2. Build service_id → day-type map ──────────────────────
     const svcMap: Record<string, { weekday: boolean; saturday: boolean; sunday: boolean }> = {};
     for (const row of calDows.rows) {
       svcMap[row.service_id] = {
@@ -450,15 +452,96 @@ router.get("/gtfs/summary", async (req, res) => {
       };
     }
 
-    const allTrips = await db.execute<{ service_id: string }>(sql`SELECT service_id FROM gtfs_trips WHERE feed_id = ${feedId}`);
+    // ── 3. Trips per day type ───────────────────────────────────
+    const allTrips = await db.execute<{ service_id: string; shape_id: string | null }>(
+      sql`SELECT service_id, shape_id FROM gtfs_trips WHERE feed_id = ${feedId}`
+    );
     let weekdayTrips = 0, satTrips = 0, sunTrips = 0;
+    const weekdayShapeIds = new Set<string>();
+    const satShapeIds     = new Set<string>();
+    const sunShapeIds     = new Set<string>();
+    // Count trips per shape per day type (for km = trips * shape_length)
+    const weekdayShapeTripCount: Record<string, number> = {};
+    const satShapeTripCount:     Record<string, number> = {};
+    const sunShapeTripCount:     Record<string, number> = {};
+
     for (const t of allTrips.rows) {
       const svc = svcMap[t.service_id];
-      if (svc?.weekday)  weekdayTrips++;
-      if (svc?.saturday) satTrips++;
-      if (svc?.sunday)   sunTrips++;
+      if (svc?.weekday) {
+        weekdayTrips++;
+        if (t.shape_id) {
+          weekdayShapeIds.add(t.shape_id);
+          weekdayShapeTripCount[t.shape_id] = (weekdayShapeTripCount[t.shape_id] || 0) + 1;
+        }
+      }
+      if (svc?.saturday) {
+        satTrips++;
+        if (t.shape_id) {
+          satShapeIds.add(t.shape_id);
+          satShapeTripCount[t.shape_id] = (satShapeTripCount[t.shape_id] || 0) + 1;
+        }
+      }
+      if (svc?.sunday) {
+        sunTrips++;
+        if (t.shape_id) {
+          sunShapeIds.add(t.shape_id);
+          sunShapeTripCount[t.shape_id] = (sunShapeTripCount[t.shape_id] || 0) + 1;
+        }
+      }
     }
 
+    // ── 4. Compute shape lengths (km) ──────────────────────────
+    // Collect all unique shape_ids that we need
+    const allShapeIds = new Set([...weekdayShapeIds, ...satShapeIds, ...sunShapeIds]);
+    const shapeLengthKm: Record<string, number> = {};
+
+    if (allShapeIds.size > 0) {
+      const shapeIdArr = Array.from(allShapeIds);
+      const shapesResult = await db.execute<{ shape_id: string; geojson: any }>(sql`
+        SELECT shape_id, geojson FROM gtfs_shapes
+        WHERE feed_id = ${feedId} AND shape_id IN ${sql`(${sql.join(shapeIdArr.map(s => sql`${s}`), sql`, `)})`}
+      `);
+
+      // Haversine helper
+      const toRad = (d: number) => (d * Math.PI) / 180;
+      function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+        const R = 6371;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+
+      for (const row of shapesResult.rows) {
+        let geojson = row.geojson;
+        if (typeof geojson === "string") geojson = JSON.parse(geojson);
+        const coords: number[][] =
+          geojson?.type === "LineString" ? geojson.coordinates :
+          geojson?.type === "Feature" ? geojson.geometry?.coordinates :
+          geojson?.type === "FeatureCollection" ? geojson.features?.[0]?.geometry?.coordinates :
+          [];
+        if (!coords || coords.length < 2) { shapeLengthKm[row.shape_id] = 0; continue; }
+        let len = 0;
+        for (let i = 1; i < coords.length; i++) {
+          len += haversineKm(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
+        }
+        shapeLengthKm[row.shape_id] = len;
+      }
+    }
+
+    // ── 5. Total km per day type (sum of trips × shape length) ─
+    function totalKm(shapeTripCount: Record<string, number>): number {
+      let km = 0;
+      for (const [sid, count] of Object.entries(shapeTripCount)) {
+        km += (shapeLengthKm[sid] || 0) * count;
+      }
+      return Math.round(km);
+    }
+    const weekdayKm  = totalKm(weekdayShapeTripCount);
+    const saturdayKm  = totalKm(satShapeTripCount);
+    const sundayKm    = totalKm(sunShapeTripCount);
+
+    // ── 6. Top routes ──────────────────────────────────────────
     const topRoutes = await db.execute<{ name: string; color: string; trips: number }>(sql`
       SELECT r.route_short_name AS name, r.route_color AS color, COUNT(t.trip_id)::int AS trips
       FROM gtfs_routes r
@@ -478,6 +561,9 @@ router.get("/gtfs/summary", async (req, res) => {
       weekdayTrips,
       saturdayTrips: satTrips,
       sundayTrips: sunTrips,
+      weekdayKm,
+      saturdayKm,
+      sundayKm,
       topRoutes: topRoutes.rows,
       firstDeparture: hrs.first_dep,
       lastArrival: hrs.last_arr,
