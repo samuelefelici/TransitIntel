@@ -6,6 +6,9 @@ import {
   Building2, Satellite, Sun, SlidersHorizontal,
   Search, X, ChevronDown, ChevronUp, Star, Clock,
   Bus, Route,
+  Cross, GraduationCap, ShoppingBag, Factory, Dumbbell,
+  Landmark, TrainFront, Briefcase, Church, HeartHandshake,
+  CircleParking, Camera,
 } from "lucide-react";
 
 import {
@@ -46,18 +49,32 @@ interface GtfsSummary {
 }
 
 const POI_CATEGORY_IT: Record<string, string> = {
-  hospital:   "🏥 Ospedale",
-  school:     "🏫 Scuola / Università",
-  shopping:   "🛒 Centro Commerciale",
-  industrial: "🏭 Zona Industriale",
-  leisure:    "⚽ Svago / Sport",
-  office:     "🏛️ Ufficio / P.A.",
-  transit:    "🚌 Hub Trasporti",
-  workplace:  "🏢 Aziende / Uffici",
-  worship:    "⛪ Luoghi di Culto",
-  elderly:    "🏠 RSA / Case Riposo",
-  parking:    "🅿️ Parcheggi",
-  tourism:    "🏛️ Turismo / Cultura",
+  hospital:   "Sanità",
+  school:     "Istruzione",
+  shopping:   "Commercio",
+  industrial: "Zona Industriale",
+  leisure:    "Sport / Svago",
+  office:     "Uffici / P.A.",
+  transit:    "Hub Trasporti",
+  workplace:  "Aziende",
+  worship:    "Culto",
+  elderly:    "RSA",
+  parking:    "Parcheggi",
+  tourism:    "Cultura",
+};
+const POI_ICON: Record<string, React.ReactNode> = {
+  hospital:   <Cross className="w-3 h-3" />,
+  school:     <GraduationCap className="w-3 h-3" />,
+  shopping:   <ShoppingBag className="w-3 h-3" />,
+  industrial: <Factory className="w-3 h-3" />,
+  leisure:    <Dumbbell className="w-3 h-3" />,
+  office:     <Landmark className="w-3 h-3" />,
+  transit:    <TrainFront className="w-3 h-3" />,
+  workplace:  <Briefcase className="w-3 h-3" />,
+  worship:    <Church className="w-3 h-3" />,
+  elderly:    <HeartHandshake className="w-3 h-3" />,
+  parking:    <CircleParking className="w-3 h-3" />,
+  tourism:    <Camera className="w-3 h-3" />,
 };
 const POI_COLOR: Record<string, string> = {
   hospital:   "#ef4444",
@@ -901,9 +918,9 @@ export default function Dashboard() {
                               return (
                                 <button key={cat}
                                   onClick={() => setSelectedPoiCats(prev => on ? prev.filter(c => c !== cat) : [...prev, cat])}
-                                  className={`text-[9px] px-1.5 py-0.5 rounded-full border transition-all ${on ? "opacity-100" : "opacity-30"}`}
+                                  className={`text-[9px] px-1.5 py-0.5 rounded-full border transition-all flex items-center gap-1 ${on ? "opacity-100" : "opacity-30"}`}
                                   style={{ borderColor: color, color }}>
-                                  {POI_CATEGORY_IT[cat]?.split(" ")[0]} {cat.charAt(0).toUpperCase() + cat.slice(1)}
+                                  {POI_ICON[cat]} {POI_CATEGORY_IT[cat] || cat}
                                 </button>
                               );
                             })}
@@ -1011,7 +1028,7 @@ export default function Dashboard() {
                             {Object.entries(POI_COLOR).map(([cat, color]) => (
                               <div key={cat} className="flex items-center gap-2">
                                 <div className="w-3 h-3 rounded-full border border-black/30" style={{ backgroundColor: color }} />
-                                <span className="text-xs text-muted-foreground">{POI_CATEGORY_IT[cat]?.replace(/^.+\s/, "") || cat}</span>
+                                <span className="text-xs text-muted-foreground flex items-center gap-1">{POI_ICON[cat]} {POI_CATEGORY_IT[cat] || cat}</span>
                               </div>
                             ))}
                           </div>
@@ -1071,6 +1088,7 @@ function PopupContent({ popup }: { popup: MapPopup }) {
   if (type === "poi") {
     const catLabel = POI_CATEGORY_IT[props.category] || props.category;
     const catColor = POI_COLOR[props.category] || "#6b7280";
+    const catIcon = POI_ICON[props.category] || null;
     const rating = typeof props.rating === "number" ? props.rating : null;
     const total = typeof props.userRatingsTotal === "number" ? props.userRatingsTotal : null;
     let types: string[] = [];
@@ -1081,7 +1099,7 @@ function PopupContent({ popup }: { popup: MapPopup }) {
       <div className="space-y-2 min-w-[200px]">
         <div className="font-bold text-sm text-gray-900 leading-snug">{props.name}</div>
         <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs text-white font-medium" style={{ backgroundColor: catColor }}>
-          {catLabel}
+          {catIcon} {catLabel}
         </div>
         {rating != null && (
           <div className="flex items-center gap-1.5">
