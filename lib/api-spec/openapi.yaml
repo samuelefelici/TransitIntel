@@ -1,0 +1,861 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: TransitIntel API - Public transport planning intelligence platform
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: traffic
+    description: Traffic data and analysis
+  - name: poi
+    description: Points of interest
+  - name: population
+    description: Population density data
+  - name: stops
+    description: Bus stop management
+  - name: routes
+    description: Bus route management
+  - name: analysis
+    description: Transit demand analysis
+  - name: cron
+    description: Scheduled data ingestion
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /traffic:
+    get:
+      operationId: getTraffic
+      tags: [traffic]
+      summary: Get traffic snapshots with spatial filter
+      parameters:
+        - name: bbox
+          in: query
+          description: "Bounding box: minLng,minLat,maxLng,maxLat"
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 500
+      responses:
+        "200":
+          description: Traffic snapshots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficSnapshotList"
+
+  /traffic/heatmap:
+    get:
+      operationId: getTrafficHeatmap
+      tags: [traffic]
+      summary: Aggregated congestion heatmap by hour/day
+      parameters:
+        - name: hour
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 23
+        - name: dayofweek
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 6
+      responses:
+        "200":
+          description: Heatmap data points
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficHeatmapList"
+
+  /traffic/stats:
+    get:
+      operationId: getTrafficStats
+      tags: [traffic]
+      summary: Traffic statistics summary
+      responses:
+        "200":
+          description: Traffic stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficStats"
+
+  /poi:
+    get:
+      operationId: getPoi
+      tags: [poi]
+      summary: Get points of interest
+      parameters:
+        - name: categories
+          in: query
+          description: "Comma-separated: school,hospital,shopping,industrial,leisure,office,transit"
+          schema:
+            type: string
+        - name: bbox
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: POI list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PoiList"
+
+  /population/density:
+    get:
+      operationId: getPopulationDensity
+      tags: [population]
+      summary: Census section polygons with density
+      parameters:
+        - name: bbox
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Census sections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CensusSectionList"
+
+  /stops:
+    get:
+      operationId: getStops
+      tags: [stops]
+      summary: Get all bus stops
+      parameters:
+        - name: bbox
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Bus stops
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusStopList"
+    post:
+      operationId: createStop
+      tags: [stops]
+      summary: Create a new bus stop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusStop"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusStop"
+
+  /stops/{id}:
+    put:
+      operationId: updateStop
+      tags: [stops]
+      summary: Update a bus stop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusStop"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusStop"
+    delete:
+      operationId: deleteStop
+      tags: [stops]
+      summary: Delete a bus stop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /stops/{id}/nearby:
+    get:
+      operationId: getStopNearby
+      tags: [stops]
+      summary: Get nearby POIs and population for a stop
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Nearby data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopNearbyData"
+
+  /routes:
+    get:
+      operationId: getRoutes
+      tags: [routes]
+      summary: Get all bus routes
+      responses:
+        "200":
+          description: Bus routes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusRouteList"
+    post:
+      operationId: createRoute
+      tags: [routes]
+      summary: Create a new bus route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBusRoute"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusRoute"
+
+  /routes/{id}:
+    delete:
+      operationId: deleteRoute
+      tags: [routes]
+      summary: Delete a bus route
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /analysis/coverage:
+    get:
+      operationId: getCoverageAnalysis
+      tags: [analysis]
+      summary: Population coverage within radius of bus stops
+      parameters:
+        - name: radius
+          in: query
+          description: Radius in meters
+          schema:
+            type: integer
+            default: 400
+      responses:
+        "200":
+          description: Coverage analysis
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoverageAnalysis"
+
+  /analysis/demand-score:
+    get:
+      operationId: getDemandScore
+      tags: [analysis]
+      summary: Composite demand score per grid cell
+      parameters:
+        - name: bbox
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Demand score grid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DemandScoreList"
+
+  /analysis/underserved:
+    get:
+      operationId: getUnderservedAreas
+      tags: [analysis]
+      summary: Areas with high demand but no nearby bus stop
+      parameters:
+        - name: radius
+          in: query
+          schema:
+            type: integer
+            default: 400
+        - name: minScore
+          in: query
+          schema:
+            type: number
+            default: 0.5
+      responses:
+        "200":
+          description: Underserved areas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnderservedAreaList"
+
+  /analysis/stats:
+    get:
+      operationId: getAnalysisStats
+      tags: [analysis]
+      summary: Overall stats for dashboard
+      responses:
+        "200":
+          description: Dashboard stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardStats"
+
+  /cron/traffic:
+    post:
+      operationId: cronTraffic
+      tags: [cron]
+      summary: Ingest TomTom traffic data
+      security:
+        - cronSecret: []
+      responses:
+        "200":
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronResult"
+
+  /cron/poi:
+    post:
+      operationId: cronPoi
+      tags: [cron]
+      summary: Ingest OSM POI data
+      security:
+        - cronSecret: []
+      responses:
+        "200":
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronResult"
+
+  /cron/population:
+    post:
+      operationId: cronPopulation
+      tags: [cron]
+      summary: Ingest ISTAT population data
+      security:
+        - cronSecret: []
+      responses:
+        "200":
+          description: Ingestion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CronResult"
+
+components:
+  securitySchemes:
+    cronSecret:
+      type: apiKey
+      in: header
+      name: x-cron-secret
+
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    TrafficSnapshot:
+      type: object
+      properties:
+        id:
+          type: string
+        segmentId:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        speed:
+          type: number
+        freeflowSpeed:
+          type: number
+        congestionLevel:
+          type: number
+        capturedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - segmentId
+        - lng
+        - lat
+        - speed
+        - freeflowSpeed
+        - congestionLevel
+        - capturedAt
+
+    TrafficSnapshotList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrafficSnapshot"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    TrafficHeatmapPoint:
+      type: object
+      properties:
+        lng:
+          type: number
+        lat:
+          type: number
+        avgCongestion:
+          type: number
+        sampleCount:
+          type: integer
+      required:
+        - lng
+        - lat
+        - avgCongestion
+        - sampleCount
+
+    TrafficHeatmapList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrafficHeatmapPoint"
+      required:
+        - data
+
+    TrafficStats:
+      type: object
+      properties:
+        avgCongestion:
+          type: number
+        totalSnapshots:
+          type: integer
+        lastUpdated:
+          type: string
+          format: date-time
+        peakHour:
+          type: integer
+        congestionByHour:
+          type: array
+          items:
+            type: object
+            properties:
+              hour:
+                type: integer
+              avgCongestion:
+                type: number
+            required:
+              - hour
+              - avgCongestion
+      required:
+        - avgCongestion
+        - totalSnapshots
+        - congestionByHour
+
+    Poi:
+      type: object
+      properties:
+        id:
+          type: string
+        osmId:
+          type: integer
+        name:
+          type: string
+        category:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        properties:
+          type: object
+          additionalProperties: true
+      required:
+        - id
+        - category
+        - lng
+        - lat
+
+    PoiList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Poi"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    CensusSection:
+      type: object
+      properties:
+        id:
+          type: string
+        istatCode:
+          type: string
+        population:
+          type: integer
+        areaKm2:
+          type: number
+        density:
+          type: number
+        centroidLng:
+          type: number
+        centroidLat:
+          type: number
+      required:
+        - id
+        - population
+        - density
+        - centroidLng
+        - centroidLat
+
+    CensusSectionList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CensusSection"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    BusStop:
+      type: object
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+        name:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        lines:
+          type: array
+          items:
+            type: string
+      required:
+        - id
+        - name
+        - lng
+        - lat
+
+    BusStopList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BusStop"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    CreateBusStop:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        lines:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - lng
+        - lat
+
+    StopNearbyData:
+      type: object
+      properties:
+        stopId:
+          type: string
+        nearbyPois:
+          type: array
+          items:
+            $ref: "#/components/schemas/Poi"
+        populationServed:
+          type: integer
+        poiCount:
+          type: integer
+      required:
+        - stopId
+        - nearbyPois
+        - populationServed
+        - poiCount
+
+    BusRoute:
+      type: object
+      properties:
+        id:
+          type: string
+        lineCode:
+          type: string
+        name:
+          type: string
+        serviceType:
+          type: string
+        stopCount:
+          type: integer
+      required:
+        - id
+        - name
+        - serviceType
+
+    BusRouteList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BusRoute"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    CreateBusRoute:
+      type: object
+      properties:
+        lineCode:
+          type: string
+        name:
+          type: string
+        serviceType:
+          type: string
+          enum: [urban, extraurban]
+      required:
+        - name
+        - serviceType
+
+    CoverageAnalysis:
+      type: object
+      properties:
+        radiusMeters:
+          type: integer
+        totalPopulation:
+          type: integer
+        coveredPopulation:
+          type: integer
+        coveragePercent:
+          type: number
+        totalStops:
+          type: integer
+      required:
+        - radiusMeters
+        - totalPopulation
+        - coveredPopulation
+        - coveragePercent
+        - totalStops
+
+    DemandScoreCell:
+      type: object
+      properties:
+        cellId:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        score:
+          type: number
+        populationScore:
+          type: number
+        poiScore:
+          type: number
+        trafficScore:
+          type: number
+        hasStop:
+          type: boolean
+      required:
+        - cellId
+        - lng
+        - lat
+        - score
+        - hasStop
+
+    DemandScoreList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DemandScoreCell"
+      required:
+        - data
+
+    UnderservedArea:
+      type: object
+      properties:
+        cellId:
+          type: string
+        lng:
+          type: number
+        lat:
+          type: number
+        score:
+          type: number
+        nearestStopDistanceMeters:
+          type: number
+        suggestedStopLng:
+          type: number
+        suggestedStopLat:
+          type: number
+        populationAffected:
+          type: integer
+        topPoiCategories:
+          type: array
+          items:
+            type: string
+      required:
+        - cellId
+        - lng
+        - lat
+        - score
+        - nearestStopDistanceMeters
+
+    UnderservedAreaList:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnderservedArea"
+        total:
+          type: integer
+      required:
+        - data
+        - total
+
+    DashboardStats:
+      type: object
+      properties:
+        avgCongestion:
+          type: number
+        totalPoi:
+          type: integer
+        totalStops:
+          type: integer
+        totalPopulation:
+          type: integer
+        coveredPopulation:
+          type: integer
+        coveragePercent:
+          type: number
+        underservedCount:
+          type: integer
+        lastTrafficUpdate:
+          type: string
+          format: date-time
+      required:
+        - avgCongestion
+        - totalPoi
+        - totalStops
+        - totalPopulation
+        - coveredPopulation
+        - coveragePercent
+        - underservedCount
+
+    CronResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        inserted:
+          type: integer
+        message:
+          type: string
+      required:
+        - success
+        - inserted
+        - message

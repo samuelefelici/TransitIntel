@@ -1,0 +1,29 @@
+# ═══════════════════════════════════════════════════════════
+# Render.com — Blueprint per deploy automatico
+# ═══════════════════════════════════════════════════════════
+services:
+  - type: web
+    name: transitintel-api
+    runtime: node
+    plan: free
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
+    startCommand: node artifacts/api-server/dist/index.cjs
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: CRON_SECRET
+        sync: false
+      - key: TOMTOM_API_KEY
+        sync: false
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: MAPBOX_TOKEN
+        sync: false
+    healthCheckPath: /api/healthz
+    autoDeploy: true

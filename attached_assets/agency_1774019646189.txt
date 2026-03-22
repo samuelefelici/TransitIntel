@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email
+"ATMA","Atma Scpa","https://www.atmaancona.it","Europe/Rome","it","0712837468","https://www.atmaancona.it/tariffe/tariffe-generale/","info@atmaancona.it"

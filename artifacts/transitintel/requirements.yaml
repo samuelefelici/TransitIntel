@@ -1,0 +1,17 @@
+packages:
+  "react-map-gl": "React wrapper for Mapbox GL JS"
+  "mapbox-gl": "Mapbox GL JS library"
+  "@types/mapbox-gl": "TypeScript definitions for mapbox-gl"
+  "recharts": "Charting library for data visualization"
+  "framer-motion": "Animation library for beautiful page transitions and interactions"
+  "date-fns": "Date formatting for traffic snapshots and analysis"
+  "lucide-react": "Beautiful icons for the dashboard interface"
+
+images:
+  - path: "artifacts/transitintel/public/images/logo.png"
+    description: "Minimal geometric logo mark for a public transit intelligence platform, deep cyan and navy, transparent background"
+    aspect_ratio: "1:1"
+
+notes:
+  - The map relies on VITE_MAPBOX_TOKEN being set in the environment or passed at build time.
+  - Using generated orval hooks from @workspace/api-client-react for data fetching.

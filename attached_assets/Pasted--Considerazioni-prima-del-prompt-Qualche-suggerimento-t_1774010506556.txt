@@ -1,0 +1,255 @@
+## Considerazioni prima del prompt
+
+Qualche suggerimento tecnico prima di generare:
+
+**Fonti dati che ti consiglio:**
+- **Traffico** → TomTom Traffic API o HERE Traffic API (free tier generoso, dati italiani ottimi) — Google Maps è più costoso
+- **Popolazione** → ISTAT open data (API gratuita, dati per sezione di censimento)
+- **POI/Punti interesse** → Overpass API (OpenStreetMap, completamente gratuito)
+- **Geospaziale** → PostGIS su Supabase (estensione built-in, essenziale per query geografiche)
+
+**Stack consigliato:**
+- Next.js 14 App Router + TypeScript
+- Supabase + PostGIS
+- `react-map-gl` + Mapbox GL JS per le mappe
+- `deck.gl` per visualizzazione layer dati pesanti
+- Vercel Cron Jobs per acquisizione dati schedulata
+
+---
+
+Ecco il prompt completo:
+
+---
+
+```
+You are a senior fullstack engineer. Build a complete Next.js 14 (App Router) 
+TypeScript application called "TransitIntel" for public transport planning 
+in an Italian province.
+
+## Tech Stack
+- Next.js 14 App Router, TypeScript, Tailwind CSS
+- Supabase (PostgreSQL + PostGIS extension) for spatial data storage
+- react-map-gl + Mapbox GL JS for map rendering
+- deck.gl for heatmap and flow visualization layers
+- Vercel hosting + Vercel Cron Jobs for scheduled data ingestion
+- Zod for validation, React Query / TanStack Query for data fetching
+
+---
+
+## Data Sources to Integrate
+
+### 1. Traffic Data — TomTom Traffic API
+- Endpoint: Flow Segment Data + Incident Details API
+- Fetch traffic flow speed, freeFlow speed, confidence per road segment
+- Schedule: every 15 minutes via Vercel Cron
+- Store in table: `traffic_snapshots` with geometry (LineString/Point), 
+  timestamp, speed, freeflow_speed, congestion_level (computed 0–1)
+
+### 2. Population Distribution — ISTAT Open Data
+- Source: ISTAT API or static CSV download 
+  (https://www.istat.it/it/archivio/104317)
+- Data: population per sezione di censimento (census section)
+- Store in table: `census_sections` with geometry (Polygon), 
+  population count, density per km²
+- Refresh: weekly cron
+
+### 3. Points of Interest — OpenStreetMap Overpass API
+- Query categories relevant to transit planning:
+  - Schools (amenity=school, amenity=university)
+  - Hospitals (amenity=hospital, amenity=clinic)  
+  - Supermarkets, shopping (shop=supermarket, shop=mall)
+  - Industrial zones (landuse=industrial)
+  - Sport/leisure (leisure=stadium, leisure=sports_centre)
+  - Public offices (amenity=townhall, office=government)
+  - Train stations, bus stops (railway=station, highway=bus_stop)
+- Store in table: `points_of_interest` with geometry (Point/Polygon), 
+  name, category, osm_id
+- Refresh: monthly cron
+
+### 4. Existing Bus Stops & Routes (manual input)
+- Tables: `bus_stops`, `bus_routes`, `route_stops`
+- CRUD interface for operators to manage
+
+---
+
+## Database Schema (Supabase + PostGIS)
+
+Enable PostGIS: `CREATE EXTENSION IF NOT EXISTS postgis;`
+
+```sql
+-- Traffic snapshots
+CREATE TABLE traffic_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  segment_id TEXT NOT NULL,
+  geom GEOMETRY(LineString, 4326),
+  speed FLOAT,
+  freeflow_speed FLOAT,
+  congestion_level FLOAT GENERATED ALWAYS AS 
+    (1 - LEAST(speed / NULLIF(freeflow_speed, 0), 1)) STORED,
+  captured_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX ON traffic_snapshots USING GIST(geom);
+CREATE INDEX ON traffic_snapshots(captured_at DESC);
+
+-- Census sections
+CREATE TABLE census_sections (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  istat_code TEXT UNIQUE,
+  geom GEOMETRY(MultiPolygon, 4326),
+  population INTEGER,
+  area_km2 FLOAT,
+  density FLOAT GENERATED ALWAYS AS 
+    (population::FLOAT / NULLIF(area_km2, 0)) STORED,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX ON census_sections USING GIST(geom);
+
+-- Points of interest
+CREATE TABLE points_of_interest (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  osm_id BIGINT UNIQUE,
+  name TEXT,
+  category TEXT,  -- school, hospital, shopping, industrial, leisure, office, transit
+  geom GEOMETRY(Point, 4326),
+  properties JSONB,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX ON points_of_interest USING GIST(geom);
+CREATE INDEX ON points_of_interest(category);
+
+-- Bus stops
+CREATE TABLE bus_stops (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT UNIQUE,
+  name TEXT,
+  geom GEOMETRY(Point, 4326),
+  lines TEXT[]
+);
+
+-- Bus routes  
+CREATE TABLE bus_routes (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  line_code TEXT,
+  name TEXT,
+  geom GEOMETRY(LineString, 4326),
+  service_type TEXT  -- urban, extraurban
+);
+```
+
+---
+
+## API Routes (Next.js App Router)
+
+### Data Ingestion (called by Vercel Cron)
+- `POST /api/cron/traffic` — fetch TomTom data for province bounding box, 
+  upsert to traffic_snapshots. Protected by CRON_SECRET header.
+- `POST /api/cron/poi` — fetch Overpass API POIs, upsert to points_of_interest
+- `POST /api/cron/population` — process ISTAT data, upsert census_sections
+
+### Data API
+- `GET /api/traffic?bbox=...&from=...&to=...` — traffic snapshots with 
+  spatial filter
+- `GET /api/traffic/heatmap?hour=8&dayofweek=1` — aggregated congestion 
+  by hour/day for heatmap
+- `GET /api/poi?categories=school,hospital&bbox=...` — POIs with filter
+- `GET /api/population/density?bbox=...` — census section polygons with density
+- `GET /api/analysis/coverage?radius=400` — bus stops coverage analysis: 
+  return % population within radius of a stop
+
+### Analysis Endpoints
+- `GET /api/analysis/demand-score` — composite demand score per hexagon grid 
+  (H3 or custom grid): combines population density + POI count + 
+  traffic congestion weight
+- `GET /api/analysis/underserved` — areas with high demand score 
+  but no bus stop within 400m
+
+---
+
+## Frontend Pages
+
+### `/dashboard` — Main Overview
+- Full-screen Mapbox map as base
+- Layer toggle panel (sidebar):
+  - Toggle traffic flow layer (color-coded segments: green/yellow/red)
+  - Toggle population density heatmap (deck.gl HeatmapLayer)
+  - Toggle POI markers (clustered by category)
+  - Toggle existing bus routes overlay
+  - Toggle demand score hexgrid
+  - Toggle underserved areas (red highlight)
+- Top bar: time range selector (last hour / today / this week / custom)
+- Stats cards: avg congestion, total POIs, population covered, 
+  uncovered population %
+
+### `/traffic` — Traffic Analysis
+- Time series chart (recharts): avg congestion by hour of day, 
+  split by day of week
+- Heatmap calendar: congestion intensity by day (like GitHub contribution graph)
+- Top 10 most congested road segments table
+- Filters: date range, segment type
+
+### `/territory` — Territory Analysis  
+- Population density choropleth map
+- POI distribution bar chart by category
+- Coverage analysis: 
+  - Input: select a bus line or draw a custom corridor
+  - Output: population reached, POI categories served
+
+### `/stops` — Bus Stop Management
+- Map with existing stops
+- CRUD panel: add/edit/delete stops
+- For each stop: show nearby POIs (within 300m) and population served (within 400m)
+
+### `/reports` — Demand Analysis
+- Demand score map (hexgrid visualization)
+- Underserved zones table with coordinates + suggested stop location
+- Export to CSV/PDF
+
+---
+
+## Environment Variables Required
+```
+NEXT_PUBLIC_MAPBOX_TOKEN=
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+TOMTOM_API_KEY=
+CRON_SECRET=
+PROVINCE_BBOX=13.1,43.5,13.8,44.0  # example: bounding box of target province
+```
+
+## Vercel Cron Config (vercel.json)
+```json
+{
+  "crons": [
+    { "path": "/api/cron/traffic", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/poi", "schedule": "0 3 1 * *" },
+    { "path": "/api/cron/population", "schedule": "0 4 * * 1" }
+  ]
+}
+```
+
+---
+
+## Key Implementation Notes
+1. All geometry stored as EPSG:4326 (WGS84)
+2. Use Supabase RPC for complex PostGIS queries 
+   (ST_Within, ST_DWithin, ST_Intersects)
+3. Traffic data retention policy: keep raw snapshots for 90 days, 
+   then aggregate to hourly averages in a separate `traffic_hourly_agg` table
+4. Mapbox style: use "mapbox://styles/mapbox/dark-v11" as base
+5. All map interactions (hover, click) should show a tooltip/sidebar panel 
+   with detailed data for the selected feature
+6. Mobile responsive: map full-screen on mobile, 
+   panels as bottom sheets
+7. Auth: Supabase Auth with email/password, 
+   all write operations require authenticated session
+
+Generate the complete project structure with all files, 
+starting from the folder tree, then each file in full.
+```
+
+---
+
+**Nota sul BBOX:** per Ancona/Marche puoi usare `12.9,43.3,13.9,43.9` come bounding box di partenza — coprirà tutta l'area di Conerobus.
+
+Vuoi che sviluppi una sezione specifica più in dettaglio, tipo la logica del demand score o le query PostGIS per l'analisi di copertura?
