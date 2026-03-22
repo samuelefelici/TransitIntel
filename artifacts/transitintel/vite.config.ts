@@ -9,10 +9,6 @@ const basePath = process.env.BASE_PATH || "/";
 
 export default defineConfig({
   base: basePath,
-  define: {
-    "import.meta.env.VITE_MAPBOX_TOKEN": JSON.stringify(process.env.MAPBOX_TOKEN || ""),
-    "import.meta.env.VITE_API_BASE_URL": JSON.stringify(process.env.VITE_API_BASE_URL || ""),
-  },
   plugins: [
     react(),
     tailwindcss(),
