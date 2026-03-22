@@ -3,7 +3,7 @@
   "version": 2,
   "framework": "vite",
   "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm -w run typecheck:libs && cd artifacts/transitintel && pnpm run build",
+  "buildCommand": "pnpm -w run typecheck:libs && pnpm --filter @workspace/transitintel run build",
   "outputDirectory": "artifacts/transitintel/dist/public",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
