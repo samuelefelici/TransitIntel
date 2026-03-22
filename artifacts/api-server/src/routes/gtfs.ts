@@ -835,12 +835,63 @@ function modelCongestion(hour: number, lng: number, lat: number): number {
   return Math.min(0.98, Math.max(0.02, base * zoneFactor + jitter * base));
 }
 
+// GET /api/gtfs/routes/:routeId/variants — distinct shape variants with headsign and trip count
+// Query params: directionId=0|1 (optional), feedId (optional)
+router.get("/gtfs/routes/:routeId/variants", async (req, res) => {
+  const { routeId } = req.params;
+  const feedId = req.query.feedId as string | undefined;
+  const directionIdParam = req.query.directionId !== undefined ? parseInt(req.query.directionId as string) : null;
+
+  try {
+    const resolvedFeedId = feedId || await getLatestFeedId();
+
+    // Get distinct (shape_id, direction_id, trip_headsign) combos with trip count
+    let q = sql`
+      SELECT
+        t.shape_id,
+        t.direction_id,
+        t.trip_headsign,
+        COUNT(*)::integer AS trips_count,
+        MIN(t.trip_id) AS sample_trip_id
+      FROM gtfs_trips t
+      WHERE t.route_id = ${routeId}
+        AND t.shape_id IS NOT NULL
+    `;
+    if (resolvedFeedId) q = sql`${q} AND t.feed_id = ${resolvedFeedId}`;
+    if (directionIdParam !== null && !isNaN(directionIdParam)) {
+      q = sql`${q} AND t.direction_id = ${directionIdParam}`;
+    }
+    q = sql`${q} GROUP BY t.shape_id, t.direction_id, t.trip_headsign ORDER BY t.direction_id, trips_count DESC`;
+
+    const result = await db.execute<{
+      shape_id: string; direction_id: number; trip_headsign: string | null;
+      trips_count: number; sample_trip_id: string;
+    }>(q);
+
+    const variants = result.rows.map(r => ({
+      shapeId: r.shape_id,
+      directionId: r.direction_id,
+      headsign: r.trip_headsign || null,
+      tripsCount: r.trips_count,
+      sampleTripId: r.sample_trip_id,
+    }));
+
+    res.json({ routeId, variants });
+  } catch (err) {
+    req.log.error(err, "Error fetching route variants");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // GET /api/gtfs/shapes/geojson — GeoJSON FeatureCollection with per-segment traffic congestion
-// Query params: feedId, routeIds (comma-separated), segmented=true, directionId=0|1, hour=<0-26>
+// Query params: feedId, routeIds (comma-separated), shapeIds (comma-separated), segmented=true, directionId=0|1, hour=<0-26>
 router.get("/gtfs/shapes/geojson", async (req, res) => {
   const feedId = req.query.feedId as string | undefined;
   const routeIds = req.query.routeIds
     ? (req.query.routeIds as string).split(",").map(s => s.trim()).filter(Boolean)
+    : [];
+  const shapeIds = req.query.shapeIds
+    ? (req.query.shapeIds as string).split(",").map(s => s.trim()).filter(Boolean)
     : [];
   const segmented = req.query.segmented === "true";
   const directionIdParam = req.query.directionId !== undefined ? parseInt(req.query.directionId as string) : null;
@@ -850,10 +901,16 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
   try {
     const resolvedFeedId = feedId || await getLatestFeedId();
 
-    // Build WHERE conditions — push routeIds filter into SQL so LIMIT doesn't cut them out
+    // Build WHERE conditions — push routeIds/shapeIds filter into SQL so LIMIT doesn't cut them out
     const conditions: SQL[] = [];
     if (resolvedFeedId) conditions.push(eq(gtfsShapes.feedId, resolvedFeedId));
-    if (routeIds.length > 0) conditions.push(inArray(gtfsShapes.routeId, routeIds));
+    // shapeIds takes priority over routeIds when both provided
+    if (shapeIds.length > 0) {
+      conditions.push(inArray(gtfsShapes.shapeId, shapeIds));
+    } else if (routeIds.length > 0) {
+      conditions.push(inArray(gtfsShapes.routeId, routeIds));
+    }
+    const hasFilter = shapeIds.length > 0 || routeIds.length > 0;
 
     let rows = await db
       .select({
@@ -865,7 +922,7 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
       })
       .from(gtfsShapes)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .limit(routeIds.length > 0 ? 2000 : 600);
+      .limit(hasFilter ? 2000 : 600);
 
     // Filter by direction_id if provided — lookup valid shape_ids via trips
     if (directionIdParam !== null && !isNaN(directionIdParam) && resolvedFeedId) {
