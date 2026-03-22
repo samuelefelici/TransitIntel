@@ -131,8 +131,8 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
     const maxMorning = Math.max(...Object.values(stopMorningPeak), 1);
     const maxEvening = Math.max(...Object.values(stopEveningPeak), 1);
 
-    // Shapes (limit to 300 for performance)
-    const shapePairs = buildShapeGeojson(shapesRaw).slice(0, 300);
+    // Shapes — import all (no truncation)
+    const shapePairs = buildShapeGeojson(shapesRaw);
 
     const agencyName = agencyRaw[0]?.["agency_name"] || null;
     const feedStart = feedInfoRaw[0]?.["feed_start_date"] || null;
@@ -850,7 +850,14 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
   try {
     const resolvedFeedId = feedId || await getLatestFeedId();
 
-    let allRows = await db
+    // When routeIds are specified, filter in SQL to avoid losing data with LIMIT
+    const whereCondition = resolvedFeedId && routeIds.length > 0
+      ? sql`${gtfsShapes.feedId} = ${resolvedFeedId} AND ${gtfsShapes.routeId} IN (${sql.join(routeIds.map(r => sql`${r}`), sql`, `)})`
+      : resolvedFeedId
+        ? eq(gtfsShapes.feedId, resolvedFeedId)
+        : undefined;
+
+    let rows = await db
       .select({
         geojson: gtfsShapes.geojson,
         shapeId: gtfsShapes.shapeId,
@@ -859,13 +866,8 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
         routeColor: gtfsShapes.routeColor,
       })
       .from(gtfsShapes)
-      .where(resolvedFeedId ? eq(gtfsShapes.feedId, resolvedFeedId) : undefined)
-      .limit(600);
-
-    // Filter by requested routeIds (client-side filter for flexibility)
-    let rows = routeIds.length > 0
-      ? allRows.filter(r => r.routeId && routeIds.includes(r.routeId))
-      : allRows;
+      .where(whereCondition)
+      .limit(routeIds.length > 0 ? 2000 : 1200);
 
     // Filter by direction_id if provided — lookup valid shape_ids via trips
     if (directionIdParam !== null && !isNaN(directionIdParam) && resolvedFeedId) {
