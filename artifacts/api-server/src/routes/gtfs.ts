@@ -4,7 +4,7 @@ import AdmZip from "adm-zip";
 import { parse } from "csv-parse/sync";
 import { db } from "@workspace/db";
 import { gtfsFeeds, gtfsStops, gtfsRoutes, gtfsShapes, gtfsTrips, gtfsStopTimes, gtfsCalendar, gtfsCalendarDates, pointsOfInterest, censusSections, trafficSnapshots } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and, inArray, type SQL } from "drizzle-orm";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -850,7 +850,12 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
   try {
     const resolvedFeedId = feedId || await getLatestFeedId();
 
-    let allRows = await db
+    // Build WHERE conditions — push routeIds filter into SQL so LIMIT doesn't cut them out
+    const conditions: SQL[] = [];
+    if (resolvedFeedId) conditions.push(eq(gtfsShapes.feedId, resolvedFeedId));
+    if (routeIds.length > 0) conditions.push(inArray(gtfsShapes.routeId, routeIds));
+
+    let rows = await db
       .select({
         geojson: gtfsShapes.geojson,
         shapeId: gtfsShapes.shapeId,
@@ -859,13 +864,8 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
         routeColor: gtfsShapes.routeColor,
       })
       .from(gtfsShapes)
-      .where(resolvedFeedId ? eq(gtfsShapes.feedId, resolvedFeedId) : undefined)
-      .limit(600);
-
-    // Filter by requested routeIds (client-side filter for flexibility)
-    let rows = routeIds.length > 0
-      ? allRows.filter(r => r.routeId && routeIds.includes(r.routeId))
-      : allRows;
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .limit(routeIds.length > 0 ? 2000 : 600);
 
     // Filter by direction_id if provided — lookup valid shape_ids via trips
     if (directionIdParam !== null && !isNaN(directionIdParam) && resolvedFeedId) {
