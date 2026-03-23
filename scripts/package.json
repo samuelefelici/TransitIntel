@@ -5,10 +5,18 @@
   "type": "module",
   "scripts": {
     "hello": "tsx ./src/hello.ts",
+    "import-census": "tsx ./src/import-census-sections.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:"
+  },
+  "dependencies": {
+    "@types/proj4": "^2.19.0",
+    "@workspace/db": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "proj4": "^2.20.4",
+    "shapefile": "^0.6.6"
   }
 }

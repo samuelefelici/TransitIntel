@@ -2,10 +2,14 @@ import React, { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import Map, { Source, Layer, Popup, MapMouseEvent, MapRef } from "react-map-gl/mapbox";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as ReTooltip,
+  ResponsiveContainer,
+} from "recharts";
+import {
   Activity, MapPin, AlertTriangle, Layers,
   Building2, Satellite, Sun, SlidersHorizontal,
   Search, X, ChevronDown, ChevronUp, Star, Clock,
-  Bus, Route,
+  Bus, Route, Footprints, Loader2, Play, Users,
   Cross, GraduationCap, ShoppingBag, Factory, Dumbbell,
   Landmark, TrainFront, Briefcase, Church, HeartHandshake,
   CircleParking, Camera,
@@ -256,6 +260,22 @@ export default function Dashboard() {
   const [popup, setPopup] = useState<MapPopup | null>(null);
   const [cursor, setCursor] = useState("grab");
 
+  // Isochrone state
+  const [isochroneGeojson, setIsochroneGeojson] = useState<any>(null);
+  const [isochroneLoading, setIsochroneLoading] = useState(false);
+  const [isochroneStop, setIsochroneStop] = useState<{ name: string; lat: number; lng: number } | null>(null);
+
+  // Walkability coverage state
+  const [walkData, setWalkData] = useState<{
+    minutes: number; totalPopulation: number; coveredPopulation: number; coveragePercent: number;
+    totalStops: number; sampledStops: number; note?: string;
+    stops: { stopId: string; stopName: string; lat: number; lng: number; coveredPop: number }[];
+    isochroneUnion: GeoJSON.FeatureCollection;
+  } | null>(null);
+  const [walkLoading, setWalkLoading] = useState(false);
+  const [walkMinutes, setWalkMinutes] = useState(10);
+  const [walkPanelOpen, setWalkPanelOpen] = useState(false);
+
   const { data: statsData }   = useGetAnalysisStats();
   const { data: trafficData } = useGetTraffic({ limit: 1000 });
   const { data: demandData }  = useGetDemandScore({});
@@ -502,6 +522,81 @@ export default function Dashboard() {
     }
   }, [selectedRouteIds.length]);
 
+  // Fetch isochrone for a given stop
+  const fetchIsochrone = useCallback((lat: number, lng: number, name: string) => {
+    setIsochroneLoading(true);
+    setIsochroneStop({ name, lat, lng });
+    fetch(`${getApiBase()}/api/analysis/isochrone?lat=${lat}&lng=${lng}&minutes=5,10`)
+      .then(r => {
+        if (r.status === 429) throw new Error("Rate limit raggiunto. Riprova tra 1 minuto.");
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(data => {
+        setIsochroneGeojson(data);
+        setIsochroneLoading(false);
+      })
+      .catch(err => {
+        console.error("Isochrone fetch failed:", err);
+        setIsochroneLoading(false);
+      });
+  }, []);
+
+  // Clear isochrone when popup is closed
+  useEffect(() => {
+    if (!popup) {
+      setIsochroneGeojson(null);
+      setIsochroneStop(null);
+    }
+  }, [popup]);
+
+  // Walkability coverage analysis
+  const runWalkability = useCallback(async () => {
+    setWalkLoading(true);
+    setWalkData(null);
+    try {
+      const params = new URLSearchParams({ minutes: String(walkMinutes) });
+      if (selectedRouteIds.length > 0) params.set("routeIds", selectedRouteIds.join(","));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 min timeout
+      const r = await fetch(`${getApiBase()}/api/analysis/walkability-coverage?${params}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const json = await r.json();
+      setWalkData(json);
+      // Fly to isochrone bounds
+      if (json.isochroneUnion?.features?.length && mapRef.current) {
+        const coords: [number, number][] = [];
+        for (const f of json.isochroneUnion.features) {
+          const g = f.geometry as any;
+          const rings = g.type === "Polygon" ? g.coordinates : g.type === "MultiPolygon" ? g.coordinates.flat() : [];
+          for (const ring of rings) for (const c of ring) coords.push(c as [number, number]);
+        }
+        if (coords.length) {
+          const lngs = coords.map(c => c[0]), lats = coords.map(c => c[1]);
+          mapRef.current.fitBounds([[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]], { padding: 60, duration: 1200 });
+        }
+      }
+    } catch (err) {
+      console.error("Walkability fetch failed:", err);
+    } finally {
+      setWalkLoading(false);
+    }
+  }, [walkMinutes, selectedRouteIds]);
+
+  // Derived walkability chart data
+  const walkDonut = useMemo(() => walkData ? [
+    { name: "Coperta", value: walkData.coveredPopulation, fill: "#3b82f6" },
+    { name: "Non coperta", value: walkData.totalPopulation - walkData.coveredPopulation, fill: "#334155" },
+  ] : [], [walkData]);
+
+  const walkBars = useMemo(() => walkData
+    ? [...walkData.stops].sort((a, b) => b.coveredPop - a.coveredPop).slice(0, 8).map(s => ({
+        name: s.stopName.length > 16 ? s.stopName.slice(0, 14) + "…" : s.stopName,
+        full: s.stopName, pop: s.coveredPop,
+      }))
+    : [], [walkData]);
+
   const filteredRoutes = useMemo(() => {
     const q = routeSearch.toLowerCase();
     return routeList.filter(r => {
@@ -648,7 +743,7 @@ export default function Dashboard() {
               "fill-extrusion-color": ["interpolate",["linear"],["zoom"],14,"#1e293b",17,"#334155"],
               "fill-extrusion-height": ["interpolate",["linear"],["zoom"],14,0,14.5,["get","height"]],
               "fill-extrusion-base": ["interpolate",["linear"],["zoom"],14,0,14.5,["get","min_height"]],
-              "fill-extrusion-opacity": viewMode === "city3d" ? 0.88 : 0.75,
+              "fill-extrusion-opacity": 0.75,
             }}
           />
         )}
@@ -729,7 +824,7 @@ export default function Dashboard() {
               "circle-color": ["interpolate",["linear"],["get","congestion"],0,"#22c55e",0.3,"#84cc16",0.5,"#eab308",0.7,"#f97316",1,"#ef4444"],
               "circle-opacity": 0.92,
               "circle-stroke-width": 2,
-              "circle-stroke-color": "#ffffff30",
+              "circle-stroke-color": "rgba(255,255,255,0.19)",
             }} />
           </Source>
         )}
@@ -772,11 +867,81 @@ export default function Dashboard() {
           </Source>
         )}
 
+        {/* Isochrone walking polygons */}
+        {isochroneGeojson && (
+          <Source type="geojson" data={isochroneGeojson}>
+            <Layer id="isochrone-fill" type="fill" paint={{
+              "fill-color": [
+                "match", ["get", "value"],
+                300, "#3b82f6",  // 5 min — blue
+                600, "#1d4ed8",  // 10 min — dark blue
+                "#2563eb",       // fallback blue
+              ],
+              "fill-opacity": [
+                "match", ["get", "value"],
+                300, 0.3,
+                600, 0.15,
+                0.2,
+              ],
+            }} />
+            <Layer id="isochrone-outline" type="line" paint={{
+              "line-color": [
+                "match", ["get", "value"],
+                300, "#2563eb",
+                600, "#1e40af",
+                "#1d4ed8",
+              ],
+              "line-width": 2,
+              "line-opacity": 0.7,
+              "line-dasharray": [2, 2],
+            }} />
+          </Source>
+        )}
+
+        {/* Walkability coverage polygons */}
+        {walkData?.isochroneUnion && (
+          <Source type="geojson" data={walkData.isochroneUnion}>
+            <Layer id="walk-cover-fill" type="fill" paint={{
+              "fill-color": "#3b82f6",
+              "fill-opacity": 0.2,
+            }} />
+            <Layer id="walk-cover-outline" type="line" paint={{
+              "line-color": "#2563eb",
+              "line-width": 1.5,
+              "line-opacity": 0.5,
+              "line-dasharray": [3, 2],
+            }} />
+          </Source>
+        )}
+        {walkData?.stops && (
+          <Source type="geojson" data={{
+            type: "FeatureCollection",
+            features: walkData.stops.map(s => ({
+              type: "Feature" as const,
+              geometry: { type: "Point" as const, coordinates: [s.lng, s.lat] },
+              properties: { name: s.stopName, pop: s.coveredPop },
+            })),
+          }}>
+            <Layer id="walk-stop-dots" type="circle" paint={{
+              "circle-radius": ["interpolate", ["linear"], ["get", "pop"], 0, 4, 5000, 10],
+              "circle-color": "#22c55e",
+              "circle-stroke-width": 1.5,
+              "circle-stroke-color": "#fff",
+              "circle-opacity": 0.9,
+            }} />
+          </Source>
+        )}
+
         {/* Popup */}
         {popup && (
           <Popup longitude={popup.lng} latitude={popup.lat} onClose={() => setPopup(null)}
             closeOnClick={false} maxWidth="300px" style={{ zIndex: 100 }}>
-            <PopupContent popup={popup} />
+            <PopupContent
+              popup={popup}
+              onShowIsochrone={fetchIsochrone}
+              isochroneLoading={isochroneLoading}
+              isochroneVisible={!!isochroneGeojson}
+            />
           </Popup>
         )}
       </Map>
@@ -1077,7 +1242,7 @@ export default function Dashboard() {
           </Card>
 
           {/* Legend — single collapsible card */}
-          {(layers.mapboxTraffic || layers.traffic || layers.poi || layers.gtfsShapes) && (
+          {(layers.mapboxTraffic || layers.traffic || layers.poi || layers.gtfsShapes || isochroneGeojson || walkData) && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <Card className="bg-card/85 backdrop-blur-xl border-border/50 shadow-xl overflow-hidden">
                 <button
@@ -1147,6 +1312,36 @@ export default function Dashboard() {
                             ))}
                           </div>
                         )}
+                        {isochroneGeojson && (
+                          <div className="space-y-1.5 border-t border-border/20 pt-2">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                              <Footprints className="w-3 h-3" /> Isocrona pedonale
+                            </p>
+                            {isochroneStop && (
+                              <p className="text-[10px] text-muted-foreground italic">{isochroneStop.name}</p>
+                            )}
+                            {[
+                              { color: "#3b82f6", label: "5 min a piedi", opacity: 0.3 },
+                              { color: "#1d4ed8", label: "10 min a piedi", opacity: 0.15 },
+                            ].map(({ color, label, opacity }) => (
+                              <div key={label} className="flex items-center gap-2">
+                                <div className="w-5 h-3 rounded border" style={{ backgroundColor: color, opacity, borderColor: color }} />
+                                <span className="text-xs text-muted-foreground">{label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {walkData && (
+                          <div className="space-y-1.5 border-t border-border/20 pt-2">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                              <Footprints className="w-3 h-3" /> Copertura pedonale
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <div className="w-5 h-3 rounded border border-blue-600" style={{ backgroundColor: "#3b82f6", opacity: 0.2 }} />
+                              <span className="text-xs text-muted-foreground">{walkData.minutes} min — {walkData.coveragePercent}% pop.</span>
+                            </div>
+                          </div>
+                        )}
                       </CardContent>
                     </motion.div>
                   )}
@@ -1155,6 +1350,144 @@ export default function Dashboard() {
             </motion.div>
           )}
         </motion.div>
+      </div>
+
+      {/* ── Walkability Coverage Panel — bottom left ──────────── */}
+      <div className="absolute bottom-6 left-4 w-80 pointer-events-auto z-10">
+        <Card className="bg-card/90 backdrop-blur-xl border-border/50 shadow-2xl overflow-hidden">
+          <button
+            onClick={() => setWalkPanelOpen(v => !v)}
+            className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-muted/20 transition-colors"
+          >
+            <span className="flex items-center gap-2 text-xs font-semibold">
+              <Footprints className="w-3.5 h-3.5 text-blue-400" />
+              Copertura Pedonale
+              {walkData && (
+                <span className="text-[10px] font-bold text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                  {walkData.coveragePercent}%
+                </span>
+              )}
+            </span>
+            {walkPanelOpen ? <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" /> : <ChevronUp className="w-3.5 h-3.5 text-muted-foreground" />}
+          </button>
+          <AnimatePresence initial={false}>
+            {walkPanelOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <CardContent className="px-3 pb-3 pt-0 space-y-3 border-t border-border/30">
+                  {/* Controls */}
+                  <div className="flex items-center gap-2 pt-2">
+                    <span className="text-[10px] text-muted-foreground shrink-0">Raggio:</span>
+                    {[5, 10, 15].map(m => (
+                      <button key={m} onClick={() => setWalkMinutes(m)}
+                        className={`px-2 py-1 rounded text-[10px] font-medium border transition-all ${
+                          walkMinutes === m ? "bg-blue-500/20 text-blue-400 border-blue-500/40" : "border-border/30 text-muted-foreground hover:bg-muted/30"
+                        }`}>{m} min</button>
+                    ))}
+                    <button onClick={runWalkability} disabled={walkLoading}
+                      className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 transition-colors">
+                      {walkLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                      {walkLoading ? "Calcolo…" : "Calcola"}
+                    </button>
+                  </div>
+                  {selectedRouteIds.length > 0 && (
+                    <p className="text-[10px] text-blue-400 bg-blue-500/10 rounded px-2 py-1">
+                      ▸ Solo fermate delle {selectedRouteIds.length} {selectedRouteIds.length === 1 ? "linea" : "linee"} selezionate
+                    </p>
+                  )}
+
+                  {/* Results */}
+                  {walkData && !walkLoading && (
+                    <div className="space-y-3">
+                      {/* KPI row */}
+                      <div className="grid grid-cols-3 gap-1.5 text-center">
+                        <div className="bg-blue-500/10 rounded-lg p-1.5">
+                          <p className="text-lg font-bold text-blue-400">{walkData.coveragePercent}%</p>
+                          <p className="text-[9px] text-muted-foreground">Copertura</p>
+                        </div>
+                        <div className="bg-muted/30 rounded-lg p-1.5">
+                          <p className="text-sm font-bold text-foreground">{walkData.coveredPopulation.toLocaleString("it-IT")}</p>
+                          <p className="text-[9px] text-muted-foreground">Pop. coperta</p>
+                        </div>
+                        <div className="bg-muted/30 rounded-lg p-1.5">
+                          <p className="text-sm font-bold text-foreground">{walkData.sampledStops}/{walkData.totalStops}</p>
+                          <p className="text-[9px] text-muted-foreground">Fermate</p>
+                        </div>
+                      </div>
+
+                      {/* Donut */}
+                      <div className="flex items-center gap-2">
+                        <div className="w-[100px] h-[100px]">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie data={walkDonut} cx="50%" cy="50%" innerRadius={28} outerRadius={42} paddingAngle={3} dataKey="value" strokeWidth={0}>
+                                {walkDonut.map((e, i) => <Cell key={i} fill={e.fill} />)}
+                              </Pie>
+                              <ReTooltip formatter={(v: number) => `${v.toLocaleString("it-IT")} ab.`}
+                                contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 10 }} />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center gap-1.5 text-[10px]">
+                            <div className="w-2.5 h-2.5 rounded-sm bg-blue-500" />
+                            <span className="text-muted-foreground">Coperta</span>
+                            <span className="ml-auto font-semibold">{walkData.coveredPopulation.toLocaleString("it-IT")}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-[10px]">
+                            <div className="w-2.5 h-2.5 rounded-sm" style={{ background: "#334155" }} />
+                            <span className="text-muted-foreground">Non coperta</span>
+                            <span className="ml-auto font-semibold">{(walkData.totalPopulation - walkData.coveredPopulation).toLocaleString("it-IT")}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Bar chart — top stops */}
+                      {walkBars.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Top fermate per pop. coperta</p>
+                          <ResponsiveContainer width="100%" height={walkBars.length * 22 + 10}>
+                            <BarChart data={walkBars} layout="vertical" margin={{ left: 0, right: 5, top: 0, bottom: 0 }}>
+                              <XAxis type="number" hide />
+                              <YAxis type="category" dataKey="name" width={95} tick={{ fill: "#94a3b8", fontSize: 9 }} />
+                              <ReTooltip formatter={(v: number, _: string, p: any) => [`${v.toLocaleString("it-IT")} ab.`, p.payload.full]}
+                                contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 10 }} />
+                              <Bar dataKey="pop" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      )}
+
+                      {/* Low coverage warning */}
+                      {walkData.coveragePercent < 50 && (
+                        <p className="text-[10px] text-amber-400 bg-amber-500/10 rounded px-2 py-1">
+                          ⚠ Copertura &lt;50% — valutare nuove fermate o servizi a chiamata (DRT) per aree scoperte
+                        </p>
+                      )}
+
+                      {walkData.note && (
+                        <p className="text-[9px] text-muted-foreground/60 italic">{walkData.note}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Loading */}
+                  {walkLoading && (
+                    <div className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
+                      Calcolo isocrone in corso…
+                    </div>
+                  )}
+                </CardContent>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Card>
       </div>
     </div>
   );
@@ -1169,7 +1502,12 @@ function StatBox({ label, value, icon, color }: { label: string; value: string; 
   );
 }
 
-function PopupContent({ popup }: { popup: MapPopup }) {
+function PopupContent({ popup, onShowIsochrone, isochroneLoading, isochroneVisible }: {
+  popup: MapPopup;
+  onShowIsochrone?: (lat: number, lng: number, name: string) => void;
+  isochroneLoading?: boolean;
+  isochroneVisible?: boolean;
+}) {
   const { type, props } = popup;
 
   if (type === "traffic") {
@@ -1280,6 +1618,26 @@ function PopupContent({ popup }: { popup: MapPopup }) {
           </>
         ) : (
           <p className="text-xs text-gray-400 italic">Re-importa il feed GTFS per aggiornare i dati.</p>
+        )}
+        {/* Isochrone button */}
+        {onShowIsochrone && (
+          <button
+            onClick={() => onShowIsochrone(popup.lat, popup.lng, props.name)}
+            disabled={isochroneLoading}
+            className={`w-full mt-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+              isochroneVisible
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100 hover:text-gray-800"
+            }`}
+          >
+            {isochroneLoading ? (
+              <><Loader2 className="w-3 h-3 animate-spin" /> Calcolo in corso…</>
+            ) : isochroneVisible ? (
+              <><Footprints className="w-3 h-3" /> Isocrona visibile</>
+            ) : (
+              <><Footprints className="w-3 h-3" /> Mostra isocrona pedonale</>
+            )}
+          </button>
         )}
       </div>
     );

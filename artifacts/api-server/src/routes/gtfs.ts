@@ -381,10 +381,10 @@ router.get("/gtfs/stops", async (req, res) => {
     let query = db.select().from(gtfsStops).$dynamic();
     if (feedId) query = query.where(eq(gtfsStops.feedId, feedId));
     const stops = await query.limit(limit);
-    res.json({ data: stops, total: stops.length });
+    return void res.json({ data: stops, total: stops.length });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS stops");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -553,7 +553,7 @@ router.get("/gtfs/summary", async (req, res) => {
     `);
 
     const hrs = (hoursRow.rows[0] as any) || {};
-    res.json({
+    return void res.json({
       available: true,
       totalRoutes: (routeCount.rows[0] as any).n,
       totalStops:  (stopCount.rows[0] as any).n,
@@ -570,7 +570,7 @@ router.get("/gtfs/summary", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS summary");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -631,7 +631,7 @@ router.get("/gtfs/analysis", async (req, res) => {
     }
 
     // ── 1. Frequency distribution ──
-    const withTimes = stops.filter(s => (s as any).daily_trips !== undefined ? (s as any).daily_trips > 0 : s.tripsCount > 0);
+    const withTimes = stops.filter(s => (s as any).daily_trips !== undefined ? (s as any).daily_trips > 0 : (s.tripsCount ?? 0) > 0);
     const dailyTrips = stops.map(s => (s as any).daily_trips ?? s.tripsCount ?? 0);
     const avgDailyTrips = dailyTrips.reduce((a, b) => a + b, 0) / Math.max(dailyTrips.length, 1);
     const morningTrips = stops.map(s => (s as any).morning_peak_trips ?? 0);
@@ -876,10 +876,10 @@ router.get("/gtfs/routes/active-by-band", async (req, res) => {
         ${dayFilter}
     `);
 
-    res.json({ routeIds: result.rows.map(r => r.route_id), count: result.rows.length });
+    return void res.json({ routeIds: result.rows.map(r => r.route_id), count: result.rows.length });
   } catch (err) {
     req.log.error(err, "Error fetching active routes by band");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1002,7 +1002,7 @@ router.get("/gtfs/shapes/geojson", async (req, res) => {
         const db2 = (b.lng - lng) ** 2 + (b.lat - lat) ** 2;
         return da - db2;
       })[0];
-      return { congestion: best.congestion ?? 0, speed: best.speed ?? 0, freeflow: best.freeflowSpeed ?? 0 };
+      return { congestion: best.congestion ?? 0, speed: best.speed ?? 0, freeflow: best.freeflow ?? 0 };
     }
 
     const features: any[] = [];
@@ -1836,10 +1836,10 @@ router.get("/gtfs/trips/list", async (req, res) => {
         return toMin(a.firstDeparture) - toMin(b.firstDeparture);
       });
 
-    res.json({ data: result, feedId, total: result.length });
+    return void res.json({ data: result, feedId, total: result.length });
   } catch (err) {
     req.log.error(err, "Error listing trips");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -1885,7 +1885,7 @@ router.get("/traffic/availability", async (_req, res) => {
       };
     });
 
-    res.json({
+    return void res.json({
       available: true,
       totalSnapshots: rows.reduce((s, r) => s + r.count, 0),
       dateRange: { from: dates[0], to: dates[dates.length - 1] },
@@ -1895,8 +1895,8 @@ router.get("/traffic/availability", async (_req, res) => {
       byDate,
     });
   } catch (err) {
-    req.log?.error(err, "Error fetching traffic availability");
-    res.status(500).json({ error: "Internal server error" });
+    _req.log?.error(err, "Error fetching traffic availability");
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2092,7 +2092,7 @@ router.get("/gtfs/trips/visual", async (req, res) => {
       segmentsWithoutTomTom: segments.filter(s => !s.hasTomTom).length,
     };
 
-    res.json({
+    return void res.json({
       tripId,
       routeId: trip?.routeId ?? "",
       routeColor,
@@ -2106,7 +2106,7 @@ router.get("/gtfs/trips/visual", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error building trip visual");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2181,8 +2181,8 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
         const depMin = timeToMinutes(s.departure_time || "0:0");
         const lat = typeof s.stop_lat === "string" ? parseFloat(s.stop_lat) : (s.stop_lat ?? 0);
         const lon = typeof s.stop_lon === "string" ? parseFloat(s.stop_lon) : (s.stop_lon ?? 0);
-        const prevLat = i > 0 ? (typeof stops[i-1].stop_lat === "string" ? parseFloat(stops[i-1].stop_lat as string) : (stops[i-1].stop_lat ?? 0)) : lat;
-        const prevLon = i > 0 ? (typeof stops[i-1].stop_lon === "string" ? parseFloat(stops[i-1].stop_lon as string) : (stops[i-1].stop_lon ?? 0)) : lon;
+        const prevLat = i > 0 ? (typeof stops[i-1].stop_lat === "string" ? parseFloat(stops[i-1].stop_lat as unknown as string) : (stops[i-1].stop_lat ?? 0)) : lat;
+        const prevLon = i > 0 ? (typeof stops[i-1].stop_lon === "string" ? parseFloat(stops[i-1].stop_lon as unknown as string) : (stops[i-1].stop_lon ?? 0)) : lon;
         const distKm = i > 0 ? Math.round(haversineKm(prevLat, prevLon, lat, lon) * 100) / 100 : 0;
         return {
           stopName: s.stop_name ?? `Fermata ${i + 1}`,
@@ -2220,10 +2220,10 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
       return toMin(a.firstDeparture) - toMin(b.firstDeparture);
     });
 
-    res.json({ trips, routeColor, routeShortName, total: trips.length, feedId });
+    return void res.json({ trips, routeColor, routeShortName, total: trips.length, feedId });
   } catch (err) {
     req.log.error(err, "Error fetching trip schedule");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2432,7 +2432,7 @@ router.get("/gtfs/travel-time/route-segments", async (req, res) => {
 
     segments.sort((a, b) => a.seq - b.seq);
 
-    res.json({
+    return void res.json({
       routeId, routeShortName, routeColor, day,
       totalDistanceKm: Math.round(totalDistKm * 10) / 10,
       stops: deduped.map(s => ({ stopId: s.stopId, stopName: s.stopName, lat: s.stopLat, lon: s.stopLon })),
@@ -2440,7 +2440,7 @@ router.get("/gtfs/travel-time/route-segments", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error computing route segments");
-    res.status(500).json({ error: "Internal server error" });
+    return void res.status(500).json({ error: "Internal server error" });
   }
 });
 

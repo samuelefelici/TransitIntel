@@ -11,3 +11,4 @@ replit.nix
 .cache/
 .turbo/
 .neon
+scripts/data/

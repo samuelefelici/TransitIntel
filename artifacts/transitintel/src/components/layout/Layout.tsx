@@ -5,16 +5,36 @@ import { Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, FileArchive
 import { Button } from "@/components/ui/button";
 import logoImg from "/logo.png";
 
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/routes", label: "Analisi Linee", icon: Bus },
-  { href: "/travel-time", label: "Tempi Percorso", icon: Timer },
-  { href: "/traffic", label: "Traffico", icon: Activity },
-  { href: "/territory", label: "Territorio", icon: Map },
-  { href: "/stops", label: "Fermate & Linee", icon: MapPin },
-  { href: "/demand", label: "Analisi Domanda", icon: BarChart3 },
-  { href: "/gtfs", label: "Importa GTFS", icon: FileArchive },
-  { href: "/sync", label: "Sincronizza Dati", icon: RefreshCw },
+interface NavSection {
+  title: string;
+  items: { href: string; label: string; icon: any }[];
+}
+
+const NAV_SECTIONS: NavSection[] = [
+  {
+    title: "Mappa & Panoramica",
+    items: [
+      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/traffic", label: "Traffico", icon: Activity },
+      { href: "/territory", label: "Territorio", icon: Map },
+    ],
+  },
+  {
+    title: "Analisi",
+    items: [
+      { href: "/routes", label: "Analisi Linee", icon: Bus },
+      { href: "/travel-time", label: "Tempi Percorso", icon: Timer },
+      { href: "/stops", label: "Fermate & Linee", icon: MapPin },
+      { href: "/demand", label: "Domanda / Offerta", icon: BarChart3 },
+    ],
+  },
+  {
+    title: "Gestione Dati",
+    items: [
+      { href: "/gtfs", label: "Importa GTFS", icon: FileArchive },
+      { href: "/sync", label: "Sincronizza Dati", icon: RefreshCw },
+    ],
+  },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -66,39 +86,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Intelligence
-          </p>
-          {NAV_ITEMS.map((item) => {
-            const isActive = location === item.href;
-            return (
-              <Link key={item.href} href={item.href}>
-                <div
-                  onClick={() => setIsMobileOpen(false)}
-                  className={`
-                    flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer
-                    transition-all duration-150 group relative text-sm
-                    ${isActive
-                      ? "bg-primary/15 text-primary font-medium"
-                      : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                    }
-                  `}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="active-nav"
-                      className="absolute left-0 w-0.5 h-6 bg-primary rounded-r-full"
-                      initial={false}
-                      transition={{ type: "spring", stiffness: 350, damping: 35 }}
-                    />
-                  )}
-                  <item.icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "group-hover:text-foreground transition-colors"}`} />
-                  {item.label}
-                </div>
-              </Link>
-            );
-          })}
+        <nav className="flex-1 px-3 py-4 space-y-4 overflow-y-auto">
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.title} className="space-y-0.5">
+              <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                {section.title}
+              </p>
+              {section.items.map((item) => {
+                const isActive = location === item.href;
+                return (
+                  <Link key={item.href} href={item.href}>
+                    <div
+                      onClick={() => setIsMobileOpen(false)}
+                      className={`
+                        flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer
+                        transition-all duration-150 group relative text-sm
+                        ${isActive
+                          ? "bg-primary/15 text-primary font-medium"
+                          : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                        }
+                      `}
+                    >
+                      {isActive && (
+                        <motion.div
+                          layoutId="active-nav"
+                          className="absolute left-0 w-0.5 h-6 bg-primary rounded-r-full"
+                          initial={false}
+                          transition={{ type: "spring", stiffness: 350, damping: 35 }}
+                        />
+                      )}
+                      <item.icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "group-hover:text-foreground transition-colors"}`} />
+                      {item.label}
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="p-4 mt-auto border-t border-border/30">

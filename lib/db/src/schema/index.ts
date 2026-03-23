@@ -151,6 +151,16 @@ export const gtfsCalendarDates = pgTable("gtfs_calendar_dates", {
   exceptionType: integer("exception_type").notNull(), // 1=added, 2=removed
 });
 
+// Isochrone cache — avoids re-calling ORS for the same stop + minutes
+export const isochroneCache = pgTable("isochrone_cache", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  latRound: doublePrecision("lat_round").notNull(), // rounded to 4 decimals (~11m)
+  lngRound: doublePrecision("lng_round").notNull(),
+  minutes: integer("minutes").notNull(),
+  geojson: jsonb("geojson").notNull(),              // GeoJSON geometry (Polygon/MultiPolygon)
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
@@ -164,3 +174,4 @@ export type GtfsTrip = typeof gtfsTrips.$inferSelect;
 export type GtfsStopTime = typeof gtfsStopTimes.$inferSelect;
 export type GtfsCalendar = typeof gtfsCalendar.$inferSelect;
 export type GtfsCalendarDate = typeof gtfsCalendarDates.$inferSelect;
+export type IsochroneCache = typeof isochroneCache.$inferSelect;

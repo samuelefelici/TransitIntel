@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { busStops, censusSections, pointsOfInterest, trafficSnapshots } from "@workspace/db/schema";
-import { sql, count } from "drizzle-orm";
+import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, isochroneCache } from "@workspace/db/schema";
+import { sql, count, inArray, and, eq } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -12,9 +12,10 @@ router.get("/analysis/coverage", async (req, res) => {
     // Approx degrees for given meters (1 deg ≈ 111km)
     const degRadius = radius / 111000;
 
-    const [totalPop] = await db.execute(sql`
+    const totalPopResult = await db.execute(sql`
       SELECT COALESCE(SUM(population), 0)::int as total FROM census_sections
     `);
+    const totalPop = (totalPopResult as any).rows?.[0] ?? totalPopResult;
 
     const stops = await db.select({ lng: busStops.lng, lat: busStops.lat }).from(busStops);
 
@@ -25,16 +26,16 @@ router.get("/analysis/coverage", async (req, res) => {
         (s) => `(ABS(centroid_lng - ${s.lng}) < ${degRadius} AND ABS(centroid_lat - ${s.lat}) < ${degRadius})`
       ).join(" OR ");
 
-      const [covResult] = await db.execute(sql.raw(`
+      const covResultRaw = await db.execute(sql.raw(`
         SELECT COALESCE(SUM(population), 0)::int as covered
         FROM census_sections
         WHERE ${stopConditions}
       `));
-      coveredPop = parseInt((covResult as any).rows?.[0]?.covered ?? (covResult as any).covered ?? 0);
+      const covResult = (covResultRaw as any).rows?.[0] ?? covResultRaw;
+      coveredPop = parseInt((covResult as any).covered ?? 0);
     }
 
-    const totalRow = (totalPop as any).rows?.[0] ?? totalPop;
-    const totalPopulation = parseInt((totalRow as any).total) || 0;
+    const totalPopulation = parseInt((totalPop as any).total) || 0;
     const coveragePercent = totalPopulation > 0 ? (coveredPop / totalPopulation) * 100 : 0;
 
     res.json({
@@ -602,6 +603,410 @@ router.get("/territory/overview", async (req, res) => {
   } catch (err) {
     req.log.error(err, "Error in territory overview");
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────
+// OpenRouteService — Isochrone endpoints
+// ──────────────────────────────────────────────────────────────────
+
+const ORS_BASE = "https://api.openrouteservice.org/v2";
+const ORS_KEY  = process.env.OPENROUTE_API_KEY || "";
+
+/** Call ORS isochrones API for a single point (foot-walking), with retry on 429 */
+async function fetchIsochrone(
+  lng: number, lat: number, rangeSeconds: number[],
+): Promise<any> {
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const resp = await fetch(`${ORS_BASE}/isochrones/foot-walking`, {
+      method: "POST",
+      headers: {
+        "Authorization": ORS_KEY,
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "application/json, application/geo+json",
+      },
+      body: JSON.stringify({
+        locations: [[lng, lat]],
+        range: rangeSeconds,
+        range_type: "time",
+        attributes: ["area"],
+      }),
+    });
+    if (resp.status === 429 && attempt < MAX_RETRIES) {
+      // Rate limited — wait with exponential backoff
+      const wait = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    if (resp.status === 403) {
+      // Quota exceeded — no point retrying
+      throw new Error(`ORS 403: Quota giornaliera esaurita`);
+    }
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`ORS ${resp.status}: ${text}`);
+    }
+    return resp.json();
+  }
+}
+
+/** Fetch isochrone geometry, using DB cache first. Returns GeoJSON geometry (Polygon/MultiPolygon) or null. */
+async function fetchIsochroneCached(
+  lng: number, lat: number, minutes: number,
+): Promise<any | null> {
+  const latR = Math.round(lat * 10000) / 10000; // ~11m precision
+  const lngR = Math.round(lng * 10000) / 10000;
+
+  // Check cache
+  const cached = await db.select({ geojson: isochroneCache.geojson })
+    .from(isochroneCache)
+    .where(and(
+      eq(isochroneCache.latRound, latR),
+      eq(isochroneCache.lngRound, lngR),
+      eq(isochroneCache.minutes, minutes),
+    ))
+    .limit(1);
+
+  if (cached.length > 0) return cached[0].geojson;
+
+  // Fetch from ORS
+  const rangeSeconds = [minutes * 60];
+  const iso = await fetchIsochrone(lng, lat, rangeSeconds);
+  const geometry = iso.features?.[0]?.geometry ?? null;
+
+  // Store in cache
+  if (geometry) {
+    try {
+      await db.insert(isochroneCache).values({
+        latRound: latR, lngRound: lngR, minutes, geojson: geometry,
+      }).onConflictDoNothing();
+    } catch { /* ignore cache write errors */ }
+  }
+
+  return geometry;
+}
+
+/** Point-in-polygon (ray casting) for flat GeoJSON Polygon coords */
+function pointInPolygon(lng: number, lat: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// ──────────────────────────────────────────────────────────────
+// GET /api/analysis/isochrone?lat=43.6&lng=13.5&minutes=5,10,15
+// Returns GeoJSON FeatureCollection of walking isochrone polygons
+// for a single point. Used when user clicks a stop on the map.
+// ──────────────────────────────────────────────────────────────
+router.get("/analysis/isochrone", async (req, res) => {
+  try {
+    if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
+
+    const lat = parseFloat(req.query.lat as string);
+    const lng = parseFloat(req.query.lng as string);
+    const minutesParam = (req.query.minutes as string) || "5,10,15";
+
+    if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: "lat e lng richiesti" });
+
+    const minutes = minutesParam.split(",").map(Number).filter(n => n > 0 && n <= 60);
+    if (minutes.length === 0) return res.status(400).json({ error: "minutes non valido (1-60)" });
+
+    const rangeSeconds = minutes.map(m => m * 60);
+    const geojson = await fetchIsochrone(lng, lat, rangeSeconds);
+
+    // Enrich each feature with the minute label
+    if (geojson.features) {
+      for (const f of geojson.features) {
+        const sec = f.properties?.value ?? 0;
+        f.properties.minutes = Math.round(sec / 60);
+        f.properties.label = `${Math.round(sec / 60)} min a piedi`;
+      }
+    }
+
+    return void res.json(geojson);
+  } catch (err: any) {
+    if (err?.message?.includes("429")) {
+      return void res.status(429).json({ error: "Rate limit ORS raggiunto. Riprova tra 1 minuto." });
+    }
+    req.log.error(err, "Error fetching isochrone");
+    return void res.status(500).json({ error: "Errore nel calcolo isocrona" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+// GET /api/analysis/walkability-coverage?minutes=10&feedId=&routeIds=R001,R002
+// Real walkability coverage: for each GTFS stop, fetch a walking
+// isochrone from ORS, then count census population inside.
+//
+// When routeIds is provided, only stops served by those routes are used.
+//
+// NOTE: To stay within ORS free tier (2000/day), this endpoint
+// samples up to 200 stops spread across the territory.
+// ──────────────────────────────────────────────────────────────
+router.get("/analysis/walkability-coverage", async (req, res) => {
+  try {
+    if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
+
+    const minutes = Math.min(parseInt((req.query.minutes as string) || "10"), 20);
+    const feedId = req.query.feedId as string | undefined;
+    const routeIdsParam = (req.query.routeIds as string || "").split(",").map(s => s.trim()).filter(Boolean);
+    const rangeSeconds = [minutes * 60];
+
+    // 1. Get GTFS stops — optionally filtered by routeIds
+    let allStops: { stopId: string; stopName: string; lat: number; lng: number; serviceScore: number | null }[];
+
+    if (routeIdsParam.length > 0) {
+      // Get distinct stop_ids served by these routes via trips → stop_times
+      const stopIdsRows = await db
+        .selectDistinct({ stopId: gtfsStopTimes.stopId })
+        .from(gtfsStopTimes)
+        .innerJoin(gtfsTrips, sql`${gtfsStopTimes.tripId} = ${gtfsTrips.tripId} AND ${gtfsStopTimes.feedId} = ${gtfsTrips.feedId}`)
+        .where(inArray(gtfsTrips.routeId, routeIdsParam));
+
+      const stopIdSet = new Set(stopIdsRows.map(r => r.stopId));
+
+      if (stopIdSet.size === 0) {
+        return void res.json({
+          minutes, routeIds: routeIdsParam,
+          totalPopulation: 0, coveredPopulation: 0, coveragePercent: 0,
+          message: "Nessuna fermata trovata per le linee selezionate",
+          totalStops: 0, sampledStops: 0, stops: [],
+          isochroneUnion: { type: "FeatureCollection", features: [] },
+        });
+      }
+
+      const allStopsRaw = await db.select({
+        stopId: gtfsStops.stopId,
+        stopName: gtfsStops.stopName,
+        lat: gtfsStops.stopLat,
+        lng: gtfsStops.stopLon,
+        serviceScore: gtfsStops.serviceScore,
+      }).from(gtfsStops);
+
+      allStops = allStopsRaw.filter(s => stopIdSet.has(s.stopId));
+    } else {
+      let stopsQuery = db.select({
+        stopId: gtfsStops.stopId,
+        stopName: gtfsStops.stopName,
+        lat: gtfsStops.stopLat,
+        lng: gtfsStops.stopLon,
+        serviceScore: gtfsStops.serviceScore,
+      }).from(gtfsStops).$dynamic();
+
+      if (feedId) {
+        stopsQuery = stopsQuery.where(sql`feed_id = ${feedId}`);
+      }
+      allStops = await stopsQuery;
+    }
+
+    if (allStops.length === 0) {
+      return void res.json({
+        minutes,
+        totalPopulation: 0, coveredPopulation: 0, coveragePercent: 0,
+        message: "Nessuna fermata GTFS disponibile",
+        stops: [],
+      });
+    }
+
+    // 2. Deduplicate stops within ~200m (covers opposite-direction pairs on same road)
+    //    and apply grid sampling if still over limit.
+    //    ORS free tier: ~12 requests per ~60s window.
+    const PROXIMITY_DEG = 0.003; // ~300m at 43°N latitude
+    const deduped: typeof allStops = [];
+    for (const s of allStops) {
+      const tooClose = deduped.some(d =>
+        Math.abs(d.lat - s.lat) < PROXIMITY_DEG && Math.abs(d.lng - s.lng) < PROXIMITY_DEG
+      );
+      if (!tooClose) deduped.push(s);
+    }
+
+    const MAX_STOPS = 120;
+    let sampledStops = deduped;
+    if (deduped.length > MAX_STOPS) {
+      const lats = deduped.map(s => s.lat);
+      const lngs = deduped.map(s => s.lng);
+      const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+      const gridSize = Math.ceil(Math.sqrt(MAX_STOPS));
+      const cellH = (maxLat - minLat) / gridSize || 0.01;
+      const cellW = (maxLng - minLng) / gridSize || 0.01;
+      const grid = new Map<string, typeof deduped[0]>();
+      for (const s of deduped) {
+        const r = Math.floor((s.lat - minLat) / cellH);
+        const c = Math.floor((s.lng - minLng) / cellW);
+        const key = `${r},${c}`;
+        const existing = grid.get(key);
+        if (!existing || (s.serviceScore ?? 0) > (existing.serviceScore ?? 0)) {
+          grid.set(key, s);
+        }
+      }
+      sampledStops = Array.from(grid.values()).slice(0, MAX_STOPS);
+    }
+
+    req.log.info({ totalStops: allStops.length, deduped: deduped.length, sampled: sampledStops.length }, "Walkability stop counts");
+
+    // 3. Fetch isochrones with DB cache (only uncached stops hit ORS)
+    const stopResults: {
+      stopId: string; stopName: string; lat: number; lng: number;
+      coveredPop: number; isochrone: any;
+    }[] = [];
+
+    // Split into cached and uncached
+    const uncachedStops: typeof sampledStops = [];
+    for (const stop of sampledStops) {
+      const latR = Math.round(stop.lat * 10000) / 10000;
+      const lngR = Math.round(stop.lng * 10000) / 10000;
+      const cached = await db.select({ geojson: isochroneCache.geojson })
+        .from(isochroneCache)
+        .where(and(
+          eq(isochroneCache.latRound, latR),
+          eq(isochroneCache.lngRound, lngR),
+          eq(isochroneCache.minutes, minutes),
+        ))
+        .limit(1);
+      if (cached.length > 0) {
+        stopResults.push({
+          stopId: stop.stopId, stopName: stop.stopName,
+          lat: stop.lat, lng: stop.lng, coveredPop: 0,
+          isochrone: cached[0].geojson,
+        });
+      } else {
+        uncachedStops.push(stop);
+      }
+    }
+
+    req.log.info({ cached: stopResults.length, toFetch: uncachedStops.length }, "Isochrone cache hit/miss");
+
+    // Fetch uncached from ORS: burst 10, then throttle 8s
+    // If 403 (quota exceeded) is received, abort immediately
+    let quotaExceeded = false;
+    if (uncachedStops.length > 0) {
+      const BURST_SIZE = 10;
+      const THROTTLE_DELAY = 8_000;
+
+      const burstStops = uncachedStops.slice(0, BURST_SIZE);
+      const burstResults = await Promise.allSettled(
+        burstStops.map(stop =>
+          fetchIsochroneCached(stop.lng, stop.lat, minutes)
+            .then(geometry => ({
+              stopId: stop.stopId, stopName: stop.stopName,
+              lat: stop.lat, lng: stop.lng, coveredPop: 0,
+              isochrone: geometry,
+            }))
+        )
+      );
+      for (let ri = 0; ri < burstResults.length; ri++) {
+        const r = burstResults[ri];
+        if (r.status === "fulfilled") stopResults.push(r.value);
+        else {
+          const msg = r.reason?.message ?? "";
+          req.log.warn({ stopId: burstStops[ri].stopId, error: msg }, "Isochrone fetch failed");
+          if (msg.includes("403")) quotaExceeded = true;
+        }
+      }
+
+      if (!quotaExceeded) {
+        for (let i = BURST_SIZE; i < uncachedStops.length; i++) {
+          await new Promise(r => setTimeout(r, THROTTLE_DELAY));
+          const stop = uncachedStops[i];
+          try {
+            const geometry = await fetchIsochroneCached(stop.lng, stop.lat, minutes);
+            stopResults.push({
+              stopId: stop.stopId, stopName: stop.stopName,
+              lat: stop.lat, lng: stop.lng, coveredPop: 0,
+              isochrone: geometry,
+            });
+          } catch (err: any) {
+            const msg = err?.message ?? "";
+            req.log.warn({ stopId: stop.stopId, error: msg }, "Isochrone fetch failed");
+            if (msg.includes("403")) { quotaExceeded = true; break; }
+          }
+        }
+      }
+    }
+
+    // 4. Get census sections
+    const sections = await db.select({
+      centroidLng: censusSections.centroidLng,
+      centroidLat: censusSections.centroidLat,
+      population: censusSections.population,
+    }).from(censusSections);
+
+    const totalPopulation = sections.reduce((s, c) => s + c.population, 0);
+
+    // 5. For each section, check if centroid falls inside any isochrone
+    const coveredSectionIds = new Set<number>();
+    for (let si = 0; si < sections.length; si++) {
+      const sec = sections[si];
+      for (const stop of stopResults) {
+        if (!stop.isochrone) continue;
+        const coords = stop.isochrone.type === "Polygon"
+          ? stop.isochrone.coordinates
+          : stop.isochrone.type === "MultiPolygon"
+            ? stop.isochrone.coordinates.flat()
+            : [];
+        for (const ring of coords) {
+          if (pointInPolygon(sec.centroidLng, sec.centroidLat, ring)) {
+            coveredSectionIds.add(si);
+            stop.coveredPop += sec.population;
+            break;
+          }
+        }
+        if (coveredSectionIds.has(si)) break;
+      }
+    }
+
+    const coveredPopulation = [...coveredSectionIds].reduce((s, i) => s + sections[i].population, 0);
+    const coveragePercent = totalPopulation > 0
+      ? Math.round((coveredPopulation / totalPopulation) * 1000) / 10
+      : 0;
+
+    const estimatedNote = [
+      sampledStops.length < allStops.length
+        ? `Campione di ${sampledStops.length}/${allStops.length} fermate (${allStops.length - deduped.length} duplicate per prossimità rimosse)`
+        : null,
+      quotaExceeded
+        ? `Quota ORS giornaliera esaurita — analisi basata su ${stopResults.length} fermate con cache`
+        : null,
+    ].filter(Boolean).join(". ") || undefined;
+
+    return void res.json({
+      minutes,
+      routeIds: routeIdsParam.length > 0 ? routeIdsParam : undefined,
+      totalPopulation,
+      coveredPopulation,
+      coveragePercent,
+      totalStops: allStops.length,
+      sampledStops: sampledStops.length,
+      note: estimatedNote,
+      stops: stopResults.map(s => ({
+        stopId: s.stopId, stopName: s.stopName,
+        lat: s.lat, lng: s.lng, coveredPop: s.coveredPop,
+      })),
+      isochroneUnion: {
+        type: "FeatureCollection",
+        features: stopResults
+          .filter(s => s.isochrone)
+          .map(s => ({
+            type: "Feature",
+            geometry: s.isochrone,
+            properties: {
+              stopId: s.stopId, stopName: s.stopName,
+              minutes, coveredPop: s.coveredPop,
+            },
+          })),
+      },
+    });
+  } catch (err) {
+    req.log.error(err, "Error in walkability coverage");
+    return void res.status(500).json({ error: "Errore nel calcolo copertura pedonale" });
   }
 });
 
