@@ -453,13 +453,21 @@ router.get("/gtfs/summary", async (req, res) => {
     }
 
     // ── 3. Trips per day type ───────────────────────────────────
-    const allTrips = await db.execute<{ service_id: string; shape_id: string | null }>(
-      sql`SELECT service_id, shape_id FROM gtfs_trips WHERE feed_id = ${feedId}`
+    const allTrips = await db.execute<{ service_id: string; shape_id: string | null; route_id: string; trip_id: string }>(
+      sql`SELECT service_id, shape_id, route_id, trip_id FROM gtfs_trips WHERE feed_id = ${feedId}`
     );
     let weekdayTrips = 0, satTrips = 0, sunTrips = 0;
     const weekdayShapeIds = new Set<string>();
     const satShapeIds     = new Set<string>();
     const sunShapeIds     = new Set<string>();
+    // Distinct routes per day type
+    const weekdayRouteIds = new Set<string>();
+    const satRouteIds     = new Set<string>();
+    const sunRouteIds     = new Set<string>();
+    // Trip IDs per day type (for stop counting)
+    const weekdayTripIds = new Set<string>();
+    const satTripIds     = new Set<string>();
+    const sunTripIds     = new Set<string>();
     // Count trips per shape per day type (for km = trips * shape_length)
     const weekdayShapeTripCount: Record<string, number> = {};
     const satShapeTripCount:     Record<string, number> = {};
@@ -469,6 +477,8 @@ router.get("/gtfs/summary", async (req, res) => {
       const svc = svcMap[t.service_id];
       if (svc?.weekday) {
         weekdayTrips++;
+        weekdayRouteIds.add(t.route_id);
+        weekdayTripIds.add(t.trip_id);
         if (t.shape_id) {
           weekdayShapeIds.add(t.shape_id);
           weekdayShapeTripCount[t.shape_id] = (weekdayShapeTripCount[t.shape_id] || 0) + 1;
@@ -476,6 +486,8 @@ router.get("/gtfs/summary", async (req, res) => {
       }
       if (svc?.saturday) {
         satTrips++;
+        satRouteIds.add(t.route_id);
+        satTripIds.add(t.trip_id);
         if (t.shape_id) {
           satShapeIds.add(t.shape_id);
           satShapeTripCount[t.shape_id] = (satShapeTripCount[t.shape_id] || 0) + 1;
@@ -483,11 +495,27 @@ router.get("/gtfs/summary", async (req, res) => {
       }
       if (svc?.sunday) {
         sunTrips++;
+        sunRouteIds.add(t.route_id);
+        sunTripIds.add(t.trip_id);
         if (t.shape_id) {
           sunShapeIds.add(t.shape_id);
           sunShapeTripCount[t.shape_id] = (sunShapeTripCount[t.shape_id] || 0) + 1;
         }
       }
+    }
+
+    // ── 3b. Distinct stops per day type ────────────────────────
+    // Query stop_times to find which stops are used by each day type's trips
+    const stopTimesResult = await db.execute<{ trip_id: string; stop_id: string }>(
+      sql`SELECT DISTINCT trip_id, stop_id FROM gtfs_stop_times WHERE feed_id = ${feedId}`
+    );
+    const weekdayStopIds = new Set<string>();
+    const satStopIds     = new Set<string>();
+    const sunStopIds     = new Set<string>();
+    for (const st of stopTimesResult.rows) {
+      if (weekdayTripIds.has(st.trip_id)) weekdayStopIds.add(st.stop_id);
+      if (satTripIds.has(st.trip_id))     satStopIds.add(st.stop_id);
+      if (sunTripIds.has(st.trip_id))     sunStopIds.add(st.stop_id);
     }
 
     // ── 4. Compute shape lengths (km) ──────────────────────────
@@ -561,6 +589,12 @@ router.get("/gtfs/summary", async (req, res) => {
       weekdayTrips,
       saturdayTrips: satTrips,
       sundayTrips: sunTrips,
+      weekdayRoutes: weekdayRouteIds.size,
+      saturdayRoutes: satRouteIds.size,
+      sundayRoutes: sunRouteIds.size,
+      weekdayStops: weekdayStopIds.size,
+      saturdayStops: satStopIds.size,
+      sundayStops: sunStopIds.size,
       weekdayKm,
       saturdayKm,
       sundayKm,
@@ -2060,8 +2094,21 @@ router.get("/gtfs/trips/visual", async (req, res) => {
       const freeflowKmh = hasTomTom && (tt.avg_freeflow ?? 0) > 5 ? tt.avg_freeflow : (hasTrafficData ? avgFreeflow : null);
       const currentSpeedKmh = hasTomTom && (tt.avg_speed ?? 0) > 0 ? tt.avg_speed : null;
 
-      // Delay: how much slower than freeflow is the schedule?
+      // Road congestion: how much traffic slows ALL vehicles vs freeflow
+      // congestionPct = 1 - current/freeflow  (0 = free, 1 = gridlock)
+      const congestionPct = (currentSpeedKmh && freeflowKmh && freeflowKmh > 0)
+        ? Math.max(0, Math.min(1, 1 - currentSpeedKmh / freeflowKmh))
+        : null;
+
+      // Legacy delayPct kept for backward compat (schedule vs freeflow)
       const delayPct = freeflowKmh ? Math.max(0, Math.min(1, 1 - scheduledSpeedKmh / freeflowKmh)) : null;
+
+      // Bus impact: how many extra minutes traffic adds to this segment.
+      // A city bus is already slow (stops, boarding, signals), so road congestion
+      // impacts it less than a car. We use a damping factor of 0.4.
+      // extraMin = scheduledMin × congestionPct × BUS_TRAFFIC_FACTOR
+      const BUS_TRAFFIC_FACTOR = 0.4;
+      const extraMin = congestionPct !== null ? scheduledMin * congestionPct * BUS_TRAFFIC_FACTOR : null;
 
       segments.push({
         fromIdx: i, toIdx: i + 1,
@@ -2073,6 +2120,8 @@ router.get("/gtfs/trips/visual", async (req, res) => {
         freeflowKmh: freeflowKmh ? Math.round(freeflowKmh * 10) / 10 : null,
         currentSpeedKmh: currentSpeedKmh ? Math.round(currentSpeedKmh * 10) / 10 : null,
         delayPct: delayPct !== null ? Math.round(delayPct * 100) / 100 : null,
+        congestionPct: congestionPct !== null ? Math.round(congestionPct * 100) / 100 : null,
+        extraMin: extraMin !== null ? Math.round(extraMin * 10) / 10 : null,
         hasTomTom,
         segHour,
         tomTomSamples: tt?.count ?? 0,

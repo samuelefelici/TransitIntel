@@ -6,7 +6,7 @@ const router: IRouter = Router();
 
 router.get("/population/density", async (req, res) => {
   try {
-    const rows = await db.select().from(censusSections).limit(2000);
+    const rows = await db.select().from(censusSections).limit(10000);
 
     const data = rows.map((r) => ({
       id: r.id,

@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import {
   Activity, MapPin, AlertTriangle, Layers,
-  Building2, Satellite, Sun, SlidersHorizontal,
+  Building2, Satellite, Sun, Moon, SlidersHorizontal,
   Search, X, ChevronDown, ChevronUp, Star, Clock,
   Bus, Route, Footprints, Loader2, Play, Users,
   Cross, GraduationCap, ShoppingBag, Factory, Dumbbell,
@@ -27,14 +27,15 @@ import { getApiBase } from "@/lib/api";
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
 const MAP_STYLES: Record<string, string> = {
-  dark:      "mapbox://styles/mapbox/dark-v11",
-  city3d:    "mapbox://styles/mapbox/standard",
-  satellite: "mapbox://styles/mapbox/satellite-streets-v12",
+  dark:        "mapbox://styles/mapbox/dark-v11",
+  city3d:      "mapbox://styles/mapbox/standard",
+  "city3d-dark": "mapbox://styles/mapbox/standard",
+  satellite:   "mapbox://styles/mapbox/satellite-streets-v12",
 };
 
 type DayFilter = "tutti" | "feriale" | "sabato" | "domenica";
 
-type ViewMode = "dark" | "city3d" | "satellite";
+type ViewMode = "dark" | "city3d" | "city3d-dark" | "satellite";
 
 interface GtfsSummary {
   available: boolean;
@@ -44,6 +45,12 @@ interface GtfsSummary {
   weekdayTrips: number;
   saturdayTrips: number;
   sundayTrips: number;
+  weekdayRoutes?: number;
+  saturdayRoutes?: number;
+  sundayRoutes?: number;
+  weekdayStops?: number;
+  saturdayStops?: number;
+  sundayStops?: number;
   weekdayKm?: number;
   saturdayKm?: number;
   sundayKm?: number;
@@ -226,10 +233,11 @@ export default function Dashboard() {
   const [gtfsSummary, setGtfsSummary] = useState<GtfsSummary | null>(null);
   const [selectedPoiCats, setSelectedPoiCats] = useState<string[]>(Object.keys(POI_COLOR));
 
-  const is3D = viewMode === "city3d";
+  const is3D = viewMode === "city3d" || viewMode === "city3d-dark";
+  const isStandardStyle = viewMode === "city3d" || viewMode === "city3d-dark";
 
   const [layers, setLayers] = useState({
-    traffic: true,
+    traffic: false,
     mapboxTraffic: false,
     demand: false,
     poi: true,
@@ -241,6 +249,7 @@ export default function Dashboard() {
   // Collapsible panels
   const [layersCollapsed, setLayersCollapsed] = useState(false);
   const [legendCollapsed, setLegendCollapsed] = useState(true);
+  const [statsCollapsed, setStatsCollapsed] = useState(false);
 
   // Route filter state
   const [showRouteFilter, setShowRouteFilter] = useState(false);
@@ -276,10 +285,31 @@ export default function Dashboard() {
   const [walkMinutes, setWalkMinutes] = useState(10);
   const [walkPanelOpen, setWalkPanelOpen] = useState(false);
 
+  // Census population heatmap state
+  const [censusPoints, setCensusPoints] = useState<{ lng: number; lat: number; pop: number }[]>([]);
+
   const { data: statsData }   = useGetAnalysisStats();
   const { data: trafficData } = useGetTraffic({ limit: 1000 });
   const { data: demandData }  = useGetDemandScore({});
   const { data: poiData }     = useGetPoi({});
+
+  // Fetch census sections for population heatmap
+  useEffect(() => {
+    if (!layers.demand) return;
+    if (censusPoints.length > 0) return; // already loaded
+    fetch(`${getApiBase()}/api/population/density`)
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d.data)) {
+          setCensusPoints(d.data.map((c: any) => ({
+            lng: Number(c.centroidLng),
+            lat: Number(c.centroidLat),
+            pop: Number(c.population) || 0,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [layers.demand]);
 
   // Fetch GTFS summary for stats card
   useEffect(() => {
@@ -408,10 +438,63 @@ export default function Dashboard() {
     if (m) {
       // Re-register POI icons after style change
       registerPoiImages(m);
+      // Set light preset for Standard style (city3d = day, city3d-dark = dusk for Bangkok effect)
+      if (isStandardStyle) {
+        try {
+          (m as any).setConfigProperty?.("basemap", "lightPreset", viewMode === "city3d-dark" ? "dusk" : "day");
+        } catch {}
+      }
     }
     if (!is3D) return;
     setTimeout(() => { try { m?.setTerrain({ source: "mapbox-dem", exaggeration: 1.5 }); } catch {} }, 300);
-  }, [is3D, registerPoiImages]);
+  }, [is3D, isStandardStyle, viewMode, registerPoiImages]);
+
+  // Apply lightPreset + atmosphere when switching between city3d ↔ city3d-dark
+  useEffect(() => {
+    if (!mapLoaded || !isStandardStyle) return;
+    const m = mapRef.current?.getMap() as any;
+    if (!m) return;
+    try {
+      if (viewMode === "city3d-dark") {
+        // "Bangkok at night" — dusk preset gives warm orange/amber street-light glow
+        // with deep dark sky, more contrast than pure "night"
+        m.setConfigProperty?.("basemap", "lightPreset", "dusk");
+        // Hide clutter for cleaner night cityscape
+        m.setConfigProperty?.("basemap", "showPointOfInterestLabels", false);
+        m.setConfigProperty?.("basemap", "showTransitLabels", false);
+        // Atmospheric haze — subtle warm fog, mostly at horizon (keeps near features crisp)
+        m.setFog?.({
+          "range": [2, 14],
+          "color": "rgba(20, 15, 30, 0.6)",
+          "high-color": "rgba(40, 25, 60, 0.5)",
+          "horizon-blend": 0.06,
+          "star-intensity": 0.35,
+          "space-color": "rgba(8, 5, 18, 1)",
+        });
+        // High-contrast directional light — warm amber, strong shadows
+        m.setLights?.([{
+          "id": "night_sun",
+          "type": "directional",
+          "properties": {
+            "color": "rgba(255, 180, 80, 1.0)",
+            "intensity": 0.35,
+            "direction": [210, 30],
+            "cast-shadows": true,
+            "shadow-intensity": 0.6,
+          },
+        }]);
+      } else {
+        // Daytime preset — clean and bright
+        m.setConfigProperty?.("basemap", "lightPreset", "day");
+        m.setConfigProperty?.("basemap", "showPointOfInterestLabels", true);
+        m.setConfigProperty?.("basemap", "showTransitLabels", true);
+        // Clear fog for day mode
+        m.setFog?.(null);
+        // Remove custom lights — let style defaults handle it
+        m.setLights?.([]);
+      }
+    } catch {}
+  }, [viewMode, mapLoaded, isStandardStyle]);
 
   // GeoJSON builders
   const trafficGeojson = useMemo(() => {
@@ -440,6 +523,57 @@ export default function Dashboard() {
       })),
     };
   }, [demandData]);
+
+  // Population heatmap — uses census section centroids
+  // "covered" flag set when walkability data available via simple point-in-bbox check
+  const populationHeatmapGeojson = useMemo(() => {
+    if (!censusPoints.length) return null;
+    // If walk data exists, compute a rough bounding box of the isochrone union for fast inside check
+    let coveredBboxes: { minLng: number; minLat: number; maxLng: number; maxLat: number }[] = [];
+    if (walkData?.isochroneUnion?.features?.length) {
+      for (const f of walkData.isochroneUnion.features) {
+        const g = f.geometry as any;
+        const allCoords: number[][] = [];
+        if (g.type === "Polygon") {
+          for (const ring of g.coordinates) for (const c of ring) allCoords.push(c);
+        } else if (g.type === "MultiPolygon") {
+          for (const poly of g.coordinates) for (const ring of poly) for (const c of ring) allCoords.push(c);
+        }
+        if (allCoords.length) {
+          const lngs = allCoords.map(c => c[0]), lats = allCoords.map(c => c[1]);
+          coveredBboxes.push({ minLng: Math.min(...lngs), maxLng: Math.max(...lngs), minLat: Math.min(...lats), maxLat: Math.max(...lats) });
+        }
+      }
+    }
+    const hasCoverage = coveredBboxes.length > 0;
+    // Use log scale for weight to handle huge population range (0–99k)
+    // log1p(pop) ranges from 0 to ~11.5 for pop=99470; cap at p95 for visual balance
+    const logPops = censusPoints.filter(c => c.pop > 0).map(c => Math.log1p(c.pop));
+    logPops.sort((a, b) => a - b);
+    const p95 = logPops.length ? logPops[Math.floor(logPops.length * 0.95)] : 1;
+    const maxLogPop = Math.max(p95, 1);
+
+    return {
+      type: "FeatureCollection",
+      features: censusPoints
+        .filter(c => c.pop > 0) // skip empty sections
+        .map(c => {
+          const inCoverage = hasCoverage && coveredBboxes.some(b =>
+            c.lng >= b.minLng && c.lng <= b.maxLng && c.lat >= b.minLat && c.lat <= b.maxLat
+          );
+          return {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [c.lng, c.lat] },
+            properties: {
+              pop: c.pop,
+              weight: Math.min(Math.log1p(c.pop) / maxLogPop, 1),
+              covered: inCoverage ? 1 : 0,
+            },
+          };
+        }),
+    };
+  }, [censusPoints, walkData]);
+
 
   const poiGeojson = useMemo(() => {
     if (!poiData?.data) return null;
@@ -617,8 +751,8 @@ export default function Dashboard() {
     );
   }
 
-  // Standard style (city3d) has built-in 3D buildings — only show custom layer for dark/satellite
-  const showBuildings = layers.buildings && viewMode !== "city3d";
+  // Standard style (city3d/city3d-dark) has built-in 3D buildings — only show custom layer for dark/satellite
+  const showBuildings = layers.buildings && !isStandardStyle;
 
   return (
     <div className="relative w-full h-full overflow-hidden">
@@ -712,9 +846,14 @@ export default function Dashboard() {
         {/* Sky */}
         <Layer id="sky" type="sky" paint={{
           "sky-type": "atmosphere",
-          "sky-atmosphere-sun": [0.0, 90.0],
-          "sky-atmosphere-sun-intensity": 12,
-          "sky-atmosphere-color": viewMode === "satellite" ? "rgba(25,50,100,1)" : "rgba(8,12,28,1)",
+          "sky-atmosphere-sun": viewMode === "city3d" ? [0.0, 75.0]
+            : viewMode === "city3d-dark" ? [0.0, 0.0] : [0.0, 90.0],
+          "sky-atmosphere-sun-intensity": viewMode === "city3d" ? 8
+            : viewMode === "city3d-dark" ? 3 : 12,
+          "sky-atmosphere-color": viewMode === "satellite" ? "rgba(25,50,100,1)"
+            : viewMode === "city3d" ? "rgba(85,140,200,1)"
+            : viewMode === "city3d-dark" ? "rgba(30,18,48,1)"
+            : "rgba(8,12,28,1)",
         }} />
 
         {/* Mapbox live traffic on roads */}
@@ -748,16 +887,43 @@ export default function Dashboard() {
           />
         )}
 
-        {/* Demand Heatmap */}
-        {layers.demand && demandGeojson && (
-          <Source type="geojson" data={demandGeojson as any}>
-            <Layer id="demand-heatmap" type="heatmap" paint={{
-              "heatmap-weight": ["get","score"],
-              "heatmap-intensity": ["interpolate",["linear"],["zoom"],0,1,15,3],
-              "heatmap-color": ["interpolate",["linear"],["heatmap-density"],
-                0,"rgba(33,102,172,0)",0.2,"rgb(103,169,207)",0.5,"rgb(253,219,199)",0.8,"rgb(239,138,98)",1,"rgb(178,24,43)"],
-              "heatmap-radius": ["interpolate",["linear"],["zoom"],0,8,15,40],
-            }} />
+        {/* Population Heatmap — background layer, rendered BELOW routes/stops/POI */}
+        {layers.demand && populationHeatmapGeojson && (
+          <Source id="pop-heatmap-src" type="geojson" data={populationHeatmapGeojson as any}>
+            {/* Uncovered population — warm coral/orange (or ALL pop when no walkability yet) */}
+            <Layer id="pop-heatmap-all" type="heatmap"
+              {...(walkData ? { filter: ["==", ["get", "covered"], 0] } : {})}
+              paint={{
+                "heatmap-weight": ["get", "weight"],
+                "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.8, 12, 1.8, 15, 2.8],
+                "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+                  0, "rgba(0,0,0,0)",
+                  0.1, "rgba(254,204,140,0.25)",
+                  0.3, "rgba(253,164,93,0.45)",
+                  0.5, "rgba(245,120,72,0.55)",
+                  0.7, "rgba(220,72,42,0.65)",
+                  1, "rgba(180,40,25,0.75)"],
+                "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 14, 12, 26, 15, 46],
+                "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.6, 13, 0.5, 16, 0.35],
+              }} />
+            {/* Covered population — teal/emerald, only when walkability calculated */}
+            {walkData && (
+              <Layer id="pop-heatmap-covered" type="heatmap"
+                filter={["==", ["get", "covered"], 1]}
+                paint={{
+                  "heatmap-weight": ["get", "weight"],
+                  "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.8, 12, 1.8, 15, 2.8],
+                  "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+                    0, "rgba(0,0,0,0)",
+                    0.1, "rgba(130,210,190,0.25)",
+                    0.3, "rgba(80,190,165,0.4)",
+                    0.5, "rgba(45,170,145,0.52)",
+                    0.7, "rgba(20,150,130,0.62)",
+                    1, "rgba(8,125,110,0.72)"],
+                  "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 14, 12, 26, 15, 46],
+                  "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.6, 13, 0.5, 16, 0.35],
+                }} />
+            )}
           </Source>
         )}
 
@@ -785,15 +951,15 @@ export default function Dashboard() {
             <Layer id="gtfs-shapes-outline" type="line"
               paint={{
                 "line-width": ["interpolate",["linear"],["zoom"],9,3.5,12,5.5,14,9],
-                "line-color": "#000000",
-                "line-opacity": 0.25,
+                "line-color": viewMode === "city3d-dark" ? "#1a1028" : "#000000",
+                "line-opacity": viewMode === "city3d-dark" ? 0.5 : 0.25,
               }}
               layout={{ "line-cap":"round","line-join":"round" }}
             />
             {/* Main line — colored by congestion when data available, else route's own color */}
             <Layer id="gtfs-shapes-line" type="line"
               paint={{
-                "line-width": ["interpolate",["linear"],["zoom"],9,2,12,3.5,14,6],
+                "line-width": ["interpolate",["linear"],["zoom"],9, viewMode === "city3d-dark" ? 2.5 : 2, 12, viewMode === "city3d-dark" ? 4.5 : 3.5, 14, viewMode === "city3d-dark" ? 7 : 6],
                 "line-color": [
                   "case",
                   ["==", ["typeof", ["get","congestion"]], "number"],
@@ -803,7 +969,8 @@ export default function Dashboard() {
                   ],
                   ["coalesce",["get","routeColor"],"#60a5fa"],
                 ],
-                "line-opacity": 0.88,
+                "line-opacity": viewMode === "city3d-dark" ? 1 : 0.88,
+                ...(viewMode === "city3d-dark" ? { "line-emissive-strength": 0.85 } : {}),
               }}
               layout={{ "line-cap":"round","line-join":"round" }}
             />
@@ -857,12 +1024,13 @@ export default function Dashboard() {
         {layers.gtfsStops && gtfsStopsGeojson && (
           <Source type="geojson" data={gtfsStopsGeojson as any}>
             <Layer id="gtfs-stops" type="circle" paint={{
-              "circle-radius": ["interpolate",["linear"],["zoom"],8,3,14,8],
+              "circle-radius": ["interpolate",["linear"],["zoom"],8, viewMode === "city3d-dark" ? 4 : 3, 14, viewMode === "city3d-dark" ? 10 : 8],
               "circle-color": ["interpolate",["linear"],["coalesce",["get","score"],0],
                 0,"#6b7280",30,"#ef4444",60,"#eab308",100,"#22c55e"],
-              "circle-stroke-width": 1.5,
-              "circle-stroke-color": "#fff",
-              "circle-opacity": 0.9,
+              "circle-stroke-width": viewMode === "city3d-dark" ? 2 : 1.5,
+              "circle-stroke-color": viewMode === "city3d-dark" ? "rgba(255,255,255,0.85)" : "#fff",
+              "circle-opacity": 1,
+              ...(viewMode === "city3d-dark" ? { "circle-emissive-strength": 0.9 } : {}),
             }} />
           </Source>
         )}
@@ -1056,14 +1224,15 @@ export default function Dashboard() {
       <div className="absolute bottom-6 right-4 flex flex-col gap-2 pointer-events-auto">
         <div className="bg-card/90 backdrop-blur-xl border border-border/50 shadow-xl rounded-xl p-1 flex gap-1">
           {([
-            { key: "dark"      as ViewMode, icon: <Sun className="w-3.5 h-3.5" />,       label: "Scuro" },
-            { key: "city3d"    as ViewMode, icon: <Building2 className="w-3.5 h-3.5" />, label: "Città 3D" },
-            { key: "satellite" as ViewMode, icon: <Satellite className="w-3.5 h-3.5" />, label: "Satellite" },
+            { key: "dark"        as ViewMode, icon: <Sun className="w-3.5 h-3.5" />,       label: "Scuro" },
+            { key: "city3d"      as ViewMode, icon: <Building2 className="w-3.5 h-3.5" />, label: "Città 3D" },
+            { key: "city3d-dark" as ViewMode, icon: <Moon className="w-3.5 h-3.5" />,      label: "3D Notte" },
+            { key: "satellite"   as ViewMode, icon: <Satellite className="w-3.5 h-3.5" />, label: "Satellite" },
           ]).map(({ key, icon, label }) => (
             <button key={key} title={label}
               onClick={() => {
                 setViewMode(key);
-                if (key === "city3d") setLayers(p => ({ ...p, buildings: true }));
+                if (key === "city3d" || key === "city3d-dark") setLayers(p => ({ ...p, buildings: true }));
               }}
               className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 viewMode === key
@@ -1081,61 +1250,111 @@ export default function Dashboard() {
       <div className="absolute top-10 left-4 md:w-72 pointer-events-none">
         <AnimatePresence>
           <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="pointer-events-auto">
-            <Card className="bg-card/85 backdrop-blur-xl border-border/50 shadow-2xl">
-              <CardContent className="p-4 space-y-4">
-                <div className="flex items-center gap-2">
+            <Card className="bg-card/85 backdrop-blur-xl border-border/50 shadow-2xl overflow-hidden">
+              {/* Header — clickable to collapse */}
+              <button
+                onClick={() => setStatsCollapsed(v => !v)}
+                className="w-full p-3 flex items-center justify-between hover:bg-muted/20 transition-colors"
+              >
+                <span className="flex items-center gap-2">
                   <Activity className="w-4 h-4 text-primary" />
-                  <h2 className="text-sm font-bold">Stato Rete</h2>
-                  <span className="ml-auto text-[10px] text-muted-foreground">Conerobus · Ancona/Marche</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <StatBox label="Linee totali"   value={gtfsSummary?.totalRoutes?.toString() ?? "--"} icon={<Route className="w-3.5 h-3.5" />}  color="text-blue-400" />
-                  <StatBox label="Fermate"         value={gtfsSummary?.totalStops != null ? gtfsSummary.totalStops.toLocaleString("it-IT") : "--"} icon={<MapPin className="w-3.5 h-3.5" />}  color="text-cyan-400" />
-                </div>
-                {/* Corse e km per tipo giorno */}
-                <div className="rounded-lg border border-border/40 overflow-hidden">
-                  <table className="w-full text-[10px]">
-                    <thead>
-                      <tr className="bg-muted/30 text-muted-foreground">
-                        <th className="text-left px-2 py-1 font-medium">Tipo</th>
-                        <th className="text-right px-2 py-1 font-medium">Corse</th>
-                        <th className="text-right px-2 py-1 font-medium">Km</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border/20">
-                      {([
-                        { label: "Feriale",  trips: gtfsSummary?.weekdayTrips,  km: gtfsSummary?.weekdayKm,  color: "text-green-400" },
-                        { label: "Sabato",   trips: gtfsSummary?.saturdayTrips, km: gtfsSummary?.saturdayKm, color: "text-amber-400" },
-                        { label: "Festivo",  trips: gtfsSummary?.sundayTrips,   km: gtfsSummary?.sundayKm,   color: "text-rose-400" },
-                      ] as const).map(row => (
-                        <tr key={row.label}>
-                          <td className={`px-2 py-1 font-semibold ${row.color}`}>{row.label}</td>
-                          <td className="text-right px-2 py-1 font-mono">{row.trips != null ? row.trips.toLocaleString("it-IT") : "--"}</td>
-                          <td className="text-right px-2 py-1 font-mono">{row.km != null ? row.km.toLocaleString("it-IT") : "--"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Orario servizio */}
-                {gtfsSummary?.firstDeparture && (
-                  <div className="flex items-center justify-between text-[10px] text-muted-foreground bg-muted/30 rounded-lg px-2.5 py-1.5">
-                    <span>Prima corsa</span>
-                    <span className="font-mono font-semibold text-foreground">{gtfsSummary.firstDeparture.substring(0,5)}</span>
-                    <span>Ultima</span>
-                    <span className="font-mono font-semibold text-foreground">{gtfsSummary.lastArrival?.substring(0,5)}</span>
-                  </div>
+                  <span className="text-sm font-bold">Stato Rete</span>
+                  <span className="text-[10px] text-muted-foreground">ATMA · Ancona</span>
+                </span>
+                {statsCollapsed
+                  ? <ChevronDown className="w-4 h-4 text-muted-foreground" />
+                  : <ChevronUp className="w-4 h-4 text-muted-foreground" />}
+              </button>
+
+              <AnimatePresence initial={false}>
+                {!statsCollapsed && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <CardContent className="px-3 pb-3 pt-0 space-y-3 border-t border-border/30">
+                      {/* Dynamic table: linee, fermate, corse, km per tipo giorno */}
+                      {(() => {
+                        const dayRows = [
+                          ...(dayFilter === "tutti" || dayFilter === "feriale" ? [{
+                            label: "Feriale",
+                            routes: gtfsSummary?.weekdayRoutes,
+                            stops:  gtfsSummary?.weekdayStops,
+                            trips:  gtfsSummary?.weekdayTrips,
+                            km:     gtfsSummary?.weekdayKm,
+                            color:  "text-green-400",
+                          }] : []),
+                          ...(dayFilter === "tutti" || dayFilter === "sabato" ? [{
+                            label: "Sabato",
+                            routes: gtfsSummary?.saturdayRoutes,
+                            stops:  gtfsSummary?.saturdayStops,
+                            trips:  gtfsSummary?.saturdayTrips,
+                            km:     gtfsSummary?.saturdayKm,
+                            color:  "text-amber-400",
+                          }] : []),
+                          ...(dayFilter === "tutti" || dayFilter === "domenica" ? [{
+                            label: "Festivo",
+                            routes: gtfsSummary?.sundayRoutes,
+                            stops:  gtfsSummary?.sundayStops,
+                            trips:  gtfsSummary?.sundayTrips,
+                            km:     gtfsSummary?.sundayKm,
+                            color:  "text-rose-400",
+                          }] : []),
+                        ];
+
+                        return (
+                          <div className="rounded-lg border border-border/40 overflow-hidden mt-2">
+                            <table className="w-full text-[10px]">
+                              <thead>
+                                <tr className="bg-muted/30 text-muted-foreground">
+                                  <th className="text-left px-2 py-1 font-medium">Tipo</th>
+                                  <th className="text-right px-2 py-1 font-medium">Linee</th>
+                                  <th className="text-right px-2 py-1 font-medium">Fermate</th>
+                                  <th className="text-right px-2 py-1 font-medium">Corse</th>
+                                  <th className="text-right px-2 py-1 font-medium">Km</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-border/20">
+                                {dayRows.map(row => (
+                                  <tr key={row.label}>
+                                    <td className={`px-2 py-1 font-semibold ${row.color}`}>{row.label}</td>
+                                    <td className="text-right px-2 py-1 font-mono">{row.routes != null ? row.routes.toLocaleString("it-IT") : "--"}</td>
+                                    <td className="text-right px-2 py-1 font-mono">{row.stops != null ? row.stops.toLocaleString("it-IT") : "--"}</td>
+                                    <td className="text-right px-2 py-1 font-mono">{row.trips != null ? row.trips.toLocaleString("it-IT") : "--"}</td>
+                                    <td className="text-right px-2 py-1 font-mono">{row.km != null ? row.km.toLocaleString("it-IT") : "--"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Orario servizio */}
+                      {gtfsSummary?.firstDeparture && (
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground bg-muted/30 rounded-lg px-2.5 py-1.5">
+                          <span>Prima corsa</span>
+                          <span className="font-mono font-semibold text-foreground">{gtfsSummary.firstDeparture.substring(0,5)}</span>
+                          <span>Ultima</span>
+                          <span className="font-mono font-semibold text-foreground">{gtfsSummary.lastArrival?.substring(0,5)}</span>
+                        </div>
+                      )}
+                      {/* Traffico */}
+                      {statsData?.avgCongestion != null && (
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="flex items-center gap-1 text-muted-foreground"><Activity className="w-3 h-3" /> Congestione media</span>
+                          <span className="font-semibold" style={{ color: congestionLabel(statsData.avgCongestion).color }}>
+                            {congestionLabel(statsData.avgCongestion).text} ({(statsData.avgCongestion * 100).toFixed(0)}%)
+                          </span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </motion.div>
                 )}
-                {/* Traffico */}
-                {statsData?.avgCongestion != null && (
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="flex items-center gap-1 text-muted-foreground"><Activity className="w-3 h-3" /> Congestione media</span>
-                    <span className="font-semibold" style={{ color: congestionLabel(statsData.avgCongestion).color }}>
-                      {congestionLabel(statsData.avgCongestion).text} ({(statsData.avgCongestion * 100).toFixed(0)}%)
-                    </span>
-                  </div>
-                )}
-              </CardContent>
+              </AnimatePresence>
             </Card>
           </motion.div>
         </AnimatePresence>
@@ -1169,12 +1388,11 @@ export default function Dashboard() {
                 >
                   <CardContent className="px-3 pb-3 pt-0 space-y-2.5 border-t border-border/30">
                     {(([
-                      { key: "traffic",       label: "Sensori traffico",    hint: "clicca per dettaglio" },
-                      { key: "mapboxTraffic", label: "Traffico strade",     hint: "live — strade principali" },
-                      { key: "demand",        label: "Domanda (heatmap)" },
-                      { key: "poi",           label: "Punti di interesse",  hint: "clicca per info" },
                       { key: "gtfsShapes",    label: "Percorsi GTFS",       hint: "colorati per congestione" },
                       { key: "gtfsStops",     label: "Fermate GTFS",        hint: "clicca per dettaglio" },
+                      { key: "poi",           label: "Punti di interesse",  hint: "clicca per info" },
+                      { key: "demand",        label: "Heatmap popolazione" },
+                      { key: "mapboxTraffic", label: "Traffico strade",     hint: "live — strade principali" },
                     ] as Array<{ key: keyof typeof layers; label: string; hint?: string }>)).map(({ key, label, hint }) => (
                       <div key={key}>
                         <div className="flex items-center justify-between gap-2 pt-0.5">
@@ -1235,6 +1453,17 @@ export default function Dashboard() {
                         </div>
                       </button>
                     )}
+
+                    {/* Compact traffic sensor toggle */}
+                    <div className="flex items-center justify-between pt-1 mt-1 border-t border-border/20">
+                      <span className="text-[10px] text-muted-foreground">Sensori TomTom</span>
+                      <Switch
+                        id="layer-traffic"
+                        checked={layers.traffic}
+                        onCheckedChange={c => setLayers(p => ({ ...p, traffic: c }))}
+                        className="scale-75"
+                      />
+                    </div>
                   </CardContent>
                 </motion.div>
               )}
@@ -1242,7 +1471,7 @@ export default function Dashboard() {
           </Card>
 
           {/* Legend — single collapsible card */}
-          {(layers.mapboxTraffic || layers.traffic || layers.poi || layers.gtfsShapes || isochroneGeojson || walkData) && (
+          {(layers.mapboxTraffic || layers.traffic || layers.poi || layers.gtfsShapes || layers.demand || isochroneGeojson || walkData) && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
               <Card className="bg-card/85 backdrop-blur-xl border-border/50 shadow-xl overflow-hidden">
                 <button
@@ -1310,6 +1539,26 @@ export default function Dashboard() {
                                 <span className="text-xs text-muted-foreground flex items-center gap-1">{POI_ICON[cat]} {POI_CATEGORY_IT[cat] || cat}</span>
                               </div>
                             ))}
+                          </div>
+                        )}
+                        {layers.demand && (
+                          <div className="space-y-1.5 border-t border-border/20 pt-2">
+                            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                              <Users className="w-3 h-3" /> Heatmap popolazione
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <div className="w-5 h-3 rounded" style={{ background: "linear-gradient(90deg, #fecc8c, #dc4828, #b42819)" }} />
+                              <span className="text-xs text-muted-foreground">Pop. non coperta</span>
+                            </div>
+                            {walkData && (
+                              <div className="flex items-center gap-2">
+                                <div className="w-5 h-3 rounded" style={{ background: "linear-gradient(90deg, #82d2be, #2daa91, #087d6e)" }} />
+                                <span className="text-xs text-muted-foreground">Pop. coperta (walkability)</span>
+                              </div>
+                            )}
+                            {!walkData && (
+                              <p className="text-[9px] text-muted-foreground/60 italic">Calcola walkability per vedere la copertura</p>
+                            )}
                           </div>
                         )}
                         {isochroneGeojson && (

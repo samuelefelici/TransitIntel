@@ -107,7 +107,7 @@ export default function DemandPage() {
         <Info className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground/60" />
         <span>
           Copertura calcolata su <strong>86 sezioni censuarie ISTAT</strong> (pop. totale {fmt(coverage.totalPop)} ab.)
-          e <strong>3.943 fermate GTFS Conerobus/Marche</strong>. Le distanze sono in linea d'aria.
+          e <strong>3.943 fermate GTFS ATMA/Marche</strong>. Le distanze sono in linea d'aria.
           Dati GTFS aggiornati: gennaio–dicembre 2026.
         </span>
       </div>
@@ -164,7 +164,7 @@ function CoverageSection({ coverage, uncoveredPop800 }: {
     <section>
       <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
         <Users className="w-4 h-4 text-primary" />
-        Popolazione coperta dalla rete Conerobus
+        Popolazione coperta dalla rete ATMA
       </h2>
       <p className="text-xs text-muted-foreground mb-4">
         Percentuale di residenti che hanno una fermata GTFS entro la distanza indicata (linea d'aria).
@@ -410,14 +410,14 @@ function UnderservedSection({ items }: { items: DemandData["underserved"] }) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium">
-                  {item.lat.toFixed(4)}°N · {item.lon.toFixed(4)}°E
+                  {item.lat.toFixed(4)}°N · {item.lng.toFixed(4)}°E
                 </p>
                 <p className="text-[10px] text-muted-foreground mt-0.5">
                   {item.population.toLocaleString("it-IT")} abitanti · densità {item.density.toLocaleString("it-IT")} ab/km²
                 </p>
               </div>
               <div className="shrink-0">
-                <a href={`https://www.google.com/maps?q=${item.lat},${item.lon}`}
+                <a href={`https://www.google.com/maps?q=${item.lat},${item.lng}`}
                   target="_blank" rel="noopener noreferrer"
                   className={`text-[10px] ${text} hover:underline`}>
                   Mappa →

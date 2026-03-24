@@ -41,6 +41,8 @@ interface SegmentVisual {
   freeflowKmh: number | null;
   currentSpeedKmh: number | null;
   delayPct: number | null;
+  congestionPct: number | null;
+  extraMin: number | null;
   hasTomTom: boolean;
   segHour: number;
   tomTomSamples: number;
@@ -104,9 +106,17 @@ function minToHM(min: number): string {
   const m = Math.round(min % 60);
   return h > 0 ? `${h}h ${m}min` : `${m}min`;
 }
+/** Segment color for mini-diagram: same 5-step palette as delayColor
+ *  but based on ratio of segment time vs trip-average segment time.
+ *  ratio < 0.8  → fast (green)
+ *  0.8–1.0      → normal (lime)
+ *  1.0–1.4      → moderate (yellow)
+ *  1.4–2.0      → slow (orange)
+ *  ≥ 2.0        → very slow (red)
+ */
 function segColor(segMin: number, avgMin: number): string {
   const ratio = avgMin > 0 ? segMin / avgMin : 1;
-  if (ratio < 0.7)  return "#22c55e";
+  if (ratio < 0.8)  return "#22c55e";
   if (ratio < 1.0)  return "#84cc16";
   if (ratio < 1.4)  return "#eab308";
   if (ratio < 2.0)  return "#f97316";
@@ -180,6 +190,10 @@ function MiniTripCard({
   trip: ScheduleTrip; color: string; shortName: string;
   onClick: () => void; index: number;
 }) {
+  const origin = trip.stops[0]?.stopName ?? "—";
+  const destination = trip.stops[trip.stops.length - 1]?.stopName ?? "—";
+  const truncate = (s: string, n: number) => s.length > n ? s.substring(0, n - 1) + "…" : s;
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
@@ -195,21 +209,24 @@ function MiniTripCard({
           <div className="text-[10px] text-muted-foreground mt-0.5">→ {trip.lastArrival?.substring(0, 5)}</div>
         </div>
 
-        {/* Direction + headsign */}
-        <div className="shrink-0 w-16">
-          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full border"
-            style={{ borderColor: color + "80", color, backgroundColor: color + "15" }}>
-            Dir. {trip.directionId}
-          </span>
-          {trip.headsign && (
-            <div className="text-[10px] text-muted-foreground truncate mt-0.5 max-w-[64px]" title={trip.headsign}>
-              {trip.headsign}
-            </div>
-          )}
-        </div>
-
         {/* Mini diagram — takes remaining space */}
-        <div className="flex-1 min-w-0 pb-3">
+        <div className="flex-1 min-w-0">
+          {/* Capolinea labels */}
+          <div className="flex items-center justify-between mb-0.5 gap-1">
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+              <span className="text-[9px] font-semibold text-foreground/80 truncate" title={origin}>
+                {truncate(origin, 22)}
+              </span>
+            </div>
+            <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
+            <div className="flex items-center gap-1 min-w-0 justify-end">
+              <span className="text-[9px] font-semibold text-foreground/80 truncate text-right" title={destination}>
+                {truncate(destination, 22)}
+              </span>
+              <span className="w-2 h-2 rounded-full border-2 shrink-0" style={{ borderColor: color, backgroundColor: "transparent" }} />
+            </div>
+          </div>
           <MiniDiagram trip={trip} color={color} />
         </div>
 
@@ -743,11 +760,24 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
   const dayLabel = DAY_OPTS.find(d => d.key === day)?.label ?? day;
   const firstStop = visual.stops[0];
   const lastStop = visual.stops[visual.stops.length - 1];
+
+  // Segments with real road congestion data
+  const segsWithCongestion = visual.segments.filter(s => s.congestionPct !== null);
+  const avgCongestion = segsWithCongestion.length > 0
+    ? segsWithCongestion.reduce((s, sg) => s + (sg.congestionPct ?? 0), 0) / segsWithCongestion.length : null;
+  const worstSeg = segsWithCongestion.length > 0
+    ? segsWithCongestion.reduce((a, b) => (b.congestionPct ?? 0) > (a.congestionPct ?? 0) ? b : a) : null;
+
+  // Legacy delayPct for backward compat display
   const segsWithDelay = visual.segments.filter(s => s.delayPct !== null);
-  const worstSeg = segsWithDelay.length > 0
-    ? segsWithDelay.reduce((a, b) => (b.delayPct ?? 0) > (a.delayPct ?? 0) ? b : a) : null;
   const avgDelay = segsWithDelay.length > 0
     ? segsWithDelay.reduce((s, sg) => s + (sg.delayPct ?? 0), 0) / segsWithDelay.length : null;
+
+  // Real bus impact: sum of extraMin across all segments
+  const segsWithExtra = visual.segments.filter(s => s.extraMin !== null);
+  const totalExtraMin = segsWithExtra.length > 0
+    ? segsWithExtra.reduce((s, sg) => s + (sg.extraMin ?? 0), 0) : null;
+
   const displayColor = visual.routeColor && visual.routeColor !== "#6b7280" ? visual.routeColor : "#64748b";
   const tc = visual.trafficContext;
 
@@ -823,36 +853,78 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
       )}
 
       {/* KPIs */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Velocità media</p>
-          <p className="text-2xl font-bold">
-            {visual.totalDistanceKm > 0 && visual.totalScheduledMin > 0
-              ? Math.round((visual.totalDistanceKm / visual.totalScheduledMin) * 60) : 0}
-            <span className="text-sm font-normal text-muted-foreground"> km/h</span>
-          </p>
-        </CardContent></Card>
-        <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Rallentamento medio</p>
-          {avgDelay !== null ? (
-            <>
-              <p className="text-2xl font-bold" style={{ color: delayColor(avgDelay) }}>{Math.round(avgDelay * 100)}%</p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">{delayLabel(avgDelay)}</p>
-            </>
-          ) : <p className="text-lg text-muted-foreground">—</p>}
-        </CardContent></Card>
-        <Card><CardContent className="p-4">
-          <p className="text-xs text-muted-foreground">Tratta più lenta</p>
-          {worstSeg ? (
-            <>
-              <p className="text-lg font-bold" style={{ color: delayColor(worstSeg.delayPct ?? 0) }}>{Math.round((worstSeg.delayPct ?? 0) * 100)}%</p>
-              <p className="text-[10px] text-muted-foreground truncate mt-0.5">
-                {worstSeg.fromStop.stopName.split(" ").slice(0,2).join(" ")} → {worstSeg.toStop.stopName.split(" ").slice(0,2).join(" ")}
+      {(() => {
+        /* Estimated bus delay based on real road congestion (extraMin from backend).
+         * totalExtraMin = sum of each segment's scheduledMin × congestionPct × 0.4
+         * This gives realistic values: a 24min trip with moderate congestion → +1-3 min, not +13.
+         */
+        const scheduledMin = visual.totalScheduledMin;
+        const deltaMin = totalExtraMin;
+        const estimatedMin = deltaMin !== null ? scheduledMin + deltaMin : null;
+        const deltaPct = scheduledMin > 0 && deltaMin !== null ? (deltaMin / scheduledMin) * 100 : null;
+        const isDelay = deltaMin !== null && deltaMin > 0.5;
+        const isPunctual = deltaMin !== null && !isDelay;
+
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {/* Estimated real time vs GTFS – prominent card */}
+            <Card className={`border-2 ${
+              isDelay ? "border-red-500/40 bg-red-500/5" :
+              isPunctual ? "border-green-500/40 bg-green-500/5" :
+              "border-border"
+            }`}><CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Stima ritardo traffico</p>
+              {deltaMin !== null ? (
+                <>
+                  <p className={`text-2xl font-bold ${isDelay ? "text-red-400" : "text-green-400"}`}>
+                    +{deltaMin.toFixed(1)}<span className="text-sm font-normal"> min</span>
+                  </p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {isDelay
+                      ? `🔴 Ritardo probabile (+${deltaPct!.toFixed(0)}%)`
+                      : "✅ Puntuale (traffico trascurabile)"}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {minToHM(estimatedMin!)} stimati vs {minToHM(scheduledMin)} GTFS
+                  </p>
+                </>
+              ) : <p className="text-lg text-muted-foreground">—</p>}
+            </CardContent></Card>
+
+            <Card><CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Velocità media</p>
+              <p className="text-2xl font-bold">
+                {visual.totalDistanceKm > 0 && visual.totalScheduledMin > 0
+                  ? Math.round((visual.totalDistanceKm / visual.totalScheduledMin) * 60) : 0}
+                <span className="text-sm font-normal text-muted-foreground"> km/h</span>
               </p>
-            </>
-          ) : <p className="text-muted-foreground text-sm">—</p>}
-        </CardContent></Card>
-      </div>
+            </CardContent></Card>
+            <Card><CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Congestione stradale</p>
+              {avgCongestion !== null ? (
+                <>
+                  <p className="text-2xl font-bold" style={{ color: delayColor(avgCongestion) }}>{Math.round(avgCongestion * 100)}%</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{delayLabel(avgCongestion)}</p>
+                </>
+              ) : <p className="text-lg text-muted-foreground">—</p>}
+            </CardContent></Card>
+            <Card><CardContent className="p-4">
+              <p className="text-xs text-muted-foreground">Tratta più lenta</p>
+              {worstSeg ? (
+                <>
+                  <p className="text-lg font-bold" style={{ color: delayColor(worstSeg.congestionPct ?? 0) }}>{Math.round((worstSeg.congestionPct ?? 0) * 100)}%</p>
+                  <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                    {worstSeg.fromStop.stopName.split(" ").slice(0,2).join(" ")} → {worstSeg.toStop.stopName.split(" ").slice(0,2).join(" ")}
+                  </p>
+                  {worstSeg.extraMin !== null && (
+                    <p className="text-[10px] text-red-400/70 mt-0.5">+{worstSeg.extraMin.toFixed(1)} min</p>
+                  )}
+                </>
+              ) : <p className="text-muted-foreground text-sm">—</p>}
+            </CardContent></Card>
+          </div>
+        );
+      })()}
 
       {/* Stop table */}
       <Card>
@@ -869,7 +941,8 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
                   <th className="px-3 py-2 text-left font-medium">Tempo</th>
                   <th className="px-3 py-2 text-left font-medium">Vel. sched.</th>
                   <th className="px-3 py-2 text-left font-medium">Flusso libero</th>
-                  <th className="px-3 py-2 text-left font-medium">Rallent.</th>
+                  <th className="px-3 py-2 text-left font-medium">Congest.</th>
+                  <th className="px-3 py-2 text-left font-medium">Ritardo</th>
                 </tr>
               </thead>
               <tbody>
@@ -887,12 +960,21 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
                         {seg?.freeflowKmh != null ? `${seg.freeflowKmh} km/h` : "—"}
                       </td>
                       <td className="px-3 py-2">
-                        {seg && seg.delayPct !== null ? (
+                        {seg && seg.congestionPct !== null ? (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                            style={{ color: delayColor(seg.delayPct), backgroundColor: delayColor(seg.delayPct) + "20" }}>
-                            {Math.round(seg.delayPct * 100)}%
+                            style={{ color: delayColor(seg.congestionPct), backgroundColor: delayColor(seg.congestionPct) + "20" }}>
+                            {Math.round(seg.congestionPct * 100)}%
                             {seg.hasTomTom && <span title="Dato TomTom reale">📡</span>}
                           </span>
+                        ) : <span className="text-muted-foreground/40 text-[10px]">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        {seg && seg.extraMin !== null && seg.extraMin > 0.05 ? (
+                          <span className="text-[10px] font-medium text-red-400">
+                            +{seg.extraMin.toFixed(1)} min
+                          </span>
+                        ) : seg && seg.congestionPct !== null ? (
+                          <span className="text-[10px] text-green-400">≈0</span>
                         ) : <span className="text-muted-foreground/40 text-[10px]">—</span>}
                       </td>
                     </tr>
@@ -945,7 +1027,7 @@ function RouteLineDiagram({ visual }: { visual: TripVisual }) {
           const from = stopPositions[seg.fromIdx];
           const to = stopPositions[seg.toIdx];
           if (!from || !to) return null;
-          const color = seg.delayPct !== null ? delayColor(seg.delayPct) : "#475569";
+          const color = seg.congestionPct !== null ? delayColor(seg.congestionPct) : "#475569";
           const midX = (from.x + to.x) / 2;
           return (
             <g key={i}>
@@ -1010,9 +1092,9 @@ function RouteLineDiagram({ visual }: { visual: TripVisual }) {
                   Orar. {tooltip.seg.scheduledSpeedKmh} km/h | FL {tooltip.seg.freeflowKmh != null ? `${tooltip.seg.freeflowKmh} km/h` : "n/d"}
                 </text>
                 <text x={Math.min(Math.max(tooltip.x - 90, 2), SVG_W - 182) + 8} y={48} fontSize={10}
-                  fill={tooltip.seg.delayPct !== null ? delayColor(tooltip.seg.delayPct) : "#94a3b8"} fontWeight={600}>
-                  {tooltip.seg.delayPct !== null
-                    ? `Rallent.: ${Math.round(tooltip.seg.delayPct * 100)}% — ${delayLabel(tooltip.seg.delayPct)}`
+                  fill={tooltip.seg.congestionPct !== null ? delayColor(tooltip.seg.congestionPct) : "#94a3b8"} fontWeight={600}>
+                  {tooltip.seg.congestionPct !== null
+                    ? `Congestione: ${Math.round(tooltip.seg.congestionPct * 100)}% — ${delayLabel(tooltip.seg.congestionPct)}${tooltip.seg.extraMin != null && tooltip.seg.extraMin > 0.05 ? ` (+${tooltip.seg.extraMin.toFixed(1)} min)` : ""}`
                     : tooltip.seg.hasTomTom ? "TomTom: fuori orario campioni" : "Nessun dato TomTom"}
                 </text>
               </>

@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
 import { motion } from "framer-motion";
-import { Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, FileArchive, Bus, RefreshCw, Timer } from "lucide-react";
+import { Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, FileArchive, Bus, RefreshCw, Timer, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import logoImg from "/logo.png";
 
@@ -40,6 +40,7 @@ const NAV_SECTIONS: NavSection[] = [
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isMobileOpen, setIsMobileOpen] = React.useState(false);
+  const [collapsed, setCollapsed] = React.useState(false);
 
   const Background = () => (
     <div className="fixed inset-0 z-[-1] pointer-events-none">
@@ -73,34 +74,46 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Sidebar — CSS-only transform, no framer-motion x conflict */}
       <aside
         className={`
-          fixed md:static inset-y-0 left-0 z-40 w-64 shrink-0
+          fixed md:static inset-y-0 left-0 z-40 shrink-0
           bg-card/50 backdrop-blur-2xl border-r border-border/50
           flex flex-col h-full
-          transition-transform duration-300 ease-in-out
+          transition-all duration-300 ease-in-out
+          ${collapsed ? "w-16" : "w-64"}
           ${isMobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
         `}
       >
-        {/* Logo */}
-        <div className="px-5 py-4 border-b border-border/30 flex items-center">
-          <img src={logoImg} alt="TransitIntel" className="h-8 w-auto" />
+        {/* Logo + collapse toggle */}
+        <div className="px-3 py-4 border-b border-border/30 flex items-center justify-between gap-2">
+          {!collapsed && <img src={logoImg} alt="TransitIntel" className="h-8 w-auto" />}
+          <button
+            onClick={() => setCollapsed(c => !c)}
+            className="hidden md:flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
+            title={collapsed ? "Espandi sidebar" : "Comprimi sidebar"}
+          >
+            {collapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+          </button>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 px-3 py-4 space-y-4 overflow-y-auto">
+        <nav className="flex-1 px-2 py-4 space-y-4 overflow-y-auto">
           {NAV_SECTIONS.map((section) => (
             <div key={section.title} className="space-y-0.5">
-              <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                {section.title}
-              </p>
+              {!collapsed && (
+                <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                  {section.title}
+                </p>
+              )}
               {section.items.map((item) => {
                 const isActive = location === item.href;
                 return (
                   <Link key={item.href} href={item.href}>
                     <div
                       onClick={() => setIsMobileOpen(false)}
+                      title={collapsed ? item.label : undefined}
                       className={`
-                        flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer
+                        flex items-center gap-3 rounded-lg cursor-pointer
                         transition-all duration-150 group relative text-sm
+                        ${collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5"}
                         ${isActive
                           ? "bg-primary/15 text-primary font-medium"
                           : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
@@ -116,7 +129,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                         />
                       )}
                       <item.icon className={`w-4 h-4 shrink-0 ${isActive ? "text-primary" : "group-hover:text-foreground transition-colors"}`} />
-                      {item.label}
+                      {!collapsed && item.label}
                     </div>
                   </Link>
                 );
@@ -125,12 +138,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        <div className="p-4 mt-auto border-t border-border/30">
-          <div className="bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl p-4 border border-primary/20">
-            <h4 className="font-semibold text-xs mb-0.5 text-primary">Ancona / Marche</h4>
-            <p className="text-[11px] text-muted-foreground">Sistema attivo</p>
+        {!collapsed && (
+          <div className="p-4 mt-auto border-t border-border/30">
+            <div className="bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl p-4 border border-primary/20">
+              <h4 className="font-semibold text-xs mb-0.5 text-primary">Ancona / Marche</h4>
+              <p className="text-[11px] text-muted-foreground">Sistema attivo</p>
+            </div>
           </div>
-        </div>
+        )}
       </aside>
 
       {/* Main Content */}
