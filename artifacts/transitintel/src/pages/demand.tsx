@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   GraduationCap, Building2, Stethoscope, ArrowLeftRight,
@@ -6,6 +6,10 @@ import {
   BarChart2,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
+
+// Lazy-load the map component (heavy)
+const SchoolMap = lazy(() => import("@/components/SchoolMap"));
+import type { SchoolMapItem, RouteShape } from "@/components/SchoolMap";
 
 // ─── Types ────────────────────────────────────────────────────
 interface PoiItem {
@@ -31,7 +35,7 @@ interface HubItem {
   transferScore: "ottimo" | "buono" | "sufficiente" | "critico";
 }
 interface ServiceData {
-  schools:   { items: PoiItem[]; stats: VerdictStats };
+  schools:   { items: SchoolMapItem[]; stats: VerdictStats; routeIds: string[] };
   offices:   { items: PoiItem[]; stats: VerdictStats; breakdown?: { uffici: number; shopping: number; industriali: number } };
   hospitals: { items: PoiItem[]; stats: VerdictStats };
   hubs:      { items: HubItem[]; stats: VerdictStats };
@@ -67,6 +71,8 @@ export default function DemandPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("schools");
+  const [routeShapes, setRouteShapes] = useState<RouteShape[]>([]);
+  const [shapesLoading, setShapesLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -75,6 +81,18 @@ export default function DemandPage() {
       .then(d => { setData(d); setLoading(false); })
       .catch(e => { setError(`Errore caricamento: ${e.message}`); setLoading(false); });
   }, []);
+
+  // Lazy-load route shapes when school tab is active
+  useEffect(() => {
+    if (tab !== "schools" || !data || routeShapes.length > 0) return;
+    const ids = data.schools.routeIds;
+    if (!ids || ids.length === 0) return;
+    setShapesLoading(true);
+    fetch(`${getApiBase()}/api/analysis/route-shapes?routeIds=${ids.join(",")}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(shapes => { setRouteShapes(shapes); setShapesLoading(false); })
+      .catch(() => setShapesLoading(false));
+  }, [tab, data, routeShapes.length]);
 
   if (loading) return (
     <div className="h-full flex items-center justify-center gap-3 text-muted-foreground">
@@ -144,13 +162,32 @@ export default function DemandPage() {
         <AnimatePresence mode="wait">
           {tab === "schools" && (
             <motion.div key="schools" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-              className="p-4 max-w-3xl space-y-4">
+              className="p-4 space-y-4">
               <MethodBox
                 title="Come analizziamo le scuole"
-                text={`Per ogni istituto scolastico (medie, superiori, università) troviamo le fermate GTFS entro 500 m e contiamo quanti autobus passano nelle fasce di ingresso (${data.timeWindows.school.entry}) e uscita (${data.timeWindows.school.exit}). Un istituto è "critico" se ha meno di 5 bus totali nelle fasce chiave — gli studenti rischiano di non trovare corse compatibili con gli orari scolastici.`}
+                text={`Per ogni istituto scolastico (medie, superiori, università) troviamo le fermate GTFS entro 500 m e contiamo quanti autobus passano nelle fasce di ingresso (${data.timeWindows.school.entry}) e uscita (${data.timeWindows.school.exit}). Un istituto è "critico" se ha meno di 5 bus totali nelle fasce chiave — gli studenti rischiano di non trovare corse compatibili con gli orari scolastici.\n\nLa mappa mostra ogni scuola come un cerchio colorato in base alla copertura; le linee tratteggiate collegano ciascuna scuola alla fermata più vicina, mentre i tracciati delle linee bus sono visibili sullo sfondo. Passa il mouse sulle linee nel pannello a destra per evidenziarle.`}
               />
               <VerdictBar stats={data.schools.stats} />
-              <PoiList items={data.schools.items} entryLabel="Ingresso" exitLabel="Uscita" />
+
+              {/* Interactive map */}
+              <Suspense fallback={
+                <div className="h-[420px] rounded-xl border border-border/30 flex items-center justify-center gap-2 text-muted-foreground text-xs">
+                  <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  Caricamento mappa…
+                </div>
+              }>
+                <SchoolMap items={data.schools.items} routeShapes={routeShapes} />
+                {shapesLoading && (
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground px-1 py-1">
+                    <div className="w-3 h-3 border border-primary border-t-transparent rounded-full animate-spin" />
+                    Caricamento tracciati linee bus…
+                  </div>
+                )}
+              </Suspense>
+
+              <div className="max-w-3xl">
+                <PoiList items={data.schools.items} entryLabel="Ingresso" exitLabel="Uscita" />
+              </div>
             </motion.div>
           )}
           {tab === "offices" && (

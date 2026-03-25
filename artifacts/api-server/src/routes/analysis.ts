@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, isochroneCache } from "@workspace/db/schema";
+import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
 
 const router: IRouter = Router();
@@ -1207,6 +1207,53 @@ router.get("/analysis/service-quality", async (req, res) => {
     const officeResults   = analysePois(workplaces as any, OFFICE_ENTRY, OFFICE_EXIT);
     const hospitalResults = analysePois(hospitals, { from: hhmm("07:00"), to: hhmm("13:00") }, { from: hhmm("13:00"), to: hhmm("20:00") });
 
+    /* ── 4b. Arricchisci scuole con dati per la mappa ────────── */
+    // Collect all route IDs involved in school results
+    const schoolRouteIds = new Set<string>();
+    for (const s of schoolResults) {
+      for (const r of s.entryRoutes) schoolRouteIds.add(r);
+      for (const r of s.exitRoutes) schoolRouteIds.add(r);
+    }
+
+    // Build enriched school items with stop coords and connected routes
+    type SchoolMapItem = PoiResult & {
+      nearestStopLat: number; nearestStopLng: number;
+      nearStops: { name: string; lat: number; lng: number; stopId: string }[];
+      connectedRoutes: { routeId: string; shortName: string; color: string }[];
+    };
+
+    const schoolMapItems: SchoolMapItem[] = [];
+    for (const sch of schoolResults) {
+      // Find nearest stop coords
+      let nsLat = 0, nsLng = 0;
+      const nearStops: SchoolMapItem["nearStops"] = [];
+      for (const s of stops) {
+        const d = dist(sch.lat, sch.lng, s.lat, s.lng);
+        if (d <= NEAR_M) {
+          nearStops.push({ name: s.name, lat: s.lat, lng: s.lng, stopId: s.stopId });
+        }
+        if (s.name === sch.nearestStop && d < 2000) {
+          nsLat = s.lat; nsLng = s.lng;
+        }
+      }
+
+      const allRouteIds = [...new Set([...sch.entryRoutes, ...sch.exitRoutes])];
+      const connectedRoutes = allRouteIds
+        .map(rid => {
+          const rm = routeMap.get(rid);
+          return rm ? { routeId: rid, shortName: rm.shortName ?? rid, color: rm.color ?? "64748b" } : null;
+        })
+        .filter(Boolean) as SchoolMapItem["connectedRoutes"];
+
+      schoolMapItems.push({
+        ...sch,
+        nearestStopLat: nsLat,
+        nearestStopLng: nsLng,
+        nearStops: nearStops.slice(0, 5), // max 5 nearby stops
+        connectedRoutes,
+      });
+    }
+
     /* ── 5. Coincidenze inter-comunali ──────────────────────── */
     // Find top hub stops (>10 routes) and check how many extra-urban lines converge
     // "Hub" = stops where multiple routes meet → transfer opportunity
@@ -1351,7 +1398,11 @@ router.get("/analysis/service-quality", async (req, res) => {
     };
 
     res.json({
-      schools:   { items: schoolResults.slice(0, 40),   stats: verdictCounts(schoolResults) },
+      schools:   {
+        items: schoolMapItems,
+        stats: verdictCounts(schoolResults),
+        routeIds: [...schoolRouteIds],
+      },
       offices:   {
         items: officeResults.slice(0, 80),
         stats: verdictCounts(officeResults),
@@ -1371,6 +1422,63 @@ router.get("/analysis/service-quality", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error in service-quality analysis");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── Route shapes by route IDs (for school map) ────────────────
+// GET /api/analysis/route-shapes?routeIds=R1,R2,...
+router.get("/analysis/route-shapes", async (req, res) => {
+  try {
+    const idsParam = (req.query.routeIds as string) ?? "";
+    const routeIds = idsParam.split(",").map(s => s.trim()).filter(Boolean);
+    if (routeIds.length === 0) { res.json([]); return; }
+
+    const rows = await db.select({
+      routeId: gtfsShapes.routeId,
+      routeShortName: gtfsShapes.routeShortName,
+      routeColor: gtfsShapes.routeColor,
+      geojson: gtfsShapes.geojson,
+    }).from(gtfsShapes).where(inArray(gtfsShapes.routeId, routeIds));
+
+    // Deduplicate by routeId, simplify coordinates
+    const seen = new Map<string, boolean>();
+    const simplify = (coords: number[][], max = 120): number[][] => {
+      if (coords.length <= max) return coords;
+      const step = Math.ceil(coords.length / max);
+      const out = coords.filter((_, i) => i % step === 0);
+      if (out[out.length - 1] !== coords[coords.length - 1]) out.push(coords[coords.length - 1]);
+      return out;
+    };
+
+    const results = [];
+    for (const sh of rows) {
+      if (!sh.routeId || seen.has(sh.routeId)) continue;
+      seen.set(sh.routeId, true);
+
+      const geo = typeof sh.geojson === "string" ? JSON.parse(sh.geojson as string) : sh.geojson;
+      let coords: number[][] = [];
+      if (geo?.type === "FeatureCollection") {
+        for (const f of (geo as any).features ?? []) {
+          if (f.geometry?.type === "LineString") coords.push(...f.geometry.coordinates);
+        }
+      } else if (geo?.type === "Feature" && (geo as any).geometry?.type === "LineString") {
+        coords = (geo as any).geometry.coordinates;
+      } else if (geo?.type === "LineString") {
+        coords = (geo as any).coordinates;
+      }
+
+      results.push({
+        routeId: sh.routeId,
+        shortName: sh.routeShortName ?? sh.routeId,
+        color: sh.routeColor ?? "64748b",
+        coordinates: simplify(coords),
+      });
+    }
+
+    res.json(results);
+  } catch (err) {
+    req.log.error(err, "Error fetching route shapes");
     res.status(500).json({ error: "Internal server error" });
   }
 });
