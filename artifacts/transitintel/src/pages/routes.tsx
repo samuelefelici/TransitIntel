@@ -11,7 +11,13 @@ import { getApiBase } from "@/lib/api";
 // ─── Types ────────────────────────────────────────────────────
 type DayType = "weekday" | "saturday" | "sunday" | "";
 
-interface CollisionDetail { stopName: string; times: string[] }
+interface CollisionDetail {
+  stopName: string;
+  times: string[];
+  timesA: string[];
+  timesB: string[];
+  deltaMin: number;
+}
 interface OverlapPair {
   routeA: string; routeB: string;
   sharedStops: number; stopsA: number; stopsB: number;
@@ -329,18 +335,39 @@ export default function Routes() {
                         <span>{pair.sharedStops} fermate in comune</span>
                         <span className={`font-bold ${c.text}`}>{pair.minCoveragePct}% sovrapp.</span>
                       </div>
-                      {/* Collision detail preview */}
+                      {/* Collision detail preview — show A vs B times */}
                       {(pair.collisionDetails?.length ?? 0) > 0 && (
-                        <div className="mt-1.5 space-y-0.5">
-                          {pair.collisionDetails.slice(0, 2).map((d, di) => (
-                            <div key={di} className="flex items-center gap-1.5 text-[10px]">
-                              <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-                              <span className="text-muted-foreground truncate">{d.stopName}</span>
-                              <span className="text-red-400/80 font-mono shrink-0">{d.times.slice(0, 2).join(", ")}</span>
-                            </div>
-                          ))}
-                          {pair.collisionDetails.length > 2 && (
-                            <p className="text-[9px] text-muted-foreground/50 pl-3">+{pair.collisionDetails.length - 2} fermate…</p>
+                        <div className="mt-2 space-y-1">
+                          {pair.collisionDetails.slice(0, 3).map((d, di) => {
+                            const ra = routes.find(x => x.routeId === pair.routeA);
+                            const rb = routes.find(x => x.routeId === pair.routeB);
+                            const cA = ra?.color && ra.color !== "#6b7280" ? ra.color : "#64748b";
+                            const cB = rb?.color && rb.color !== "#6b7280" ? rb.color : "#64748b";
+                            return (
+                              <div key={di} className="bg-red-500/5 border border-red-500/10 rounded-lg px-2.5 py-1.5">
+                                <div className="flex items-center gap-1.5 mb-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                                  <span className="text-[10px] font-medium text-foreground/80 truncate flex-1">{d.stopName}</span>
+                                  {d.deltaMin <= 1 && (
+                                    <span className="text-[9px] font-bold text-red-400 bg-red-500/15 rounded px-1 py-0.5">SIMULTANEI</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px]">
+                                  <div className="flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: cA }} />
+                                    <span className="font-mono text-muted-foreground">{d.timesA?.slice(0, 3).join(" ") || d.times.slice(0, 2).join(" ")}</span>
+                                  </div>
+                                  <span className="text-muted-foreground/30">|</span>
+                                  <div className="flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: cB }} />
+                                    <span className="font-mono text-muted-foreground">{d.timesB?.slice(0, 3).join(" ") || "—"}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {pair.collisionDetails.length > 3 && (
+                            <p className="text-[9px] text-muted-foreground/50 pl-3">+{pair.collisionDetails.length - 3} fermate…</p>
                           )}
                         </div>
                       )}
@@ -601,21 +628,73 @@ function OverlapDetail({ pair, routes }: { pair: OverlapPair; routes: RouteRow[]
         </div>
       )}
 
-      {/* Collision details */}
+      {/* Collision details — visual timeline A vs B */}
       {pair.collisionDetails.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            💥 Fermate con collisioni orario (±2min)
-          </p>
-          <div className="space-y-1.5">
+          <div className="flex items-center gap-2 mb-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              💥 Collisioni orario (±2min)
+            </p>
+            <div className="flex items-center gap-3 ml-auto text-[10px]">
+              <div className="flex items-center gap-1">
+                <span className="w-2.5 h-1.5 rounded-sm" style={{ backgroundColor: colorA }} />
+                <span className="text-muted-foreground">{ra?.shortName ?? pair.routeA}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="w-2.5 h-1.5 rounded-sm" style={{ backgroundColor: colorB }} />
+                <span className="text-muted-foreground">{rb?.shortName ?? pair.routeB}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
             {pair.collisionDetails.map((d, i) => (
-              <div key={i} className="flex items-center gap-3 bg-red-500/8 border border-red-500/15 rounded-xl px-3 py-2">
-                <div className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
-                <span className="text-xs flex-1 font-medium">{d.stopName}</span>
-                <div className="flex items-center gap-1.5">
-                  {d.times.map(t => (
-                    <span key={t} className="text-[11px] font-mono font-bold text-red-300 bg-red-500/15 rounded px-1.5 py-0.5">{t}</span>
-                  ))}
+              <div key={i} className="bg-card/60 border border-border/30 rounded-xl overflow-hidden">
+                {/* Stop header */}
+                <div className="flex items-center gap-2 px-3 py-2 bg-red-500/5 border-b border-red-500/10">
+                  <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <span className="text-xs font-semibold flex-1 truncate">{d.stopName}</span>
+                  {d.deltaMin <= 1 ? (
+                    <span className="text-[10px] font-bold text-red-400 bg-red-500/15 rounded-full px-2 py-0.5">
+                      ⚡ Simultaneo
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-orange-400 bg-orange-500/10 rounded-full px-2 py-0.5">
+                      Δ {d.deltaMin}min
+                    </span>
+                  )}
+                </div>
+
+                {/* Two-row timeline: A times vs B times */}
+                <div className="px-3 py-2 space-y-1.5">
+                  {/* Row A */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold shrink-0 w-10 text-right" style={{ color: colorA }}>
+                      {ra?.shortName ?? pair.routeA}
+                    </span>
+                    <div className="flex items-center gap-1 flex-wrap flex-1">
+                      {(d.timesA ?? d.times).map((t, ti) => (
+                        <span key={ti} className="text-[11px] font-mono font-semibold rounded px-1.5 py-0.5"
+                          style={{ backgroundColor: colorA + "20", color: colorA }}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Row B */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold shrink-0 w-10 text-right" style={{ color: colorB }}>
+                      {rb?.shortName ?? pair.routeB}
+                    </span>
+                    <div className="flex items-center gap-1 flex-wrap flex-1">
+                      {(d.timesB ?? []).map((t, ti) => (
+                        <span key={ti} className="text-[11px] font-mono font-semibold rounded px-1.5 py-0.5"
+                          style={{ backgroundColor: colorB + "20", color: colorB }}>
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}

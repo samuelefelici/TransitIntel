@@ -1278,7 +1278,7 @@ router.get("/gtfs/routes/network-analysis", async (req, res) => {
       _sharedStopIds: string[]; // full list for collision analysis
       _stopNames: Map<string, string>; // stopId -> name
       collisionCount: number;
-      collisionDetails: { stopName: string; times: string[] }[];
+      collisionDetails: { stopName: string; times: string[]; timesA: string[]; timesB: string[]; deltaMin: number }[];
     }
     const pairs: InternalPair[] = [];
 
@@ -1368,6 +1368,7 @@ router.get("/gtfs/routes/network-analysis", async (req, res) => {
 
       // Compute collisions per pair (±2 minutes at same stop)
       const DELTA = 2;
+      const fmtMin = (m: number) => `${Math.floor(m / 60).toString().padStart(2, "0")}:${(m % 60).toString().padStart(2, "0")}`;
       for (const pair of topPairs) {
         let count = 0;
         for (let k = 0; k < pair._sharedStopIds.length; k++) {
@@ -1377,21 +1378,29 @@ router.get("/gtfs/routes/network-analysis", async (req, res) => {
           const timesA = smap.get(pair.routeA) ?? [];
           const timesB = smap.get(pair.routeB) ?? [];
           if (!timesA.length || !timesB.length) continue;
-          const stopHits: string[] = [];
+          const hitTimesAll: string[] = [];
+          const hitTimesA: string[] = [];
+          const hitTimesB: string[] = [];
+          let minDelta = Infinity;
           for (const ta of timesA) {
             for (const tb of timesB) {
-              if (Math.abs(ta - tb) <= DELTA) {
+              const d = Math.abs(ta - tb);
+              if (d <= DELTA) {
                 count++;
-                const t = Math.min(ta, tb);
-                const ts = `${Math.floor(t / 60).toString().padStart(2, "0")}:${(t % 60).toString().padStart(2, "0")}`;
-                stopHits.push(ts);
+                hitTimesAll.push(fmtMin(Math.min(ta, tb)));
+                hitTimesA.push(fmtMin(ta));
+                hitTimesB.push(fmtMin(tb));
+                if (d < minDelta) minDelta = d;
               }
             }
           }
-          if (stopHits.length > 0 && pair.collisionDetails.length < 6) {
+          if (hitTimesAll.length > 0 && pair.collisionDetails.length < 10) {
             pair.collisionDetails.push({
               stopName: pair._stopNames.get(stopId) ?? stopId,
-              times: [...new Set(stopHits)].slice(0, 4),
+              times: [...new Set(hitTimesAll)].slice(0, 6),
+              timesA: [...new Set(hitTimesA)].slice(0, 6),
+              timesB: [...new Set(hitTimesB)].slice(0, 6),
+              deltaMin: minDelta === Infinity ? 0 : minDelta,
             });
           }
         }
