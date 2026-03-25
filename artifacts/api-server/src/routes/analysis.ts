@@ -1054,7 +1054,42 @@ router.get("/analysis/service-quality", async (req, res) => {
         (!types.includes("primary_school")); // if no primary tag, assume medie+
     };
     const schools   = allPoi.filter(p => p.category === "school" && isSecondaryPlus(p));
-    const offices   = allPoi.filter(p => p.category === "office");
+
+    /* Offices + Shopping + Industrial zones ─────────────────── */
+    // Include: office POI + shopping_mall/supermarket/department_store + known industrial areas
+    const isRelevantShopping = (p: any) => {
+      const types: string[] = (p.properties as any)?.types ?? [];
+      return types.some(t => ["shopping_mall", "department_store", "supermarket"].includes(t));
+    };
+    const officePoi = allPoi.filter(p => p.category === "office");
+    const shoppingPoi = allPoi.filter(p => p.category === "shopping" && isRelevantShopping(p));
+
+    // Known industrial/commercial zones in Provincia di Ancona
+    // These are synthetic POI representing major employment/commercial hubs
+    const INDUSTRIAL_ZONES: Array<{ name: string; lat: number; lng: number; category: string; properties: any }> = [
+      { name: "Zona Industriale Baraccola (Ikea, MediaWorld, negozi)", lat: 43.5580, lng: 13.4990, category: "industrial", properties: {} },
+      { name: "Centro Comm. Emisfero / Conero (Baraccola)", lat: 43.5757, lng: 13.5041, category: "industrial", properties: {} },
+      { name: "Angelini Pharma — Stabilimento Ancona", lat: 43.5850, lng: 13.4780, category: "industrial", properties: {} },
+      { name: "Fincantieri — Cantiere Navale Ancona", lat: 43.6250, lng: 13.5080, category: "industrial", properties: {} },
+      { name: "Zona Industriale Castelferretti / Falconara", lat: 43.6300, lng: 13.3800, category: "industrial", properties: {} },
+      { name: "Fileni — Stabilimento Cingoli/Jesi", lat: 43.5240, lng: 13.2410, category: "industrial", properties: {} },
+      { name: "Zona Industriale Osimo — Recanati", lat: 43.4700, lng: 13.5100, category: "industrial", properties: {} },
+      { name: "Interporto Marche — Jesi", lat: 43.5100, lng: 13.2600, category: "industrial", properties: {} },
+      { name: "Zona Produttiva Fabriano (Elica, Indesit)", lat: 43.3380, lng: 12.9060, category: "industrial", properties: {} },
+      { name: "Centro Commerciale Vallemiano — Ancona", lat: 43.6050, lng: 13.5000, category: "industrial", properties: {} },
+      { name: "Polo Commerciale Torrette (Auchan/CC Torrette 2000)", lat: 43.6080, lng: 13.4546, category: "industrial", properties: {} },
+      { name: "Centro Commerciale Il Maestrale — Senigallia", lat: 43.7150, lng: 13.2200, category: "industrial", properties: {} },
+      { name: "Zona Ind. Sentino — Sassoferrato/Fabriano", lat: 43.4310, lng: 12.8550, category: "industrial", properties: {} },
+      { name: "Corso Garibaldi — Centro Commerciale Naturale Ancona", lat: 43.6178, lng: 13.5138, category: "industrial", properties: {} },
+    ];
+
+    // Merge all into one "workplaces" array
+    const workplaces = [
+      ...officePoi,
+      ...shoppingPoi,
+      ...INDUSTRIAL_ZONES.map(z => ({ id: z.name, ...z })),
+    ];
+
     const hospitals = allPoi.filter(p => p.category === "hospital" &&
       ((p.properties as any)?.types ?? []).includes("hospital"));
 
@@ -1097,6 +1132,7 @@ router.get("/analysis/service-quality", async (req, res) => {
       entryBuses: number; exitBuses: number;
       entryRoutes: string[]; exitRoutes: string[];
       verdict: "ottimo" | "buono" | "sufficiente" | "critico";
+      tag?: "ufficio" | "negozio" | "industria";
     };
 
     function analysePois(
@@ -1106,19 +1142,23 @@ router.get("/analysis/service-quality", async (req, res) => {
     ): PoiResult[] {
       const results: PoiResult[] = [];
       for (const poi of pois) {
+        const isIndustrial = (poi as any).category === "industrial";
+        const isShopping = (poi as any).category === "shopping";
+        const searchRadius = isIndustrial ? 800 : NEAR_M; // larger radius for industrial zones
+        const maxDist = isIndustrial ? 2000 : NEAR_M * 2;
+
         // find nearest stop
         let bestStop = "", bestDist = Infinity, bestStopId = "";
         for (const s of stops) {
           const d = dist(poi.lat, poi.lng, s.lat, s.lng);
           if (d < bestDist) { bestDist = d; bestStop = s.name; bestStopId = s.stopId; }
         }
-        if (bestDist > NEAR_M * 2) continue; // too far, skip
+        if (bestDist > maxDist) continue; // too far, skip
 
-        // count buses in entry and exit windows at this stop
-        // also check stops within NEAR_M
+        // count buses in entry and exit windows at nearby stops
         const nearStopIds: string[] = [];
         for (const s of stops) {
-          if (dist(poi.lat, poi.lng, s.lat, s.lng) <= NEAR_M) nearStopIds.push(s.stopId);
+          if (dist(poi.lat, poi.lng, s.lat, s.lng) <= searchRadius) nearStopIds.push(s.stopId);
         }
 
         const entryRouteSet = new Set<string>();
@@ -1154,6 +1194,7 @@ router.get("/analysis/service-quality", async (req, res) => {
           entryRoutes: [...entryRouteSet],
           exitRoutes: [...exitRouteSet],
           verdict,
+          tag: isIndustrial ? "industria" : isShopping ? "negozio" : "ufficio",
         });
       }
       // sort: critico first, then by total buses ascending
@@ -1163,7 +1204,7 @@ router.get("/analysis/service-quality", async (req, res) => {
     }
 
     const schoolResults   = analysePois(schools, SCHOOL_ENTRY, SCHOOL_EXIT);
-    const officeResults   = analysePois(offices, OFFICE_ENTRY, OFFICE_EXIT);
+    const officeResults   = analysePois(workplaces as any, OFFICE_ENTRY, OFFICE_EXIT);
     const hospitalResults = analysePois(hospitals, { from: hhmm("07:00"), to: hhmm("13:00") }, { from: hhmm("13:00"), to: hhmm("20:00") });
 
     /* ── 5. Coincidenze inter-comunali ──────────────────────── */
@@ -1311,7 +1352,15 @@ router.get("/analysis/service-quality", async (req, res) => {
 
     res.json({
       schools:   { items: schoolResults.slice(0, 40),   stats: verdictCounts(schoolResults) },
-      offices:   { items: officeResults.slice(0, 40),   stats: verdictCounts(officeResults) },
+      offices:   {
+        items: officeResults.slice(0, 80),
+        stats: verdictCounts(officeResults),
+        breakdown: {
+          uffici:     officePoi.length,
+          shopping:   shoppingPoi.length,
+          industriali: INDUSTRIAL_ZONES.length,
+        },
+      },
       hospitals: { items: hospitalResults.slice(0, 30), stats: verdictCounts(hospitalResults) },
       hubs:      { items: hubs.slice(0, 15),            stats: hubVerdictCounts },
       timeWindows: {

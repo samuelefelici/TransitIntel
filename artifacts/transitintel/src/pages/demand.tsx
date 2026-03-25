@@ -14,6 +14,7 @@ interface PoiItem {
   entryBuses: number; exitBuses: number;
   entryRoutes: string[]; exitRoutes: string[];
   verdict: "ottimo" | "buono" | "sufficiente" | "critico";
+  tag?: "ufficio" | "negozio" | "industria";
 }
 interface VerdictStats {
   ottimo: number; buono: number; sufficiente: number; critico: number; total: number;
@@ -31,7 +32,7 @@ interface HubItem {
 }
 interface ServiceData {
   schools:   { items: PoiItem[]; stats: VerdictStats };
-  offices:   { items: PoiItem[]; stats: VerdictStats };
+  offices:   { items: PoiItem[]; stats: VerdictStats; breakdown?: { uffici: number; shopping: number; industriali: number } };
   hospitals: { items: PoiItem[]; stats: VerdictStats };
   hubs:      { items: HubItem[]; stats: VerdictStats };
   timeWindows: {
@@ -55,7 +56,7 @@ function rc(c: string) { return c.startsWith("#") ? c : c ? `#${c}` : "#64748b";
 type Tab = "schools" | "offices" | "hospitals" | "hubs";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "schools",   label: "Scuole",           icon: <GraduationCap className="w-3.5 h-3.5" /> },
-  { id: "offices",   label: "Uffici & Prod.",    icon: <Building2 className="w-3.5 h-3.5" /> },
+  { id: "offices",   label: "Lavoro & Negozi",   icon: <Building2 className="w-3.5 h-3.5" /> },
   { id: "hospitals", label: "Ospedali",          icon: <Stethoscope className="w-3.5 h-3.5" /> },
   { id: "hubs",      label: "Nodi di Scambio",   icon: <ArrowLeftRight className="w-3.5 h-3.5" /> },
 ];
@@ -109,8 +110,8 @@ export default function DemandPage() {
             label="Scuole analizzate" value={String(data.schools.stats.total)}
             sub={`${data.schools.stats.ottimo + data.schools.stats.buono} ben servite`} color="text-violet-400" />
           <KpiCard icon={<Building2 className="w-3.5 h-3.5 text-blue-400" />}
-            label="Uffici / Produttivo" value={String(data.offices.stats.total)}
-            sub={`${data.offices.stats.critico} critici`} color="text-blue-400" />
+            label="Lavoro & Commercio" value={String(data.offices.stats.total)}
+            sub={`${data.offices.breakdown?.uffici ?? "?"} uffici · ${data.offices.breakdown?.shopping ?? "?"} negozi · ${data.offices.breakdown?.industriali ?? "?"} z.industriali`} color="text-blue-400" />
           <KpiCard icon={<Stethoscope className="w-3.5 h-3.5 text-rose-400" />}
             label="Ospedali" value={String(data.hospitals.stats.total)}
             sub={`${data.hospitals.stats.ottimo} ottimi`} color="text-rose-400" />
@@ -156,9 +157,25 @@ export default function DemandPage() {
             <motion.div key="offices" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
               className="p-4 max-w-3xl space-y-4">
               <MethodBox
-                title="Come analizziamo uffici e zone produttive"
-                text={`Per ogni ufficio pubblico, municipio, tribunale e centro produttivo verifichiamo la copertura bus nelle fasce pendolari: ingresso (${data.timeWindows.office.entry}) e uscita (${data.timeWindows.office.exit}). Gli uffici pubblici generano flussi prevedibili: apertura sportelli, turni impiegati, udienze. Se un ufficio ha meno di 5 bus nelle fasce chiave, il lavoratore pendolare ha poche alternative all'auto.`}
+                title="Come analizziamo uffici, negozi e zone industriali"
+                text={`Analizziamo tre categorie di generatori di traffico pendolare:\n\n• Uffici pubblici (${data.offices.breakdown?.uffici ?? "?"}): municipio, tribunale, questura, ASUR, Regione — orari di sportello e turni impiegati.\n• Centri commerciali e negozi (${data.offices.breakdown?.shopping ?? "?"}): supermercati, centri comm. (Emisfero, Auchan, Il Maestrale), zone shopping (Corso Garibaldi, Baraccola) — orari apertura/chiusura.\n• Zone industriali (${data.offices.breakdown?.industriali ?? "?"}): poli produttivi noti della provincia (Angelini, Fincantieri, Fileni, Elica, Interporto Jesi, ZI Osimo, Fabriano, Castelferretti).\n\nPer ciascun POI troviamo le fermate entro 500 m e contiamo i bus nelle fasce pendolari: ingresso (${data.timeWindows.office.entry}) e uscita (${data.timeWindows.office.exit}). Se un luogo di lavoro/commercio ha meno di 5 bus nelle fasce chiave, chi ci lavora o ci fa acquisti ha poche alternative all'auto.`}
               />
+
+              {/* Breakdown badges */}
+              {data.offices.breakdown && (
+                <div className="flex gap-2 flex-wrap">
+                  <span className="text-[10px] px-2.5 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 font-medium">
+                    🏢 {data.offices.breakdown.uffici} uffici pubblici
+                  </span>
+                  <span className="text-[10px] px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 font-medium">
+                    🛒 {data.offices.breakdown.shopping} centri comm. & negozi
+                  </span>
+                  <span className="text-[10px] px-2.5 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 text-violet-400 font-medium">
+                    🏭 {data.offices.breakdown.industriali} zone industriali
+                  </span>
+                </div>
+              )}
+
               <VerdictBar stats={data.offices.stats} />
               <PoiList items={data.offices.items} entryLabel="Entrata" exitLabel="Uscita" />
             </motion.div>
@@ -272,7 +289,14 @@ function PoiList({ items, entryLabel, exitLabel }: {
 
             {/* Name + stop */}
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium truncate">{item.name}</p>
+              <div className="flex items-center gap-1.5">
+                {item.tag && (
+                  <span className="text-[10px] shrink-0" title={item.tag === "industria" ? "Zona industriale" : item.tag === "negozio" ? "Centro commerciale / Negozio" : "Ufficio pubblico"}>
+                    {item.tag === "industria" ? "🏭" : item.tag === "negozio" ? "🛒" : "🏢"}
+                  </span>
+                )}
+                <p className="text-xs font-medium truncate">{item.name}</p>
+              </div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <MapPin className="w-2.5 h-2.5 text-muted-foreground/60" />
                 <span className="text-[10px] text-muted-foreground truncate">{item.nearestStop} · {item.distM}m</span>
