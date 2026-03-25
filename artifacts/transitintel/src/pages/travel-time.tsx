@@ -17,6 +17,8 @@ interface StopStep {
   minsFromFirst: number;
   minsFromPrev: number;
   distFromPrevKm: number;
+  congestionPct: number | null;
+  extraMin: number | null;
 }
 interface ScheduleTrip {
   tripId: string;
@@ -27,6 +29,7 @@ interface ScheduleTrip {
   totalMin: number;
   stopCount: number;
   stops: StopStep[];
+  totalExtraMin: number;
 }
 interface ScheduleData {
   trips: ScheduleTrip[];
@@ -140,7 +143,6 @@ function MiniDiagram({ trip, color }: { trip: ScheduleTrip; color: string }) {
   const trackW = W - PAD * 2;
   const trackH = 5;
 
-  const avgSegMin = stops.slice(1).reduce((s, st) => s + st.minsFromPrev, 0) / Math.max(stops.length - 1, 1);
   const xOf = (minsFromFirst: number) => PAD + (minsFromFirst / totalMin) * trackW;
 
   return (
@@ -153,11 +155,12 @@ function MiniDiagram({ trip, color }: { trip: ScheduleTrip; color: string }) {
       {/* Track background */}
       <rect x={PAD} y={lineY - trackH / 2} width={trackW} height={trackH} rx={trackH / 2} fill="rgba(255,255,255,0.07)" />
 
-      {/* Colored segments */}
+      {/* Colored segments — use congestionPct (TomTom) matching the detail view */}
       {stops.slice(0, -1).map((s, i) => {
         const x1 = xOf(s.minsFromFirst);
         const x2 = xOf(stops[i + 1].minsFromFirst);
-        const sc = segColor(stops[i + 1].minsFromPrev, avgSegMin);
+        const cPct = stops[i + 1].congestionPct;
+        const sc = cPct !== null ? delayColor(cPct) : "#475569";
         return (
           <rect key={i} x={x1} y={lineY - trackH / 2} width={Math.max(x2 - x1 - 1, 1)} height={trackH} fill={sc} />
         );
@@ -230,10 +233,18 @@ function MiniTripCard({
           <MiniDiagram trip={trip} color={color} />
         </div>
 
-        {/* Total duration */}
-        <div className="shrink-0 text-right min-w-[60px]">
+        {/* Total duration + delay estimate */}
+        <div className="shrink-0 text-right min-w-[68px]">
           <div className="font-semibold text-sm">{minToHM(trip.totalMin)}</div>
-          <div className="text-[10px] text-muted-foreground">{trip.stopCount} fermate</div>
+          {trip.totalExtraMin > 0.3 ? (
+            <div className="text-[10px] font-medium text-red-400">
+              +{trip.totalExtraMin.toFixed(1)}min traffico
+            </div>
+          ) : trip.totalExtraMin !== undefined && trip.totalExtraMin >= 0 ? (
+            <div className="text-[10px] text-green-400">puntuale</div>
+          ) : (
+            <div className="text-[10px] text-muted-foreground">{trip.stopCount} fermate</div>
+          )}
         </div>
 
         {/* Click arrow */}
@@ -881,11 +892,14 @@ function TripVisualPanel({ visual, day, selectedRoute }: {
                   </p>
                   <p className="text-[10px] text-muted-foreground mt-0.5">
                     {isDelay
-                      ? `🔴 Ritardo probabile (+${deltaPct!.toFixed(0)}%)`
-                      : "✅ Puntuale (traffico trascurabile)"}
+                      ? `🔴 Ritardo cumulativo su tutta la corsa (+${deltaPct!.toFixed(0)}%)`
+                      : "✅ Puntuale — traffico trascurabile"}
                   </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                    {minToHM(estimatedMin!)} stimati vs {minToHM(scheduledMin)} GTFS
+                  <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+                    Stimato: ~{minToHM(estimatedMin!)} reali vs {minToHM(scheduledMin)} orario GTFS
+                  </p>
+                  <p className="text-[9px] text-muted-foreground/50 mt-0.5">
+                    Somma ritardi per tratta · TomTom × fattore bus
                   </p>
                 </>
               ) : <p className="text-lg text-muted-foreground">—</p>}

@@ -2214,6 +2214,40 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
       tripMap[r.trip_id].stops.push(r);
     }
 
+    // ── Load TomTom traffic data for segment congestion colouring ──
+    const trafficRawSch = await db.execute<{
+      lng: number; lat: number; hour: number;
+      avg_speed: number; avg_freeflow: number; count: number;
+    }>(sql`
+      SELECT ROUND(lng::numeric, 4) AS lng, ROUND(lat::numeric, 4) AS lat,
+             EXTRACT(HOUR FROM captured_at)::int AS hour,
+             AVG(speed) AS avg_speed, AVG(freeflow_speed) AS avg_freeflow,
+             COUNT(*)::int AS count
+      FROM traffic_snapshots
+      GROUP BY ROUND(lng::numeric, 4), ROUND(lat::numeric, 4), EXTRACT(HOUR FROM captured_at)::int
+    `);
+    const schTrafficByHour: Record<number, typeof trafficRawSch.rows> = {};
+    for (const row of trafficRawSch.rows) {
+      if (!schTrafficByHour[row.hour]) schTrafficByHour[row.hour] = [];
+      schTrafficByHour[row.hour].push(row);
+    }
+    const schAllTraffic = trafficRawSch.rows;
+    const BUS_TRAFFIC_FACTOR = 0.4;
+
+    function schNearestTT(lng: number, lat: number, hour: number) {
+      const R = 0.08;
+      let pool = (schTrafficByHour[hour] ?? []).filter(t => Math.abs(t.lng - lng) < R && Math.abs(t.lat - lat) < R);
+      if (!pool.length) {
+        for (const dh of [1, -1, 2, -2]) {
+          pool = (schTrafficByHour[hour + dh] ?? []).filter(t => Math.abs(t.lng - lng) < R && Math.abs(t.lat - lat) < R);
+          if (pool.length) break;
+        }
+      }
+      if (!pool.length) pool = schAllTraffic.filter(t => Math.abs(t.lng - lng) < R && Math.abs(t.lat - lat) < R);
+      if (!pool.length) return null;
+      return pool.sort((a, b) => ((a.lng - lng) ** 2 + (a.lat - lat) ** 2) - ((b.lng - lng) ** 2 + (b.lat - lat) ** 2))[0];
+    }
+
     // Build trip objects, filter by day + direction
     const trips = Object.entries(tripMap).map(([tripId, info]) => {
       const stops = info.stops;
@@ -2225,7 +2259,8 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
       const lastMin = timeToMinutes(last.departure_time || "0:0");
       const totalMin = Math.max(0, lastMin - firstMin);
 
-      // Build stops with cumulative time from first stop
+      // Build stops with cumulative time from first stop + traffic data
+      let tripExtraMin = 0;
       const stopsOut = stops.map((s, i) => {
         const depMin = timeToMinutes(s.departure_time || "0:0");
         const lat = typeof s.stop_lat === "string" ? parseFloat(s.stop_lat) : (s.stop_lat ?? 0);
@@ -2233,12 +2268,31 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
         const prevLat = i > 0 ? (typeof stops[i-1].stop_lat === "string" ? parseFloat(stops[i-1].stop_lat as unknown as string) : (stops[i-1].stop_lat ?? 0)) : lat;
         const prevLon = i > 0 ? (typeof stops[i-1].stop_lon === "string" ? parseFloat(stops[i-1].stop_lon as unknown as string) : (stops[i-1].stop_lon ?? 0)) : lon;
         const distKm = i > 0 ? Math.round(haversineKm(prevLat, prevLon, lat, lon) * 100) / 100 : 0;
+        const minsFromPrev = i > 0 ? depMin - timeToMinutes(stops[i-1].departure_time || "0:0") : 0;
+
+        // TomTom congestion for this segment
+        let congestionPct: number | null = null;
+        let extraMin: number | null = null;
+        if (i > 0 && lat !== 0 && lon !== 0 && prevLat !== 0 && prevLon !== 0) {
+          const midLat = (lat + prevLat) / 2;
+          const midLon = (lon + prevLon) / 2;
+          const segHour = Math.floor(depMin / 60) % 24;
+          const tt = schNearestTT(midLon, midLat, segHour);
+          if (tt && tt.avg_freeflow > 5 && tt.avg_speed > 0) {
+            congestionPct = Math.round(Math.max(0, Math.min(1, 1 - tt.avg_speed / tt.avg_freeflow)) * 100) / 100;
+            extraMin = Math.round(minsFromPrev * congestionPct * BUS_TRAFFIC_FACTOR * 10) / 10;
+            tripExtraMin += extraMin;
+          }
+        }
+
         return {
           stopName: s.stop_name ?? `Fermata ${i + 1}`,
           departureTime: s.departure_time,
           minsFromFirst: depMin - firstMin,
-          minsFromPrev: i > 0 ? depMin - timeToMinutes(stops[i-1].departure_time || "0:0") : 0,
+          minsFromPrev,
           distFromPrevKm: distKm,
+          congestionPct,
+          extraMin,
         };
       });
 
@@ -2250,6 +2304,7 @@ router.get("/gtfs/trips/schedule", async (req, res) => {
         totalMin: Math.round(totalMin * 10) / 10,
         stopCount: stops.length,
         stops: stopsOut,
+        totalExtraMin: Math.round(tripExtraMin * 10) / 10,
       };
     }).filter((t): t is NonNullable<typeof t> => {
       if (!t) return false;
