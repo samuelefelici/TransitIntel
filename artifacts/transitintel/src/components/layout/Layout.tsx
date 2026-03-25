@@ -25,7 +25,7 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/routes", label: "Analisi Linee", icon: Bus },
       { href: "/travel-time", label: "Tempi Percorso", icon: Timer },
       { href: "/stops", label: "Fermate & Linee", icon: MapPin },
-      { href: "/demand", label: "Domanda / Offerta", icon: BarChart3 },
+      { href: "/demand", label: "Qualità Servizio", icon: BarChart3 },
     ],
   },
   {

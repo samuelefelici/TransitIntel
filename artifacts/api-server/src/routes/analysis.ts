@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, isochroneCache } from "@workspace/db/schema";
+import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
 
 const router: IRouter = Router();
@@ -1007,6 +1007,322 @@ router.get("/analysis/walkability-coverage", async (req, res) => {
   } catch (err) {
     req.log.error(err, "Error in walkability coverage");
     return void res.status(500).json({ error: "Errore nel calcolo copertura pedonale" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+// GET /api/analysis/service-quality
+// Analisi qualità servizio: copertura POI (scuole, uffici, ospedali)
+// con valutazione oraria, coincidenze inter-comunali ai nodi di scambio
+// ──────────────────────────────────────────────────────────────
+router.get("/analysis/service-quality", async (req, res) => {
+  try {
+    /* ── helpers ──────────────────────────────────────────────── */
+    const dist = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+      const dLat = (lat2 - lat1) * 111_000;
+      const dLng = (lng2 - lng1) * 111_000 * Math.cos((lat1 * Math.PI) / 180);
+      return Math.sqrt(dLat * dLat + dLng * dLng);
+    };
+    const hhmm = (t: string) => {
+      const p = t.split(":");
+      return parseInt(p[0]) * 60 + parseInt(p[1]);
+    };
+    const fmtMin = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+    /* Time windows (in minutes from 00:00) */
+    const SCHOOL_ENTRY = { from: hhmm("07:30"), to: hhmm("08:30") };  // ingresso
+    const SCHOOL_EXIT  = { from: hhmm("13:00"), to: hhmm("14:30") };  // uscita
+    const OFFICE_ENTRY = { from: hhmm("07:30"), to: hhmm("09:30") };
+    const OFFICE_EXIT  = { from: hhmm("17:00"), to: hhmm("19:00") };
+    const HOSPITAL_WIN = { from: hhmm("07:00"), to: hhmm("20:00") };  // full-day
+    const NEAR_M = 500; // max distance POI → stop
+
+    /* ── 1. Fetch all POI ───────────────────────────────────── */
+    const allPoi = await db.select({
+      id: pointsOfInterest.id,
+      name: pointsOfInterest.name,
+      category: pointsOfInterest.category,
+      lng: pointsOfInterest.lng,
+      lat: pointsOfInterest.lat,
+      properties: pointsOfInterest.properties,
+    }).from(pointsOfInterest);
+
+    /* Classify schools */
+    const isSecondaryPlus = (p: any) => {
+      const types: string[] = (p.properties as any)?.types ?? [];
+      return types.some(t => ["secondary_school", "university"].includes(t)) ||
+        (!types.includes("primary_school")); // if no primary tag, assume medie+
+    };
+    const schools   = allPoi.filter(p => p.category === "school" && isSecondaryPlus(p));
+    const offices   = allPoi.filter(p => p.category === "office");
+    const hospitals = allPoi.filter(p => p.category === "hospital" &&
+      ((p.properties as any)?.types ?? []).includes("hospital"));
+
+    /* ── 2. All GTFS stops ──────────────────────────────────── */
+    const stops = await db.select({
+      stopId: gtfsStops.stopId,
+      name: gtfsStops.stopName,
+      lat: gtfsStops.stopLat,
+      lng: gtfsStops.stopLon,
+    }).from(gtfsStops);
+
+    /* ── 3. All stop_times (departure_time per stop) ─────────── */
+    const stRows = await db.execute(sql`
+      SELECT st.stop_id, st.departure_time, t.route_id
+      FROM gtfs_stop_times st
+      JOIN gtfs_trips t ON t.trip_id = st.trip_id
+      WHERE st.departure_time IS NOT NULL
+    `);
+    // Map<stopId, { min: number; routeId: string }[]>
+    const stopDeps = new Map<string, { min: number; routeId: string }[]>();
+    for (const r of stRows.rows as any[]) {
+      const m = hhmm(r.departure_time);
+      if (!stopDeps.has(r.stop_id)) stopDeps.set(r.stop_id, []);
+      stopDeps.get(r.stop_id)!.push({ min: m, routeId: r.route_id });
+    }
+
+    /* ── 4. Route metadata ──────────────────────────────────── */
+    const routeRows = await db.select({
+      routeId: gtfsRoutes.routeId,
+      shortName: gtfsRoutes.routeShortName,
+      longName: gtfsRoutes.routeLongName,
+      color: gtfsRoutes.routeColor,
+    }).from(gtfsRoutes);
+    const routeMap = new Map(routeRows.map(r => [r.routeId, r]));
+
+    /* ── helper: analyse POI group ──────────────────────────── */
+    type PoiResult = {
+      name: string; lat: number; lng: number;
+      nearestStop: string; distM: number;
+      entryBuses: number; exitBuses: number;
+      entryRoutes: string[]; exitRoutes: string[];
+      verdict: "ottimo" | "buono" | "sufficiente" | "critico";
+    };
+
+    function analysePois(
+      pois: typeof schools,
+      entryWin: { from: number; to: number },
+      exitWin: { from: number; to: number },
+    ): PoiResult[] {
+      const results: PoiResult[] = [];
+      for (const poi of pois) {
+        // find nearest stop
+        let bestStop = "", bestDist = Infinity, bestStopId = "";
+        for (const s of stops) {
+          const d = dist(poi.lat, poi.lng, s.lat, s.lng);
+          if (d < bestDist) { bestDist = d; bestStop = s.name; bestStopId = s.stopId; }
+        }
+        if (bestDist > NEAR_M * 2) continue; // too far, skip
+
+        // count buses in entry and exit windows at this stop
+        // also check stops within NEAR_M
+        const nearStopIds: string[] = [];
+        for (const s of stops) {
+          if (dist(poi.lat, poi.lng, s.lat, s.lng) <= NEAR_M) nearStopIds.push(s.stopId);
+        }
+
+        const entryRouteSet = new Set<string>();
+        const exitRouteSet = new Set<string>();
+        let entryCount = 0, exitCount = 0;
+
+        for (const sid of nearStopIds) {
+          const deps = stopDeps.get(sid) ?? [];
+          for (const d of deps) {
+            if (d.min >= entryWin.from && d.min <= entryWin.to) {
+              entryCount++;
+              entryRouteSet.add(d.routeId);
+            }
+            if (d.min >= exitWin.from && d.min <= exitWin.to) {
+              exitCount++;
+              exitRouteSet.add(d.routeId);
+            }
+          }
+        }
+
+        const totalBuses = entryCount + exitCount;
+        const verdict: PoiResult["verdict"] =
+          totalBuses >= 30 ? "ottimo" :
+          totalBuses >= 15 ? "buono" :
+          totalBuses >= 5  ? "sufficiente" : "critico";
+
+        results.push({
+          name: poi.name ?? "Senza nome",
+          lat: poi.lat, lng: poi.lng,
+          nearestStop: bestStop,
+          distM: Math.round(bestDist),
+          entryBuses: entryCount, exitBuses: exitCount,
+          entryRoutes: [...entryRouteSet],
+          exitRoutes: [...exitRouteSet],
+          verdict,
+        });
+      }
+      // sort: critico first, then by total buses ascending
+      const vOrd: Record<string, number> = { critico: 0, sufficiente: 1, buono: 2, ottimo: 3 };
+      results.sort((a, b) => vOrd[a.verdict] - vOrd[b.verdict] || (a.entryBuses + a.exitBuses) - (b.entryBuses + b.exitBuses));
+      return results;
+    }
+
+    const schoolResults   = analysePois(schools, SCHOOL_ENTRY, SCHOOL_EXIT);
+    const officeResults   = analysePois(offices, OFFICE_ENTRY, OFFICE_EXIT);
+    const hospitalResults = analysePois(hospitals, { from: hhmm("07:00"), to: hhmm("13:00") }, { from: hhmm("13:00"), to: hhmm("20:00") });
+
+    /* ── 5. Coincidenze inter-comunali ──────────────────────── */
+    // Find top hub stops (>10 routes) and check how many extra-urban lines converge
+    // "Hub" = stops where multiple routes meet → transfer opportunity
+    const hubThreshold = 5; // min routes for a hub
+    type HubInfo = {
+      stopName: string; lat: number; lng: number;
+      routeCount: number; routes: { id: string; shortName: string; color: string }[];
+      // pairs of routes with arrivals within 10min of each other
+      transferPairs: { routeA: string; routeB: string; timeA: string; timeB: string; deltaMin: number }[];
+      transferScore: "ottimo" | "buono" | "sufficiente" | "critico";
+    };
+
+    // Group nearby stops as one hub (within 150m)
+    const hubClusters: { name: string; lat: number; lng: number; stopIds: string[] }[] = [];
+    const usedStops = new Set<string>();
+    // Find stops with many routes
+    const stopRouteCount = new Map<string, Set<string>>();
+    for (const [sid, deps] of stopDeps) {
+      const routes = new Set(deps.map(d => d.routeId));
+      stopRouteCount.set(sid, routes);
+    }
+    // cluster nearby stops
+    const sortedStops = [...stopRouteCount.entries()]
+      .sort((a, b) => b[1].size - a[1].size);
+
+    for (const [sid, routes] of sortedStops) {
+      if (usedStops.has(sid)) continue;
+      if (routes.size < hubThreshold) continue;
+      const s = stops.find(x => x.stopId === sid);
+      if (!s) continue;
+      const cluster = { name: s.name, lat: s.lat, lng: s.lng, stopIds: [sid] };
+      usedStops.add(sid);
+      // merge nearby stops
+      for (const s2 of stops) {
+        if (usedStops.has(s2.stopId)) continue;
+        if (dist(s.lat, s.lng, s2.lat, s2.lng) <= 200) {
+          cluster.stopIds.push(s2.stopId);
+          usedStops.add(s2.stopId);
+          // merge route count
+          const r2 = stopRouteCount.get(s2.stopId);
+          if (r2) r2.forEach(r => routes.add(r));
+        }
+      }
+      hubClusters.push(cluster);
+    }
+
+    // Analyse transfer pairs at each hub
+    const hubs: HubInfo[] = [];
+    for (const hub of hubClusters.slice(0, 25)) { // top 25 hubs
+      // collect all departures at this hub
+      const hubDeps: { routeId: string; min: number }[] = [];
+      const hubRouteSet = new Set<string>();
+      for (const sid of hub.stopIds) {
+        for (const d of stopDeps.get(sid) ?? []) {
+          hubDeps.push(d);
+          hubRouteSet.add(d.routeId);
+        }
+      }
+      if (hubRouteSet.size < hubThreshold) continue;
+
+      // Find transfer pairs: different routes arriving within 10min
+      // Group by route, pick representative departure per route per hour
+      const routeTimes = new Map<string, number[]>();
+      for (const d of hubDeps) {
+        if (!routeTimes.has(d.routeId)) routeTimes.set(d.routeId, []);
+        routeTimes.get(d.routeId)!.push(d.min);
+      }
+      // deduplicate close times per route (within 3min)
+      for (const [rid, times] of routeTimes) {
+        times.sort((a, b) => a - b);
+        const deduped: number[] = [];
+        for (const t of times) {
+          if (deduped.length === 0 || t - deduped[deduped.length - 1] >= 3) deduped.push(t);
+        }
+        routeTimes.set(rid, deduped);
+      }
+
+      const transferPairs: HubInfo["transferPairs"] = [];
+      const routeIds = [...routeTimes.keys()];
+      const MAX_TRANSFER = 10; // minutes
+      outer:
+      for (let i = 0; i < routeIds.length; i++) {
+        for (let j = i + 1; j < routeIds.length; j++) {
+          const tA = routeTimes.get(routeIds[i])!;
+          const tB = routeTimes.get(routeIds[j])!;
+          // find best (shortest) transfer in morning peak
+          let bestDelta = Infinity, bestTA = 0, bestTB = 0;
+          for (const a of tA) {
+            if (a < hhmm("06:30") || a > hhmm("09:30")) continue;
+            for (const b of tB) {
+              const delta = Math.abs(a - b);
+              if (delta <= MAX_TRANSFER && delta < bestDelta) {
+                bestDelta = delta; bestTA = a; bestTB = b;
+              }
+            }
+          }
+          if (bestDelta <= MAX_TRANSFER) {
+            transferPairs.push({
+              routeA: routeIds[i], routeB: routeIds[j],
+              timeA: fmtMin(bestTA), timeB: fmtMin(bestTB),
+              deltaMin: bestDelta,
+            });
+          }
+          if (transferPairs.length >= 8) break outer;
+        }
+      }
+
+      const routeInfos = [...hubRouteSet].map(rid => {
+        const r = routeMap.get(rid);
+        return { id: rid, shortName: r?.shortName ?? rid, color: r?.color ?? "6b7280" };
+      });
+
+      const tScore: HubInfo["transferScore"] =
+        transferPairs.length >= 6 ? "ottimo" :
+        transferPairs.length >= 3 ? "buono" :
+        transferPairs.length >= 1 ? "sufficiente" : "critico";
+
+      hubs.push({
+        stopName: hub.name, lat: hub.lat, lng: hub.lng,
+        routeCount: hubRouteSet.size,
+        routes: routeInfos.sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true })),
+        transferPairs: transferPairs.sort((a, b) => a.deltaMin - b.deltaMin),
+        transferScore: tScore,
+      });
+    }
+    hubs.sort((a, b) => b.routeCount - a.routeCount);
+
+    /* ── 6. Global verdict ──────────────────────────────────── */
+    const verdictCounts = (arr: PoiResult[]) => ({
+      ottimo:      arr.filter(x => x.verdict === "ottimo").length,
+      buono:       arr.filter(x => x.verdict === "buono").length,
+      sufficiente: arr.filter(x => x.verdict === "sufficiente").length,
+      critico:     arr.filter(x => x.verdict === "critico").length,
+      total:       arr.length,
+    });
+    const hubVerdictCounts = {
+      ottimo:      hubs.filter(x => x.transferScore === "ottimo").length,
+      buono:       hubs.filter(x => x.transferScore === "buono").length,
+      sufficiente: hubs.filter(x => x.transferScore === "sufficiente").length,
+      critico:     hubs.filter(x => x.transferScore === "critico").length,
+      total:       hubs.length,
+    };
+
+    res.json({
+      schools:   { items: schoolResults.slice(0, 40),   stats: verdictCounts(schoolResults) },
+      offices:   { items: officeResults.slice(0, 40),   stats: verdictCounts(officeResults) },
+      hospitals: { items: hospitalResults.slice(0, 30), stats: verdictCounts(hospitalResults) },
+      hubs:      { items: hubs.slice(0, 15),            stats: hubVerdictCounts },
+      timeWindows: {
+        school: { entry: "07:30–08:30", exit: "13:00–14:30" },
+        office: { entry: "07:30–09:30", exit: "17:00–19:00" },
+        hospital: { am: "07:00–13:00", pm: "13:00–20:00" },
+      },
+    });
+  } catch (err) {
+    req.log.error(err, "Error in service-quality analysis");
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
