@@ -22,8 +22,8 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-// Use process.cwd() — works in both ESM dev (tsx) and CJS production (esbuild bundle)
-const SCRIPTS_DIR = path.resolve(process.cwd(), "scripts");
+// Scripts dir: go up from api-server (cwd) to workspace root, then into scripts/
+const SCRIPTS_DIR = path.resolve(process.cwd(), "..", "..", "scripts");
 
 const router: IRouter = Router();
 
@@ -1343,6 +1343,11 @@ async function runCPSATVehicleScheduler(
       } else {
         resolve(stdout);
       }
+    });
+
+    // Guard against EPIPE: if Python dies before we finish writing, catch the error
+    py.stdin.on("error", (err) => {
+      logger.error(`VSP stdin error: ${err.message}`);
     });
 
     const inputJson = JSON.stringify({
