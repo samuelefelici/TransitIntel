@@ -25,8 +25,8 @@ import { getLatestFeedId, HOURLY_MODEL } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-// Use process.cwd() — works in both ESM dev (tsx) and CJS production (esbuild bundle)
-const SCRIPTS_DIR = path.resolve(process.cwd(), "scripts");
+// Scripts are at the monorepo root: ../../scripts relative to api-server/
+const SCRIPTS_DIR = path.resolve(process.cwd(), "..", "..", "scripts");
 
 const router: IRouter = Router();
 
