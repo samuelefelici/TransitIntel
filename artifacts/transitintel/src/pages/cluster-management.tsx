@@ -118,23 +118,40 @@ export default function ClusterManagement() {
   const [saving, setSaving] = useState(false);
   const [carsInput, setCarsInput] = useState("5");
 
-  // ── Load data ──
+  // ── Load data (allSettled so a single failure doesn't block everything) ──
   useEffect(() => {
     (async () => {
       try {
-        const [stopsRes, routesRes, clustersRes, carsRes] = await Promise.all([
+        const [stopsRes, routesRes, clustersRes, carsRes] = await Promise.allSettled([
           apiFetch<{ data: GtfsStop[] }>("/api/gtfs/stops/all"),
           apiFetch<{ data: RouteInfo[] }>("/api/gtfs/routes/list"),
           apiFetch<{ data: ClusterData[] }>("/api/clusters"),
           apiFetch<{ companyCars: number }>("/api/settings/company-cars"),
         ]);
-        setAllStops(stopsRes.data || []);
-        setAllRoutes(routesRes.data || []);
-        setClusters(clustersRes.data || []);
-        setCompanyCars(carsRes.companyCars ?? 5);
-        setCarsInput(String(carsRes.companyCars ?? 5));
+        if (stopsRes.status === "fulfilled") {
+          const stops = stopsRes.value.data || [];
+          console.log("[ClusterMgmt] Loaded stops:", stops.length);
+          setAllStops(stops);
+        } else {
+          console.error("[ClusterMgmt] Failed to load stops:", stopsRes.reason);
+        }
+        if (routesRes.status === "fulfilled") {
+          setAllRoutes(routesRes.value.data || []);
+        } else {
+          console.error("[ClusterMgmt] Failed to load routes:", routesRes.reason);
+        }
+        if (clustersRes.status === "fulfilled") {
+          setClusters(clustersRes.value.data || []);
+        } else {
+          console.error("[ClusterMgmt] Failed to load clusters:", clustersRes.reason);
+        }
+        if (carsRes.status === "fulfilled") {
+          const cars = carsRes.value.companyCars ?? 5;
+          setCompanyCars(cars);
+          setCarsInput(String(cars));
+        }
       } catch (err) {
-        console.error("Failed to load cluster data:", err);
+        console.error("[ClusterMgmt] Unexpected error:", err);
       } finally {
         setLoading(false);
       }
@@ -199,28 +216,26 @@ export default function ClusterManagement() {
     };
   }, [polygonPoints, hoveredPoint]);
 
-  // ── GeoJSON for stops ──
+  // ── GeoJSON for stops (same pattern as dashboard) ──
   const stopsGeoJSON = useMemo(() => {
+    if (!filteredStops.length) return null;
+
     const clusterMap = new Map<string, string>();
     clusters.forEach(c => c.stops.forEach(s => clusterMap.set(s.gtfsStopId, c.color)));
 
-    const features = filteredStops.map(s => {
-      const cc = clusterMap.get(s.stopId);
-      const props: Record<string, any> = {
-        stopId: s.stopId,
-        stopName: s.stopName,
-        selected: selectedStops.has(s.stopId) ? 1 : 0,
-      };
-      // Only add clusterColor if it actually exists — avoids Mapbox null issues
-      if (cc) props.clusterColor = cc;
-      return {
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [s.stopLon, s.stopLat] },
-        properties: props,
-      };
-    });
-
-    return { type: "FeatureCollection" as const, features };
+    return {
+      type: "FeatureCollection",
+      features: filteredStops.map(s => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.stopLon, s.stopLat] },
+        properties: {
+          stopId: s.stopId,
+          stopName: s.stopName,
+          selected: selectedStops.has(s.stopId) ? 1 : 0,
+          clusterColor: clusterMap.get(s.stopId) || "",
+        },
+      })),
+    };
   }, [filteredStops, selectedStops, clusters]);
 
   // ── Map click: add polygon point OR toggle stop ──
@@ -411,6 +426,12 @@ export default function ClusterManagement() {
   }, [allRoutes, routeSearch]);
 
   const isEditing = editingCluster !== null || clusterName !== "" || selectedStops.size > 0;
+
+  const interactiveLayerIds = useMemo(() => {
+    const ids: string[] = [];
+    if (stopsGeoJSON) ids.push("stops-layer");
+    return ids;
+  }, [stopsGeoJSON]);
 
   if (!MAPBOX_TOKEN) {
     return (
@@ -786,55 +807,47 @@ export default function ClusterManagement() {
           mapStyle="mapbox://styles/mapbox/dark-v11"
           mapboxAccessToken={MAPBOX_TOKEN}
           style={{ width: "100%", height: "100%" }}
-          interactiveLayerIds={["stops-layer"]}
+          interactiveLayerIds={interactiveLayerIds}
           doubleClickZoom={!drawMode}
           onClick={handleMapClick}
           onDblClick={handleMapDblClick}
           onMouseMove={handleMapMouseMove}
           cursor={drawMode ? "crosshair" : "grab"}
         >
-          {/* ── All GTFS stops ── */}
-          <Source id="all-stops" type="geojson" data={stopsGeoJSON as any}>
-            <Layer
-              id="stops-layer"
-              type="circle"
-              paint={{
-                "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2, 13, 4, 16, 7],
+          {/* ── All GTFS stops (conditional mount — same pattern as dashboard) ── */}
+          {stopsGeoJSON && (
+            <Source type="geojson" data={stopsGeoJSON as any}>
+              <Layer id="stops-layer" type="circle" paint={{
+                "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 3, 13, 5, 16, 8],
                 "circle-color": [
                   "case",
                   ["==", ["get", "selected"], 1], clusterColor,
-                  ["has", "clusterColor"], ["get", "clusterColor"],
+                  ["!=", ["get", "clusterColor"], ""], ["get", "clusterColor"],
                   "#94a3b8",
                 ],
                 "circle-opacity": [
                   "case",
                   ["==", ["get", "selected"], 1], 1,
-                  ["has", "clusterColor"], 0.7,
-                  0.4,
+                  ["!=", ["get", "clusterColor"], ""], 0.8,
+                  0.6,
                 ],
-                "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 2, 0.5],
-                "circle-stroke-color": ["case", ["==", ["get", "selected"], 1], "#ffffff", "#ffffff20"],
-              }}
-            />
-            <Layer
-              id="stops-labels"
-              type="symbol"
-              minzoom={15}
-              layout={{
+                "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 2, 1],
+                "circle-stroke-color": ["case", ["==", ["get", "selected"], 1], "#ffffff", "rgba(255,255,255,0.3)"],
+              }} />
+              <Layer id="stops-labels" type="symbol" minzoom={15} layout={{
                 "text-field": ["get", "stopName"],
                 "text-size": 10,
                 "text-offset": [0, 1.2],
                 "text-anchor": "top",
                 "text-max-width": 8,
-              }}
-              paint={{
+              }} paint={{
                 "text-color": "#e2e8f0",
                 "text-halo-color": "#0f172a",
                 "text-halo-width": 1,
                 "text-opacity": ["case", ["==", ["get", "selected"], 1], 1, 0.5],
-              }}
-            />
-          </Source>
+              }} />
+            </Source>
+          )}
 
           {/* ── Drawing polygon overlay ── */}
           {polygonGeoJSON && (
@@ -920,6 +933,10 @@ export default function ClusterManagement() {
         <div className="absolute bottom-4 right-4 z-10 flex gap-2">
           <Badge variant="secondary" className="text-xs bg-background/80 backdrop-blur">
             {filteredStops.length}{selectedRoutes.size > 0 ? ` / ${allStops.length}` : ""} fermate
+            {allStops.length === 0 && " ⚠️ nessuna fermata caricata"}
+          </Badge>
+          <Badge variant="secondary" className="text-xs bg-background/80 backdrop-blur">
+            {allRoutes.length} linee
           </Badge>
           <Badge variant="secondary" className="text-xs bg-background/80 backdrop-blur">
             {clusters.length} cluster

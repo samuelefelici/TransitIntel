@@ -36,12 +36,11 @@ import { db } from "@workspace/db";
 import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { jobManager } from "../lib/job-manager.js";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Use process.cwd() — works in both ESM dev (tsx) and CJS production (esbuild bundle)
+const SCRIPTS_DIR = path.resolve(process.cwd(), "scripts");
 
 const router: IRouter = Router();
 
@@ -797,7 +796,7 @@ async function runCPSATCrewScheduler(
   logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
   extraConfig?: Record<string, any>,
 ): Promise<any> {
-  const scriptPath = path.resolve(__dirname, "../../../../scripts/crew_scheduler_v3.py");
+  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v3.py");
 
   // Carica cluster e autovetture dal DB
   const [dbClusters, dbCompanyCars] = await Promise.all([
@@ -904,7 +903,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
       res.status(400).json({ error: "Lo scenario non contiene turni macchina" }); return;
     }
 
-    const scriptPath = path.resolve(__dirname, "../../../../scripts/crew_scheduler_v3.py");
+    const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v3.py");
 
     // Carica cluster e autovetture dal DB
     const [dbClusters, dbCompanyCars] = await Promise.all([

@@ -20,11 +20,10 @@ import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Use process.cwd() — works in both ESM dev (tsx) and CJS production (esbuild bundle)
+const SCRIPTS_DIR = path.resolve(process.cwd(), "scripts");
 
 const router: IRouter = Router();
 
@@ -1292,7 +1291,7 @@ async function runCPSATVehicleScheduler(
   timeLimitSec: number,
   logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
 ): Promise<any> {
-  const scriptPath = path.resolve(__dirname, "../../../../scripts/vehicle_scheduler_cpsat.py");
+  const scriptPath = path.resolve(SCRIPTS_DIR, "vehicle_scheduler_cpsat.py");
 
   const pyTrips = tripBlocks.map(t => ({
     tripId: t.tripId,

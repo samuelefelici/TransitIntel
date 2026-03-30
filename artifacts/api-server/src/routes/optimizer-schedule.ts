@@ -24,10 +24,9 @@ import { timeToMinutes, minToTime } from "../lib/geo-utils";
 import { getLatestFeedId, HOURLY_MODEL } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Use process.cwd() — works in both ESM dev (tsx) and CJS production (esbuild bundle)
+const SCRIPTS_DIR = path.resolve(process.cwd(), "scripts");
 
 const router: IRouter = Router();
 
@@ -647,7 +646,7 @@ router.post("/optimizer/schedule/optimize", async (req, res) => {
     req.log.info(`CP-SAT optimize: ${pyTrips.length} trips, ${timeLimitSeconds}s limit, custom=${!!customStrategy}`);
 
     // 2. Spawn Python
-    const scriptPath = path.resolve(__dirname, "../../../../scripts/schedule_optimizer_engine.py");
+    const scriptPath = path.resolve(SCRIPTS_DIR, "schedule_optimizer_engine.py");
 
     const result = await new Promise<string>((resolve, reject) => {
       const py = spawn("python3", [scriptPath], {
