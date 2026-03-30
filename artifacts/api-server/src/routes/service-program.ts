@@ -1277,7 +1277,10 @@ router.post("/service-program", async (req, res) => {
     res.json({ shifts: allShifts, unassigned: allUnassigned, routeStats, hourlyDist, summary, costs, score, advisories });
   } catch (err: any) {
     req.log.error(err, "Error in service-program optimiser");
-    res.status(500).json({ error: "Errore nel programma di esercizio" });
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error("[service-program] FULL ERROR:", msg, stack);
+    res.status(500).json({ error: `Errore nel programma di esercizio: ${msg}` });
   }
 });
 

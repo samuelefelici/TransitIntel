@@ -767,7 +767,7 @@ export default function ServiceProgramPage() {
           <button onClick={run} disabled={loading || !selectedDate || selectedRoutes.size === 0}
             className="flex items-center gap-2 bg-primary text-primary-foreground py-2.5 px-6 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {loading ? (solverMode === "cpsat" ? "CP-SAT Solving…" : "Elaborazione…") : "Genera Scenario"}
+            {loading ? (solverMode === "cpsat" ? "CP-SAT Solving…" : "Elaborazione…") : "Genera Turni Macchina"}
           </button>
           {result && !loading && (
             <>
