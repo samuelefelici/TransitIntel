@@ -192,6 +192,369 @@ DEPOT_TRANSFER_OUTER = 15
 MAX_CONTINUOUS_DRIVING = 270   # 4h30 — oltre serve pausa ≥15 min
 MIN_BREAK_AFTER_DRIVING = 15   # min
 
+
+# ═══════════════════════════════════════════════════════════════
+#  BDS NORMATIVA — Dataclass ispirate a MAIOR BDS v4
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class PrePostRules:
+    """Tempi accessori per turni guida, ispirato a BDS PrePostTipoLocalita.
+
+    4 livelli: turno, ripresa, pezzo guida, mansione.
+    Differenziati deposito vs cambio in linea.
+    """
+    # Pre/post TURNO (inizio e fine del turno guida completo)
+    pre_turno_deposito: int = 12     # min — prima uscita dal deposito
+    pre_turno_cambio: int = 5        # min — cambio in linea (prende vettura in servizio)
+    post_turno_deposito: int = 8     # min — ultimo rientro al deposito
+    post_turno_cambio: int = 3       # min — lascia vettura al capolinea
+
+    # Pre/post RIPRESA (ogni ripresa, se turno a 2 riprese)
+    pre_ripresa: int = 5             # min — ripresa dopo interruzione
+    post_ripresa: int = 3            # min — prima dell'interruzione
+
+    # Pre/post PEZZO (ogni pezzo guida dopo un cambio in linea)
+    pre_pezzo_cambio: int = 3        # min — dopo cambio veicolo
+    post_pezzo_cambio: int = 2       # min — prima di lasciare al cambio
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "PrePostRules":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "preTurnoDeposito": "pre_turno_deposito",
+            "preTurnoCambio": "pre_turno_cambio",
+            "postTurnoDeposito": "post_turno_deposito",
+            "postTurnoCambio": "post_turno_cambio",
+            "preRipresa": "pre_ripresa",
+            "postRipresa": "post_ripresa",
+            "prePezzoCambio": "pre_pezzo_cambio",
+            "postPezzoCambio": "post_pezzo_cambio",
+        }
+        for js_key, py_attr in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, int(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "preTurnoDeposito": self.pre_turno_deposito,
+            "preTurnoCambio": self.pre_turno_cambio,
+            "postTurnoDeposito": self.post_turno_deposito,
+            "postTurnoCambio": self.post_turno_cambio,
+            "preRipresa": self.pre_ripresa,
+            "postRipresa": self.post_ripresa,
+            "prePezzoCambio": self.pre_pezzo_cambio,
+            "postPezzoCambio": self.post_pezzo_cambio,
+        }
+
+
+@dataclass
+class CEE561Config:
+    """Vincolo CE 561/2006: guida continuativa max 4h30, pausa 45min (frazionabile 2×15)."""
+    attivo: bool = True
+    max_periodo_continuativo: int = 270   # 4h30
+    sosta_che_spezza: int = 45            # pausa completa
+    min_sosta: int = 15                   # pausa minima frazionata
+    max_soste: int = 2                    # max 2 soste per comporre la pausa
+    max_nastro_pc: int = 315              # 5h15 nastro max periodo
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "CEE561Config":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "attivo": ("attivo", bool),
+            "maxPeriodoContinuativo": ("max_periodo_continuativo", int),
+            "sostaCheSpezza": ("sosta_che_spezza", int),
+            "minSosta": ("min_sosta", int),
+            "maxSoste": ("max_soste", int),
+            "maxNastroPC": ("max_nastro_pc", int),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "attivo": self.attivo,
+            "maxPeriodoContinuativo": self.max_periodo_continuativo,
+            "sostaCheSpezza": self.sosta_che_spezza,
+            "minSosta": self.min_sosta,
+            "maxSoste": self.max_soste,
+            "maxNastroPC": self.max_nastro_pc,
+        }
+
+
+@dataclass
+class IntervalloPastoConfig:
+    """Vincolo intervallo pasto ispirato a BDS ACIntervalloPasto."""
+    attivo: bool = True
+    # Fascia pranzo
+    pranzo_controllo_inizio: int = 720   # 12:00
+    pranzo_controllo_fine: int = 840     # 14:00
+    pranzo_sosta_inizio: int = 720       # 12:00
+    pranzo_sosta_fine: int = 900         # 15:00
+    pranzo_sosta_minima: int = 30        # min
+    # Fascia cena
+    cena_controllo_inizio: int = 1140    # 19:00
+    cena_controllo_fine: int = 1260      # 21:00
+    cena_sosta_inizio: int = 1140        # 19:00
+    cena_sosta_fine: int = 1350          # 22:30
+    cena_sosta_minima: int = 30          # min
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "IntervalloPastoConfig":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "attivo": ("attivo", bool),
+            "pranzoControlloInizio": ("pranzo_controllo_inizio", int),
+            "pranzoControlloFine": ("pranzo_controllo_fine", int),
+            "pranzoSostaInizio": ("pranzo_sosta_inizio", int),
+            "pranzoSostaFine": ("pranzo_sosta_fine", int),
+            "pranzoSostaMinima": ("pranzo_sosta_minima", int),
+            "cenaControlloInizio": ("cena_controllo_inizio", int),
+            "cenaControlloFine": ("cena_controllo_fine", int),
+            "cenaSostaInizio": ("cena_sosta_inizio", int),
+            "cenaSostaFine": ("cena_sosta_fine", int),
+            "cenaSostaMinima": ("cena_sosta_minima", int),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "attivo": self.attivo,
+            "pranzoControlloInizio": self.pranzo_controllo_inizio,
+            "pranzoControlloFine": self.pranzo_controllo_fine,
+            "pranzoSostaInizio": self.pranzo_sosta_inizio,
+            "pranzoSostaFine": self.pranzo_sosta_fine,
+            "pranzoSostaMinima": self.pranzo_sosta_minima,
+            "cenaControlloInizio": self.cena_controllo_inizio,
+            "cenaControlloFine": self.cena_controllo_fine,
+            "cenaSostaInizio": self.cena_sosta_inizio,
+            "cenaSostaFine": self.cena_sosta_fine,
+            "cenaSostaMinima": self.cena_sosta_minima,
+        }
+
+
+@dataclass
+class StaccoMinimo:
+    """Stacco minimo ispirato a BDS STACCO_MINIMO_TRA_PEZZI_GUIDA_COSTANTE."""
+    tra_pezzi_guida: int = 5           # min — cambio veicolo al cluster
+    per_collegamento_vettura: int = 3   # min — collegamento su vettura come passeggero
+    stesso_veicolo: int = 0             # min — continuità sullo stesso mezzo
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "StaccoMinimo":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "traPezziGuida": ("tra_pezzi_guida", int),
+            "perCollegamentoVettura": ("per_collegamento_vettura", int),
+            "stessoVeicolo": ("stesso_veicolo", int),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "traPezziGuida": self.tra_pezzi_guida,
+            "perCollegamentoVettura": self.per_collegamento_vettura,
+            "stessoVeicolo": self.stesso_veicolo,
+        }
+
+
+@dataclass
+class GestoreRiprese:
+    """Configurazione riprese ispirata a BDS GestoreRipreseGenerale."""
+    sosta_che_spezza: int = 75          # min — sosta ≥ questo valore → spezzatura
+    comprendi_pre_post: bool = True     # nel calcolo durata sosta, includi pre/post
+    max_riprese: int = 2                # max numero riprese per turno
+    max_durata_ripresa: int = 480       # min — durata massima di ogni ripresa (8h)
+    max_guida_per_ripresa: int = 270    # min — guida max per ripresa (4h30, poi pausa CEE)
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "GestoreRiprese":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "sostaCheSpezza": ("sosta_che_spezza", int),
+            "comprendiPrePost": ("comprendi_pre_post", bool),
+            "maxRiprese": ("max_riprese", int),
+            "maxDurataRipresa": ("max_durata_ripresa", int),
+            "maxGuidaPerRipresa": ("max_guida_per_ripresa", int),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "sostaCheSpezza": self.sosta_che_spezza,
+            "comprendiPrePost": self.comprendi_pre_post,
+            "maxRiprese": self.max_riprese,
+            "maxDurataRipresa": self.max_durata_ripresa,
+            "maxGuidaPerRipresa": self.max_guida_per_ripresa,
+        }
+
+
+@dataclass
+class CoperturaSosteConfig:
+    """Configurazione copertura soste ispirata a BDS CoperturaSostePerTipoLinea."""
+    min_sosta_cambio_urbano: int = 5       # min — soste > 5 min su cambio urbano → coperte
+    min_sosta_cambio_extra: int = 10       # min — soste > 10 min su cambio extra → coperte
+    min_sosta_deposito: int = 0            # min — soste in deposito → sempre punti di taglio
+    modalita_default: str = "IN_TESTA"     # chi copre: IN_TESTA (chi lascia) | IN_CODA (chi prende)
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "CoperturaSosteConfig":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "minSostaCambioUrbano": ("min_sosta_cambio_urbano", int),
+            "minSostaCambioExtra": ("min_sosta_cambio_extra", int),
+            "minSostaDeposito": ("min_sosta_deposito", int),
+            "modalitaDefault": ("modalita_default", str),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "minSostaCambioUrbano": self.min_sosta_cambio_urbano,
+            "minSostaCambioExtra": self.min_sosta_cambio_extra,
+            "minSostaDeposito": self.min_sosta_deposito,
+            "modalitaDefault": self.modalita_default,
+        }
+
+
+@dataclass
+class CollegamentoConfig:
+    """Configurazione collegamenti ispirata a BDS GESTORE_COLLEGAMENTI."""
+    trasferimenti: str = "FORFE_E_VETTURA"      # VIETATI | SOLO_FORFETTIZZATI | SOLO_VETTURA | FORFE_E_VETTURA
+    moltiplicatore_trasferimenti: float = 1.0    # retribuzione al 100%
+    moltiplicatore_raggiungimenti: float = 0.7   # retribuzione al 70%
+    cuscinetto_trasferimento_min: int = 3        # min aggiunti al forfettizzato per sicurezza
+    durata_massima_raggiungimento: int = 60      # min max per raggiungimento
+    durata_massima_trasferimento: int = 45       # min max per trasferimento
+    ammetti_doppi: bool = True                   # forf + vettura in sequenza
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "CollegamentoConfig":
+        if not cfg:
+            return cls()
+        r = cls()
+        _MAP = {
+            "trasferimenti": ("trasferimenti", str),
+            "moltiplicatoreTrasferimenti": ("moltiplicatore_trasferimenti", float),
+            "moltiplicatoreRaggiungimenti": ("moltiplicatore_raggiungimenti", float),
+            "cuscinettoTrasferimentoMin": ("cuscinetto_trasferimento_min", int),
+            "durataMassimaRaggiungimento": ("durata_massima_raggiungimento", int),
+            "durataMassimaTrasferimento": ("durata_massima_trasferimento", int),
+            "ammettiDoppi": ("ammetti_doppi", bool),
+        }
+        for js_key, (py_attr, typ) in _MAP.items():
+            if js_key in cfg:
+                setattr(r, py_attr, typ(cfg[js_key]))
+        return r
+
+    def to_dict(self) -> dict:
+        return {
+            "trasferimenti": self.trasferimenti,
+            "moltiplicatoreTrasferimenti": self.moltiplicatore_trasferimenti,
+            "moltiplicatoreRaggiungimenti": self.moltiplicatore_raggiungimenti,
+            "cuscinettoTrasferimentoMin": self.cuscinetto_trasferimento_min,
+            "durataMassimaRaggiungimento": self.durata_massima_raggiungimento,
+            "durataMassimaTrasferimento": self.durata_massima_trasferimento,
+            "ammettiDoppi": self.ammetti_doppi,
+        }
+
+
+@dataclass
+class WorkCalculation:
+    """Calcolo lavoro ispirato a BDS RegolaCalcoloLavoroSommaRiprese."""
+    driving_min: int = 0
+    idle_at_terminal_min: int = 0       # attese al capolinea tra corse
+    pre_post_min: int = 0               # pre-turno + pre-ripresa + pre-pezzo
+    transfer_min: int = 0               # trasferimenti
+    # Soste fra riprese (semiunico/spezzato)
+    soste_fra_riprese_ir_min: int = 0   # in residenza (deposito)
+    soste_fra_riprese_fr_min: int = 0   # fuori residenza
+    coeff_ir: float = 0.0               # retribuzione soste IR
+    coeff_fr: float = 0.0               # retribuzione soste FR
+
+    @property
+    def lavoro_netto(self) -> int:
+        """Guida + attese + pre/post + trasferimenti. Senza soste fra riprese."""
+        return self.driving_min + self.idle_at_terminal_min + self.pre_post_min + self.transfer_min
+
+    @property
+    def lavoro_convenzionale(self) -> int:
+        """Lavoro netto + soste fra riprese pesate con coefficienti."""
+        extra_ir = int(self.soste_fra_riprese_ir_min * self.coeff_ir)
+        extra_fr = int(self.soste_fra_riprese_fr_min * self.coeff_fr)
+        return self.lavoro_netto + extra_ir + extra_fr
+
+    def to_dict(self) -> dict:
+        return {
+            "lavoroNetto": self.lavoro_netto,
+            "lavoroConvenzionale": self.lavoro_convenzionale,
+            "driving": self.driving_min,
+            "idleAtTerminal": self.idle_at_terminal_min,
+            "prePost": self.pre_post_min,
+            "transfer": self.transfer_min,
+            "sosteFraRipreseIR": self.soste_fra_riprese_ir_min,
+            "sosteFraRipreseFR": self.soste_fra_riprese_fr_min,
+        }
+
+
+@dataclass
+class BDSValidation:
+    """Risultato validazione BDS di un turno guida."""
+    classificazione_valida: bool = True
+    cee561_ok: bool = True
+    intervallo_pasto_ok: bool = True
+    stacco_minimo_ok: bool = True
+    nastro_ok: bool = True
+    riprese_ok: bool = True
+    violations: list[str] = field(default_factory=list)
+
+    @property
+    def valid(self) -> bool:
+        return (self.classificazione_valida and self.cee561_ok
+                and self.intervallo_pasto_ok and self.stacco_minimo_ok
+                and self.nastro_ok and self.riprese_ok)
+
+    def to_dict(self) -> dict:
+        return {
+            "valid": self.valid,
+            "classificazioneValida": self.classificazione_valida,
+            "cee561": self.cee561_ok,
+            "intervalloPasto": self.intervallo_pasto_ok,
+            "staccoMinimo": self.stacco_minimo_ok,
+            "nastro": self.nastro_ok,
+            "riprese": self.riprese_ok,
+            "violations": self.violations,
+        }
+
+
 # ═══════════════════════════════════════════════════════════════
 #  CLUSTER DI CAMBIO IN LINEA
 # ═══════════════════════════════════════════════════════════════

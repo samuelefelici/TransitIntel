@@ -115,6 +115,27 @@ interface DriverShiftData {
   /* v2 cost fields */
   costEuro?: number;
   costBreakdown?: Record<string, number>;
+  /* v4 BDS fields */
+  bdsValidation?: {
+    valid: boolean;
+    classificazioneValida: boolean;
+    cee561: boolean;
+    intervalloPasto: boolean;
+    staccoMinimo: boolean;
+    nastro: boolean;
+    riprese: boolean;
+    violations: string[];
+  };
+  workCalculation?: {
+    lavoroNetto: number;
+    lavoroConvenzionale: number;
+    driving: number;
+    idleAtTerminal: number;
+    prePost: number;
+    transfer: number;
+    sosteFraRipreseIR: number;
+    sosteFraRipreseFR: number;
+  };
 }
 
 interface DriverShiftSummary {
@@ -614,6 +635,15 @@ export default function DriverShiftsPage() {
           {result.unassignedBlocks > 0 && (
             <SummaryCard icon={<AlertTriangle className="w-4 h-4" />} label="Non assegnati" value={result.unassignedBlocks.toString()} color="#ef4444" sub="blocchi rimasti" />
           )}
+          {/* BDS conformity summary */}
+          {result.driverShifts.some(s => s.bdsValidation) && (() => {
+            const withBds = result.driverShifts.filter(s => s.bdsValidation);
+            const conformi = withBds.filter(s => s.bdsValidation!.valid).length;
+            const pct = Math.round((conformi / withBds.length) * 100);
+            return (
+              <SummaryCard icon={<Shield className="w-4 h-4" />} label="Conformità BDS" value={`${pct}%`} color={pct >= 90 ? "#22c55e" : pct >= 70 ? "#f59e0b" : "#ef4444"} sub={`${conformi}/${withBds.length} turni conformi`} />
+            );
+          })()}
         </div>
 
         {/* Distribution charts */}
@@ -727,6 +757,29 @@ export default function DriverShiftsPage() {
                 <div className="text-[10px] text-muted-foreground">media per turno</div>
               </div>
             </div>
+            {/* BDS per-check breakdown */}
+            {result.driverShifts.some(s => s.bdsValidation) && (() => {
+              const withBds = result.driverShifts.filter(s => s.bdsValidation);
+              const checks: [string, keyof NonNullable<DriverShiftData["bdsValidation"]>][] = [
+                ["CE 561/2006", "cee561"], ["Pasto", "intervalloPasto"],
+                ["Stacco min.", "staccoMinimo"], ["Nastro", "nastro"], ["Riprese", "riprese"],
+              ];
+              return (
+                <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {checks.map(([label, key]) => {
+                    const ok = withBds.filter(s => s.bdsValidation![key] === true).length;
+                    const pct = Math.round((ok / withBds.length) * 100);
+                    return (
+                      <div key={key} className={`rounded-lg p-2 border text-center ${pct === 100 ? "bg-green-500/5 border-green-500/20" : "bg-amber-500/5 border-amber-500/20"}`}>
+                        <div className="text-[10px] text-muted-foreground mb-0.5">{label}</div>
+                        <div className={`text-lg font-bold ${pct === 100 ? "text-green-400" : "text-amber-400"}`}>{pct}%</div>
+                        <div className="text-[9px] text-muted-foreground">{ok}/{withBds.length}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </CardContent>
         </Card>
 
@@ -791,6 +844,12 @@ export default function DriverShiftsPage() {
                         {shift.riprese.length > 0 && <> · {shift.riprese.reduce((s, r) => s + r.trips.length, 0)} corse</>}
                         {shift.costEuro != null && shift.costEuro > 0 && <> · <span className="text-emerald-400 font-medium">€{shift.costEuro.toFixed(0)}</span></>}
                       </span>
+                      {/* BDS validation badge */}
+                      {shift.bdsValidation && (
+                        <span title={shift.bdsValidation.valid ? "Conforme BDS" : shift.bdsValidation.violations.join(", ")} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${shift.bdsValidation.valid ? "bg-green-500/15 text-green-400" : "bg-red-500/15 text-red-400"}`}>
+                          {shift.bdsValidation.valid ? "✅ BDS" : `❌ BDS (${shift.bdsValidation.violations.length})`}
+                        </span>
+                      )}
                       {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                     </button>
                     <AnimatePresence>
@@ -1015,6 +1074,86 @@ export default function DriverShiftsPage() {
                                 {shift.interruption} — {shift.type === "semiunico" ? "non retribuita, in residenza" : "spezzato, riposo"}
                               </span>
                               <span className="ml-auto text-[10px] text-muted-foreground/60">{shift.interruptionMin} min</span>
+                            </div>
+                          )}
+
+                          {/* BDS Validation & Work Calculation detail */}
+                          {(shift.bdsValidation || shift.workCalculation) && (
+                            <div className="mt-3 space-y-2">
+                              {/* BDS Validation checks */}
+                              {shift.bdsValidation && (
+                                <div className={`rounded-lg border p-3 ${shift.bdsValidation.valid ? "bg-green-500/5 border-green-500/20" : "bg-red-500/5 border-red-500/20"}`}>
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Shield className="w-3.5 h-3.5 text-primary" />
+                                    <span className="text-xs font-semibold">Validazione BDS</span>
+                                    <Badge variant="outline" className={`text-[9px] ${shift.bdsValidation.valid ? "border-green-500/40 text-green-400" : "border-red-500/40 text-red-400"}`}>
+                                      {shift.bdsValidation.valid ? "CONFORME" : "NON CONFORME"}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                    {([
+                                      ["classificazioneValida", "Classificazione"],
+                                      ["cee561", "CE 561/2006"],
+                                      ["intervalloPasto", "Pasto"],
+                                      ["staccoMinimo", "Stacco min."],
+                                      ["nastro", "Nastro"],
+                                      ["riprese", "Riprese"],
+                                    ] as [keyof typeof shift.bdsValidation, string][]).map(([key, label]) => {
+                                      const val = shift.bdsValidation![key];
+                                      if (typeof val !== "boolean") return null;
+                                      return (
+                                        <div key={key} className="flex items-center gap-1 text-[10px]">
+                                          <span>{val ? "✅" : "❌"}</span>
+                                          <span className={val ? "text-green-400" : "text-red-400"}>{label}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  {shift.bdsValidation.violations.length > 0 && (
+                                    <div className="mt-2 space-y-0.5">
+                                      {shift.bdsValidation.violations.map((v, vi) => (
+                                        <div key={vi} className="flex items-start gap-1.5 text-[10px] text-red-400">
+                                          <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                                          <span>{v}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Work Calculation breakdown */}
+                              {shift.workCalculation && (
+                                <div className="rounded-lg border bg-muted/20 border-border/30 p-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Clock className="w-3.5 h-3.5 text-primary" />
+                                    <span className="text-xs font-semibold">Calcolo Lavoro BDS</span>
+                                    <span className="text-[10px] text-muted-foreground ml-auto">
+                                      Netto: <span className="font-semibold text-foreground">{formatDuration(shift.workCalculation.lavoroNetto)}</span>
+                                      {" · "}Conv.: <span className="font-semibold text-foreground">{formatDuration(shift.workCalculation.lavoroConvenzionale)}</span>
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                    {([
+                                      ["driving", "Guida", "text-emerald-400"],
+                                      ["idleAtTerminal", "Soste capolinea", "text-amber-400"],
+                                      ["prePost", "Pre/Post turno", "text-blue-400"],
+                                      ["transfer", "Trasferimenti", "text-orange-400"],
+                                      ["sosteFraRipreseIR", "Soste IR (inter-rip.)", "text-purple-400"],
+                                      ["sosteFraRipreseFR", "Soste FR (fra rip.)", "text-cyan-400"],
+                                    ] as [keyof typeof shift.workCalculation, string, string][]).map(([key, label, color]) => {
+                                      const val = shift.workCalculation![key];
+                                      if (typeof val !== "number" || val === 0) return null;
+                                      return (
+                                        <div key={key} className="text-[10px]">
+                                          <div className="text-muted-foreground">{label}</div>
+                                          <div className={`font-semibold ${color}`}>{val} min</div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </motion.div>

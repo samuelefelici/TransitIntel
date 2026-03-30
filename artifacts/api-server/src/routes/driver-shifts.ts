@@ -786,8 +786,8 @@ router.get("/driver-shifts/:scenarioId", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
- *  CP-SAT CREW SCHEDULING V3 (Vehicle-Shift-First)
- *  Spawn python crew_scheduler_v3.py
+ *  CP-SAT CREW SCHEDULING V4 (BDS-inspired)
+ *  Spawn python crew_scheduler_v4.py
  * ═══════════════════════════════════════════════════════════════ */
 
 async function runCPSATCrewScheduler(
@@ -796,7 +796,7 @@ async function runCPSATCrewScheduler(
   logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
   extraConfig?: Record<string, any>,
 ): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v3.py");
+  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
   // Carica cluster e autovetture dal DB
   const [dbClusters, dbCompanyCars] = await Promise.all([
@@ -903,7 +903,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
       res.status(400).json({ error: "Lo scenario non contiene turni macchina" }); return;
     }
 
-    const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v3.py");
+    const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
     // Carica cluster e autovetture dal DB
     const [dbClusters, dbCompanyCars] = await Promise.all([

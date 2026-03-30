@@ -14,7 +14,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Settings, X, Save, RotateCcw, Zap, Shield,
   ChevronDown, ChevronRight, Bookmark, Trash2,
-  DollarSign, Layers, Car, Route,
+  DollarSign, Layers, Car, Route, Clock, Coffee, AlertTriangle,
 } from "lucide-react";
 import type { OperatorConfig, CostRates } from "@/hooks/use-crew-optimization";
 
@@ -228,6 +228,7 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
   const [showRules, setShowRules] = useState(false);
   const [showCosts, setShowCosts] = useState(false);
   const [showGranularity, setShowGranularity] = useState(false);
+  const [showBDS, setShowBDS] = useState(false);
 
   const weights = useMemo(() => ({ ...DEFAULT_WEIGHTS, ...(config.weights || {}) }), [config.weights]);
   const intensity = config.solverIntensity ?? 2;
@@ -605,6 +606,184 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
                           />
                         </div>
                       ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* ═══ NORMATIVA BDS ═══ */}
+              <div>
+                <button onClick={() => setShowBDS(!showBDS)}
+                  className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground mb-2">
+                  {showBDS ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                  <AlertTriangle className="w-3 h-3" /> Normativa BDS (CCNL / CE 561)
+                </button>
+                <AnimatePresence>
+                  {showBDS && (
+                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="space-y-4 overflow-hidden">
+                      <div className="text-[10px] text-muted-foreground mb-1">
+                        Parametri normativi ispirati a MAIOR BDS v4. Modifica solo se autorizzato.
+                      </div>
+
+                      {/* Pre/Post Turno */}
+                      <div className="space-y-2">
+                        <h4 className="text-[11px] font-semibold flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-blue-400" /> Tempi Pre/Post (min)
+                        </h4>
+                        {([
+                          { key: "preTurnoDeposito", label: "Pre-turno deposito", default: 12 },
+                          { key: "preTurnoCambio", label: "Pre-turno cambio", default: 5 },
+                          { key: "postTurnoDeposito", label: "Post-turno deposito", default: 8 },
+                          { key: "postTurnoCambio", label: "Post-turno cambio", default: 3 },
+                          { key: "preRipresa", label: "Pre-ripresa", default: 5 },
+                          { key: "postRipresa", label: "Post-ripresa", default: 3 },
+                          { key: "prePezzoCambio", label: "Pre-pezzo cambio", default: 3 },
+                          { key: "postPezzoCambio", label: "Post-pezzo cambio", default: 2 },
+                        ] as const).map(({ key, label, default: def }) => (
+                          <div key={key} className="flex items-center gap-2">
+                            <label className="text-[10px] flex-1 min-w-0">{label}</label>
+                            <input type="number" min={0} max={30} step={1}
+                              value={(config as any).bds?.prePost?.[key] ?? def}
+                              onChange={e => onChange({
+                                ...config,
+                                bds: {
+                                  ...(config as any).bds,
+                                  prePost: {
+                                    ...((config as any).bds?.prePost || {}),
+                                    [key]: parseInt(e.target.value) || def,
+                                  }
+                                }
+                              })}
+                              className="w-14 text-xs bg-background border border-border/50 rounded px-2 py-0.5 text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* CE 561/2006 */}
+                      <div className="space-y-2">
+                        <h4 className="text-[11px] font-semibold flex items-center gap-1">
+                          <Shield className="w-3 h-3 text-red-400" /> CE 561/2006
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <input type="checkbox"
+                            checked={(config as any).bds?.cee561?.attivo !== false}
+                            onChange={e => onChange({
+                              ...config,
+                              bds: {
+                                ...(config as any).bds,
+                                cee561: {
+                                  ...((config as any).bds?.cee561 || {}),
+                                  attivo: e.target.checked,
+                                }
+                              }
+                            })}
+                            className="rounded border-border"
+                          />
+                          <label className="text-[10px]">Vincolo guida continuativa attivo</label>
+                        </div>
+                        {([
+                          { key: "maxPeriodoContinuativo", label: "Max guida continua (min)", default: 270 },
+                          { key: "sostaCheSpezza", label: "Pausa completa (min)", default: 45 },
+                          { key: "minSosta", label: "Pausa minima fraz. (min)", default: 15 },
+                        ] as const).map(({ key, label, default: def }) => (
+                          <div key={key} className="flex items-center gap-2">
+                            <label className="text-[10px] flex-1 min-w-0">{label}</label>
+                            <input type="number" min={0} max={600} step={5}
+                              value={(config as any).bds?.cee561?.[key] ?? def}
+                              onChange={e => onChange({
+                                ...config,
+                                bds: {
+                                  ...(config as any).bds,
+                                  cee561: {
+                                    ...((config as any).bds?.cee561 || {}),
+                                    [key]: parseInt(e.target.value) || def,
+                                  }
+                                }
+                              })}
+                              className="w-14 text-xs bg-background border border-border/50 rounded px-2 py-0.5 text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Intervallo Pasto */}
+                      <div className="space-y-2">
+                        <h4 className="text-[11px] font-semibold flex items-center gap-1">
+                          <Coffee className="w-3 h-3 text-amber-400" /> Intervallo Pasto
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <input type="checkbox"
+                            checked={(config as any).bds?.pasto?.attivo !== false}
+                            onChange={e => onChange({
+                              ...config,
+                              bds: {
+                                ...(config as any).bds,
+                                pasto: {
+                                  ...((config as any).bds?.pasto || {}),
+                                  attivo: e.target.checked,
+                                }
+                              }
+                            })}
+                            className="rounded border-border"
+                          />
+                          <label className="text-[10px]">Vincolo pasto attivo</label>
+                        </div>
+                        {([
+                          { key: "pranzoSostaMinima", label: "Pranzo: sosta min. (min)", default: 30 },
+                          { key: "cenaSostaMinima", label: "Cena: sosta min. (min)", default: 30 },
+                        ] as const).map(({ key, label, default: def }) => (
+                          <div key={key} className="flex items-center gap-2">
+                            <label className="text-[10px] flex-1 min-w-0">{label}</label>
+                            <input type="number" min={0} max={120} step={5}
+                              value={(config as any).bds?.pasto?.[key] ?? def}
+                              onChange={e => onChange({
+                                ...config,
+                                bds: {
+                                  ...(config as any).bds,
+                                  pasto: {
+                                    ...((config as any).bds?.pasto || {}),
+                                    [key]: parseInt(e.target.value) || def,
+                                  }
+                                }
+                              })}
+                              className="w-14 text-xs bg-background border border-border/50 rounded px-2 py-0.5 text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Gestore Riprese */}
+                      <div className="space-y-2">
+                        <h4 className="text-[11px] font-semibold flex items-center gap-1">
+                          <Layers className="w-3 h-3 text-green-400" /> Gestore Riprese
+                        </h4>
+                        {([
+                          { key: "sostaCheSpezza", label: "Sosta che spezza (min)", default: 75 },
+                          { key: "maxRiprese", label: "Max riprese", default: 2 },
+                          { key: "maxDurataRipresa", label: "Max durata ripresa (min)", default: 480 },
+                          { key: "maxGuidaPerRipresa", label: "Max guida/ripresa (min)", default: 270 },
+                        ] as const).map(({ key, label, default: def }) => (
+                          <div key={key} className="flex items-center gap-2">
+                            <label className="text-[10px] flex-1 min-w-0">{label}</label>
+                            <input type="number" min={0} max={600} step={5}
+                              value={(config as any).bds?.riprese?.[key] ?? def}
+                              onChange={e => onChange({
+                                ...config,
+                                bds: {
+                                  ...(config as any).bds,
+                                  riprese: {
+                                    ...((config as any).bds?.riprese || {}),
+                                    [key]: parseInt(e.target.value) || def,
+                                  }
+                                }
+                              })}
+                              className="w-14 text-xs bg-background border border-border/50 rounded px-2 py-0.5 text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+
                     </motion.div>
                   )}
                 </AnimatePresence>

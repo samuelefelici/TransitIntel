@@ -55,6 +55,16 @@ export interface OperatorConfig {
   enableTaxiFallback?: boolean;
   cutOnlyAtClusters?: boolean;
   costRates?: CostRates;
+  /* v4 BDS normativa */
+  bds?: {
+    prePost?: Record<string, number>;
+    cee561?: Record<string, any>;
+    pasto?: Record<string, any>;
+    stacco?: Record<string, number>;
+    riprese?: Record<string, any>;
+    copertura?: Record<string, any>;
+    collegamento?: Record<string, any>;
+  };
 }
 
 export interface CrewOptimizationResult {
