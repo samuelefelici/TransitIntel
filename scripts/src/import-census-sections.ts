@@ -69,6 +69,29 @@ function computeCentroid(rings: number[][][]): { lng: number; lat: number } {
 // Uncomment others to include more provinces
 const PROVINCE_CODES = new Set([42]);
 
+/** Reproject a GeoJSON geometry from UTM32N to WGS84, simplifying coords to 6 decimals */
+function reprojectGeometry(geometry: any): any {
+  const reproj = (coord: number[]): number[] => {
+    const [lng, lat] = utmToWgs84.forward(coord);
+    return [Math.round(lng * 1e6) / 1e6, Math.round(lat * 1e6) / 1e6];
+  };
+
+  if (geometry.type === "Polygon") {
+    return {
+      type: "Polygon",
+      coordinates: geometry.coordinates.map((ring: number[][]) => ring.map(reproj)),
+    };
+  } else if (geometry.type === "MultiPolygon") {
+    return {
+      type: "MultiPolygon",
+      coordinates: geometry.coordinates.map((poly: number[][][]) =>
+        poly.map((ring: number[][]) => ring.map(reproj))
+      ),
+    };
+  }
+  return null;
+}
+
 async function main() {
   console.log("🔄 Opening shapefile R11_21_WGS84...");
 
@@ -85,6 +108,7 @@ async function main() {
     population: number;
     areaKm2: number;
     density: number;
+    geojson: any;
   }[] = [];
 
   let totalRead = 0;
@@ -142,6 +166,9 @@ async function main() {
       continue;
     }
 
+    // Reproject polygon geometry from UTM to WGS84 for choropleth map
+    const wgs84Geom = reprojectGeometry(value.geometry);
+
     sections.push({
       istatCode: sezId,
       centroidLng: Math.round(centroid.lng * 1_000_000) / 1_000_000,
@@ -149,6 +176,7 @@ async function main() {
       population: pop,
       areaKm2: Math.round(areaKm2 * 1000) / 1000,
       density: Math.round(density * 10) / 10,
+      geojson: wgs84Geom,
     });
   }
 

@@ -2,13 +2,20 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { busStops, censusSections, pointsOfInterest, trafficSnapshots, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
+import { z } from "zod";
+import { validateQuery } from "../middlewares/validate";
+import { cache } from "../middlewares/cache";
 
 const router: IRouter = Router();
 
+const coverageQuerySchema = z.object({
+  radius: z.coerce.number().int().min(100).max(5000).default(400),
+});
+
 // Coverage analysis: % population within radius of any bus stop
-router.get("/analysis/coverage", async (req, res) => {
+router.get("/analysis/coverage", validateQuery(coverageQuerySchema), cache({ ttlSeconds: 120 }), async (req, res) => {
   try {
-    const radius = parseInt((req.query.radius as string) || "400");
+    const { radius } = res.locals.query as z.infer<typeof coverageQuerySchema>;
     // Approx degrees for given meters (1 deg ≈ 111km)
     const degRadius = radius / 111000;
 
@@ -21,18 +28,20 @@ router.get("/analysis/coverage", async (req, res) => {
 
     let coveredPop = 0;
     if (stops.length > 0) {
-      // Build a union of stop buffers and sum population of sections within
-      const stopConditions = stops.map(
-        (s) => `(ABS(centroid_lng - ${s.lng}) < ${degRadius} AND ABS(centroid_lat - ${s.lat}) < ${degRadius})`
-      ).join(" OR ");
+      // Compute coverage in-memory to avoid SQL injection from string interpolation.
+      // Load all census sections with population and check proximity to any stop.
+      const sections = await db.select({
+        lng: censusSections.centroidLng,
+        lat: censusSections.centroidLat,
+        pop: censusSections.population,
+      }).from(censusSections);
 
-      const covResultRaw = await db.execute(sql.raw(`
-        SELECT COALESCE(SUM(population), 0)::int as covered
-        FROM census_sections
-        WHERE ${stopConditions}
-      `));
-      const covResult = (covResultRaw as any).rows?.[0] ?? covResultRaw;
-      coveredPop = parseInt((covResult as any).covered ?? 0);
+      for (const sec of sections) {
+        const isCovered = stops.some(
+          (s) => Math.abs(sec.lng - s.lng) < degRadius && Math.abs(sec.lat - s.lat) < degRadius
+        );
+        if (isCovered) coveredPop += sec.pop ?? 0;
+      }
     }
 
     const totalPopulation = parseInt((totalPop as any).total) || 0;
@@ -53,7 +62,7 @@ router.get("/analysis/coverage", async (req, res) => {
 
 // Demand score: uses actual data points (census sections + POI locations)
 // NO synthetic grid — all points are on land (real geographic locations)
-router.get("/analysis/demand-score", async (req, res) => {
+router.get("/analysis/demand-score", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     const RADIUS_DEG = 0.025; // ~2.5km lookup radius
 
@@ -163,7 +172,7 @@ router.get("/analysis/demand-score", async (req, res) => {
 
 // Underserved areas: high demand (census/POI) with no stop nearby
 // Uses real geographic points only — no synthetic grid
-router.get("/analysis/underserved", async (req, res) => {
+router.get("/analysis/underserved", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     const radius = parseInt((req.query.radius as string) || "600");
     const minScore = parseFloat((req.query.minScore as string) || "0.25");
@@ -240,7 +249,7 @@ router.get("/analysis/underserved", async (req, res) => {
 // GET /api/analysis/demand
 // Domanda reale calcolata su gtfs_stops (3.943 fermate GTFS) + census_sections + POI
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/demand", async (req, res) => {
+router.get("/analysis/demand", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     // ── 1. Population covered within 400m and 800m of any GTFS stop ──
     const coverage = await db.execute(sql`
@@ -375,7 +384,7 @@ router.get("/analysis/demand", async (req, res) => {
 });
 
 // Dashboard stats
-router.get("/analysis/stats", async (req, res) => {
+router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     const trafficResult = await db.execute(sql`
       SELECT AVG(congestion_level) as avg_congestion, COUNT(*)::int as total_snapshots, MAX(captured_at) as last_updated
@@ -443,7 +452,7 @@ router.get("/analysis/stats", async (req, res) => {
 });
 
 // ── Territory overview ────────────────────────────────────────────────────
-router.get("/territory/overview", async (req, res) => {
+router.get("/territory/overview", cache({ ttlSeconds: 120 }), async (req, res) => {
   try {
     // 1. Global stats
     const globalStats = await db.execute(sql`
@@ -705,7 +714,7 @@ function pointInPolygon(lng: number, lat: number, ring: number[][]): boolean {
 // Returns GeoJSON FeatureCollection of walking isochrone polygons
 // for a single point. Used when user clicks a stop on the map.
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/isochrone", async (req, res) => {
+router.get("/analysis/isochrone", cache({ ttlSeconds: 120 }), async (req, res) => {
   try {
     if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
 
@@ -750,7 +759,7 @@ router.get("/analysis/isochrone", async (req, res) => {
 // NOTE: To stay within ORS free tier (2000/day), this endpoint
 // samples up to 200 stops spread across the territory.
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/walkability-coverage", async (req, res) => {
+router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (req, res) => {
   try {
     if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
 
@@ -932,19 +941,56 @@ router.get("/analysis/walkability-coverage", async (req, res) => {
       }
     }
 
-    // 4. Get census sections
+    // 4. Get census sections (include istatCode for municipality grouping)
     const sections = await db.select({
+      istatCode: censusSections.istatCode,
       centroidLng: censusSections.centroidLng,
       centroidLat: censusSections.centroidLat,
       population: censusSections.population,
     }).from(censusSections);
 
-    const totalPopulation = sections.reduce((s, c) => s + c.population, 0);
+    // 4b. Determine which municipalities (comuni) the line passes through
+    //     by finding the nearest census section for each sampled stop
+    //     ISTAT code format: PPCCCC + section digits → first 6 chars = municipality
+    let relevantMuniCodes: Set<string> | null = null;
+    if (routeIdsParam.length > 0) {
+      relevantMuniCodes = new Set<string>();
+      for (const stop of sampledStops) {
+        let bestDist = Infinity;
+        let bestCode: string | null = null;
+        for (const sec of sections) {
+          if (!sec.istatCode) continue;
+          const dlat = sec.centroidLat - stop.lat;
+          const dlng = (sec.centroidLng - stop.lng) * Math.cos(stop.lat * Math.PI / 180);
+          const dist2 = dlat * dlat + dlng * dlng;
+          if (dist2 < bestDist) { bestDist = dist2; bestCode = sec.istatCode; }
+        }
+        if (bestCode) relevantMuniCodes.add(bestCode.slice(0, 6));
+      }
+      req.log.info({ municipalities: [...relevantMuniCodes] }, "Walkability: municipalities for route(s)");
+    }
+
+    // Filter sections to relevant municipalities (if route-specific)
+    const relevantSections = relevantMuniCodes
+      ? sections.filter(s => s.istatCode && relevantMuniCodes!.has(s.istatCode.slice(0, 6)))
+      : sections;
+
+    const totalPopulation = relevantSections.reduce((s, c) => s + c.population, 0);
+
+    // Build index from section → relevantSections index for fast lookup
+    const sectionIndexMap = new Map<number, number>();
+    relevantSections.forEach((s, i) => {
+      const origIdx = sections.indexOf(s);
+      sectionIndexMap.set(origIdx, i);
+    });
 
     // 5. For each section, check if centroid falls inside any isochrone
     const coveredSectionIds = new Set<number>();
     for (let si = 0; si < sections.length; si++) {
       const sec = sections[si];
+      // Skip sections not in relevant municipalities
+      if (relevantMuniCodes && (!sec.istatCode || !relevantMuniCodes.has(sec.istatCode.slice(0, 6)))) continue;
+
       for (const stop of stopResults) {
         if (!stop.isochrone) continue;
         const coords = stop.isochrone.type === "Polygon"
@@ -967,6 +1013,49 @@ router.get("/analysis/walkability-coverage", async (req, res) => {
     const coveragePercent = totalPopulation > 0
       ? Math.round((coveredPopulation / totalPopulation) * 1000) / 10
       : 0;
+
+    // Build per-municipality breakdown
+    // Municipality name lookup — ISTAT codes for Province of Ancona (42)
+    const MUNI_NAMES: Record<string, string> = {
+      "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
+      "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
+      "420080": "Castel Colonna", "420100": "Castelfidardo", "420110": "Castelleone di Suasa",
+      "420120": "Castelplanio", "420130": "Cerreto d'Esi", "420140": "Chiaravalle",
+      "420150": "Corinaldo", "420160": "Cupramontana", "420170": "Fabriano",
+      "420180": "Falconara Marittima", "420190": "Filottrano", "420200": "Genga",
+      "420210": "Jesi", "420220": "Loreto", "420230": "Maiolati Spontini",
+      "420240": "Mergo", "420250": "Monsano", "420260": "Monte Roberto",
+      "420270": "Monte San Vito", "420280": "Montecarotto", "420290": "Montemarciano",
+      "420300": "Numana", "420310": "Offagna", "420320": "Osimo",
+      "420330": "Ostra", "420340": "Senigallia", "420350": "Serra de' Conti",
+      "420360": "Serra San Quirico", "420370": "Staffolo", "420380": "Santa Maria Nuova",
+      "420400": "Poggio San Marcello", "420410": "Polverigi", "420420": "Rosora",
+      "420430": "San Marcello", "420440": "San Paolo di Jesi", "420450": "Osimo",
+      "420460": "Trecastelli", "420470": "Sassoferrato", "420480": "Castelbellino",
+      "420490": "Morro d'Alba", "420500": "Sirolo",
+    };
+
+    const muniBreakdown: { code: string; name: string; totalPop: number; coveredPop: number; percent: number }[] = [];
+    if (relevantMuniCodes) {
+      for (const code of relevantMuniCodes) {
+        const muniSections = sections.filter(s => s.istatCode?.slice(0, 6) === code);
+        const muniTotal = muniSections.reduce((s, c) => s + c.population, 0);
+        let muniCovered = 0;
+        for (let si = 0; si < sections.length; si++) {
+          if (coveredSectionIds.has(si) && sections[si].istatCode?.slice(0, 6) === code) {
+            muniCovered += sections[si].population;
+          }
+        }
+        muniBreakdown.push({
+          code,
+          name: MUNI_NAMES[code] || `Comune ${code}`,
+          totalPop: muniTotal,
+          coveredPop: muniCovered,
+          percent: muniTotal > 0 ? Math.round((muniCovered / muniTotal) * 1000) / 10 : 0,
+        });
+      }
+      muniBreakdown.sort((a, b) => b.totalPop - a.totalPop);
+    }
 
     const estimatedNote = [
       sampledStops.length < allStops.length
@@ -1003,6 +1092,7 @@ router.get("/analysis/walkability-coverage", async (req, res) => {
             },
           })),
       },
+      municipalities: muniBreakdown.length > 0 ? muniBreakdown : undefined,
     });
   } catch (err) {
     req.log.error(err, "Error in walkability coverage");
@@ -1015,7 +1105,7 @@ router.get("/analysis/walkability-coverage", async (req, res) => {
 // Analisi qualità servizio: copertura POI (scuole, uffici, ospedali)
 // con valutazione oraria, coincidenze inter-comunali ai nodi di scambio
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/service-quality", async (req, res) => {
+router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     /* ── helpers ──────────────────────────────────────────────── */
     const dist = (lat1: number, lng1: number, lat2: number, lng2: number) => {
@@ -1428,7 +1518,7 @@ router.get("/analysis/service-quality", async (req, res) => {
 
 // ── Route shapes by route IDs (for school map) ────────────────
 // GET /api/analysis/route-shapes?routeIds=R1,R2,...
-router.get("/analysis/route-shapes", async (req, res) => {
+router.get("/analysis/route-shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
     const idsParam = (req.query.routeIds as string) ?? "";
     const routeIds = idsParam.split(",").map(s => s.trim()).filter(Boolean);
@@ -1479,6 +1569,369 @@ router.get("/analysis/route-shapes", async (req, res) => {
     res.json(results);
   } catch (err) {
     req.log.error(err, "Error fetching route shapes");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────
+// GET /api/analysis/segments
+// Analisi gap domanda/offerta per 4 segmenti utenza:
+//   studenti medie/superiori, universitari, anziani, lavoratori
+// ──────────────────────────────────────────────────────────────
+router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => {
+  try {
+    const t0 = Date.now();
+    const hhmm = (t: string) => {
+      const p = t.split(":");
+      return parseInt(p[0]) * 60 + parseInt(p[1]);
+    };
+    const fmtMin = (m: number) =>
+      `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+    req.log.info("segments: starting DB queries...");
+
+    /* ── 1. Parallel data loading — aggregate departures in SQL ── */
+    const [allPoi, stopsArr, depAggRows, totalDepsRow] = await Promise.all([
+      db.select({
+        id: pointsOfInterest.id,
+        name: pointsOfInterest.name,
+        category: pointsOfInterest.category,
+        lat: pointsOfInterest.lat,
+        lng: pointsOfInterest.lng,
+        properties: pointsOfInterest.properties,
+      }).from(pointsOfInterest),
+
+      db.select({
+        stopId: gtfsStops.stopId,
+        name: gtfsStops.stopName,
+        lat: gtfsStops.stopLat,
+        lng: gtfsStops.stopLon,
+      }).from(gtfsStops),
+
+      // Pre-aggregate: per stop, per 30-min slot → count departures + distinct routes
+      db.execute(sql`
+        WITH parsed AS (
+          SELECT
+            st.stop_id,
+            t.route_id,
+            (SPLIT_PART(st.departure_time, ':', 1)::int * 60 +
+             SPLIT_PART(st.departure_time, ':', 2)::int) AS dep_min
+          FROM gtfs_stop_times st
+          JOIN gtfs_trips t ON t.trip_id = st.trip_id
+          WHERE st.departure_time IS NOT NULL
+            AND st.departure_time <> ''
+        )
+        SELECT
+          stop_id,
+          FLOOR(dep_min / 30)::int AS slot_idx,
+          COUNT(*)::int AS dep_count,
+          COUNT(DISTINCT route_id)::int AS route_count
+        FROM parsed
+        WHERE dep_min >= 0 AND dep_min < 1440
+        GROUP BY stop_id, slot_idx
+      `),
+
+      // Total daily departures
+      db.execute(sql`
+        SELECT COUNT(*)::int AS total
+        FROM gtfs_stop_times
+        WHERE departure_time IS NOT NULL
+      `),
+    ]);
+
+    /* ── 2. Build stop slot index ────────────────────────────── */
+    req.log.info({ poi: allPoi.length, stops: stopsArr.length, depRows: depAggRows.rows.length, ms: Date.now() - t0 }, "segments: DB queries done");
+
+    const SLOT_MIN = 30;
+    const DAY_START_MIN = 360; // 06:00
+    const DAY_END_MIN = 1320;  // 22:00
+    const DAY_START_SLOT = DAY_START_MIN / SLOT_MIN; // slot 12
+    const DAY_END_SLOT = DAY_END_MIN / SLOT_MIN;     // slot 44
+    const NUM_SLOTS = DAY_END_SLOT - DAY_START_SLOT;  // 32
+
+    type SlotData = { depCount: number; routeCount: number };
+    const stopSlots = new Map<string, Map<number, SlotData>>();
+
+    for (const r of depAggRows.rows as any[]) {
+      const sid = r.stop_id as string;
+      const slotIdx = Number(r.slot_idx);
+      const data: SlotData = {
+        depCount: r.dep_count,
+        routeCount: r.route_count,
+      };
+      if (!stopSlots.has(sid)) stopSlots.set(sid, new Map());
+      stopSlots.get(sid)!.set(slotIdx, data);
+    }
+
+    const totalDailyDepartures = (totalDepsRow.rows[0] as any)?.total ?? 0;
+
+    /* ── 3. Spatial grid index for stops ─────────────────────── */
+    const GRID_DEG = 0.006;
+    const stopGrid = new Map<string, typeof stopsArr>();
+    for (const s of stopsArr) {
+      const key = `${Math.floor(s.lat / GRID_DEG)}_${Math.floor(s.lng / GRID_DEG)}`;
+      if (!stopGrid.has(key)) stopGrid.set(key, []);
+      stopGrid.get(key)!.push(s);
+    }
+    const COS_LAT = Math.cos((43.6 * Math.PI) / 180);
+    const M_PER_DEG_LAT = 111_000;
+    const M_PER_DEG_LNG = 111_000 * COS_LAT;
+
+    function nearbyStops(lat: number, lng: number, maxM: number) {
+      const cellsR = Math.ceil(maxM / (GRID_DEG * M_PER_DEG_LAT)) + 1;
+      const cx = Math.floor(lat / GRID_DEG);
+      const cy = Math.floor(lng / GRID_DEG);
+      const result: { stopId: string; dist: number }[] = [];
+      let bestDist = Infinity;
+      for (let dx = -cellsR; dx <= cellsR; dx++) {
+        for (let dy = -cellsR; dy <= cellsR; dy++) {
+          const cell = stopGrid.get(`${cx + dx}_${cy + dy}`);
+          if (!cell) continue;
+          for (const s of cell) {
+            const dLat = (s.lat - lat) * M_PER_DEG_LAT;
+            const dLng = (s.lng - lng) * M_PER_DEG_LNG;
+            const d = Math.sqrt(dLat * dLat + dLng * dLng);
+            if (d < bestDist) bestDist = d;
+            if (d <= maxM) result.push({ stopId: s.stopId, dist: d });
+          }
+        }
+      }
+      return { nearby: result, bestDist };
+    }
+
+    // Helper: count deps for a set of stops in a minute range using slot buckets
+    function countDepsInRange(stopIds: string[], fromMin: number, toMin: number) {
+      const fromSlot = Math.floor(fromMin / SLOT_MIN);
+      const toSlot = Math.floor(toMin / SLOT_MIN);
+      let total = 0;
+      let routesCnt = 0;
+      for (const sid of stopIds) {
+        const slots = stopSlots.get(sid);
+        if (!slots) continue;
+        for (let s = fromSlot; s <= toSlot; s++) {
+          const d = slots.get(s);
+          if (!d) continue;
+          total += d.depCount;
+          routesCnt += d.routeCount;
+        }
+      }
+      return { total, routesCnt };
+    }
+
+    /* ── 4. Classify POI ─────────────────────────────────────── */
+    const isSecondarySchool = (p: any) => {
+      const types: string[] = (p.properties as any)?.types ?? [];
+      return p.category === "school" && (
+        types.some((t: string) => t === "secondary_school") ||
+        (!types.includes("primary_school") && !types.includes("university"))
+      );
+    };
+    const isUniversity = (p: any) => {
+      const types: string[] = (p.properties as any)?.types ?? [];
+      return p.category === "school" && types.includes("university");
+    };
+    const isElderlyPoi = (p: any) =>
+      p.category === "hospital" ||
+      (p.category === "office" && ((p.properties as any)?.types ?? []).some(
+        (t: string) => ["local_government_office", "post_office", "pharmacy"].includes(t)
+      ));
+    const isWorkplace = (p: any) =>
+      p.category === "office" || p.category === "shopping" ||
+      (p as any).category === "industrial";
+
+    /* ── 5. Segment definitions ──────────────────────────────── */
+    const NEAR_M = 500;
+    const NEAR_ELDERLY = 300;
+    const segments = [
+      {
+        id: "studenti", label: "Studenti Medie/Superiori", icon: "🎓",
+        pois: allPoi.filter(isSecondarySchool),
+        peakWindows: [
+          { label: "Ingresso mattina", from: hhmm("07:30"), to: hhmm("08:30") },
+          { label: "Uscita pranzo",    from: hhmm("13:00"), to: hhmm("14:00") },
+          { label: "Uscita pomeriggio", from: hhmm("15:30"), to: hhmm("17:00") },
+        ],
+        maxDist: NEAR_M, demandPerPoi: 200,
+      },
+      {
+        id: "universitari", label: "Universitari", icon: "🎒",
+        pois: allPoi.filter(isUniversity),
+        peakWindows: [
+          { label: "Ingresso mattina", from: hhmm("08:00"), to: hhmm("09:30") },
+          { label: "Uscita sera",      from: hhmm("18:00"), to: hhmm("19:30") },
+        ],
+        maxDist: NEAR_M, demandPerPoi: 500,
+      },
+      {
+        id: "anziani", label: "Anziani", icon: "👴",
+        pois: allPoi.filter(isElderlyPoi),
+        peakWindows: [
+          { label: "Mattina", from: hhmm("09:00"), to: hhmm("12:00") },
+        ],
+        maxDist: NEAR_ELDERLY, demandPerPoi: 50,
+      },
+      {
+        id: "lavoratori", label: "Lavoratori / Pendolari", icon: "💼",
+        pois: allPoi.filter(isWorkplace),
+        peakWindows: [
+          { label: "Ingresso mattina", from: hhmm("07:00"), to: hhmm("08:30") },
+          { label: "Uscita sera",      from: hhmm("17:30"), to: hhmm("19:00") },
+        ],
+        maxDist: NEAR_M, demandPerPoi: 30,
+      },
+    ];
+
+    /* ── 6. Analyse each segment ─────────────────────────────── */
+    const results: any[] = [];
+
+    for (const seg of segments) {
+      const poiData: {
+        name: string; lat: number; lng: number;
+        nearestDist: number;
+        nearStopIds: string[];
+        peakBuses: number[];
+        totalPeakBuses: number;
+      }[] = [];
+      const allSegStopIds = new Set<string>();
+
+      for (const poi of seg.pois) {
+        const { nearby, bestDist } = nearbyStops(poi.lat, poi.lng, seg.maxDist);
+        if (bestDist > seg.maxDist * 2) continue;
+        const nearIds = nearby.map(n => n.stopId);
+        nearIds.forEach(id => allSegStopIds.add(id));
+
+        const peakBuses: number[] = [];
+        for (const win of seg.peakWindows) {
+          const { total } = countDepsInRange(nearIds, win.from, win.to);
+          peakBuses.push(total);
+        }
+
+        poiData.push({
+          name: poi.name ?? "Senza nome",
+          lat: poi.lat, lng: poi.lng,
+          nearestDist: Math.round(bestDist),
+          nearStopIds: nearIds,
+          peakBuses,
+          totalPeakBuses: peakBuses.reduce((a, b) => a + b, 0),
+        });
+      }
+
+      const coveredPoi = poiData.filter(p => p.totalPeakBuses > 0).length;
+      const uncoveredPoi = poiData.filter(p => p.totalPeakBuses === 0).length;
+      const farPoi = seg.pois.length - poiData.length;
+      const avgBusesPeak = poiData.length > 0
+        ? Math.round(poiData.reduce((s, p) => s + p.totalPeakBuses, 0) / poiData.length) : 0;
+      const avgDistM = poiData.length > 0
+        ? Math.round(poiData.reduce((s, p) => s + p.nearestDist, 0) / poiData.length) : 0;
+
+      const peakDetails = seg.peakWindows.map((win, wi) => {
+        const buses = poiData.map(p => p.peakBuses[wi]);
+        const totalBuses = buses.reduce((a, b) => a + b, 0);
+        return {
+          label: win.label,
+          from: fmtMin(win.from), to: fmtMin(win.to),
+          totalBuses,
+          avgBusesPerPoi: poiData.length > 0 ? Math.round((totalBuses / poiData.length) * 10) / 10 : 0,
+          poiWithZero: buses.filter(b => b === 0).length,
+        };
+      });
+
+      // Hourly profile from pre-aggregated slot buckets
+      const hourlyProfile: { hour: string; buses: number; routes: number; demand: number; gap: number }[] = [];
+      for (let si = DAY_START_SLOT; si < DAY_END_SLOT; si++) {
+        let buses = 0;
+        let routes = 0;
+        for (const sid of allSegStopIds) {
+          const d = stopSlots.get(sid)?.get(si);
+          if (!d) continue;
+          buses += d.depCount;
+          routes += d.routeCount;
+        }
+        const slotStart = si * SLOT_MIN;
+        let inPeak = false;
+        for (const win of seg.peakWindows) {
+          if (slotStart + SLOT_MIN > win.from && slotStart < win.to) { inPeak = true; break; }
+        }
+        const demand = Math.round(seg.pois.length * seg.demandPerPoi * (inPeak ? 1.0 : 0.2) / NUM_SLOTS);
+        hourlyProfile.push({
+          hour: fmtMin(slotStart),
+          buses,
+          routes,
+          demand,
+          gap: Math.max(0, demand - buses * 40),
+        });
+      }
+
+      // ── Gap score: based on per-POI service quality ──────────
+      // For each POI, check if it has adequate peak service:
+      //   "adequate" = at least 4 departures per peak window on average
+      //   Score components:
+      //   - % POI with zero peak buses (critical)
+      //   - % POI with < minAdequate buses (underserved)
+      //   - distance penalty: % POI farther than maxDist
+      const MIN_ADEQUATE_PER_WINDOW = 4; // at least 4 buses per peak hour window
+      const adequatePoi = poiData.filter(p => {
+        const avgPerWin = p.peakBuses.length > 0
+          ? p.peakBuses.reduce((a, b) => a + b, 0) / p.peakBuses.length : 0;
+        return avgPerWin >= MIN_ADEQUATE_PER_WINDOW;
+      }).length;
+      const underservedPoi = poiData.filter(p => {
+        const avgPerWin = p.peakBuses.length > 0
+          ? p.peakBuses.reduce((a, b) => a + b, 0) / p.peakBuses.length : 0;
+        return avgPerWin > 0 && avgPerWin < MIN_ADEQUATE_PER_WINDOW;
+      }).length;
+
+      const totalPoisConsidered = seg.pois.length;
+      const zeroPct = totalPoisConsidered > 0 ? ((uncoveredPoi + farPoi) / totalPoisConsidered) : 0;
+      const underservedPct = totalPoisConsidered > 0 ? (underservedPoi / totalPoisConsidered) : 0;
+      const distPenalty = totalPoisConsidered > 0 ? (farPoi / totalPoisConsidered) : 0;
+
+      // Weighted gap: zero coverage has most weight
+      const gapScore = Math.min(100, Math.round(
+        zeroPct * 60 +          // max 60 points from zero-coverage
+        underservedPct * 30 +   // max 30 points from underserved
+        distPenalty * 10         // max 10 points from distance
+      * 100));
+      const gapLabel = gapScore >= 60 ? "critico" : gapScore >= 35 ? "insufficiente" : gapScore >= 15 ? "accettabile" : "buono";
+
+      // Demand/supply estimate: use per-POI average
+      const avgBusesPerPoiDay = poiData.length > 0
+        ? poiData.reduce((s, p) => s + p.totalPeakBuses, 0) / poiData.length : 0;
+      const estDailyDemand = seg.pois.length * seg.demandPerPoi;
+      const estDailySupply = Math.round(avgBusesPerPoiDay * 40 * poiData.length);
+
+      const topCritical = [...poiData]
+        .sort((a, b) => a.totalPeakBuses - b.totalPeakBuses)
+        .slice(0, 8)
+        .map(p => ({ name: p.name, lat: p.lat, lng: p.lng, distM: p.nearestDist, buses: p.totalPeakBuses }));
+
+      results.push({
+        id: seg.id, label: seg.label, icon: seg.icon,
+        poiCount: seg.pois.length, coveredPoi, uncoveredPoi,
+        avgBusesPeak, avgDistM, farPoi,
+        peakWindows: peakDetails, hourlyProfile,
+        gapScore, gapLabel,
+        estimatedDailyDemand: estDailyDemand,
+        estimatedDailySupply: estDailySupply,
+        topCriticalPoi: topCritical,
+      });
+    }
+
+    results.sort((a, b) => b.gapScore - a.gapScore);
+
+    req.log.info({ totalMs: Date.now() - t0, segments: results.length }, "segments: analysis complete");
+
+    res.json({
+      segments: results,
+      worstSegment: results[0]?.id ?? null,
+      summary: {
+        totalPoi: segments.reduce((s, seg) => s + seg.pois.length, 0),
+        totalStops: stopsArr.length,
+        totalDailyDepartures,
+      },
+    });
+  } catch (err) {
+    req.log.error(err, "Error in segments analysis");
     res.status(500).json({ error: "Internal server error" });
   }
 });

@@ -42,6 +42,8 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3000",
         changeOrigin: true,
+        timeout: 180_000,       // 3 min for CP-SAT solver
+        proxyTimeout: 180_000,
       },
     },
     fs: {

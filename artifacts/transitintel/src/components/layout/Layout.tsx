@@ -1,7 +1,7 @@
 import React from "react";
 import { Link, useLocation } from "wouter";
 import { motion } from "framer-motion";
-import { Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, FileArchive, Bus, RefreshCw, Timer, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, FileArchive, Bus, RefreshCw, Timer, PanelLeftClose, PanelLeftOpen, Users, Route, ArrowRightLeft, ClipboardList, Clock, Grip } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import logoImg from "/logo.png";
 
@@ -26,6 +26,12 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/travel-time", label: "Tempi Percorso", icon: Timer },
       { href: "/stops", label: "Fermate & Linee", icon: MapPin },
       { href: "/demand", label: "Qualità Servizio", icon: BarChart3 },
+      { href: "/segments", label: "Segmenti Utenza", icon: Users },
+      { href: "/scenarios", label: "Scenari", icon: Route },
+      { href: "/intermodal", label: "Intermodale", icon: ArrowRightLeft },
+      { href: "/optimizer-route", label: "Programma Esercizio", icon: ClipboardList },
+      { href: "/optimizer-schedule", label: "Ottim. Orari", icon: Clock },
+      { href: "/cluster-management", label: "Cluster Cambio", icon: Grip },
     ],
   },
   {
@@ -150,7 +156,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main Content */}
       <main className="flex-1 relative flex flex-col h-full overflow-hidden pt-14 md:pt-0">
-        <div className={`flex-1 w-full h-full ${location !== "/dashboard" ? "overflow-y-auto p-4 md:p-8" : ""}`}>
+        <div className={`flex-1 w-full h-full ${location !== "/dashboard" && location !== "/scenarios" ? "overflow-y-auto p-4 md:p-8" : ""}`}>
           <motion.div
             key={location}
             initial={{ opacity: 0, y: 8 }}

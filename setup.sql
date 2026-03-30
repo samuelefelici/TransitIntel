@@ -161,3 +161,34 @@ CREATE TABLE IF NOT EXISTS gtfs_calendar_dates (
   date TEXT NOT NULL,
   exception_type INTEGER NOT NULL
 );
+
+-- Stop Clusters (per cambi in linea)
+CREATE TABLE IF NOT EXISTS stop_clusters (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  transfer_from_depot_min INTEGER NOT NULL DEFAULT 10,
+  color TEXT NOT NULL DEFAULT '#3b82f6',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS stop_cluster_stops (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cluster_id UUID NOT NULL REFERENCES stop_clusters(id) ON DELETE CASCADE,
+  gtfs_stop_id TEXT NOT NULL,
+  stop_name TEXT NOT NULL,
+  stop_lat DOUBLE PRECISION NOT NULL,
+  stop_lon DOUBLE PRECISION NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cluster_stops_cluster ON stop_cluster_stops(cluster_id);
+
+-- App Settings (autovetture aziendali, ecc.)
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Default: 5 autovetture aziendali
+INSERT INTO app_settings (key, value) VALUES ('company_cars', '5')
+  ON CONFLICT (key) DO NOTHING;

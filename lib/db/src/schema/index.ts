@@ -19,6 +19,7 @@ export const censusSections = pgTable("census_sections", {
   population: integer("population").notNull().default(0),
   areaKm2: doublePrecision("area_km2").notNull().default(0),
   density: doublePrecision("density").notNull().default(0),
+  geojson: jsonb("geojson"),                         // GeoJSON Polygon/MultiPolygon geometry (WGS84)
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
@@ -151,6 +152,20 @@ export const gtfsCalendarDates = pgTable("gtfs_calendar_dates", {
   exceptionType: integer("exception_type").notNull(), // 1=added, 2=removed
 });
 
+// Scenarios — planned route scenarios built from KML/KMZ files
+export const scenarios = pgTable("scenarios", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  description: text("description"),
+  color: text("color").notNull().default("#3b82f6"),
+  geojson: jsonb("geojson").notNull(),             // GeoJSON FeatureCollection (lines + points from KML)
+  stopsCount: integer("stops_count").default(0),
+  lengthKm: doublePrecision("length_km").default(0),
+  metadata: jsonb("metadata").default({}),          // extra KML metadata, folder names, etc.
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
 // Isochrone cache — avoids re-calling ORS for the same stop + minutes
 export const isochroneCache = pgTable("isochrone_cache", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -159,6 +174,46 @@ export const isochroneCache = pgTable("isochrone_cache", {
   minutes: integer("minutes").notNull(),
   geojson: jsonb("geojson").notNull(),              // GeoJSON geometry (Polygon/MultiPolygon)
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// Service Program Scenarios — saved vehicle shift plans for driver shift generation
+export const serviceProgramScenarios = pgTable("service_program_scenarios", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  date: text("date").notNull(),                      // YYYYMMDD
+  feedId: uuid("feed_id"),
+  /** Full optimizer input: route→vehicleType→forced mappings */
+  input: jsonb("input").notNull(),
+  /** Full optimizer output: shifts, costs, score, advisories, summary, etc. */
+  result: jsonb("result").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// Stop Clusters — gruppi di fermate per cambi in linea
+export const stopClusters = pgTable("stop_clusters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  transferFromDepotMin: integer("transfer_from_depot_min").notNull().default(10),
+  color: text("color").notNull().default("#3b82f6"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+// Stop Cluster Stops — fermate GTFS assegnate a un cluster
+export const stopClusterStops = pgTable("stop_cluster_stops", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  clusterId: uuid("cluster_id").references(() => stopClusters.id, { onDelete: "cascade" }).notNull(),
+  gtfsStopId: text("gtfs_stop_id").notNull(),   // stop_id dal GTFS
+  stopName: text("stop_name").notNull(),
+  stopLat: doublePrecision("stop_lat").notNull(),
+  stopLon: doublePrecision("stop_lon").notNull(),
+});
+
+// App Settings — configurazione globale (autovetture, ecc.)
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
 
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
@@ -175,3 +230,8 @@ export type GtfsStopTime = typeof gtfsStopTimes.$inferSelect;
 export type GtfsCalendar = typeof gtfsCalendar.$inferSelect;
 export type GtfsCalendarDate = typeof gtfsCalendarDates.$inferSelect;
 export type IsochroneCache = typeof isochroneCache.$inferSelect;
+export type Scenario = typeof scenarios.$inferSelect;
+export type ServiceProgramScenario = typeof serviceProgramScenarios.$inferSelect;
+export type StopCluster = typeof stopClusters.$inferSelect;
+export type StopClusterStop = typeof stopClusterStops.$inferSelect;
+export type AppSetting = typeof appSettings.$inferSelect;

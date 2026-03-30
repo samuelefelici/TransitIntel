@@ -7,8 +7,18 @@ import stopsRouter from "./stops";
 import routesBusRouter from "./routes-bus";
 import analysisRouter from "./analysis";
 import cronRouter from "./cron";
-import gtfsRouter from "./gtfs";
+import gtfsUploadRouter from "./gtfs-upload";
+import gtfsQueriesRouter from "./gtfs-queries";
+import gtfsAnalysisRouter from "./gtfs-analysis";
+import gtfsTravelRouter from "./gtfs-travel";
 import adminRouter from "./admin";
+import scenariosRouter from "./scenarios";
+import intermodalRouter from "./intermodal";
+import optimizerRouteRouter from "./optimizer-route";
+import optimizerScheduleRouter from "./optimizer-schedule";
+import serviceProgramRouter from "./service-program";
+import driverShiftsRouter from "./driver-shifts";
+import clustersRouter from "./clusters";
 
 const router: IRouter = Router();
 
@@ -20,7 +30,17 @@ router.use(stopsRouter);
 router.use(routesBusRouter);
 router.use(analysisRouter);
 router.use(cronRouter);
-router.use(gtfsRouter);
+router.use(gtfsUploadRouter);
+router.use(gtfsQueriesRouter);
+router.use(gtfsAnalysisRouter);
+router.use(gtfsTravelRouter);
 router.use(adminRouter);
+router.use(scenariosRouter);
+router.use(intermodalRouter);
+router.use(optimizerRouteRouter);
+router.use(optimizerScheduleRouter);
+router.use(serviceProgramRouter);
+router.use(driverShiftsRouter);
+router.use(clustersRouter);
 
 export default router;

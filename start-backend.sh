@@ -1,4 +1,5 @@
 #!/bin/bash
+eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null)"
 export DATABASE_URL='postgresql://neondb_owner:npg_dk3DUt5ZNWqO@ep-muddy-bread-agpt6182.c-2.eu-central-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
 export PORT=3000
 export NODE_ENV=development
