@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, Component, type ErrorInfo, type ReactNode } from "react";
 import { useParams } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -18,6 +18,55 @@ import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optim
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 
+
+/* ═══════════════════════════════════════════════════════════════
+ *  ERROR BOUNDARY — prevents white/black screen on render crash
+ * ═══════════════════════════════════════════════════════════════ */
+
+class DriverShiftsErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[DriverShifts] Render crash:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="max-w-3xl mx-auto p-6">
+          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle className="w-5 h-5 text-red-400" />
+              <h2 className="text-lg font-bold text-red-400">Errore di rendering</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mb-2">
+              Si è verificato un errore durante il rendering della pagina Turni Guida.
+            </p>
+            <pre className="text-xs bg-black/30 rounded p-3 overflow-auto max-h-40 text-red-300">
+              {this.state.error?.message}
+              {"\n"}
+              {this.state.error?.stack?.split("\n").slice(0, 5).join("\n")}
+            </pre>
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90"
+            >
+              Riprova
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 /* ═══════════════════════════════════════════════════════════════
  *  TYPES
  * ═══════════════════════════════════════════════════════════════ */
@@ -380,6 +429,14 @@ function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
  * ═══════════════════════════════════════════════════════════════ */
 
 export default function DriverShiftsPage() {
+  return (
+    <DriverShiftsErrorBoundary>
+      <DriverShiftsPageInner />
+    </DriverShiftsErrorBoundary>
+  );
+}
+
+function DriverShiftsPageInner() {
   const params = useParams<{ scenarioId: string }>();
   const scenarioId = params.scenarioId;
 
