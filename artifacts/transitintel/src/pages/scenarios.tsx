@@ -281,19 +281,40 @@ export default function ScenariosPage() {
     }
   }, [uploadName, stopsFile, routeFile, scenarioList.length, fetchScenarios]);
 
-  // Delete
+  // Delete — primo click: segna per conferma; secondo click: esegue
+  const pendingDeleteRef = useRef<string | null>(null);
   const handleDelete = useCallback(async (id: string) => {
     if (pendingDeleteId !== id) {
+      // Primo click → chiedi conferma (icona diventa rossa pulsante)
       setPendingDeleteId(id);
-      setTimeout(() => setPendingDeleteId(prev => prev === id ? null : prev), 3000);
+      pendingDeleteRef.current = id;
+      setTimeout(() => {
+        if (pendingDeleteRef.current === id) {
+          setPendingDeleteId(null);
+          pendingDeleteRef.current = null;
+        }
+      }, 4000);
       return;
     }
+    // Secondo click → esegui DELETE
     setPendingDeleteId(null);
-    await fetch(`${getApiBase()}/api/scenarios/${id}`, { method: "DELETE" });
+    pendingDeleteRef.current = null;
+    try {
+      const resp = await fetch(`${getApiBase()}/api/scenarios/${id}`, { method: "DELETE" });
+      if (!resp.ok) {
+        console.error("Delete failed:", resp.status, await resp.text());
+        return;
+      }
+    } catch (err) {
+      console.error("Delete fetch error:", err);
+      return;
+    }
     setVisibleIds(prev => { const s = new Set(prev); s.delete(id); return s; });
     setLoadedScenarios(prev => { const c = { ...prev }; delete c[id]; return c; });
     setSelectedForCompare(prev => prev.filter(x => x !== id));
-    fetchScenarios();
+    // Aggiorna la lista immediatamente rimuovendo lo scenario dalla UI
+    setScenarioList(prev => prev.filter(s => s.id !== id));
+    await fetchScenarios();
   }, [fetchScenarios, pendingDeleteId]);
 
   // Analyze single scenario
@@ -728,11 +749,27 @@ export default function ScenariosPage() {
                                 className={`p-1 rounded transition-colors ${isCompare ? "text-amber-400 bg-amber-500/10" : "text-muted-foreground hover:text-foreground"}`}>
                                 <GitCompareArrows className="w-3.5 h-3.5" />
                               </button>
-                              <button onClick={() => handleDelete(s.id)} title={pendingDeleteId === s.id ? "Clicca di nuovo per confermare" : "Elimina"}
+                              <button onClick={(e) => { e.stopPropagation(); handleDelete(s.id); }}
+                                title={pendingDeleteId === s.id ? "Clicca di nuovo per confermare" : "Elimina"}
                                 className={`p-1 rounded transition-colors ${pendingDeleteId === s.id ? "text-red-400 bg-red-500/20 animate-pulse" : "text-muted-foreground hover:text-red-400"}`}>
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
+                            {/* Conferma eliminazione inline */}
+                            {pendingDeleteId === s.id && (
+                              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-lg px-2 py-1.5">
+                                <Trash2 className="w-3 h-3 text-red-400 shrink-0" />
+                                <span className="text-[10px] text-red-300 flex-1">Eliminare "{s.name}"?</span>
+                                <button onClick={(e) => { e.stopPropagation(); handleDelete(s.id); }}
+                                  className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors">
+                                  Conferma
+                                </button>
+                                <button onClick={(e) => { e.stopPropagation(); setPendingDeleteId(null); pendingDeleteRef.current = null; }}
+                                  className="px-2 py-0.5 rounded text-[10px] font-medium bg-muted/50 hover:bg-muted text-muted-foreground transition-colors">
+                                  Annulla
+                                </button>
+                              </div>
+                            )}
                             <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
                               <span className="flex items-center gap-0.5"><Ruler className="w-3 h-3" /> {s.lengthKm.toFixed(1)} km</span>
                               <span className="flex items-center gap-0.5"><MapPin className="w-3 h-3" /> {s.stopsCount} fermate</span>
