@@ -37,6 +37,139 @@ COST_PER_DRIVING_HOUR = 28
 COST_PER_DEPOT_RETURN = 15
 COST_PER_IDLE_HOUR = 5
 
+
+# ═══════════════════════════════════════════════════════════════
+#  VEHICLE COST RATES — Tariffe turni macchina (MAIOR-inspired)
+# ═══════════════════════════════════════════════════════════════
+
+@dataclass
+class VehicleCostRates:
+    """
+    Tariffe per il calcolo costi turni macchina.
+    Tutti i valori sono in euro — configurabili dall'operatore.
+    Ispirate al modello MAIOR VS.
+    """
+
+    # A. Costo fisso giornaliero per tipo veicolo (assicurazione, bollo, manutenzione)
+    fixed_daily: dict = field(default_factory=lambda: {
+        "autosnodato": 55.0, "12m": 42.0, "10m": 32.0, "pollicino": 18.0,
+    })
+
+    # B. Costo per km in servizio per tipo veicolo (carburante, gomme, usura)
+    per_service_km: dict = field(default_factory=lambda: {
+        "autosnodato": 1.20, "12m": 0.95, "10m": 0.75, "pollicino": 0.45,
+    })
+
+    # C. Costo per km fuori linea (deadhead) per tipo veicolo
+    per_deadhead_km: dict = field(default_factory=lambda: {
+        "autosnodato": 1.00, "12m": 0.80, "10m": 0.65, "pollicino": 0.40,
+    })
+
+    # Velocità media per stima km da ore (km/h)
+    avg_service_speed: dict = field(default_factory=lambda: {
+        "urbano": 18.0, "extraurbano": 32.0,
+    })
+
+    # D. Costo per minuto di sosta al capolinea (veicolo fermo, autista pagato)
+    idle_per_min: float = 0.08          # ~€5/h
+
+    # Costo per minuto di sosta LUNGA (>threshold) — penalità aggiuntiva
+    long_idle_per_min: float = 0.15     # ~€9/h
+    long_idle_threshold: int = 20       # minuti
+
+    # E. Costo per rientro deposito
+    per_depot_return: float = 15.0
+
+    # F. Sbilanciamento durata turno (QUADRATICO, ispirato a MAIOR CostoLavoroQuadratico)
+    target_shift_duration: int = 600    # 10h = target durata turno macchina (minuti)
+    balance_quadratic_coeff: float = 0.0003
+    # Esempio: turno 8h → delta=120min → 120²×0.0003 = €4.32
+    #          turno 14h → delta=240min → 240²×0.0003 = €17.28
+
+    # G. Gap nastro-lavoro (QUADRATICO, ispirato a MAIOR coeff_lav_nastro_quad)
+    gap_quadratic_coeff: float = 0.0005
+    # nastro=600min, lavoro=450min → gap=150 → 150²×0.0005 = €11.25
+
+    # H. Downsize penalty
+    downsize_peak_per_level_per_min: float = 0.10   # €/min/livello in ora di punta
+    downsize_offpeak_per_level_per_min: float = 0.01  # quasi zero fuori punta
+
+    # Sosta massima al capolinea prima del rientro deposito
+    max_idle_at_terminal: int = 90      # minuti (alzato da 60 per saturare meglio)
+
+    # Soglia sotto la quale il deadhead è trascurabile
+    min_deadhead_km: float = 0.5
+
+    @classmethod
+    def from_config(cls, cfg: dict | None) -> "VehicleCostRates":
+        """Crea VehicleCostRates da config operatore JSON (merge con default)."""
+        r = cls()
+        if not cfg:
+            return r
+        _map = {
+            "maxIdleAtTerminal": "max_idle_at_terminal",
+            "targetShiftDuration": "target_shift_duration",
+            "balanceCoeff": "balance_quadratic_coeff",
+            "gapCoeff": "gap_quadratic_coeff",
+            "perDepotReturn": "per_depot_return",
+            "idlePerMin": "idle_per_min",
+            "longIdlePerMin": "long_idle_per_min",
+            "longIdleThreshold": "long_idle_threshold",
+            "downsizePeakPerLevelPerMin": "downsize_peak_per_level_per_min",
+            "downsizeOffpeakPerLevelPerMin": "downsize_offpeak_per_level_per_min",
+            "minDeadheadKm": "min_deadhead_km",
+        }
+        for js_key, py_attr in _map.items():
+            if js_key in cfg:
+                setattr(r, py_attr, type(getattr(r, py_attr))(cfg[js_key]))
+        # Nested dicts
+        for dict_key in ("fixedDaily", "perServiceKm", "perDeadheadKm", "avgServiceSpeed"):
+            py_key = {
+                "fixedDaily": "fixed_daily",
+                "perServiceKm": "per_service_km",
+                "perDeadheadKm": "per_deadhead_km",
+                "avgServiceSpeed": "avg_service_speed",
+            }[dict_key]
+            if dict_key in cfg and isinstance(cfg[dict_key], dict):
+                getattr(r, py_key).update(cfg[dict_key])
+        return r
+
+
+@dataclass
+class VehicleShiftCost:
+    """Costo in euro di un turno macchina, calcolabile a priori."""
+    fixed_daily: float = 0.0
+    service_km_cost: float = 0.0
+    deadhead_km_cost: float = 0.0
+    idle_cost: float = 0.0
+    depot_return_cost: float = 0.0
+    balance_penalty: float = 0.0
+    gap_penalty: float = 0.0
+    downsize_penalty: float = 0.0
+    total: float = 0.0
+
+    def compute(self) -> float:
+        self.total = (
+            self.fixed_daily + self.service_km_cost + self.deadhead_km_cost
+            + self.idle_cost + self.depot_return_cost
+            + self.balance_penalty + self.gap_penalty + self.downsize_penalty
+        )
+        return self.total
+
+    def to_dict(self) -> dict:
+        return {
+            "fixedDaily": round(self.fixed_daily, 2),
+            "serviceKmCost": round(self.service_km_cost, 2),
+            "deadheadKmCost": round(self.deadhead_km_cost, 2),
+            "idleCost": round(self.idle_cost, 2),
+            "depotReturnCost": round(self.depot_return_cost, 2),
+            "balancePenalty": round(self.balance_penalty, 2),
+            "gapPenalty": round(self.gap_penalty, 2),
+            "downsizePenalty": round(self.downsize_penalty, 2),
+            "total": round(self.total, 2),
+        }
+
+
 # Turni guida — normativa CCNL
 PRE_TURNO_MIN = 12
 PRE_TURNO_AUTO_MIN = 5   # pre-turno ridotto quando si usa auto aziendale

@@ -156,6 +156,51 @@ interface ServiceProgramResult {
   advisories: Advisory[];
   solver?: "greedy" | "cpsat";
   solverMetrics?: any;
+  costBreakdown?: {
+    aggregated: {
+      fixedDaily: number;
+      serviceKmCost: number;
+      deadheadKmCost: number;
+      idleCost: number;
+      depotReturnCost: number;
+      balancePenalty: number;
+      gapPenalty: number;
+      downsizePenalty: number;
+      total: number;
+    };
+    perShift: Array<{
+      vehicleId: number;
+      vehicleType: string;
+      numTrips: number;
+      fixedDaily: number;
+      serviceKmCost: number;
+      deadheadKmCost: number;
+      idleCost: number;
+      depotReturnCost: number;
+      balancePenalty: number;
+      gapPenalty: number;
+      downsizePenalty: number;
+      total: number;
+    }>;
+    numVehicles: number;
+  };
+  greedyComparison?: {
+    vehicles: number;
+    costBreakdown: {
+      aggregated: {
+        total: number;
+        fixedDaily: number;
+        serviceKmCost: number;
+        deadheadKmCost: number;
+        idleCost: number;
+        depotReturnCost: number;
+        balancePenalty: number;
+        gapPenalty: number;
+        downsizePenalty: number;
+      };
+      numVehicles: number;
+    };
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -418,6 +463,7 @@ export default function ServiceProgramPage() {
   // ── Solver mode: greedy or CP-SAT ──
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("greedy");
   const [solverMetrics, setSolverMetrics] = useState<any>(null);
+  const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep">("normal");
 
   useEffect(() => {
     const base = getApiBase();
@@ -491,7 +537,10 @@ export default function ServiceProgramPage() {
           forced: forcedRoutes.has(routeId),
         })),
       };
-      if (solverMode === "cpsat") bodyPayload.timeLimit = 60;
+      if (solverMode === "cpsat") {
+        bodyPayload.timeLimit = solverIntensity === "fast" ? 30 : solverIntensity === "deep" ? 120 : 60;
+        bodyPayload.solverIntensity = solverIntensity;
+      }
 
       const resp = await fetch(`${getApiBase()}${endpoint}`, {
         method: "POST",
@@ -764,10 +813,28 @@ export default function ServiceProgramPage() {
             </button>
           </div>
 
+          {/* Solver intensity (only for CP-SAT) */}
+          {solverMode === "cpsat" && (
+            <div className="flex items-center gap-1.5 bg-card/60 border border-purple-500/30 rounded-lg px-2.5 py-1.5">
+              <span className="text-[10px] text-muted-foreground mr-1">Intensità:</span>
+              {([
+                { key: "fast" as const, label: "⚡ Veloce", desc: "30s, 4 worker" },
+                { key: "normal" as const, label: "⚙️ Normale", desc: "60s, 8 worker" },
+                { key: "deep" as const, label: "🔬 Profondo", desc: "120s, 12 worker" },
+              ]).map(opt => (
+                <button key={opt.key} onClick={() => setSolverIntensity(opt.key)}
+                  title={opt.desc}
+                  className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${solverIntensity === opt.key ? "bg-purple-600/30 text-purple-300 border border-purple-500/40" : "text-muted-foreground hover:text-foreground hover:bg-muted/30"}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           <button onClick={run} disabled={loading || !selectedDate || selectedRoutes.size === 0}
             className="flex items-center gap-2 bg-primary text-primary-foreground py-2.5 px-6 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {loading ? (solverMode === "cpsat" ? "CP-SAT Solving…" : "Elaborazione…") : "Genera Turni Macchina"}
+            {loading ? (solverMode === "cpsat" ? `CP-SAT (${solverIntensity === "fast" ? "Veloce" : solverIntensity === "deep" ? "Profondo" : "Normale"})…` : "Elaborazione…") : "Genera Turni Macchina"}
           </button>
           {result && !loading && (
             <>
@@ -1069,6 +1136,17 @@ export default function ServiceProgramPage() {
                       <span className="text-xs text-muted-foreground">
                         Tempo: {solverMetrics.totalSolveTimeSec ?? solverMetrics.solveTimeSec ?? "?"}s
                       </span>
+                      {solverMetrics.status && (
+                        <Badge variant="outline" className={`text-xs ${solverMetrics.status === "OPTIMAL" ? "border-green-500/50 text-green-400" : solverMetrics.status === "FEASIBLE" ? "border-amber-500/50 text-amber-400" : "border-muted-foreground/50"}`}>
+                          {solverMetrics.status}
+                          {solverMetrics.gap != null && solverMetrics.gap > 0 && <> (gap {(solverMetrics.gap * 100).toFixed(1)}%)</>}
+                        </Badge>
+                      )}
+                      {solverMetrics.localSearchImprovement != null && solverMetrics.localSearchImprovement > 0 && (
+                        <Badge variant="outline" className="text-xs border-green-500/30 text-green-400">
+                          🔄 Local Search: -{solverMetrics.localSearchImprovement.toFixed(1)}%
+                        </Badge>
+                      )}
                       {solverMetrics.byCategory && Object.entries(solverMetrics.byCategory).map(([cat, m]: [string, any]) => (
                         <Badge key={cat} variant="outline" className="text-xs">
                           {cat}: {m.status}
@@ -1077,6 +1155,94 @@ export default function ServiceProgramPage() {
                     </>
                   )}
                 </div>
+              )}
+
+              {/* ──── GREEDY COMPARISON BANNER ──── */}
+              {result.solver === "cpsat" && result.greedyComparison && result.costBreakdown && (() => {
+                const greedyCost = result.greedyComparison.costBreakdown.aggregated.total;
+                const cpsatCost = result.costBreakdown.aggregated.total;
+                const greedyVehicles = result.greedyComparison.vehicles;
+                const cpsatVehicles = result.costBreakdown.numVehicles;
+                const savedCost = greedyCost - cpsatCost;
+                const savedPct = greedyCost > 0 ? (savedCost / greedyCost) * 100 : 0;
+                const savedVehicles = greedyVehicles - cpsatVehicles;
+                return (
+                  <div className="bg-gradient-to-r from-green-500/10 via-emerald-500/10 to-teal-500/10 border border-green-500/30 rounded-xl p-4">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                          <TrendingUp className="w-4 h-4 text-green-400" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-green-400">
+                            CP-SAT risparmia {savedPct.toFixed(1)}% vs Greedy
+                          </div>
+                          <div className="text-[11px] text-muted-foreground">
+                            €{savedCost.toFixed(0)}/giorno in meno · {savedVehicles > 0 ? `${savedVehicles} veicoli in meno` : "Stesso numero di veicoli"}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-4 ml-auto text-xs">
+                        <div className="text-center">
+                          <div className="text-muted-foreground">Greedy</div>
+                          <div className="font-bold text-red-400/80">{greedyVehicles} veicoli</div>
+                          <div className="text-muted-foreground">€{greedyCost.toFixed(0)}</div>
+                        </div>
+                        <div className="flex items-center">
+                          <ArrowRight className="w-4 h-4 text-green-400" />
+                        </div>
+                        <div className="text-center">
+                          <div className="text-muted-foreground">CP-SAT</div>
+                          <div className="font-bold text-green-400">{cpsatVehicles} veicoli</div>
+                          <div className="text-green-400">€{cpsatCost.toFixed(0)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* ──── COST BREAKDOWN (CP-SAT F.O.) ──── */}
+              {result.solver === "cpsat" && result.costBreakdown && (
+                <Card className="bg-muted/30 border-purple-500/20">
+                  <CardContent className="p-5">
+                    <h3 className="text-sm font-semibold flex items-center gap-1.5 mb-4">
+                      <Euro className="w-4 h-4 text-purple-400" /> Costi Funzione Obiettivo (CP-SAT)
+                      <Badge variant="outline" className="text-[10px] ml-2 border-purple-500/30 text-purple-400">
+                        {result.costBreakdown.numVehicles} veicoli · €{result.costBreakdown.aggregated.total.toFixed(2)}
+                      </Badge>
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                      {[
+                        { label: "Fisso giornaliero", value: result.costBreakdown.aggregated.fixedDaily, color: "#3b82f6", icon: "🏷️" },
+                        { label: "Km servizio", value: result.costBreakdown.aggregated.serviceKmCost, color: "#06b6d4", icon: "🛣️" },
+                        { label: "Km vuoto", value: result.costBreakdown.aggregated.deadheadKmCost, color: "#ef4444", icon: "↝" },
+                        { label: "Inattivo", value: result.costBreakdown.aggregated.idleCost, color: "#f59e0b", icon: "⏸️" },
+                        { label: "Rientri deposito", value: result.costBreakdown.aggregated.depotReturnCost, color: "#8b5cf6", icon: "🏠" },
+                        { label: "Bilanciamento", value: result.costBreakdown.aggregated.balancePenalty, color: "#ec4899", icon: "⚖️" },
+                        { label: "Gap penalty", value: result.costBreakdown.aggregated.gapPenalty, color: "#d97706", icon: "⏳" },
+                        { label: "Downsize", value: result.costBreakdown.aggregated.downsizePenalty, color: "#14b8a6", icon: "↓" },
+                      ].filter(c => c.value > 0.01).map(comp => {
+                        const pct = result.costBreakdown!.aggregated.total > 0 ? (comp.value / result.costBreakdown!.aggregated.total) * 100 : 0;
+                        return (
+                          <div key={comp.label} className="bg-background/50 rounded-lg p-2.5">
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="text-sm">{comp.icon}</span>
+                              <span className="text-[10px] text-muted-foreground">{comp.label}</span>
+                            </div>
+                            <div className="text-sm font-bold" style={{ color: comp.color }}>
+                              €{comp.value.toFixed(0)}
+                            </div>
+                            <div className="h-1 bg-muted/30 rounded-full overflow-hidden mt-1">
+                              <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: comp.color }} />
+                            </div>
+                            <div className="text-[9px] text-muted-foreground mt-0.5">{pct.toFixed(1)}%</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardContent>
+                </Card>
               )}
 
               {/* ──── SUMMARY CARDS ──── */}

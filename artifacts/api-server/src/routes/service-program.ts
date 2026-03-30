@@ -1293,6 +1293,8 @@ async function runCPSATVehicleScheduler(
   tripBlocks: TripBlock[],
   timeLimitSec: number,
   logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
+  extraConfig?: Record<string, any>,
+  routeDetails?: { routeId: string; routeName: string }[],
 ): Promise<any> {
   const scriptPath = path.resolve(SCRIPTS_DIR, "vehicle_scheduler_cpsat.py");
 
@@ -1352,7 +1354,11 @@ async function runCPSATVehicleScheduler(
 
     const inputJson = JSON.stringify({
       trips: pyTrips,
-      config: { timeLimit: timeLimitSec },
+      config: {
+        timeLimit: timeLimitSec,
+        ...extraConfig,
+      },
+      routeDetails: routeDetails || [],
     });
     py.stdin.write(inputJson);
     py.stdin.end();
@@ -1370,6 +1376,8 @@ router.post("/service-program/cpsat", async (req, res) => {
       date?: string;
       routes?: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
       timeLimit?: number;
+      vehicleCosts?: Record<string, any>;
+      solverIntensity?: string;
     };
 
     const rawDate = body.date;
@@ -1502,8 +1510,21 @@ router.post("/service-program/cpsat", async (req, res) => {
 
     req.log.info(`CP-SAT VSP: ${tripBlocks.length} trips, timeLimit=${timeLimitSec}s`);
 
+    // Build route details for Python
+    const routeDetailsForPy = Array.from(selectedRouteIds).map(rid => ({
+      routeId: rid,
+      routeName: routeNameMap.get(rid) || rid,
+    }));
+
     // 6. Spawn Python solver
-    const cpResult = await runCPSATVehicleScheduler(tripBlocks, timeLimitSec, req.log);
+    const cpResult = await runCPSATVehicleScheduler(
+      tripBlocks, timeLimitSec, req.log,
+      {
+        vehicleCosts: body.vehicleCosts || {},
+        solverIntensity: body.solverIntensity || "normal",
+      },
+      routeDetailsForPy,
+    );
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
     const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
@@ -1583,6 +1604,8 @@ router.post("/service-program/cpsat", async (req, res) => {
       score,
       advisories,
       solverMetrics: cpResult.metrics,
+      costBreakdown: cpResult.costBreakdown || null,
+      greedyComparison: cpResult.greedyComparison || null,
     });
   } catch (err: any) {
     req.log.error(err, "Error in CP-SAT service-program");
