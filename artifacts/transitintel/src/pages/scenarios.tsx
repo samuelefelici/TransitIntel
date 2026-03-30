@@ -17,7 +17,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { getApiBase } from "@/lib/api";
+import { getApiBase, apiFetch } from "@/lib/api";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -210,10 +210,11 @@ export default function ScenariosPage() {
   // ─── Data fetching ──────────────────────────────────────────────
   const fetchScenarios = useCallback(async () => {
     try {
-      const r = await fetch(`${getApiBase()}/api/scenarios`);
-      const d = await r.json();
+      const d = await apiFetch<{ data: ScenarioItem[] }>("/api/scenarios");
       setScenarioList(d.data || []);
-    } catch {}
+    } catch (err) {
+      console.error("Errore caricamento scenari:", err);
+    }
   }, []);
 
   useEffect(() => { fetchScenarios(); }, [fetchScenarios]);
@@ -221,18 +222,22 @@ export default function ScenariosPage() {
   // Fetch POI
   useEffect(() => {
     if (!showPoi || poiData) return;
-    fetch(`${getApiBase()}/api/poi`).then(r => r.json()).then(d => setPoiData(d)).catch(() => {});
+    fetch(`${getApiBase()}/api/poi`).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); }).then(d => setPoiData(d)).catch(err => console.error("Errore caricamento POI:", err));
   }, [showPoi, poiData]);
 
   // Load scenario geojson when toggled visible
+  const loadedScenariosRef = useRef(loadedScenarios);
+  loadedScenariosRef.current = loadedScenarios;
+
   const loadScenario = useCallback(async (id: string) => {
-    if (loadedScenarios[id]) return;
+    if (loadedScenariosRef.current[id]) return;
     try {
-      const r = await fetch(`${getApiBase()}/api/scenarios/${id}`);
-      const data = await r.json();
+      const data = await apiFetch<ScenarioFull>(`/api/scenarios/${id}`);
       setLoadedScenarios(prev => ({ ...prev, [id]: data }));
-    } catch {}
-  }, [loadedScenarios]);
+    } catch (err) {
+      console.error(`Errore caricamento scenario ${id}:`, err);
+    }
+  }, []);
 
   const toggleVisibility = useCallback(async (id: string) => {
     const newSet = new Set(visibleIds);
@@ -329,11 +334,11 @@ export default function ScenariosPage() {
     setCompareResult(null);
     setAnalysisPanelOpen(true);
     try {
-      const analysisRes = await fetch(`${getApiBase()}/api/scenarios/${id}/analyze?radius=${analysisRadius}`);
-      const data = await analysisRes.json();
+      const data = await apiFetch<AnalysisResult>(`/api/scenarios/${id}/analyze?radius=${analysisRadius}`);
       setAnalysisResult(data);
-    } catch {
-      alert("Errore nell'analisi dello scenario");
+    } catch (err: any) {
+      console.error("Errore analisi scenario:", err);
+      alert(`Errore nell'analisi: ${err.message}`);
     } finally {
       setAnalysisLoading(false);
     }
@@ -347,11 +352,11 @@ export default function ScenariosPage() {
     setAnalysisResult(null);
     setAnalysisPanelOpen(true);
     try {
-      const r = await fetch(`${getApiBase()}/api/scenarios/compare?ids=${selectedForCompare.join(",")}&radius=${analysisRadius}`);
-      const data = await r.json();
+      const data = await apiFetch<CompareResult>(`/api/scenarios/compare?ids=${selectedForCompare.join(",")}&radius=${analysisRadius}`);
       setCompareResult(data);
-    } catch {
-      alert("Errore nel confronto scenari");
+    } catch (err: any) {
+      console.error("Errore confronto scenari:", err);
+      alert(`Errore nel confronto: ${err.message}`);
     } finally {
       setCompareLoading(false);
     }

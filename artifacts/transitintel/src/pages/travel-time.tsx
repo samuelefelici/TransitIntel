@@ -292,7 +292,7 @@ export default function TravelTime() {
         }
         setRouteList(Object.values(seen).sort((a, b) => a.routeShortName.localeCompare(b.routeShortName, undefined, { numeric: true })));
       })
-      .catch(() => {});
+      .catch(err => console.error("Errore caricamento routes GTFS:", err));
   }, []);
 
   // Load traffic availability
@@ -307,7 +307,7 @@ export default function TravelTime() {
           if (d.dayTypes?.length) setTrafficDayTypes(d.dayTypes);
         }
       })
-      .catch(() => {});
+      .catch(err => console.error("Errore caricamento traffic availability:", err));
   }, []);
 
   // Auto-sync traffic day types with selected day
