@@ -143,12 +143,18 @@ function AnalysisTab({ feedId }: { feedId: string | null }) {
     setLoading(true);
     setError(null);
     fetch(`${getApiBase()}/api/gtfs/analysis?feedId=${feedId}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(d => {
         if (d.noData) { setError(d.message); }
         else setAnalysis(d);
       })
-      .catch(() => setError("Errore durante il caricamento dell'analisi"))
+      .catch((err) => {
+        console.error("[GTFS] analysis failed:", err);
+        setError("Errore durante il caricamento dell'analisi");
+      })
       .finally(() => setLoading(false));
   }, [feedId]);
 
@@ -489,9 +495,12 @@ function FeedCard({
       setLoadingRoutes(true);
       try {
         const resp = await fetch(`${getApiBase()}/api/gtfs/routes?feedId=${feed.id}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         setRoutes(data.data || []);
-      } catch { }
+      } catch (err) {
+        console.error("[GTFS] loadRoutes failed:", err);
+      }
       finally { setLoadingRoutes(false); }
     }
   };
@@ -622,12 +631,14 @@ export default function GtfsPage() {
     setLoading(true);
     try {
       const resp = await fetch(`${getApiBase()}/api/gtfs/feeds`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       const f = data.data || [];
       setFeeds(f);
       if (f.length > 0 && !selectedFeed) setSelectedFeed(f[0].id);
-    } catch { }
-    finally { setLoading(false); }
+    } catch (err) {
+      console.error("[GTFS] loadFeeds failed:", err);
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { loadFeeds(); }, [loadFeeds]);
@@ -643,7 +654,12 @@ export default function GtfsPage() {
     form.append("file", file);
     try {
       const resp = await fetch(`${getApiBase()}/api/gtfs/upload`, { method: "POST", body: form });
-      const data = await resp.json();
+      let data: any;
+      try {
+        data = await resp.json();
+      } catch {
+        throw new Error(`Server ha risposto con status ${resp.status} (risposta non JSON)`);
+      }
       if (resp.ok && data.success) {
         setUploadResult({
           success: true,
@@ -652,17 +668,24 @@ export default function GtfsPage() {
         await loadFeeds();
         setActiveTab("analysis");
       } else {
-        setUploadResult({ success: false, message: data.error || "Errore durante il caricamento" });
+        setUploadResult({ success: false, message: data.error || `Errore HTTP ${resp.status}` });
       }
-    } catch {
-      setUploadResult({ success: false, message: "Errore di rete durante il caricamento" });
+    } catch (err) {
+      console.error("[GTFS] upload failed:", err);
+      setUploadResult({ success: false, message: err instanceof Error ? err.message : "Errore di rete durante il caricamento" });
     } finally {
       setUploading(false);
     }
   };
 
   const handleDelete = async (feedId: string) => {
-    await fetch(`${getApiBase()}/api/gtfs/feeds/${feedId}`, { method: "DELETE" });
+    try {
+      const resp = await fetch(`${getApiBase()}/api/gtfs/feeds/${feedId}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    } catch (err) {
+      console.error("[GTFS] delete failed:", err);
+      return;
+    }
     const next = feeds.filter(f => f.id !== feedId);
     setFeeds(next);
     if (selectedFeed === feedId) setSelectedFeed(next[0]?.id || null);

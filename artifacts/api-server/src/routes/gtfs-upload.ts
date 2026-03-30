@@ -35,6 +35,8 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       return entry ? entry.getData().toString("utf-8") : null;
     };
 
+    req.log.info({ entries: entries.length }, "GTFS zip extracted");
+
     const stopsContent = getFile("stops.txt");
     const routesContent = getFile("routes.txt");
     const tripsContent = getFile("trips.txt");
@@ -112,6 +114,13 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       shapesCount: shapePairs.length,
     }).returning();
 
+    req.log.info({
+      feedId: feed.id,
+      stops: stopsRaw.length, routes: routesRaw.length,
+      trips: tripsRaw.length, shapes: shapePairs.length,
+      stopTimes: stopTimesRaw.length,
+    }, "GTFS feed created, starting inserts");
+
     // Insert stops with service stats
     const stopsToInsert = stopsRaw
       .filter(s => s["stop_lat"] && s["stop_lon"])
@@ -151,6 +160,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
         )}
       `);
     }
+    req.log.info({ count: stopsToInsert.length }, "GTFS stops inserted");
 
     // Insert routes
     const routesToInsert = routesRaw.map(r => ({
@@ -167,6 +177,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
     for (let i = 0; i < routesToInsert.length; i += 200) {
       await db.insert(gtfsRoutes).values(routesToInsert.slice(i, i + 200));
     }
+    req.log.info({ count: routesToInsert.length }, "GTFS routes inserted");
 
     // Build shape_id → route mapping via trips.txt
     const shapeToRoute: Record<string, { routeId: string; routeShortName: string; routeColor: string }> = {};
@@ -197,6 +208,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
         );
       }
     }
+    req.log.info({ count: shapePairs.length }, "GTFS shapes inserted");
 
     // Insert calendar
     if (calendarRaw.length > 0) {
@@ -246,6 +258,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
         await db.insert(gtfsTrips).values(tripRows.slice(i, i + 500));
       }
     }
+    req.log.info({ count: tripsRaw.length }, "GTFS trips inserted");
 
     // Insert stop_times
     if (stopTimesRaw.length > 0) {
@@ -257,10 +270,11 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
         departureTime: st["departure_time"] || st["arrival_time"] || null,
         arrivalTime: st["arrival_time"] || null,
       })).filter(st => st.tripId && st.stopId);
-      for (let i = 0; i < stRows.length; i += 1000) {
-        await db.insert(gtfsStopTimes).values(stRows.slice(i, i + 1000));
+      for (let i = 0; i < stRows.length; i += 3000) {
+        await db.insert(gtfsStopTimes).values(stRows.slice(i, i + 3000));
       }
     }
+    req.log.info({ count: stopTimesRaw.length }, "GTFS stop_times inserted");
 
     // Invalidate all cached GTFS data
     clearCache("/api/gtfs/");
