@@ -653,12 +653,26 @@ export default function GtfsPage() {
     const form = new FormData();
     form.append("file", file);
     try {
-      const resp = await fetch(`${getApiBase()}/api/gtfs/upload`, { method: "POST", body: form });
-      let data: any;
+      let resp: Response;
       try {
+        resp = await fetch(`${getApiBase()}/api/gtfs/upload`, { method: "POST", body: form });
+      } catch (networkErr) {
+        // fetch itself threw — network error, backend unreachable, proxy down
+        throw new Error("Impossibile raggiungere il server. Verifica che il backend sia in esecuzione.");
+      }
+      let data: any;
+      const contentType = resp.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
         data = await resp.json();
-      } catch {
-        throw new Error(`Server ha risposto con status ${resp.status} (risposta non JSON)`);
+      } else {
+        // Server returned non-JSON (proxy error page, HTML error, etc.)
+        const text = await resp.text();
+        console.error("[GTFS] non-JSON response:", resp.status, text.slice(0, 500));
+        throw new Error(
+          resp.status === 504 || resp.status === 502
+            ? "Il server non ha risposto in tempo. Il file potrebbe essere troppo grande, riprova."
+            : `Errore del server (HTTP ${resp.status}). Verifica che il backend sia avviato.`
+        );
       }
       if (resp.ok && data.success) {
         setUploadResult({

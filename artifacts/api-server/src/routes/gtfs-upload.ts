@@ -103,25 +103,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
     const feedStart = feedInfoRaw[0]?.["feed_start_date"] || null;
     const feedEnd = feedInfoRaw[0]?.["feed_end_date"] || null;
 
-    const [feed] = await db.insert(gtfsFeeds).values({
-      filename: req.file.originalname,
-      agencyName,
-      feedStartDate: feedStart,
-      feedEndDate: feedEnd,
-      stopsCount: stopsRaw.length,
-      routesCount: routesRaw.length,
-      tripsCount: tripsRaw.length,
-      shapesCount: shapePairs.length,
-    }).returning();
-
-    req.log.info({
-      feedId: feed.id,
-      stops: stopsRaw.length, routes: routesRaw.length,
-      trips: tripsRaw.length, shapes: shapePairs.length,
-      stopTimes: stopTimesRaw.length,
-    }, "GTFS feed created, starting inserts");
-
-    // Insert stops with service stats
+    // Prepare stops data outside transaction (CPU work)
     const stopsToInsert = stopsRaw
       .filter(s => s["stop_lat"] && s["stop_lon"])
       .map(s => {
@@ -134,7 +116,6 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
         const eveScore = Math.min(evening / 6, 1) * 25;
         const serviceScore = Math.round((freqScore + mornScore + eveScore) * 10) / 10;
         return {
-          feedId: feed.id,
           stopId: sid,
           stopCode: s["stop_code"] || null,
           stopName: s["stop_name"] || "Senza nome",
@@ -150,21 +131,7 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       })
       .filter(s => !isNaN(s.stopLat) && !isNaN(s.stopLon));
 
-    for (let i = 0; i < stopsToInsert.length; i += 500) {
-      const batch = stopsToInsert.slice(i, i + 500);
-      await db.execute(sql`
-        INSERT INTO gtfs_stops (feed_id, stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, wheelchair_boarding, trips_count, morning_peak_trips, evening_peak_trips, service_score)
-        VALUES ${sql.join(
-          batch.map(s => sql`(${feed.id}, ${s.stopId}, ${s.stopCode}, ${s.stopName}, ${s.stopDesc}, ${s.stopLat}, ${s.stopLon}, ${s.wheelchairBoarding}, ${s.tripsCount}, ${s.morningPeakTrips}, ${s.eveningPeakTrips}, ${s.serviceScore})`),
-          sql`, `
-        )}
-      `);
-    }
-    req.log.info({ count: stopsToInsert.length }, "GTFS stops inserted");
-
-    // Insert routes
     const routesToInsert = routesRaw.map(r => ({
-      feedId: feed.id,
       routeId: r["route_id"] || "",
       agencyId: r["agency_id"] || null,
       routeShortName: r["route_short_name"] || null,
@@ -174,10 +141,6 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       routeTextColor: r["route_text_color"] ? `#${r["route_text_color"]}` : null,
       tripsCount: tripsPerRoute[r["route_id"]] || 0,
     }));
-    for (let i = 0; i < routesToInsert.length; i += 200) {
-      await db.insert(gtfsRoutes).values(routesToInsert.slice(i, i + 200));
-    }
-    req.log.info({ count: routesToInsert.length }, "GTFS routes inserted");
 
     // Build shape_id → route mapping via trips.txt
     const shapeToRoute: Record<string, { routeId: string; routeShortName: string; routeColor: string }> = {};
@@ -193,97 +156,142 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       };
     }
 
-    // Insert shapes with route info
-    if (shapePairs.length > 0) {
-      for (let i = 0; i < shapePairs.length; i += 100) {
-        await db.insert(gtfsShapes).values(
-          shapePairs.slice(i, i + 100).map(s => ({
-            feedId: feed.id,
-            shapeId: s.shapeId,
-            routeId: shapeToRoute[s.shapeId]?.routeId ?? null,
-            routeShortName: shapeToRoute[s.shapeId]?.routeShortName ?? null,
-            routeColor: shapeToRoute[s.shapeId]?.routeColor ?? null,
-            geojson: s.geojson,
-          }))
-        );
-      }
-    }
-    req.log.info({ count: shapePairs.length }, "GTFS shapes inserted");
+    // ── ALL DB inserts inside a TRANSACTION — if anything fails, everything rolls back ──
+    const result = await db.transaction(async (tx) => {
+      // Create feed record
+      const [feed] = await tx.insert(gtfsFeeds).values({
+        filename: req.file!.originalname,
+        agencyName,
+        feedStartDate: feedStart,
+        feedEndDate: feedEnd,
+        stopsCount: stopsRaw.length,
+        routesCount: routesRaw.length,
+        tripsCount: tripsRaw.length,
+        shapesCount: shapePairs.length,
+      }).returning();
 
-    // Insert calendar
-    if (calendarRaw.length > 0) {
-      const calendarRows = calendarRaw.map(c => ({
+      req.log.info({
         feedId: feed.id,
-        serviceId: c["service_id"] || "",
-        monday: parseInt(c["monday"] || "0") || 0,
-        tuesday: parseInt(c["tuesday"] || "0") || 0,
-        wednesday: parseInt(c["wednesday"] || "0") || 0,
-        thursday: parseInt(c["thursday"] || "0") || 0,
-        friday: parseInt(c["friday"] || "0") || 0,
-        saturday: parseInt(c["saturday"] || "0") || 0,
-        sunday: parseInt(c["sunday"] || "0") || 0,
-        startDate: c["start_date"] || "",
-        endDate: c["end_date"] || "",
-      })).filter(c => c.serviceId);
-      for (let i = 0; i < calendarRows.length; i += 200) {
-        await db.insert(gtfsCalendar).values(calendarRows.slice(i, i + 200));
-      }
-    }
+        stops: stopsRaw.length, routes: routesRaw.length,
+        trips: tripsRaw.length, shapes: shapePairs.length,
+        stopTimes: stopTimesRaw.length,
+      }, "GTFS feed created (in transaction), inserting data…");
 
-    // Insert calendar_dates
-    if (calendarDatesRaw.length > 0) {
-      const cdRows = calendarDatesRaw.map(c => ({
-        feedId: feed.id,
-        serviceId: c["service_id"] || "",
-        date: c["date"] || "",
-        exceptionType: parseInt(c["exception_type"] || "1") || 1,
-      })).filter(c => c.serviceId && c.date);
-      for (let i = 0; i < cdRows.length; i += 500) {
-        await db.insert(gtfsCalendarDates).values(cdRows.slice(i, i + 500));
+      // Insert stops with service stats
+      for (let i = 0; i < stopsToInsert.length; i += 500) {
+        const batch = stopsToInsert.slice(i, i + 500);
+        await tx.execute(sql`
+          INSERT INTO gtfs_stops (feed_id, stop_id, stop_code, stop_name, stop_desc, stop_lat, stop_lon, wheelchair_boarding, trips_count, morning_peak_trips, evening_peak_trips, service_score)
+          VALUES ${sql.join(
+            batch.map(s => sql`(${feed.id}, ${s.stopId}, ${s.stopCode}, ${s.stopName}, ${s.stopDesc}, ${s.stopLat}, ${s.stopLon}, ${s.wheelchairBoarding}, ${s.tripsCount}, ${s.morningPeakTrips}, ${s.eveningPeakTrips}, ${s.serviceScore})`),
+            sql`, `
+          )}
+        `);
       }
-    }
+      req.log.info({ count: stopsToInsert.length }, "GTFS stops inserted");
 
-    // Insert trips
-    if (tripsRaw.length > 0) {
-      const tripRows = tripsRaw.map(t => ({
-        feedId: feed.id,
-        tripId: t["trip_id"] || "",
-        routeId: t["route_id"] || "",
-        serviceId: t["service_id"] || "",
-        tripHeadsign: t["trip_headsign"] || null,
-        directionId: parseInt(t["direction_id"] || "0") || 0,
-        shapeId: t["shape_id"] || null,
-      })).filter(t => t.tripId && t.routeId && t.serviceId);
-      for (let i = 0; i < tripRows.length; i += 500) {
-        await db.insert(gtfsTrips).values(tripRows.slice(i, i + 500));
+      // Insert routes
+      for (let i = 0; i < routesToInsert.length; i += 200) {
+        await tx.insert(gtfsRoutes).values(routesToInsert.slice(i, i + 200).map(r => ({ ...r, feedId: feed.id })));
       }
-    }
-    req.log.info({ count: tripsRaw.length }, "GTFS trips inserted");
+      req.log.info({ count: routesToInsert.length }, "GTFS routes inserted");
 
-    // Insert stop_times
-    if (stopTimesRaw.length > 0) {
-      const stRows = stopTimesRaw.map(st => ({
-        feedId: feed.id,
-        tripId: st["trip_id"] || "",
-        stopId: st["stop_id"] || "",
-        stopSequence: parseInt(st["stop_sequence"] || "0") || 0,
-        departureTime: st["departure_time"] || st["arrival_time"] || null,
-        arrivalTime: st["arrival_time"] || null,
-      })).filter(st => st.tripId && st.stopId);
-      for (let i = 0; i < stRows.length; i += 3000) {
-        await db.insert(gtfsStopTimes).values(stRows.slice(i, i + 3000));
+      // Insert shapes with route info
+      if (shapePairs.length > 0) {
+        for (let i = 0; i < shapePairs.length; i += 100) {
+          await tx.insert(gtfsShapes).values(
+            shapePairs.slice(i, i + 100).map(s => ({
+              feedId: feed.id,
+              shapeId: s.shapeId,
+              routeId: shapeToRoute[s.shapeId]?.routeId ?? null,
+              routeShortName: shapeToRoute[s.shapeId]?.routeShortName ?? null,
+              routeColor: shapeToRoute[s.shapeId]?.routeColor ?? null,
+              geojson: s.geojson,
+            }))
+          );
+        }
       }
-    }
-    req.log.info({ count: stopTimesRaw.length }, "GTFS stop_times inserted");
+      req.log.info({ count: shapePairs.length }, "GTFS shapes inserted");
+
+      // Insert calendar
+      if (calendarRaw.length > 0) {
+        const calendarRows = calendarRaw.map(c => ({
+          feedId: feed.id,
+          serviceId: c["service_id"] || "",
+          monday: parseInt(c["monday"] || "0") || 0,
+          tuesday: parseInt(c["tuesday"] || "0") || 0,
+          wednesday: parseInt(c["wednesday"] || "0") || 0,
+          thursday: parseInt(c["thursday"] || "0") || 0,
+          friday: parseInt(c["friday"] || "0") || 0,
+          saturday: parseInt(c["saturday"] || "0") || 0,
+          sunday: parseInt(c["sunday"] || "0") || 0,
+          startDate: c["start_date"] || "",
+          endDate: c["end_date"] || "",
+        })).filter(c => c.serviceId);
+        for (let i = 0; i < calendarRows.length; i += 200) {
+          await tx.insert(gtfsCalendar).values(calendarRows.slice(i, i + 200));
+        }
+      }
+
+      // Insert calendar_dates
+      if (calendarDatesRaw.length > 0) {
+        const cdRows = calendarDatesRaw.map(c => ({
+          feedId: feed.id,
+          serviceId: c["service_id"] || "",
+          date: c["date"] || "",
+          exceptionType: parseInt(c["exception_type"] || "1") || 1,
+        })).filter(c => c.serviceId && c.date);
+        for (let i = 0; i < cdRows.length; i += 500) {
+          await tx.insert(gtfsCalendarDates).values(cdRows.slice(i, i + 500));
+        }
+      }
+
+      // Insert trips
+      if (tripsRaw.length > 0) {
+        const tripRows = tripsRaw.map(t => ({
+          feedId: feed.id,
+          tripId: t["trip_id"] || "",
+          routeId: t["route_id"] || "",
+          serviceId: t["service_id"] || "",
+          tripHeadsign: t["trip_headsign"] || null,
+          directionId: parseInt(t["direction_id"] || "0") || 0,
+          shapeId: t["shape_id"] || null,
+        })).filter(t => t.tripId && t.routeId && t.serviceId);
+        for (let i = 0; i < tripRows.length; i += 500) {
+          await tx.insert(gtfsTrips).values(tripRows.slice(i, i + 500));
+        }
+      }
+      req.log.info({ count: tripsRaw.length }, "GTFS trips inserted");
+
+      // Insert stop_times
+      if (stopTimesRaw.length > 0) {
+        const stRows = stopTimesRaw.map(st => ({
+          feedId: feed.id,
+          tripId: st["trip_id"] || "",
+          stopId: st["stop_id"] || "",
+          stopSequence: parseInt(st["stop_sequence"] || "0") || 0,
+          departureTime: st["departure_time"] || st["arrival_time"] || null,
+          arrivalTime: st["arrival_time"] || null,
+        })).filter(st => st.tripId && st.stopId);
+        for (let i = 0; i < stRows.length; i += 3000) {
+          await tx.insert(gtfsStopTimes).values(stRows.slice(i, i + 3000));
+        }
+      }
+      req.log.info({ count: stopTimesRaw.length }, "GTFS stop_times inserted");
+
+      return feed;
+    }); // end transaction — if we get here, ALL data is committed atomically
 
     // Invalidate all cached GTFS data
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");
     clearCache("/api/traffic/");
 
+    req.log.info({ feedId: result.id }, "GTFS import completed successfully (all data committed)");
+
     res.json({
       success: true,
-      feedId: feed.id,
+      feedId: result.id,
       stopsImported: stopsToInsert.length,
       routesImported: routesToInsert.length,
       tripsImported: tripsRaw.length,
@@ -294,8 +302,9 @@ router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
       agencyName,
     });
   } catch (err) {
-    req.log.error(err, "Error parsing GTFS zip");
-    res.status(500).json({ error: "Errore durante il parsing del GTFS" });
+    const msg = err instanceof Error ? err.message : String(err);
+    req.log.error({ err, message: msg, stack: err instanceof Error ? err.stack : undefined }, "GTFS upload failed — transaction rolled back, no partial data left");
+    res.status(500).json({ error: `Errore durante l'importazione GTFS: ${msg}` });
   }
 });
 
