@@ -157,6 +157,11 @@ interface CompareResult {
   scenarios: CompareScenario[];
   suggestions: string[];
   radius: number;
+  unifiedBase?: {
+    totalPop: number;
+    comuniCount: number;
+    comuni: { code: string; name: string; totalPop: number }[];
+  };
 }
 
 // ─── Component ──────────────────────────────────────────────────────────
@@ -509,17 +514,22 @@ export default function ScenariosPage() {
   }, [compareResult]);
 
   // Score breakdown data for analysis and compare
+  // Must match backend formula: 35% pop, 30% poi, 20% distribution, 15% efficiency
   const scoreBreakdown = useCallback((result: AnalysisResult) => {
-    const popScore = Math.min(100, result.populationCoverage.percent * 1.2);
+    const popScore = Math.min(100, result.populationCoverage.percent * 1.3);
     const poiScore = Math.min(100, result.poiCoverage.percent * 1.3);
-    const distScore = result.stopDistribution
-      ? Math.min(100, Math.max(0, 100 - result.stopDistribution.gapsOver1km * 8 - result.stopDistribution.stopsWithin300m * 0.5))
-      : 50;
-    const effScore = Math.min(100, result.efficiencyMetrics.popPerKm / 30);
+    const sd = result.stopDistribution;
+    const distScore = sd
+      ? Math.max(0, Math.min(100, 100
+          - Math.min(40, sd.gapsOver1km * 5)
+          - Math.min(20, (sd.stopsWithin300m / Math.max(1, sd.stopsWithin300m + sd.gapsOver1km + 10)) * 15)
+        ))
+      : 60;
+    const effScore = Math.min(100, (result.efficiencyMetrics.popPerKm / 500) * 100);
     return [
-      { factor: "Popolazione (40%)", value: Math.round(popScore), weight: 40, color: "#3b82f6" },
+      { factor: "Popolazione (35%)", value: Math.round(popScore), weight: 35, color: "#3b82f6" },
       { factor: "POI (30%)", value: Math.round(poiScore), weight: 30, color: "#22c55e" },
-      { factor: "Distribuzione (15%)", value: Math.round(distScore), weight: 15, color: "#f59e0b" },
+      { factor: "Distribuzione (20%)", value: Math.round(distScore), weight: 20, color: "#f59e0b" },
       { factor: "Efficienza (15%)", value: Math.round(effScore), weight: 15, color: "#a855f7" },
     ];
   }, []);
@@ -938,8 +948,8 @@ export default function ScenariosPage() {
                         <p className="text-[8px] text-muted-foreground">fermate/km</p>
                       </div>
                       <div className="bg-muted/20 rounded px-2 py-1.5">
-                        <p className="text-sm font-bold">×{analysisResult.efficiencyMetrics.costIndex}</p>
-                        <p className="text-[8px] text-muted-foreground">indice costo</p>
+                        <p className="text-sm font-bold">{analysisResult.efficiencyMetrics.costIndex}</p>
+                        <p className="text-[8px] text-muted-foreground">%pop/10km</p>
                       </div>
                     </div>
 
@@ -1012,7 +1022,7 @@ export default function ScenariosPage() {
 
                     {/* POI by category */}
                     <div>
-                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">Copertura POI per categoria (raggio {analysisResult.poiCoverage.radius} km)</p>
+                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">Copertura POI per categoria (raggio {analysisResult.poiCoverage.radius} km dalle fermate)</p>
                       <div className="grid grid-cols-2 gap-1.5">
                         {Object.entries(analysisResult.poiCoverage.byCategory)
                           .sort(([, a], [, b]) => b.total - a.total)
@@ -1034,7 +1044,7 @@ export default function ScenariosPage() {
 
                     {/* Population donut */}
                     <div>
-                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Copertura popolazione</p>
+                      <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">Copertura popolazione (sezioni censuarie ISTAT)</p>
                       <div className="flex items-center gap-3">
                         <div className="w-[100px] h-[100px]">
                           <ResponsiveContainer width="100%" height="100%">
@@ -1062,11 +1072,11 @@ export default function ScenariosPage() {
                           </div>
                           <div className="flex items-center gap-1.5 text-[10px]">
                             <div className="w-2.5 h-2.5 rounded-sm" style={{ background: "#334155" }} />
-                            <span className="text-muted-foreground">Totale (comuni toccati)</span>
+                            <span className="text-muted-foreground">Totale area servizio</span>
                             <span className="ml-auto font-semibold">{analysisResult.populationCoverage.totalPop.toLocaleString("it-IT")}</span>
                           </div>
                           <p className="text-[9px] text-muted-foreground italic mt-1">
-                            Calcolata su {analysisResult.populationCoverage.comuniToccati} comuni attraversati
+                            Dati ISTAT — {analysisResult.populationCoverage.comuniToccati} comuni, raggio {analysisResult.poiCoverage.radius} km dalle fermate
                           </p>
                         </div>
                       </div>
@@ -1102,6 +1112,19 @@ export default function ScenariosPage() {
                 {/* Compare result */}
                 {compareResult && !compareLoading && (
                   <div className="space-y-4">
+                    {/* Unified base indicator */}
+                    {compareResult.unifiedBase && (
+                      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[10px]">
+                        <Info className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          Base unificata: <strong>{compareResult.unifiedBase.totalPop.toLocaleString("it-IT")}</strong> abitanti
+                          in <strong>{compareResult.unifiedBase.comuniCount}</strong> comuni
+                          ({compareResult.unifiedBase.comuni.map(c => c.name).join(", ")}).
+                          Le % sono calcolate sulla stessa base per un confronto equo.
+                        </span>
+                      </div>
+                    )}
+
                     {/* Side-by-side KPI */}
                     <div className="grid grid-cols-2 gap-3">
                       {compareResult.scenarios.map(s => (
@@ -1182,7 +1205,7 @@ export default function ScenariosPage() {
                         { label: "Abitanti/km", aVal: a.efficiency.popPerKm, bVal: b.efficiency.popPerKm, fmt: (v: number) => v.toLocaleString("it-IT"), higher: true },
                         { label: "POI/km", aVal: a.efficiency.poiPerKm, bVal: b.efficiency.poiPerKm, fmt: (v: number) => String(v), higher: true },
                         { label: "Fermate/km", aVal: a.efficiency.stopsPerKm, bVal: b.efficiency.stopsPerKm, fmt: (v: number) => String(v), higher: true },
-                        { label: "Indice costo", aVal: a.efficiency.costIndex, bVal: b.efficiency.costIndex, fmt: (v: number) => `×${v}`, higher: false },
+                        { label: "%Pop/10km", aVal: a.efficiency.costIndex, bVal: b.efficiency.costIndex, fmt: (v: number) => String(v), higher: true },
                         { label: "Gap >1km", aVal: a.stopDistribution?.gapsOver1km ?? 0, bVal: b.stopDistribution?.gapsOver1km ?? 0, fmt: (v: number) => String(v), higher: false },
                         { label: "Ferm. vicine", aVal: a.stopDistribution?.stopsWithin300m ?? 0, bVal: b.stopDistribution?.stopsWithin300m ?? 0, fmt: (v: number) => String(v), higher: false },
                       ];
@@ -1342,17 +1365,23 @@ export default function ScenariosPage() {
 
                     {/* Suggestions */}
                     {compareResult.suggestions.length > 0 && (
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
-                          <Lightbulb className="w-3 h-3 text-amber-400" /> Suggerimenti di ottimizzazione
+                          <Lightbulb className="w-3 h-3 text-amber-400" /> Analisi comparativa
                         </p>
-                        {compareResult.suggestions.map((sug, i) => (
-                          <div key={i} className={`text-[11px] px-3 py-2 rounded-lg border ${
-                            sug.startsWith("⚠") ? "bg-red-500/10 border-red-500/30 text-red-300" : "bg-amber-500/10 border-amber-500/20 text-amber-200"
-                          }`}>
-                            {sug}
-                          </div>
-                        ))}
+                        {compareResult.suggestions.map((sug, i) => {
+                          const isWarning = sug.startsWith("⚠️") || sug.startsWith("🚨");
+                          const isIndented = sug.startsWith("  →");
+                          return (
+                            <div key={i} className={`text-[11px] px-3 py-1.5 rounded-lg border ${
+                              isWarning ? "bg-red-500/10 border-red-500/30 text-red-300"
+                              : isIndented ? "bg-muted/20 border-border/20 text-muted-foreground ml-4"
+                              : "bg-card/50 border-border/30 text-foreground/80"
+                            }`}>
+                              {sug}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

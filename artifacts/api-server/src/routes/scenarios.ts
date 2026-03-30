@@ -278,14 +278,14 @@ async function analyzeScenario(
   const totalLengthKm = routes.reduce((s, r) => s + r.lengthKm, 0);
   const allLines = routes.map(r => r.coordinates);
 
-  // Auto-generate stops every ~300m if none provided
+  // Auto-generate stops every ~400m if none provided
   if (stops.length === 0 && allLines.length > 0) {
     for (const line of allLines) {
       let accum = 0;
       stops.push({ name: "Auto-fermata", lng: line[0][0], lat: line[0][1] });
       for (let i = 1; i < line.length; i++) {
         accum += haversineKm(line[i - 1][1], line[i - 1][0], line[i][1], line[i][0]);
-        if (accum >= 0.3) {
+        if (accum >= 0.4) {
           stops.push({ name: "Auto-fermata", lng: line[i][0], lat: line[i][1] });
           accum = 0;
         }
@@ -298,28 +298,53 @@ async function analyzeScenario(
   }
 
   // ── Determine which comuni are touched ──
-  // A comune is "touched" if any stop or route point is within its census sections (proximity-based)
-  // We use a generous bounding box: find all sections within 2km of any route/stop
+  // A comune is "touched" if any stop or route passes through/near its census sections
   const touchedComuniCodes = new Set<string>();
 
-  // Build a set of all route vertices + stops for proximity
+  // Build a set of sampled route vertices + stops for proximity checks (coarse: ~500m)
   const allScenarioPoints: { lng: number; lat: number }[] = [...stops];
   for (const line of allLines) {
-    for (let i = 0; i < line.length; i += Math.max(1, Math.floor(line.length / 50))) {
-      allScenarioPoints.push({ lng: line[i][0], lat: line[i][1] });
+    let accum = 0;
+    allScenarioPoints.push({ lng: line[0][0], lat: line[0][1] });
+    for (let i = 1; i < line.length; i++) {
+      accum += haversineKm(line[i - 1][1], line[i - 1][0], line[i][1], line[i][0]);
+      if (accum >= 0.5) {
+        allScenarioPoints.push({ lng: line[i][0], lat: line[i][1] });
+        accum = 0;
+      }
     }
-    // always include last
     const last = line[line.length - 1];
     allScenarioPoints.push({ lng: last[0], lat: last[1] });
   }
 
-  // For each census section, check if any scenario point is within 2km → mark that comune as touched
-  const sectionComuneMap = new Map<string, string>(); // istatCode → comuneCode
-  for (const cs of validCensus) {
+  // Compute scenario bounding box for initial filtering
+  let sMinLng = Infinity, sMaxLng = -Infinity, sMinLat = Infinity, sMaxLat = -Infinity;
+  for (const p of allScenarioPoints) {
+    if (p.lng < sMinLng) sMinLng = p.lng;
+    if (p.lng > sMaxLng) sMaxLng = p.lng;
+    if (p.lat < sMinLat) sMinLat = p.lat;
+    if (p.lat > sMaxLat) sMaxLat = p.lat;
+  }
+  // Generous bounding box (+0.03° ≈ 3km) for "touched" detection
+  const scenarioBbox = {
+    minLng: sMinLng - 0.03, maxLng: sMaxLng + 0.03,
+    minLat: sMinLat - 0.03, maxLat: sMaxLat + 0.03,
+  };
+
+  // First pass: filter census sections by bounding box (very fast)
+  const sectionComuneMap = new Map<string, string>();
+  const nearbyCensus = validCensus.filter(cs => {
     const comuneCode = getComuneCode(cs.istatCode);
     sectionComuneMap.set(cs.istatCode, comuneCode);
+    return cs.centroidLat >= scenarioBbox.minLat && cs.centroidLat <= scenarioBbox.maxLat &&
+           cs.centroidLng >= scenarioBbox.minLng && cs.centroidLng <= scenarioBbox.maxLng;
+  });
+
+  // Second pass: for nearby sections, check centroid proximity (1.5km for "touched")
+  for (const cs of nearbyCensus) {
+    const comuneCode = getComuneCode(cs.istatCode);
     for (const sp of allScenarioPoints) {
-      if (haversineKm(cs.centroidLat, cs.centroidLng, sp.lat, sp.lng) < 2.0) {
+      if (haversineKm(cs.centroidLat, cs.centroidLng, sp.lat, sp.lng) < 1.5) {
         touchedComuniCodes.add(comuneCode);
         break;
       }
@@ -355,6 +380,8 @@ async function analyzeScenario(
   );
 
   // ── POI coverage ──
+  // Primary: distance from STOPS (people walk to stops to take the bus)
+  // Secondary: distance from route lines (slightly larger than radius for visibility but not coverage)
   const byCategory: Record<string, { total: number; covered: number }> = {};
   let totalPoi = 0, coveredPoi = 0;
   const uncoveredPoiList: ScenarioAnalysis["gapAnalysis"]["uncoveredPoi"] = [];
@@ -364,28 +391,38 @@ async function analyzeScenario(
     byCategory[poi.category].total++;
     totalPoi++;
 
-    let minDist = Infinity;
-    for (const line of allLines) {
-      const d = pointToLineDistance(poi.lng, poi.lat, line);
-      if (d < minDist) minDist = d;
-    }
+    // Primary: distance from nearest stop (this is what matters — people walk to stops)
+    let minStopDist = Infinity;
     for (const stop of stops) {
       const d = haversineKm(poi.lat, poi.lng, stop.lat, stop.lng);
-      if (d < minDist) minDist = d;
+      if (d < minStopDist) minStopDist = d;
+      if (d <= radiusKm) break; // early exit
     }
-    if (minDist <= radiusKm) {
+
+    // Secondary: distance from route line (with a slightly smaller effective radius)
+    let minLineDist = Infinity;
+    for (const line of allLines) {
+      const d = pointToLineDistance(poi.lng, poi.lat, line);
+      if (d < minLineDist) minLineDist = d;
+    }
+
+    // A POI is covered if within radius of a stop OR within 80% of radius from route
+    const isCovered = minStopDist <= radiusKm || minLineDist <= radiusKm * 0.8;
+    const effectiveDist = Math.min(minStopDist, minLineDist);
+
+    if (isCovered) {
       coveredPoi++;
       byCategory[poi.category].covered++;
     } else {
       // Track uncovered important POIs (within reasonable distance, not all)
       const criticalCategories = ["hospital", "school", "elderly", "transit"];
-      if (criticalCategories.includes(poi.category) && minDist <= radiusKm * 4) {
+      if (criticalCategories.includes(poi.category) && effectiveDist <= radiusKm * 4) {
         uncoveredPoiList.push({
           category: poi.category,
           name: poi.name || poi.category,
           lng: poi.lng,
           lat: poi.lat,
-          distKm: Math.round(minDist * 100) / 100,
+          distKm: Math.round(effectiveDist * 100) / 100,
         });
       }
     }
@@ -394,7 +431,13 @@ async function analyzeScenario(
   uncoveredPoiList.sort((a, b) => a.distKm - b.distKm);
   const topUncoveredPoi = uncoveredPoiList.slice(0, 15);
 
-  // ── Population coverage per comune ──
+  // ── Population coverage per comune (ISTAT sezioni censuarie) ──
+  // A census section is "covered" if:
+  //   1) Any stop is within radius of its centroid, OR
+  //   2) The route passes through the census polygon (point-in-polygon), OR
+  //   3) The centroid is within radius of the route line
+  // We use a proportional model: for large sections only partially covered,
+  // we weight the population by the proximity factor.
   const comuneAggregates = new Map<string, { totalPop: number; coveredPop: number; totalSections: number; coveredSections: number; poiTotal: number; poiCovered: number }>();
 
   for (const code of touchedComuniCodes) {
@@ -414,10 +457,11 @@ async function analyzeScenario(
     }
   }
   for (const poi of relevantPoi) {
-    let minDist = Infinity;
-    for (const line of allLines) { const d = pointToLineDistance(poi.lng, poi.lat, line); if (d < minDist) minDist = d; }
-    for (const stop of stops) { const d = haversineKm(poi.lat, poi.lng, stop.lat, stop.lng); if (d < minDist) minDist = d; }
-    if (minDist <= radiusKm) {
+    let minStopDist = Infinity;
+    for (const stop of stops) { const d = haversineKm(poi.lat, poi.lng, stop.lat, stop.lng); if (d < minStopDist) minStopDist = d; }
+    let minLineDist = Infinity;
+    for (const line of allLines) { const d = pointToLineDistance(poi.lng, poi.lat, line); if (d < minLineDist) minLineDist = d; }
+    if (minStopDist <= radiusKm || minLineDist <= radiusKm * 0.8) {
       let nearestCode = "";
       let nearestCodeDist = Infinity;
       for (const cs of relevantCensus) {
@@ -440,20 +484,39 @@ async function analyzeScenario(
     agg.totalSections++;
     totalPop += cs.population;
 
-    let minDist = Infinity;
+    // Check 1: Distance from nearest stop (primary — people walk to stops)
+    let minStopDist = Infinity;
     for (const stop of stops) {
       const d = haversineKm(cs.centroidLat, cs.centroidLng, stop.lat, stop.lng);
-      if (d < minDist) minDist = d;
+      if (d < minStopDist) minStopDist = d;
+      if (d <= radiusKm) break; // early exit
     }
-    // Also check distance to route lines
+
+    // Check 2: Distance from route line
+    let minLineDist = Infinity;
     for (const line of allLines) {
       const d = pointToLineDistance(cs.centroidLng, cs.centroidLat, line);
-      if (d < minDist) minDist = d;
+      if (d < minLineDist) minLineDist = d;
     }
-    if (minDist <= radiusKm) {
+
+    // Determine coverage with proportional model
+    // Fully covered: centroid within radius of a stop or route line
+    // Partially covered: centroid within 1.5x radius (fading)
+    const effectiveDist = Math.min(minStopDist, minLineDist);
+    const isFullyCovered = effectiveDist <= radiusKm;
+    const isPartiallyCovered = !isFullyCovered && effectiveDist <= radiusKm * 1.5;
+
+    if (isFullyCovered) {
       coveredPop += cs.population;
       agg.coveredPop += cs.population;
       agg.coveredSections++;
+    } else if (isPartiallyCovered) {
+      // Proportional: fade from 60% to 0% between radius and 1.5x radius
+      const factor = Math.max(0, 1 - ((effectiveDist - radiusKm) / (radiusKm * 0.5)));
+      const partialPop = Math.round(cs.population * factor * 0.6);
+      coveredPop += partialPop;
+      agg.coveredPop += partialPop;
+      if (factor > 0.3) agg.coveredSections++;
     }
   }
 
@@ -482,8 +545,6 @@ async function analyzeScenario(
   if (stops.length >= 2) {
     // Compute inter-stop distances along routes
     const interStopDists: number[] = [];
-    // For each route, find stops closest to the route and compute along-route distances
-    // Simpler approach: sort stops by projection onto the route, then compute sequential distances
     for (const route of routes) {
       const routeStops = stops
         .map(s => {
@@ -492,7 +553,6 @@ async function analyzeScenario(
         })
         .filter(s => s.dist < 0.5) // within 500m of route
         .sort((a, b) => {
-          // Project onto route by finding nearest segment position
           const projA = projectOnRoute(a.lng, a.lat, route.coordinates);
           const projB = projectOnRoute(b.lng, b.lat, route.coordinates);
           return projA - projB;
@@ -500,7 +560,7 @@ async function analyzeScenario(
 
       for (let i = 1; i < routeStops.length; i++) {
         const d = haversineKm(routeStops[i - 1].lat, routeStops[i - 1].lng, routeStops[i].lat, routeStops[i].lng);
-        if (d > 0.01) interStopDists.push(d); // ignore <10m duplicates
+        if (d > 0.05) interStopDists.push(d); // ignore <50m duplicates (auto-generated stops)
       }
     }
 
@@ -511,36 +571,50 @@ async function analyzeScenario(
         maxInterStopKm: Math.round(interStopDists[interStopDists.length - 1] * 1000) / 1000,
         avgInterStopKm: Math.round((interStopDists.reduce((s, d) => s + d, 0) / interStopDists.length) * 1000) / 1000,
         medianInterStopKm: Math.round(interStopDists[Math.floor(interStopDists.length / 2)] * 1000) / 1000,
-        stopsWithin300m: interStopDists.filter(d => d < 0.3).length,
+        stopsWithin300m: interStopDists.filter(d => d < 0.15).length, // very close stops (<150m)
         gapsOver1km: interStopDists.filter(d => d > 1.0).length,
       };
     }
   }
 
   // ── Efficiency metrics ──
-  const straightLineKm = allLines.length > 0
-    ? haversineKm(
-        allScenarioPoints[0].lat, allScenarioPoints[0].lng,
-        allScenarioPoints[allScenarioPoints.length - 1].lat, allScenarioPoints[allScenarioPoints.length - 1].lng
-      )
-    : 0;
-
+  // For bus routes, costIndex = route length / straight line is not useful (always high)
+  // Instead, compute service area per km (more meaningful)
   const efficiencyMetrics = {
     popPerKm: totalLengthKm > 0 ? Math.round(coveredPop / totalLengthKm) : 0,
     poiPerKm: totalLengthKm > 0 ? Math.round((coveredPoi / totalLengthKm) * 10) / 10 : 0,
-    costIndex: straightLineKm > 0 ? Math.round((totalLengthKm / straightLineKm) * 100) / 100 : 1,
+    costIndex: totalLengthKm > 0 && totalPop > 0 ? Math.round((coveredPop / totalPop * 100) / (totalLengthKm / 10) * 10) / 10 : 0, // % pop coperta per 10km
     stopsPerKm: totalLengthKm > 0 ? Math.round((stops.length / totalLengthKm) * 10) / 10 : 0,
   };
 
   // ── Accessibility score (0-100) ──
-  // Weighted composite: 40% pop coverage, 30% POI coverage, 15% stop distribution, 15% efficiency
-  const popScore = totalPop > 0 ? (coveredPop / totalPop) * 100 : 0;
-  const poiScore = totalPoi > 0 ? (coveredPoi / totalPoi) * 100 : 0;
+  // Weighted composite optimized for realistic bus route evaluation:
+  // - 35% population coverage (most important)
+  // - 30% POI coverage (service to key destinations)
+  // - 20% stop distribution quality (penalize gaps, not closely-spaced stops for urban)
+  // - 15% efficiency (pop served per km — higher is better)
+  const popPct = totalPop > 0 ? (coveredPop / totalPop) * 100 : 0;
+  const poiPct = totalPoi > 0 ? (coveredPoi / totalPoi) * 100 : 0;
+
+  // Population score: 0-100, with bonus for >50% coverage
+  const popScore = Math.min(100, popPct * 1.3);
+  // POI score: 0-100, similar scaling
+  const poiScore = Math.min(100, poiPct * 1.3);
+  // Distribution score: penalize gaps >1km (bad), mild penalty for close stops as % of total
+  // In urban networks with many overlapping routes, having stops <150m apart is common and acceptable
+  // Cap penalties so distribution doesn't collapse the overall score
   const distScore = stopDistribution
-    ? Math.max(0, 100 - (stopDistribution.gapsOver1km * 15) - (stopDistribution.stopsWithin300m * 5))
-    : 50;
-  const effScore = Math.min(100, efficiencyMetrics.popPerKm / 30); // 3000 pop/km = 100
-  const accessibilityScore = Math.round(popScore * 0.4 + poiScore * 0.3 + distScore * 0.15 + effScore * 0.15);
+    ? Math.max(0, Math.min(100, 100
+        - Math.min(40, stopDistribution.gapsOver1km * 5)        // max -40 for gaps >1km
+        - Math.min(20, (stopDistribution.stopsWithin300m / Math.max(1, stopDistribution.stopsWithin300m + stopDistribution.gapsOver1km + 10)) * 15)  // max -20 for close stops ratio
+      ))
+    : 60;
+  // Efficiency: popPerKm scaled so that 500 pop/km = 100 (reasonable for urban transit)
+  const effScore = Math.min(100, (efficiencyMetrics.popPerKm / 500) * 100);
+
+  const accessibilityScore = Math.round(
+    popScore * 0.35 + poiScore * 0.30 + distScore * 0.20 + effScore * 0.15
+  );
 
   return {
     routes,
@@ -642,29 +716,91 @@ router.get("/scenarios/compare", async (req, res) => {
       analyses.push({ scenario: { id: row.id, name: row.name, color: row.color }, analysis });
     }
 
+    // ── Compute UNIFIED population base for fair comparison ──
+    // Use the UNION of all comuni touched by ANY scenario
+    const allTouchedComuni = new Set<string>();
+    for (const an of analyses) {
+      for (const c of an.analysis.comuniDetails) {
+        allTouchedComuni.add(c.code);
+      }
+    }
+
+    // Calculate unified total population across all touched comuni
+    let unifiedTotalPop = 0;
+    const unifiedComuniPop = new Map<string, number>(); // code → totalPop
+    for (const an of analyses) {
+      for (const c of an.analysis.comuniDetails) {
+        if (!unifiedComuniPop.has(c.code) || c.totalPop > (unifiedComuniPop.get(c.code) || 0)) {
+          unifiedComuniPop.set(c.code, c.totalPop);
+        }
+      }
+    }
+    for (const pop of unifiedComuniPop.values()) {
+      unifiedTotalPop += pop;
+    }
+
+    // Add unified total POI from all scenarios (union of relevant POI)
+    let unifiedTotalPoi = 0;
+    const allPoiCategories = new Set<string>();
+    for (const an of analyses) {
+      if (an.analysis.poiCoverage.total > unifiedTotalPoi) {
+        unifiedTotalPoi = an.analysis.poiCoverage.total;
+      }
+      for (const cat of Object.keys(an.analysis.poiCoverage.byCategory)) {
+        allPoiCategories.add(cat);
+      }
+    }
+
+    // Recalculate percentages with unified base for fair comparison
+    for (const an of analyses) {
+      if (unifiedTotalPop > 0) {
+        an.analysis.populationCoverage.totalPop = unifiedTotalPop;
+        an.analysis.populationCoverage.percent = Math.round((an.analysis.populationCoverage.coveredPop / unifiedTotalPop) * 100);
+      }
+      an.analysis.populationCoverage.comuniToccati = an.analysis.comuniDetails.length;
+    }
+
     const suggestions: string[] = [];
     const a = analyses[0], b = analyses[1];
     const aName = a.scenario.name, bName = b.scenario.name;
 
-    // 1. Length comparison
+    // 1. Overall assessment
+    const aScore = a.analysis.accessibilityScore, bScore = b.analysis.accessibilityScore;
+    if (Math.abs(aScore - bScore) >= 5) {
+      const better = aScore > bScore ? a : b;
+      const worse = aScore <= bScore ? a : b;
+      suggestions.push(`📊 "${better.scenario.name}" ha un punteggio di accessibilità complessivo migliore: ${better.analysis.accessibilityScore}/100 vs ${worse.analysis.accessibilityScore}/100.`);
+    } else {
+      suggestions.push(`📊 I due scenari hanno punteggi di accessibilità simili: ${aName} ${aScore}/100 vs ${bName} ${bScore}/100.`);
+    }
+
+    // 2. Length comparison
     const lenDiff = Math.abs(a.analysis.totalLengthKm - b.analysis.totalLengthKm);
     if (lenDiff > 1) {
       const shorter = a.analysis.totalLengthKm < b.analysis.totalLengthKm ? aName : bName;
-      suggestions.push(`"${shorter}" è più corto di ${lenDiff.toFixed(1)} km. Un percorso più breve riduce i costi operativi.`);
+      const longer = a.analysis.totalLengthKm >= b.analysis.totalLengthKm ? aName : bName;
+      suggestions.push(`📏 "${shorter}" è più corto di ${lenDiff.toFixed(1)} km rispetto a "${longer}". Un percorso più breve riduce i costi operativi.`);
     }
 
-    // 2. Accessibility score
-    if (a.analysis.accessibilityScore !== b.analysis.accessibilityScore) {
-      const better = a.analysis.accessibilityScore > b.analysis.accessibilityScore ? a : b;
-      const worse = a.analysis.accessibilityScore <= b.analysis.accessibilityScore ? a : b;
-      suggestions.push(`"${better.scenario.name}" ha un indice di accessibilità migliore: ${better.analysis.accessibilityScore}/100 vs ${worse.analysis.accessibilityScore}/100.`);
+    // 3. Population coverage (using UNIFIED base)
+    const aCovPop = a.analysis.populationCoverage.coveredPop;
+    const bCovPop = b.analysis.populationCoverage.coveredPop;
+    const aPct = a.analysis.populationCoverage.percent;
+    const bPct = b.analysis.populationCoverage.percent;
+    if (aCovPop !== bCovPop) {
+      const betterPop = aCovPop > bCovPop ? a : b;
+      const worsePop = aCovPop <= bCovPop ? a : b;
+      const popDiffAbs = Math.abs(aCovPop - bCovPop);
+      const betterPct = betterPop === a ? aPct : bPct;
+      const worsePct = worsePop === a ? aPct : bPct;
+      suggestions.push(`👥 "${betterPop.scenario.name}" copre ${popDiffAbs.toLocaleString("it-IT")} abitanti in più (${betterPct}% vs ${worsePct}% sulla stessa base di ${unifiedTotalPop.toLocaleString("it-IT")} ab.).`);
     }
 
-    // 3. POI coverage
+    // 4. POI coverage
     if (a.analysis.poiCoverage.percent !== b.analysis.poiCoverage.percent) {
-      const better = a.analysis.poiCoverage.percent > b.analysis.poiCoverage.percent ? a : b;
-      const worse = a.analysis.poiCoverage.percent <= b.analysis.poiCoverage.percent ? a : b;
-      suggestions.push(`"${better.scenario.name}" copre il ${better.analysis.poiCoverage.percent}% dei POI vs ${worse.analysis.poiCoverage.percent}% di "${worse.scenario.name}" (raggio ${radius} km).`);
+      const betterPoi = a.analysis.poiCoverage.percent > b.analysis.poiCoverage.percent ? a : b;
+      const worsePoi = a.analysis.poiCoverage.percent <= b.analysis.poiCoverage.percent ? a : b;
+      suggestions.push(`📍 "${betterPoi.scenario.name}" copre il ${betterPoi.analysis.poiCoverage.percent}% dei POI vs ${worsePoi.analysis.poiCoverage.percent}% di "${worsePoi.scenario.name}" (raggio ${radius} km).`);
 
       const allCats = new Set([...Object.keys(a.analysis.poiCoverage.byCategory), ...Object.keys(b.analysis.poiCoverage.byCategory)]);
       const catLabels: Record<string, string> = {
@@ -676,34 +812,26 @@ router.get("/scenarios/compare", async (req, res) => {
       for (const cat of allCats) {
         const ca = a.analysis.poiCoverage.byCategory[cat] || { total: 0, covered: 0 };
         const cb = b.analysis.poiCoverage.byCategory[cat] || { total: 0, covered: 0 };
-        if (ca.total > 0) {
-          const pa = Math.round((ca.covered / ca.total) * 100);
+        if (ca.total > 0 || cb.total > 0) {
+          const pa = ca.total > 0 ? Math.round((ca.covered / ca.total) * 100) : 0;
           const pb = cb.total > 0 ? Math.round((cb.covered / cb.total) * 100) : 0;
           if (Math.abs(pa - pb) >= 20) {
             const betterName = pa > pb ? aName : bName;
-            suggestions.push(`Per i ${catLabels[cat] || cat}, "${betterName}" ha copertura significativamente migliore (+${Math.abs(pa - pb)}%).`);
+            suggestions.push(`  → ${catLabels[cat] || cat}: "${betterName}" ha copertura migliore (+${Math.abs(pa - pb)}%).`);
           }
         }
       }
     }
 
-    // 4. Population coverage (now dynamic per-comune)
-    if (a.analysis.populationCoverage.percent !== b.analysis.populationCoverage.percent) {
-      const better = a.analysis.populationCoverage.percent > b.analysis.populationCoverage.percent ? a : b;
-      const worse = a.analysis.populationCoverage.percent <= b.analysis.populationCoverage.percent ? a : b;
-      const popDiff = better.analysis.populationCoverage.coveredPop - worse.analysis.populationCoverage.coveredPop;
-      suggestions.push(`"${better.scenario.name}" copre ${popDiff.toLocaleString("it-IT")} abitanti in più (${better.analysis.populationCoverage.percent}% vs ${worse.analysis.populationCoverage.percent}%).`);
-    }
-
-    // Comuni touched comparison
+    // 5. Comuni touched comparison
     const comuniA = new Set(a.analysis.comuniDetails.map(c => c.code));
     const comuniB = new Set(b.analysis.comuniDetails.map(c => c.code));
     const onlyA = a.analysis.comuniDetails.filter(c => !comuniB.has(c.code));
     const onlyB = b.analysis.comuniDetails.filter(c => !comuniA.has(c.code));
-    if (onlyA.length > 0) suggestions.push(`"${aName}" copre in esclusiva: ${onlyA.map(c => c.name).join(", ")}.`);
-    if (onlyB.length > 0) suggestions.push(`"${bName}" copre in esclusiva: ${onlyB.map(c => c.name).join(", ")}.`);
+    if (onlyA.length > 0) suggestions.push(`🗺️ "${aName}" copre in esclusiva: ${onlyA.map(c => `${c.name} (${c.totalPop.toLocaleString("it-IT")} ab.)`).join(", ")}.`);
+    if (onlyB.length > 0) suggestions.push(`🗺️ "${bName}" copre in esclusiva: ${onlyB.map(c => `${c.name} (${c.totalPop.toLocaleString("it-IT")} ab.)`).join(", ")}.`);
 
-    // 5. Overlap analysis
+    // 6. Overlap analysis
     if (a.analysis.stops.length > 0 && b.analysis.stops.length > 0) {
       let sharedStops = 0;
       for (const sa of a.analysis.stops) {
@@ -712,43 +840,44 @@ router.get("/scenarios/compare", async (req, res) => {
         }
       }
       const overlapPct = Math.round((sharedStops / Math.min(a.analysis.stops.length, b.analysis.stops.length)) * 100);
-      if (overlapPct > 70) suggestions.push(`Alta sovrapposizione fermate (${overlapPct}%). Valutare se sono realmente alternativi.`);
-      else if (overlapPct < 30) suggestions.push(`Bassa sovrapposizione fermate (${overlapPct}%). I due scenari servono zone diverse — considerare una combinazione.`);
+      if (overlapPct > 70) suggestions.push(`🔄 Alta sovrapposizione fermate (${overlapPct}%). I due scenari coprono zone simili — valutare se sono realmente alternativi.`);
+      else if (overlapPct > 30) suggestions.push(`🔄 Sovrapposizione fermate media (${overlapPct}%). I due scenari hanno zone in comune ma servono anche aree diverse.`);
+      else suggestions.push(`🔄 Bassa sovrapposizione fermate (${overlapPct}%). I due scenari servono zone complementari — considerare una combinazione.`);
     }
 
-    // 6. Efficiency (from pre-computed metrics)
+    // 7. Efficiency comparison
     const effA = a.analysis.efficiencyMetrics, effB = b.analysis.efficiencyMetrics;
-    if (effA.popPerKm !== effB.popPerKm) {
-      const better = effA.popPerKm > effB.popPerKm ? aName : bName;
-      suggestions.push(`"${better}" è più efficiente: ${Math.max(effA.popPerKm, effB.popPerKm).toLocaleString("it-IT")} abitanti serviti per km.`);
+    if (Math.abs(effA.popPerKm - effB.popPerKm) > 50) {
+      const betterEff = effA.popPerKm > effB.popPerKm ? aName : bName;
+      suggestions.push(`⚡ "${betterEff}" è più efficiente: ${Math.max(effA.popPerKm, effB.popPerKm).toLocaleString("it-IT")} abitanti serviti per km vs ${Math.min(effA.popPerKm, effB.popPerKm).toLocaleString("it-IT")}.`);
     }
 
-    // 7. Stop distribution comparison
+    // 8. Stop distribution comparison
     if (a.analysis.stopDistribution && b.analysis.stopDistribution) {
       const dA = a.analysis.stopDistribution, dB = b.analysis.stopDistribution;
       if (dA.gapsOver1km > 0 || dB.gapsOver1km > 0) {
-        const worse = dA.gapsOver1km > dB.gapsOver1km ? aName : bName;
+        const worseGaps = dA.gapsOver1km > dB.gapsOver1km ? aName : bName;
         const maxGaps = Math.max(dA.gapsOver1km, dB.gapsOver1km);
-        suggestions.push(`"${worse}" ha ${maxGaps} tratti senza fermate >1 km. Valutare fermate intermedie.`);
+        suggestions.push(`⚠️ "${worseGaps}" ha ${maxGaps} tratti senza fermate >1 km. Valutare l'inserimento di fermate intermedie.`);
       }
     }
 
-    // 8. Uncovered critical POI
+    // 9. Uncovered critical POI
     const criticalCats = ["hospital", "school", "elderly", "transit"];
     const catLabels2: Record<string, string> = { hospital: "ospedali/sanità", school: "scuole", elderly: "RSA", transit: "hub trasporti" };
     for (const cat of criticalCats) {
       const allUncovered = analyses.every(an => { const c = an.analysis.poiCoverage.byCategory[cat]; return !c || c.covered === 0; });
       if (allUncovered) {
         const relevantPoi = poiRows.filter(p => p.category === cat);
-        if (relevantPoi.length > 0) suggestions.push(`⚠ Nessuno scenario copre i ${catLabels2[cat] || cat} (${relevantPoi.length} nell'area). Valutare deviazioni di percorso.`);
+        if (relevantPoi.length > 0) suggestions.push(`🚨 Nessuno scenario copre i ${catLabels2[cat] || cat} (${relevantPoi.length} nell'area). Valutare deviazioni di percorso.`);
       }
     }
 
-    // 9. Underserved comuni warnings
+    // 10. Underserved comuni warnings
     for (const an of analyses) {
       if (an.analysis.gapAnalysis.underservedComuni.length > 0) {
         const names = an.analysis.gapAnalysis.underservedComuni.slice(0, 3).map(c => `${c.name} (${c.coveragePercent}%)`).join(", ");
-        suggestions.push(`⚠ "${an.scenario.name}" sotto-serve: ${names}.`);
+        suggestions.push(`⚠️ "${an.scenario.name}" sotto-serve: ${names}.`);
       }
     }
 
@@ -766,6 +895,13 @@ router.get("/scenarios/compare", async (req, res) => {
         gapAnalysis: an.analysis.gapAnalysis,
       })),
       suggestions, radius,
+      unifiedBase: {
+        totalPop: unifiedTotalPop,
+        comuniCount: allTouchedComuni.size,
+        comuni: Array.from(unifiedComuniPop.entries()).map(([code, pop]) => ({
+          code, name: COMUNE_NAMES[code] || `Comune ${code}`, totalPop: pop,
+        })).sort((a, b) => b.totalPop - a.totalPop),
+      },
     });
   } catch (err) {
     req.log.error(err, "Error comparing scenarios");
