@@ -71,7 +71,7 @@ class DriverShiftsErrorBoundary extends Component<
  *  TYPES
  * ═══════════════════════════════════════════════════════════════ */
 
-type DriverShiftType = "intero" | "semiunico" | "spezzato" | "supplemento";
+type DriverShiftType = "intero" | "semiunico" | "spezzato" | "supplemento" | "invalido";
 
 interface RipresaTrip {
   tripId: string;
@@ -235,6 +235,7 @@ const TYPE_LABELS: Record<DriverShiftType, string> = {
   semiunico: "Semiunico",
   spezzato: "Spezzato",
   supplemento: "Supplemento",
+  invalido: "Invalido",
 };
 
 const TYPE_COLORS: Record<DriverShiftType, string> = {
@@ -242,6 +243,7 @@ const TYPE_COLORS: Record<DriverShiftType, string> = {
   semiunico: "#f59e0b",
   spezzato: "#ef4444",
   supplemento: "#8b5cf6",
+  invalido: "#6b7280",
 };
 
 const TYPE_ICONS: Record<DriverShiftType, React.ReactNode> = {
@@ -249,6 +251,7 @@ const TYPE_ICONS: Record<DriverShiftType, React.ReactNode> = {
   semiunico: <Coffee className="w-3.5 h-3.5" />,
   spezzato: <Timer className="w-3.5 h-3.5" />,
   supplemento: <Zap className="w-3.5 h-3.5" />,
+  invalido: <AlertTriangle className="w-3.5 h-3.5" />,
 };
 
 const TYPE_DESC: Record<DriverShiftType, string> = {
@@ -256,6 +259,7 @@ const TYPE_DESC: Record<DriverShiftType, string> = {
   semiunico: "2 riprese, pausa 1h15–2h59, nastro ≤ 9h15",
   spezzato: "2 riprese, pausa ≥ 3h, nastro ≤ 10h30",
   supplemento: "Turno breve, max 2h30",
+  invalido: "Turno non classificabile (violazione normativa)",
 };
 
 function ymdToDisplay(ymd: string): string {
@@ -326,7 +330,7 @@ function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
               <div className="w-36 shrink-0 text-[10px] font-mono flex items-center gap-1 px-1">
                 <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: typeColor }} />
                 {shift.driverId}
-                <span className="text-muted-foreground">({TYPE_LABELS[shift.type].slice(0, 3)})</span>
+                <span className="text-muted-foreground">({(TYPE_LABELS[shift.type] ?? "???").slice(0, 3)})</span>
               </div>
               <div className="flex-1 relative h-6">
                 {/* Grid lines */}
@@ -892,7 +896,7 @@ function DriverShiftsPageInner() {
                         {TYPE_LABELS[shift.type]}
                       </Badge>
                       <span className="text-xs text-muted-foreground">
-                        {shift.nastroStart.slice(0, 5)} → {shift.nastroEnd.slice(0, 5)}
+                        {(shift.nastroStart ?? "").slice(0, 5)} → {(shift.nastroEnd ?? "").slice(0, 5)}
                       </span>
                       <span className="text-xs text-muted-foreground ml-auto">
                         Lavoro: {shift.work} · Nastro: {shift.nastro}
@@ -1075,7 +1079,7 @@ function DriverShiftsPageInner() {
                                     Ripresa {ri + 1}
                                   </div>
                                   <div className="text-[10px] text-muted-foreground">
-                                    {rip.startTime.slice(0, 5)} → {rip.endTime.slice(0, 5)}
+                                    {(rip.startTime ?? "").slice(0, 5)} → {(rip.endTime ?? "").slice(0, 5)}
                                   </div>
                                   <div className="text-[10px] text-muted-foreground flex items-center gap-1">
                                     <Bus className="w-3 h-3" />
@@ -1124,7 +1128,7 @@ function DriverShiftsPageInner() {
                             <div className="flex items-center gap-2 text-xs bg-amber-500/8 border border-amber-500/15 rounded-md px-3 py-2 my-2">
                               <Coffee className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                               <span className="font-mono font-medium text-foreground/90 min-w-[90px]">
-                                {shift.riprese[0].endTime.slice(0, 5)} → {shift.riprese[1].startTime.slice(0, 5)}
+                                {(shift.riprese[0]?.endTime ?? "").slice(0, 5)} → {(shift.riprese[1]?.startTime ?? "").slice(0, 5)}
                               </span>
                               <span className="font-semibold text-amber-400">Interruzione</span>
                               <span className="text-muted-foreground">
