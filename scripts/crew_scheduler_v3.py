@@ -1109,7 +1109,7 @@ def validate_all(duties: list[DriverDutyV3], config: dict) -> dict:
 
 @dataclass
 class Handover:
-    """Un cambio fisico di bus tra due conducenti al capolinea."""
+    """Un cambio fisico di bus tra due conducenti al capolinea o a fermata intermedia."""
     vehicle_id: str
     at_min: int            # minuto del cambio
     at_stop: str           # fermata/capolinea dove avviene
@@ -1120,6 +1120,9 @@ class Handover:
     incoming_seg_start: int  # inizio segmento del conducente entrante
     car_driver_to: str     # chi PORTA l'auto aziendale al capolinea (= incoming)
     car_driver_from: str   # chi RIPORTA l'auto al deposito (= outgoing)
+    cut_type: str = "inter"   # "inter" (tra corse) | "intra" (dentro corsa)
+    trip_id: str = ""         # trip_id della corsa spezzata (solo intra)
+    route_name: str = ""      # nome linea (solo intra)
 
 
 def compute_handovers(
@@ -1168,6 +1171,17 @@ def compute_handovers(
                     f"({duty_out.driver_id} → {duty_in.driver_id})")
                 continue  # non creare handover fuori cluster
             
+            # Determina cut_type: se l'ultima corsa del seg_out e la prima del seg_in
+            # hanno lo stesso trip_id → la corsa è stata spezzata (intra)
+            last_trip_out = seg_out.trips[-1] if seg_out.trips else None
+            first_trip_in = seg_in.trips[0] if seg_in.trips else None
+            is_intra = (last_trip_out is not None and first_trip_in is not None
+                        and last_trip_out.trip_id and first_trip_in.trip_id
+                        and last_trip_out.trip_id == first_trip_in.trip_id)
+            h_cut_type = "intra" if is_intra else "inter"
+            h_trip_id = last_trip_out.trip_id if is_intra and last_trip_out else ""
+            h_route_name = last_trip_out.route_name if is_intra and last_trip_out else ""
+
             handovers.append(Handover(
                 vehicle_id=vid,
                 at_min=seg_out.end_min,
@@ -1179,6 +1193,9 @@ def compute_handovers(
                 incoming_seg_start=seg_in.start_min,
                 car_driver_to=duty_in.driver_id,    # entrante porta l'auto
                 car_driver_from=duty_out.driver_id,  # uscente riporta l'auto
+                cut_type=h_cut_type,
+                trip_id=h_trip_id,
+                route_name=h_route_name,
             ))
     
     handovers.sort(key=lambda h: h.at_min)

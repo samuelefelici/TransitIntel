@@ -139,6 +139,9 @@ interface HandoverInfo {
   role: "incoming" | "outgoing";
   otherDriver: string;
   description: string;
+  cutType?: "inter" | "intra";
+  tripId?: string;
+  routeName?: string;
 }
 
 interface DriverShiftData {
@@ -199,6 +202,8 @@ interface DriverShiftSummary {
   semiunicoPct: number;
   spezzatoPct: number;
   totalCambi: number;
+  totalInterCambi?: number;    // cambi tra corse (al capolinea)
+  totalIntraCambi?: number;    // cambi dentro corsa (a fermata intermedia)
   companyCarsUsed: number;
   /* v2 cost fields */
   totalDailyCost?: number;
@@ -685,8 +690,13 @@ function DriverShiftsPageInner() {
           )}
           {result.summary.totalCambi > 0 && (() => {
             const totalHandovers = result.driverShifts.reduce((sum, s) => sum + (s.handovers?.filter(h => h.role === "outgoing").length ?? 0), 0);
+            const interCount = result.summary.totalInterCambi ?? result.summary.totalCambi;
+            const intraCount = result.summary.totalIntraCambi ?? 0;
+            const subLabel = intraCount > 0
+              ? `${interCount} inter + ${intraCount} intra-corsa`
+              : (totalHandovers > 0 ? `${totalHandovers} cambi bus con auto aziendale` : `${result.driverShifts.filter(s => s.cambiCount > 0).length} turni con cambio`);
             return (
-              <SummaryCard icon={<Repeat className="w-4 h-4" />} label="Cambi in Linea" value={result.summary.totalCambi.toString()} sub={totalHandovers > 0 ? `${totalHandovers} cambi bus con auto aziendale` : `${result.driverShifts.filter(s => s.cambiCount > 0).length} turni con cambio`} color="#06b6d4" />
+              <SummaryCard icon={<Repeat className="w-4 h-4" />} label="Cambi in Linea" value={result.summary.totalCambi.toString()} sub={subLabel} color="#06b6d4" />
             );
           })()}
           <SummaryCard icon={<Car className="w-4 h-4" />} label="Auto Aziendali" value={`${result.summary.companyCarsUsed}/${result.companyCars}`} sub="per trasf. deposito ↔ cluster" />
@@ -901,7 +911,11 @@ function DriverShiftsPageInner() {
                       <span className="text-xs text-muted-foreground ml-auto">
                         Lavoro: {shift.work} · Nastro: {shift.nastro}
                         {shift.interruption && <> · Pausa: {shift.interruption}</>}
-                        {shift.cambiCount > 0 && <> · <span className="text-cyan-400">{shift.cambiCount} cambi{(shift.handovers?.length ?? 0) > 0 ? " 🔄" : ""}</span></>}
+                        {shift.cambiCount > 0 && (() => {
+                          const intraH = shift.handovers?.filter(h => h.cutType === "intra").length ?? 0;
+                          const icon = intraH > 0 ? " ✂️" : ((shift.handovers?.length ?? 0) > 0 ? " 🔄" : "");
+                          return <> · <span className={intraH > 0 ? "text-amber-400" : "text-cyan-400"}>{shift.cambiCount} cambi{icon}</span></>;
+                        })()}
                         {shift.riprese.length > 0 && <> · {shift.riprese.reduce((s, r) => s + r.trips.length, 0)} corse</>}
                         {shift.costEuro != null && shift.costEuro > 0 && <> · <span className="text-emerald-400 font-medium">€{shift.costEuro.toFixed(0)}</span></>}
                       </span>
@@ -980,12 +994,14 @@ function DriverShiftsPageInner() {
 
                             // 2b. Incoming handover: autista arriva e prende il bus da un collega
                             if (incomingH) {
+                              const isIntra = incomingH.cutType === "intra";
                               activities.push({
                                 type: "handover", startMin: incomingH.atMin, endMin: incomingH.atMin,
-                                label: "🔄 Cambio bus (arrivo)",
-                                detail: incomingH.description,
+                                label: isIntra ? "✂️ Cambio intra-corsa (arrivo)" : "🔄 Cambio bus (arrivo)",
+                                detail: incomingH.description + (isIntra && incomingH.routeName ? ` · Linea ${incomingH.routeName}` : ""),
                                 icon: <Repeat className="w-3.5 h-3.5" />,
-                                colorClass: "text-cyan-400", bgClass: "bg-cyan-500/10 border-cyan-500/20",
+                                colorClass: isIntra ? "text-amber-400" : "text-cyan-400",
+                                bgClass: isIntra ? "bg-amber-500/10 border-amber-500/20" : "bg-cyan-500/10 border-cyan-500/20",
                               });
                             }
 
@@ -1037,12 +1053,14 @@ function DriverShiftsPageInner() {
 
                             // 3b. Outgoing handover: autista lascia il bus a un collega
                             if (outgoingH) {
+                              const isIntraOut = outgoingH.cutType === "intra";
                               activities.push({
                                 type: "handover", startMin: outgoingH.atMin, endMin: outgoingH.atMin,
-                                label: "🔄 Cambio bus (uscita)",
-                                detail: outgoingH.description,
+                                label: isIntraOut ? "✂️ Cambio intra-corsa (uscita)" : "🔄 Cambio bus (uscita)",
+                                detail: outgoingH.description + (isIntraOut && outgoingH.routeName ? ` · Linea ${outgoingH.routeName}` : ""),
                                 icon: <Repeat className="w-3.5 h-3.5" />,
-                                colorClass: "text-cyan-400", bgClass: "bg-cyan-500/10 border-cyan-500/20",
+                                colorClass: isIntraOut ? "text-amber-400" : "text-cyan-400",
+                                bgClass: isIntraOut ? "bg-amber-500/10 border-amber-500/20" : "bg-cyan-500/10 border-cyan-500/20",
                               });
                             }
 

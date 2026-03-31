@@ -560,6 +560,17 @@ class BDSValidation:
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
+class ClusterStop:
+    """Una fermata intermedia di una corsa che appartiene a un cluster."""
+    stop_id: str
+    stop_name: str
+    stop_sequence: int
+    cluster_id: str
+    arrival_min: int = 0       # minuto arrivo alla fermata (dal backend)
+    departure_min: int = 0     # minuto partenza dalla fermata
+
+
+@dataclass
 class Cluster:
     id: str
     name: str
@@ -567,6 +578,8 @@ class Cluster:
     transfer_from_depot_min: int
     stop_ids: list[str] = field(default_factory=list)    # GTFS stop_id list (from DB)
     stop_names: list[str] = field(default_factory=list)  # corrispondenti stop_name
+    stop_coords: list[tuple] = field(default_factory=list)  # (lat, lon) per ogni stop
+    color: str = "#3b82f6"
 
 DEFAULT_CLUSTERS = [
     Cluster("ugo_bassi",  "Piazza Ugo Bassi",   ["UGO BASSI", "U.BASSI"], 10),
@@ -616,6 +629,15 @@ def depot_transfer_min(stop_name: str | None, clusters: list[Cluster] | None = N
         c = cluster_by_id(cid, clusters)
         return c.transfer_from_depot_min if c else DEPOT_TRANSFER_CENTRAL
     return DEPOT_TRANSFER_OUTER
+
+
+def build_cluster_stop_lookup(clusters: list[Cluster]) -> dict[str, str]:
+    """Costruisce una mappa O(1) stop_id → cluster_id per tutti i cluster."""
+    lookup: dict[str, str] = {}
+    for c in clusters:
+        for sid in c.stop_ids:
+            lookup[sid] = c.id
+    return lookup
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -682,6 +704,7 @@ class VShiftTrip:
     deadhead_min: int = 0
     downsized: bool = False
     original_vehicle: str | None = None
+    cluster_stops: list[ClusterStop] = field(default_factory=list)  # fermate intermedie in cluster
 
 
 @dataclass
@@ -735,6 +758,11 @@ class CambioInfo:
     cluster_name: str
     from_vehicle: str
     to_vehicle: str
+    cut_type: str = "inter"         # "inter" (tra corse) | "intra" (dentro corsa)
+    stop_id: str = ""               # GTFS stop_id del punto di cambio
+    stop_sequence: int = 0          # stop_sequence dentro la corsa (solo per intra)
+    trip_id: str = ""               # trip_id dove avviene il cambio (solo per intra)
+    route_name: str = ""            # nome linea (solo per intra)
 
 
 @dataclass
@@ -1072,10 +1100,10 @@ def vehicle_shift_to_dict(vs: VehicleShift) -> dict:
 
 @dataclass
 class CutCandidate:
-    """Un potenziale punto di taglio tra due corse consecutive in un turno macchina."""
-    index: int                    # posizione nel vettore trips del VehicleBlock (taglio tra index e index+1)
-    gap_min: int                  # gap tra arrivo corsa[index] e partenza corsa[index+1]
-    time_min: int                 # minuto in cui avviene il taglio (arrivo corsa[index])
+    """Un potenziale punto di taglio tra corse o dentro una corsa in un turno macchina."""
+    index: int                    # posizione nel vettore trips del VehicleBlock (taglio tra index e index+1, oppure dentro trips[index] se intra)
+    gap_min: int                  # gap tra arrivo corsa[index] e partenza corsa[index+1] (0 per intra)
+    time_min: int                 # minuto in cui avviene il taglio (arrivo corsa[index] o arrivo alla fermata intra)
     stop_name: str                # fermata dove avviene il taglio
     cluster_id: str | None        # id cluster se la fermata è in un cluster
     score: float                  # punteggio qualità del taglio (più alto = meglio)
@@ -1085,6 +1113,11 @@ class CutCandidate:
     right_driving_min: int        # minuti guida nella metà destra
     right_work_min: int           # minuti lavoro nella metà destra
     transfer_cost_min: int        # minuti di trasferimento deposito<->punto taglio
+    cut_type: str = "inter"       # "inter" (tra corse) | "intra" (dentro corsa, a fermata intermedia)
+    stop_sequence: int = 0        # stop_sequence nella corsa (solo per intra)
+    stop_id: str = ""             # GTFS stop_id (solo per intra)
+    trip_id: str = ""             # trip_id della corsa (solo per intra)
+    route_name: str = ""          # nome linea (solo per intra)
 
 
 @dataclass
@@ -1161,6 +1194,8 @@ def parse_clusters_from_config(config: dict) -> list[Cluster]:
             transfer_from_depot_min=c.get("transferFromDepotMin", DEPOT_TRANSFER_CENTRAL),
             stop_ids=c.get("stopIds", []),
             stop_names=c.get("stopNames", []),
+            stop_coords=[(lat, lon) for lat, lon in zip(c.get("stopLats", []), c.get("stopLons", []))],
+            color=c.get("color", "#3b82f6"),
         )
         for c in raw
     ]

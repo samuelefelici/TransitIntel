@@ -48,7 +48,7 @@ from optimizer_common import (
     TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID,
     COMPANY_CARS,
     # Dataclass esistenti
-    VShiftTrip, VehicleShift, CambioInfo,
+    VShiftTrip, VehicleShift, CambioInfo, ClusterStop,
     VehicleBlock, CutCandidate, Segment, DriverDutyV3,
     Cluster, DEFAULT_CLUSTERS,
     # BDS dataclass
@@ -57,6 +57,7 @@ from optimizer_common import (
     CollegamentoConfig, WorkCalculation, BDSValidation,
     # Funzioni
     match_cluster, cluster_by_id, depot_transfer_min,
+    build_cluster_stop_lookup,
     min_to_time, fmt_dur,
     load_input, write_output, log, report_progress,
     merge_config, parse_clusters_from_config,
@@ -100,6 +101,20 @@ CUT_SCORE_BALANCE_MAX = 5.0
 CUT_NASTRO_PENALTY_PER_MIN = 0.05
 CUT_SAME_ROUTE_PENALTY = 15.0
 CUT_NO_CLUSTER_PENALTY = 8.0
+
+# ----------------------------------------------------------------
+# Costi cambio conducente
+# ----------------------------------------------------------------
+INTER_CAMBIO_COST_EUR = 5.0    # cambio al capolinea (tra corse)
+INTRA_CAMBIO_COST_EUR = 15.0   # cambio a fermata intermedia (intra-corsa)
+
+# ----------------------------------------------------------------
+# Scoring intra-trip cut
+# ----------------------------------------------------------------
+INTRA_MIN_SOSTA = 2            # minuti minimi di sosta alla fermata per tentare un taglio intra
+INTRA_SCORE_BASE = -2.0        # penalità base vs inter (l'intra è meno desiderabile)
+INTRA_CLUSTER_BONUS = 2.0      # bonus se la fermata intermedia è in cluster
+INTRA_BALANCE_MAX = 4.0        # bonus max per bilanciamento
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -200,6 +215,16 @@ def compute_pre_post_total(
 #  FASE 1: PARSING
 # ═══════════════════════════════════════════════════════════════
 
+def _hhmm_to_min(s: str) -> int:
+    """Converte 'HH:MM:SS' o 'HH:MM' in minuti dal mezzanotte. Supporta >24h per GTFS."""
+    if not s:
+        return 0
+    parts = s.split(":")
+    h = int(parts[0]) if len(parts) > 0 else 0
+    m = int(parts[1]) if len(parts) > 1 else 0
+    return h * 60 + m
+
+
 def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) -> list[VehicleBlock]:
     """Converte i turni macchina JSON in VehicleBlock."""
     blocks: list[VehicleBlock] = []
@@ -214,6 +239,20 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
         for t in raw_trips:
             if t.get("type") != "trip":
                 continue
+
+            # Parse clusterStops dal JSON (aggiunto dal backend)
+            raw_cs = t.get("clusterStops", [])
+            cluster_stops: list[ClusterStop] = []
+            for cs in raw_cs:
+                cluster_stops.append(ClusterStop(
+                    stop_id=cs.get("stopId", ""),
+                    stop_name=cs.get("stopName", ""),
+                    stop_sequence=cs.get("stopSequence", 0),
+                    cluster_id=cs.get("clusterId", ""),
+                    arrival_min=_hhmm_to_min(cs.get("arrivalTime", "")),
+                    departure_min=_hhmm_to_min(cs.get("departureTime", "")),
+                ))
+
             trips.append(VShiftTrip(
                 type="trip",
                 trip_id=t.get("tripId", ""),
@@ -229,6 +268,7 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
                 stop_count=t.get("stopCount", 0),
                 duration_min=t.get("durationMin", 0),
                 direction_id=t.get("directionId", 0),
+                cluster_stops=cluster_stops,
             ))
 
         if not trips:
@@ -361,7 +401,74 @@ def analyze_vehicle_block(
             right_driving_min=right_driving,
             right_work_min=right_work,
             transfer_cost_min=transfer_cost,
+            cut_type="inter",
         ))
+
+    # ── Tagli INTRA-CORSA: a fermate intermedie in cluster ──
+    # Per ogni corsa che ha cluster_stops, valutiamo se una fermata intermedia
+    # può essere un punto di cambio conducente dentro la corsa.
+    for i, trip in enumerate(trips):
+        if not trip.cluster_stops:
+            continue
+        for cs in trip.cluster_stops:
+            if cs.arrival_min <= 0:
+                continue
+            # La fermata deve essere intermedia (non primo/ultimo stop della corsa)
+            if cs.arrival_min <= trip.departure_min or cs.arrival_min >= trip.arrival_min:
+                continue
+
+            cut_time_intra = cs.arrival_min
+            cid_intra = cs.cluster_id
+            if not cid_intra:
+                continue  # deve essere in un cluster
+
+            transfer_cost_intra = depot_transfer_min(cs.stop_name, clusters)
+
+            # Driving/work split per intra: la corsa trip[i] viene spezzata al minuto cs.arrival_min
+            left_driving_intra = cum_driving[i] + (cs.arrival_min - trip.departure_min)
+            right_driving_intra = total_driving - left_driving_intra
+            left_work_intra = cs.arrival_min - trips[0].departure_min
+            right_work_intra = trips[-1].arrival_min - cs.departure_min
+
+            # ── Scoring intra ──
+            score_intra = INTRA_SCORE_BASE  # penalità base vs inter
+
+            # Bonus cluster (sempre in cluster per intra)
+            score_intra += INTRA_CLUSTER_BONUS
+
+            # Bilanciamento
+            if total_driving > 0:
+                balance_intra = 1.0 - abs(left_driving_intra - right_driving_intra) / total_driving
+                score_intra += balance_intra * INTRA_BALANCE_MAX
+
+            # Penalità nastro
+            max_nastro = SHIFT_RULES["intero"]["maxNastro"]
+            left_nastro_i = left_work_intra + pre_turno_for(transfer_cost_intra) + transfer_cost_intra * 2
+            right_nastro_i = right_work_intra + pre_turno_for(transfer_cost_intra) + transfer_cost_intra * 2
+            if left_nastro_i > max_nastro:
+                score_intra -= (left_nastro_i - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
+            if right_nastro_i > max_nastro:
+                score_intra -= (right_nastro_i - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
+
+            candidates.append(CutCandidate(
+                index=i,
+                gap_min=0,  # nessun gap: il taglio è dentro la corsa
+                time_min=cut_time_intra,
+                stop_name=cs.stop_name,
+                cluster_id=cid_intra,
+                score=score_intra,
+                allows_cambio=True,
+                left_driving_min=left_driving_intra,
+                left_work_min=left_work_intra,
+                right_driving_min=right_driving_intra,
+                right_work_min=right_work_intra,
+                transfer_cost_min=transfer_cost_intra,
+                cut_type="intra",
+                stop_sequence=cs.stop_sequence,
+                stop_id=cs.stop_id,
+                trip_id=trip.trip_id,
+                route_name=trip.route_name,
+            ))
 
     candidates.sort(key=lambda c: -c.score)
     block.cut_candidates = candidates
@@ -481,15 +588,92 @@ def _make_segment(
     )
 
 
+def _split_trip_at_stop(trip: VShiftTrip, cs: ClusterStop) -> tuple[VShiftTrip, VShiftTrip]:
+    """Spezza una corsa in due sub-trip al cluster stop intermedio.
+    
+    trip_a: partenza originale → arrivo a cs (prima metà)
+    trip_b: partenza da cs → arrivo originale (seconda metà)
+    """
+    trip_a = VShiftTrip(
+        type="trip",
+        trip_id=trip.trip_id,
+        route_id=trip.route_id,
+        route_name=trip.route_name,
+        headsign=trip.headsign,
+        departure_time=trip.departure_time,
+        arrival_time=min_to_time(cs.arrival_min),
+        departure_min=trip.departure_min,
+        arrival_min=cs.arrival_min,
+        first_stop_name=trip.first_stop_name,
+        last_stop_name=cs.stop_name,
+        stop_count=cs.stop_sequence,  # approssimazione
+        duration_min=cs.arrival_min - trip.departure_min,
+        direction_id=trip.direction_id,
+    )
+    trip_b = VShiftTrip(
+        type="trip",
+        trip_id=trip.trip_id,
+        route_id=trip.route_id,
+        route_name=trip.route_name,
+        headsign=trip.headsign,
+        departure_time=min_to_time(cs.departure_min if cs.departure_min > 0 else cs.arrival_min),
+        arrival_time=trip.arrival_time,
+        departure_min=cs.departure_min if cs.departure_min > 0 else cs.arrival_min,
+        arrival_min=trip.arrival_min,
+        first_stop_name=cs.stop_name,
+        last_stop_name=trip.last_stop_name,
+        stop_count=max(0, trip.stop_count - cs.stop_sequence),
+        duration_min=trip.arrival_min - (cs.departure_min if cs.departure_min > 0 else cs.arrival_min),
+        direction_id=trip.direction_id,
+    )
+    return trip_a, trip_b
+
+
+def _split_trips_for_cut(block: VehicleBlock, cut: CutCandidate) -> tuple[list[VShiftTrip], list[VShiftTrip]]:
+    """Genera left_trips e right_trips per un taglio, gestendo sia inter che intra."""
+    trips = block.trips
+    if cut.cut_type == "inter":
+        # Taglio classico tra trips[index] e trips[index+1]
+        return trips[:cut.index + 1], trips[cut.index + 1:]
+    else:
+        # Taglio INTRA: spezza trips[index] al stop_sequence
+        trip = trips[cut.index]
+        # Trova il ClusterStop corrispondente
+        cs_match = None
+        for cs in trip.cluster_stops:
+            if cs.stop_id == cut.stop_id and cs.stop_sequence == cut.stop_sequence:
+                cs_match = cs
+                break
+        if cs_match is None:
+            # Fallback: cerca per stop_id
+            for cs in trip.cluster_stops:
+                if cs.stop_id == cut.stop_id:
+                    cs_match = cs
+                    break
+        if cs_match is None:
+            # Non trovato — fallback a inter
+            log(f"  WARN: intra cut stop_id={cut.stop_id} not found in trip {trip.trip_id}, fallback inter")
+            return trips[:cut.index + 1], trips[cut.index + 1:]
+
+        trip_a, trip_b = _split_trip_at_stop(trip, cs_match)
+        left_trips = list(trips[:cut.index]) + [trip_a]
+        right_trips = [trip_b] + list(trips[cut.index + 1:])
+        return left_trips, right_trips
+
+
 def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate | None:
-    """Seleziona il miglior taglio per un blocco MEDIO."""
+    """Seleziona il miglior taglio per un blocco MEDIO. Gestisce sia inter che intra."""
     max_nastro = SHIFT_RULES["intero"]["maxNastro"]
     valid_cuts: list[CutCandidate] = []
 
     for c in b.cut_candidates:
         left_first = b.trips[0].first_stop_name
-        left_last = b.trips[c.index].last_stop_name
-        right_first = b.trips[c.index + 1].first_stop_name
+        if c.cut_type == "intra":
+            left_last = c.stop_name  # fermata intermedia
+            right_first = c.stop_name
+        else:
+            left_last = b.trips[c.index].last_stop_name
+            right_first = b.trips[c.index + 1].first_stop_name if c.index + 1 < len(b.trips) else ""
         right_last = b.trips[-1].last_stop_name
 
         lt_out = depot_transfer_min(left_first, clusters)
@@ -508,8 +692,12 @@ def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate |
     if b.cut_candidates:
         def worst_nastro(c: CutCandidate) -> int:
             lf = b.trips[0].first_stop_name
-            ll = b.trips[c.index].last_stop_name
-            rf = b.trips[c.index + 1].first_stop_name
+            if c.cut_type == "intra":
+                ll = c.stop_name
+                rf = c.stop_name
+            else:
+                ll = b.trips[c.index].last_stop_name
+                rf = b.trips[c.index + 1].first_stop_name if c.index + 1 < len(b.trips) else ""
             rl = b.trips[-1].last_stop_name
             lo, lb = depot_transfer_min(lf, clusters), depot_transfer_min(ll, clusters)
             ro, rb = depot_transfer_min(rf, clusters), depot_transfer_min(rl, clusters)
@@ -537,8 +725,7 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
         elif b.classification == "MEDIO":
             best = _select_best_cut(b, clusters)
             if best:
-                left_trips = b.trips[:best.index + 1]
-                right_trips = b.trips[best.index + 1:]
+                left_trips, right_trips = _split_trips_for_cut(b, best)
                 seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips, "first", best.index, clusters)
                 seg2 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips, "second", best.index, clusters)
                 b.segments = [seg1, seg2]
@@ -594,23 +781,34 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
 
             if best_pair_cuts:
                 c1, c2 = best_pair_cuts
-                left_trips = b.trips[:c1.index + 1]
-                mid_trips = b.trips[c1.index + 1:c2.index + 1]
-                right_trips = b.trips[c2.index + 1:]
-                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips, "first", c1.index, clusters)
+                # Prima split per c1
+                left_trips_c1, rest_after_c1 = _split_trips_for_cut(b, c1)
+                # Per c2 dobbiamo lavorare su rest_after_c1, ma c2.index è relativo al blocco originale.
+                # Approccio semplice: ricostruiamo la split per c2 dal blocco originale.
+                _, right_trips_c2 = _split_trips_for_cut(b, c2)
+                # Mid trips: tutto ciò che c'è tra c1 e c2
+                # Per semplicità, se entrambi sono inter, usiamo i trip originali
+                if c1.cut_type == "inter" and c2.cut_type == "inter":
+                    mid_trips = b.trips[c1.index + 1:c2.index + 1]
+                else:
+                    # Per intra, usiamo il blocco tra la fine del left e l'inizio del right
+                    mid_trips = rest_after_c1[:max(0, len(rest_after_c1) - len(right_trips_c2))]
+                    if not mid_trips:
+                        mid_trips = rest_after_c1
+
+                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips_c1, "first", c1.index, clusters)
                 segs = [seg1]
                 if mid_trips:
                     seg2 = _make_segment(b.vehicle_id, b.vehicle_type, mid_trips, "middle", c1.index, clusters)
                     segs.append(seg2)
-                seg3 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips, "second", c2.index, clusters)
+                seg3 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips_c2, "second", c2.index, clusters)
                 segs.append(seg3)
                 b.segments = segs
                 all_segments.extend(segs)
             elif b.cut_candidates:
                 best = _select_best_cut(b, clusters)
                 if best:
-                    l = b.trips[:best.index + 1]
-                    r = b.trips[best.index + 1:]
+                    l, r = _split_trips_for_cut(b, best)
                     seg1 = _make_segment(b.vehicle_id, b.vehicle_type, l, "first", best.index, clusters)
                     seg2 = _make_segment(b.vehicle_id, b.vehicle_type, r, "second", best.index, clusters)
                     b.segments = [seg1, seg2]
@@ -1692,6 +1890,10 @@ def serialize_output(
         for h in my_handovers:
             is_outgoing = (h.outgoing_driver == d.driver_id)
             cluster_label = cluster_names.get(h.cluster or "", h.at_stop or "?")
+            cut_type = getattr(h, 'cut_type', 'inter')
+            trip_id = getattr(h, 'trip_id', '')
+            route_name = getattr(h, 'route_name', '')
+            intra_label = f" (intra-corsa {route_name})" if cut_type == "intra" and route_name else ""
             handovers_out.append({
                 "vehicleId": h.vehicle_id,
                 "atMin": h.at_min,
@@ -1701,10 +1903,13 @@ def serialize_output(
                 "clusterName": cluster_label,
                 "role": "outgoing" if is_outgoing else "incoming",
                 "otherDriver": h.incoming_driver if is_outgoing else h.outgoing_driver,
+                "cutType": cut_type,
+                "tripId": trip_id,
+                "routeName": route_name,
                 "description": (
-                    f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver} a {cluster_label}"
+                    f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver} a {cluster_label}{intra_label}"
                     if is_outgoing else
-                    f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver} a {cluster_label}"
+                    f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver} a {cluster_label}{intra_label}"
                 ),
             })
 
@@ -1773,6 +1978,8 @@ def serialize_output(
             "semiunicoPct": semi_pct,
             "spezzatoPct": spez_pct,
             "totalCambi": len(handovers),
+            "totalInterCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'inter'),
+            "totalIntraCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'intra'),
             "companyCarsUsed": len({seg.vehicle_id for d in duties for seg in d.segments}),
             "totalDailyCost": round(total_cost, 2),
             "costBreakdown": {
