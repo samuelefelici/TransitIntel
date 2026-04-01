@@ -32,6 +32,17 @@ interface RouteItem {
   category: ServiceCategory;
 }
 
+interface TripInfo {
+  tripId: string;
+  routeId: string;
+  headsign: string;
+  directionId: number;
+  departureTime: string;
+  arrivalTime: string;
+  firstStopName: string;
+  lastStopName: string;
+}
+
 interface VehicleTypeInfo {
   id: string;
   label: string;
@@ -440,6 +451,11 @@ export default function ServiceProgramPage() {
   const [loadingRoutes, setLoadingRoutes] = useState(true);
   const [selectedRoutes, setSelectedRoutes] = useState<Map<string, VehicleType>>(new Map());
   const [forcedRoutes, setForcedRoutes] = useState<Set<string>>(new Set());
+  // ── Per-trip vehicle overrides ──
+  const [tripVehicleOverrides, setTripVehicleOverrides] = useState<Map<string, VehicleType>>(new Map());
+  const [expandedRouteTrips, setExpandedRouteTrips] = useState<Set<string>>(new Set());
+  const [routeTrips, setRouteTrips] = useState<Map<string, TripInfo[]>>(new Map());
+  const [loadingTrips, setLoadingTrips] = useState<Set<string>>(new Set());
   const [routeSearch, setRouteSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<ServiceCategory | "all">("all");
 
@@ -514,13 +530,47 @@ export default function ServiceProgramPage() {
   };
   const setRouteVehicle = (routeId: string, vt: VehicleType) => {
     setSelectedRoutes(prev => { const n = new Map(prev); n.set(routeId, vt); return n; });
+    // Reset per-trip overrides for this route when the route vehicle type changes
+    const trips = routeTrips.get(routeId);
+    if (trips && trips.length > 0) {
+      setTripVehicleOverrides(prev => {
+        const n = new Map(prev);
+        for (const tr of trips) n.delete(tr.tripId);
+        return n;
+      });
+    }
   };
   const toggleForced = (routeId: string) => {
     setForcedRoutes(prev => { const n = new Set(prev); if (n.has(routeId)) n.delete(routeId); else n.add(routeId); return n; });
   };
   const selectAllVisible = () => { const n = new Map(selectedRoutes); for (const r of filteredRoutes) if (!n.has(r.routeId)) n.set(r.routeId, "12m"); setSelectedRoutes(n); };
   const deselectAllVisible = () => { const ids = new Set(filteredRoutes.map(r => r.routeId)); setSelectedRoutes(prev => { const n = new Map(prev); for (const id of ids) n.delete(id); return n; }); };
-  const selectNone = () => { setSelectedRoutes(new Map()); setForcedRoutes(new Set()); };
+  const selectNone = () => { setSelectedRoutes(new Map()); setForcedRoutes(new Set()); setTripVehicleOverrides(new Map()); setExpandedRouteTrips(new Set()); };
+
+  // ── Toggle route trips expansion ──
+  const toggleRouteTrips = useCallback(async (routeId: string) => {
+    setExpandedRouteTrips(prev => {
+      const n = new Set(prev);
+      if (n.has(routeId)) { n.delete(routeId); } else { n.add(routeId); }
+      return n;
+    });
+    // Lazy-load trips if not already loaded
+    if (!routeTrips.has(routeId) && selectedDate) {
+      setLoadingTrips(prev => new Set(prev).add(routeId));
+      try {
+        const resp = await fetch(`${getApiBase()}/api/service-program/trips?date=${selectedDate}&routeIds=${routeId}`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setRouteTrips(prev => new Map(prev).set(routeId, data.trips || []));
+        }
+      } catch (e) { console.error("Error loading trips", e); }
+      finally { setLoadingTrips(prev => { const n = new Set(prev); n.delete(routeId); return n; }); }
+    }
+  }, [routeTrips, selectedDate]);
+
+  const setTripVehicle = useCallback((tripId: string, vt: VehicleType) => {
+    setTripVehicleOverrides(prev => { const n = new Map(prev); n.set(tripId, vt); return n; });
+  }, []);
 
   const run = useCallback(async () => {
     if (!selectedDate) { setError("Seleziona una data"); return; }
@@ -529,6 +579,11 @@ export default function ServiceProgramPage() {
     setGanttFilter("all"); setExpandedShifts(new Set());
     try {
       const endpoint = solverMode === "cpsat" ? "/api/service-program/cpsat" : "/api/service-program";
+      // Build trip overrides: only send trips that differ from route default
+      const tripOverridesObj: Record<string, string> = {};
+      for (const [tripId, vt] of tripVehicleOverrides) {
+        tripOverridesObj[tripId] = vt;
+      }
       const bodyPayload: any = {
         date: selectedDate,
         routes: Array.from(selectedRoutes.entries()).map(([routeId, vehicleType]) => ({
@@ -536,6 +591,7 @@ export default function ServiceProgramPage() {
           vehicleType,
           forced: forcedRoutes.has(routeId),
         })),
+        ...(Object.keys(tripOverridesObj).length > 0 ? { tripVehicleOverrides: tripOverridesObj } : {}),
       };
       if (solverMode === "cpsat") {
         bodyPayload.timeLimit = solverIntensity === "fast" ? 30 : solverIntensity === "deep" ? 120 : 60;
@@ -552,7 +608,7 @@ export default function ServiceProgramPage() {
       setResult(data);
       if (data.solverMetrics) setSolverMetrics(data.solverMetrics);
     } catch (e: any) { setError(e.message || "Errore sconosciuto"); } finally { setLoading(false); }
-  }, [selectedDate, selectedRoutes, forcedRoutes, solverMode]);
+  }, [selectedDate, selectedRoutes, forcedRoutes, tripVehicleOverrides, solverMode]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
@@ -764,30 +820,105 @@ export default function ServiceProgramPage() {
                       const isSelected = selectedRoutes.has(route.routeId);
                       const vt = selectedRoutes.get(route.routeId) || "12m";
                       const isForced = forcedRoutes.has(route.routeId);
+                      const isExpanded = expandedRouteTrips.has(route.routeId);
+                      const trips = routeTrips.get(route.routeId) || [];
+                      const isLoadingTr = loadingTrips.has(route.routeId);
+                      // Count how many trips have overrides for this route
+                      const overrideCount = trips.filter(tr => tripVehicleOverrides.has(tr.tripId) && tripVehicleOverrides.get(tr.tripId) !== vt).length;
                       return (
-                        <div key={route.routeId} className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors cursor-pointer ${isSelected ? "bg-primary/10 border border-primary/20" : "bg-background/50 border border-transparent hover:bg-muted/40"}`}>
-                          <button onClick={() => toggleRoute(route.routeId)} className="shrink-0">{isSelected ? <CheckSquare className="w-4 h-4 text-primary" /> : <Square className="w-4 h-4 text-muted-foreground" />}</button>
-                          <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: route.color || "#6b7280" }} />
-                          <span className="font-medium min-w-[40px]">{route.name}</span>
-                          <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: route.category === "urbano" ? "rgba(59,130,246,0.15)" : "rgba(245,158,11,0.15)", color: CATEGORY_COLORS[route.category] }}>{route.category === "urbano" ? "URB" : "EXT"}</span>
-                          <span className="text-xs text-muted-foreground truncate flex-1">{route.longName || ""}</span>
-                          <span className="text-[10px] text-muted-foreground shrink-0">{route.tripsCount} corse</span>
-                          {isSelected && (
-                            <>
-                              <select value={vt} onChange={e => { e.stopPropagation(); setRouteVehicle(route.routeId, e.target.value as VehicleType); }} onClick={e => e.stopPropagation()} className="ml-1 text-xs bg-background border border-border/50 rounded px-1.5 py-0.5 shrink-0">
-                                <option value="autosnodato">Autosnodato</option>
-                                <option value="12m">12 metri</option>
-                                <option value="10m">10 metri</option>
-                                <option value="pollicino">Pollicino</option>
-                              </select>
-                              <button
-                                onClick={e => { e.stopPropagation(); toggleForced(route.routeId); }}
-                                title={isForced ? "Forzato: solo questo tipo di mezzo" : "Flessibile: può usare mezzi più piccoli"}
-                                className={`shrink-0 p-1 rounded transition-colors ${isForced ? "bg-amber-500/20 text-amber-400 hover:bg-amber-500/30" : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/30"}`}
-                              >
-                                {isForced ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-                              </button>
-                            </>
+                        <div key={route.routeId} className="space-y-0">
+                          <div className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors cursor-pointer ${isSelected ? "bg-primary/10 border border-primary/20" : "bg-background/50 border border-transparent hover:bg-muted/40"}`}>
+                            <button onClick={() => toggleRoute(route.routeId)} className="shrink-0">{isSelected ? <CheckSquare className="w-4 h-4 text-primary" /> : <Square className="w-4 h-4 text-muted-foreground" />}</button>
+                            <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: route.color || "#6b7280" }} />
+                            <span className="font-medium min-w-[40px]">{route.name}</span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0" style={{ backgroundColor: route.category === "urbano" ? "rgba(59,130,246,0.15)" : "rgba(245,158,11,0.15)", color: CATEGORY_COLORS[route.category] }}>{route.category === "urbano" ? "URB" : "EXT"}</span>
+                            <span className="text-xs text-muted-foreground truncate flex-1">{route.longName || ""}</span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">{route.tripsCount} corse</span>
+                            {isSelected && (
+                              <>
+                                <select value={vt} onChange={e => { e.stopPropagation(); setRouteVehicle(route.routeId, e.target.value as VehicleType); }} onClick={e => e.stopPropagation()} className="ml-1 text-xs bg-background border border-border/50 rounded px-1.5 py-0.5 shrink-0">
+                                  <option value="autosnodato">Autosnodato</option>
+                                  <option value="12m">12 metri</option>
+                                  <option value="10m">10 metri</option>
+                                  <option value="pollicino">Pollicino</option>
+                                </select>
+                                <button
+                                  onClick={e => { e.stopPropagation(); toggleForced(route.routeId); }}
+                                  title={isForced ? "Forzato: solo questo tipo di mezzo" : "Flessibile: può usare mezzi più piccoli"}
+                                  className={`shrink-0 p-1 rounded transition-colors ${isForced ? "bg-amber-500/20 text-amber-400 hover:bg-amber-500/30" : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/30"}`}
+                                >
+                                  {isForced ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                                </button>
+                                <button
+                                  onClick={e => { e.stopPropagation(); toggleRouteTrips(route.routeId); }}
+                                  title="Personalizza tipo veicolo per singola corsa"
+                                  className={`shrink-0 p-1 rounded transition-colors ${isExpanded ? "bg-blue-500/20 text-blue-400" : overrideCount > 0 ? "bg-orange-500/20 text-orange-400" : "text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/30"}`}
+                                >
+                                  {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                </button>
+                                {overrideCount > 0 && !isExpanded && (
+                                  <span className="text-[9px] text-orange-400 shrink-0">{overrideCount} override</span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                          {/* ── Per-trip vehicle override sub-panel ── */}
+                          {isSelected && isExpanded && (
+                            <div className="ml-8 mr-2 mb-1 border-l-2 border-primary/20 pl-3 py-1 space-y-0.5 bg-muted/10 rounded-r-md">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[10px] text-muted-foreground font-medium">Corse linea {route.name} — tipo veicolo per corsa</span>
+                                {overrideCount > 0 && (
+                                  <button onClick={() => {
+                                    setTripVehicleOverrides(prev => {
+                                      const n = new Map(prev);
+                                      for (const tr of trips) n.delete(tr.tripId);
+                                      return n;
+                                    });
+                                  }} className="text-[9px] text-red-400 hover:underline">Reset tutti</button>
+                                )}
+                              </div>
+                              {isLoadingTr ? (
+                                <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground py-2">
+                                  <Loader2 className="w-3 h-3 animate-spin" /> Caricamento corse…
+                                </div>
+                              ) : trips.length === 0 ? (
+                                <div className="text-[10px] text-muted-foreground py-2">Nessuna corsa attiva per questa data</div>
+                              ) : (
+                                <div className="max-h-[200px] overflow-y-auto space-y-0.5 pr-1">
+                                  {trips.map(trip => {
+                                    const tripVt = tripVehicleOverrides.get(trip.tripId) || vt;
+                                    const isOverridden = tripVehicleOverrides.has(trip.tripId) && tripVehicleOverrides.get(trip.tripId) !== vt;
+                                    return (
+                                      <div key={trip.tripId} className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded ${isOverridden ? "bg-orange-500/10 border border-orange-500/20" : "bg-background/30"}`}>
+                                        <span className="text-muted-foreground shrink-0 w-[50px] font-mono">{trip.departureTime?.substring(0, 5)}</span>
+                                        <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
+                                        <span className="text-muted-foreground shrink-0 w-[50px] font-mono">{trip.arrivalTime?.substring(0, 5)}</span>
+                                        <span className="text-[9px] px-1 py-0.5 rounded bg-muted/30 shrink-0">{trip.directionId === 0 ? "A" : "R"}</span>
+                                        <span className="truncate flex-1 text-muted-foreground" title={`${trip.firstStopName} → ${trip.lastStopName}`}>
+                                          {trip.firstStopName} → {trip.lastStopName}
+                                        </span>
+                                        <select
+                                          value={tripVt}
+                                          onChange={e => { setTripVehicle(trip.tripId, e.target.value as VehicleType); }}
+                                          className={`text-[10px] bg-background border rounded px-1 py-0.5 shrink-0 ${isOverridden ? "border-orange-500/40 text-orange-300" : "border-border/50"}`}
+                                        >
+                                          <option value="autosnodato">Autosnodato</option>
+                                          <option value="12m">12 metri</option>
+                                          <option value="10m">10 metri</option>
+                                          <option value="pollicino">Pollicino</option>
+                                        </select>
+                                        {isOverridden && (
+                                          <button onClick={() => setTripVehicleOverrides(prev => { const n = new Map(prev); n.delete(trip.tripId); return n; })}
+                                            className="text-muted-foreground/40 hover:text-red-400 shrink-0" title="Rimuovi override">
+                                            <X className="w-3 h-3" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       );

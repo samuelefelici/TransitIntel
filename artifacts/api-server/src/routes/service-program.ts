@@ -995,6 +995,111 @@ router.get("/service-program/dates", async (_req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
+ *  GET /api/service-program/trips — Trips for selected routes on a date
+ * ═══════════════════════════════════════════════════════════════ */
+
+router.get("/service-program/trips", async (req, res) => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+
+    const dateRaw = req.query.date as string | undefined;
+    const routeIdsRaw = req.query.routeIds as string | undefined;
+    if (!dateRaw || !routeIdsRaw) {
+      res.status(400).json({ error: "Parametri 'date' e 'routeIds' obbligatori" });
+      return;
+    }
+    const dateYMD = dateRaw.replace(/-/g, "");
+    if (!/^\d{8}$/.test(dateYMD)) {
+      res.status(400).json({ error: "Formato data non valido" });
+      return;
+    }
+    const routeIds = routeIdsRaw.split(",").map(s => s.trim()).filter(Boolean);
+    if (routeIds.length === 0) {
+      res.status(400).json({ error: "Nessuna linea specificata" });
+      return;
+    }
+
+    // 1. Active services for the date
+    const activeServices = await getActiveServiceIds(feedId, dateYMD);
+    if (activeServices.size === 0) {
+      res.json({ trips: [] });
+      return;
+    }
+
+    // 2. Get trips for selected routes + active services
+    const allTrips = await db.select({
+      tripId: gtfsTrips.tripId,
+      routeId: gtfsTrips.routeId,
+      serviceId: gtfsTrips.serviceId,
+      headsign: gtfsTrips.tripHeadsign,
+      directionId: gtfsTrips.directionId,
+    }).from(gtfsTrips)
+      .where(eq(gtfsTrips.feedId, feedId));
+
+    const filtered = allTrips.filter(t =>
+      activeServices.has(t.serviceId) && routeIds.includes(t.routeId)
+    );
+
+    if (filtered.length === 0) {
+      res.json({ trips: [] });
+      return;
+    }
+
+    // 3. Get stop_times for each trip (first and last)
+    const tripIds = filtered.map(t => t.tripId);
+    const stRows = await db.select({
+      tripId: gtfsStopTimes.tripId,
+      stopId: gtfsStopTimes.stopId,
+      arrivalTime: gtfsStopTimes.arrivalTime,
+      departureTime: gtfsStopTimes.departureTime,
+      stopSequence: gtfsStopTimes.stopSequence,
+    }).from(gtfsStopTimes)
+      .where(eq(gtfsStopTimes.feedId, feedId));
+
+    // Group by trip
+    const stByTrip = new Map<string, typeof stRows>();
+    for (const st of stRows) {
+      if (!tripIds.includes(st.tripId)) continue;
+      let arr = stByTrip.get(st.tripId);
+      if (!arr) { arr = []; stByTrip.set(st.tripId, arr); }
+      arr.push(st);
+    }
+
+    // 4. Get stop names
+    const stopRows = await db.select({
+      stopId: gtfsStops.stopId,
+      stopName: gtfsStops.stopName,
+    }).from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
+    const stopNameMap = new Map<string, string>();
+    for (const s of stopRows) stopNameMap.set(s.stopId, s.stopName || s.stopId);
+
+    // 5. Build response
+    const trips = filtered.map(t => {
+      const sts = (stByTrip.get(t.tripId) || []).sort((a, b) => a.stopSequence - b.stopSequence);
+      const firstDep = sts[0]?.departureTime || "??:??";
+      const lastArr = sts[sts.length - 1]?.arrivalTime || "??:??";
+      const firstStopName = sts[0] ? (stopNameMap.get(sts[0].stopId) || sts[0].stopId) : "?";
+      const lastStopName = sts.length > 0 ? (stopNameMap.get(sts[sts.length - 1].stopId) || sts[sts.length - 1].stopId) : "?";
+      return {
+        tripId: t.tripId,
+        routeId: t.routeId,
+        headsign: t.headsign || "",
+        directionId: t.directionId ?? 0,
+        departureTime: firstDep,
+        arrivalTime: lastArr,
+        firstStopName,
+        lastStopName,
+      };
+    }).sort((a, b) => a.departureTime.localeCompare(b.departureTime));
+
+    res.json({ trips });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════
  *  POST /api/service-program — Run optimizer
  * ═══════════════════════════════════════════════════════════════ */
 
@@ -1006,6 +1111,7 @@ router.post("/service-program", async (req, res) => {
     const body = req.body as {
       date?: string;
       routes?: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
+      tripVehicleOverrides?: Record<string, VehicleType>;
     };
 
     const rawDate = body.date;
@@ -1145,7 +1251,7 @@ router.post("/service-program", async (req, res) => {
         lastStopLon: lastStop?.lon ?? 13.5,
         firstStopName: firstStop?.name || sts[0].stop_id,
         lastStopName: lastStop?.name || sts[sts.length - 1].stop_id,
-        requiredVehicle: routeVehicleMap[t.routeId] || "12m",
+        requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),
         category: getServiceCategory(routeName),
         forced: routeForcedMap[t.routeId] ?? false,
       });
@@ -1375,6 +1481,7 @@ router.post("/service-program/cpsat", async (req, res) => {
     const body = req.body as {
       date?: string;
       routes?: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
+      tripVehicleOverrides?: Record<string, VehicleType>;
       timeLimit?: number;
       vehicleCosts?: Record<string, any>;
       solverIntensity?: string;
@@ -1502,7 +1609,7 @@ router.post("/service-program/cpsat", async (req, res) => {
         lastStopLon: lastStop?.lon ?? 13.5,
         firstStopName: firstStop?.name || sts[0].stop_id,
         lastStopName: lastStop?.name || sts[sts.length - 1].stop_id,
-        requiredVehicle: routeVehicleMap[t.routeId] || "12m",
+        requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),
         category: getServiceCategory(routeName),
         forced: routeForcedMap[t.routeId] ?? false,
       });
