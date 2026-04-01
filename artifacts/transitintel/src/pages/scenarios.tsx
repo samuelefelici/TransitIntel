@@ -440,22 +440,36 @@ export default function ScenariosPage() {
     finally { setPdeLoading(false); }
   }, [pdeScenarioId]);
 
+  const [pdeConfirmDelete, setPdeConfirmDelete] = useState<string | null>(null);
   const [pdeDeleting, setPdeDeleting] = useState<string | null>(null);
-  const deletePdeProgram = useCallback(async (programId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    e?.preventDefault();
+
+  // First click: show confirm. Second click: actually delete.
+  const deletePdeProgram = useCallback(async (programId: string, confirmed: boolean) => {
     if (!pdeScenarioId || pdeDeleting) return;
-    if (!window.confirm("Eliminare questo programma?")) return;
+    if (!confirmed) {
+      // First click — ask confirmation
+      setPdeConfirmDelete(programId);
+      // Auto-cancel after 3 seconds
+      setTimeout(() => setPdeConfirmDelete(prev => prev === programId ? null : prev), 3000);
+      return;
+    }
+    // Second click — confirmed, do the delete
+    setPdeConfirmDelete(null);
     setPdeDeleting(programId);
+    // Optimistic: remove from list immediately
+    const backup = [...pdeSavedList];
+    setPdeSavedList(prev => prev.filter(p => p.id !== programId));
+    if (pdeResult?.id === programId) setPdeResult(null);
     try {
-      await apiFetch(`/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
-      setPdeSavedList(prev => prev.filter(p => p.id !== programId));
-      if (pdeResult?.id === programId) setPdeResult(null);
+      const resp = await fetch(`${getApiBase()}/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     } catch (err: any) {
       console.error("Delete failed:", err);
+      // Rollback on failure
+      setPdeSavedList(backup);
       alert(`Errore eliminazione: ${err.message}`);
     } finally { setPdeDeleting(null); }
-  }, [pdeScenarioId, pdeResult, pdeDeleting]);
+  }, [pdeScenarioId, pdeResult, pdeDeleting, pdeSavedList]);
 
   // ─── Map data ────────────────────────────────────────────────────
   const poiGeojson = useMemo(() => {
@@ -1642,15 +1656,23 @@ export default function ScenariosPage() {
                               {p.name}
                             </button>
                             <span className="text-[9px] text-muted-foreground shrink-0">{new Date(p.createdAt).toLocaleDateString("it-IT")}</span>
-                            <button
-                              onClick={(e) => deletePdeProgram(p.id, e)}
-                              disabled={pdeDeleting === p.id}
-                              className="p-1 -m-1 text-muted-foreground hover:text-red-400 shrink-0 rounded transition-colors disabled:opacity-50"
-                              title="Elimina programma">
-                              {pdeDeleting === p.id
-                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                : <Trash2 className="w-3.5 h-3.5" />}
-                            </button>
+                            {pdeConfirmDelete === p.id ? (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deletePdeProgram(p.id, true); }}
+                                className="px-2 py-0.5 bg-red-600 text-white text-[9px] font-semibold rounded hover:bg-red-500 transition-colors animate-pulse shrink-0">
+                                Conferma
+                              </button>
+                            ) : (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deletePdeProgram(p.id, false); }}
+                                disabled={pdeDeleting === p.id}
+                                className="p-1 -m-1 text-muted-foreground hover:text-red-400 shrink-0 rounded transition-colors disabled:opacity-50"
+                                title="Elimina programma">
+                                {pdeDeleting === p.id
+                                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  : <Trash2 className="w-3.5 h-3.5" />}
+                              </button>
+                            )}
                           </div>
                         ))}
                       </div>
