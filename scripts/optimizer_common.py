@@ -174,15 +174,15 @@ class VehicleShiftCost:
 PRE_TURNO_MIN = 12
 PRE_TURNO_AUTO_MIN = 5   # pre-turno ridotto quando si usa auto aziendale
 TARGET_WORK_LOW = 390     # 6h30
-TARGET_WORK_HIGH = 402    # 6h42
-TARGET_WORK_MID = 396     # media
+TARGET_WORK_HIGH = 435    # 7h15
+TARGET_WORK_MID = 408     # 6h48 media
 COMPANY_CARS = 5
 
 SHIFT_RULES = {
-    "intero":      {"maxNastro": 435, "intMin": 0,   "intMax": 0,   "maxPct": 100},
-    "semiunico":   {"maxNastro": 555, "intMin": 75,  "intMax": 179, "maxPct": 12},
-    "spezzato":    {"maxNastro": 630, "intMin": 180, "intMax": 999, "maxPct": 13},
-    "supplemento": {"maxNastro": 150, "intMin": 0,   "intMax": 0,   "maxPct": 100},
+    "intero":      {"maxNastro": 435, "maxLavoro": 435, "intMin": 0,   "intMax": 0,   "maxPct": 100, "sostaMinCapolinea": 15},
+    "semiunico":   {"maxNastro": 555, "maxLavoro": 480, "intMin": 75,  "intMax": 179, "maxPct": 12},
+    "spezzato":    {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13},
+    "supplemento": {"maxNastro": 150, "maxLavoro": 150, "intMin": 0,   "intMax": 0,   "maxPct": 100},
 }
 
 DEPOT_TRANSFER_CENTRAL = 10
@@ -207,12 +207,12 @@ class PrePostRules:
     # Pre/post TURNO (inizio e fine del turno guida completo)
     pre_turno_deposito: int = 12     # min — prima uscita dal deposito
     pre_turno_cambio: int = 5        # min — cambio in linea (prende vettura in servizio)
-    post_turno_deposito: int = 8     # min — ultimo rientro al deposito
-    post_turno_cambio: int = 3       # min — lascia vettura al capolinea
+    post_turno_deposito: int = 0     # min — ultimo rientro al deposito (RD 131/1938: 0)
+    post_turno_cambio: int = 0       # min — lascia vettura al capolinea (RD 131/1938: 0)
 
     # Pre/post RIPRESA (ogni ripresa, se turno a 2 riprese)
-    pre_ripresa: int = 5             # min — ripresa dopo interruzione
-    post_ripresa: int = 3            # min — prima dell'interruzione
+    pre_ripresa: int = 12            # min — ripresa dopo interruzione (RD 131/1938: come pre-turno)
+    post_ripresa: int = 0            # min — prima dell'interruzione (RD 131/1938: 0)
 
     # Pre/post PEZZO (ogni pezzo guida dopo un cambio in linea)
     pre_pezzo_cambio: int = 3        # min — dopo cambio veicolo
@@ -252,27 +252,28 @@ class PrePostRules:
 
 
 @dataclass
-class CEE561Config:
-    """Vincolo CE 561/2006: guida continuativa max 4h30, pausa 45min (frazionabile 2×15)."""
+class RD131Config:
+    """Vincolo RD 131/1938 (TPL urbano): guida continuativa max 4h30,
+    sosta minima 15 min al capolinea per spezzare la continuità,
+    lavoro giornaliero max 7h15 (435 min)."""
     attivo: bool = True
-    max_periodo_continuativo: int = 270   # 4h30
-    sosta_che_spezza: int = 45            # pausa completa
-    min_sosta: int = 15                   # pausa minima frazionata
-    max_soste: int = 2                    # max 2 soste per comporre la pausa
-    max_nastro_pc: int = 315              # 5h15 nastro max periodo
+    max_guida_continuativa: int = 270     # 4h30
+    sosta_minima: int = 15                # min — sosta al capolinea che resetta il contatore
+    max_lavoro_giornaliero: int = 435     # 7h15
 
     @classmethod
-    def from_config(cls, cfg: dict | None) -> "CEE561Config":
+    def from_config(cls, cfg: dict | None) -> "RD131Config":
         if not cfg:
             return cls()
         r = cls()
         _MAP = {
             "attivo": ("attivo", bool),
-            "maxPeriodoContinuativo": ("max_periodo_continuativo", int),
-            "sostaCheSpezza": ("sosta_che_spezza", int),
-            "minSosta": ("min_sosta", int),
-            "maxSoste": ("max_soste", int),
-            "maxNastroPC": ("max_nastro_pc", int),
+            "maxGuidaContinuativa": ("max_guida_continuativa", int),
+            "sostaMinima": ("sosta_minima", int),
+            "maxLavoroGiornaliero": ("max_lavoro_giornaliero", int),
+            # Retrocompat CE 561/2006
+            "maxPeriodoContinuativo": ("max_guida_continuativa", int),
+            "minSosta": ("sosta_minima", int),
         }
         for js_key, (py_attr, typ) in _MAP.items():
             if js_key in cfg:
@@ -282,12 +283,13 @@ class CEE561Config:
     def to_dict(self) -> dict:
         return {
             "attivo": self.attivo,
-            "maxPeriodoContinuativo": self.max_periodo_continuativo,
-            "sostaCheSpezza": self.sosta_che_spezza,
-            "minSosta": self.min_sosta,
-            "maxSoste": self.max_soste,
-            "maxNastroPC": self.max_nastro_pc,
+            "maxGuidaContinuativa": self.max_guida_continuativa,
+            "sostaMinima": self.sosta_minima,
+            "maxLavoroGiornaliero": self.max_lavoro_giornaliero,
         }
+
+# Alias retrocompatibilità
+CEE561Config = RD131Config
 
 
 @dataclass
@@ -527,9 +529,11 @@ class WorkCalculation:
 
 @dataclass
 class BDSValidation:
-    """Risultato validazione BDS di un turno guida."""
+    """Risultato validazione BDS di un turno guida (RD 131/1938)."""
     classificazione_valida: bool = True
-    cee561_ok: bool = True
+    rd131_ok: bool = True
+    sosta_capolinea_ok: bool = True
+    lavoro_ok: bool = True
     intervallo_pasto_ok: bool = True
     stacco_minimo_ok: bool = True
     nastro_ok: bool = True
@@ -537,8 +541,14 @@ class BDSValidation:
     violations: list[str] = field(default_factory=list)
 
     @property
+    def cee561_ok(self) -> bool:
+        """Alias retrocompatibilità."""
+        return self.rd131_ok
+
+    @property
     def valid(self) -> bool:
-        return (self.classificazione_valida and self.cee561_ok
+        return (self.classificazione_valida and self.rd131_ok
+                and self.sosta_capolinea_ok and self.lavoro_ok
                 and self.intervallo_pasto_ok and self.stacco_minimo_ok
                 and self.nastro_ok and self.riprese_ok)
 
@@ -546,7 +556,10 @@ class BDSValidation:
         return {
             "valid": self.valid,
             "classificazioneValida": self.classificazione_valida,
-            "cee561": self.cee561_ok,
+            "rd131": self.rd131_ok,
+            "sostaCapolinea": self.sosta_capolinea_ok,
+            "lavoro": self.lavoro_ok,
+            "cee561": self.rd131_ok,   # retrocompat
             "intervalloPasto": self.intervallo_pasto_ok,
             "staccoMinimo": self.stacco_minimo_ok,
             "nastro": self.nastro_ok,
@@ -893,10 +906,10 @@ def report_progress(phase: str, percentage: float, detail: str, extra: dict | No
 DEFAULT_OPERATOR_CONFIG: dict[str, Any] = {
     # shiftRules — sovrascrivibili dall'operatore
     "shiftRules": {
-        "intero":      {"maxNastro": 435, "intMin": 0,   "intMax": 0,   "maxPct": 100},
-        "semiunico":   {"maxNastro": 555, "intMin": 75,  "intMax": 179, "maxPct": 12},
-        "spezzato":    {"maxNastro": 630, "intMin": 180, "intMax": 999, "maxPct": 13},
-        "supplemento": {"maxNastro": 150, "intMin": 0,   "intMax": 0,   "maxPct": 100},
+        "intero":      {"maxNastro": 435, "maxLavoro": 435, "intMin": 0,   "intMax": 0,   "maxPct": 100, "sostaMinCapolinea": 15},
+        "semiunico":   {"maxNastro": 555, "maxLavoro": 480, "intMin": 75,  "intMax": 179, "maxPct": 12},
+        "spezzato":    {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13},
+        "supplemento": {"maxNastro": 150, "maxLavoro": 150, "intMin": 0,   "intMax": 0,   "maxPct": 100},
     },
     # Pesi obiettivo (0-10)
     "weights": {
