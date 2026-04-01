@@ -440,14 +440,22 @@ export default function ScenariosPage() {
     finally { setPdeLoading(false); }
   }, [pdeScenarioId]);
 
-  const deletePdeProgram = useCallback(async (programId: string) => {
-    if (!pdeScenarioId || !confirm("Eliminare questo programma?")) return;
+  const [pdeDeleting, setPdeDeleting] = useState<string | null>(null);
+  const deletePdeProgram = useCallback(async (programId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    if (!pdeScenarioId || pdeDeleting) return;
+    if (!window.confirm("Eliminare questo programma?")) return;
+    setPdeDeleting(programId);
     try {
       await apiFetch(`/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
       setPdeSavedList(prev => prev.filter(p => p.id !== programId));
       if (pdeResult?.id === programId) setPdeResult(null);
-    } catch (err: any) { alert(`Errore eliminazione: ${err.message}`); }
-  }, [pdeScenarioId, pdeResult]);
+    } catch (err: any) {
+      console.error("Delete failed:", err);
+      alert(`Errore eliminazione: ${err.message}`);
+    } finally { setPdeDeleting(null); }
+  }, [pdeScenarioId, pdeResult, pdeDeleting]);
 
   // ─── Map data ────────────────────────────────────────────────────
   const poiGeojson = useMemo(() => {
@@ -1634,8 +1642,14 @@ export default function ScenariosPage() {
                               {p.name}
                             </button>
                             <span className="text-[9px] text-muted-foreground shrink-0">{new Date(p.createdAt).toLocaleDateString("it-IT")}</span>
-                            <button onClick={() => deletePdeProgram(p.id)} className="text-muted-foreground hover:text-red-400 shrink-0">
-                              <Trash2 className="w-3 h-3" />
+                            <button
+                              onClick={(e) => deletePdeProgram(p.id, e)}
+                              disabled={pdeDeleting === p.id}
+                              className="p-1 -m-1 text-muted-foreground hover:text-red-400 shrink-0 rounded transition-colors disabled:opacity-50"
+                              title="Elimina programma">
+                              {pdeDeleting === p.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Trash2 className="w-3.5 h-3.5" />}
                             </button>
                           </div>
                         ))}
