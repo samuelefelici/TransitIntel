@@ -9,7 +9,7 @@ import {
 import {
   Upload, Trash2, Eye, EyeOff, GitCompareArrows, Loader2, Plus, X, ChevronDown, ChevronUp,
   Layers, MapPin, Route, Users, Building2, Satellite, Sun, Moon, Lightbulb, FileUp,
-  Ruler, BarChart3, AlertTriangle, CheckCircle2, Info,
+  Ruler, BarChart3, AlertTriangle, CheckCircle2, Info, Play, Clock, Truck, Settings2, Save,
   Cross, GraduationCap, ShoppingBag, Factory, Dumbbell, Landmark, TrainFront,
   Briefcase, Church, HeartHandshake, CircleParking, Camera,
 } from "lucide-react";
@@ -200,6 +200,26 @@ export default function ScenariosPage() {
   const [analysisPanelOpen, setAnalysisPanelOpen] = useState(false);
   const [legendCollapsed, setLegendCollapsed] = useState(true);
 
+  // ── PdE (Programma di Esercizio) state ──
+  const [pdePanelOpen, setPdePanelOpen] = useState(false);
+  const [pdeLoading, setPdeLoading] = useState(false);
+  const [pdeResult, setPdeResult] = useState<any | null>(null);
+  const [pdeScenarioId, setPdeScenarioId] = useState<string | null>(null);
+  const [pdeConfig, setPdeConfig] = useState({
+    targetKm: 500,
+    serviceStartH: 6,
+    serviceEndH: 22,
+    minCadenceMin: 10,
+    maxCadenceMin: 60,
+    avgSpeedKmh: 20,
+    dwellTimeSec: 25,
+    terminalTimeSec: 300,
+    bidirectional: true,
+  });
+  const [pdeSavedList, setPdeSavedList] = useState<any[]>([]);
+  const [pdeTab, setPdeTab] = useState<"config" | "result" | "gantt">("config");
+  const [pdeSelectedLine, setPdeSelectedLine] = useState<number>(-1); // -1 = all lines
+
   // Popup
   const [popup, setPopup] = useState<{ lng: number; lat: number; type: string; props: Record<string, any> } | null>(null);
   const [cursor, setCursor] = useState("grab");
@@ -361,6 +381,61 @@ export default function ScenariosPage() {
       setCompareLoading(false);
     }
   }, [selectedForCompare, analysisRadius]);
+
+  // ── PdE functions ──
+  const openPdePanel = useCallback(async (scenarioId: string) => {
+    setPdeScenarioId(scenarioId);
+    setPdeResult(null);
+    setPdeTab("config");
+    setPdePanelOpen(true);
+    // Load saved programs
+    try {
+      const data = await apiFetch<{ programs: any[] }>(`/api/scenarios/${scenarioId}/programs`);
+      setPdeSavedList(data.programs || []);
+    } catch { setPdeSavedList([]); }
+  }, []);
+
+  const generatePde = useCallback(async () => {
+    if (!pdeScenarioId) return;
+    setPdeLoading(true);
+    setPdeResult(null);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/scenarios/${pdeScenarioId}/generate-program`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pdeConfig),
+      });
+      if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error || `HTTP ${resp.status}`); }
+      const data = await resp.json();
+      setPdeResult(data);
+      setPdeTab("result");
+      // Refresh saved list
+      const list = await apiFetch<{ programs: any[] }>(`/api/scenarios/${pdeScenarioId}/programs`);
+      setPdeSavedList(list.programs || []);
+    } catch (err: any) {
+      alert(`Errore generazione PdE: ${err.message}`);
+    } finally { setPdeLoading(false); }
+  }, [pdeScenarioId, pdeConfig]);
+
+  const loadPdeProgram = useCallback(async (programId: string) => {
+    if (!pdeScenarioId) return;
+    setPdeLoading(true);
+    try {
+      const data = await apiFetch<any>(`/api/scenarios/${pdeScenarioId}/programs/${programId}`);
+      setPdeResult(data);
+      setPdeTab("result");
+    } catch (err: any) { alert(`Errore: ${err.message}`); }
+    finally { setPdeLoading(false); }
+  }, [pdeScenarioId]);
+
+  const deletePdeProgram = useCallback(async (programId: string) => {
+    if (!pdeScenarioId || !confirm("Eliminare questo programma?")) return;
+    try {
+      await fetch(`${getApiBase()}/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
+      setPdeSavedList(prev => prev.filter(p => p.id !== programId));
+      if (pdeResult?.id === programId) setPdeResult(null);
+    } catch (err: any) { alert(`Errore: ${err.message}`); }
+  }, [pdeScenarioId, pdeResult]);
 
   // ─── Map data ────────────────────────────────────────────────────
   const poiGeojson = useMemo(() => {
@@ -790,10 +865,16 @@ export default function ScenariosPage() {
                               <span className="flex items-center gap-0.5"><MapPin className="w-3 h-3" /> {s.stopsCount} fermate</span>
                             </div>
                             {/* Quick analyze button */}
-                            <button onClick={() => runAnalysis(s.id)}
-                              className="w-full flex items-center justify-center gap-1 px-2 py-1 rounded text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
-                              <BarChart3 className="w-3 h-3" /> Analizza
-                            </button>
+                            <div className="flex gap-1">
+                              <button onClick={() => runAnalysis(s.id)}
+                                className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[10px] font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                                <BarChart3 className="w-3 h-3" /> Analizza
+                              </button>
+                              <button onClick={() => openPdePanel(s.id)}
+                                className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors">
+                                <Play className="w-3 h-3" /> Genera PdE
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
@@ -1389,6 +1470,400 @@ export default function ScenariosPage() {
                         })}
                       </div>
                     )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── PdE Panel — bottom ────────────────────────────────── */}
+      <AnimatePresence>
+        {pdePanelOpen && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 30 }}
+            className="absolute bottom-6 left-4 right-4 max-w-4xl mx-auto pointer-events-auto z-20"
+          >
+            <Card className="bg-card/95 backdrop-blur-xl border-emerald-500/30 shadow-2xl overflow-hidden">
+              <div className="px-4 py-2.5 flex items-center justify-between border-b border-border/30">
+                <span className="flex items-center gap-2 text-sm font-bold">
+                  <Truck className="w-4 h-4 text-emerald-400" />
+                  Programma di Esercizio
+                  {pdeScenarioId && <span className="text-xs text-muted-foreground font-normal ml-1">
+                    — {scenarioList.find(s => s.id === pdeScenarioId)?.name}
+                  </span>}
+                </span>
+                <div className="flex items-center gap-2">
+                  {(["config", "result", "gantt"] as const).map(tab => (
+                    <button key={tab} onClick={() => setPdeTab(tab)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-medium transition-colors ${pdeTab === tab ? "bg-emerald-500/20 text-emerald-400" : "text-muted-foreground hover:text-foreground"}`}
+                      disabled={tab !== "config" && !pdeResult}>
+                      {tab === "config" ? "⚙️ Configura" : tab === "result" ? "📊 Risultati" : "📅 Gantt"}
+                    </button>
+                  ))}
+                  <button onClick={() => setPdePanelOpen(false)} className="text-muted-foreground hover:text-foreground ml-2">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <CardContent className="p-4 max-h-[55vh] overflow-y-auto">
+                {/* Loading */}
+                {pdeLoading && (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                    Generazione programma in corso… (traffico + POI + densità)
+                  </div>
+                )}
+
+                {/* ── Config tab ── */}
+                {pdeTab === "config" && !pdeLoading && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🎯 Km Target (indicativo)</label>
+                        <input type="number" min={50} max={5000} step={50} value={pdeConfig.targetKm}
+                          onChange={e => setPdeConfig(p => ({ ...p, targetKm: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🕐 Inizio servizio</label>
+                        <input type="number" min={4} max={12} value={pdeConfig.serviceStartH}
+                          onChange={e => setPdeConfig(p => ({ ...p, serviceStartH: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🕙 Fine servizio</label>
+                        <input type="number" min={18} max={24} value={pdeConfig.serviceEndH}
+                          onChange={e => setPdeConfig(p => ({ ...p, serviceEndH: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🚌 Velocità media (km/h)</label>
+                        <input type="number" min={10} max={60} value={pdeConfig.avgSpeedKmh}
+                          onChange={e => setPdeConfig(p => ({ ...p, avgSpeedKmh: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">⏱ Cadenza min (punta)</label>
+                        <input type="number" min={5} max={30} value={pdeConfig.minCadenceMin}
+                          onChange={e => setPdeConfig(p => ({ ...p, minCadenceMin: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">⏱ Cadenza max (morbida)</label>
+                        <input type="number" min={15} max={120} value={pdeConfig.maxCadenceMin}
+                          onChange={e => setPdeConfig(p => ({ ...p, maxCadenceMin: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🚏 Sosta fermata (sec)</label>
+                        <input type="number" min={10} max={60} value={pdeConfig.dwellTimeSec}
+                          onChange={e => setPdeConfig(p => ({ ...p, dwellTimeSec: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-muted-foreground font-medium">🔄 Sosta capolinea (sec)</label>
+                        <input type="number" min={60} max={600} step={30} value={pdeConfig.terminalTimeSec}
+                          onChange={e => setPdeConfig(p => ({ ...p, terminalTimeSec: Number(e.target.value) }))}
+                          className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={pdeConfig.bidirectional}
+                          onChange={e => setPdeConfig(p => ({ ...p, bidirectional: e.target.checked }))}
+                          className="rounded" />
+                        Bidirezionale (andata + ritorno)
+                      </label>
+                      <button onClick={generatePde} disabled={pdeLoading}
+                        className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-emerald-500 transition-colors disabled:opacity-50">
+                        {pdeLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                        {pdeLoading ? "Generazione…" : "Genera Programma"}
+                      </button>
+                    </div>
+
+                    {/* Saved programs list */}
+                    {pdeSavedList.length > 0 && (
+                      <div className="border-t border-border/30 pt-3 space-y-1.5">
+                        <span className="text-[10px] text-muted-foreground font-medium">Programmi salvati:</span>
+                        {pdeSavedList.map(p => (
+                          <div key={p.id} className="flex items-center gap-2 bg-background/50 rounded px-2.5 py-1.5 text-xs">
+                            <button onClick={() => loadPdeProgram(p.id)} className="flex-1 text-left hover:text-primary transition-colors truncate">
+                              {p.name}
+                            </button>
+                            <span className="text-[9px] text-muted-foreground shrink-0">{new Date(p.createdAt).toLocaleDateString("it-IT")}</span>
+                            <button onClick={() => deletePdeProgram(p.id)} className="text-muted-foreground hover:text-red-400 shrink-0">
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Result tab ── */}
+                {pdeTab === "result" && pdeResult && !pdeLoading && (
+                  <div className="space-y-4">
+                    {/* Line selector */}
+                    {pdeResult.totalLines > 1 && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] text-muted-foreground font-medium">Linea:</span>
+                        <button onClick={() => setPdeSelectedLine(-1)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${pdeSelectedLine === -1 ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "text-muted-foreground hover:text-foreground bg-muted/20"}`}>
+                          Tutte ({pdeResult.totalLines})
+                        </button>
+                        {(pdeResult.lines || []).map((ls: any) => (
+                          <button key={ls.lineIndex} onClick={() => setPdeSelectedLine(ls.lineIndex)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${pdeSelectedLine === ls.lineIndex ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "text-muted-foreground hover:text-foreground bg-muted/20"}`}>
+                            {ls.lineName.length > 12 ? ls.lineName.slice(0, 10) + "…" : ls.lineName}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Summary cards */}
+                    {(() => {
+                      const sel = pdeSelectedLine >= 0 ? pdeResult.lines?.find((l: any) => l.lineIndex === pdeSelectedLine) : null;
+                      const totalTrips = sel ? sel.totalTrips : pdeResult.totalTrips;
+                      const totalKm = sel ? sel.totalKm : pdeResult.totalKm;
+                      const lengthKm = sel ? sel.lengthKm : pdeResult.routeLengthKm;
+                      const stopsCount = sel ? sel.stopsCount : pdeResult.stops?.length || 0;
+                      return (
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                          {[
+                            { label: "Corse", value: totalTrips, icon: "🚌" },
+                            { label: "Km totali", value: `${totalKm} km`, icon: "📏" },
+                            { label: "Percorso", value: `${lengthKm} km`, icon: "🛤" },
+                            { label: "Fermate", value: stopsCount, icon: "🚏" },
+                            { label: pdeSelectedLine >= 0 ? "Linea" : "Linee", value: pdeSelectedLine >= 0 ? sel?.lineName : pdeResult.totalLines, icon: "🗺️" },
+                          ].map((m, i) => (
+                            <div key={i} className="bg-muted/20 rounded-lg px-3 py-2 text-center">
+                              <div className="text-lg">{m.icon}</div>
+                              <div className="text-sm font-bold">{m.value}</div>
+                              <div className="text-[9px] text-muted-foreground">{m.label}</div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Metrics */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {[
+                        { label: "Cadenza media", value: `${pdeResult.metrics?.avgCadenceMin} min` },
+                        { label: "Cadenza punta", value: `${pdeResult.metrics?.peakCadenceMin} min` },
+                        { label: "Tempo medio corsa", value: `${pdeResult.metrics?.avgTravelTimeMin} min` },
+                        { label: "Veicoli necessari", value: pdeResult.metrics?.vehiclesNeeded },
+                        { label: "Ore servizio totali", value: `${pdeResult.metrics?.totalServiceHours} h` },
+                        { label: "Km per veicolo", value: `${pdeResult.metrics?.kmPerVehicle} km` },
+                        { label: "Cadenza morbida", value: `${pdeResult.metrics?.offPeakCadenceMin} min` },
+                        { label: "Fascia oraria", value: pdeResult.serviceWindow },
+                      ].map((m, i) => (
+                        <div key={i} className="bg-background/40 border border-border/20 rounded px-2.5 py-1.5">
+                          <div className="text-[9px] text-muted-foreground">{m.label}</div>
+                          <div className="text-xs font-semibold">{m.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Lines summary table */}
+                    {pdeSelectedLine === -1 && pdeResult.lines && pdeResult.lines.length > 1 && (
+                      <div>
+                        <h4 className="text-[10px] font-semibold text-muted-foreground mb-2">Riepilogo per linea</h4>
+                        <div className="overflow-x-auto rounded border border-border/20">
+                          <table className="w-full text-[10px]">
+                            <thead>
+                              <tr className="bg-muted/20 text-muted-foreground">
+                                <th className="px-2 py-1.5 text-left font-medium">Linea</th>
+                                <th className="px-2 py-1.5 text-right font-medium">Km</th>
+                                <th className="px-2 py-1.5 text-right font-medium">Fermate</th>
+                                <th className="px-2 py-1.5 text-right font-medium">Corse</th>
+                                <th className="px-2 py-1.5 text-right font-medium">Km tot</th>
+                                <th className="px-2 py-1.5 text-right font-medium">Domanda</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pdeResult.lines.map((ls: any) => (
+                                <tr key={ls.lineIndex} className="border-t border-border/10 hover:bg-muted/10 cursor-pointer" onClick={() => setPdeSelectedLine(ls.lineIndex)}>
+                                  <td className="px-2 py-1 font-medium text-emerald-400">{ls.lineName}</td>
+                                  <td className="px-2 py-1 text-right">{ls.lengthKm}</td>
+                                  <td className="px-2 py-1 text-right">{ls.stopsCount}</td>
+                                  <td className="px-2 py-1 text-right">{ls.totalTrips}</td>
+                                  <td className="px-2 py-1 text-right">{ls.totalKm}</td>
+                                  <td className="px-2 py-1 text-right">{ls.avgDemandScore}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Cadence profile chart */}
+                    {(() => {
+                      const sel = pdeSelectedLine >= 0 ? pdeResult.lines?.find((l: any) => l.lineIndex === pdeSelectedLine) : null;
+                      const profile = sel ? sel.cadenceProfile : pdeResult.cadenceProfile;
+                      if (!profile) return null;
+                      return (
+                        <div>
+                          <h4 className="text-[10px] font-semibold text-muted-foreground mb-2">
+                            Profilo cadenza {sel ? `— ${sel.lineName}` : "globale"}
+                          </h4>
+                          <div className="h-[140px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={profile.map((c: any) => ({
+                                name: c.window.replace(/_/g, " ").replace("mattina ", "matt. ").replace("pomeriggio ", "pom. ").replace("sera ", ""),
+                                cadenza: c.cadenceMin,
+                                corse: c.tripsInWindow,
+                              }))}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                                <XAxis dataKey="name" tick={{ fill: "#888", fontSize: 9 }} />
+                                <YAxis tick={{ fill: "#888", fontSize: 9 }} />
+                                <ReTooltip contentStyle={{ backgroundColor: "#1a1a2e", border: "1px solid #333", borderRadius: 8, fontSize: 11 }} />
+                                <Bar dataKey="cadenza" name="Cadenza (min)" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="corse" name="N° corse" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Demand heatmap for stops */}
+                    {(() => {
+                      const sel = pdeSelectedLine >= 0 ? pdeResult.lines?.find((l: any) => l.lineIndex === pdeSelectedLine) : null;
+                      const stops = sel ? sel.stops : pdeResult.stops;
+                      if (!stops || stops.length === 0) return null;
+                      const maxD = Math.max(...stops.map((x: any) => x.demandScore || 1));
+                      return (
+                        <div>
+                          <h4 className="text-[10px] font-semibold text-muted-foreground mb-2">
+                            Indice domanda fermate {sel ? `— ${sel.lineName}` : ""}
+                          </h4>
+                          <div className="flex flex-wrap gap-1">
+                            {stops.map((s: any, i: number) => {
+                              const pct = maxD > 0 ? (s.demandScore / maxD) : 0;
+                              const bg = pct > 0.7 ? "bg-red-500/30 text-red-300" : pct > 0.4 ? "bg-amber-500/30 text-amber-300" : "bg-emerald-500/30 text-emerald-300";
+                              return (
+                                <span key={i} className={`px-1.5 py-0.5 rounded text-[9px] ${bg}`} title={`Demand: ${s.demandScore}`}>
+                                  {s.name.length > 20 ? s.name.slice(0, 18) + "…" : s.name}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* ── Gantt tab ── */}
+                {pdeTab === "gantt" && pdeResult && !pdeLoading && (
+                  <div className="space-y-3">
+                    {/* Line selector for Gantt */}
+                    {pdeResult.totalLines > 1 && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] text-muted-foreground font-medium">Linea:</span>
+                        <button onClick={() => setPdeSelectedLine(-1)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${pdeSelectedLine === -1 ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "text-muted-foreground hover:text-foreground bg-muted/20"}`}>
+                          Tutte
+                        </button>
+                        {(pdeResult.lines || []).map((ls: any) => (
+                          <button key={ls.lineIndex} onClick={() => setPdeSelectedLine(ls.lineIndex)}
+                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${pdeSelectedLine === ls.lineIndex ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "text-muted-foreground hover:text-foreground bg-muted/20"}`}>
+                            {ls.lineName.length > 12 ? ls.lineName.slice(0, 10) + "…" : ls.lineName}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {(() => {
+                      const filteredTrips = pdeSelectedLine >= 0
+                        ? (pdeResult.trips || []).filter((t: any) => t.lineIndex === pdeSelectedLine)
+                        : (pdeResult.trips || []);
+                      return (
+                        <>
+                          <h4 className="text-[10px] font-semibold text-muted-foreground">
+                            Diagramma corse — {filteredTrips.length} corse
+                            {pdeSelectedLine >= 0 && ` (${pdeResult.lines?.find((l: any) => l.lineIndex === pdeSelectedLine)?.lineName})`}
+                          </h4>
+                          <div className="relative overflow-x-auto">
+                            <div className="min-w-[700px]">
+                              {/* Time axis */}
+                              <div className="flex items-center border-b border-border/30 pb-1 mb-2">
+                                <div className="w-[100px] shrink-0 text-[9px] text-muted-foreground">Corsa</div>
+                                <div className="flex-1 relative h-4">
+                                  {Array.from({ length: 19 }, (_, i) => i + 5).map(h => {
+                                    const pct = ((h - 5) / 19) * 100;
+                                    return <span key={h} className="absolute text-[8px] text-muted-foreground/60" style={{ left: `${pct}%` }}>{h}:00</span>;
+                                  })}
+                                </div>
+                              </div>
+                              {/* Trip bars */}
+                              <div className="space-y-0.5 max-h-[300px] overflow-y-auto">
+                                {filteredTrips.map((trip: any, idx: number) => {
+                                  const depParts = trip.departureTime.split(":");
+                                  const arrParts = trip.arrivalTime.split(":");
+                                  const depMin = parseInt(depParts[0]) * 60 + parseInt(depParts[1]);
+                                  const arrMin = parseInt(arrParts[0]) * 60 + parseInt(arrParts[1]);
+                                  const startPct = ((depMin - 300) / (24 * 60 - 300)) * 100;
+                                  const widthPct = ((arrMin - depMin) / (24 * 60 - 300)) * 100;
+                                  const isAndata = trip.direction === "andata";
+                                  // Color by line (cycle through 10 hues)
+                                  const lineColors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
+                                  const lineColor = pdeSelectedLine === -1 ? lineColors[trip.lineIndex % lineColors.length] : (isAndata ? "#10b981" : "#3b82f6");
+                                  return (
+                                    <div key={idx} className="flex items-center h-[16px]">
+                                      <div className="w-[100px] shrink-0 text-[8px] text-muted-foreground truncate" title={trip.tripId}>
+                                        {trip.tripId}
+                                      </div>
+                                      <div className="flex-1 relative h-full">
+                                        <div
+                                          className="absolute top-0.5 h-[12px] rounded-sm"
+                                          style={{
+                                            left: `${Math.max(0, startPct)}%`,
+                                            width: `${Math.max(0.5, widthPct)}%`,
+                                            backgroundColor: lineColor,
+                                            opacity: isAndata ? 0.8 : 0.5,
+                                          }}
+                                          title={`${trip.tripId}: ${trip.departureTime}→${trip.arrivalTime} (${trip.travelTimeMin}min) [${trip.direction}] ${trip.lineName || ""}`}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {/* Legend */}
+                              <div className="flex items-center gap-4 mt-2 text-[9px] text-muted-foreground flex-wrap">
+                                {pdeSelectedLine >= 0 ? (
+                                  <>
+                                    <span className="flex items-center gap-1"><div className="w-3 h-2 rounded-sm bg-emerald-500/70" /> Andata</span>
+                                    <span className="flex items-center gap-1"><div className="w-3 h-2 rounded-sm bg-blue-500/70" /> Ritorno</span>
+                                  </>
+                                ) : (
+                                  (pdeResult.lines || []).slice(0, 10).map((ls: any) => {
+                                    const lineColors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
+                                    return (
+                                      <span key={ls.lineIndex} className="flex items-center gap-1">
+                                        <div className="w-3 h-2 rounded-sm" style={{ backgroundColor: lineColors[ls.lineIndex % lineColors.length] }} />
+                                        {ls.lineName.length > 10 ? ls.lineName.slice(0, 8) + "…" : ls.lineName}
+                                      </span>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </CardContent>

@@ -201,6 +201,20 @@ export const driverShiftScenarios = pgTable("driver_shift_scenarios", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// Scenario Service Programs — programmi di esercizio generati da scenari KML
+export const scenarioServicePrograms = pgTable("scenario_service_programs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scenarioId: uuid("scenario_id")
+    .references(() => scenarios.id, { onDelete: "cascade" })
+    .notNull(),
+  name: text("name").notNull(),
+  /** Configuration used to generate: targetKm, serviceWindow, etc. */
+  config: jsonb("config").notNull(),
+  /** Generated program: trips with stop times, cadences, metrics */
+  result: jsonb("result").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 // Stop Clusters — gruppi di fermate per cambi in linea
 export const stopClusters = pgTable("stop_clusters", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -248,3 +262,4 @@ export type StopCluster = typeof stopClusters.$inferSelect;
 export type StopClusterStop = typeof stopClusterStops.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type DriverShiftScenario = typeof driverShiftScenarios.$inferSelect;
+export type ScenarioServiceProgram = typeof scenarioServicePrograms.$inferSelect;

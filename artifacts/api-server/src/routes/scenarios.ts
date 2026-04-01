@@ -2,8 +2,8 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
-import { scenarios, pointsOfInterest, censusSections } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenarioServicePrograms } from "@workspace/db/schema";
+import { eq, sql, desc } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
 
 const router: IRouter = Router();
@@ -1091,5 +1091,597 @@ router.get("/scenarios/:id/analyze", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ *  PROGRAMMA DI ESERCIZIO — Auto-generated from KML scenario
+ *
+ *  Given a KML-based scenario (routes + stops), generate a complete
+ *  service program with:
+ *   - Adaptive cadence based on traffic, POI density, population density
+ *   - Peak / off-peak / evening differentiation
+ *   - Estimated travel times per segment using real traffic data
+ *   - Trips duplicated until target km is approximately reached
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+// ── Time windows for service ──────────────────────────────────────────
+interface TimeWindow { label: string; startH: number; endH: number; demandFactor: number; }
+
+const DEFAULT_WINDOWS: TimeWindow[] = [
+  { label: "mattina_punta",   startH: 6,   endH: 9,   demandFactor: 1.0 },
+  { label: "mattina_morbida", startH: 9,   endH: 12,  demandFactor: 0.55 },
+  { label: "pranzo",          startH: 12,  endH: 14,  demandFactor: 0.65 },
+  { label: "pomeriggio_punta",startH: 14,  endH: 18,  demandFactor: 0.85 },
+  { label: "sera_morbida",    startH: 18,  endH: 21,  demandFactor: 0.45 },
+  { label: "sera_tarda",      startH: 21,  endH: 24,  demandFactor: 0.25 },
+];
+
+const POI_WEIGHTS: Record<string, number> = {
+  hospital: 3.0, school: 2.5, university: 2.5, transit: 2.0,
+  elderly: 2.0, government: 1.5, commercial: 1.5, worship: 1.0,
+  sport: 1.0, culture: 1.2, park: 0.8, tourism: 1.0,
+};
+
+interface GenerateProgramConfig {
+  targetKm: number;
+  serviceStartH?: number;
+  serviceEndH?: number;
+  minCadenceMin?: number;
+  maxCadenceMin?: number;
+  avgSpeedKmh?: number;
+  dwellTimeSec?: number;
+  terminalTimeSec?: number;
+  bidirectional?: boolean;
+}
+
+interface GeneratedTrip {
+  tripId: string;
+  lineIndex: number;
+  lineName: string;
+  direction: "andata" | "ritorno";
+  departureTime: string;
+  arrivalTime: string;
+  travelTimeMin: number;
+  stopTimes: { stopName: string; lng: number; lat: number; arrival: string; departure: string }[];
+  timeWindow: string;
+  cadenceMin: number;
+}
+
+interface LineSummary {
+  lineIndex: number;
+  lineName: string;
+  lengthKm: number;
+  stopsCount: number;
+  totalTrips: number;
+  totalKm: number;
+  cadenceProfile: { window: string; cadenceMin: number; tripsInWindow: number }[];
+  avgDemandScore: number;
+  stops: { name: string; lng: number; lat: number; demandScore: number }[];
+}
+
+interface GeneratedProgram {
+  routeName: string;
+  routeLengthKm: number;
+  totalTrips: number;
+  totalKm: number;
+  totalLines: number;
+  serviceWindow: string;
+  trips: GeneratedTrip[];
+  lines: LineSummary[];
+  cadenceProfile: { window: string; cadenceMin: number; tripsInWindow: number }[];
+  metrics: {
+    avgCadenceMin: number;
+    peakCadenceMin: number;
+    offPeakCadenceMin: number;
+    avgTravelTimeMin: number;
+    vehiclesNeeded: number;
+    totalServiceHours: number;
+    kmPerVehicle: number;
+  };
+  stops: { name: string; lng: number; lat: number; demandScore: number }[];
+}
+
+/* ── Demand scores per stop ── */
+function computeStopDemandScores(
+  stops: { name: string; lng: number; lat: number }[],
+  poiRows: { category: string; lng: number; lat: number; name: string | null }[],
+  censusRows: { population: number; centroidLng: number; centroidLat: number }[],
+  radiusKm = 0.5,
+): number[] {
+  return stops.map(stop => {
+    let poiScore = 0;
+    for (const poi of poiRows) {
+      const d = haversineKm(stop.lat, stop.lng, poi.lat, poi.lng);
+      if (d <= radiusKm) {
+        const weight = POI_WEIGHTS[poi.category] || 1.0;
+        poiScore += weight * (1 - d / radiusKm);
+      }
+    }
+    let popScore = 0;
+    for (const cs of censusRows) {
+      const d = haversineKm(stop.lat, stop.lng, cs.centroidLat, cs.centroidLng);
+      if (d <= radiusKm) {
+        popScore += (cs.population / 1000) * (1 - d / radiusKm);
+      }
+    }
+    return Math.round((poiScore * 0.6 + popScore * 0.4) * 100) / 100;
+  });
+}
+
+/* ── Traffic profile (congestion by hour) ── */
+async function getTrafficProfileForRoute(
+  routeCoords: number[][],
+  radiusKm = 1.0,
+): Promise<Map<number, number>> {
+  let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const [lng, lat] of routeCoords) {
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  const pad = radiusKm / 111;
+  const bbox = { minLng: minLng - pad, maxLng: maxLng + pad, minLat: minLat - pad, maxLat: maxLat + pad };
+
+  const rows = await db.execute<{ hour: string; avg_congestion: string }>(sql`
+    SELECT
+      EXTRACT(HOUR FROM captured_at)::text AS hour,
+      AVG(congestion_level)::text AS avg_congestion
+    FROM traffic_snapshots
+    WHERE lng BETWEEN ${bbox.minLng} AND ${bbox.maxLng}
+      AND lat BETWEEN ${bbox.minLat} AND ${bbox.maxLat}
+    GROUP BY EXTRACT(HOUR FROM captured_at)
+    ORDER BY hour
+  `);
+
+  const profile = new Map<number, number>();
+  for (const r of rows.rows) {
+    profile.set(parseInt(r.hour), parseFloat(r.avg_congestion) || 0);
+  }
+  return profile;
+}
+
+/* ── Estimate travel time with congestion ── */
+function estimateTravelTime(distKm: number, baseSpeedKmh: number, congestionLevel: number): number {
+  const speedFactor = Math.max(0.35, 1 - congestionLevel * 0.65);
+  return (distKm / (baseSpeedKmh * speedFactor)) * 60;
+}
+
+/* ── Assign stops to nearest line ── */
+function assignStopsToLines(
+  allStops: { name: string; lng: number; lat: number }[],
+  lines: { coords: number[][] }[],
+): Map<number, { name: string; lng: number; lat: number }[]> {
+  const map = new Map<number, { name: string; lng: number; lat: number }[]>();
+  for (let i = 0; i < lines.length; i++) map.set(i, []);
+
+  for (const stop of allStops) {
+    let bestLine = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < lines.length; i++) {
+      const d = pointToLineDistance(stop.lng, stop.lat, lines[i].coords);
+      if (d < bestDist) { bestDist = d; bestLine = i; }
+    }
+    // Only assign if within 1 km of the line
+    if (bestDist <= 1.0) {
+      map.get(bestLine)!.push(stop);
+    }
+  }
+  return map;
+}
+
+/* ── Order stops along a line ── */
+function orderStopsAlongLine(
+  stops: { name: string; lng: number; lat: number }[],
+  lineCoords: number[][],
+): { name: string; lng: number; lat: number }[] {
+  if (stops.length <= 1) return stops;
+
+  // For each stop, find its projection position along the line (0..1)
+  const stopWithPosition = stops.map(s => {
+    let bestT = 0;
+    let accLen = 0;
+    let bestDist = Infinity;
+    let totalLen = 0;
+    const segLens: number[] = [];
+
+    for (let i = 0; i < lineCoords.length - 1; i++) {
+      const segLen = haversineKm(lineCoords[i][1], lineCoords[i][0], lineCoords[i + 1][1], lineCoords[i + 1][0]);
+      segLens.push(segLen);
+      totalLen += segLen;
+    }
+
+    accLen = 0;
+    for (let i = 0; i < lineCoords.length - 1; i++) {
+      const [ax, ay] = lineCoords[i], [bx, by] = lineCoords[i + 1];
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      let t = lenSq > 0 ? ((s.lng - ax) * dx + (s.lat - ay) * dy) / lenSq : 0;
+      t = Math.max(0, Math.min(1, t));
+      const cx = ax + t * dx, cy = ay + t * dy;
+      const dist = haversineKm(s.lat, s.lng, cy, cx);
+      const pos = totalLen > 0 ? (accLen + segLens[i] * t) / totalLen : 0;
+      if (dist < bestDist) { bestDist = dist; bestT = pos; }
+      accLen += segLens[i];
+    }
+    return { ...s, position: bestT };
+  });
+
+  stopWithPosition.sort((a, b) => a.position - b.position);
+  return stopWithPosition.map(({ position, ...rest }) => rest);
+}
+
+/* ── Auto-generate stops along a line every ~stopIntervalKm ── */
+function autoGenerateStops(lineCoords: number[][], intervalKm = 0.4): { name: string; lng: number; lat: number }[] {
+  const stops: { name: string; lng: number; lat: number }[] = [];
+  if (lineCoords.length < 2) return stops;
+
+  stops.push({ name: "Capolinea A", lng: lineCoords[0][0], lat: lineCoords[0][1] });
+  let accum = 0;
+  for (let i = 1; i < lineCoords.length; i++) {
+    accum += haversineKm(lineCoords[i - 1][1], lineCoords[i - 1][0], lineCoords[i][1], lineCoords[i][0]);
+    if (accum >= intervalKm) {
+      stops.push({ name: `Fermata ${stops.length + 1}`, lng: lineCoords[i][0], lat: lineCoords[i][1] });
+      accum = 0;
+    }
+  }
+  const last = lineCoords[lineCoords.length - 1];
+  if (stops.length === 0 || haversineKm(stops[stops.length - 1].lat, stops[stops.length - 1].lng, last[1], last[0]) > 0.05) {
+    stops.push({ name: "Capolinea B", lng: last[0], lat: last[1] });
+  }
+  return stops;
+}
+
+function minToHHMM(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = Math.round(minutes % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   MAIN ENGINE — Multi-line Service Program Generator
+   ══════════════════════════════════════════════════════════════════════ */
+async function generateServiceProgram(
+  geojson: GeoJSONFeatureCollection,
+  config: GenerateProgramConfig,
+  poiRows: { category: string; lng: number; lat: number; name: string | null }[],
+  censusRows: { population: number; centroidLng: number; centroidLat: number }[],
+): Promise<GeneratedProgram> {
+  const {
+    targetKm,
+    serviceStartH = 6,
+    serviceEndH = 22,
+    minCadenceMin = 10,
+    maxCadenceMin = 60,
+    avgSpeedKmh = 20,
+    dwellTimeSec = 25,
+    terminalTimeSec = 300,
+    bidirectional = true,
+  } = config;
+
+  // ── 1. Extract lines and stops from GeoJSON ──
+  const rawLines: { name: string; coords: number[][] }[] = [];
+  const allStops: { name: string; lng: number; lat: number }[] = [];
+
+  for (const f of geojson.features) {
+    const geomType = f.geometry.type;
+    if (geomType === "LineString") {
+      rawLines.push({
+        name: f.properties?.name || `Linea ${rawLines.length + 1}`,
+        coords: f.geometry.coordinates,
+      });
+    } else if (geomType === "MultiLineString") {
+      for (const seg of f.geometry.coordinates) {
+        rawLines.push({
+          name: f.properties?.name || `Linea ${rawLines.length + 1}`,
+          coords: seg,
+        });
+      }
+    } else if (geomType === "Point") {
+      allStops.push({
+        name: f.properties?.name || `Fermata ${allStops.length + 1}`,
+        lng: f.geometry.coordinates[0],
+        lat: f.geometry.coordinates[1],
+      });
+    }
+  }
+
+  // ── 2. Compute line lengths ──
+  const lineLengths = rawLines.map(l => lineLength(l.coords));
+  const totalNetworkKm = lineLengths.reduce((s, v) => s + v, 0);
+
+  // ── 3. Assign stops to nearest line + order along line ──
+  const stopAssignment = assignStopsToLines(allStops, rawLines);
+
+  // For lines with no stops assigned, auto-generate them
+  for (let i = 0; i < rawLines.length; i++) {
+    let lineStops = stopAssignment.get(i) || [];
+    if (lineStops.length < 2) {
+      lineStops = autoGenerateStops(rawLines[i].coords);
+      stopAssignment.set(i, lineStops);
+    } else {
+      // Order existing stops along the line
+      lineStops = orderStopsAlongLine(lineStops, rawLines[i].coords);
+      stopAssignment.set(i, lineStops);
+    }
+  }
+
+  // ── 4. Global traffic profile (one query for the whole bounding box) ──
+  const allCoords = rawLines.flatMap(l => l.coords);
+  const trafficProfile = await getTrafficProfileForRoute(allCoords);
+
+  // ── 5. Active time windows ──
+  const activeWindows = DEFAULT_WINDOWS.filter(w =>
+    w.endH > serviceStartH && w.startH < serviceEndH
+  ).map(w => ({
+    ...w,
+    startH: Math.max(w.startH, serviceStartH),
+    endH: Math.min(w.endH, serviceEndH),
+  }));
+
+  // ── 6. Generate trips per line ──
+  const allTrips: GeneratedTrip[] = [];
+  const lineSummaries: LineSummary[] = [];
+  let globalTripCounter = 0;
+  let globalTotalKm = 0;
+
+  for (let li = 0; li < rawLines.length; li++) {
+    const line = rawLines[li];
+    const lengthKm = lineLengths[li];
+    const lineStops = stopAssignment.get(li) || [];
+
+    // Target km proportional to line length
+    const lineTargetKm = targetKm * (lengthKm / totalNetworkKm);
+
+    // Demand scores
+    const demandScores = computeStopDemandScores(lineStops, poiRows, censusRows);
+    const avgDemand = demandScores.length > 0 ? demandScores.reduce((a, b) => a + b, 0) / demandScores.length : 1;
+
+    // Inter-stop distances
+    const interStopKm: number[] = [];
+    for (let i = 1; i < lineStops.length; i++) {
+      interStopKm.push(haversineKm(lineStops[i - 1].lat, lineStops[i - 1].lng, lineStops[i].lat, lineStops[i].lng));
+    }
+
+    // Cadence per window for this line
+    const cadencePerWindow = activeWindows.map(w => {
+      const baseCadence = minCadenceMin + (maxCadenceMin - minCadenceMin) * (1 - w.demandFactor);
+      const demandAdj = Math.max(0.6, Math.min(1.4, 1.5 - avgDemand * 0.1));
+      const midHour = Math.floor((w.startH + w.endH) / 2);
+      const congestion = trafficProfile.get(midHour) ?? 0.3;
+      const trafficAdj = 1 + congestion * 0.15;
+      const finalCadence = Math.round(Math.max(minCadenceMin, Math.min(maxCadenceMin, baseCadence * demandAdj * trafficAdj)));
+      return { window: w, cadenceMin: finalCadence };
+    });
+
+    // Generate trips for this line
+    const lineTrips: GeneratedTrip[] = [];
+    let lineTotalKm = 0;
+    let lineTripCounter = 0;
+
+    for (const { window: w, cadenceMin } of cadencePerWindow) {
+      let currentTimeMin = w.startH * 60;
+      const windowEndMin = w.endH * 60;
+
+      while (currentTimeMin + 1 < windowEndMin && lineTotalKm < lineTargetKm * 1.05) {
+        const directions: ("andata" | "ritorno")[] = bidirectional
+          ? (lineTripCounter % 2 === 0 ? ["andata", "ritorno"] : ["ritorno", "andata"])
+          : ["andata"];
+
+        for (const dir of directions) {
+          if (lineTotalKm >= lineTargetKm * 1.05) break;
+          if (currentTimeMin >= windowEndMin) break;
+
+          const orderedStops = dir === "andata" ? [...lineStops] : [...lineStops].reverse();
+          const hourOfDay = Math.floor(currentTimeMin / 60);
+          const congestion = trafficProfile.get(hourOfDay) ?? 0.3;
+          const dwellMin = dwellTimeSec / 60;
+
+          const stopTimes: GeneratedTrip["stopTimes"] = [];
+          let runningMin = currentTimeMin;
+
+          for (let i = 0; i < orderedStops.length; i++) {
+            const arrivalMin = runningMin;
+            const departureMin = i < orderedStops.length - 1 ? arrivalMin + dwellMin : arrivalMin;
+            stopTimes.push({
+              stopName: orderedStops[i].name,
+              lng: orderedStops[i].lng,
+              lat: orderedStops[i].lat,
+              arrival: minToHHMM(arrivalMin),
+              departure: minToHHMM(departureMin),
+            });
+            if (i < orderedStops.length - 1) {
+              const segKm = interStopKm[dir === "andata" ? i : orderedStops.length - 2 - i] || 0.4;
+              const segTimeMin = estimateTravelTime(segKm, avgSpeedKmh, congestion);
+              runningMin = departureMin + segTimeMin;
+            }
+          }
+
+          const travelTimeMin = Math.round(runningMin - currentTimeMin);
+
+          globalTripCounter++;
+          lineTripCounter++;
+
+          lineTrips.push({
+            tripId: `L${String(li + 1).padStart(2, "0")}_T${String(lineTripCounter).padStart(3, "0")}_${dir === "andata" ? "A" : "R"}`,
+            lineIndex: li,
+            lineName: line.name,
+            direction: dir,
+            departureTime: minToHHMM(currentTimeMin),
+            arrivalTime: minToHHMM(runningMin),
+            travelTimeMin,
+            stopTimes,
+            timeWindow: w.label,
+            cadenceMin,
+          });
+
+          lineTotalKm += lengthKm;
+          globalTotalKm += lengthKm;
+
+          if (bidirectional && dir === "andata") {
+            currentTimeMin = runningMin + terminalTimeSec / 60;
+          }
+        }
+        currentTimeMin += cadenceMin;
+      }
+    }
+
+    allTrips.push(...lineTrips);
+
+    lineSummaries.push({
+      lineIndex: li,
+      lineName: line.name,
+      lengthKm: Math.round(lengthKm * 100) / 100,
+      stopsCount: lineStops.length,
+      totalTrips: lineTrips.length,
+      totalKm: Math.round(lineTotalKm * 100) / 100,
+      cadenceProfile: cadencePerWindow.map(c => ({
+        window: c.window.label,
+        cadenceMin: c.cadenceMin,
+        tripsInWindow: lineTrips.filter(t => t.timeWindow === c.window.label).length,
+      })),
+      avgDemandScore: Math.round(avgDemand * 100) / 100,
+      stops: lineStops.map((s, i) => ({ ...s, demandScore: demandScores[i] || 0 })),
+    });
+  }
+
+  // ── 7. Aggregate metrics ──
+  const peakTrips = allTrips.filter(t => t.timeWindow.includes("punta"));
+  const avgTravelTime = allTrips.length > 0 ? Math.round(allTrips.reduce((s, t) => s + t.travelTimeMin, 0) / allTrips.length) : 0;
+  const totalServiceMin = allTrips.reduce((s, t) => s + t.travelTimeMin, 0);
+  const totalServiceHours = Math.round(totalServiceMin / 60 * 10) / 10;
+
+  // Vehicles per line (round trip time / peak cadence), summed
+  let totalVehicles = 0;
+  for (const ls of lineSummaries) {
+    const peakCad = ls.cadenceProfile.find(c => c.window.includes("punta"))?.cadenceMin || minCadenceMin;
+    const lineTrips = allTrips.filter(t => t.lineIndex === ls.lineIndex);
+    const avgRtMin = lineTrips.length > 0
+      ? lineTrips.reduce((s, t) => s + t.travelTimeMin, 0) / lineTrips.length * 2 + (terminalTimeSec / 60) * 2
+      : 60;
+    totalVehicles += Math.max(1, Math.ceil(avgRtMin / peakCad));
+  }
+
+  // Global cadence profile (aggregate across lines)
+  const globalCadenceProfile = activeWindows.map(w => {
+    const windowTrips = allTrips.filter(t => t.timeWindow === w.label);
+    const windowCadences = lineSummaries.map(ls =>
+      ls.cadenceProfile.find(c => c.window === w.label)?.cadenceMin || maxCadenceMin
+    );
+    const avgCadence = windowCadences.length > 0
+      ? Math.round(windowCadences.reduce((a, b) => a + b, 0) / windowCadences.length)
+      : maxCadenceMin;
+    return { window: w.label, cadenceMin: avgCadence, tripsInWindow: windowTrips.length };
+  });
+
+  const peakCadence = globalCadenceProfile.find(c => c.window.includes("punta"))?.cadenceMin || minCadenceMin;
+  const offPeakCadence = globalCadenceProfile.find(c => c.window.includes("morbida"))?.cadenceMin || maxCadenceMin;
+
+  // All stops aggregated
+  const allStopsWithDemand = lineSummaries.flatMap(ls => ls.stops);
+
+  return {
+    routeName: rawLines.length === 1 ? rawLines[0].name : `Rete ${rawLines.length} linee`,
+    routeLengthKm: Math.round(totalNetworkKm * 100) / 100,
+    totalTrips: allTrips.length,
+    totalKm: Math.round(globalTotalKm * 100) / 100,
+    totalLines: rawLines.length,
+    serviceWindow: `${String(serviceStartH).padStart(2, "0")}:00\u2013${String(serviceEndH).padStart(2, "0")}:00`,
+    trips: allTrips,
+    lines: lineSummaries,
+    cadenceProfile: globalCadenceProfile,
+    metrics: {
+      avgCadenceMin: Math.round(globalCadenceProfile.reduce((s, c) => s + c.cadenceMin, 0) / globalCadenceProfile.length),
+      peakCadenceMin: peakCadence,
+      offPeakCadenceMin: offPeakCadence,
+      avgTravelTimeMin: avgTravelTime,
+      vehiclesNeeded: totalVehicles,
+      totalServiceHours,
+      kmPerVehicle: totalVehicles > 0 ? Math.round(globalTotalKm / totalVehicles * 10) / 10 : 0,
+    },
+    stops: allStopsWithDemand,
+  };
+}
+
+// ─── POST /api/scenarios/:id/generate-program ────────────────────────
+router.post("/scenarios/:id/generate-program", async (req, res) => {
+  try {
+    const [row] = await db.select().from(scenarios).where(eq(scenarios.id, req.params.id)).limit(1);
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    const config = req.body as GenerateProgramConfig;
+    if (!config.targetKm || config.targetKm <= 0) {
+      res.status(400).json({ error: "Parametro 'targetKm' obbligatorio e > 0" });
+      return;
+    }
+
+    const [poiRows, censusRows] = await Promise.all([
+      db.select({ category: pointsOfInterest.category, lng: pointsOfInterest.lng, lat: pointsOfInterest.lat, name: pointsOfInterest.name }).from(pointsOfInterest),
+      db.select({ population: censusSections.population, centroidLng: censusSections.centroidLng, centroidLat: censusSections.centroidLat })
+        .from(censusSections).where(sql`${censusSections.population} > 0`),
+    ]);
+
+    const program = await generateServiceProgram(row.geojson as any, config, poiRows, censusRows);
+
+    const [saved] = await db.insert(scenarioServicePrograms).values({
+      scenarioId: req.params.id,
+      name: `PdE ${program.routeName} \u2013 ${program.totalKm}km`,
+      config: config as any,
+      result: program as any,
+    }).returning();
+
+    res.json({ id: saved.id, ...program });
+  } catch (err) {
+    req.log.error(err, "Error generating service program");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── GET /api/scenarios/:id/programs ─────────────────────────────────
+router.get("/scenarios/:id/programs", async (req, res) => {
+  try {
+    const rows = await db.select({
+      id: scenarioServicePrograms.id,
+      name: scenarioServicePrograms.name,
+      config: scenarioServicePrograms.config,
+      createdAt: scenarioServicePrograms.createdAt,
+    }).from(scenarioServicePrograms)
+      .where(eq(scenarioServicePrograms.scenarioId, req.params.id))
+      .orderBy(desc(scenarioServicePrograms.createdAt));
+    res.json({ programs: rows });
+  } catch (err) {
+    req.log.error(err, "Error listing programs");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── GET /api/scenarios/:id/programs/:programId ──────────────────────
+router.get("/scenarios/:id/programs/:programId", async (req, res) => {
+  try {
+    const [row] = await db.select().from(scenarioServicePrograms)
+      .where(eq(scenarioServicePrograms.id, req.params.programId))
+      .limit(1);
+    if (!row) { res.status(404).json({ error: "Programma non trovato" }); return; }
+    res.json({ id: row.id, name: row.name, config: row.config, ...row.result as any });
+  } catch (err) {
+    req.log.error(err, "Error getting program");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── DELETE /api/scenarios/:id/programs/:programId ────────────────────
+router.delete("/scenarios/:id/programs/:programId", async (req, res) => {
+  try {
+    const [deleted] = await db.delete(scenarioServicePrograms)
+      .where(eq(scenarioServicePrograms.id, req.params.programId))
+      .returning({ id: scenarioServicePrograms.id });
+    if (!deleted) { res.status(404).json({ error: "Programma non trovato" }); return; }
+    res.json({ deleted: true });
+  } catch (err) {
+    req.log.error(err, "Error deleting program");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 
 export default router;
