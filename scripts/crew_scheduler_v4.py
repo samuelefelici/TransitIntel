@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-crew_scheduler_v4.py — BDS-inspired Crew Scheduler (MAIOR BDS v4)
+crew_scheduler_v4.py — Crew Scheduler Multi-Scenario (RD 131/1938)
 Conerobus S.p.A. / TransitIntel
 
-APPROCCIO VSF (Vehicle-Shift-First) con normativa BDS integrata:
-  - PrePostRules multi-livello (turno/ripresa/pezzo)
-  - CE 561/2006 guida continuativa con soste frazionate
+APPROCCIO VSF (Vehicle-Shift-First) con normativa RD 131/1938:
+  - Regio Decreto 131/1938 per autoservizi pubblici di trasporto
+  - PrePostRules: preturno 12min (solo con bus), post = solo trasferimento vuoto
+  - Guida continuativa max 4h30, sosta ≥15min azzera continuità
+  - Intero: nastro max 7h15, lavoro max 7h15, ≥1 sosta 15min al capolinea
+  - Semiunico: nastro max 9h15, interruzione 1h15–2h59 in deposito, lavoro max 8h
+  - Spezzato: nastro max 10h30, interruzione ≥3h, lavoro max 7h30
+  - Supplemento: nastro max 2h30 straordinario
   - Intervallo pasto (pranzo/cena)
   - Stacco minimo differenziato
-  - GestoreRiprese con sosta che spezza
-  - CoperturaSoste per tipo linea
-  - CollegamentoConfig per trasferimenti strutturati
-  - classify_duty() post-hoc (supplemento → intero → semiunico → spezzato)
-  - validate_duty_bds() validazione completa
-  - compute_duty_cost() con pre/post multi-livello
+  - Multi-scenario: genera 8-20 scenari CP-SAT, sceglie il migliore
+  - Preferenza tagli al capolinea su fermate intermedie
 
 Pipeline:
   1. parse_vehicle_blocks     — JSON → VehicleBlock[]
-  2. analyze_vehicle_block    — punti di taglio con copertura soste BDS
+  2. analyze_vehicle_block    — punti di taglio con bonus capolinea
   3. collassa_cambi           — collasso gap < 45min tra tagli
   4. classify_blocks          — CORTO / CORTO_BASSO / MEDIO / LUNGO
   5. build_initial_segments   — applica tagli, genera segmenti
-  6. optimize_global          — CP-SAT: scelta tagli + pairing
-  7. classify_duty            — classificazione post-hoc BDS
-  8. validate_all_bds         — validazione completa BDS
+  6. optimize_multi_scenario  — N scenari CP-SAT con seed e noise diversi
+  7. classify_duty            — classificazione post-hoc RD 131/1938
+  8. validate_all_bds         — validazione RD 131 + BDS
   9. compute_costs            — costi con pre/post multi-livello
   10. serialize_output        — JSON per il backend
 """
@@ -52,7 +53,7 @@ from optimizer_common import (
     VehicleBlock, CutCandidate, Segment, DriverDutyV3,
     Cluster, DEFAULT_CLUSTERS,
     # BDS dataclass
-    PrePostRules, CEE561Config, IntervalloPastoConfig,
+    PrePostRules, CEE561Config, RD131Config, IntervalloPastoConfig,
     StaccoMinimo, GestoreRiprese, CoperturaSosteConfig,
     CollegamentoConfig, WorkCalculation, BDSValidation,
     # Funzioni
@@ -86,10 +87,17 @@ COST_SCALE = 100
 # ----------------------------------------------------------------
 NASTRO_INTERO_MAX = 435
 DRIVING_BASSO_THRESHOLD = 120
-NASTRO_LUNGO_THRESHOLD = 870
+NASTRO_LUNGO_THRESHOLD = 555     # 9h15 (semiunico max) → oltre serve 3 conducenti
 MIN_CUT_GAP = 3
 SUPPLEMENTO_NASTRO_MAX = 150
 COLLASSA_MIN_GAP = 45  # gap minimo tra tagli per collasso
+
+# ----------------------------------------------------------------
+# Multi-scenario
+# ----------------------------------------------------------------
+MIN_SCENARIOS = 8                  # minimo scenari
+MAX_SCENARIOS = 20                 # massimo scenari
+SCENARIO_TIME_FRACTION = 0.85     # 85% del tempo totale per scenari
 
 # ----------------------------------------------------------------
 # Scoring tagli
@@ -101,6 +109,7 @@ CUT_SCORE_BALANCE_MAX = 5.0
 CUT_NASTRO_PENALTY_PER_MIN = 0.05
 CUT_SAME_ROUTE_PENALTY = 15.0
 CUT_NO_CLUSTER_PENALTY = 8.0
+CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 15min
 
 # ----------------------------------------------------------------
 # Costi cambio conducente
@@ -123,21 +132,26 @@ INTRA_BALANCE_MAX = 4.0        # bonus max per bilanciamento
 
 @dataclass
 class BDSConfig:
-    """Bundle di tutte le configurazioni BDS."""
+    """Bundle di tutte le configurazioni BDS (normativa RD 131/1938)."""
     pre_post: PrePostRules = field(default_factory=PrePostRules)
-    cee561: CEE561Config = field(default_factory=CEE561Config)
+    rd131: RD131Config = field(default_factory=RD131Config)
     pasto: IntervalloPastoConfig = field(default_factory=IntervalloPastoConfig)
     stacco: StaccoMinimo = field(default_factory=StaccoMinimo)
     riprese: GestoreRiprese = field(default_factory=GestoreRiprese)
     copertura: CoperturaSosteConfig = field(default_factory=CoperturaSosteConfig)
     collegamento: CollegamentoConfig = field(default_factory=CollegamentoConfig)
 
+    @property
+    def cee561(self) -> RD131Config:
+        """Alias retrocompatibilità."""
+        return self.rd131
+
     @classmethod
     def from_config(cls, cfg: dict) -> "BDSConfig":
         bds = cfg.get("bds", {})
         return cls(
             pre_post=PrePostRules.from_config(bds.get("prePost")),
-            cee561=CEE561Config.from_config(bds.get("cee561")),
+            rd131=RD131Config.from_config(bds.get("rd131") or bds.get("cee561")),
             pasto=IntervalloPastoConfig.from_config(bds.get("pasto")),
             stacco=StaccoMinimo.from_config(bds.get("stacco")),
             riprese=GestoreRiprese.from_config(bds.get("riprese")),
@@ -148,7 +162,8 @@ class BDSConfig:
     def to_dict(self) -> dict:
         return {
             "prePost": self.pre_post.to_dict(),
-            "cee561": self.cee561.to_dict(),
+            "rd131": self.rd131.to_dict(),
+            "cee561": self.rd131.to_dict(),  # retrocompat
             "pasto": self.pasto.to_dict(),
             "stacco": self.stacco.to_dict(),
             "riprese": self.riprese.to_dict(),
@@ -378,6 +393,10 @@ def analyze_vehicle_block(
         if total_driving > 0:
             balance = 1.0 - abs(left_driving - right_driving) / total_driving
             score += balance * CUT_SCORE_BALANCE_MAX
+
+        # ── RD 131/1938: bonus capolinea con sosta ≥ 15min ──
+        if cid and gap >= 15:
+            score += CUT_SCORE_CAPOLINEA_BONUS
 
         # Penalità nastro
         max_nastro = SHIFT_RULES["intero"]["maxNastro"]
@@ -834,8 +853,11 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
 
     Ordine: supplemento → intero → semiunico → spezzato → invalido.
     Non forza la classificazione in fase di enumerazione — la determina dopo.
+
+    RD 131/1938: controlla sia nastro che lavoro effettivo.
     """
     nastro = duty.nastro_min
+    work = duty.work_min
     interruzione = duty.interruption_min
     n_segs = len(duty.segments)
     rules = SHIFT_RULES
@@ -844,18 +866,21 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
     if nastro <= SUPPLEMENTO_NASTRO_MAX and n_segs == 1:
         return "supplemento"
 
-    # 2. Intero: singolo segmento, nastro ≤ 435
-    if n_segs == 1 and nastro <= rules["intero"]["maxNastro"]:
+    # 2. Intero: singolo segmento, nastro ≤ 435, lavoro ≤ 435
+    max_lavoro_intero = rules["intero"].get("maxLavoro", 435)
+    if n_segs == 1 and nastro <= rules["intero"]["maxNastro"] and work <= max_lavoro_intero:
         return "intero"
 
-    # 3. Semiunico: 2 segmenti, interruzione 75-179 min, nastro ≤ 555
+    # 3. Semiunico: 2 segmenti, interruzione 75-179 min, nastro ≤ 555, lavoro ≤ 480
+    max_lavoro_semi = rules["semiunico"].get("maxLavoro", 480)
     if n_segs >= 2 and interruzione >= rules["semiunico"]["intMin"] and interruzione <= rules["semiunico"]["intMax"]:
-        if nastro <= rules["semiunico"]["maxNastro"]:
+        if nastro <= rules["semiunico"]["maxNastro"] and work <= max_lavoro_semi:
             return "semiunico"
 
-    # 4. Spezzato: 2 segmenti, interruzione ≥ 180 min, nastro ≤ 630
+    # 4. Spezzato: 2 segmenti, interruzione ≥ 180 min, nastro ≤ 630, lavoro ≤ 450
+    max_lavoro_spez = rules["spezzato"].get("maxLavoro", 450)
     if n_segs >= 2 and interruzione >= rules["spezzato"]["intMin"]:
-        if nastro <= rules["spezzato"]["maxNastro"]:
+        if nastro <= rules["spezzato"]["maxNastro"] and work <= max_lavoro_spez:
             return "spezzato"
 
     # 5. Fallback: intero con tolleranza se singolo segmento
@@ -870,56 +895,59 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
 #  VALIDAZIONE BDS
 # ═══════════════════════════════════════════════════════════════
 
-def check_cee561(duty: DriverDutyV3, cee: CEE561Config) -> tuple[bool, list[str]]:
-    """Verifica CE 561/2006: guida continuativa max 4h30 con soste frazionate.
+def check_rd131(duty: DriverDutyV3, rd: RD131Config) -> tuple[bool, list[str]]:
+    """Verifica RD 131/1938: guida continuativa max 4h30.
 
-    Supporta soste frazionate: 2×15 min o 1×15 + 1×30 min per comporre
-    la pausa di 45 min.
+    Nel RD 131 la regola è più semplice del CE 561/2006:
+    una sosta ≥ 15 min azzera completamente il conteggio di guida continuativa.
+    Non c'è il concetto di pause frazionate da accumulare.
     """
-    if not cee.attivo:
+    if not rd.attivo:
         return True, []
 
     violations: list[str] = []
 
     for seg in duty.segments:
         continuous_driving = 0
-        accumulated_break = 0
-        break_count = 0
 
         for i, t in enumerate(seg.trips):
             dur = t.arrival_min - t.departure_min
             continuous_driving += dur
 
-            if continuous_driving > cee.max_periodo_continuativo:
+            if continuous_driving > rd.max_guida_continuativa:
                 violations.append(
-                    f"guida continuativa {continuous_driving}min > max {cee.max_periodo_continuativo}min "
+                    f"guida continuativa {continuous_driving}min > max {rd.max_guida_continuativa}min "
                     f"(segmento {seg.vehicle_id}, trip {t.trip_id})"
                 )
                 break
 
-            # Controlla se c'è un gap dopo questa corsa
+            # Sosta dopo questa corsa: ≥ 15 min azzera il conteggio
             if i + 1 < len(seg.trips):
                 gap = seg.trips[i + 1].departure_min - t.arrival_min
-                if gap >= cee.min_sosta:
-                    # Questa è una sosta valida (≥ 15 min)
-                    accumulated_break += gap
-                    break_count += 1
-
-                    # Se la pausa cumulata raggiunge la soglia completa, reset
-                    if accumulated_break >= cee.sosta_che_spezza:
-                        continuous_driving = 0
-                        accumulated_break = 0
-                        break_count = 0
-                    elif break_count >= cee.max_soste:
-                        # Troppe soste senza raggiungere la pausa completa
-                        if accumulated_break < cee.sosta_che_spezza:
-                            violations.append(
-                                f"dopo {break_count} soste cumulate {accumulated_break}min "
-                                f"< {cee.sosta_che_spezza}min richiesti "
-                                f"(segmento {seg.vehicle_id})"
-                            )
+                if gap >= rd.sosta_minima:
+                    continuous_driving = 0
 
     return len(violations) == 0, violations
+
+
+# Alias retrocompatibilità
+check_cee561 = check_rd131
+
+
+def check_sosta_capolinea(duty: DriverDutyV3, rules: dict = SHIFT_RULES) -> tuple[bool, list[str]]:
+    """RD 131/1938: turno intero deve avere almeno 1 sosta ≥15min al capolinea."""
+    if duty.duty_type != "intero":
+        return True, []
+
+    sosta_min = rules.get("intero", SHIFT_RULES["intero"]).get("sostaMinCapolinea", 15)
+
+    for seg in duty.segments:
+        for i in range(len(seg.trips) - 1):
+            gap = seg.trips[i + 1].departure_min - seg.trips[i].arrival_min
+            if gap >= sosta_min:
+                return True, []
+
+    return False, [f"intero senza sosta ≥ {sosta_min}min al capolinea"]
 
 
 def check_intervallo_pasto(
@@ -1077,7 +1105,7 @@ def validate_duty_bds(
     bds: BDSConfig,
     clusters: list[Cluster],
 ) -> BDSValidation:
-    """Validazione completa BDS di un turno guida."""
+    """Validazione completa BDS/RD 131/1938 di un turno guida."""
     result = BDSValidation()
 
     # Classificazione
@@ -1094,6 +1122,12 @@ def validate_duty_bds(
         result.nastro_ok = False
         result.violations.append(f"nastro {duty.nastro_min}min > max {max_nastro}+{tolerance}min")
 
+    # Lavoro effettivo (RD 131/1938)
+    max_lavoro = rules.get("maxLavoro", 999)
+    if duty.work_min > max_lavoro + tolerance:
+        result.lavoro_ok = False
+        result.violations.append(f"lavoro {duty.work_min}min > max {max_lavoro}+{tolerance}min")
+
     # Interruzione
     if duty.duty_type in ("semiunico", "spezzato"):
         int_min = rules.get("intMin", 0)
@@ -1105,10 +1139,15 @@ def validate_duty_bds(
             result.violations.append(f"interruzione {duty.interruption_min}min > max {int_max}min")
             result.classificazione_valida = False
 
-    # CE 561/2006
-    cee_ok, cee_viol = check_cee561(duty, bds.cee561)
-    result.cee561_ok = cee_ok
-    result.violations.extend(cee_viol)
+    # RD 131/1938 guida continuativa
+    rd_ok, rd_viol = check_rd131(duty, bds.rd131)
+    result.rd131_ok = rd_ok
+    result.violations.extend(rd_viol)
+
+    # Sosta capolinea (turni intero)
+    sosta_ok, sosta_viol = check_sosta_capolinea(duty)
+    result.sosta_capolinea_ok = sosta_ok
+    result.violations.extend(sosta_viol)
 
     # Intervallo pasto
     pasto_ok, pasto_viol = check_intervallo_pasto(duty, bds.pasto)
@@ -1277,7 +1316,11 @@ def compute_duty_cost_v4(
 # ═══════════════════════════════════════════════════════════════
 
 def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
-    """Verifica se due segmenti possono formare un turno biripresa."""
+    """Verifica se due segmenti possono formare un turno biripresa (semiunico/spezzato).
+
+    Semiunico/spezzato servono per coprire i picchi (entrata/uscita scuole e uffici):
+    un conducente lavora al mattino, torna in deposito per l'interruzione, riesce al pomeriggio.
+    """
     if s1.start_min > s2.start_min:
         s1, s2 = s2, s1
 
@@ -1294,42 +1337,46 @@ def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
     work = (s1.work_min + s2.work_min
             + pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2)
 
-    # Semiunico
-    sr = rules.get("semiunico", SHIFT_RULES["semiunico"])
-    if (sr["intMin"] <= interruption <= sr["intMax"]
-            and nastro <= sr["maxNastro"]
+    # RD 131/1938: verifica lavoro max oltre a nastro max
+    sr_semi = rules.get("semiunico", SHIFT_RULES["semiunico"])
+    sr_spez = rules.get("spezzato", SHIFT_RULES["spezzato"])
+
+    # Semiunico: interruzione 1h15-2h59, nastro <= 9h15, lavoro <= 8h
+    if (sr_semi["intMin"] <= interruption <= sr_semi["intMax"]
+            and nastro <= sr_semi["maxNastro"]
+            and work <= sr_semi.get("maxLavoro", 480)
             and work >= 180):
         return "semiunico"
 
-    # Spezzato
-    sr = rules.get("spezzato", SHIFT_RULES["spezzato"])
-    if (interruption >= sr["intMin"]
-            and nastro <= sr["maxNastro"]
+    # Spezzato: interruzione >= 3h, nastro <= 10h30, lavoro <= 7h30
+    if (interruption >= sr_spez["intMin"]
+            and nastro <= sr_spez["maxNastro"]
+            and work <= sr_spez.get("maxLavoro", 450)
             and work >= 180):
         return "spezzato"
 
     return None
 
 
-def optimize_global(
-    blocks: list[VehicleBlock],
+def _build_cpsat_model(
     segments: list[Segment],
-    config: dict,
-    time_limit_sec: int,
-    clusters: list[Cluster],
+    feasible_pairs: list[tuple[int, int, str]],
+    rules: dict,
+    rates: CostRates,
     bds: BDSConfig,
-) -> list[DriverDutyV3]:
-    """CP-SAT compatto BDS-aware."""
-    rules = config.get("shiftRules", SHIFT_RULES)
-    rates = CostRates.from_config(config)
-
-    report_progress("optimize", 30, f"CP-SAT v4: {len(segments)} segmenti")
+    clusters: list[Cluster],
+    scenario_seed: int,
+    scenario_noise: float = 0.0,
+) -> tuple[cp_model.CpModel, dict, dict, dict]:
+    """Costruisce un modello CP-SAT. Parametro scenario_noise perturba i costi
+    per esplorare soluzioni diverse in multi-scenario."""
+    import random
 
     model = cp_model.CpModel()
     n_seg = len(segments)
     seg_by_idx = {s.idx: s for s in segments}
 
-    # ── Variabili single ──
+    # -- Variabili single --
     single: dict[int, Any] = {}
     for s in segments:
         single[s.idx] = model.new_bool_var(f"single_{s.idx}")
@@ -1345,24 +1392,7 @@ def optimize_global(
         if not is_suppl and nastro_s > intero_max:
             too_long_for_single.add(s.idx)
 
-    # ── Coppie fattibili ──
-    feasible_pairs: list[tuple[int, int, str]] = []
-    for i in range(n_seg):
-        for j in range(i + 1, n_seg):
-            s1, s2 = segments[i], segments[j]
-            gap_between = abs(s1.start_min - s2.end_min)
-            if gap_between > 700:
-                continue
-            if s1.end_min > s2.start_min and s2.end_min > s1.start_min:
-                continue
-            pair_type = _feasible_pair(s1, s2, rules)
-            if pair_type:
-                feasible_pairs.append((s1.idx, s2.idx, pair_type))
-
-    log(f"CP-SAT v4: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili")
-    report_progress("optimize", 35, f"{len(feasible_pairs)} coppie candidate")
-
-    # ── Variabili pair ──
+    # -- Variabili pair --
     pair_vars: dict[tuple[int, int], Any] = {}
     pair_types: dict[tuple[int, int], str] = {}
     for s1_idx, s2_idx, ptype in feasible_pairs:
@@ -1370,7 +1400,7 @@ def optimize_global(
         pair_vars[key] = model.new_bool_var(f"pair_{s1_idx}_{s2_idx}")
         pair_types[key] = ptype
 
-    # ── Vincoli: copertura ──
+    # -- Vincoli: copertura esatta --
     for s in segments:
         involved = [single[s.idx]]
         for key, pv in pair_vars.items():
@@ -1378,9 +1408,8 @@ def optimize_global(
                 involved.append(pv)
         model.add_exactly_one(involved)
 
-    # ── Penalità nastro violato ──
+    # -- Penalita nastro violato --
     nastro_violation_penalty: dict[int, int] = {}
-    forced_pair_count = 0
     for s_idx in too_long_for_single:
         has_pair = any(s_idx in key for key in pair_vars)
         seg = seg_by_idx[s_idx]
@@ -1390,14 +1419,10 @@ def optimize_global(
         excess = nastro_s - SHIFT_RULES["intero"]["maxNastro"]
         if has_pair:
             nastro_violation_penalty[s_idx] = excess * 500 * COST_SCALE
-            forced_pair_count += 1
         else:
             nastro_violation_penalty[s_idx] = excess * 200 * COST_SCALE
 
-    if forced_pair_count:
-        log(f"CP-SAT v4: {forced_pair_count} segmenti penalizzati per nastro > intero max")
-
-    # ── Conta turni per tipo ──
+    # -- Conta turni per tipo --
     total_duties = model.new_int_var(0, n_seg, "total_duties")
     n_supplemento = []
     n_semi = []
@@ -1437,7 +1462,8 @@ def optimize_global(
         spez_max_pct = rules.get("spezzato", SHIFT_RULES["spezzato"]).get("maxPct", 13)
         model.add(100 * spez_count <= spez_max_pct * total_duties)
 
-    # ── Obiettivo ──
+    # -- Obiettivo (con noise per multi-scenario) --
+    rng = random.Random(scenario_seed)
     obj_terms: list[Any] = []
 
     for s in segments:
@@ -1446,12 +1472,10 @@ def optimize_global(
         _pt = pre_turno_for(_t)
         nastro_s = s.work_min + _pt + _t + _tb
 
-        # Pre/post BDS per single
         pp = bds.pre_post
-        pre_post_bds = pp.pre_turno_deposito if _t > 0 else pp.pre_turno_cambio
-        pre_post_bds += pp.post_turno_deposito if _tb > 0 else pp.post_turno_cambio
+        pre_post_val = pp.pre_turno_deposito if _t > 0 else pp.pre_turno_cambio
 
-        work_with_overhead = s.work_min + pre_post_bds + _tb
+        work_with_overhead = s.work_min + pre_post_val + _tb
         dev_from_target = abs(work_with_overhead - TARGET_WORK_MID)
 
         if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
@@ -1461,6 +1485,11 @@ def optimize_global(
             cost_cents = int((hours * rates.hourly_rate
                              + dev_from_target * rates.work_imbalance_per_min) * COST_SCALE)
 
+        # Perturbazione per esplorare soluzioni diverse
+        if scenario_noise > 0:
+            noise = rng.gauss(0, scenario_noise * cost_cents)
+            cost_cents = max(1, int(cost_cents + noise))
+
         obj_terms.append(cost_cents * single[s.idx])
 
     for key, pv in pair_vars.items():
@@ -1469,8 +1498,8 @@ def optimize_global(
 
         pp = bds.pre_post
         combined_work = (s1.work_min + s2.work_min
-                        + pp.pre_turno_deposito + pp.post_turno_deposito
-                        + pp.pre_ripresa + pp.post_ripresa
+                        + pp.pre_turno_deposito
+                        + pp.pre_ripresa
                         + DEPOT_TRANSFER_CENTRAL * 2)
         hours = combined_work / 60.0
         dev = abs(combined_work - TARGET_WORK_MID)
@@ -1479,6 +1508,10 @@ def optimize_global(
                          + dev * rates.work_imbalance_per_min
                          + rates.company_car_per_use) * COST_SCALE)
 
+        if scenario_noise > 0:
+            noise = rng.gauss(0, scenario_noise * cost_cents)
+            cost_cents = max(1, int(cost_cents + noise))
+
         obj_terms.append(cost_cents * pv)
 
     for s_idx, penalty in nastro_violation_penalty.items():
@@ -1486,36 +1519,20 @@ def optimize_global(
 
     model.minimize(sum(obj_terms))
 
-    # ── Solve ──
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = time_limit_sec
-    solver.parameters.num_workers = 8
-    solver.parameters.log_search_progress = False
-    solver.parameters.random_seed = int(time.time()) % 10000
-    solver.parameters.linearization_level = 2
+    return model, single, pair_vars, pair_types
 
-    report_progress("optimize", 40, "Avvio CP-SAT v4...")
-    t0 = time.time()
-    status = solver.solve(model)
-    elapsed = time.time() - t0
 
-    status_name = {
-        cp_model.OPTIMAL: "OPTIMAL",
-        cp_model.FEASIBLE: "FEASIBLE",
-        cp_model.INFEASIBLE: "INFEASIBLE",
-        cp_model.MODEL_INVALID: "MODEL_INVALID",
-        cp_model.UNKNOWN: "UNKNOWN",
-    }.get(status, f"CODE_{status}")
-
-    log(f"CP-SAT v4: status={status_name}, elapsed={elapsed:.1f}s, "
-        f"obj={solver.objective_value if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else 'N/A'}")
-    report_progress("optimize", 60, f"CP-SAT v4: {status_name} in {elapsed:.1f}s")
-
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        log("CP-SAT v4 infeasible — fallback a greedy")
-        return greedy_fallback(blocks, segments, config, clusters, bds)
-
-    # ── Estrai soluzione ──
+def _extract_duties_from_solution(
+    solver: cp_model.CpSolver,
+    segments: list[Segment],
+    single: dict[int, Any],
+    pair_vars: dict[tuple[int, int], Any],
+    pair_types: dict[tuple[int, int], str],
+    clusters: list[Cluster],
+    bds: BDSConfig,
+) -> list[DriverDutyV3]:
+    """Estrae i turni guida da una soluzione CP-SAT."""
+    seg_by_idx = {s.idx: s for s in segments}
     duties: list[DriverDutyV3] = []
     duty_idx = 0
 
@@ -1578,14 +1595,212 @@ def optimize_global(
             ))
             duty_idx += 1
 
-    # ── Post-hoc: riclassifica con BDS ──
+    # Post-hoc: riclassifica con RD 131/1938
     for d in duties:
         classified = classify_duty(d, bds, clusters)
         if classified != d.duty_type:
-            log(f"  {d.driver_id}: riclassificato {d.duty_type} → {classified}")
             d.duty_type = classified
 
     return duties
+
+
+def _score_solution(
+    duties: list[DriverDutyV3],
+    rates: CostRates,
+    bds: BDSConfig,
+    clusters: list[Cluster],
+) -> float:
+    """Calcola un punteggio di qualita di una soluzione (piu basso = meglio)."""
+    total_cost = 0.0
+    n_violations = 0
+    n_invalido = 0
+
+    for d in duties:
+        cb = compute_duty_cost_v4(d, rates, bds, clusters)
+        total_cost += cb.total
+
+        v = validate_duty_bds(d, bds, clusters)
+        n_violations += len(v.violations)
+        if d.duty_type == "invalido":
+            n_invalido += 1
+
+    score = total_cost + n_violations * 50.0 + n_invalido * 500.0
+
+    n_total = len(duties)
+    n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
+    suppl_pct = n_suppl / max(n_total, 1)
+    if suppl_pct > 0.15:
+        score += (suppl_pct - 0.15) * n_total * 20.0
+
+    return score
+
+
+def optimize_multi_scenario(
+    blocks: list[VehicleBlock],
+    segments: list[Segment],
+    config: dict,
+    time_limit_sec: int,
+    clusters: list[Cluster],
+    bds: BDSConfig,
+) -> list[DriverDutyV3]:
+    """Ottimizzazione multi-scenario: genera N scenari CP-SAT con parametri diversi,
+    poi sceglie il migliore.
+
+    Ispirato agli ottimizzatori professionali che generano 10-20 scenari e selezionano
+    il migliore. Ogni scenario usa:
+    - Seed CP-SAT diverso -> esplora rami diversi dell'albero di ricerca
+    - Noise sui costi -> perturba l'obiettivo per trovare soluzioni strutturalmente diverse
+    - Linearization level diverso -> strategie di bound diverse
+    """
+    rules = config.get("shiftRules", SHIFT_RULES)
+    rates = CostRates.from_config(config)
+    n_seg = len(segments)
+
+    # Determina numero scenari in base all'intensita
+    intensity = config.get("solverIntensity", 2)
+    n_scenarios = {1: MIN_SCENARIOS, 2: 12, 3: MAX_SCENARIOS}.get(intensity, 12)
+
+    # Tempo per scenario
+    scenario_budget = int(time_limit_sec * SCENARIO_TIME_FRACTION / n_scenarios)
+    scenario_budget = max(5, scenario_budget)  # almeno 5 secondi per scenario
+
+    log(f"Multi-scenario: {n_scenarios} scenari x {scenario_budget}s = {n_scenarios * scenario_budget}s "
+        f"(budget totale {time_limit_sec}s, intensita {intensity})")
+    report_progress("optimize", 30, f"Multi-scenario: {n_scenarios} scenari x {scenario_budget}s")
+
+    # -- Pre-calcola coppie fattibili (uguale per tutti gli scenari) --
+    feasible_pairs: list[tuple[int, int, str]] = []
+    for i in range(n_seg):
+        for j in range(i + 1, n_seg):
+            s1, s2 = segments[i], segments[j]
+            gap_between = abs(s1.start_min - s2.end_min)
+            if gap_between > 700:
+                continue
+            if s1.end_min > s2.start_min and s2.end_min > s1.start_min:
+                continue
+            pair_type = _feasible_pair(s1, s2, rules)
+            if pair_type:
+                feasible_pairs.append((s1.idx, s2.idx, pair_type))
+
+    log(f"CP-SAT: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili")
+
+    # -- Scenari --
+    best_duties: list[DriverDutyV3] | None = None
+    best_score = float('inf')
+    best_scenario_idx = -1
+    scenario_results: list[dict] = []
+
+    base_seed = int(time.time()) % 10000
+
+    scenario_params = []
+    for sc_idx in range(n_scenarios):
+        noise = 0.0 if sc_idx == 0 else 0.02 + (sc_idx / n_scenarios) * 0.12
+        lin_level = [2, 1, 2, 0, 2, 1, 0, 2, 1, 2, 0, 1, 2, 0, 1, 2, 1, 0, 2, 1][sc_idx % 20]
+        n_workers = [8, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4][sc_idx % 20]
+        scenario_params.append({
+            "seed": base_seed + sc_idx * 137,
+            "noise": noise,
+            "lin_level": lin_level,
+            "n_workers": n_workers,
+        })
+
+    t_total_start = time.time()
+
+    for sc_idx, params in enumerate(scenario_params):
+        if _stop_requested.is_set():
+            log(f"  Scenario {sc_idx+1}/{n_scenarios}: SKIP (stop requested)")
+            break
+
+        sc_start = time.time()
+        pct = 30 + int(50 * sc_idx / n_scenarios)
+        report_progress("optimize", pct,
+                       f"Scenario {sc_idx+1}/{n_scenarios} (noise={params['noise']:.2f}, seed={params['seed']})")
+
+        model, single, pvars, ptypes = _build_cpsat_model(
+            segments, feasible_pairs, rules, rates, bds, clusters,
+            scenario_seed=params["seed"],
+            scenario_noise=params["noise"],
+        )
+
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = scenario_budget
+        solver.parameters.num_workers = params["n_workers"]
+        solver.parameters.log_search_progress = False
+        solver.parameters.random_seed = params["seed"]
+        solver.parameters.linearization_level = params["lin_level"]
+
+        status = solver.solve(model)
+        sc_elapsed = time.time() - sc_start
+
+        status_name = {
+            cp_model.OPTIMAL: "OPTIMAL",
+            cp_model.FEASIBLE: "FEASIBLE",
+            cp_model.INFEASIBLE: "INFEASIBLE",
+            cp_model.MODEL_INVALID: "MODEL_INVALID",
+            cp_model.UNKNOWN: "UNKNOWN",
+        }.get(status, f"CODE_{status}")
+
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            log(f"  Scenario {sc_idx+1}: {status_name} in {sc_elapsed:.1f}s -- skip")
+            scenario_results.append({"idx": sc_idx, "status": status_name, "score": float('inf')})
+            continue
+
+        duties = _extract_duties_from_solution(
+            solver, segments, single, pvars, ptypes, clusters, bds,
+        )
+
+        score = _score_solution(duties, rates, bds, clusters)
+
+        n_total = len(duties)
+        n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
+        obj_val = solver.objective_value
+
+        is_best = " ★ BEST" if score < best_score else ""
+        log(f"  Scenario {sc_idx+1}: {status_name} in {sc_elapsed:.1f}s -- "
+            f"{n_total} turni ({n_suppl} suppl), obj={obj_val:.0f}, score={score:.0f}{is_best}")
+
+        scenario_results.append({
+            "idx": sc_idx,
+            "status": status_name,
+            "score": round(score, 2),
+            "duties": n_total,
+            "supplementi": n_suppl,
+            "obj": round(obj_val, 0),
+            "elapsed": round(sc_elapsed, 1),
+        })
+
+        if score < best_score:
+            best_score = score
+            best_duties = duties
+            best_scenario_idx = sc_idx
+
+        if time.time() - t_total_start > time_limit_sec * SCENARIO_TIME_FRACTION:
+            log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
+            break
+
+    total_elapsed = time.time() - t_total_start
+    log(f"Multi-scenario: {len(scenario_results)} scenari in {total_elapsed:.1f}s, "
+        f"migliore = scenario {best_scenario_idx+1} (score={best_score:.0f})")
+    report_progress("optimize", 80, f"Migliore: scenario {best_scenario_idx+1}/{len(scenario_results)}")
+
+    if best_duties is None:
+        log("Tutti gli scenari falliti -- fallback a greedy")
+        return greedy_fallback(blocks, segments, config, clusters, bds)
+
+    return best_duties
+
+
+# Alias retrocompatibilita
+def optimize_global(
+    blocks: list[VehicleBlock],
+    segments: list[Segment],
+    config: dict,
+    time_limit_sec: int,
+    clusters: list[Cluster],
+    bds: BDSConfig,
+) -> list[DriverDutyV3]:
+    """Wrapper retrocompatibilita -> multi-scenario."""
+    return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2044,7 +2259,7 @@ def main() -> None:
     log(f"=== Crew Scheduler V4 (BDS) ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")
     log(f"BDS config: pre/post={bds.pre_post.pre_turno_deposito}/{bds.pre_post.post_turno_deposito}, "
-        f"CEE561={'ON' if bds.cee561.attivo else 'OFF'}, "
+        f"RD131={'ON' if bds.rd131.attivo else 'OFF'}, "
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")
     report_progress("init", 5, f"{len(vehicle_shifts_raw)} turni macchina")
 
@@ -2075,8 +2290,8 @@ def main() -> None:
     log(f"Fase 3: {len(segments)} segmenti generati")
     report_progress("segments", 25, f"{len(segments)} segmenti")
 
-    # ── Fase 4: Ottimizzazione CP-SAT BDS ──
-    duties = optimize_global(blocks, segments, config, time_limit_sec, clusters, bds)
+    # ── Fase 4: Ottimizzazione multi-scenario CP-SAT (RD 131/1938) ──
+    duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
 
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
