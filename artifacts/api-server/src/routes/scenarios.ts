@@ -12,20 +12,69 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 interface GeoJSONFeature { type: "Feature"; geometry: any; properties: Record<string, any>; }
 interface GeoJSONFeatureCollection { type: "FeatureCollection"; features: GeoJSONFeature[]; }
 
-// ─── KML → GeoJSON converter (minimal, no external deps) ──────────────
+// ─── KML → GeoJSON converter (with Folder name inheritance) ───────────
 function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
   const features: GeoJSONFeature[] = [];
 
-  // Extract all Placemark elements
+  // ── Step 1: Build a map of Folder names so Placemarks can inherit them ──
+  // Scan all <Folder> open/close tags, match them with depth counting, extract names.
+  interface FolderCtx { name: string; startIdx: number; endIdx: number; }
+  const folders: FolderCtx[] = [];
+  {
+    // Collect all Folder open/close positions
+    const tagRegex = /<(\/?)Folder[^>]*>/gi;
+    const openStack: { idx: number; tagEnd: number }[] = [];
+    let tm: RegExpExecArray | null;
+    while ((tm = tagRegex.exec(kmlString)) !== null) {
+      if (tm[1] === "/") {
+        // Closing tag — pop the stack and create a folder entry
+        const open = openStack.pop();
+        if (open) {
+          const folderContent = kmlString.substring(open.tagEnd, tm.index);
+          // Extract the folder's direct <name> (first <name> before any nested <Folder>)
+          const nextFolderIdx = folderContent.indexOf("<Folder");
+          const searchIn = nextFolderIdx > 0 ? folderContent.substring(0, nextFolderIdx) : folderContent.substring(0, 500);
+          const fnMatch = searchIn.match(/<name>([\s\S]*?)<\/name>/i);
+          const folderName = fnMatch ? fnMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim() : "";
+          if (folderName) {
+            folders.push({ name: folderName, startIdx: open.idx, endIdx: tm.index + tm[0].length });
+          }
+        }
+      } else {
+        // Opening tag — push to stack
+        openStack.push({ idx: tm.index, tagEnd: tm.index + tm[0].length });
+      }
+    }
+  }
+
+  /** Get the innermost Folder name for a given character position in the KML string */
+  function getFolderName(charIdx: number): string {
+    let best = "";
+    let bestSize = Infinity;
+    for (const f of folders) {
+      if (charIdx >= f.startIdx && charIdx < f.endIdx) {
+        const size = f.endIdx - f.startIdx;
+        if (size < bestSize) { bestSize = size; best = f.name; }
+      }
+    }
+    return best;
+  }
+
+  // ── Step 2: Extract all Placemark elements ──
   const placemarkRegex = /<Placemark[^>]*>([\s\S]*?)<\/Placemark>/gi;
   let match: RegExpExecArray | null;
 
   while ((match = placemarkRegex.exec(kmlString)) !== null) {
     const block = match[1];
+    const placemarkPosition = match.index;
 
-    // Extract name
+    // Extract name (Placemark's own name)
     const nameMatch = block.match(/<name>([\s\S]*?)<\/name>/i);
-    const name = nameMatch ? nameMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim() : "";
+    const ownName = nameMatch ? nameMatch[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim() : "";
+
+    // If Placemark has no name, inherit from parent Folder
+    const folderName = getFolderName(placemarkPosition);
+    const name = ownName || folderName;
 
     // Extract description
     const descMatch = block.match(/<description>([\s\S]*?)<\/description>/i);
