@@ -189,6 +189,18 @@ export const serviceProgramScenarios = pgTable("service_program_scenarios", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// Driver Shift Scenarios — scenari turni guida salvati (N:1 con turni macchina)
+export const driverShiftScenarios = pgTable("driver_shift_scenarios", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  serviceProgramScenarioId: uuid("service_program_scenario_id")
+    .references(() => serviceProgramScenarios.id, { onDelete: "cascade" })
+    .notNull(),
+  name: text("name").notNull(),
+  result: jsonb("result").notNull(),
+  config: jsonb("config"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 // Stop Clusters — gruppi di fermate per cambi in linea
 export const stopClusters = pgTable("stop_clusters", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -235,3 +247,4 @@ export type ServiceProgramScenario = typeof serviceProgramScenarios.$inferSelect
 export type StopCluster = typeof stopClusters.$inferSelect;
 export type StopClusterStop = typeof stopClusterStops.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
+export type DriverShiftScenario = typeof driverShiftScenarios.$inferSelect;

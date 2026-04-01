@@ -33,8 +33,8 @@
 
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes } from "@workspace/db/schema";
-import { eq, inArray, and } from "drizzle-orm";
+import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes, driverShiftScenarios } from "@workspace/db/schema";
+import { eq, inArray, and, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { jobManager } from "../lib/job-manager.js";
@@ -1253,6 +1253,78 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
     res.json({ greedy, cpsat, delta });
   } catch (err: any) {
     req.log.error(err, "Error in driver-shifts compare");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+/* ═══════════════════════════════════════════════════════════════
+ *  DRIVER-SHIFT SCENARIOS — CRUD
+ * ═══════════════════════════════════════════════════════════════ */
+
+// POST — save a driver-shift scenario
+router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
+  try {
+    const { scenarioId } = req.params;
+    const { name, result: dssResult, config } = req.body;
+    if (!name || !dssResult) { res.status(400).json({ error: "name and result required" }); return; }
+    const [row] = await db.insert(driverShiftScenarios).values({
+      serviceProgramScenarioId: scenarioId,
+      name,
+      result: dssResult,
+      config: config ?? null,
+    }).returning();
+    res.json(row);
+  } catch (err: any) {
+    req.log.error(err, "Error saving driver-shift scenario");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET — list saved driver-shift scenarios (lightweight summary)
+router.get("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
+  try {
+    const { scenarioId } = req.params;
+    const rows = await db.select().from(driverShiftScenarios)
+      .where(eq(driverShiftScenarios.serviceProgramScenarioId, scenarioId))
+      .orderBy(desc(driverShiftScenarios.createdAt));
+    const list = rows.map(r => {
+      const res = r.result as any;
+      return {
+        id: r.id,
+        name: r.name,
+        createdAt: r.createdAt,
+        summary: res?.summary ?? {},
+      };
+    });
+    res.json(list);
+  } catch (err: any) {
+    req.log.error(err, "Error listing driver-shift scenarios");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET — load full driver-shift scenario
+router.get("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
+  try {
+    const [row] = await db.select().from(driverShiftScenarios)
+      .where(eq(driverShiftScenarios.id, req.params.dssId));
+    if (!row) { res.status(404).json({ error: "Not found" }); return; }
+    res.json(row);
+  } catch (err: any) {
+    req.log.error(err, "Error loading driver-shift scenario");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE — remove a driver-shift scenario
+router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
+  try {
+    await db.delete(driverShiftScenarios)
+      .where(eq(driverShiftScenarios.id, req.params.dssId));
+    res.json({ ok: true });
+  } catch (err: any) {
+    req.log.error(err, "Error deleting driver-shift scenario");
     res.status(500).json({ error: err.message });
   }
 });

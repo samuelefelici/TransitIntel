@@ -192,3 +192,14 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- Default: 5 autovetture aziendali
 INSERT INTO app_settings (key, value) VALUES ('company_cars', '5')
   ON CONFLICT (key) DO NOTHING;
+
+-- Driver Shift Scenarios — scenari turni guida (N:1 con turni macchina)
+CREATE TABLE IF NOT EXISTS driver_shift_scenarios (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  service_program_scenario_id UUID NOT NULL REFERENCES service_program_scenarios(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  result JSONB NOT NULL,
+  config JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dss_parent ON driver_shift_scenarios(service_program_scenario_id);
