@@ -217,8 +217,10 @@ export default function ScenariosPage() {
     bidirectional: true,
   });
   const [pdeSavedList, setPdeSavedList] = useState<any[]>([]);
-  const [pdeTab, setPdeTab] = useState<"config" | "result" | "gantt">("config");
+  const [pdeTab, setPdeTab] = useState<"config" | "result" | "gantt" | "ttd">("config");
   const [pdeSelectedLine, setPdeSelectedLine] = useState<number>(-1); // -1 = all lines
+  const [pdeKmSuggestion, setPdeKmSuggestion] = useState<any>(null);
+  const [pdeTtdLines, setPdeTtdLines] = useState<number[]>([]); // multi-line selection for TTD
 
   // Popup
   const [popup, setPopup] = useState<{ lng: number; lat: number; type: string; props: Record<string, any> } | null>(null);
@@ -388,10 +390,20 @@ export default function ScenariosPage() {
     setPdeResult(null);
     setPdeTab("config");
     setPdePanelOpen(true);
-    // Load saved programs
+    setPdeKmSuggestion(null);
+    setPdeTtdLines([]);
+    // Load saved programs + km suggestion in parallel
     try {
-      const data = await apiFetch<{ programs: any[] }>(`/api/scenarios/${scenarioId}/programs`);
-      setPdeSavedList(data.programs || []);
+      const [listData, kmData] = await Promise.all([
+        apiFetch<{ programs: any[] }>(`/api/scenarios/${scenarioId}/programs`),
+        apiFetch<any>(`/api/scenarios/${scenarioId}/suggest-km`).catch(() => null),
+      ]);
+      setPdeSavedList(listData.programs || []);
+      if (kmData) {
+        setPdeKmSuggestion(kmData);
+        // Auto-fill suggested km into config
+        setPdeConfig(prev => ({ ...prev, targetKm: kmData.suggestedKm }));
+      }
     } catch { setPdeSavedList([]); }
   }, []);
 
@@ -431,10 +443,10 @@ export default function ScenariosPage() {
   const deletePdeProgram = useCallback(async (programId: string) => {
     if (!pdeScenarioId || !confirm("Eliminare questo programma?")) return;
     try {
-      await fetch(`${getApiBase()}/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
+      await apiFetch(`/api/scenarios/${pdeScenarioId}/programs/${programId}`, { method: "DELETE" });
       setPdeSavedList(prev => prev.filter(p => p.id !== programId));
       if (pdeResult?.id === programId) setPdeResult(null);
-    } catch (err: any) { alert(`Errore: ${err.message}`); }
+    } catch (err: any) { alert(`Errore eliminazione: ${err.message}`); }
   }, [pdeScenarioId, pdeResult]);
 
   // ─── Map data ────────────────────────────────────────────────────
@@ -1497,11 +1509,11 @@ export default function ScenariosPage() {
                   </span>}
                 </span>
                 <div className="flex items-center gap-2">
-                  {(["config", "result", "gantt"] as const).map(tab => (
+                  {(["config", "result", "gantt", "ttd"] as const).map(tab => (
                     <button key={tab} onClick={() => setPdeTab(tab)}
                       className={`px-2.5 py-1 rounded text-[10px] font-medium transition-colors ${pdeTab === tab ? "bg-emerald-500/20 text-emerald-400" : "text-muted-foreground hover:text-foreground"}`}
                       disabled={tab !== "config" && !pdeResult}>
-                      {tab === "config" ? "⚙️ Configura" : tab === "result" ? "📊 Risultati" : "📅 Gantt"}
+                      {tab === "config" ? "⚙️ Configura" : tab === "result" ? "📊 Risultati" : tab === "gantt" ? "📅 Gantt" : "📈 TTD"}
                     </button>
                   ))}
                   <button onClick={() => setPdePanelOpen(false)} className="text-muted-foreground hover:text-foreground ml-2">
@@ -1522,10 +1534,34 @@ export default function ScenariosPage() {
                 {/* ── Config tab ── */}
                 {pdeTab === "config" && !pdeLoading && (
                   <div className="space-y-4">
+                    {/* Km suggestion banner */}
+                    {pdeKmSuggestion && (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Lightbulb className="w-4 h-4 text-emerald-400" />
+                          <span className="text-xs font-semibold text-emerald-400">Suggerimento Km</span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px]">
+                          <div><span className="text-muted-foreground">Rete:</span> <span className="font-medium">{pdeKmSuggestion.breakdown?.totalNetworkKm} km</span></div>
+                          <div><span className="text-muted-foreground">Linee:</span> <span className="font-medium">{pdeKmSuggestion.breakdown?.totalLines}</span></div>
+                          <div><span className="text-muted-foreground">POI serviti:</span> <span className="font-medium">{pdeKmSuggestion.breakdown?.poiCount}</span></div>
+                          <div><span className="text-muted-foreground">Popolazione:</span> <span className="font-medium">{(pdeKmSuggestion.breakdown?.populationServed || 0).toLocaleString("it-IT")}</span></div>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs">
+                          <span className="text-muted-foreground">Km consigliati:</span>
+                          <span className="font-bold text-emerald-400 text-sm">{pdeKmSuggestion.suggestedKm} km</span>
+                          <span className="text-[9px] text-muted-foreground">(range: {pdeKmSuggestion.minKm}–{pdeKmSuggestion.maxKm} km)</span>
+                          <button onClick={() => setPdeConfig(p => ({ ...p, targetKm: pdeKmSuggestion.suggestedKm }))}
+                            className="ml-auto px-2 py-0.5 bg-emerald-600/20 text-emerald-400 rounded text-[10px] hover:bg-emerald-600/30 transition-colors">
+                            Usa suggerimento
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                       <div className="space-y-1">
                         <label className="text-[10px] text-muted-foreground font-medium">🎯 Km Target (indicativo)</label>
-                        <input type="number" min={50} max={5000} step={50} value={pdeConfig.targetKm}
+                        <input type="number" min={50} max={50000} step={50} value={pdeConfig.targetKm}
                           onChange={e => setPdeConfig(p => ({ ...p, targetKm: Number(e.target.value) }))}
                           className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
                       </div>
@@ -1672,6 +1708,30 @@ export default function ScenariosPage() {
                         </div>
                       ))}
                     </div>
+
+                    {/* Coincidences info */}
+                    {pdeResult.coincidences && pdeResult.coincidences.length > 0 && (
+                      <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <GitCompareArrows className="w-4 h-4 text-blue-400" />
+                          <span className="text-xs font-semibold text-blue-400">Coincidenze ai capolinea ({pdeResult.coincidences.length})</span>
+                        </div>
+                        <div className="space-y-1">
+                          {pdeResult.coincidences.map((c: any, i: number) => (
+                            <div key={i} className="flex items-center gap-2 text-[10px]">
+                              <MapPin className="w-3 h-3 text-blue-400/60" />
+                              <span className="font-medium">{c.stopName}</span>
+                              <span className="text-muted-foreground">→</span>
+                              <div className="flex gap-1 flex-wrap">
+                                {c.lines.map((ln: string, j: number) => (
+                                  <span key={j} className="px-1.5 py-0.5 bg-blue-500/15 text-blue-300 rounded text-[9px]">{ln}</span>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Lines summary table */}
                     {pdeSelectedLine === -1 && pdeResult.lines && pdeResult.lines.length > 1 && (
@@ -1866,6 +1926,205 @@ export default function ScenariosPage() {
                     })()}
                   </div>
                 )}
+
+                {/* ── TTD (Time-Table Diagram) tab ── */}
+                {pdeTab === "ttd" && pdeResult && !pdeLoading && (
+                  <div className="space-y-3">
+                    {/* Multi-line toggle for TTD */}
+                    {pdeResult.totalLines > 1 && (
+                      <div className="space-y-2">
+                        <span className="text-[10px] text-muted-foreground font-medium">Seleziona linee da visualizzare:</span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button onClick={() => setPdeTtdLines(pdeTtdLines.length === (pdeResult.lines || []).length ? [] : (pdeResult.lines || []).map((l: any) => l.lineIndex))}
+                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${pdeTtdLines.length === (pdeResult.lines || []).length ? "bg-emerald-500/20 text-emerald-400 ring-1 ring-emerald-500/30" : "text-muted-foreground hover:text-foreground bg-muted/20"}`}>
+                            {pdeTtdLines.length === (pdeResult.lines || []).length ? "Deseleziona tutte" : "Seleziona tutte"}
+                          </button>
+                          {(pdeResult.lines || []).map((ls: any) => {
+                            const active = pdeTtdLines.includes(ls.lineIndex);
+                            const lineColors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
+                            return (
+                              <button key={ls.lineIndex}
+                                onClick={() => setPdeTtdLines(prev => active ? prev.filter(x => x !== ls.lineIndex) : [...prev, ls.lineIndex])}
+                                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors border ${active ? "border-current" : "border-transparent text-muted-foreground hover:text-foreground bg-muted/20"}`}
+                                style={active ? { color: lineColors[ls.lineIndex % lineColors.length], backgroundColor: lineColors[ls.lineIndex % lineColors.length] + "20" } : {}}>
+                                {ls.lineName.length > 15 ? ls.lineName.slice(0, 13) + "…" : ls.lineName}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* TTD Chart */}
+                    {(() => {
+                      const lineColors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
+                      const selectedLineIndices = pdeTtdLines.length > 0 ? pdeTtdLines : (pdeResult.totalLines === 1 ? [0] : []);
+                      if (selectedLineIndices.length === 0) {
+                        return <div className="text-center text-xs text-muted-foreground py-8">Seleziona almeno una linea per visualizzare il TTD</div>;
+                      }
+
+                      // Collect stops for selected lines (ordered)
+                      const allLineStops: { lineName: string; lineIndex: number; stops: { name: string; position: number }[] }[] = [];
+                      for (const li of selectedLineIndices) {
+                        const lineSummary = (pdeResult.lines || []).find((l: any) => l.lineIndex === li);
+                        if (!lineSummary) continue;
+                        allLineStops.push({
+                          lineName: lineSummary.lineName,
+                          lineIndex: li,
+                          stops: (lineSummary.stops || []).map((s: any, i: number) => ({
+                            name: s.name,
+                            position: i,
+                          })),
+                        });
+                      }
+
+                      // For single-line: Y-axis = stops in order, X-axis = time
+                      // For multi-line: merged stop list
+                      const primaryLine = allLineStops[0];
+                      if (!primaryLine) return null;
+
+                      const yStops = primaryLine.stops;
+                      const timeStartMin = (pdeResult.metrics?.peakCadenceMin ? 5 : 6) * 60; // 5:00 or 6:00
+                      const timeEndMin = 23 * 60; // 23:00
+                      const timeRange = timeEndMin - timeStartMin;
+
+                      // Get trips for selected lines
+                      const trips = (pdeResult.trips || []).filter((t: any) => selectedLineIndices.includes(t.lineIndex));
+
+                      // SVG dimensions
+                      const svgW = 900, svgH = Math.max(350, yStops.length * 28 + 80);
+                      const padL = 110, padR = 30, padT = 30, padB = 40;
+                      const plotW = svgW - padL - padR;
+                      const plotH = svgH - padT - padB;
+
+                      const timeToX = (min: number) => padL + ((min - timeStartMin) / timeRange) * plotW;
+                      const stopToY = (idx: number) => padT + (idx / Math.max(yStops.length - 1, 1)) * plotH;
+
+                      // Parse time "HH:MM" to minutes
+                      const parseTime = (t: string) => { const p = t.split(":"); return parseInt(p[0]) * 60 + parseInt(p[1]); };
+
+                      return (
+                        <div className="overflow-x-auto overflow-y-auto max-h-[500px] border border-border/20 rounded-lg bg-background/30">
+                          <svg width={svgW} height={svgH} className="select-none">
+                            {/* Grid lines - horizontal (stops) */}
+                            {yStops.map((_: any, i: number) => (
+                              <line key={`h${i}`} x1={padL} x2={svgW - padR} y1={stopToY(i)} y2={stopToY(i)} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+                            ))}
+                            {/* Grid lines - vertical (hours) */}
+                            {Array.from({ length: Math.ceil(timeRange / 60) + 1 }, (_, i) => timeStartMin + i * 60).map(min => (
+                              <line key={`v${min}`} x1={timeToX(min)} x2={timeToX(min)} y1={padT} y2={svgH - padB} stroke="rgba(255,255,255,0.06)" strokeWidth={1} />
+                            ))}
+
+                            {/* Y-axis labels (stop names) */}
+                            {yStops.map((s: any, i: number) => (
+                              <text key={`yl${i}`} x={padL - 6} y={stopToY(i) + 3} textAnchor="end" fill="#888" fontSize={9}
+                                className="select-none pointer-events-none">
+                                {s.name.length > 14 ? s.name.slice(0, 12) + "…" : s.name}
+                              </text>
+                            ))}
+
+                            {/* X-axis labels (hours) */}
+                            {Array.from({ length: Math.ceil(timeRange / 60) + 1 }, (_, i) => timeStartMin + i * 60).map(min => (
+                              <text key={`xl${min}`} x={timeToX(min)} y={svgH - padB + 16} textAnchor="middle" fill="#888" fontSize={9}
+                                className="select-none pointer-events-none">
+                                {String(Math.floor(min / 60)).padStart(2, "0")}:00
+                              </text>
+                            ))}
+
+                            {/* Trip lines */}
+                            {trips.map((trip: any, ti: number) => {
+                              const color = lineColors[trip.lineIndex % lineColors.length];
+                              const isAndata = trip.direction === "andata";
+                              // Map stopTimes to coordinates
+                              const points: { x: number; y: number; stopName: string; time: string }[] = [];
+
+                              for (let si = 0; si < trip.stopTimes.length; si++) {
+                                const st = trip.stopTimes[si];
+                                const timeMin = parseTime(st.departure);
+                                if (timeMin < timeStartMin || timeMin > timeEndMin) continue;
+                                const x = timeToX(timeMin);
+                                // Find matching stop in yStops
+                                let yIdx = yStops.findIndex((ys: any) => ys.name === st.stopName);
+                                if (yIdx < 0) {
+                                  // Interpolate based on position
+                                  yIdx = isAndata
+                                    ? Math.round((si / Math.max(trip.stopTimes.length - 1, 1)) * (yStops.length - 1))
+                                    : Math.round(((trip.stopTimes.length - 1 - si) / Math.max(trip.stopTimes.length - 1, 1)) * (yStops.length - 1));
+                                }
+                                const y = stopToY(yIdx);
+                                points.push({ x, y, stopName: st.stopName, time: st.departure });
+                              }
+
+                              if (points.length < 2) return null;
+
+                              const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+
+                              return (
+                                <g key={ti}>
+                                  <path d={pathD} fill="none" stroke={color} strokeWidth={1.2}
+                                    opacity={isAndata ? 0.7 : 0.45}
+                                    strokeDasharray={isAndata ? "none" : "3,2"}>
+                                    <title>{trip.tripId}: {trip.departureTime}→{trip.arrivalTime} ({trip.direction}) — {trip.lineName}</title>
+                                  </path>
+                                  {/* Small dot at departure */}
+                                  <circle cx={points[0].x} cy={points[0].y} r={2} fill={color} opacity={0.8}>
+                                    <title>{trip.tripId} dep {trip.departureTime}</title>
+                                  </circle>
+                                </g>
+                              );
+                            })}
+
+                            {/* Coincidence markers */}
+                            {(pdeResult.coincidences || []).map((c: any, ci: number) => {
+                              // Find if this coincidence involves any selected line
+                              const involvedLines = (c.lines || []);
+                              const hasSelectedLine = selectedLineIndices.some(li => {
+                                const ln = (pdeResult.lines || []).find((l: any) => l.lineIndex === li);
+                                return ln && involvedLines.includes(ln.lineName);
+                              });
+                              if (!hasSelectedLine) return null;
+                              // Find stop position
+                              const yIdx = yStops.findIndex((ys: any) => ys.name === c.stopName);
+                              if (yIdx < 0) return null;
+                              return (
+                                <g key={`coinc${ci}`}>
+                                  <circle cx={padL - 20} cy={stopToY(yIdx)} r={5} fill="rgba(59,130,246,0.3)" stroke="#3b82f6" strokeWidth={1}>
+                                    <title>Coincidenza: {c.stopName} — Linee: {involvedLines.join(", ")}</title>
+                                  </circle>
+                                  <text x={padL - 20} y={stopToY(yIdx) + 3} textAnchor="middle" fill="#3b82f6" fontSize={7} className="select-none pointer-events-none">⇄</text>
+                                </g>
+                              );
+                            })}
+                          </svg>
+                        </div>
+                      );
+                    })()}
+
+                    {/* TTD Legend */}
+                    <div className="flex items-center gap-4 text-[9px] text-muted-foreground flex-wrap">
+                      {(() => {
+                        const lineColors = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
+                        const selectedLineIndices = pdeTtdLines.length > 0 ? pdeTtdLines : (pdeResult.totalLines === 1 ? [0] : []);
+                        return selectedLineIndices.map((li: number) => {
+                          const ls = (pdeResult.lines || []).find((l: any) => l.lineIndex === li);
+                          if (!ls) return null;
+                          return (
+                            <span key={li} className="flex items-center gap-1">
+                              <div className="w-4 h-0.5 rounded" style={{ backgroundColor: lineColors[li % lineColors.length] }} />
+                              {ls.lineName}
+                            </span>
+                          );
+                        });
+                      })()}
+                      <span className="flex items-center gap-1"><div className="w-4 h-0.5 rounded bg-white/40" /> Andata (continua)</span>
+                      <span className="flex items-center gap-1"><div className="w-4 h-0.5 rounded bg-white/40 border-dashed" style={{ borderTop: "1px dashed white" }} /> Ritorno (tratteggio)</span>
+                      {pdeResult.coincidences?.length > 0 && (
+                        <span className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-blue-500/30 border border-blue-500" /> Coincidenza</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
               </CardContent>
             </Card>
           </motion.div>

@@ -1228,6 +1228,7 @@ interface GeneratedProgram {
     kmPerVehicle: number;
   };
   stops: { name: string; lng: number; lat: number; demandScore: number }[];
+  coincidences: { stopName: string; lng: number; lat: number; lines: string[] }[];
 }
 
 /* ── Demand scores per stop ── */
@@ -1385,6 +1386,141 @@ function minToHHMM(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
   const m = Math.round(minutes % 60);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+
+/* ── Detect shared terminals (coincidences) between lines ── */
+interface TerminalCoincidence {
+  stopName: string;
+  lng: number;
+  lat: number;
+  lineIndices: number[];
+}
+
+function detectTerminalCoincidences(
+  rawLines: { name: string; coords: number[][] }[],
+  stopAssignment: Map<number, { name: string; lng: number; lat: number }[]>,
+  thresholdKm = 0.3,
+): TerminalCoincidence[] {
+  // Collect all terminals (first and last stop of each line)
+  const terminals: { name: string; lng: number; lat: number; lineIndex: number }[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const stops = stopAssignment.get(i) || [];
+    if (stops.length >= 2) {
+      terminals.push({ ...stops[0], lineIndex: i });
+      terminals.push({ ...stops[stops.length - 1], lineIndex: i });
+    }
+  }
+
+  // Group terminals that are within thresholdKm of each other
+  const used = new Set<number>();
+  const coincidences: TerminalCoincidence[] = [];
+
+  for (let i = 0; i < terminals.length; i++) {
+    if (used.has(i)) continue;
+    const group = [i];
+    for (let j = i + 1; j < terminals.length; j++) {
+      if (used.has(j)) continue;
+      if (terminals[i].lineIndex === terminals[j].lineIndex) continue;
+      const d = haversineKm(terminals[i].lat, terminals[i].lng, terminals[j].lat, terminals[j].lng);
+      if (d <= thresholdKm) group.push(j);
+    }
+    if (group.length > 1) {
+      const lineIndices = [...new Set(group.map(g => terminals[g].lineIndex))];
+      if (lineIndices.length > 1) {
+        for (const g of group) used.add(g);
+        coincidences.push({
+          stopName: terminals[i].name,
+          lng: terminals[i].lng,
+          lat: terminals[i].lat,
+          lineIndices,
+        });
+      }
+    }
+  }
+  return coincidences;
+}
+
+/* ── Synchronize trips at shared terminals ── */
+function synchronizeCoincidences(
+  trips: GeneratedTrip[],
+  coincidences: TerminalCoincidence[],
+  toleranceMin = 5,
+): GeneratedTrip[] {
+  if (coincidences.length === 0) return trips;
+
+  // For each coincidence, find trips from different lines arriving/departing at that terminal
+  // and adjust their times to align within toleranceMin
+  const adjusted = trips.map(t => ({ ...t, stopTimes: t.stopTimes.map(st => ({ ...st })) }));
+
+  for (const coinc of coincidences) {
+    // Find trips that start or end at this terminal
+    const terminalTrips: { tripIdx: number; stopIdx: number; timeMin: number; isArrival: boolean }[] = [];
+
+    for (let ti = 0; ti < adjusted.length; ti++) {
+      const trip = adjusted[ti];
+      if (!coinc.lineIndices.includes(trip.lineIndex)) continue;
+
+      for (let si = 0; si < trip.stopTimes.length; si++) {
+        const st = trip.stopTimes[si];
+        const d = haversineKm(coinc.lat, coinc.lng, st.lat, st.lng);
+        if (d <= 0.3) {
+          const parts = st.departure.split(":");
+          const timeMin = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+          terminalTrips.push({
+            tripIdx: ti,
+            stopIdx: si,
+            timeMin,
+            isArrival: si === trip.stopTimes.length - 1,
+          });
+        }
+      }
+    }
+
+    // Group by time proximity
+    terminalTrips.sort((a, b) => a.timeMin - b.timeMin);
+    for (let i = 0; i < terminalTrips.length; i++) {
+      const cluster: typeof terminalTrips = [terminalTrips[i]];
+      for (let j = i + 1; j < terminalTrips.length; j++) {
+        if (terminalTrips[j].timeMin - terminalTrips[i].timeMin <= toleranceMin * 2) {
+          // Only sync trips from different lines
+          const existingLines = new Set(cluster.map(c => adjusted[c.tripIdx].lineIndex));
+          if (!existingLines.has(adjusted[terminalTrips[j].tripIdx].lineIndex)) {
+            cluster.push(terminalTrips[j]);
+          }
+        }
+      }
+
+      if (cluster.length >= 2) {
+        // Align departures to the earliest arrival + small buffer (2 min)
+        const arrivals = cluster.filter(c => c.isArrival);
+        const departures = cluster.filter(c => !c.isArrival);
+        if (arrivals.length > 0 && departures.length > 0) {
+          const latestArrival = Math.max(...arrivals.map(a => a.timeMin));
+          const syncTime = latestArrival + 2; // 2 min transfer buffer
+          for (const dep of departures) {
+            if (Math.abs(dep.timeMin - syncTime) <= toleranceMin) {
+              const delta = syncTime - dep.timeMin;
+              // Shift entire trip by delta
+              const trip = adjusted[dep.tripIdx];
+              for (const st of trip.stopTimes) {
+                const aParts = st.arrival.split(":");
+                const dParts = st.departure.split(":");
+                const aMin = parseInt(aParts[0]) * 60 + parseInt(aParts[1]) + delta;
+                const dMin = parseInt(dParts[0]) * 60 + parseInt(dParts[1]) + delta;
+                st.arrival = minToHHMM(aMin);
+                st.departure = minToHHMM(dMin);
+              }
+              trip.departureTime = trip.stopTimes[0].departure;
+              trip.arrivalTime = trip.stopTimes[trip.stopTimes.length - 1].arrival;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return adjusted;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1594,6 +1730,12 @@ async function generateServiceProgram(
     });
   }
 
+  // ── 6b. Detect and synchronize coincidences ──
+  const coincidences = detectTerminalCoincidences(rawLines, stopAssignment);
+  const syncedTrips = synchronizeCoincidences(allTrips, coincidences);
+  // Replace allTrips with synced version
+  allTrips.splice(0, allTrips.length, ...syncedTrips);
+
   // ── 7. Aggregate metrics ──
   const peakTrips = allTrips.filter(t => t.timeWindow.includes("punta"));
   const avgTravelTime = allTrips.length > 0 ? Math.round(allTrips.reduce((s, t) => s + t.travelTimeMin, 0) / allTrips.length) : 0;
@@ -1649,8 +1791,110 @@ async function generateServiceProgram(
       kmPerVehicle: totalVehicles > 0 ? Math.round(globalTotalKm / totalVehicles * 10) / 10 : 0,
     },
     stops: allStopsWithDemand,
+    coincidences: coincidences.map(c => ({
+      stopName: c.stopName,
+      lng: c.lng,
+      lat: c.lat,
+      lines: c.lineIndices.map(li => rawLines[li]?.name || "Linea " + (li + 1)),
+    })),
   };
 }
+
+// ─── GET /api/scenarios/:id/suggest-km ────────────────────────────────
+router.get("/scenarios/:id/suggest-km", async (req, res) => {
+  try {
+    const [row] = await db.select().from(scenarios).where(eq(scenarios.id, req.params.id)).limit(1);
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    const geojson = row.geojson as any;
+    if (!geojson?.features) { res.json({ suggestedKm: 500, breakdown: {} }); return; }
+
+    // Extract lines
+    const lines: { name: string; lengthKm: number }[] = [];
+    for (const f of geojson.features) {
+      if (f.geometry.type === "LineString") {
+        lines.push({ name: f.properties?.name || `Linea ${lines.length + 1}`, lengthKm: lineLength(f.geometry.coordinates) });
+      } else if (f.geometry.type === "MultiLineString") {
+        for (const seg of f.geometry.coordinates) {
+          lines.push({ name: f.properties?.name || `Linea ${lines.length + 1}`, lengthKm: lineLength(seg) });
+        }
+      }
+    }
+
+    const totalNetworkKm = lines.reduce((s, l) => s + l.lengthKm, 0);
+    if (totalNetworkKm === 0) { res.json({ suggestedKm: 500, breakdown: {} }); return; }
+
+    // Count POI and population near routes
+    const allCoords = geojson.features
+      .filter((f: any) => f.geometry.type === "LineString" || f.geometry.type === "MultiLineString")
+      .flatMap((f: any) => f.geometry.type === "LineString" ? f.geometry.coordinates : f.geometry.coordinates.flat());
+
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    for (const [lng, lat] of allCoords) {
+      if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+    }
+    const pad = 1 / 111;
+
+    const [poiCountResult, popResult] = await Promise.all([
+      db.execute<{ cnt: string }>(sql`
+        SELECT COUNT(*)::text AS cnt FROM points_of_interest
+        WHERE lng BETWEEN ${minLng - pad} AND ${maxLng + pad}
+          AND lat BETWEEN ${minLat - pad} AND ${maxLat + pad}
+      `),
+      db.execute<{ total_pop: string }>(sql`
+        SELECT COALESCE(SUM(population), 0)::text AS total_pop FROM census_sections
+        WHERE centroid_lng BETWEEN ${minLng - pad} AND ${maxLng + pad}
+          AND centroid_lat BETWEEN ${minLat - pad} AND ${maxLat + pad}
+      `),
+    ]);
+
+    const poiCount = parseInt(poiCountResult.rows[0]?.cnt || "0");
+    const population = parseInt(popResult.rows[0]?.total_pop || "0");
+
+    // Suggestion logic:
+    // Base: each line needs ~2x its length per hour * 16 hours service * bidirectional factor
+    const serviceHours = 16; // 6-22
+    const avgCadenceMin = 30; // balanced default
+    const tripsPerLinePerHour = 60 / avgCadenceMin; // 2 trips/hour
+    const bidiMultiplier = 2; // andata + ritorno
+
+    // Base km = networkKm * trips/hour * hours * bidi
+    let baseKm = totalNetworkKm * tripsPerLinePerHour * serviceHours * bidiMultiplier / lines.length;
+    // If many lines, scale down per-line trips
+    if (lines.length > 1) {
+      baseKm = totalNetworkKm * bidiMultiplier * serviceHours * tripsPerLinePerHour;
+    }
+
+    // Demand multiplier based on POI density and population
+    const poiDensity = poiCount / Math.max(totalNetworkKm, 1);
+    const popDensity = population / Math.max(totalNetworkKm, 1);
+    const demandMultiplier = Math.max(0.5, Math.min(2.0,
+      0.7 + poiDensity * 0.02 + popDensity * 0.00005
+    ));
+
+    const suggestedKm = Math.round(baseKm * demandMultiplier / 50) * 50; // round to nearest 50
+    const minKm = Math.round(totalNetworkKm * bidiMultiplier * 4); // minimum: 4 round trips
+    const maxKm = Math.round(totalNetworkKm * bidiMultiplier * serviceHours * 6); // max: 6 trips/h
+
+    res.json({
+      suggestedKm: Math.max(minKm, Math.min(maxKm, suggestedKm)),
+      minKm,
+      maxKm,
+      breakdown: {
+        totalNetworkKm: Math.round(totalNetworkKm * 100) / 100,
+        totalLines: lines.length,
+        poiCount,
+        populationServed: population,
+        demandMultiplier: Math.round(demandMultiplier * 100) / 100,
+        lines: lines.map(l => ({ name: l.name, lengthKm: Math.round(l.lengthKm * 100) / 100 })),
+      },
+    });
+  } catch (err) {
+    req.log.error(err, "Error suggesting km");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ─── POST /api/scenarios/:id/generate-program ────────────────────────
 router.post("/scenarios/:id/generate-program", async (req, res) => {
