@@ -1,178 +1,262 @@
 openapi: 3.1.0
 info:
-  title: Api
-  version: 0.1.0
-  description: TransitIntel API - Public transport planning intelligence platform
+  title: TransitIntel API
+  version: 0.2.0
+  description: TransitIntel — Public transport planning intelligence platform for Provincia di Ancona
 servers:
   - url: /api
     description: Base API path
+
+security: []   # Public API — no authentication required
+
 tags:
   - name: health
-    description: Health operations
+    description: Health-check
   - name: traffic
     description: Traffic data and analysis
   - name: poi
     description: Points of interest
   - name: population
-    description: Population density data
+    description: Population density & choropleth
   - name: stops
     description: Bus stop management
   - name: routes
     description: Bus route management
   - name: analysis
-    description: Transit demand analysis
+    description: Territorial & service analysis
   - name: cron
-    description: Scheduled data ingestion
+    description: Scheduled data sync (cron)
+  - name: admin
+    description: Admin manual sync
+  - name: gtfs-upload
+    description: GTFS feed upload & management
+  - name: gtfs-queries
+    description: GTFS basic queries (stops, routes, shapes, summary, stats, analysis)
+  - name: gtfs-analysis
+    description: GTFS advanced analysis (bands, impact, network)
+  - name: gtfs-travel
+    description: GTFS travel-time, trips & stop directory
+  - name: scenarios
+    description: KML scenario management & service-program generation
+  - name: scenario-programs
+    description: Scenario service-program CRUD, calendars, GTFS export
+  - name: calendar-presets
+    description: Calendar preset definitions
+  - name: intermodal
+    description: Intermodal hubs & passenger analysis
+  - name: optimizer-route
+    description: Route/stop-placement optimizer
+  - name: optimizer-schedule
+    description: Schedule optimizer (CP-SAT & greedy)
+  - name: service-program
+    description: Vehicle service-program (greedy + CP-SAT)
+  - name: driver-shifts
+    description: Driver-shift generation (greedy + CP-SAT + async jobs)
+  - name: clusters
+    description: Stop-cluster management
+  - name: coincidence-zones
+    description: Coincidence zone management (intermodal, bus-bus, P&R)
+  - name: settings
+    description: Application settings
+  - name: territory
+    description: Territory overview & deep analysis
+  - name: weather
+    description: Weather data collection and correlation with traffic
 
+# ════════════════════════════════════════════════════════════════
+#  PATHS
+# ════════════════════════════════════════════════════════════════
 paths:
+
+  # ── Health ────────────────────────────────────────────────────
   /healthz:
     get:
-      operationId: healthCheck
+      operationId: getHealth
       tags: [health]
       summary: Health check
       responses:
         "200":
-          description: Healthy
+          description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  # ── Traffic ───────────────────────────────────────────────────
   /traffic:
     get:
       operationId: getTraffic
       tags: [traffic]
-      summary: Get traffic snapshots with spatial filter
+      summary: Latest traffic snapshots
       parameters:
-        - name: bbox
-          in: query
-          description: "Bounding box: minLng,minLat,maxLng,maxLat"
-          schema:
-            type: string
         - name: from
           in: query
-          schema:
-            type: string
-            format: date-time
+          schema: { type: string }
         - name: to
           in: query
-          schema:
-            type: string
-            format: date-time
+          schema: { type: string }
         - name: limit
           in: query
-          schema:
-            type: integer
-            default: 500
+          schema: { type: integer, minimum: 1, maximum: 2000, default: 500 }
       responses:
         "200":
-          description: Traffic snapshots
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TrafficSnapshotList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrafficSnapshot"
+                  total:
+                    type: integer
 
   /traffic/heatmap:
     get:
       operationId: getTrafficHeatmap
       tags: [traffic]
-      summary: Aggregated congestion heatmap by hour/day
-      parameters:
-        - name: hour
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            maximum: 23
-        - name: dayofweek
-          in: query
-          schema:
-            type: integer
-            minimum: 0
-            maximum: 6
+      summary: Aggregated traffic heatmap
       responses:
         "200":
-          description: Heatmap data points
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TrafficHeatmapList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrafficHeatmapPoint"
 
   /traffic/stats:
     get:
       operationId: getTrafficStats
       tags: [traffic]
-      summary: Traffic statistics summary
+      summary: Traffic statistics with day-type breakdown
       responses:
         "200":
-          description: Traffic stats
+          description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TrafficStats"
 
+  /traffic/availability:
+    get:
+      operationId: getTrafficAvailability
+      tags: [traffic]
+      summary: Check if traffic data is available
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                  count:
+                    type: integer
+                  lastUpdated:
+                    type: string
+                    format: date-time
+
+  # ── POI ───────────────────────────────────────────────────────
   /poi:
     get:
       operationId: getPoi
       tags: [poi]
-      summary: Get points of interest
+      summary: Points of interest
       parameters:
         - name: categories
           in: query
-          description: "Comma-separated: school,hospital,shopping,industrial,leisure,office,transit"
-          schema:
-            type: string
-        - name: bbox
-          in: query
-          schema:
-            type: string
+          schema: { type: string }
+          description: Comma-separated categories
       responses:
         "200":
-          description: POI list
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PoiList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Poi"
+                  total:
+                    type: integer
 
+  # ── Population ────────────────────────────────────────────────
   /population/density:
     get:
       operationId: getPopulationDensity
       tags: [population]
-      summary: Census section polygons with density
-      parameters:
-        - name: bbox
-          in: query
-          schema:
-            type: string
+      summary: Census sections with density
       responses:
         "200":
-          description: Census sections
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CensusSectionList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CensusSection"
+                  total:
+                    type: integer
 
+  /population/choropleth:
+    get:
+      operationId: getPopulationChoropleth
+      tags: [population]
+      summary: GeoJSON FeatureCollection for choropleth rendering
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [FeatureCollection]
+                  features:
+                    type: array
+                    items:
+                      type: object
+
+  # ── Stops ─────────────────────────────────────────────────────
   /stops:
     get:
       operationId: getStops
       tags: [stops]
-      summary: Get all bus stops
-      parameters:
-        - name: bbox
-          in: query
-          schema:
-            type: string
+      summary: List all bus stops
       responses:
         "200":
-          description: Bus stops
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BusStopList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusStop"
+                  total:
+                    type: integer
     post:
       operationId: createStop
       tags: [stops]
-      summary: Create a new bus stop
+      summary: Create a bus stop
       requestBody:
         required: true
         content:
@@ -193,11 +277,7 @@ paths:
       tags: [stops]
       summary: Update a bus stop
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/IdPath"
       requestBody:
         required: true
         content:
@@ -206,7 +286,7 @@ paths:
               $ref: "#/components/schemas/CreateBusStop"
       responses:
         "200":
-          description: Updated
+          description: OK
           content:
             application/json:
               schema:
@@ -216,11 +296,7 @@ paths:
       tags: [stops]
       summary: Delete a bus stop
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/IdPath"
       responses:
         "204":
           description: Deleted
@@ -229,37 +305,41 @@ paths:
     get:
       operationId: getStopNearby
       tags: [stops]
-      summary: Get nearby POIs and population for a stop
+      summary: Nearby POI & population for a stop
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/IdPath"
       responses:
         "200":
-          description: Nearby data
+          description: OK
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/StopNearbyData"
 
+  # ── Routes (bus) ──────────────────────────────────────────────
   /routes:
     get:
       operationId: getRoutes
       tags: [routes]
-      summary: Get all bus routes
+      summary: List all bus routes
       responses:
         "200":
-          description: Bus routes
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/BusRouteList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BusRoute"
+                  total:
+                    type: integer
     post:
       operationId: createRoute
       tags: [routes]
-      summary: Create a new bus route
+      summary: Create a bus route
       requestBody:
         required: true
         content:
@@ -280,100 +360,255 @@ paths:
       tags: [routes]
       summary: Delete a bus route
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/IdPath"
       responses:
         "204":
           description: Deleted
 
+  # ── Analysis ──────────────────────────────────────────────────
   /analysis/coverage:
     get:
-      operationId: getCoverageAnalysis
+      operationId: getAnalysisCoverage
       tags: [analysis]
-      summary: Population coverage within radius of bus stops
+      summary: Stop coverage analysis
       parameters:
-        - name: radius
+        - name: radiusKm
           in: query
-          description: Radius in meters
-          schema:
-            type: integer
-            default: 400
+          schema: { type: number, default: 0.5 }
       responses:
         "200":
-          description: Coverage analysis
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CoverageAnalysis"
+                type: object
 
   /analysis/demand-score:
     get:
-      operationId: getDemandScore
+      operationId: getAnalysisDemandScore
       tags: [analysis]
-      summary: Composite demand score per grid cell
-      parameters:
-        - name: bbox
-          in: query
-          schema:
-            type: string
+      summary: Demand score grid
       responses:
         "200":
-          description: Demand score grid
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DemandScoreList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        cellId: { type: string }
+                        lng: { type: number }
+                        lat: { type: number }
+                        score: { type: number }
+                        populationScore: { type: number }
+                        poiScore: { type: number }
+                        trafficScore: { type: number }
+                        hasStop: { type: boolean }
+                        source: { type: string }
 
   /analysis/underserved:
     get:
-      operationId: getUnderservedAreas
+      operationId: getAnalysisUnderserved
       tags: [analysis]
-      summary: Areas with high demand but no nearby bus stop
+      summary: Underserved areas
       parameters:
-        - name: radius
-          in: query
-          schema:
-            type: integer
-            default: 400
         - name: minScore
           in: query
-          schema:
-            type: number
-            default: 0.5
+          schema: { type: number }
       responses:
         "200":
-          description: Underserved areas
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/UnderservedAreaList"
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        cellId: { type: string }
+                        lng: { type: number }
+                        lat: { type: number }
+                        score: { type: number }
+                        populationScore: { type: number }
+                        poiScore: { type: number }
+                        trafficScore: { type: number }
+                        hasStop: { type: boolean }
+                        nearestStopDistanceMeters: { type: number }
+                        suggestedStopLng: { type: number }
+                        suggestedStopLat: { type: number }
+                        populationAffected: { type: number }
+                        topPoiCategories:
+                          type: array
+                          items: { type: string }
+                        source: { type: string }
+                  total: { type: integer }
+
+  /analysis/demand:
+    get:
+      operationId: getAnalysisDemand
+      tags: [analysis]
+      summary: Demand analysis (population + POI combined)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
 
   /analysis/stats:
     get:
       operationId: getAnalysisStats
       tags: [analysis]
-      summary: Overall stats for dashboard
+      summary: Dashboard stats
       responses:
         "200":
-          description: Dashboard stats
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DashboardStats"
+                type: object
 
+  /analysis/isochrone:
+    get:
+      operationId: getAnalysisIsochrone
+      tags: [analysis]
+      summary: Isochrone contours from a point
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema: { type: number }
+        - name: lng
+          in: query
+          required: true
+          schema: { type: number }
+        - name: minutes
+          in: query
+          schema: { type: integer, default: 15 }
+        - name: provider
+          in: query
+          schema:
+            type: string
+            enum: [auto, mapbox, ors]
+            default: auto
+          description: Isochrone provider. "auto" tries Mapbox then ORS as fallback.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string }
+                  features:
+                    type: array
+                    items:
+                      type: object
+                  provider: { type: string }
+
+  /analysis/walkability-coverage:
+    get:
+      operationId: getAnalysisWalkabilityCoverage
+      tags: [analysis]
+      summary: Walkability coverage analysis
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /analysis/service-quality:
+    get:
+      operationId: getAnalysisServiceQuality
+      tags: [analysis]
+      summary: Service quality analysis (frequency, punctuality, coverage)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /analysis/route-shapes:
+    get:
+      operationId: getAnalysisRouteShapes
+      tags: [analysis]
+      summary: Route shape GeoJSON for analysis map
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /analysis/segments:
+    get:
+      operationId: getAnalysisSegments
+      tags: [analysis]
+      summary: Route segment analysis
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Territory ─────────────────────────────────────────────────
+  /territory/overview:
+    get:
+      operationId: getTerritoryOverview
+      tags: [territory]
+      summary: Territory overview (population, POI, stops per comune)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /territory/deep:
+    get:
+      operationId: getTerritoryDeep
+      tags: [territory]
+      summary: Deep territory analysis
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Cron ──────────────────────────────────────────────────────
   /cron/traffic:
     post:
       operationId: cronTraffic
       tags: [cron]
-      summary: Ingest TomTom traffic data
-      security:
-        - cronSecret: []
+      summary: Sync traffic from TomTom
+      parameters:
+        - name: x-cron-secret
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         "200":
-          description: Ingestion result
+          description: OK
           content:
             application/json:
               schema:
@@ -383,12 +618,15 @@ paths:
     post:
       operationId: cronPoi
       tags: [cron]
-      summary: Ingest OSM POI data
-      security:
-        - cronSecret: []
+      summary: Sync POI from OSM Overpass
+      parameters:
+        - name: x-cron-secret
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         "200":
-          description: Ingestion result
+          description: OK
           content:
             application/json:
               schema:
@@ -398,464 +636,2722 @@ paths:
     post:
       operationId: cronPopulation
       tags: [cron]
-      summary: Ingest ISTAT population data
-      security:
-        - cronSecret: []
+      summary: Sync census data from ISTAT (live API with static fallback)
+      parameters:
+        - name: x-cron-secret
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         "200":
-          description: Ingestion result
+          description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CronResult"
+                allOf:
+                  - $ref: "#/components/schemas/CronResult"
+                  - type: object
+                    properties:
+                      source: { type: string, description: "istat-api or static-fallback" }
 
+  # ── Weather ───────────────────────────────────────────────────
+  /cron/weather:
+    post:
+      operationId: cronWeather
+      tags: [cron, weather]
+      summary: Fetch weather snapshots from OpenWeatherMap for province locations
+      parameters:
+        - name: x-cron-secret
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  inserted: { type: integer }
+                  errors: { type: integer }
+
+  /weather/current:
+    get:
+      operationId: getWeatherCurrent
+      tags: [weather]
+      summary: Latest weather snapshot per monitored location
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeatherSnapshot"
+
+  /weather/history:
+    get:
+      operationId: getWeatherHistory
+      tags: [weather]
+      summary: Weather history (configurable lookback)
+      parameters:
+        - name: hours
+          in: query
+          schema: { type: integer, default: 24 }
+          description: Number of hours to look back
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeatherSnapshot"
+
+  /weather/correlation:
+    get:
+      operationId: getWeatherCorrelation
+      tags: [weather]
+      summary: Correlation between weather conditions and traffic congestion
+      parameters:
+        - name: hours
+          in: query
+          schema: { type: integer, default: 168 }
+          description: Number of hours to look back for correlation analysis
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    weather_main: { type: string }
+                    sample_count: { type: integer }
+                    avg_congestion: { type: number }
+                    avg_speed_kmh: { type: number }
+                    avg_temp: { type: number }
+                    avg_humidity: { type: number }
+                    avg_wind_speed: { type: number }
+
+  # ── Admin ─────────────────────────────────────────────────────
+  /admin/sync/{source}:
+    post:
+      operationId: adminSync
+      tags: [admin]
+      summary: Manual data sync
+      parameters:
+        - name: source
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [google-poi, poi, traffic, census]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  source:
+                    type: string
+        "429":
+          description: Cooldown active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /admin/sync/status:
+    get:
+      operationId: getAdminSyncStatus
+      tags: [admin]
+      summary: Sync cooldown status for all sources
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: object
+                  properties:
+                    ready:
+                      type: boolean
+                    cooldownRemaining:
+                      type: integer
+                    lastSync:
+                      type: [string, "null"]
+                      format: date-time
+
+  # ── GTFS Upload / Feeds ───────────────────────────────────────
+  /gtfs/upload:
+    post:
+      operationId: uploadGtfs
+      tags: [gtfs-upload]
+      summary: Upload a GTFS zip file
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtfsUploadResult"
+
+  /gtfs/feeds:
+    get:
+      operationId: getGtfsFeeds
+      tags: [gtfs-upload]
+      summary: List GTFS feeds
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GtfsFeed"
+
+  /gtfs/feeds/{id}:
+    delete:
+      operationId: deleteGtfsFeed
+      tags: [gtfs-upload]
+      summary: Delete a GTFS feed (cascade)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  # ── GTFS Queries ──────────────────────────────────────────────
+  /gtfs/stops:
+    get:
+      operationId: getGtfsStops
+      tags: [gtfs-queries]
+      summary: GTFS stops (with optional route filter)
+      parameters:
+        - name: feedId
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 2000, maximum: 5000 }
+        - name: routeIds
+          in: query
+          schema: { type: string }
+          description: Comma-separated route IDs to filter
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GtfsStop"
+                  total:
+                    type: integer
+
+  /gtfs/stops/all:
+    get:
+      operationId: getGtfsStopsAll
+      tags: [gtfs-queries]
+      summary: All GTFS stops deduplicated with associated routes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        stopId: { type: string }
+                        stopName: { type: string }
+                        stopLat: { type: number }
+                        stopLon: { type: number }
+                        routes:
+                          type: array
+                          items: { type: string }
+                  total:
+                    type: integer
+
+  /gtfs/stops/directory:
+    get:
+      operationId: getGtfsStopsDirectory
+      tags: [gtfs-travel]
+      summary: Stop directory with search
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/stops/{stopId}/detail:
+    get:
+      operationId: getGtfsStopDetail
+      tags: [gtfs-travel]
+      summary: Detailed stop info with passing routes and timetable
+      parameters:
+        - name: stopId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/routes:
+    get:
+      operationId: getGtfsRoutes
+      tags: [gtfs-queries]
+      summary: GTFS routes
+      parameters:
+        - name: feedId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GtfsRoute"
+
+  /gtfs/routes/list:
+    get:
+      operationId: getGtfsRoutesList
+      tags: [gtfs-queries]
+      summary: Synthetic route list (for filters)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        routeShortName: { type: string }
+                        routeLongName: { type: string }
+                        routeColor: { type: [string, "null"] }
+
+  /gtfs/routes/active-by-band:
+    get:
+      operationId: getGtfsRoutesActiveByBand
+      tags: [gtfs-analysis]
+      summary: Routes active in a time band
+      parameters:
+        - name: hourStart
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: hourEnd
+          in: query
+          schema: { type: integer, default: 27 }
+        - name: day
+          in: query
+          schema: { type: string }
+          description: "feriale | sabato | domenica"
+        - name: directionId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routeIds:
+                    type: array
+                    items: { type: string }
+
+  /gtfs/routes/impact:
+    get:
+      operationId: getGtfsRoutesImpact
+      tags: [gtfs-analysis]
+      summary: Route impact analysis (POI, population, traffic)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/routes/network-analysis:
+    get:
+      operationId: getGtfsRoutesNetworkAnalysis
+      tags: [gtfs-analysis]
+      summary: Network-wide route analysis
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/shapes:
+    get:
+      operationId: getGtfsShapes
+      tags: [gtfs-queries]
+      summary: GTFS shapes
+      parameters:
+        - name: feedId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GtfsShape"
+
+  /gtfs/shapes/geojson:
+    get:
+      operationId: getGtfsShapesGeojson
+      tags: [gtfs-analysis]
+      summary: Shape GeoJSON with route info and stop count
+      parameters:
+        - name: routeIds
+          in: query
+          schema: { type: string }
+          description: Comma-separated route IDs
+        - name: hourStart
+          in: query
+          schema: { type: integer }
+        - name: hourEnd
+          in: query
+          schema: { type: integer }
+        - name: day
+          in: query
+          schema: { type: string }
+        - name: directionId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/summary:
+    get:
+      operationId: getGtfsSummary
+      tags: [gtfs-queries]
+      summary: GTFS summary for dashboard
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtfsSummary"
+
+  /gtfs/stats:
+    get:
+      operationId: getGtfsStats
+      tags: [gtfs-queries]
+      summary: Basic GTFS counts
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtfsBasicStats"
+
+  /gtfs/analysis:
+    get:
+      operationId: getGtfsAnalysis
+      tags: [gtfs-queries]
+      summary: Comprehensive GTFS analysis (frequency, coverage, ranking)
+      parameters:
+        - name: feedId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtfsAnalysisResult"
+
+  # ── GTFS Travel ───────────────────────────────────────────────
+  /gtfs/travel-time:
+    get:
+      operationId: getGtfsTravelTime
+      tags: [gtfs-travel]
+      summary: Travel-time analysis per shape with congestion overlay
+      parameters:
+        - name: routeId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/travel-time/route-segments:
+    get:
+      operationId: getGtfsTravelTimeRouteSegments
+      tags: [gtfs-travel]
+      summary: Detailed route-segment travel times
+      parameters:
+        - name: routeId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/trips/list:
+    get:
+      operationId: getGtfsTripsList
+      tags: [gtfs-travel]
+      summary: Trip list with departure/arrival times
+      parameters:
+        - name: routeId
+          in: query
+          schema: { type: string }
+        - name: directionId
+          in: query
+          schema: { type: integer }
+        - name: day
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/trips/visual:
+    get:
+      operationId: getGtfsTripsVisual
+      tags: [gtfs-travel]
+      summary: Visual trip data (Marey chart)
+      parameters:
+        - name: routeId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: day
+          in: query
+          schema: { type: string }
+        - name: directionId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /gtfs/trips/schedule:
+    get:
+      operationId: getGtfsTripsSchedule
+      tags: [gtfs-travel]
+      summary: Full trip schedule with stop times
+      parameters:
+        - name: routeId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: day
+          in: query
+          schema: { type: string }
+        - name: directionId
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Scenarios ─────────────────────────────────────────────────
+  /scenarios:
+    get:
+      operationId: getScenarios
+      tags: [scenarios]
+      summary: List all KML scenarios
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScenarioSummary"
+
+  /scenarios/upload:
+    post:
+      operationId: uploadScenario
+      tags: [scenarios]
+      summary: Upload KML/KMZ files to create a scenario
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                stopsFile:
+                  type: string
+                  format: binary
+                routeFile:
+                  type: string
+                  format: binary
+                file:
+                  type: string
+                  format: binary
+                  description: Legacy single file mode
+                name:
+                  type: string
+                description:
+                  type: string
+                color:
+                  type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scenario"
+
+  /scenarios/compare:
+    get:
+      operationId: compareScenarios
+      tags: [scenarios]
+      summary: Compare two or more scenarios
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          schema: { type: string }
+          description: Comma-separated scenario IDs
+        - name: radius
+          in: query
+          schema: { type: number, default: 0.5 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /scenarios/{id}:
+    get:
+      operationId: getScenario
+      tags: [scenarios]
+      summary: Get a single scenario (with GeoJSON)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scenario"
+    patch:
+      operationId: patchScenario
+      tags: [scenarios]
+      summary: Update name/description/color
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                color: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Scenario"
+    delete:
+      operationId: deleteScenario
+      tags: [scenarios]
+      summary: Delete a scenario
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /scenarios/{id}/analyze:
+    get:
+      operationId: analyzeScenario
+      tags: [scenarios]
+      summary: Analyze scenario POI + population coverage
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - name: radius
+          in: query
+          schema: { type: number, default: 0.5 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /scenarios/{id}/reimport-stops:
+    post:
+      operationId: reimportScenarioStops
+      tags: [scenarios]
+      summary: Re-import stops from a new KML file
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                stopsFile:
+                  type: string
+                  format: binary
+              required: [stopsFile]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  stopsCount: { type: integer }
+                  scenario:
+                    $ref: "#/components/schemas/Scenario"
+
+  /scenarios/{id}/line-stops:
+    get:
+      operationId: getScenarioLineStops
+      tags: [scenarios]
+      summary: Lines with stops, distances, and transit times
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - name: avgSpeedKmh
+          in: query
+          schema: { type: number, default: 20 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /scenarios/{id}/suggest-km:
+    get:
+      operationId: suggestScenarioKm
+      tags: [scenarios]
+      summary: Suggest target km based on demand
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  suggestedKm: { type: integer }
+                  minKm: { type: integer }
+                  maxKm: { type: integer }
+                  breakdown: { type: object }
+
+  /scenarios/{id}/generate-program:
+    post:
+      operationId: generateScenarioProgram
+      tags: [scenario-programs]
+      summary: Generate a service program from scenario
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateProgramConfig"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Scenario Programs ─────────────────────────────────────────
+  /scenarios/{id}/programs:
+    get:
+      operationId: getScenarioPrograms
+      tags: [scenario-programs]
+      summary: List programs for a scenario
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScenarioProgramSummary"
+
+  /scenarios/{id}/programs/{programId}:
+    get:
+      operationId: getScenarioProgram
+      tags: [scenario-programs]
+      summary: Get a single program (full data)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: deleteScenarioProgram
+      tags: [scenario-programs]
+      summary: Delete a scenario service program
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /scenarios/{id}/programs/{programId}/calendars:
+    get:
+      operationId: getScenarioProgramCalendars
+      tags: [scenario-programs]
+      summary: List calendars for a program
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendars:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProgramCalendar"
+    post:
+      operationId: createScenarioProgramCalendar
+      tags: [scenario-programs]
+      summary: Create a calendar
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProgramCalendar"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgramCalendar"
+
+  /scenarios/{id}/programs/{programId}/calendars/from-preset:
+    post:
+      operationId: createCalendarFromPreset
+      tags: [scenario-programs]
+      summary: Create a calendar from a preset
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                preset: { type: string }
+              required: [preset]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgramCalendar"
+
+  /scenarios/{id}/programs/{programId}/calendars/from-all-presets:
+    post:
+      operationId: createCalendarsFromAllPresets
+      tags: [scenario-programs]
+      summary: Create calendars for all presets
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calendars:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProgramCalendar"
+                  count:
+                    type: integer
+
+  /scenarios/{id}/programs/{programId}/calendars/{calId}:
+    put:
+      operationId: updateScenarioProgramCalendar
+      tags: [scenario-programs]
+      summary: Update a calendar
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+        - $ref: "#/components/parameters/CalIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProgramCalendar"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgramCalendar"
+    delete:
+      operationId: deleteScenarioProgramCalendar
+      tags: [scenario-programs]
+      summary: Delete a program calendar
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+        - $ref: "#/components/parameters/CalIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /scenarios/{id}/programs/{programId}/calendars/{calId}/exceptions:
+    post:
+      operationId: createCalendarException
+      tags: [scenario-programs]
+      summary: Add a calendar exception
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+        - $ref: "#/components/parameters/CalIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                exceptionDate: { type: string }
+                date: { type: string }
+                exceptionType: { type: integer }
+                type: { type: integer }
+                description: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /scenarios/{id}/programs/{programId}/calendars/{calId}/exceptions/{excId}:
+    delete:
+      operationId: deleteCalendarException
+      tags: [scenario-programs]
+      summary: Delete a calendar exception
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+        - $ref: "#/components/parameters/CalIdPath"
+        - name: excId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /scenarios/{id}/programs/{programId}/validate-gtfs:
+    get:
+      operationId: validateScenarioGtfs
+      tags: [scenario-programs]
+      summary: Validate GTFS feed from scenario program
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GtfsValidationResult"
+
+  /scenarios/{id}/programs/{programId}/export-gtfs:
+    get:
+      operationId: exportScenarioGtfs
+      tags: [scenario-programs]
+      summary: Export scenario program as GTFS zip
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/ProgramIdPath"
+        - name: agencyName
+          in: query
+          schema: { type: string }
+        - name: agencyUrl
+          in: query
+          schema: { type: string }
+        - name: feedVersion
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: GTFS zip file
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: Validation failed or no calendars
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Calendar Presets ──────────────────────────────────────────
+  /calendar-presets:
+    get:
+      operationId: getCalendarPresets
+      tags: [calendar-presets]
+      summary: List calendar preset definitions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  presets:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CalendarPreset"
+
+  # ── Intermodal ────────────────────────────────────────────────
+  /intermodal/hubs:
+    get:
+      operationId: getIntermodalHubs
+      tags: [intermodal]
+      summary: List intermodal hub definitions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/IntermodalHub"
+
+  /intermodal/hub/{hubId}/routes:
+    get:
+      operationId: getIntermodalHubRoutes
+      tags: [intermodal]
+      summary: Bus routes passing near a hub
+      parameters:
+        - name: hubId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /intermodal/analyze:
+    get:
+      operationId: analyzeIntermodal
+      tags: [intermodal]
+      summary: Passenger-centric intermodal analysis
+      parameters:
+        - name: radius
+          in: query
+          schema: { type: number, default: 0.5 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /intermodal/shapes:
+    get:
+      operationId: getIntermodalShapes
+      tags: [intermodal]
+      summary: GTFS shapes for intermodal map
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /intermodal/pois:
+    get:
+      operationId: getIntermodalPois
+      tags: [intermodal]
+      summary: POIs near intermodal hubs
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /intermodal/sync-schedules:
+    post:
+      operationId: syncIntermodalSchedules
+      tags: [intermodal]
+      summary: Sync train/ferry schedules from API
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /intermodal/sync-status:
+    get:
+      operationId: getIntermodalSyncStatus
+      tags: [intermodal]
+      summary: Sync status of intermodal schedules
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Optimizer Route ───────────────────────────────────────────
+  /optimizer/route-placement:
+    post:
+      operationId: optimizeRoutePlacement
+      tags: [optimizer-route]
+      summary: Optimize stop placement on a scenario route
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoutePlacementRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /optimizer/bus-profiles:
+    get:
+      operationId: getBusProfiles
+      tags: [optimizer-route]
+      summary: Bus size profiles reference data
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ── Optimizer Schedule ────────────────────────────────────────
+  /optimizer/schedule/optimize:
+    post:
+      operationId: optimizeScheduleCpsat
+      tags: [optimizer-schedule]
+      summary: CP-SAT schedule optimization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date:
+                  type: string
+                  description: "YYYYMMDD or YYYY-MM-DD"
+                timeLimitSeconds:
+                  type: integer
+                  default: 60
+                customStrategy:
+                  type: [object, "null"]
+              required: [date]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /optimizer/schedule:
+    post:
+      operationId: optimizeScheduleGreedy
+      tags: [optimizer-schedule]
+      summary: Greedy schedule optimization for a date
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date:
+                  type: string
+              required: [date]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /optimizer/schedule/dates:
+    get:
+      operationId: getScheduleDates
+      tags: [optimizer-schedule]
+      summary: Available dates in GTFS feed
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mode:
+                    type: string
+                    enum: [calendar, calendar_dates]
+                  minDate:
+                    type: string
+                  maxDate:
+                    type: string
+                  dates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string }
+                        services: { type: integer }
+
+  # ── Service Program ───────────────────────────────────────────
+  /service-program/routes:
+    get:
+      operationId: getServiceProgramRoutes
+      tags: [service-program]
+      summary: GTFS routes with vehicle-type info
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  feedId:
+                    type: string
+                  routes:
+                    type: array
+                    items:
+                      type: object
+                  vehicleTypes:
+                    type: array
+                    items:
+                      type: object
+
+  /service-program/dates:
+    get:
+      operationId: getServiceProgramDates
+      tags: [service-program]
+      summary: Available dates for service-program
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /service-program/trips:
+    get:
+      operationId: getServiceProgramTrips
+      tags: [service-program]
+      summary: Trips for given date + routes
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema: { type: string }
+        - name: routeIds
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trips:
+                    type: array
+                    items:
+                      type: object
+
+  /service-program:
+    post:
+      operationId: runServiceProgram
+      tags: [service-program]
+      summary: Run greedy vehicle scheduling
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceProgramRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /service-program/cpsat:
+    post:
+      operationId: runServiceProgramCpsat
+      tags: [service-program]
+      summary: Run CP-SAT vehicle scheduling
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceProgramCpsatRequest"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /service-program/scenarios:
+    get:
+      operationId: getServiceProgramScenarios
+      tags: [service-program]
+      summary: List saved vehicle-scheduling scenarios
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ServiceProgramScenarioSummary"
+    post:
+      operationId: saveServiceProgramScenario
+      tags: [service-program]
+      summary: Save a vehicle-scheduling scenario
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                date: { type: string }
+                input: { type: object }
+                result: { type: object }
+              required: [name, date, input, result]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  createdAt: { type: string, format: date-time }
+
+  /service-program/scenarios/{id}:
+    get:
+      operationId: getServiceProgramScenario
+      tags: [service-program]
+      summary: Load a saved scenario (full data)
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: deleteServiceProgramScenario
+      tags: [service-program]
+      summary: Delete a service-program scenario
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  # ── Driver Shifts ─────────────────────────────────────────────
+  /driver-shifts/{scenarioId}:
+    get:
+      operationId: getDriverShifts
+      tags: [driver-shifts]
+      summary: Generate driver shifts (greedy)
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      operationId: generateDriverShifts
+      tags: [driver-shifts]
+      summary: Generate driver shifts (greedy, POST)
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /driver-shifts/{scenarioId}/cpsat:
+    post:
+      operationId: runDriverShiftsCpsat
+      tags: [driver-shifts]
+      summary: Run CP-SAT crew scheduling (sync)
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeLimit: { type: integer, default: 60 }
+                config: { type: object }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /driver-shifts/{scenarioId}/cpsat/async:
+    post:
+      operationId: runDriverShiftsCpsatAsync
+      tags: [driver-shifts]
+      summary: Launch async CP-SAT crew scheduling (returns 202 + jobId)
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeLimit: { type: integer, default: 120 }
+                config: { type: object }
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  scenarioId: { type: string }
+                  status: { type: string }
+                  message: { type: string }
+
+  /driver-shifts/jobs/{jobId}:
+    get:
+      operationId: getDriverShiftJob
+      tags: [driver-shifts]
+      summary: Poll job status
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverShiftJobStatus"
+
+  /driver-shifts/jobs/{jobId}/stream:
+    get:
+      operationId: streamDriverShiftJob
+      tags: [driver-shifts]
+      summary: SSE progress stream for a job
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /driver-shifts/jobs/{jobId}/stop:
+    post:
+      operationId: stopDriverShiftJob
+      tags: [driver-shifts]
+      summary: Stop a running job
+      parameters:
+        - $ref: "#/components/parameters/JobIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  status: { type: string }
+
+  /driver-shifts/{scenarioId}/compare:
+    post:
+      operationId: compareDriverShifts
+      tags: [driver-shifts]
+      summary: Compare greedy vs CP-SAT driver shifts
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeLimit: { type: integer, default: 60 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  greedy: { type: object }
+                  cpsat: { type: [object, "null"] }
+                  delta: { type: [object, "null"] }
+
+  /driver-shifts/{scenarioId}/scenarios:
+    get:
+      operationId: getDriverShiftScenarios
+      tags: [driver-shifts]
+      summary: List saved driver-shift scenarios
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    name: { type: string }
+                    createdAt: { type: string, format: date-time }
+                    summary: { type: object }
+    post:
+      operationId: saveDriverShiftScenario
+      tags: [driver-shifts]
+      summary: Save a driver-shift scenario
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                result: { type: object }
+                config: { type: object }
+              required: [name, result]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /driver-shifts/{scenarioId}/scenarios/{dssId}:
+    get:
+      operationId: getDriverShiftScenario
+      tags: [driver-shifts]
+      summary: Load full driver-shift scenario
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+        - name: dssId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: deleteDriverShiftScenario
+      tags: [driver-shifts]
+      summary: Delete a driver-shift scenario
+      parameters:
+        - $ref: "#/components/parameters/ScenarioIdPath"
+        - name: dssId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  # ── Clusters ──────────────────────────────────────────────────
+  /clusters:
+    get:
+      operationId: getClusters
+      tags: [clusters]
+      summary: List all stop clusters
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/StopCluster"
+    post:
+      operationId: createCluster
+      tags: [clusters]
+      summary: Create a stop cluster
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStopCluster"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopCluster"
+
+  /clusters/{id}:
+    put:
+      operationId: updateCluster
+      tags: [clusters]
+      summary: Update a cluster
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateStopCluster"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopCluster"
+    delete:
+      operationId: deleteCluster
+      tags: [clusters]
+      summary: Delete a stop cluster
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "204":
+          description: Deleted
+
+  # ── Coincidence Zones ─────────────────────────────────────────
+  /coincidence-zones:
+    get:
+      operationId: getCoincidenceZones
+      tags: [coincidence-zones]
+      summary: List all coincidence zones
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CoincidenceZone"
+    post:
+      operationId: createCoincidenceZone
+      tags: [coincidence-zones]
+      summary: Create a coincidence zone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCoincidenceZone"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoincidenceZone"
+
+  /coincidence-zones/{id}:
+    put:
+      operationId: updateCoincidenceZone
+      tags: [coincidence-zones]
+      summary: Update a zone
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoincidenceZone"
+    delete:
+      operationId: deleteCoincidenceZone
+      tags: [coincidence-zones]
+      summary: Delete a coincidence zone
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "204":
+          description: Deleted
+
+  /coincidence-zones/hubs:
+    get:
+      operationId: getCoincidenceZoneHubs
+      tags: [coincidence-zones]
+      summary: Intermodal hubs with nearby stops
+      parameters:
+        - name: radius
+          in: query
+          schema: { type: number, default: 0.1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hubs:
+                    type: array
+                    items:
+                      type: object
+
+  /coincidence-zones/auto-create:
+    post:
+      operationId: autoCreateCoincidenceZones
+      tags: [coincidence-zones]
+      summary: Auto-generate zones for known hubs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                radiusKm: { type: number, default: 0.1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  zones:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CoincidenceZone"
+
+  /coincidence-zones/{id}/schedules:
+    get:
+      operationId: getCoincidenceZoneSchedules
+      tags: [coincidence-zones]
+      summary: Train/ferry schedules for a zone hub
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  arrivals:
+                    type: array
+                    items: { type: object }
+                  departures:
+                    type: array
+                    items: { type: object }
+                  hubType:
+                    type: string
+                  platformWalkMinutes:
+                    type: integer
+
+  /coincidence-zones/{id}/bus-lines:
+    get:
+      operationId: getCoincidenceZoneBusLines
+      tags: [coincidence-zones]
+      summary: Bus lines passing through zone stops
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  busLines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        routeId: { type: string }
+                        routeShortName: { type: string }
+                        routeLongName: { type: string }
+                        routeColor: { type: [string, "null"] }
+                        tripsCount: { type: integer }
+                        times:
+                          type: array
+                          items: { type: string }
+
+  # ── Settings ──────────────────────────────────────────────────
+  /settings/company-cars:
+    get:
+      operationId: getCompanyCars
+      tags: [settings]
+      summary: Get company cars count
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companyCars: { type: integer }
+    put:
+      operationId: setCompanyCars
+      tags: [settings]
+      summary: Update company cars count
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                companyCars: { type: integer, minimum: 0, maximum: 50 }
+              required: [companyCars]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  companyCars: { type: integer }
+
+# ════════════════════════════════════════════════════════════════
+#  COMPONENTS
+# ════════════════════════════════════════════════════════════════
 components:
-  securitySchemes:
-    cronSecret:
-      type: apiKey
-      in: header
-      name: x-cron-secret
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    ProgramIdPath:
+      name: programId
+      in: path
+      required: true
+      schema: { type: string }
+    CalIdPath:
+      name: calId
+      in: path
+      required: true
+      schema: { type: string }
+    ScenarioIdPath:
+      name: scenarioId
+      in: path
+      required: true
+      schema: { type: string }
+    JobIdPath:
+      name: jobId
+      in: path
+      required: true
+      schema: { type: string }
 
   schemas:
+    # ── Generic ────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+
+    SuccessResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        success: { type: boolean }
+
+    # ── Health ─────────────────────────────────────────────────
     HealthStatus:
       type: object
       properties:
-        status:
-          type: string
-      required:
-        - status
+        status: { type: string }
+        cacheEntries: { type: integer }
 
+    # ── Traffic ────────────────────────────────────────────────
     TrafficSnapshot:
       type: object
       properties:
-        id:
-          type: string
-        segmentId:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
-        speed:
-          type: number
-        freeflowSpeed:
-          type: number
-        congestionLevel:
-          type: number
-        capturedAt:
-          type: string
-          format: date-time
-      required:
-        - id
-        - segmentId
-        - lng
-        - lat
-        - speed
-        - freeflowSpeed
-        - congestionLevel
-        - capturedAt
-
-    TrafficSnapshotList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/TrafficSnapshot"
-        total:
-          type: integer
-      required:
-        - data
-        - total
+        id: { type: string }
+        segmentId: { type: string }
+        lng: { type: number }
+        lat: { type: number }
+        speed: { type: number }
+        freeflowSpeed: { type: number }
+        congestionLevel: { type: number }
+        capturedAt: { type: string, format: date-time }
 
     TrafficHeatmapPoint:
       type: object
       properties:
-        lng:
-          type: number
-        lat:
-          type: number
-        avgCongestion:
-          type: number
-        sampleCount:
-          type: integer
-      required:
-        - lng
-        - lat
-        - avgCongestion
-        - sampleCount
-
-    TrafficHeatmapList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/TrafficHeatmapPoint"
-      required:
-        - data
+        lng: { type: number }
+        lat: { type: number }
+        avgCongestion: { type: number }
+        sampleCount: { type: integer }
 
     TrafficStats:
       type: object
       properties:
-        avgCongestion:
-          type: number
-        totalSnapshots:
-          type: integer
-        lastUpdated:
-          type: string
-          format: date-time
-        peakHour:
-          type: integer
+        avgCongestion: { type: number }
+        totalSnapshots: { type: integer }
+        lastUpdated: { type: string, format: date-time }
+        peakHour: { type: integer }
         congestionByHour:
           type: array
           items:
             type: object
             properties:
-              hour:
-                type: integer
-              avgCongestion:
-                type: number
-            required:
-              - hour
-              - avgCongestion
-      required:
-        - avgCongestion
-        - totalSnapshots
-        - congestionByHour
+              hour: { type: integer }
+              avgCongestion: { type: number }
+        congestionByDayType:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: object
+        zoneStats:
+          type: array
+          items:
+            type: object
+        avgSpeed: { type: number }
+        avgFreeflow: { type: number }
 
+    # ── POI ────────────────────────────────────────────────────
     Poi:
       type: object
       properties:
-        id:
-          type: string
-        osmId:
-          type: integer
-        name:
-          type: string
-        category:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
-        properties:
-          type: object
-          additionalProperties: true
-      required:
-        - id
-        - category
-        - lng
-        - lat
+        id: { type: string }
+        osmId: { type: [integer, "null"] }
+        name: { type: string }
+        category: { type: string }
+        lng: { type: number }
+        lat: { type: number }
+        properties: { type: object }
 
-    PoiList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/Poi"
-        total:
-          type: integer
-      required:
-        - data
-        - total
-
+    # ── Population ─────────────────────────────────────────────
     CensusSection:
       type: object
       properties:
-        id:
-          type: string
-        istatCode:
-          type: string
-        population:
-          type: integer
-        areaKm2:
-          type: number
-        density:
-          type: number
-        centroidLng:
-          type: number
-        centroidLat:
-          type: number
-      required:
-        - id
-        - population
-        - density
-        - centroidLng
-        - centroidLat
+        id: { type: string }
+        istatCode: { type: string }
+        population: { type: integer }
+        areaKm2: { type: number }
+        density: { type: number }
+        centroidLng: { type: number }
+        centroidLat: { type: number }
 
-    CensusSectionList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/CensusSection"
-        total:
-          type: integer
-      required:
-        - data
-        - total
-
+    # ── Stops ──────────────────────────────────────────────────
     BusStop:
       type: object
       properties:
-        id:
-          type: string
-        code:
-          type: string
-        name:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
+        id: { type: string }
+        code: { type: [string, "null"] }
+        name: { type: string }
+        lng: { type: number }
+        lat: { type: number }
         lines:
           type: array
-          items:
-            type: string
-      required:
-        - id
-        - name
-        - lng
-        - lat
-
-    BusStopList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/BusStop"
-        total:
-          type: integer
-      required:
-        - data
-        - total
+          items: { type: string }
 
     CreateBusStop:
       type: object
       properties:
-        code:
-          type: string
-        name:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
+        code: { type: string }
+        name: { type: string }
+        lng: { type: number }
+        lat: { type: number }
         lines:
           type: array
-          items:
-            type: string
-      required:
-        - name
-        - lng
-        - lat
+          items: { type: string }
+      required: [name, lng, lat]
 
     StopNearbyData:
       type: object
       properties:
-        stopId:
-          type: string
+        stopId: { type: string }
         nearbyPois:
           type: array
           items:
             $ref: "#/components/schemas/Poi"
-        populationServed:
-          type: integer
-        poiCount:
-          type: integer
-      required:
-        - stopId
-        - nearbyPois
-        - populationServed
-        - poiCount
+        populationServed: { type: integer }
+        poiCount: { type: integer }
 
+    # ── Routes ─────────────────────────────────────────────────
     BusRoute:
       type: object
       properties:
-        id:
-          type: string
-        lineCode:
-          type: string
-        name:
-          type: string
-        serviceType:
-          type: string
-        stopCount:
-          type: integer
-      required:
-        - id
-        - name
-        - serviceType
-
-    BusRouteList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/BusRoute"
-        total:
-          type: integer
-      required:
-        - data
-        - total
+        id: { type: string }
+        lineCode: { type: [string, "null"] }
+        name: { type: string }
+        serviceType: { type: string }
+        stopCount: { type: integer }
 
     CreateBusRoute:
       type: object
       properties:
-        lineCode:
-          type: string
-        name:
-          type: string
-        serviceType:
-          type: string
-          enum: [urban, extraurban]
-      required:
-        - name
-        - serviceType
+        lineCode: { type: string }
+        name: { type: string }
+        serviceType: { type: string }
+      required: [name, serviceType]
 
-    CoverageAnalysis:
-      type: object
-      properties:
-        radiusMeters:
-          type: integer
-        totalPopulation:
-          type: integer
-        coveredPopulation:
-          type: integer
-        coveragePercent:
-          type: number
-        totalStops:
-          type: integer
-      required:
-        - radiusMeters
-        - totalPopulation
-        - coveredPopulation
-        - coveragePercent
-        - totalStops
-
-    DemandScoreCell:
-      type: object
-      properties:
-        cellId:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
-        score:
-          type: number
-        populationScore:
-          type: number
-        poiScore:
-          type: number
-        trafficScore:
-          type: number
-        hasStop:
-          type: boolean
-      required:
-        - cellId
-        - lng
-        - lat
-        - score
-        - hasStop
-
-    DemandScoreList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/DemandScoreCell"
-      required:
-        - data
-
-    UnderservedArea:
-      type: object
-      properties:
-        cellId:
-          type: string
-        lng:
-          type: number
-        lat:
-          type: number
-        score:
-          type: number
-        nearestStopDistanceMeters:
-          type: number
-        suggestedStopLng:
-          type: number
-        suggestedStopLat:
-          type: number
-        populationAffected:
-          type: integer
-        topPoiCategories:
-          type: array
-          items:
-            type: string
-      required:
-        - cellId
-        - lng
-        - lat
-        - score
-        - nearestStopDistanceMeters
-
-    UnderservedAreaList:
-      type: object
-      properties:
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/UnderservedArea"
-        total:
-          type: integer
-      required:
-        - data
-        - total
-
-    DashboardStats:
-      type: object
-      properties:
-        avgCongestion:
-          type: number
-        totalPoi:
-          type: integer
-        totalStops:
-          type: integer
-        totalPopulation:
-          type: integer
-        coveredPopulation:
-          type: integer
-        coveragePercent:
-          type: number
-        underservedCount:
-          type: integer
-        lastTrafficUpdate:
-          type: string
-          format: date-time
-      required:
-        - avgCongestion
-        - totalPoi
-        - totalStops
-        - totalPopulation
-        - coveredPopulation
-        - coveragePercent
-        - underservedCount
-
+    # ── Cron ───────────────────────────────────────────────────
     CronResult:
       type: object
       properties:
-        success:
-          type: boolean
-        inserted:
-          type: integer
-        message:
+        success: { type: boolean }
+        inserted: { type: integer }
+        message: { type: string }
+
+    # ── GTFS ───────────────────────────────────────────────────
+    GtfsFeed:
+      type: object
+      properties:
+        id: { type: string }
+        filename: { type: string }
+        agencyName: { type: [string, "null"] }
+        feedStartDate: { type: [string, "null"] }
+        feedEndDate: { type: [string, "null"] }
+        stopsCount: { type: integer }
+        routesCount: { type: integer }
+        tripsCount: { type: integer }
+        shapesCount: { type: integer }
+        uploadedAt: { type: string, format: date-time }
+
+    GtfsUploadResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        feedId: { type: string }
+        stopsImported: { type: integer }
+        routesImported: { type: integer }
+        tripsImported: { type: integer }
+        stopTimesImported: { type: integer }
+        calendarRows: { type: integer }
+        calendarDatesRows: { type: integer }
+        shapesImported: { type: integer }
+        agencyName: { type: [string, "null"] }
+
+    GtfsStop:
+      type: object
+      properties:
+        id: { type: string }
+        feedId: { type: string }
+        stopId: { type: string }
+        stopName: { type: string }
+        stopCode: { type: [string, "null"] }
+        stopLat: { type: number }
+        stopLon: { type: number }
+        tripsCount: { type: integer }
+        morningPeakTrips: { type: integer }
+        eveningPeakTrips: { type: integer }
+        serviceScore: { type: number }
+        wheelchairBoarding: { type: integer }
+        stopDesc: { type: [string, "null"] }
+
+    GtfsRoute:
+      type: object
+      properties:
+        id: { type: string }
+        feedId: { type: string }
+        routeId: { type: string }
+        agencyId: { type: [string, "null"] }
+        routeShortName: { type: [string, "null"] }
+        routeLongName: { type: [string, "null"] }
+        routeType: { type: integer }
+        routeColor: { type: [string, "null"] }
+        routeTextColor: { type: [string, "null"] }
+        tripsCount: { type: integer }
+
+    GtfsShape:
+      type: object
+      properties:
+        id: { type: string }
+        feedId: { type: string }
+        shapeId: { type: string }
+        routeId: { type: [string, "null"] }
+        routeShortName: { type: [string, "null"] }
+        routeColor: { type: [string, "null"] }
+        geojson: { type: object }
+
+    GtfsSummary:
+      type: object
+      properties:
+        available: { type: boolean }
+        totalRoutes: { type: integer }
+        totalStops: { type: integer }
+        totalTrips: { type: integer }
+        weekdayTrips: { type: integer }
+        saturdayTrips: { type: integer }
+        sundayTrips: { type: integer }
+        weekdayRoutes: { type: integer }
+        saturdayRoutes: { type: integer }
+        sundayRoutes: { type: integer }
+        weekdayStops: { type: integer }
+        saturdayStops: { type: integer }
+        sundayStops: { type: integer }
+        weekdayKm: { type: integer }
+        saturdayKm: { type: integer }
+        sundayKm: { type: integer }
+        topRoutes:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              color: { type: string }
+              trips: { type: integer }
+        firstDeparture: { type: [string, "null"] }
+        lastArrival: { type: [string, "null"] }
+
+    GtfsBasicStats:
+      type: object
+      properties:
+        totalFeeds: { type: integer }
+        totalStops: { type: integer }
+        totalRoutes: { type: integer }
+        latestFeed:
+          $ref: "#/components/schemas/GtfsFeed"
+
+    GtfsAnalysisResult:
+      type: object
+      properties:
+        overallScore: { type: integer }
+        summary: { type: object }
+        frequency: { type: object }
+        routeRanking:
+          type: array
+          items: { type: object }
+        poiCoverage: { type: object }
+        populationCoverage: { type: object }
+        trafficAlignment: { type: object }
+        worstServed:
+          type: array
+          items: { type: object }
+
+    # ── Scenarios ──────────────────────────────────────────────
+    ScenarioSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        color: { type: string }
+        stopsCount: { type: integer }
+        lengthKm: { type: number }
+        createdAt: { type: string, format: date-time }
+
+    Scenario:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        color: { type: string }
+        stopsCount: { type: integer }
+        lengthKm: { type: number }
+        geojson: { type: object }
+        createdAt: { type: string, format: date-time }
+
+    GenerateProgramConfig:
+      type: object
+      properties:
+        targetKm:
+          type: number
+          description: Target daily km (required, > 0)
+        avgSpeedKmh: { type: number }
+        dwellTimeSec: { type: number }
+        coincidenceZoneIds:
+          type: array
+          items: { type: string }
+      required: [targetKm]
+
+    ScenarioProgramSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        config: { type: object }
+        createdAt: { type: string, format: date-time }
+
+    ProgramCalendar:
+      type: object
+      properties:
+        id: { type: string }
+        programId: { type: string }
+        serviceId: { type: string }
+        serviceName: { type: string }
+        monday: { type: boolean }
+        tuesday: { type: boolean }
+        wednesday: { type: boolean }
+        thursday: { type: boolean }
+        friday: { type: boolean }
+        saturday: { type: boolean }
+        sunday: { type: boolean }
+        startDate: { type: string }
+        endDate: { type: string }
+        cadenceMultiplier: { type: number }
+        isVariant: { type: boolean }
+        variantConfig: { type: [object, "null"] }
+        color: { type: string }
+        createdAt: { type: string, format: date-time }
+        exceptions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              calendarId: { type: string }
+              exceptionDate: { type: string }
+              exceptionType: { type: integer }
+              description: { type: [string, "null"] }
+
+    CreateProgramCalendar:
+      type: object
+      properties:
+        serviceId: { type: string }
+        serviceName: { type: string }
+        monday: { type: boolean, default: true }
+        tuesday: { type: boolean, default: true }
+        wednesday: { type: boolean, default: true }
+        thursday: { type: boolean, default: true }
+        friday: { type: boolean, default: true }
+        saturday: { type: boolean, default: false }
+        sunday: { type: boolean, default: false }
+        startDate: { type: string }
+        endDate: { type: string }
+        cadenceMultiplier: { type: number, default: 1 }
+        isVariant: { type: boolean, default: false }
+        variantConfig: { type: [object, "null"] }
+        color: { type: string }
+
+    CalendarPreset:
+      type: object
+      properties:
+        key: { type: string }
+        serviceId: { type: string }
+        serviceName: { type: string }
+        days:
+          type: object
+          properties:
+            mon: { type: boolean }
+            tue: { type: boolean }
+            wed: { type: boolean }
+            thu: { type: boolean }
+            fri: { type: boolean }
+            sat: { type: boolean }
+            sun: { type: boolean }
+        startDate: { type: string }
+        endDate: { type: string }
+        cadenceMultiplier: { type: number }
+        isVariant: { type: boolean }
+        color: { type: string }
+        exceptionsCount: { type: integer }
+
+    GtfsValidationResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              field: { type: string }
+              message: { type: string }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              file: { type: string }
+              field: { type: string }
+              message: { type: string }
+        stats:
+          type: object
+          properties:
+            agencies: { type: integer }
+            routes: { type: integer }
+            trips: { type: integer }
+            stops: { type: integer }
+            stopTimes: { type: integer }
+            shapes: { type: integer }
+            calendars: { type: integer }
+            calendarDates: { type: integer }
+
+    # ── Intermodal ─────────────────────────────────────────────
+    IntermodalHub:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [railway, port, park-ride] }
+        lat: { type: number }
+        lng: { type: number }
+        description: { type: string }
+        platformWalkMinutes: { type: integer }
+        departures: { type: integer }
+        arrivals: { type: integer }
+        destinations:
+          type: array
+          items: { type: string }
+        origins:
+          type: array
+          items: { type: string }
+
+    # ── Optimizer Route ────────────────────────────────────────
+    RoutePlacementRequest:
+      type: object
+      properties:
+        scenarioId: { type: string }
+        busSize:
           type: string
-      required:
-        - success
-        - inserted
-        - message
+          enum: [mini, standard, articulated]
+          default: standard
+        targetInterStopKm: { type: [number, "null"] }
+        maxStops: { type: integer, default: 40 }
+        radiusKm: { type: number, default: 0.4 }
+      required: [scenarioId]
+
+    # ── Service Program ────────────────────────────────────────
+    ServiceProgramRequest:
+      type: object
+      properties:
+        date: { type: string }
+        routes:
+          type: array
+          items:
+            type: object
+            properties:
+              routeId: { type: string }
+              vehicleType: { type: string }
+              forced: { type: boolean }
+            required: [routeId, vehicleType]
+        tripVehicleOverrides:
+          type: object
+          additionalProperties: { type: string }
+      required: [date, routes]
+
+    ServiceProgramCpsatRequest:
+      type: object
+      properties:
+        date: { type: string }
+        routes:
+          type: array
+          items:
+            type: object
+            properties:
+              routeId: { type: string }
+              vehicleType: { type: string }
+              forced: { type: boolean }
+            required: [routeId, vehicleType]
+        tripVehicleOverrides:
+          type: object
+          additionalProperties: { type: string }
+        timeLimit: { type: integer, default: 60 }
+        vehicleCosts: { type: object }
+        solverIntensity: { type: string }
+      required: [date, routes]
+
+    ServiceProgramScenarioSummary:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        date: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    # ── Driver Shifts ──────────────────────────────────────────
+    DriverShiftJobStatus:
+      type: object
+      properties:
+        jobId: { type: string }
+        scenarioId: { type: string }
+        status:
+          type: string
+          enum: [queued, running, completed, failed, stopped]
+        progress: { type: number }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        data: { type: [object, "null"] }
+        error: { type: [string, "null"] }
+
+    # ── Clusters ───────────────────────────────────────────────
+    StopCluster:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        transferFromDepotMin: { type: integer }
+        color: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        stops:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              gtfsStopId: { type: string }
+              stopName: { type: string }
+              stopLat: { type: number }
+              stopLon: { type: number }
+
+    CreateStopCluster:
+      type: object
+      properties:
+        name: { type: string }
+        transferFromDepotMin: { type: integer, default: 10 }
+        color: { type: string, default: "#3b82f6" }
+        stops:
+          type: array
+          items:
+            type: object
+            properties:
+              gtfsStopId: { type: string }
+              stopName: { type: string }
+              stopLat: { type: number }
+              stopLon: { type: number }
+      required: [name]
+
+    # ── Coincidence Zones ──────────────────────────────────────
+    CoincidenceZone:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        hubId: { type: string }
+        hubName: { type: string }
+        hubType: { type: string }
+        hubLat: { type: number }
+        hubLng: { type: number }
+        walkMinutes: { type: integer }
+        radiusKm: { type: number }
+        color: { type: string }
+        notes: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        stops:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              gtfsStopId: { type: string }
+              stopName: { type: string }
+              stopLat: { type: number }
+              stopLon: { type: number }
+              distanceKm: { type: [number, "null"] }
+              walkMinFromHub: { type: [number, "null"] }
+
+    CreateCoincidenceZone:
+      type: object
+      properties:
+        name: { type: string }
+        hubId: { type: string }
+        hubName: { type: string }
+        hubType: { type: string }
+        hubLat: { type: number }
+        hubLng: { type: number }
+        walkMinutes: { type: integer }
+        radiusKm: { type: number }
+        color: { type: string }
+        notes: { type: string }
+        stops:
+          type: array
+          items:
+            type: object
+            properties:
+              gtfsStopId: { type: string }
+              stopName: { type: string }
+              stopLat: { type: number }
+              stopLon: { type: number }
+              distanceKm: { type: number }
+              walkMinFromHub: { type: number }
+      required: [name, hubId]
+
+    WeatherSnapshot:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        lat: { type: number }
+        lng: { type: number }
+        locationName: { type: string }
+        temp: { type: number, description: Temperature in Celsius }
+        feelsLike: { type: number }
+        humidity: { type: integer }
+        windSpeed: { type: number, description: Wind speed m/s }
+        weatherMain: { type: string, description: "Main weather group (Clear, Rain, Snow, etc.)" }
+        weatherDescription: { type: string }
+        weatherIcon: { type: string }
+        rain1h: { type: [number, "null"], description: "Rain volume last 1h mm" }
+        snow1h: { type: [number, "null"], description: "Snow volume last 1h mm" }
+        visibility: { type: [integer, "null"], description: "Visibility in meters" }
+        capturedAt: { type: string, format: date-time }

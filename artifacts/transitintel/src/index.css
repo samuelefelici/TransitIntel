@@ -216,3 +216,50 @@
   border-top-color: #ffffff !important;
   border-bottom-color: #ffffff !important;
 }
+
+/* ── Mobile responsive utilities ────────────────────────────── */
+
+/* Tables: horizontal scroll on small screens */
+@media (max-width: 767px) {
+  .responsive-table {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .responsive-table table {
+    min-width: 600px;
+  }
+
+  /* Cards: stack on mobile */
+  .responsive-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Maps: full width with min height */
+  .responsive-map {
+    min-height: 300px;
+    height: 50vh;
+  }
+
+  /* Hide elements not needed on mobile */
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+/* Tablet tweaks */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .responsive-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  .responsive-map {
+    min-height: 400px;
+  }
+}
+
+/* Safe area for notch/island devices */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

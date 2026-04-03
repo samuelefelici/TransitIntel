@@ -38,6 +38,7 @@ import { eq, inArray, and, desc } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { jobManager } from "../lib/job-manager.js";
+import { strictLimiter } from "../middlewares/rate-limit";
 
 // Scripts are at the monorepo root: ../../scripts relative to api-server/
 // process.cwd() is artifacts/api-server when started via start-backend.sh,
@@ -879,9 +880,9 @@ async function loadAndGenerate(scenarioId: string) {
   };
 }
 
-router.post("/driver-shifts/:scenarioId", async (req, res) => {
+router.post("/driver-shifts/:scenarioId", strictLimiter, async (req, res) => {
   try {
-    const result = await loadAndGenerate(req.params.scenarioId);
+    const result = await loadAndGenerate((req.params.scenarioId as string));
     if (result.error) { res.status(result.status!).json({ error: result.error }); return; }
     res.json(result.data);
   } catch (err: any) {
@@ -892,7 +893,7 @@ router.post("/driver-shifts/:scenarioId", async (req, res) => {
 
 router.get("/driver-shifts/:scenarioId", async (req, res) => {
   try {
-    const result = await loadAndGenerate(req.params.scenarioId);
+    const result = await loadAndGenerate((req.params.scenarioId as string));
     if (result.error) { res.status(result.status!).json({ error: result.error }); return; }
     res.json(result.data);
   } catch (err: any) {
@@ -965,12 +966,12 @@ async function runCPSATCrewScheduler(
 }
 
 /** POST /api/driver-shifts/:scenarioId/cpsat — CP-SAT crew scheduling (sync, legacy) */
-router.post("/driver-shifts/:scenarioId/cpsat", async (req, res) => {
+router.post("/driver-shifts/:scenarioId/cpsat", strictLimiter, async (req, res) => {
   try {
     const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
 
     const [scenario] = await db.select().from(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, req.params.scenarioId));
+      .where(eq(serviceProgramScenarios.id, (req.params.scenarioId as string)));
 
     if (!scenario) { res.status(404).json({ error: "Scenario non trovato" }); return; }
 
@@ -1006,14 +1007,14 @@ router.post("/driver-shifts/:scenarioId/cpsat", async (req, res) => {
  * ═══════════════════════════════════════════════════════════════ */
 
 /** POST /api/driver-shifts/:scenarioId/cpsat/async — Launch async optimization, returns 202 + jobId */
-router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
+router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req, res) => {
   try {
     const body = req.body as any || {};
     const timeLimitSec = body.timeLimit ?? 120;
     const operatorConfig = body.config ?? {};
 
     const [scenario] = await db.select().from(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, req.params.scenarioId));
+      .where(eq(serviceProgramScenarios.id, (req.params.scenarioId as string)));
 
     if (!scenario) { res.status(404).json({ error: "Scenario non trovato" }); return; }
 
@@ -1031,7 +1032,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
     ]);
 
     const jobId = jobManager.createJob({
-      scenarioId: req.params.scenarioId,
+      scenarioId: (req.params.scenarioId as string),
       scriptPath,
       args: [String(timeLimitSec)],
       inputJson: {
@@ -1050,11 +1051,11 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
       },
     });
 
-    req.log.info(`Async CSP job started: ${jobId}, scenario=${req.params.scenarioId}, timeLimit=${timeLimitSec}s`);
+    req.log.info(`Async CSP job started: ${jobId}, scenario=${(req.params.scenarioId as string)}, timeLimit=${timeLimitSec}s`);
 
     res.status(202).json({
       jobId,
-      scenarioId: req.params.scenarioId,
+      scenarioId: (req.params.scenarioId as string),
       status: "queued",
       message: "Ottimizzazione avviata in background",
     });
@@ -1066,7 +1067,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", async (req, res) => {
 
 /** GET /api/driver-shifts/jobs/:jobId/stream — SSE progress stream */
 router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
-  const job = jobManager.getJob(req.params.jobId);
+  const job = jobManager.getJob((req.params.jobId as string));
   if (!job) { res.status(404).json({ error: "Job non trovato" }); return; }
 
   // SSE headers
@@ -1115,7 +1116,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
   }
 
   // Subscribe to progress events
-  const emitter = jobManager.getJobEmitter(req.params.jobId);
+  const emitter = jobManager.getJobEmitter((req.params.jobId as string));
   if (!emitter) { res.end(); return; }
 
   const onProgress = (evt: { jobId: string; status: string; progress: unknown }) => {
@@ -1123,7 +1124,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
   };
 
   const onDone = () => {
-    const finalJob = jobManager.getJob(req.params.jobId);
+    const finalJob = jobManager.getJob((req.params.jobId as string));
     if (finalJob?.status === "completed" && finalJob.result) {
       const cpResult = finalJob.result as any;
       sendEvent("result", {
@@ -1163,7 +1164,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
 
 /** GET /api/driver-shifts/jobs/:jobId — Polling endpoint */
 router.get("/driver-shifts/jobs/:jobId", (req, res) => {
-  const job = jobManager.getJob(req.params.jobId);
+  const job = jobManager.getJob((req.params.jobId as string));
   if (!job) { res.status(404).json({ error: "Job non trovato" }); return; }
 
   const response: any = {
@@ -1198,12 +1199,12 @@ router.get("/driver-shifts/jobs/:jobId", (req, res) => {
 
 /** POST /api/driver-shifts/jobs/:jobId/stop — Stop a running job */
 router.post("/driver-shifts/jobs/:jobId/stop", (req, res) => {
-  const ok = jobManager.stopJob(req.params.jobId);
+  const ok = jobManager.stopJob((req.params.jobId as string));
   if (!ok) {
     res.status(400).json({ error: "Job non trovato o non in esecuzione" });
     return;
   }
-  res.json({ jobId: req.params.jobId, status: "stopped" });
+  res.json({ jobId: (req.params.jobId as string), status: "stopped" });
 });
 
 /** POST /api/driver-shifts/:scenarioId/compare — Compare greedy vs CP-SAT */
@@ -1212,7 +1213,7 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
     const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
 
     // Run greedy
-    const greedyResult = await loadAndGenerate(req.params.scenarioId);
+    const greedyResult = await loadAndGenerate((req.params.scenarioId as string));
     if (greedyResult.error) {
       res.status(greedyResult.status!).json({ error: greedyResult.error });
       return;
@@ -1220,7 +1221,7 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
 
     // Run CP-SAT
     const [scenario] = await db.select().from(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, req.params.scenarioId));
+      .where(eq(serviceProgramScenarios.id, (req.params.scenarioId as string)));
     if (!scenario) { res.status(404).json({ error: "Scenario non trovato" }); return; }
 
     const vehicleShifts = (scenario.result as any)?.shifts as VehicleShift[] | undefined;
@@ -1265,7 +1266,7 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
 // POST — save a driver-shift scenario
 router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
   try {
-    const { scenarioId } = req.params;
+    const scenarioId = req.params.scenarioId as string;
     const { name, result: dssResult, config } = req.body;
     if (!name || !dssResult) { res.status(400).json({ error: "name and result required" }); return; }
     const [row] = await db.insert(driverShiftScenarios).values({
@@ -1284,7 +1285,7 @@ router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
 // GET — list saved driver-shift scenarios (lightweight summary)
 router.get("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
   try {
-    const { scenarioId } = req.params;
+    const scenarioId = req.params.scenarioId as string;
     const rows = await db.select().from(driverShiftScenarios)
       .where(eq(driverShiftScenarios.serviceProgramScenarioId, scenarioId))
       .orderBy(desc(driverShiftScenarios.createdAt));
@@ -1308,7 +1309,7 @@ router.get("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
 router.get("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
   try {
     const [row] = await db.select().from(driverShiftScenarios)
-      .where(eq(driverShiftScenarios.id, req.params.dssId));
+      .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
     res.json(row);
   } catch (err: any) {
@@ -1321,7 +1322,7 @@ router.get("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
 router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
   try {
     await db.delete(driverShiftScenarios)
-      .where(eq(driverShiftScenarios.id, req.params.dssId));
+      .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
   } catch (err: any) {
     req.log.error(err, "Error deleting driver-shift scenario");

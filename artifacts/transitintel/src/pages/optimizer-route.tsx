@@ -8,432 +8,25 @@ import {
   Loader2, Play, Calendar, Bus, ChevronDown, ChevronUp,
   CheckSquare, Square, Search, AlertTriangle, Clock, ClipboardList,
   Truck, ArrowRight, Timer, BarChart3, Filter, Home, MapPin,
-  Euro, TrendingUp, Shield, Lightbulb, Fuel, Award, Info,
-  AlertCircle, Zap, RefreshCw, Navigation, Lock, Unlock,
+  Euro, TrendingUp, Lightbulb, Fuel, Award,
+  Zap, RefreshCw, Navigation, Lock, Unlock,
   Save, FolderOpen, Trash2, Users, X,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { getApiBase } from "@/lib/api";
 
-/* ═══════════════════════════════════════════════════════════════
- *  TYPES
- * ═══════════════════════════════════════════════════════════════ */
-
-type VehicleType = "autosnodato" | "12m" | "10m" | "pollicino";
-type ServiceCategory = "urbano" | "extraurbano";
-
-interface RouteItem {
-  routeId: string;
-  name: string;
-  longName: string | null;
-  tripsCount: number;
-  color: string | null;
-  category: ServiceCategory;
-}
-
-interface TripInfo {
-  tripId: string;
-  routeId: string;
-  headsign: string;
-  directionId: number;
-  departureTime: string;
-  arrivalTime: string;
-  firstStopName: string;
-  lastStopName: string;
-}
-
-interface VehicleTypeInfo {
-  id: string;
-  label: string;
-  capacity: number;
-  sizeIndex: number;
-}
-
-interface ShiftTripEntry {
-  type: "trip" | "deadhead" | "depot";
-  tripId: string;
-  routeId: string;
-  routeName: string;
-  headsign: string | null;
-  departureTime: string;
-  arrivalTime: string;
-  departureMin: number;
-  arrivalMin: number;
-  deadheadKm?: number;
-  deadheadMin?: number;
-  // Extra trip data for tooltip
-  firstStopName?: string;
-  lastStopName?: string;
-  stopCount?: number;
-  durationMin?: number;
-  directionId?: number;
-  /** True when trip runs on a smaller vehicle than originally assigned */
-  downsized?: boolean;
-  /** Original required vehicle type (set when downsized) */
-  originalVehicle?: VehicleType;
-}
-
-interface VehicleShift {
-  vehicleId: string;
-  vehicleType: VehicleType;
-  category: ServiceCategory;
-  trips: ShiftTripEntry[];
-  startMin: number;
-  endMin: number;
-  totalServiceMin: number;
-  totalDeadheadMin: number;
-  totalDeadheadKm: number;
-  depotReturns: number;
-  tripCount: number;
-  fifoOrder: number;
-  firstOut: number;
-  lastIn: number;
-  shiftDuration: number;
-  downsizedTrips: number;
-}
-
-interface RouteStatItem {
-  routeId: string;
-  routeName: string;
-  vehicleType: string;
-  category: string;
-  tripsCount: number;
-  vehiclesNeeded: number;
-  firstDeparture: string;
-  lastArrival: string;
-}
-
-interface ScenarioCost {
-  vehicleFixedCost: number;
-  vehicleServiceKmCost: number;
-  vehicleDeadheadKmCost: number;
-  vehicleTotalCost: number;
-  driverCost: number;
-  depotReturnCost: number;
-  idleCost: number;
-  totalDailyCost: number;
-  costPerTrip: number;
-  costPerServiceHour: number;
-  byVehicleType: Record<string, { count: number; fixedCost: number; serviceKmCost: number; deadheadKmCost: number; totalVehicleCost: number; serviceKm: number; deadheadKm: number }>;
-  byCategory: Record<string, { vehicles: number; vehicleCost: number; driverCost: number; totalCost: number }>;
-}
-
-interface ScenarioScore {
-  overall: number;
-  efficiency: number;
-  fleetUtilization: number;
-  deadheadRatio: number;
-  costEfficiency: number;
-  fifoCompliance: number;
-  grade: string;
-  gradeColor: string;
-}
-
-interface Advisory {
-  id: string;
-  severity: "info" | "warning" | "critical";
-  category: string;
-  title: string;
-  description: string;
-  impact: string;
-  action: string;
-  metric?: number;
-}
-
-interface ServiceProgramResult {
-  shifts: VehicleShift[];
-  unassigned: any[];
-  routeStats: RouteStatItem[];
-  hourlyDist: { hour: number; trips: number }[];
-  summary: {
-    date: string;
-    activeServices: number;
-    totalTrips: number;
-    selectedRoutes: number;
-    totalVehicles: number;
-    byType: Record<string, number>;
-    byCategory: Record<string, number>;
-    totalServiceHours: number;
-    totalDeadheadHours: number;
-    totalDeadheadKm: number;
-    depotReturns: number;
-    efficiency: number;
-    downsizedTrips?: number;
-    message?: string;
-  };
-  costs: ScenarioCost;
-  score: ScenarioScore;
-  advisories: Advisory[];
-  solver?: "greedy" | "cpsat";
-  solverMetrics?: any;
-  costBreakdown?: {
-    aggregated: {
-      fixedDaily: number;
-      serviceKmCost: number;
-      deadheadKmCost: number;
-      idleCost: number;
-      depotReturnCost: number;
-      balancePenalty: number;
-      gapPenalty: number;
-      downsizePenalty: number;
-      total: number;
-    };
-    perShift: Array<{
-      vehicleId: number;
-      vehicleType: string;
-      numTrips: number;
-      fixedDaily: number;
-      serviceKmCost: number;
-      deadheadKmCost: number;
-      idleCost: number;
-      depotReturnCost: number;
-      balancePenalty: number;
-      gapPenalty: number;
-      downsizePenalty: number;
-      total: number;
-    }>;
-    numVehicles: number;
-  };
-  greedyComparison?: {
-    vehicles: number;
-    costBreakdown: {
-      aggregated: {
-        total: number;
-        fixedDaily: number;
-        serviceKmCost: number;
-        deadheadKmCost: number;
-        idleCost: number;
-        depotReturnCost: number;
-        balancePenalty: number;
-        gapPenalty: number;
-        downsizePenalty: number;
-      };
-      numVehicles: number;
-    };
-  };
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  CONSTANTS
- * ═══════════════════════════════════════════════════════════════ */
-
-const VEHICLE_LABELS: Record<VehicleType, string> = {
-  autosnodato: "Autosnodato (18m)",
-  "12m": "12 metri",
-  "10m": "10 metri",
-  pollicino: "Pollicino (6m)",
-};
-
-const VEHICLE_COLORS: Record<VehicleType, string> = {
-  autosnodato: "#ef4444",
-  "12m": "#3b82f6",
-  "10m": "#f59e0b",
-  pollicino: "#22c55e",
-};
-
-const VEHICLE_SHORT: Record<VehicleType, string> = {
-  autosnodato: "18m",
-  "12m": "12m",
-  "10m": "10m",
-  pollicino: "6m",
-};
-
-const ROUTE_PALETTE = [
-  "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6",
-  "#ec4899", "#06b6d4", "#f97316", "#14b8a6", "#a855f7",
-  "#64748b", "#e11d48", "#0ea5e9", "#84cc16", "#d946ef",
-  "#fb923c", "#2dd4bf", "#6366f1", "#facc15", "#f43f5e",
-  "#10b981", "#7c3aed", "#0284c7", "#65a30d", "#c026d3",
-  "#ea580c", "#059669", "#4f46e5", "#ca8a04", "#be185d",
-];
-
-const CATEGORY_LABELS: Record<ServiceCategory, string> = {
-  urbano: "Urbano",
-  extraurbano: "Extraurbano",
-};
-
-const CATEGORY_COLORS: Record<ServiceCategory, string> = {
-  urbano: "#3b82f6",
-  extraurbano: "#f59e0b",
-};
-
-const SEV_CONFIG = {
-  critical: { icon: AlertCircle, bg: "bg-red-500/10", border: "border-red-500/30", text: "text-red-400", badge: "bg-red-500/20 text-red-400" },
-  warning: { icon: AlertTriangle, bg: "bg-amber-500/10", border: "border-amber-500/30", text: "text-amber-400", badge: "bg-amber-500/20 text-amber-400" },
-  info: { icon: Info, bg: "bg-blue-500/10", border: "border-blue-500/30", text: "text-blue-400", badge: "bg-blue-500/20 text-blue-400" },
-} as const;
-
-function ymdToIso(ymd: string): string {
-  return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
-}
-function ymdToDisplay(ymd: string): string {
-  return `${ymd.slice(6, 8)}/${ymd.slice(4, 6)}/${ymd.slice(0, 4)}`;
-}
-
-function SummaryCard({ icon, label, value, color, sub }: {
-  icon: React.ReactNode; label: string; value: string; color?: string; sub?: string;
-}) {
-  return (
-    <div className="bg-muted/40 rounded-lg p-3 min-w-[130px]">
-      <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">{icon} {label}</div>
-      <div className="text-lg font-bold" style={color ? { color } : undefined}>{value}</div>
-      {sub && <div className="text-[10px] text-muted-foreground mt-0.5">{sub}</div>}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  TRIP TOOLTIP — popup on hover
- * ═══════════════════════════════════════════════════════════════ */
-
-function TripTooltip({ entry, style }: { entry: ShiftTripEntry; style: React.CSSProperties }) {
-  return (
-    <div className="absolute z-50 pointer-events-none" style={style}>
-      <div className="bg-card border border-border rounded-lg shadow-xl p-3 min-w-[260px] text-xs space-y-1.5">
-        <div className="flex items-center gap-2">
-          <Badge variant="secondary" className="text-[11px] font-medium">{entry.routeName}</Badge>
-          {entry.headsign && <span className="text-muted-foreground truncate">→ {entry.headsign}</span>}
-          <span className="text-[9px] text-muted-foreground ml-auto">dir {entry.directionId ?? "?"}</span>
-        </div>
-        {entry.downsized && entry.originalVehicle && (
-          <div className="flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-1">
-            <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-            <span className="text-amber-400 text-[10px]">
-              Mezzo ridotto — richiesto <strong>{VEHICLE_LABELS[entry.originalVehicle]}</strong>
-            </span>
-          </div>
-        )}
-        <div className="flex items-center gap-2">
-          <Clock className="w-3 h-3 text-primary shrink-0" />
-          <span className="font-medium">{entry.departureTime.slice(0, 5)}</span>
-          <ArrowRight className="w-3 h-3 text-muted-foreground" />
-          <span className="font-medium">{entry.arrivalTime.slice(0, 5)}</span>
-          <span className="text-muted-foreground">({entry.durationMin ?? "?"}′)</span>
-        </div>
-        {entry.firstStopName && (
-          <div className="flex items-center gap-2">
-            <Navigation className="w-3 h-3 text-green-400 shrink-0" />
-            <span className="text-green-400">{entry.firstStopName}</span>
-          </div>
-        )}
-        {entry.lastStopName && (
-          <div className="flex items-center gap-2">
-            <MapPin className="w-3 h-3 text-red-400 shrink-0" />
-            <span className="text-red-400">{entry.lastStopName}</span>
-          </div>
-        )}
-        {entry.stopCount != null && (
-          <div className="text-muted-foreground">{entry.stopCount} fermate</div>
-        )}
-        <div className="text-[9px] text-muted-foreground/60 font-mono pt-1 border-t border-border/20">{entry.tripId}</div>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  GANTT COMPONENT
- * ═══════════════════════════════════════════════════════════════ */
-
-function GanttChart({ shifts, routeColorMap }: { shifts: VehicleShift[]; routeColorMap: Map<string, string> }) {
-  const minHour = 4;
-  const maxHour = 25;
-  const totalMin = (maxHour - minHour) * 60;
-
-  const [hoveredTrip, setHoveredTrip] = useState<{ entry: ShiftTripEntry; x: number; y: number } | null>(null);
-
-  const handleMouseEnter = useCallback((e: React.MouseEvent, entry: ShiftTripEntry) => {
-    if (entry.type !== "trip") return;
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const parentRect = (e.currentTarget as HTMLElement).closest(".gantt-container")?.getBoundingClientRect();
-    if (!parentRect) return;
-    setHoveredTrip({
-      entry,
-      x: rect.left - parentRect.left,
-      y: rect.bottom - parentRect.top + 4,
-    });
-  }, []);
-
-  const handleMouseLeave = useCallback(() => setHoveredTrip(null), []);
-
-  return (
-    <div className="overflow-x-auto gantt-container relative">
-      <div className="min-w-[800px]">
-        <div className="flex border-b border-border/30 mb-1">
-          <div className="w-32 shrink-0" />
-          <div className="flex-1 relative h-6">
-            {Array.from({ length: maxHour - minHour + 1 }, (_, i) => {
-              const h = minHour + i;
-              const pct = (i * 60 / totalMin) * 100;
-              return (
-                <span key={h} className="absolute text-[9px] text-muted-foreground" style={{ left: `${pct}%` }}>
-                  {h}:00
-                </span>
-              );
-            })}
-          </div>
-        </div>
-        {shifts.map(shift => (
-          <div key={shift.vehicleId} className="flex items-center h-7 group hover:bg-muted/20">
-            <div className="w-32 shrink-0 text-[10px] font-mono flex items-center gap-1 px-1">
-              <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: CATEGORY_COLORS[shift.category] }} />
-              {shift.vehicleId}
-              <span className="text-muted-foreground">({VEHICLE_SHORT[shift.vehicleType]})</span>
-              <span className="text-[8px] text-muted-foreground/60">#{shift.fifoOrder}</span>
-            </div>
-            <div className="flex-1 relative h-5">
-              {Array.from({ length: maxHour - minHour + 1 }, (_, i) => (
-                <div key={i} className="absolute top-0 bottom-0 border-l border-border/10"
-                  style={{ left: `${(i * 60 / totalMin) * 100}%` }} />
-              ))}
-              {shift.trips.map((entry, i) => {
-                const left = ((entry.departureMin - minHour * 60) / totalMin) * 100;
-                const width = Math.max(0.2, ((entry.arrivalMin - entry.departureMin) / totalMin) * 100);
-                if (entry.type === "depot") {
-                  return (
-                    <div key={i}
-                      className="absolute top-1 h-3 rounded-sm flex items-center justify-center text-[7px] text-muted-foreground cursor-default"
-                      style={{ left: `${left}%`, width: `${width}%`, backgroundColor: "rgba(255,255,255,0.05)", border: "1px dashed rgba(255,255,255,0.15)" }}
-                      title={`🏠 Deposito ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}`}
-                    >{width > 2 ? "🏠" : ""}</div>
-                  );
-                }
-                if (entry.type === "deadhead") {
-                  return (
-                    <div key={i}
-                      className="absolute top-1.5 h-2 rounded-full cursor-default"
-                      style={{ left: `${left}%`, width: `${width}%`, backgroundColor: "rgba(255,255,255,0.12)",
-                        backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.2) 3px, rgba(255,255,255,0.2) 6px)" }}
-                      title={`↝ Vuoto ${entry.deadheadKm}km | ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}`}
-                    />
-                  );
-                }
-                const tripColor = routeColorMap.get(entry.routeId) || "#6b7280";
-                const isDownsized = entry.downsized === true;
-                return (
-                  <div key={i}
-                    className="absolute top-0.5 h-4 rounded-sm text-[8px] text-white flex items-center justify-center overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-125 hover:z-10 transition-all"
-                    style={{
-                      left: `${left}%`, width: `${width}%`, backgroundColor: tripColor, opacity: 0.85,
-                      ...(isDownsized ? { border: "1.5px dashed #f59e0b", boxShadow: "0 0 3px rgba(245,158,11,0.3)" } : {}),
-                    }}
-                    onMouseEnter={e => handleMouseEnter(e, entry)}
-                    onMouseLeave={handleMouseLeave}
-                  >{width > 2 ? entry.routeName : ""}</div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-      {/* Floating tooltip */}
-      {hoveredTrip && (
-        <TripTooltip entry={hoveredTrip.entry} style={{ left: hoveredTrip.x, top: hoveredTrip.y }} />
-      )}
-    </div>
-  );
-}
+import type {
+  VehicleType, ServiceCategory, RouteItem, TripInfo,
+  VehicleTypeInfo, ServiceProgramResult,
+} from "./optimizer-route/types";
+import {
+  VEHICLE_LABELS, VEHICLE_COLORS, VEHICLE_SHORT,
+  ROUTE_PALETTE, CATEGORY_LABELS, CATEGORY_COLORS, SEV_CONFIG,
+  ymdToIso, ymdToDisplay, minToTime,
+} from "./optimizer-route/constants";
+import { SummaryCard } from "./optimizer-route/components";
+import InteractiveGantt, { type GanttBar, type GanttRow, type GanttChange } from "@/components/InteractiveGantt";
 
 /* ═══════════════════════════════════════════════════════════════
  *  PAGE
@@ -710,6 +303,69 @@ export default function ServiceProgramPage() {
     for (const id of ids) { map.set(id, ROUTE_PALETTE[i % ROUTE_PALETTE.length]); i++; }
     return map;
   }, [result]);
+
+  // ── InteractiveGantt adapters ──
+  const ganttRows = useMemo<GanttRow[]>(() =>
+    ganttShifts.map(s => ({
+      id: s.vehicleId,
+      label: s.vehicleId,
+      sublabel: `${VEHICLE_SHORT[s.vehicleType]} #${s.fifoOrder}`,
+      dotColor: CATEGORY_COLORS[s.category],
+    })),
+    [ganttShifts],
+  );
+
+  const ganttBars = useMemo<GanttBar[]>(() => {
+    const out: GanttBar[] = [];
+    for (const shift of ganttShifts) {
+      for (let i = 0; i < shift.trips.length; i++) {
+        const t = shift.trips[i];
+        const barId = `${shift.vehicleId}__${i}`;
+        if (t.type === "depot") {
+          out.push({
+            id: barId, rowId: shift.vehicleId,
+            startMin: t.departureMin, endMin: t.arrivalMin,
+            label: "🏠", color: "rgba(255,255,255,0.05)", style: "depot",
+            tooltip: [`Deposito ${t.departureTime.slice(0, 5)}→${t.arrivalTime.slice(0, 5)}`],
+            locked: true,
+            meta: { type: "depot", shiftIdx: i, vehicleId: shift.vehicleId },
+          });
+        } else if (t.type === "deadhead") {
+          out.push({
+            id: barId, rowId: shift.vehicleId,
+            startMin: t.departureMin, endMin: t.arrivalMin,
+            label: "↝", color: "rgba(255,255,255,0.12)", style: "striped",
+            tooltip: [`Vuoto ${t.deadheadKm ?? "?"}km`, `${t.departureTime.slice(0, 5)}→${t.arrivalTime.slice(0, 5)}`],
+            locked: true,
+            meta: { type: "deadhead", shiftIdx: i, vehicleId: shift.vehicleId },
+          });
+        } else {
+          const tripColor = routeColorMap.get(t.routeId) || "#6b7280";
+          const isDownsized = t.downsized === true;
+          const tip: string[] = [
+            `${t.routeName}${t.headsign ? " → " + t.headsign : ""}`,
+            `${t.departureTime.slice(0, 5)} → ${t.arrivalTime.slice(0, 5)} (${t.durationMin ?? "?"}′)`,
+          ];
+          if (t.firstStopName) tip.push(`Da: ${t.firstStopName}`);
+          if (t.lastStopName) tip.push(`A: ${t.lastStopName}`);
+          if (isDownsized && t.originalVehicle) tip.push(`⚠ Mezzo ridotto — richiesto ${VEHICLE_LABELS[t.originalVehicle]}`);
+          out.push({
+            id: barId, rowId: shift.vehicleId,
+            startMin: t.departureMin, endMin: t.arrivalMin,
+            label: t.routeName, color: tripColor, style: isDownsized ? "dashed" : "solid",
+            tooltip: tip,
+            meta: { type: "trip", tripId: t.tripId, routeId: t.routeId, shiftIdx: i, vehicleId: shift.vehicleId, downsized: isDownsized },
+          });
+        }
+      }
+    }
+    return out;
+  }, [ganttShifts, routeColorMap]);
+
+  const handleGanttBarChange = useCallback((change: GanttChange, _allBars: GanttBar[]) => {
+    // For now: log the change. In the future, this can push edits back to the optimizer.
+    console.log("[InteractiveGantt] Vehicle Gantt change:", change);
+  }, []);
 
   const hourlyChartData = useMemo(() => {
     if (!result?.hourlyDist) return [];
@@ -1447,7 +1103,15 @@ export default function ServiceProgramPage() {
                   </div>
                   {ganttShifts.length > 0 ? (
                     <>
-                      <GanttChart shifts={ganttShifts} routeColorMap={routeColorMap} />
+                      <InteractiveGantt
+                        rows={ganttRows}
+                        bars={ganttBars}
+                        onBarChange={handleGanttBarChange}
+                        minHour={4}
+                        maxHour={25}
+                        rowHeight={28}
+                        labelWidth={150}
+                      />
                       <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 pt-3 border-t border-border/20">
                         {Array.from(routeColorMap.entries()).map(([routeId, color]) => {
                           const routeName = result!.routeStats.find(rs => rs.routeId === routeId)?.routeName || routeId;
@@ -1599,10 +1263,4 @@ export default function ServiceProgramPage() {
       </div>
     </div>
   );
-}
-
-function minToTime(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }

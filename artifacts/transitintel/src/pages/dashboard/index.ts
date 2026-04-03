@@ -9,3 +9,4 @@ export { LayersPanel } from "./LayersPanel";
 export { LegendPanel } from "./LegendPanel";
 export { WalkabilityPanel } from "./WalkabilityPanel";
 export { ViewModeSelector } from "./ViewModeSelector";
+export { WeatherWidget } from "./WeatherWidget";

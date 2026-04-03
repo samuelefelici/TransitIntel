@@ -58,6 +58,19 @@ export default function Stops() {
   const [searchInput, setSearchInput] = useState("");
   const [selectedStop, setSelectedStop] = useState<StopDetail | null>(null);
 
+  // Dynamic KPI from GTFS summary
+  const [gtfsSummary, setGtfsSummary] = useState<{
+    totalStops: number; totalRoutes: number; totalTrips: number;
+    firstDeparture?: string; lastArrival?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch(`${getApiBase()}/api/gtfs/summary`, { cache: "no-store" })
+      .then(r => r.json())
+      .then(d => { if (d?.available) setGtfsSummary(d); })
+      .catch(() => {});
+  }, []);
+
   const fetchStops = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
@@ -105,19 +118,21 @@ export default function Stops() {
         <div className="flex items-center gap-2 mb-2">
           <MapPin className="w-4 h-4 text-primary" />
           <h1 className="text-base font-display font-bold">Fermate &amp; Linee</h1>
-          <span className="text-[10px] text-muted-foreground">· 3.943 fermate · 120 linee · rete Ancona/Marche</span>
+          <span className="text-[10px] text-muted-foreground">
+            · {gtfsSummary ? `${gtfsSummary.totalStops.toLocaleString("it-IT")} fermate · ${gtfsSummary.totalRoutes} linee` : `${total.toLocaleString("it-IT")} fermate`} · rete Ancona/Marche
+          </span>
         </div>
 
         {/* KPI strip */}
         <div className="flex gap-3 flex-wrap mb-2">
           <KpiChip icon={<MapPin className="w-3.5 h-3.5 text-blue-400" />}
-            label="Fermate totali" value="3.943" color="text-blue-400" />
+            label="Fermate totali" value={gtfsSummary ? gtfsSummary.totalStops.toLocaleString("it-IT") : total.toLocaleString("it-IT")} color="text-blue-400" />
           <KpiChip icon={<Bus className="w-3.5 h-3.5 text-green-400" />}
-            label="Linee attive" value="120" color="text-green-400" />
+            label="Linee attive" value={gtfsSummary ? String(gtfsSummary.totalRoutes) : "—"} color="text-green-400" />
           <KpiChip icon={<Layers className="w-3.5 h-3.5 text-orange-400" />}
-            label="Corse/giorno" value="12.541" color="text-orange-400" />
+            label="Corse/giorno" value={gtfsSummary ? gtfsSummary.totalTrips.toLocaleString("it-IT") : "—"} color="text-orange-400" />
           <KpiChip icon={<Route className="w-3.5 h-3.5 text-purple-400" />}
-            label="Linee per fermata (top)" value={kpiAvgRoutes} color="text-purple-400" />
+            label="Linee per fermata (media)" value={kpiAvgRoutes} color="text-purple-400" />
         </div>
 
         {/* Search */}
@@ -226,10 +241,10 @@ export default function Stops() {
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3 max-w-sm w-full">
-                  <InfoCard icon="🚌" title="Fermata più servita" value="Piazza Cavour" sub="6 linee diverse" />
-                  <InfoCard icon="📍" title="Fermate totali" value="3.943" sub="nella rete Ancona/Marche" />
-                  <InfoCard icon="🔄" title="Corse giornaliere" value="12.541" sub="trip programmati" />
-                  <InfoCard icon="🗓️" title="Calendario attivo" value="Gen–Dic 2026" sub="355 giorni coperti" />
+                  <InfoCard icon="🚌" title="Fermata più servita" value="Piazza Cavour" sub="Clicca per esplorare" />
+                  <InfoCard icon="📍" title="Fermate totali" value={gtfsSummary ? gtfsSummary.totalStops.toLocaleString("it-IT") : String(total)} sub="nella rete Ancona/Marche" />
+                  <InfoCard icon="🔄" title="Corse giornaliere" value={gtfsSummary ? gtfsSummary.totalTrips.toLocaleString("it-IT") : "—"} sub="trip programmati" />
+                  <InfoCard icon="�" title="Prima / Ultima corsa" value={gtfsSummary?.firstDeparture?.slice(0, 5) ?? "—"} sub={`→ ${gtfsSummary?.lastArrival?.slice(0, 5) ?? "—"}`} />
                 </div>
               </motion.div>
             )}

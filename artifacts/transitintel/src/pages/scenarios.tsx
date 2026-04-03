@@ -10,8 +10,8 @@ import {
   Upload, Trash2, Eye, EyeOff, GitCompareArrows, Loader2, Plus, X, ChevronDown, ChevronUp,
   Layers, MapPin, Route, Users, Building2, Satellite, Sun, Moon, Lightbulb, FileUp,
   Ruler, BarChart3, AlertTriangle, CheckCircle2, Info, Play, Clock, Truck, Settings2, Save,
-  Cross, GraduationCap, ShoppingBag, Factory, Dumbbell, Landmark, TrainFront,
-  Briefcase, Church, HeartHandshake, CircleParking, Camera,
+  Ship, Bus, Car, Plane, Zap, MapPinned, Timer, TrainFront,
+  Download, Package, CalendarDays, ShieldCheck, CalendarX2, GripVertical, RefreshCw,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -19,150 +19,14 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { getApiBase, apiFetch } from "@/lib/api";
 
-const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
-
-const MAP_STYLES: Record<string, string> = {
-  dark: "mapbox://styles/mapbox/dark-v11",
-  city3d: "mapbox://styles/mapbox/standard",
-  "city3d-dark": "mapbox://styles/mapbox/standard",
-  satellite: "mapbox://styles/mapbox/satellite-streets-v12",
-};
-
-type ViewMode = "dark" | "city3d" | "city3d-dark" | "satellite";
-
-const SCENARIO_COLORS = [
-  "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#ec4899",
-  "#06b6d4", "#f97316", "#8b5cf6", "#14b8a6",
-];
-
-const POI_CATEGORY_IT: Record<string, string> = {
-  hospital: "Sanità", school: "Istruzione", shopping: "Commercio",
-  industrial: "Zona Industriale", leisure: "Sport / Svago", office: "Uffici / P.A.",
-  transit: "Hub Trasporti", workplace: "Aziende", worship: "Culto",
-  elderly: "RSA", parking: "Parcheggi", tourism: "Cultura",
-};
-const POI_COLOR: Record<string, string> = {
-  hospital: "#ef4444", school: "#eab308", shopping: "#a855f7",
-  industrial: "#f97316", leisure: "#22c55e", office: "#3b82f6",
-  transit: "#06b6d4", workplace: "#64748b", worship: "#d946ef",
-  elderly: "#f43f5e", parking: "#94a3b8", tourism: "#14b8a6",
-};
-const POI_ICON: Record<string, React.ReactNode> = {
-  hospital: <Cross className="w-3 h-3" />, school: <GraduationCap className="w-3 h-3" />,
-  shopping: <ShoppingBag className="w-3 h-3" />, industrial: <Factory className="w-3 h-3" />,
-  leisure: <Dumbbell className="w-3 h-3" />, office: <Landmark className="w-3 h-3" />,
-  transit: <TrainFront className="w-3 h-3" />, workplace: <Briefcase className="w-3 h-3" />,
-  worship: <Church className="w-3 h-3" />, elderly: <HeartHandshake className="w-3 h-3" />,
-  parking: <CircleParking className="w-3 h-3" />, tourism: <Camera className="w-3 h-3" />,
-};
-
-/* SVG path data for POI map icons (reuse from dashboard) */
-const POI_SVG_PATHS: Record<string, string[]> = {
-  hospital: ["M8 2v4M16 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01M16 18h.01", "M9 2h6M12 10v8M9 14h6"],
-  school: ["M22 10v6M2 10l10-5 10 5-10 5z", "M6 12v5c0 2 6 3 6 3s6-1 6-3v-5"],
-  shopping: ["M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z", "M3 6h18", "M16 10a4 4 0 01-8 0"],
-  industrial: ["M2 20h20", "M5 20V8l5 6V8l5 6V4h3v16"],
-  leisure: ["M6.5 6.5a3.5 3.5 0 117 0 3.5 3.5 0 01-7 0", "M2 12h20M6 12a4 4 0 010-8M6 12a4 4 0 000 8M18 12a4 4 0 000-8M18 12a4 4 0 010 8"],
-  office: ["M3 22V6l9-4 9 4v16", "M3 10h18M7 22V10M11 22V10M15 22V10M19 22V10"],
-  transit: ["M4 11V6a2 2 0 012-2h12a2 2 0 012 2v5", "M4 15h16M6 19l2-4M16 19l2-4M4 11h16v4H4z", "M9 7h6"],
-  workplace: ["M8 21H5a2 2 0 01-2-2V5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2h-3", "M16 3v4M8 3v4M3 11h18", "M12 11v4M9 15h6"],
-  worship: ["M18 2v4M6 2v4M12 2v10", "M8 6h8M2 22l4-10h12l4 10", "M12 12l-2 10M12 12l2 10"],
-  elderly: ["M10 15v5M14 15v5M12 2a3 3 0 100 6 3 3 0 000-6z", "M19 14c-1-1-3-2-7-2s-6 1-7 2", "M17 20H7"],
-  parking: ["M12 2a10 10 0 100 20 10 10 0 000-20z", "M9 17V7h4a3 3 0 010 6H9"],
-  tourism: ["M14.5 4h-5L7 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2h-3l-2.5-3z", "M12 13a3 3 0 100-6 3 3 0 000 6z"],
-};
-
-function renderPoiIcon(category: string): ImageData {
-  const size = 48;
-  const canvas = document.createElement("canvas");
-  canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.beginPath(); ctx.arc(size / 2, size / 2, size / 2 - 2, 0, Math.PI * 2);
-  ctx.fillStyle = POI_COLOR[category] || "#888"; ctx.fill();
-  ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2; ctx.stroke();
-  const iconScale = 26 / 24; const offset = (size - 26) / 2;
-  ctx.save(); ctx.translate(offset, offset); ctx.scale(iconScale, iconScale);
-  ctx.strokeStyle = "#ffffff"; ctx.fillStyle = "none"; ctx.lineWidth = 1.8; ctx.lineCap = "round"; ctx.lineJoin = "round";
-  const paths = POI_SVG_PATHS[category] || [];
-  for (const d of paths) { ctx.stroke(new Path2D(d)); }
-  ctx.restore();
-  return ctx.getImageData(0, 0, size, size);
-}
-
-// ─── Types ──────────────────────────────────────────────────────────────
-interface ScenarioItem {
-  id: string;
-  name: string;
-  description?: string;
-  color: string;
-  stopsCount: number;
-  lengthKm: number;
-  createdAt: string;
-}
-
-interface ScenarioFull extends ScenarioItem {
-  geojson: any;
-  metadata: any;
-}
-
-interface ComuneStats {
-  code: string;
-  name: string;
-  totalPop: number;
-  coveredPop: number;
-  percent: number;
-  totalSections: number;
-  coveredSections: number;
-  poiTotal: number;
-  poiCovered: number;
-}
-
-interface StopDistribution {
-  minInterStopKm: number;
-  maxInterStopKm: number;
-  avgInterStopKm: number;
-  medianInterStopKm: number;
-  stopsWithin300m: number;
-  gapsOver1km: number;
-}
-
-interface AnalysisResult {
-  scenario: { id: string; name: string; color: string };
-  routes: { name: string; lengthKm: number }[];
-  stops: { name: string; lng: number; lat: number }[];
-  totalLengthKm: number;
-  poiCoverage: { radius: number; total: number; covered: number; percent: number; byCategory: Record<string, { total: number; covered: number }> };
-  populationCoverage: { radius: number; totalPop: number; coveredPop: number; percent: number; comuniToccati: number };
-  comuniDetails: ComuneStats[];
-  stopDistribution: StopDistribution | null;
-  accessibilityScore: number;
-  efficiencyMetrics: { popPerKm: number; poiPerKm: number; costIndex: number; stopsPerKm: number };
-  gapAnalysis: {
-    uncoveredPoi: { category: string; name: string; lng: number; lat: number; distKm: number }[];
-    underservedComuni: { code: string; name: string; pop: number; coveragePercent: number }[];
-  };
-}
-
-interface CompareScenario {
-  id: string; name: string; color: string; totalLengthKm: number; stopsCount: number;
-  poiCoverage: AnalysisResult["poiCoverage"]; populationCoverage: AnalysisResult["populationCoverage"];
-  efficiency: AnalysisResult["efficiencyMetrics"];
-  accessibilityScore: number;
-  comuniDetails: ComuneStats[];
-  stopDistribution: StopDistribution | null;
-  gapAnalysis: AnalysisResult["gapAnalysis"];
-}
-
-interface CompareResult {
-  scenarios: CompareScenario[];
-  suggestions: string[];
-  radius: number;
-  unifiedBase?: {
-    totalPop: number;
-    comuniCount: number;
-    comuni: { code: string; name: string; totalPop: number }[];
-  };
-}
+import type {
+  ViewMode, ScenarioItem, ScenarioFull, AnalysisResult, CompareResult, MapPopup,
+} from "./scenarios/types";
+import {
+  MAPBOX_TOKEN, MAP_STYLES, SCENARIO_COLORS, LINE_COLORS,
+  POI_CATEGORY_IT, POI_COLOR, POI_ICON, POI_SVG_PATHS,
+  renderPoiIcon, DEFAULT_PDE_CONFIG,
+} from "./scenarios/constants";
 
 // ─── Component ──────────────────────────────────────────────────────────
 export default function ScenariosPage() {
@@ -217,10 +81,34 @@ export default function ScenariosPage() {
     bidirectional: true,
   });
   const [pdeSavedList, setPdeSavedList] = useState<any[]>([]);
-  const [pdeTab, setPdeTab] = useState<"config" | "result" | "gantt" | "ttd">("config");
+  const [pdeTab, setPdeTab] = useState<"config" | "result" | "gantt" | "ttd" | "gtfs">("config");
   const [pdeSelectedLine, setPdeSelectedLine] = useState<number>(-1); // -1 = all lines
   const [pdeKmSuggestion, setPdeKmSuggestion] = useState<any>(null);
   const [pdeTtdLines, setPdeTtdLines] = useState<number[]>([]); // multi-line selection for TTD
+
+  // Phase 17: Enhanced PdE config state
+  const [coincidenceZonesList, setCoincidenceZonesList] = useState<any[]>([]); // all available zones
+  const [selectedZoneIds, setSelectedZoneIds] = useState<string[]>([]); // selected zone IDs for PdE
+  const [selectedPoiCategories, setSelectedPoiCategories] = useState<string[]>([]); // POI categories
+  const [lineTravelTimes, setLineTravelTimes] = useState<Record<string, number>>({}); // lineIndex -> minutes (legacy)
+  const [stopTransitTimes, setStopTransitTimes] = useState<Record<string, number[]>>({}); // lineIndex -> per-stop transit mins
+  const [lineStopsData, setLineStopsData] = useState<any[]>([]); // full line-stops data from backend
+  const [lineStopsLoading, setLineStopsLoading] = useState(false);
+  const [expandedLineIdx, setExpandedLineIdx] = useState<number | null>(null); // which line is expanded for editing
+  const [useTrafficSlowdown, setUseTrafficSlowdown] = useState(true);
+  const [scenarioLines, setScenarioLines] = useState<{ name: string; lengthKm: number }[]>([]);
+  const [dragIdx, setDragIdx] = useState<number | null>(null); // drag & drop: index being dragged
+
+  // ── GTFS Export state ──
+  const [gtfsCalendars, setGtfsCalendars] = useState<any[]>([]);
+  const [gtfsCalLoading, setGtfsCalLoading] = useState(false);
+  const [gtfsValidation, setGtfsValidation] = useState<any | null>(null);
+  const [gtfsValidating, setGtfsValidating] = useState(false);
+  const [gtfsExporting, setGtfsExporting] = useState(false);
+  const [gtfsEditingCal, setGtfsEditingCal] = useState<string | null>(null); // calId being edited
+  const [gtfsNewExcDate, setGtfsNewExcDate] = useState("");
+  const [gtfsNewExcDesc, setGtfsNewExcDesc] = useState("");
+  const [gtfsNewExcType, setGtfsNewExcType] = useState(2); // 2=removed, 1=added
 
   // Popup
   const [popup, setPopup] = useState<{ lng: number; lat: number; type: string; props: Record<string, any> } | null>(null);
@@ -349,6 +237,43 @@ export default function ScenariosPage() {
     await fetchScenarios();
   }, [fetchScenarios, pendingDeleteId]);
 
+  // Reimport stops from KML file for an existing scenario
+  const reimportInputRef = useRef<HTMLInputElement>(null);
+  const [reimportTargetId, setReimportTargetId] = useState<string | null>(null);
+  const [reimportLoading, setReimportLoading] = useState(false);
+  const handleReimportStops = useCallback((scenarioId: string) => {
+    setReimportTargetId(scenarioId);
+    reimportInputRef.current?.click();
+  }, []);
+  const onReimportFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !reimportTargetId) return;
+    setReimportLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append("stopsFile", file);
+      const resp = await fetch(`${getApiBase()}/api/scenarios/${reimportTargetId}/reimport-stops`, {
+        method: "POST", body: formData,
+      });
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({ error: "Errore sconosciuto" }));
+        throw new Error(errData.error || `HTTP ${resp.status}`);
+      }
+      const result = await resp.json();
+      alert(`✅ Reimportate ${result.stopsCount} fermate con successo!`);
+      // Refresh scenario data
+      await fetchScenarios();
+      // Clear loaded scenario to force reload of GeoJSON
+      setLoadedScenarios(prev => { const c = { ...prev }; delete c[reimportTargetId]; return c; });
+    } catch (err: any) {
+      alert(`Errore reimport fermate: ${err.message}`);
+    } finally {
+      setReimportLoading(false);
+      setReimportTargetId(null);
+      if (reimportInputRef.current) reimportInputRef.current.value = "";
+    }
+  }, [reimportTargetId, fetchScenarios]);
+
   // Analyze single scenario
   const runAnalysis = useCallback(async (id: string) => {
     setAnalysisLoading(true);
@@ -392,17 +317,31 @@ export default function ScenariosPage() {
     setPdePanelOpen(true);
     setPdeKmSuggestion(null);
     setPdeTtdLines([]);
-    // Load saved programs + km suggestion in parallel
+    setSelectedZoneIds([]);
+    setLineTravelTimes({});
+    setStopTransitTimes({});
+    setLineStopsData([]);
+    setExpandedLineIdx(null);
+    // Load saved programs + km suggestion + coincidence zones + scenario lines in parallel
     try {
-      const [listData, kmData] = await Promise.all([
+      const [listData, kmData, zonesData] = await Promise.all([
         apiFetch<{ programs: any[] }>(`/api/scenarios/${scenarioId}/programs`),
         apiFetch<any>(`/api/scenarios/${scenarioId}/suggest-km`).catch(() => null),
+        apiFetch<any>(`/api/coincidence-zones`).catch(() => ({ data: [] })),
       ]);
       setPdeSavedList(listData.programs || []);
+      setCoincidenceZonesList(Array.isArray(zonesData?.data) ? zonesData.data : Array.isArray(zonesData) ? zonesData : []);
       if (kmData) {
         setPdeKmSuggestion(kmData);
-        // Auto-fill suggested km into config
         setPdeConfig(prev => ({ ...prev, targetKm: kmData.suggestedKm }));
+        // Extract line names from breakdown
+        if (kmData.breakdown?.lines) {
+          setScenarioLines(kmData.breakdown.lines);
+          // Initialize travel times to 0 (= use default avgSpeedKmh)
+          const initTimes: Record<string, number> = {};
+          kmData.breakdown.lines.forEach((_: any, i: number) => { initTimes[String(i)] = 0; });
+          setLineTravelTimes(initTimes);
+        }
       }
     } catch { setPdeSavedList([]); }
   }, []);
@@ -412,10 +351,30 @@ export default function ScenariosPage() {
     setPdeLoading(true);
     setPdeResult(null);
     try {
+      // Phase 17: Build enhanced config with zone IDs, POI categories, travel times
+      const enhancedConfig = {
+        ...pdeConfig,
+        coincidenceZoneIds: selectedZoneIds.length > 0 ? selectedZoneIds : undefined,
+        selectedPoiCategories: selectedPoiCategories.length > 0 ? selectedPoiCategories : undefined,
+        lineTravelTimes: Object.entries(lineTravelTimes).some(([_, v]) => v > 0)
+          ? Object.fromEntries(Object.entries(lineTravelTimes).filter(([_, v]) => v > 0))
+          : undefined,
+        stopTransitTimes: Object.entries(stopTransitTimes).some(([_, arr]) => arr.some(v => v > 0))
+          ? Object.fromEntries(Object.entries(stopTransitTimes).filter(([_, arr]) => arr.some(v => v > 0)))
+          : undefined,
+        useTrafficSlowdown,
+        // Send user-reordered stops per line (from drag & drop)
+        stopOrder: lineStopsData.length > 0
+          ? Object.fromEntries(lineStopsData.map(ld => [
+              String(ld.lineIndex),
+              ld.stops.map((s: any) => ({ name: s.name, stopId: s.stopId || "", lng: s.lng, lat: s.lat })),
+            ]))
+          : undefined,
+      };
       const resp = await fetch(`${getApiBase()}/api/scenarios/${pdeScenarioId}/generate-program`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pdeConfig),
+        body: JSON.stringify(enhancedConfig),
       });
       if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error || `HTTP ${resp.status}`); }
       const data = await resp.json();
@@ -427,7 +386,7 @@ export default function ScenariosPage() {
     } catch (err: any) {
       alert(`Errore generazione PdE: ${err.message}`);
     } finally { setPdeLoading(false); }
-  }, [pdeScenarioId, pdeConfig]);
+  }, [pdeScenarioId, pdeConfig, selectedZoneIds, selectedPoiCategories, lineTravelTimes, stopTransitTimes, useTrafficSlowdown, lineStopsData]);
 
   const loadPdeProgram = useCallback(async (programId: string) => {
     if (!pdeScenarioId) return;
@@ -759,6 +718,7 @@ export default function ScenariosPage() {
             {popup.type === "stop" && (
               <div className="space-y-1 min-w-[180px]">
                 <div className="font-bold text-sm text-gray-900">📍 {popup.props.name || "Fermata"}</div>
+                {popup.props.stopId && <div className="text-[10px] text-gray-400 font-mono">ID: {popup.props.stopId}</div>}
                 {popup.props.description && <div className="text-xs text-gray-500">{popup.props.description}</div>}
               </div>
             )}
@@ -843,6 +803,10 @@ export default function ScenariosPage() {
                         {uploading ? "Caricamento…" : "Carica Scenario"}
                       </button>
 
+                      {/* Hidden input for reimport stops */}
+                      <input ref={reimportInputRef} type="file" accept=".kml,.kmz" className="hidden"
+                        onChange={onReimportFileSelected} />
+
                       {(stopsFile || routeFile) && !uploading && (
                         <p className="text-[9px] text-muted-foreground text-center">
                           {stopsFile && routeFile ? "Fermate + Percorso pronti" : stopsFile ? "Solo fermate — il percorso è opzionale" : "Solo percorso — le fermate verranno generate automaticamente"}
@@ -872,6 +836,12 @@ export default function ScenariosPage() {
                               <button onClick={() => toggleCompareSelection(s.id)} title="Seleziona per confronto"
                                 className={`p-1 rounded transition-colors ${isCompare ? "text-amber-400 bg-amber-500/10" : "text-muted-foreground hover:text-foreground"}`}>
                                 <GitCompareArrows className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); handleReimportStops(s.id); }}
+                                title="Ricarica fermate da KML"
+                                disabled={reimportLoading && reimportTargetId === s.id}
+                                className={`p-1 rounded transition-colors ${reimportLoading && reimportTargetId === s.id ? "text-blue-400 animate-spin" : "text-muted-foreground hover:text-blue-400"}`}>
+                                <RefreshCw className="w-3.5 h-3.5" />
                               </button>
                               <button onClick={(e) => { e.stopPropagation(); handleDelete(s.id); }}
                                 title={pendingDeleteId === s.id ? "Clicca di nuovo per confermare" : "Elimina"}
@@ -1519,7 +1489,7 @@ export default function ScenariosPage() {
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 30 }}
-            className="absolute bottom-6 left-4 right-4 max-w-4xl mx-auto pointer-events-auto z-20"
+            className="absolute bottom-4 left-4 right-4 max-w-6xl mx-auto pointer-events-auto z-20"
           >
             <Card className="bg-card/95 backdrop-blur-xl border-emerald-500/30 shadow-2xl overflow-hidden">
               <div className="px-4 py-2.5 flex items-center justify-between border-b border-border/30">
@@ -1531,11 +1501,11 @@ export default function ScenariosPage() {
                   </span>}
                 </span>
                 <div className="flex items-center gap-2">
-                  {(["config", "result", "gantt", "ttd"] as const).map(tab => (
+                  {(["config", "result", "gantt", "ttd", "gtfs"] as const).map(tab => (
                     <button key={tab} onClick={() => setPdeTab(tab)}
                       className={`px-2.5 py-1 rounded text-[10px] font-medium transition-colors ${pdeTab === tab ? "bg-emerald-500/20 text-emerald-400" : "text-muted-foreground hover:text-foreground"}`}
-                      disabled={tab !== "config" && !pdeResult}>
-                      {tab === "config" ? "⚙️ Configura" : tab === "result" ? "📊 Risultati" : tab === "gantt" ? "📅 Gantt" : "📈 TTD"}
+                      disabled={tab !== "config" && tab !== "gtfs" && !pdeResult}>
+                      {tab === "config" ? "⚙️ Configura" : tab === "result" ? "📊 Risultati" : tab === "gantt" ? "📅 Gantt" : tab === "ttd" ? "📈 TTD" : "📦 GTFS"}
                     </button>
                   ))}
                   <button onClick={() => setPdePanelOpen(false)} className="text-muted-foreground hover:text-foreground ml-2">
@@ -1544,7 +1514,7 @@ export default function ScenariosPage() {
                 </div>
               </div>
 
-              <CardContent className="p-4 max-h-[55vh] overflow-y-auto">
+              <CardContent className="p-4 max-h-[70vh] overflow-y-auto">
                 {/* Loading */}
                 {pdeLoading && (
                   <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
@@ -1632,13 +1602,340 @@ export default function ScenariosPage() {
                           className="w-full bg-background border border-border/50 rounded px-2.5 py-1.5 text-sm" />
                       </div>
                     </div>
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
                       <label className="flex items-center gap-2 text-xs">
                         <input type="checkbox" checked={pdeConfig.bidirectional}
                           onChange={e => setPdeConfig(p => ({ ...p, bidirectional: e.target.checked }))}
                           className="rounded" />
                         Bidirezionale (andata + ritorno)
                       </label>
+                      <label className="flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={useTrafficSlowdown}
+                          onChange={e => setUseTrafficSlowdown(e.target.checked)}
+                          className="rounded" />
+                        <Zap className="w-3 h-3 text-amber-400" />
+                        Rallentamento traffico per arco
+                      </label>
+                    </div>
+
+                    {/* Phase 17: Coincidence Zones selector */}
+                    {coincidenceZonesList.length > 0 && (
+                      <div className="border-t border-border/30 pt-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <MapPinned className="w-3 h-3 text-cyan-400" /> Zone di coincidenza
+                          </p>
+                          <button
+                            onClick={() => {
+                              if (selectedZoneIds.length === coincidenceZonesList.length) {
+                                setSelectedZoneIds([]);
+                              } else {
+                                setSelectedZoneIds(coincidenceZonesList.map((z: any) => z.id));
+                              }
+                            }}
+                            className="text-[9px] text-cyan-400 hover:text-cyan-300 transition-colors"
+                          >
+                            {selectedZoneIds.length === coincidenceZonesList.length ? "Deseleziona tutto" : "Seleziona tutto"}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                          {coincidenceZonesList.map((z: any) => {
+                            const isSelected = selectedZoneIds.includes(z.id);
+                            const HubIcon = ({ railway: TrainFront, port: Ship, "bus-bus": Bus, "park-ride": Car, airport: Plane } as any)[z.hubType] || MapPin;
+                            const hubColor = ({ railway: "#06b6d4", port: "#8b5cf6", "bus-bus": "#f59e0b", "park-ride": "#22c55e", airport: "#f97316" } as any)[z.hubType] || "#888";
+                            return (
+                              <button key={z.id} onClick={() => {
+                                setSelectedZoneIds(prev => isSelected ? prev.filter(id => id !== z.id) : [...prev, z.id]);
+                              }}
+                                className={`flex items-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-all border ${
+                                  isSelected
+                                    ? "bg-opacity-20 border-current ring-1 ring-current"
+                                    : "bg-muted/20 border-border/30 text-muted-foreground hover:text-foreground"
+                                }`}
+                                style={isSelected ? { color: hubColor, backgroundColor: hubColor + "20", borderColor: hubColor } : {}}>
+                                <HubIcon className="w-3 h-3 shrink-0" />
+                                <span className="truncate">{z.name}</span>
+                                {z.stopsCount && <Badge variant="secondary" className="text-[8px] px-1 py-0">{z.stopsCount}</Badge>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {selectedZoneIds.length > 0 && (
+                          <p className="text-[9px] text-emerald-400">
+                            {selectedZoneIds.length} zone selezionate — sincronizzazione arrivi/partenze attiva
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Phase 17: POI Categories selector */}
+                    <div className="border-t border-border/30 pt-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-violet-400" /> Categorie POI (priorità domanda)
+                        </p>
+                        <button
+                          onClick={() => {
+                            const allKeys = ["hospital","school","university","transit","elderly","government","commercial","sport","culture","worship","park","tourism"];
+                            if (selectedPoiCategories.length === allKeys.length) {
+                              setSelectedPoiCategories([]);
+                            } else {
+                              setSelectedPoiCategories(allKeys);
+                            }
+                          }}
+                          className="text-[9px] text-violet-400 hover:text-violet-300 transition-colors"
+                        >
+                          {selectedPoiCategories.length === 12 ? "Deseleziona tutto" : "Seleziona tutto"}
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                            { key: "hospital", label: "Ospedali", icon: "🏥" },
+                            { key: "school", label: "Scuole", icon: "🏫" },
+                            { key: "university", label: "Università", icon: "🎓" },
+                            { key: "transit", label: "Hub trasporti", icon: "🚉" },
+                            { key: "elderly", label: "RSA/Anziani", icon: "🏠" },
+                            { key: "government", label: "Uffici pubblici", icon: "🏛️" },
+                            { key: "commercial", label: "Centri commerciali", icon: "🛍️" },
+                            { key: "sport", label: "Sport", icon: "⚽" },
+                            { key: "culture", label: "Cultura", icon: "🎭" },
+                            { key: "worship", label: "Culto", icon: "⛪" },
+                            { key: "park", label: "Parchi", icon: "🌳" },
+                            { key: "tourism", label: "Turismo", icon: "📸" },
+                          ].map((cat: any) => {
+                          const isActive = selectedPoiCategories.length === 0 || selectedPoiCategories.includes(cat.key);
+                          return (
+                            <button key={cat.key} onClick={() => {
+                              setSelectedPoiCategories(prev => {
+                                if (prev.length === 0) return [cat.key];
+                                if (prev.includes(cat.key)) {
+                                  const next = prev.filter(c => c !== cat.key);
+                                  return next.length === 0 ? [] : next;
+                                }
+                                return [...prev, cat.key];
+                              });
+                            }}
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors border ${
+                                isActive
+                                  ? "bg-violet-500/20 text-violet-400 border-violet-500/30"
+                                  : "bg-muted/10 text-muted-foreground/50 border-border/20"
+                              }`}>
+                              {cat.icon} {cat.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[9px] text-muted-foreground">
+                        {selectedPoiCategories.length === 0 ? "Tutti i POI attivi" : `${selectedPoiCategories.length} categorie selezionate`}
+                      </p>
+                    </div>
+
+                    {/* Phase 17: Travel times — stop-by-stop */}
+                    {scenarioLines.length > 0 && (
+                      <div className="border-t border-border/30 pt-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <Timer className="w-3 h-3 text-blue-400" /> Tempi di percorrenza fermata per fermata
+                          </p>
+                          <button
+                            onClick={async () => {
+                              if (!pdeScenarioId) return;
+                              setLineStopsLoading(true);
+                              try {
+                                const data = await apiFetch<any>(`/api/scenarios/${pdeScenarioId}/line-stops?avgSpeedKmh=${pdeConfig.avgSpeedKmh}`);
+                                const lines = data.lines || [];
+                                setLineStopsData(lines);
+                                // Initialize stopTransitTimes from calculated values
+                                const newTransits: Record<string, number[]> = {};
+                                for (const line of lines) {
+                                  newTransits[String(line.lineIndex)] = line.stops
+                                    .slice(1)
+                                    .map((s: any) => Math.round(s.transitTimeMin * 10) / 10);
+                                }
+                                setStopTransitTimes(newTransits);
+                                // Also set lineTravelTimes totals
+                                const newTotals: Record<string, number> = {};
+                                for (const line of lines) {
+                                  newTotals[String(line.lineIndex)] = Math.round(line.totalTimeMin);
+                                }
+                                setLineTravelTimes(newTotals);
+                                if (lines.length > 0) setExpandedLineIdx(0);
+                              } catch (err: any) {
+                                alert(`Errore calcolo tempi: ${err.message}`);
+                              } finally { setLineStopsLoading(false); }
+                            }}
+                            disabled={lineStopsLoading}
+                            className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600/20 text-blue-400 rounded text-[10px] font-medium hover:bg-blue-600/30 transition-colors disabled:opacity-50">
+                            {lineStopsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                            {lineStopsLoading ? "Calcolo…" : "Calcola automaticamente"}
+                          </button>
+                        </div>
+
+                        {lineStopsData.length === 0 && (
+                          <p className="text-[9px] text-muted-foreground italic">
+                            Premi "Calcola automaticamente" per ottenere i tempi stimati fermata-per-fermata basati su distanza e traffico.
+                          </p>
+                        )}
+
+                        {/* Line tabs */}
+                        {lineStopsData.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {lineStopsData.map((line: any) => {
+                                const isExpanded = expandedLineIdx === line.lineIndex;
+                                const totalMin = (stopTransitTimes[String(line.lineIndex)] || []).reduce((a: number, b: number) => a + b, 0);
+                                return (
+                                  <button key={line.lineIndex}
+                                    onClick={() => setExpandedLineIdx(isExpanded ? null : line.lineIndex)}
+                                    className={`flex items-center gap-1 px-2 py-1 rounded text-[9px] font-medium transition-all border ${
+                                      isExpanded
+                                        ? "bg-blue-500/20 text-blue-400 border-blue-500/30 ring-1 ring-blue-500/20"
+                                        : "bg-muted/20 text-muted-foreground border-border/30 hover:text-foreground"
+                                    }`}>
+                                    <Route className="w-3 h-3" />
+                                    <span className="truncate max-w-[100px]">{line.lineName}</span>
+                                    <span className="text-[8px] opacity-70">({line.stopsCount} ferm.)</span>
+                                    <Badge variant="secondary" className="text-[7px] px-1 py-0">{Math.round(totalMin)} min</Badge>
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            {/* Expanded line — stop-by-stop table */}
+                            {expandedLineIdx !== null && (() => {
+                              const lineData = lineStopsData.find((l: any) => l.lineIndex === expandedLineIdx);
+                              if (!lineData) return null;
+                              const transits = stopTransitTimes[String(expandedLineIdx)] || [];
+                              const totalMin = transits.reduce((a, b) => a + b, 0);
+                              return (
+                                <div className="bg-background/50 rounded-lg border border-border/30 overflow-hidden">
+                                  <div className="px-3 py-1.5 bg-blue-500/5 border-b border-border/20 flex items-center justify-between">
+                                    <span className="text-[10px] font-semibold text-blue-400 flex items-center gap-1">
+                                      <Route className="w-3 h-3" /> {lineData.lineName}
+                                      <span className="text-muted-foreground font-normal ml-1">— {lineData.lengthKm} km, {lineData.stopsCount} fermate</span>
+                                    </span>
+                                    <span className="text-[10px] font-bold text-blue-400">{Math.round(totalMin * 10) / 10} min totali</span>
+                                  </div>
+                                  <div className="max-h-[350px] overflow-y-auto">
+                                    <table className="w-full text-[9px]">
+                                      <thead className="sticky top-0 bg-background/90 backdrop-blur-sm">
+                                        <tr className="border-b border-border/20">
+                                          <th className="text-left px-1 py-1 text-muted-foreground font-medium w-6"></th>
+                                          <th className="text-left px-2 py-1 text-muted-foreground font-medium w-8">#</th>
+                                          <th className="text-left px-2 py-1 text-muted-foreground font-medium">Fermata</th>
+                                          <th className="text-right px-2 py-1 text-muted-foreground font-medium w-16">Dist. (m)</th>
+                                          <th className="text-right px-2 py-1 text-muted-foreground font-medium w-16">Traffico</th>
+                                          <th className="text-center px-2 py-1 text-muted-foreground font-medium w-20">Transito (min)</th>
+                                          <th className="text-right px-2 py-1 text-muted-foreground font-medium w-16">Cumul.</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {lineData.stops.map((stop: any, si: number) => {
+                                          const transitIdx = si - 1;
+                                          const transitMin = si > 0 ? (transits[transitIdx] ?? stop.transitTimeMin) : 0;
+                                          const cumulMin = lineData.stops.slice(1, si + 1).reduce(
+                                            (acc: number, _: any, idx: number) => acc + (transits[idx] ?? lineData.stops[idx + 1]?.transitTimeMin ?? 0), 0
+                                          );
+                                          const congPct = stop.congestion ? Math.round(stop.congestion * 100) : 0;
+                                          return (
+                                            <tr
+                                              key={si}
+                                              draggable
+                                              onDragStart={() => setDragIdx(si)}
+                                              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("bg-blue-500/10"); }}
+                                              onDragLeave={e => { e.currentTarget.classList.remove("bg-blue-500/10"); }}
+                                              onDrop={e => {
+                                                e.preventDefault();
+                                                e.currentTarget.classList.remove("bg-blue-500/10");
+                                                if (dragIdx === null || dragIdx === si) return;
+                                                // Reorder stops in lineStopsData
+                                                setLineStopsData(prev => prev.map(ld => {
+                                                  if (ld.lineIndex !== expandedLineIdx) return ld;
+                                                  const newStops = [...ld.stops];
+                                                  const [moved] = newStops.splice(dragIdx, 1);
+                                                  newStops.splice(si, 0, moved);
+                                                  // Reindex
+                                                  return { ...ld, stops: newStops.map((s: any, idx: number) => ({ ...s, index: idx })) };
+                                                }));
+                                                // Also reorder transit times
+                                                setStopTransitTimes(prev => {
+                                                  const key = String(expandedLineIdx);
+                                                  const arr = [...(prev[key] || [])];
+                                                  if (arr.length > 0) {
+                                                    const [movedT] = arr.splice(Math.max(0, dragIdx - 1), 1);
+                                                    arr.splice(Math.max(0, si - 1), 0, movedT);
+                                                  }
+                                                  return { ...prev, [key]: arr };
+                                                });
+                                                setDragIdx(null);
+                                              }}
+                                              onDragEnd={() => setDragIdx(null)}
+                                              className={`border-b border-border/10 cursor-grab active:cursor-grabbing transition-colors ${
+                                                si === 0 || si === lineData.stops.length - 1 ? "bg-blue-500/5" : "hover:bg-muted/10"
+                                              } ${dragIdx === si ? "opacity-40" : ""}`}
+                                            >
+                                              <td className="px-1 py-1 text-muted-foreground/40 cursor-grab">
+                                                <GripVertical className="w-3 h-3" />
+                                              </td>
+                                              <td className="px-2 py-1 text-muted-foreground">{si + 1}</td>
+                                              <td className="px-2 py-1 font-medium max-w-[220px]" title={stop.name}>
+                                                <div className="flex flex-col">
+                                                  <span className="truncate">
+                                                    {si === 0 && <span className="text-blue-400 mr-1">▶</span>}
+                                                    {si === lineData.stops.length - 1 && <span className="text-red-400 mr-1">◼</span>}
+                                                    {stop.name}
+                                                  </span>
+                                                  {stop.stopId && <span className="text-[7px] text-muted-foreground/60 font-mono">{stop.stopId}</span>}
+                                                </div>
+                                              </td>
+                                              <td className="px-2 py-1 text-right text-muted-foreground">
+                                                {si > 0 ? Math.round(stop.distFromPrevKm * 1000) : "—"}
+                                              </td>
+                                              <td className="px-2 py-1 text-right">
+                                                {si > 0 ? (
+                                                  <span className={`px-1 py-0.5 rounded text-[8px] ${
+                                                    congPct > 60 ? "bg-red-500/20 text-red-400" :
+                                                    congPct > 30 ? "bg-amber-500/20 text-amber-400" :
+                                                    "bg-emerald-500/20 text-emerald-400"
+                                                  }`}>{congPct}%</span>
+                                                ) : "—"}
+                                              </td>
+                                              <td className="px-2 py-1 text-center">
+                                                {si > 0 ? (
+                                                  <input
+                                                    type="number" min={0.1} max={60} step={0.1}
+                                                    value={transits[transitIdx] ?? Math.round(stop.transitTimeMin * 10) / 10}
+                                                    onChange={e => {
+                                                      const val = Number(e.target.value);
+                                                      setStopTransitTimes(prev => {
+                                                        const arr = [...(prev[String(expandedLineIdx)] || [])];
+                                                        arr[transitIdx] = val;
+                                                        return { ...prev, [String(expandedLineIdx)]: arr };
+                                                      });
+                                                    }}
+                                                    className="w-14 bg-background border border-border/50 rounded px-1 py-0.5 text-[9px] text-center focus:ring-1 focus:ring-blue-500/30 focus:border-blue-500/50"
+                                                  />
+                                                ) : "—"}
+                                              </td>
+                                              <td className="px-2 py-1 text-right font-medium text-muted-foreground">
+                                                {si > 0 ? `${Math.round(cumulMin * 10) / 10}′` : "0′"}
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Generate button */}
+                    <div className="flex items-center justify-end pt-2">
                       <button onClick={generatePde} disabled={pdeLoading}
                         className="flex items-center gap-2 bg-emerald-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-emerald-500 transition-colors disabled:opacity-50">
                         {pdeLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
@@ -1766,6 +2063,73 @@ export default function ScenariosPage() {
                             </div>
                           ))}
                         </div>
+                      </div>
+                    )}
+
+                    {/* Phase 17: Coincidence Zone Sync results */}
+                    {pdeResult.coincidenceZoneSync && pdeResult.coincidenceZoneSync.length > 0 && (
+                      <div className="bg-cyan-500/10 border border-cyan-500/20 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <TrainFront className="w-4 h-4 text-cyan-400" />
+                          <span className="text-xs font-semibold text-cyan-400">
+                            Sincronizzazione zone intermodali ({pdeResult.coincidenceZoneSync.length})
+                          </span>
+                        </div>
+                        {pdeResult.coincidenceZoneSync.map((czs: any, i: number) => (
+                          <div key={i} className="space-y-1">
+                            <div className="flex items-center gap-2 text-[10px] font-medium">
+                              <span style={{ color: czs.hubType === "railway" ? "#06b6d4" : czs.hubType === "port" ? "#8b5cf6" : "#888" }}>
+                                {czs.hubType === "railway" ? "��" : czs.hubType === "port" ? "⛴️" : "🔗"} {czs.zoneName}
+                              </span>
+                              <Badge variant="secondary" className="text-[8px]">{czs.syncedTrips.length} corse sincronizzate</Badge>
+                            </div>
+                            <div className="space-y-0.5 pl-4">
+                              {czs.syncedTrips.slice(0, 5).map((st: any, j: number) => (
+                                <div key={j} className="flex items-center gap-2 text-[9px] text-muted-foreground">
+                                  <span className="text-cyan-400">{st.departureTime}</span>
+                                  <span>→</span>
+                                  <span className="font-medium text-foreground/80">{st.lineName}</span>
+                                  <span className="text-muted-foreground/60">sinc. arrivo {st.origin} {st.syncedWithArrival}</span>
+                                </div>
+                              ))}
+                              {czs.syncedTrips.length > 5 && (
+                                <p className="text-[9px] text-muted-foreground">+{czs.syncedTrips.length - 5} altre corse sincronizzate</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Phase 17: Traffic slowdown info */}
+                    {pdeResult.trafficSlowdownApplied && pdeResult.perArcSlowdowns && pdeResult.perArcSlowdowns.length > 0 && (
+                      <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-amber-400" />
+                          <span className="text-xs font-semibold text-amber-400">Rallentamento traffico per arco</span>
+                        </div>
+                        {pdeResult.perArcSlowdowns.map((line: any, i: number) => (
+                          <div key={i} className="space-y-1">
+                            <p className="text-[10px] font-medium">{line.lineName}</p>
+                            <div className="flex flex-wrap gap-1">
+                              {line.segments.slice(0, 6).map((seg: any, j: number) => {
+                                const slowdown = seg.adjustedMin > seg.baseMin ? Math.round((seg.adjustedMin / seg.baseMin - 1) * 100) : 0;
+                                return (
+                                  <div key={j} className={`px-1.5 py-0.5 rounded text-[8px] font-mono border ${
+                                    slowdown > 30 ? "bg-red-500/15 border-red-500/30 text-red-300"
+                                    : slowdown > 10 ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
+                                    : "bg-emerald-500/15 border-emerald-500/30 text-emerald-300"
+                                  }`}>
+                                    {seg.from.slice(0, 8)}→{seg.to.slice(0, 8)}: {seg.baseMin}→{seg.adjustedMin}min {slowdown > 0 && `(+${slowdown}%)`}
+                                  </div>
+                                );
+                              })}
+                              {line.segments.length > 6 && (
+                                <span className="text-[8px] text-muted-foreground self-center">+{line.segments.length - 6} archi</span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
 
@@ -2158,6 +2522,349 @@ export default function ScenariosPage() {
                         <span className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-blue-500/30 border border-blue-500" /> Coincidenza</span>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {/* ── GTFS Export tab ── */}
+                {pdeTab === "gtfs" && (
+                  <div className="space-y-4">
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Package className="w-4 h-4 text-amber-400" />
+                        <span className="text-sm font-bold">Esportazione GTFS</span>
+                      </div>
+                      {pdeResult?.id && (
+                        <span className="text-[9px] text-muted-foreground">
+                          Programma: {pdeResult.id?.substring(0, 8)}…
+                        </span>
+                      )}
+                    </div>
+
+                    {!pdeResult?.id ? (
+                      <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-4 text-center">
+                        <AlertTriangle className="w-5 h-5 text-amber-400 mx-auto mb-2" />
+                        <p className="text-xs text-muted-foreground">
+                          Genera e salva un Programma di Esercizio prima di esportare il GTFS.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* 1. Calendars section */}
+                        <div className="bg-background/50 rounded-lg border border-border/30 overflow-hidden">
+                          <div className="px-3 py-2 bg-blue-500/5 border-b border-border/20 flex items-center justify-between">
+                            <span className="text-[10px] font-semibold text-blue-400 flex items-center gap-1">
+                              <CalendarDays className="w-3 h-3" /> Calendari di validità
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                onClick={async () => {
+                                  setGtfsCalLoading(true);
+                                  try {
+                                    const data = await apiFetch<any>(
+                                      `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars`
+                                    );
+                                    setGtfsCalendars(data.calendars || []);
+                                  } catch { }
+                                  finally { setGtfsCalLoading(false); }
+                                }}
+                                className="text-[9px] px-2 py-0.5 bg-muted/30 rounded text-muted-foreground hover:text-foreground transition-colors"
+                              >
+                                {gtfsCalLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "Aggiorna"}
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (!pdeResult?.id || !pdeScenarioId) return;
+                                  setGtfsCalLoading(true);
+                                  try {
+                                    await apiFetch<any>(
+                                      `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars/from-all-presets`,
+                                      { method: "POST" }
+                                    );
+                                    const data = await apiFetch<any>(
+                                      `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars`
+                                    );
+                                    setGtfsCalendars(data.calendars || []);
+                                    setGtfsValidation(null);
+                                  } catch (err: any) {
+                                    alert("Errore: " + err.message);
+                                  } finally { setGtfsCalLoading(false); }
+                                }}
+                                disabled={gtfsCalLoading}
+                                className="flex items-center gap-1 text-[9px] px-2 py-0.5 bg-blue-600/20 text-blue-400 rounded hover:bg-blue-600/30 transition-colors disabled:opacity-50"
+                              >
+                                <Zap className="w-3 h-3" />
+                                Crea preset italiani
+                              </button>
+                            </div>
+                          </div>
+
+                          {gtfsCalendars.length === 0 ? (
+                            <div className="px-3 py-4 text-center">
+                              <CalendarX2 className="w-5 h-5 text-muted-foreground mx-auto mb-1.5" />
+                              <p className="text-[10px] text-muted-foreground">
+                                Nessun calendario. Clicca "Crea preset italiani" per generare automaticamente i 5 calendari standard.
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-border/20">
+                              {gtfsCalendars.map((cal: any) => {
+                                const days = ["L","M","M","G","V","S","D"];
+                                const dayVals = [cal.monday, cal.tuesday, cal.wednesday, cal.thursday, cal.friday, cal.saturday, cal.sunday];
+                                const isEditing = gtfsEditingCal === cal.id;
+                                return (
+                                  <div key={cal.id} className="px-3 py-2">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center gap-2">
+                                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: cal.color }} />
+                                        <span className="text-[10px] font-medium">{cal.serviceName}</span>
+                                        <div className="flex items-center gap-0.5 ml-1">
+                                          {days.map((d, i) => (
+                                            <span key={i} className={`text-[8px] w-3.5 h-3.5 rounded flex items-center justify-center font-bold ${
+                                              dayVals[i] ? "bg-blue-500/30 text-blue-400" : "bg-muted/20 text-muted-foreground/40"
+                                            }`}>{d}</span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[8px] text-muted-foreground">
+                                          {cal.startDate} → {cal.endDate}
+                                        </span>
+                                        {cal.cadenceMultiplier !== 1 && (
+                                          <Badge variant="secondary" className="text-[7px] px-1 py-0">
+                                            ×{cal.cadenceMultiplier}
+                                          </Badge>
+                                        )}
+                                        {cal.isVariant && (
+                                          <Badge variant="outline" className="text-[7px] px-1 py-0 border-amber-500/30 text-amber-400">
+                                            variante
+                                          </Badge>
+                                        )}
+                                        <button
+                                          onClick={() => setGtfsEditingCal(isEditing ? null : cal.id)}
+                                          className="text-[9px] text-muted-foreground hover:text-foreground"
+                                        >
+                                          {isEditing ? "Chiudi" : "Dettagli"}
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            if (!confirm(`Eliminare il calendario "${cal.serviceName}"?`)) return;
+                                            try {
+                                              await apiFetch<any>(
+                                                `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars/${cal.id}`,
+                                                { method: "DELETE" }
+                                              );
+                                              setGtfsCalendars(prev => prev.filter((c: any) => c.id !== cal.id));
+                                              setGtfsValidation(null);
+                                            } catch { }
+                                          }}
+                                          className="text-muted-foreground hover:text-red-400 transition-colors"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Expanded: exceptions */}
+                                    {isEditing && (
+                                      <div className="mt-2 pl-4 space-y-1.5">
+                                        <p className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wide">
+                                          Eccezioni ({(cal.exceptions || []).length})
+                                        </p>
+                                        <div className="max-h-[120px] overflow-y-auto space-y-0.5">
+                                          {(cal.exceptions || []).map((exc: any) => (
+                                            <div key={exc.id} className="flex items-center justify-between text-[9px] bg-muted/10 rounded px-2 py-0.5">
+                                              <span className="flex items-center gap-1.5">
+                                                <span className={exc.exceptionType === 1 ? "text-emerald-400" : "text-red-400"}>
+                                                  {exc.exceptionType === 1 ? "+" : "−"}
+                                                </span>
+                                                <span className="text-muted-foreground">{exc.exceptionDate}</span>
+                                                <span>{exc.description || ""}</span>
+                                              </span>
+                                              <button
+                                                onClick={async () => {
+                                                  try {
+                                                    await apiFetch<any>(
+                                                      `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars/${cal.id}/exceptions/${exc.id}`,
+                                                      { method: "DELETE" }
+                                                    );
+                                                    setGtfsCalendars(prev => prev.map((c: any) =>
+                                                      c.id === cal.id
+                                                        ? { ...c, exceptions: (c.exceptions || []).filter((e: any) => e.id !== exc.id) }
+                                                        : c
+                                                    ));
+                                                  } catch { }
+                                                }}
+                                                className="text-muted-foreground hover:text-red-400"
+                                              >
+                                                <X className="w-2.5 h-2.5" />
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                        {/* Add exception */}
+                                        <div className="flex items-center gap-1.5 pt-1">
+                                          <input type="date" value={gtfsNewExcDate}
+                                            onChange={e => setGtfsNewExcDate(e.target.value)}
+                                            className="bg-background border border-border/50 rounded px-1.5 py-0.5 text-[9px] w-28" />
+                                          <input type="text" placeholder="Descrizione" value={gtfsNewExcDesc}
+                                            onChange={e => setGtfsNewExcDesc(e.target.value)}
+                                            className="bg-background border border-border/50 rounded px-1.5 py-0.5 text-[9px] flex-1" />
+                                          <select value={gtfsNewExcType} onChange={e => setGtfsNewExcType(Number(e.target.value))}
+                                            className="bg-background border border-border/50 rounded px-1 py-0.5 text-[9px] w-20">
+                                            <option value={2}>Rimosso</option>
+                                            <option value={1}>Aggiunto</option>
+                                          </select>
+                                          <button
+                                            onClick={async () => {
+                                              if (!gtfsNewExcDate) return;
+                                              try {
+                                                const created = await apiFetch<any>(
+                                                  `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/calendars/${cal.id}/exceptions`,
+                                                  {
+                                                    method: "POST",
+                                                    body: JSON.stringify({ exceptionDate: gtfsNewExcDate, exceptionType: gtfsNewExcType, description: gtfsNewExcDesc }),
+                                                  }
+                                                );
+                                                setGtfsCalendars(prev => prev.map((c: any) =>
+                                                  c.id === cal.id
+                                                    ? { ...c, exceptions: [...(c.exceptions || []), created] }
+                                                    : c
+                                                ));
+                                                setGtfsNewExcDate("");
+                                                setGtfsNewExcDesc("");
+                                              } catch { }
+                                            }}
+                                            className="px-2 py-0.5 bg-emerald-600/20 text-emerald-400 rounded text-[9px] hover:bg-emerald-600/30"
+                                          >
+                                            + Aggiungi
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* 2. Validation + Preview */}
+                        {gtfsCalendars.length > 0 && (
+                          <div className="space-y-3">
+                            <button
+                              onClick={async () => {
+                                if (!pdeResult?.id || !pdeScenarioId) return;
+                                setGtfsValidating(true);
+                                try {
+                                  const result = await apiFetch<any>(
+                                    `/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/validate-gtfs`
+                                  );
+                                  setGtfsValidation(result);
+                                } catch (err: any) {
+                                  alert("Errore validazione: " + err.message);
+                                } finally { setGtfsValidating(false); }
+                              }}
+                              disabled={gtfsValidating}
+                              className="flex items-center gap-2 w-full justify-center bg-amber-500/10 border border-amber-500/20 text-amber-400 px-4 py-2 rounded-lg text-xs font-medium hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                            >
+                              {gtfsValidating ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                              {gtfsValidating ? "Validazione in corso…" : "Valida Feed GTFS"}
+                            </button>
+
+                            {/* Validation results */}
+                            {gtfsValidation && (
+                              <div className={`rounded-lg border p-3 space-y-2 ${
+                                gtfsValidation.valid
+                                  ? "bg-emerald-500/10 border-emerald-500/20"
+                                  : "bg-red-500/10 border-red-500/20"
+                              }`}>
+                                <div className="flex items-center gap-2">
+                                  {gtfsValidation.valid
+                                    ? <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                                    : <AlertTriangle className="w-4 h-4 text-red-400" />}
+                                  <span className={`text-xs font-bold ${gtfsValidation.valid ? "text-emerald-400" : "text-red-400"}`}>
+                                    {gtfsValidation.valid ? "Validazione OK" : `${gtfsValidation.errors.length} errori trovati`}
+                                  </span>
+                                </div>
+
+                                {/* Stats */}
+                                <div className="grid grid-cols-4 gap-2 text-[9px]">
+                                  <div><span className="text-muted-foreground">Agenzia:</span> <span className="font-medium">1</span></div>
+                                  <div><span className="text-muted-foreground">Linee:</span> <span className="font-medium">{gtfsValidation.stats.routes}</span></div>
+                                  <div><span className="text-muted-foreground">Corse:</span> <span className="font-medium">{gtfsValidation.stats.trips.toLocaleString("it-IT")}</span></div>
+                                  <div><span className="text-muted-foreground">Fermate:</span> <span className="font-medium">{gtfsValidation.stats.stops}</span></div>
+                                  <div><span className="text-muted-foreground">Stop times:</span> <span className="font-medium">{gtfsValidation.stats.stopTimes.toLocaleString("it-IT")}</span></div>
+                                  <div><span className="text-muted-foreground">Shapes:</span> <span className="font-medium">{gtfsValidation.stats.shapes}</span></div>
+                                  <div><span className="text-muted-foreground">Calendari:</span> <span className="font-medium">{gtfsValidation.stats.calendars}</span></div>
+                                  <div><span className="text-muted-foreground">Eccezioni:</span> <span className="font-medium">{gtfsValidation.stats.calendarDates}</span></div>
+                                </div>
+
+                                {/* Errors */}
+                                {gtfsValidation.errors.length > 0 && (
+                                  <div className="space-y-0.5 pt-1">
+                                    {gtfsValidation.errors.map((e: any, i: number) => (
+                                      <div key={i} className="flex items-start gap-1.5 text-[9px] text-red-400">
+                                        <span className="shrink-0">❌</span>
+                                        <span>{e.message}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* Warnings */}
+                                {gtfsValidation.warnings.length > 0 && (
+                                  <div className="space-y-0.5 pt-1">
+                                    {gtfsValidation.warnings.map((w: any, i: number) => (
+                                      <div key={i} className="flex items-start gap-1.5 text-[9px] text-amber-400">
+                                        <span className="shrink-0">⚠️</span>
+                                        <span>{w.message}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {/* 3. Export button */}
+                            {gtfsValidation?.valid && (
+                              <button
+                                onClick={async () => {
+                                  if (!pdeResult?.id || !pdeScenarioId) return;
+                                  setGtfsExporting(true);
+                                  try {
+                                    const apiBase = getApiBase();
+                                    const url = `${apiBase}/api/scenarios/${pdeScenarioId}/programs/${pdeResult.id}/export-gtfs`;
+                                    const resp = await fetch(url);
+                                    if (!resp.ok) {
+                                      const err = await resp.json().catch(() => ({ error: "Download fallito" }));
+                                      throw new Error(err.error || "Errore");
+                                    }
+                                    const blob = await resp.blob();
+                                    const a = document.createElement("a");
+                                    a.href = URL.createObjectURL(blob);
+                                    const cd = resp.headers.get("content-disposition") || "";
+                                    const fnMatch = cd.match(/filename="?([^"]+)"?/);
+                                    a.download = fnMatch ? fnMatch[1] : "gtfs_export.zip";
+                                    document.body.appendChild(a);
+                                    a.click();
+                                    document.body.removeChild(a);
+                                    URL.revokeObjectURL(a.href);
+                                  } catch (err: any) {
+                                    alert("Errore export: " + err.message);
+                                  } finally { setGtfsExporting(false); }
+                                }}
+                                disabled={gtfsExporting}
+                                className="flex items-center gap-2 w-full justify-center bg-emerald-600 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-emerald-500 transition-colors disabled:opacity-50"
+                              >
+                                {gtfsExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                {gtfsExporting ? "Esportazione in corso…" : "Scarica GTFS ZIP"}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 )}
 

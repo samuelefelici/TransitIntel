@@ -2,8 +2,8 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
-import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenarioServicePrograms } from "@workspace/db/schema";
-import { eq, sql, desc } from "drizzle-orm";
+import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenarioServicePrograms, coincidenceZones, coincidenceZoneStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsStops, scenarioProgramCalendars, scenarioProgramCalendarExceptions } from "@workspace/db/schema";
+import { eq, sql, desc, inArray } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
 
 const router: IRouter = Router();
@@ -89,6 +89,25 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
       color = `#${c.slice(6, 8)}${c.slice(4, 6)}${c.slice(2, 4)}`;
     }
 
+    // ── Extract ExtendedData fields (SimpleData + Data) ──
+    const extData: Record<string, string> = {};
+    // <SimpleData name="KEY">VALUE</SimpleData>  (inside SchemaData)
+    const simpleDataRegex = /<SimpleData\s+name="([^"]+)">([\s\S]*?)<\/SimpleData>/gi;
+    let sdm: RegExpExecArray | null;
+    while ((sdm = simpleDataRegex.exec(block)) !== null) {
+      extData[sdm[1]] = sdm[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim();
+    }
+    // <Data name="KEY"><value>VALUE</value></Data>
+    const dataRegex = /<Data\s+name="([^"]+)">\s*<value>([\s\S]*?)<\/value>\s*<\/Data>/gi;
+    let dm: RegExpExecArray | null;
+    while ((dm = dataRegex.exec(block)) !== null) {
+      extData[dm[1]] = dm[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim();
+    }
+
+    // If DENOMINAZ/DENOMINAZI is present, use it as the feature name; SIGLAUNIV as stopId
+    const resolvedName = extData["DENOMINAZI"] || extData["DENOMINAZ"] || extData["denominazi"] || extData["denominaz"] || name;
+    const stopId = extData["SIGLAUNIV"] || extData["siglauniv"] || "";
+
     // Parse coordinates helper
     const parseCoords = (coordStr: string): number[][] => {
       return coordStr
@@ -110,7 +129,7 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
         features.push({
           type: "Feature",
           geometry: { type: "LineString", coordinates: coords },
-          properties: { name, description, color, featureType: "route" },
+          properties: { name: resolvedName, description, color, featureType: "route", ...extData },
         });
       }
       continue;
@@ -132,7 +151,7 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
           geometry: lineStrings.length === 1
             ? { type: "LineString", coordinates: lineStrings[0] }
             : { type: "MultiLineString", coordinates: lineStrings },
-          properties: { name, description, color, featureType: "route" },
+          properties: { name: resolvedName, description, color, featureType: "route", ...extData },
         });
       }
       // Also check for Points in MultiGeometry
@@ -144,7 +163,7 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
           features.push({
             type: "Feature",
             geometry: { type: "Point", coordinates: coords[0] },
-            properties: { name, description, color, featureType: "stop" },
+            properties: { name: resolvedName, stopId, description, color, featureType: "stop", ...extData },
           });
         }
       }
@@ -159,7 +178,7 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
         features.push({
           type: "Feature",
           geometry: { type: "Polygon", coordinates: [coords] },
-          properties: { name, description, color, featureType: "area" },
+          properties: { name: resolvedName, description, color, featureType: "area", ...extData },
         });
       }
       continue;
@@ -173,7 +192,7 @@ function parseKMLToGeoJSON(kmlString: string): GeoJSONFeatureCollection {
         features.push({
           type: "Feature",
           geometry: { type: "Point", coordinates: coords[0] },
-          properties: { name, description, color, featureType: "stop" },
+          properties: { name: resolvedName, stopId, description, color, featureType: "stop", ...extData },
         });
       }
     }
@@ -260,7 +279,7 @@ interface StopDistribution {
 
 interface ScenarioAnalysis {
   routes: { name: string; lengthKm: number; coordinates: number[][] }[];
-  stops: { name: string; lng: number; lat: number }[];
+  stops: { name: string; stopId?: string; lng: number; lat: number }[];
   totalLengthKm: number;
   poiCoverage: {
     radius: number;
@@ -320,7 +339,7 @@ async function analyzeScenario(
         });
       }
     } else if (f.geometry.type === "Point") {
-      stops.push({ name: props.name || `Fermata ${stops.length + 1}`, lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] });
+      stops.push({ name: props.name || props.DENOMINAZI || props.DENOMINAZ || `Fermata ${stops.length + 1}`, stopId: props.stopId || props.SIGLAUNIV || "", lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] });
     }
   }
 
@@ -1101,6 +1120,71 @@ router.delete("/scenarios/:id", async (req, res) => {
   }
 });
 
+// POST /api/scenarios/:id/reimport-stops — re-import stops from KML, updating only Point features
+router.post("/scenarios/:id/reimport-stops", upload.single("stopsFile"), async (req, res) => {
+  try {
+    const file = (req as any).file as Express.Multer.File | undefined;
+    if (!file) { res.status(400).json({ error: "Nessun file caricato" }); return; }
+
+    const scenarioId = req.params.id as string;
+    const [row] = await db.select().from(scenarios).where(eq(scenarios.id, scenarioId)).limit(1);
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    const kml = extractKML(file.buffer, file.originalname);
+    const geo = parseKMLToGeoJSON(kml);
+
+    // Collect new stop features from the KML
+    const newStops: GeoJSONFeature[] = [];
+    for (const f of geo.features) {
+      if (f.geometry.type === "Point") {
+        f.properties.featureType = "stop";
+        newStops.push(f);
+      } else if (f.geometry.type === "LineString") {
+        for (const coord of f.geometry.coordinates) {
+          newStops.push({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: coord },
+            properties: { name: f.properties?.name || "Fermata", featureType: "stop" },
+          });
+        }
+      }
+    }
+
+    if (newStops.length === 0) {
+      res.status(400).json({ error: "Nessuna fermata (Point) trovata nel file KML" }); return;
+    }
+
+    // Replace only Point features in the existing GeoJSON, keep routes/areas
+    const existingGeo = row.geojson as any as GeoJSONFeatureCollection;
+    const nonStopFeatures = existingGeo.features.filter(f => f.geometry.type !== "Point");
+    const mergedFeatures = [...nonStopFeatures, ...newStops];
+    const updatedGeo: GeoJSONFeatureCollection = { type: "FeatureCollection", features: mergedFeatures };
+
+    // Recompute stats
+    let stopsCount = 0;
+    let totalLength = 0;
+    for (const f of updatedGeo.features) {
+      if (f.geometry.type === "Point") stopsCount++;
+      if (f.geometry.type === "LineString") totalLength += lineLength(f.geometry.coordinates);
+      if (f.geometry.type === "MultiLineString") {
+        for (const line of f.geometry.coordinates) totalLength += lineLength(line);
+      }
+    }
+
+    const [updated] = await db.update(scenarios).set({
+      geojson: updatedGeo as any,
+      stopsCount,
+      lengthKm: Math.round(totalLength * 100) / 100,
+    }).where(eq(scenarios.id, scenarioId)).returning();
+
+    req.log.info({ id: scenarioId, newStops: newStops.length }, "Reimported stops from KML");
+    res.json({ ok: true, stopsCount: newStops.length, scenario: updated });
+  } catch (err: any) {
+    req.log.error(err, "Error reimporting stops");
+    res.status(400).json({ error: err.message || "Errore nel reimport delle fermate" });
+  }
+});
+
 // PATCH /api/scenarios/:id — update name/description/color
 router.patch("/scenarios/:id", async (req, res) => {
   try {
@@ -1181,6 +1265,13 @@ interface GenerateProgramConfig {
   dwellTimeSec?: number;
   terminalTimeSec?: number;
   bidirectional?: boolean;
+  // Phase 17: Enhanced scenario params
+  coincidenceZoneIds?: string[];      // UUID[] of selected coincidence zones
+  selectedPoiCategories?: string[];   // POI categories to prioritize
+  lineTravelTimes?: Record<string, number>; // lineIndex → standard travel time in minutes (legacy)
+  stopTransitTimes?: Record<string, number[]>; // lineIndex → array of inter-stop transit times in minutes
+  useTrafficSlowdown?: boolean;       // apply per-arc traffic slowdown
+  stopOrder?: Record<string, { name: string; stopId?: string; lng: number; lat: number }[]>; // user-defined stop order per line
 }
 
 interface GeneratedTrip {
@@ -1191,7 +1282,7 @@ interface GeneratedTrip {
   departureTime: string;
   arrivalTime: string;
   travelTimeMin: number;
-  stopTimes: { stopName: string; lng: number; lat: number; arrival: string; departure: string }[];
+  stopTimes: { stopName: string; stopId?: string; lng: number; lat: number; arrival: string; departure: string }[];
   timeWindow: string;
   cadenceMin: number;
 }
@@ -1229,6 +1320,16 @@ interface GeneratedProgram {
   };
   stops: { name: string; lng: number; lat: number; demandScore: number }[];
   coincidences: { stopName: string; lng: number; lat: number; lines: string[] }[];
+  // Phase 17 — enhanced data
+  coincidenceZoneSync: {
+    zoneName: string;
+    hubType: string;
+    hubLat: number;
+    hubLng: number;
+    syncedTrips: { tripId: string; lineName: string; departureTime: string; syncedWithArrival: string; origin: string }[];
+  }[];
+  trafficSlowdownApplied: boolean;
+  perArcSlowdowns: { lineIndex: number; lineName: string; segments: { from: string; to: string; baseMin: number; adjustedMin: number; congestion: number }[] }[];
 }
 
 /* ── Demand scores per stop ── */
@@ -1299,10 +1400,10 @@ function estimateTravelTime(distKm: number, baseSpeedKmh: number, congestionLeve
 
 /* ── Assign stops to nearest line ── */
 function assignStopsToLines(
-  allStops: { name: string; lng: number; lat: number }[],
+  allStops: { name: string; stopId?: string; lng: number; lat: number }[],
   lines: { coords: number[][] }[],
-): Map<number, { name: string; lng: number; lat: number }[]> {
-  const map = new Map<number, { name: string; lng: number; lat: number }[]>();
+): Map<number, { name: string; stopId?: string; lng: number; lat: number }[]> {
+  const map = new Map<number, { name: string; stopId?: string; lng: number; lat: number }[]>();
   for (let i = 0; i < lines.length; i++) map.set(i, []);
 
   for (const stop of allStops) {
@@ -1322,9 +1423,9 @@ function assignStopsToLines(
 
 /* ── Order stops along a line ── */
 function orderStopsAlongLine(
-  stops: { name: string; lng: number; lat: number }[],
+  stops: { name: string; stopId?: string; lng: number; lat: number }[],
   lineCoords: number[][],
-): { name: string; lng: number; lat: number }[] {
+): { name: string; stopId?: string; lng: number; lat: number }[] {
   if (stops.length <= 1) return stops;
 
   // For each stop, find its projection position along the line (0..1)
@@ -1382,6 +1483,28 @@ function autoGenerateStops(lineCoords: number[][], intervalKm = 0.4): { name: st
   return stops;
 }
 
+/** If most stops share the same name (e.g. all "Fermate"), number them to make them distinguishable */
+function deduplicateStopNames(stops: { name: string; stopId?: string; lng: number; lat: number }[]): typeof stops {
+  if (stops.length <= 1) return stops;
+  const names = stops.map(s => s.name);
+  const freq = new Map<string, number>();
+  for (const n of names) freq.set(n, (freq.get(n) || 0) + 1);
+  // Find the most common name
+  let maxName = "", maxCount = 0;
+  for (const [n, c] of freq) { if (c > maxCount) { maxCount = c; maxName = n; } }
+  // If >60% of stops share the same name, number them
+  if (maxCount > stops.length * 0.6) {
+    let counter = 1;
+    return stops.map(s => {
+      if (s.name === maxName) {
+        return { ...s, name: `${maxName} ${counter++}` };
+      }
+      return s;
+    });
+  }
+  return stops;
+}
+
 function minToHHMM(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
   const m = Math.round(minutes % 60);
@@ -1399,7 +1522,7 @@ interface TerminalCoincidence {
 
 function detectTerminalCoincidences(
   rawLines: { name: string; coords: number[][] }[],
-  stopAssignment: Map<number, { name: string; lng: number; lat: number }[]>,
+  stopAssignment: Map<number, { name: string; stopId?: string; lng: number; lat: number }[]>,
   thresholdKm = 0.3,
 ): TerminalCoincidence[] {
   // Collect all terminals (first and last stop of each line)
@@ -1523,6 +1646,185 @@ function synchronizeCoincidences(
   return adjusted;
 }
 
+
+/* ── Phase 17: Fetch coincidence zone data with hub schedules and bus lines ── */
+interface CoincidenceZoneData {
+  id: string;
+  name: string;
+  hubType: string;
+  hubLat: number;
+  hubLng: number;
+  radiusKm: number;
+  stops: { gtfsStopId: string; stopName: string; stopLat: number; stopLon: number }[];
+  hubArrivals: { origin: string; times: string[] }[];
+  hubDepartures: { destination: string; times: string[] }[];
+  busLines: { routeId: string; routeShortName: string; times: string[] }[];
+}
+
+async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZoneData[]> {
+  if (!zoneIds || zoneIds.length === 0) return [];
+
+  const zones = await db.select().from(coincidenceZones).where(
+    sql`${coincidenceZones.id} IN (${sql.join(zoneIds.map(id => sql`${id}`), sql`, `)})`
+  );
+
+  const result: CoincidenceZoneData[] = [];
+
+  for (const zone of zones) {
+    // Fetch zone stops
+    const zoneStops = await db.select({
+      gtfsStopId: coincidenceZoneStops.gtfsStopId,
+      stopName: coincidenceZoneStops.stopName,
+      stopLat: coincidenceZoneStops.stopLat,
+      stopLon: coincidenceZoneStops.stopLon,
+    }).from(coincidenceZoneStops).where(eq(coincidenceZoneStops.zoneId, zone.id));
+
+    // For railway/port hubs: get the hub schedules from the hub data
+    // We make a request to our own API or query it inline
+    let hubArrivals: { origin: string; times: string[] }[] = [];
+    let hubDepartures: { destination: string; times: string[] }[] = [];
+
+    // Try to get schedules from hub config (stored in metadata)
+    // Since the INTERMODAL_HUBS are defined in coincidence-zones.ts, we fetch via internal API
+    // Alternative: import from coincidence-zones or fetch from DB directly
+    // For now, let's query via fetch to our own schedules endpoint
+    try {
+      // We fetch from our internal route
+      const schedResp = await fetch(`http://localhost:${process.env.PORT || 3000}/api/coincidence-zones/${zone.id}/schedules`);
+      if (schedResp.ok) {
+        const schedData = await schedResp.json() as any;
+        hubArrivals = schedData.arrivals || [];
+        hubDepartures = schedData.departures || [];
+      }
+    } catch { /* ignore — no schedule available */ }
+
+    // Fetch bus lines serving this zone's stops
+    let busLines: { routeId: string; routeShortName: string; times: string[] }[] = [];
+    if (zoneStops.length > 0) {
+      const stopIds = zoneStops.map(s => s.gtfsStopId);
+      const batchSize = 200;
+      let allStopTimes: { stopId: string; tripId: string; departureTime: string | null }[] = [];
+      for (let i = 0; i < stopIds.length; i += batchSize) {
+        const batch = stopIds.slice(i, i + batchSize);
+        const rows = await db.select({
+          stopId: gtfsStopTimes.stopId,
+          tripId: gtfsStopTimes.tripId,
+          departureTime: gtfsStopTimes.departureTime,
+        }).from(gtfsStopTimes).where(
+          sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(sid => sql`${sid}`), sql`, `)})`
+        );
+        allStopTimes.push(...rows);
+      }
+
+      // Map trips → routes
+      const tripIds = [...new Set(allStopTimes.map(st => st.tripId))];
+      const tripRouteMap: Record<string, string> = {};
+      for (let i = 0; i < tripIds.length; i += batchSize) {
+        const batch = tripIds.slice(i, i + batchSize);
+        const rows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
+          .from(gtfsTrips).where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(tid => sql`${tid}`), sql`, `)})`);
+        for (const r of rows) tripRouteMap[r.tripId] = r.routeId;
+      }
+
+      // Get route names
+      const routeIds = [...new Set(Object.values(tripRouteMap))];
+      const routeNameMap: Record<string, string> = {};
+      if (routeIds.length > 0) {
+        const routes = await db.select({
+          routeId: gtfsRoutes.routeId,
+          shortName: gtfsRoutes.routeShortName,
+        }).from(gtfsRoutes).where(
+          sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(rid => sql`${rid}`), sql`, `)})`
+        );
+        for (const r of routes) routeNameMap[r.routeId] = r.shortName || r.routeId;
+      }
+
+      // Aggregate by route
+      const byRoute: Record<string, Set<string>> = {};
+      for (const st of allStopTimes) {
+        const rId = tripRouteMap[st.tripId]; if (!rId) continue;
+        if (!byRoute[rId]) byRoute[rId] = new Set();
+        if (st.departureTime) byRoute[rId].add(st.departureTime);
+      }
+
+      busLines = Object.entries(byRoute).map(([rId, times]) => ({
+        routeId: rId,
+        routeShortName: routeNameMap[rId] || rId,
+        times: [...times].sort(),
+      }));
+    }
+
+    result.push({
+      id: zone.id,
+      name: zone.name,
+      hubType: zone.hubType,
+      hubLat: zone.hubLat,
+      hubLng: zone.hubLng,
+      radiusKm: zone.radiusKm,
+      stops: zoneStops,
+      hubArrivals,
+      hubDepartures,
+      busLines,
+    });
+  }
+
+  return result;
+}
+
+/* ── Phase 17: Per-arc traffic congestion (detailed per segment) ── */
+async function getPerArcTrafficProfile(
+  lineStops: { name: string; lng: number; lat: number }[],
+  radiusKm = 0.5,
+): Promise<{ from: string; to: string; hourlycongestion: Map<number, number> }[]> {
+  const segments: { from: string; to: string; hourlycongestion: Map<number, number> }[] = [];
+
+  for (let i = 0; i < lineStops.length - 1; i++) {
+    const s1 = lineStops[i], s2 = lineStops[i + 1];
+    const midLat = (s1.lat + s2.lat) / 2, midLng = (s1.lng + s2.lng) / 2;
+    const pad = radiusKm / 111;
+
+    const rows = await db.execute<{ hour: string; avg_congestion: string }>(sql`
+      SELECT
+        EXTRACT(HOUR FROM captured_at)::text AS hour,
+        AVG(congestion_level)::text AS avg_congestion
+      FROM traffic_snapshots
+      WHERE lng BETWEEN ${midLng - pad} AND ${midLng + pad}
+        AND lat BETWEEN ${midLat - pad} AND ${midLat + pad}
+      GROUP BY EXTRACT(HOUR FROM captured_at)
+      ORDER BY hour
+    `);
+
+    const hourlyMap = new Map<number, number>();
+    for (const r of rows.rows) {
+      hourlyMap.set(parseInt(r.hour), parseFloat(r.avg_congestion) || 0);
+    }
+    segments.push({ from: s1.name, to: s2.name, hourlycongestion: hourlyMap });
+  }
+
+  return segments;
+}
+
+/* ── Phase 17: Find best bus departure synced with hub arrival ── */
+function findSyncedDepartures(
+  hubArrivals: { origin: string; times: string[] }[],
+  platformWalkMin: number,
+  serviceStartH: number,
+  serviceEndH: number,
+): { arrivalTime: string; origin: string; idealBusDeparture: number }[] {
+  const synced: { arrivalTime: string; origin: string; idealBusDeparture: number }[] = [];
+  for (const arr of hubArrivals) {
+    for (const t of arr.times) {
+      const [h, m] = t.split(":").map(Number);
+      const arrivalMin = h * 60 + (m || 0);
+      if (h < serviceStartH || h >= serviceEndH) continue;
+      // Bus should depart platformWalkMin + 2 min buffer after train arrival
+      const idealMin = arrivalMin + platformWalkMin + 2;
+      synced.push({ arrivalTime: t, origin: arr.origin, idealBusDeparture: idealMin });
+    }
+  }
+  return synced;
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    MAIN ENGINE — Multi-line Service Program Generator
    ══════════════════════════════════════════════════════════════════════ */
@@ -1531,6 +1833,7 @@ async function generateServiceProgram(
   config: GenerateProgramConfig,
   poiRows: { category: string; lng: number; lat: number; name: string | null }[],
   censusRows: { population: number; centroidLng: number; centroidLat: number }[],
+  coincidenceZoneData: CoincidenceZoneData[] = [],
 ): Promise<GeneratedProgram> {
   const {
     targetKm,
@@ -1542,11 +1845,16 @@ async function generateServiceProgram(
     dwellTimeSec = 25,
     terminalTimeSec = 300,
     bidirectional = true,
+    lineTravelTimes = {},
+    stopTransitTimes = {},
+    useTrafficSlowdown = true,
+    selectedPoiCategories,
+    stopOrder,
   } = config;
 
   // ── 1. Extract lines and stops from GeoJSON ──
   const rawLines: { name: string; coords: number[][] }[] = [];
-  const allStops: { name: string; lng: number; lat: number }[] = [];
+  const allStops: { name: string; stopId?: string; lng: number; lat: number }[] = [];
 
   for (const f of geojson.features) {
     const geomType = f.geometry.type;
@@ -1564,12 +1872,41 @@ async function generateServiceProgram(
       }
     } else if (geomType === "Point") {
       allStops.push({
-        name: f.properties?.name || `Fermata ${allStops.length + 1}`,
+        name: f.properties?.name || f.properties?.DENOMINAZI || f.properties?.DENOMINAZ || `Fermata ${allStops.length + 1}`,
+        stopId: f.properties?.stopId || f.properties?.SIGLAUNIV || "",
         lng: f.geometry.coordinates[0],
         lat: f.geometry.coordinates[1],
       });
     }
   }
+
+  // ── 1b. Inject coincidence zone stops as mandatory stops ──
+  const czStopsInjected: { name: string; lng: number; lat: number; zoneId: string; hubType: string }[] = [];
+  for (const cz of coincidenceZoneData) {
+    // Add the hub center as a mandatory stop
+    const hubStop = { name: `[CZ] ${cz.name}`, lng: cz.hubLng, lat: cz.hubLat };
+    const alreadyExists = allStops.some(s => haversineKm(s.lat, s.lng, hubStop.lat, hubStop.lng) < 0.05);
+    if (!alreadyExists) {
+      allStops.push(hubStop);
+    }
+    czStopsInjected.push({ ...hubStop, zoneId: cz.id, hubType: cz.hubType });
+
+    // Also add zone bus stops that are near any line
+    for (const zs of cz.stops) {
+      const nearLine = rawLines.some(l => pointToLineDistance(zs.stopLon, zs.stopLat, l.coords) < 0.3);
+      if (nearLine) {
+        const exists = allStops.some(s => haversineKm(s.lat, s.lng, zs.stopLat, zs.stopLon) < 0.03);
+        if (!exists) {
+          allStops.push({ name: zs.stopName, lng: zs.stopLon, lat: zs.stopLat });
+        }
+      }
+    }
+  }
+
+  // ── 1c. Filter POI by selected categories if provided ──
+  const filteredPoiRows = selectedPoiCategories && selectedPoiCategories.length > 0
+    ? poiRows.filter(p => selectedPoiCategories.includes(p.category))
+    : poiRows;
 
   // ── 2. Compute line lengths ──
   const lineLengths = rawLines.map(l => lineLength(l.coords));
@@ -1587,7 +1924,19 @@ async function generateServiceProgram(
     } else {
       // Order existing stops along the line
       lineStops = orderStopsAlongLine(lineStops, rawLines[i].coords);
+      // Fix duplicate names (e.g. all "Fermate")
+      lineStops = deduplicateStopNames(lineStops);
       stopAssignment.set(i, lineStops);
+    }
+  }
+
+  // ── 3b. Apply user-defined stop order (from drag & drop) ──
+  if (stopOrder) {
+    for (const [lineIdxStr, userStops] of Object.entries(stopOrder)) {
+      const li = Number(lineIdxStr);
+      if (userStops && userStops.length >= 2) {
+        stopAssignment.set(li, userStops);
+      }
     }
   }
 
@@ -1619,13 +1968,28 @@ async function generateServiceProgram(
     const lineTargetKm = targetKm * (lengthKm / totalNetworkKm);
 
     // Demand scores
-    const demandScores = computeStopDemandScores(lineStops, poiRows, censusRows);
+    const demandScores = computeStopDemandScores(lineStops, filteredPoiRows, censusRows);
     const avgDemand = demandScores.length > 0 ? demandScores.reduce((a, b) => a + b, 0) / demandScores.length : 1;
 
     // Inter-stop distances
     const interStopKm: number[] = [];
     for (let i = 1; i < lineStops.length; i++) {
       interStopKm.push(haversineKm(lineStops[i - 1].lat, lineStops[i - 1].lng, lineStops[i].lat, lineStops[i].lng));
+    }
+    const totalLineDistKm = interStopKm.reduce((a, b) => a + b, 0) || lengthKm;
+
+    // Phase 17: Standard travel time per line → compute per-segment base time
+    const standardTravelMin = lineTravelTimes[String(li)];
+    const useStandardTime = standardTravelMin !== undefined && standardTravelMin > 0;
+
+    // Phase 17: Per-stop transit times (fermata-per-fermata)
+    const lineStopTransits = stopTransitTimes[String(li)];
+    const useStopTransits = Array.isArray(lineStopTransits) && lineStopTransits.length > 0;
+
+    // Phase 17: Per-arc traffic profile (detailed per segment)
+    let perArcProfile: { from: string; to: string; hourlycongestion: Map<number, number> }[] | null = null;
+    if (useTrafficSlowdown) {
+      perArcProfile = await getPerArcTrafficProfile(lineStops, 0.5);
     }
 
     // Cadence per window for this line
@@ -1670,14 +2034,46 @@ async function generateServiceProgram(
             const departureMin = i < orderedStops.length - 1 ? arrivalMin + dwellMin : arrivalMin;
             stopTimes.push({
               stopName: orderedStops[i].name,
+              stopId: orderedStops[i].stopId || "",
               lng: orderedStops[i].lng,
               lat: orderedStops[i].lat,
               arrival: minToHHMM(arrivalMin),
               departure: minToHHMM(departureMin),
             });
             if (i < orderedStops.length - 1) {
-              const segKm = interStopKm[dir === "andata" ? i : orderedStops.length - 2 - i] || 0.4;
-              const segTimeMin = estimateTravelTime(segKm, avgSpeedKmh, congestion);
+              const segIdx = dir === "andata" ? i : orderedStops.length - 2 - i;
+              const segKm = interStopKm[segIdx] || 0.4;
+
+              let segTimeMin: number;
+              if (useStopTransits && lineStopTransits[segIdx] !== undefined && lineStopTransits[segIdx] > 0) {
+                // Priority 1: User-defined per-stop transit time
+                const baseSegMin = lineStopTransits[segIdx];
+                if (useTrafficSlowdown && perArcProfile && perArcProfile[segIdx]) {
+                  const arcCongestion = perArcProfile[segIdx].hourlycongestion.get(hourOfDay) ?? 0.3;
+                  const slowdownFactor = Math.max(1.0, 1 + arcCongestion * 0.65);
+                  segTimeMin = baseSegMin * slowdownFactor;
+                } else {
+                  segTimeMin = baseSegMin;
+                }
+              } else if (useStandardTime) {
+                // Priority 2: Standard travel time proportionally distributed
+                const baseSegMin = standardTravelMin * (segKm / totalLineDistKm);
+                if (useTrafficSlowdown && perArcProfile && perArcProfile[segIdx]) {
+                  const arcCongestion = perArcProfile[segIdx].hourlycongestion.get(hourOfDay) ?? 0.3;
+                  const slowdownFactor = Math.max(1.0, 1 + arcCongestion * 0.65);
+                  segTimeMin = baseSegMin * slowdownFactor;
+                } else {
+                  segTimeMin = baseSegMin;
+                }
+              } else {
+                // Priority 3: avgSpeedKmh based
+                if (useTrafficSlowdown && perArcProfile && perArcProfile[segIdx]) {
+                  const arcCongestion = perArcProfile[segIdx].hourlycongestion.get(hourOfDay) ?? congestion;
+                  segTimeMin = estimateTravelTime(segKm, avgSpeedKmh, arcCongestion);
+                } else {
+                  segTimeMin = estimateTravelTime(segKm, avgSpeedKmh, congestion);
+                }
+              }
               runningMin = departureMin + segTimeMin;
             }
           }
@@ -1735,6 +2131,121 @@ async function generateServiceProgram(
   const syncedTrips = synchronizeCoincidences(allTrips, coincidences);
   // Replace allTrips with synced version
   allTrips.splice(0, allTrips.length, ...syncedTrips);
+
+  // ── 6c. Phase 17: Sync trips with coincidence zone hub arrivals ──
+  const coincidenceZoneSyncResults: GeneratedProgram["coincidenceZoneSync"] = [];
+  for (const cz of coincidenceZoneData) {
+    if (!["railway", "port"].includes(cz.hubType)) continue;
+    if (cz.hubArrivals.length === 0) continue;
+
+    // Find trips that pass near this hub
+    const hubTrips: { tripIdx: number; stopIdx: number; timeMin: number }[] = [];
+    for (let ti = 0; ti < allTrips.length; ti++) {
+      const trip = allTrips[ti];
+      for (let si = 0; si < trip.stopTimes.length; si++) {
+        const st = trip.stopTimes[si];
+        const d = haversineKm(cz.hubLat, cz.hubLng, st.lat, st.lng);
+        if (d <= cz.radiusKm + 0.2) {
+          const parts = st.departure.split(":");
+          hubTrips.push({ tripIdx: ti, stopIdx: si, timeMin: parseInt(parts[0]) * 60 + parseInt(parts[1]) });
+          break;
+        }
+      }
+    }
+
+    if (hubTrips.length === 0) continue;
+
+    // Get ideal bus departure times based on hub arrivals
+    // platformWalkMinutes: estimated from hub type
+    const platformWalk = cz.hubType === "port" ? 8 : 3;
+    const idealDepartures = findSyncedDepartures(cz.hubArrivals, platformWalk, serviceStartH, serviceEndH);
+
+    const zoneSynced: typeof coincidenceZoneSyncResults[0]["syncedTrips"] = [];
+
+    for (const ideal of idealDepartures) {
+      // Find the closest bus trip departure to this ideal time
+      let bestTripIdx = -1;
+      let bestDelta = Infinity;
+      for (const ht of hubTrips) {
+        const delta = Math.abs(ht.timeMin - ideal.idealBusDeparture);
+        if (delta < bestDelta && delta <= 15) { // Max 15 min sync window
+          bestDelta = delta;
+          bestTripIdx = ht.tripIdx;
+        }
+      }
+      if (bestTripIdx >= 0) {
+        const trip = allTrips[bestTripIdx];
+        // Shift the trip to align with ideal departure
+        const hubStop = hubTrips.find(h => h.tripIdx === bestTripIdx)!;
+        const currentDepMin = hubStop.timeMin;
+        const deltaMin = ideal.idealBusDeparture - currentDepMin;
+
+        if (Math.abs(deltaMin) > 0.5 && Math.abs(deltaMin) <= 10) {
+          // Shift entire trip
+          for (const st of trip.stopTimes) {
+            const aParts = st.arrival.split(":");
+            const dParts = st.departure.split(":");
+            const aMin = parseInt(aParts[0]) * 60 + parseInt(aParts[1]) + deltaMin;
+            const dMin = parseInt(dParts[0]) * 60 + parseInt(dParts[1]) + deltaMin;
+            st.arrival = minToHHMM(aMin);
+            st.departure = minToHHMM(dMin);
+          }
+          trip.departureTime = trip.stopTimes[0].departure;
+          trip.arrivalTime = trip.stopTimes[trip.stopTimes.length - 1].arrival;
+        }
+
+        zoneSynced.push({
+          tripId: trip.tripId,
+          lineName: trip.lineName,
+          departureTime: trip.departureTime,
+          syncedWithArrival: ideal.arrivalTime,
+          origin: ideal.origin,
+        });
+      }
+    }
+
+    if (zoneSynced.length > 0) {
+      coincidenceZoneSyncResults.push({
+        zoneName: cz.name,
+        hubType: cz.hubType,
+        hubLat: cz.hubLat,
+        hubLng: cz.hubLng,
+        syncedTrips: zoneSynced,
+      });
+    }
+  }
+
+  // ── 6d. Build per-arc slowdown report ──
+  const perArcSlowdowns: GeneratedProgram["perArcSlowdowns"] = [];
+  if (useTrafficSlowdown) {
+    for (let li = 0; li < rawLines.length; li++) {
+      const lineStops = stopAssignment.get(li) || [];
+      if (lineStops.length < 2) continue;
+      const arcProfile = await getPerArcTrafficProfile(lineStops, 0.5);
+      const segments = arcProfile.map((arc, i) => {
+        const segKm = haversineKm(lineStops[i].lat, lineStops[i].lng, lineStops[i + 1].lat, lineStops[i + 1].lng);
+        const avgCong = arc.hourlycongestion.size > 0
+          ? [...arc.hourlycongestion.values()].reduce((a, b) => a + b, 0) / arc.hourlycongestion.size
+          : 0.3;
+        const standardMin = lineTravelTimes[String(li)]
+          ? lineTravelTimes[String(li)] * (segKm / (lineLengths[li] || 1))
+          : (segKm / avgSpeedKmh) * 60;
+        const slowdownFactor = Math.max(1.0, 1 + avgCong * 0.65);
+        return {
+          from: arc.from,
+          to: arc.to,
+          baseMin: Math.round(standardMin * 10) / 10,
+          adjustedMin: Math.round(standardMin * slowdownFactor * 10) / 10,
+          congestion: Math.round(avgCong * 100) / 100,
+        };
+      });
+      perArcSlowdowns.push({
+        lineIndex: li,
+        lineName: rawLines[li].name,
+        segments,
+      });
+    }
+  }
 
   // ── 7. Aggregate metrics ──
   const peakTrips = allTrips.filter(t => t.timeWindow.includes("punta"));
@@ -1797,8 +2308,131 @@ async function generateServiceProgram(
       lat: c.lat,
       lines: c.lineIndices.map(li => rawLines[li]?.name || "Linea " + (li + 1)),
     })),
+    // Phase 17 data
+    coincidenceZoneSync: coincidenceZoneSyncResults,
+    trafficSlowdownApplied: useTrafficSlowdown,
+    perArcSlowdowns,
   };
 }
+
+
+// ─── GET /api/scenarios/:id/line-stops ────────────────────────────────
+// Returns lines with stops, inter-stop distances, and auto-calculated transit times
+router.get("/scenarios/:id/line-stops", async (req, res) => {
+  try {
+    const [row] = await db.select().from(scenarios).where(eq(scenarios.id, req.params.id)).limit(1);
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    const geojson = row.geojson as any;
+    if (!geojson?.features) { res.json({ lines: [] }); return; }
+
+    const avgSpeed = Number(req.query.avgSpeedKmh) || 20;
+
+    // Extract lines and stops from GeoJSON (same logic as generateServiceProgram)
+    const rawLines: { name: string; coords: number[][] }[] = [];
+    const allStops: { name: string; stopId?: string; lng: number; lat: number }[] = [];
+
+    for (const f of geojson.features) {
+      const geomType = f.geometry.type;
+      if (geomType === "LineString") {
+        rawLines.push({ name: f.properties?.name || `Linea ${rawLines.length + 1}`, coords: f.geometry.coordinates });
+      } else if (geomType === "MultiLineString") {
+        for (const seg of f.geometry.coordinates) {
+          rawLines.push({ name: f.properties?.name || `Linea ${rawLines.length + 1}`, coords: seg });
+        }
+      } else if (geomType === "Point") {
+        allStops.push({ name: f.properties?.name || f.properties?.DENOMINAZI || f.properties?.DENOMINAZ || `Fermata ${allStops.length + 1}`, stopId: f.properties?.stopId || f.properties?.SIGLAUNIV || "", lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] });
+      }
+    }
+
+    if (rawLines.length === 0) { res.json({ lines: [] }); return; }
+
+    // Assign stops to lines and order them
+    const stopAssignment = assignStopsToLines(allStops, rawLines);
+    for (let i = 0; i < rawLines.length; i++) {
+      let lineStops = stopAssignment.get(i) || [];
+      if (lineStops.length < 2) {
+        lineStops = autoGenerateStops(rawLines[i].coords);
+        stopAssignment.set(i, lineStops);
+      } else {
+        lineStops = orderStopsAlongLine(lineStops, rawLines[i].coords);
+        lineStops = deduplicateStopNames(lineStops);
+        stopAssignment.set(i, lineStops);
+      }
+    }
+
+    // For each line, compute inter-stop distances and estimated times
+    const allCoords = rawLines.flatMap(l => l.coords);
+    const trafficProfile = await getTrafficProfileForRoute(allCoords);
+    // Use peak hour (8:00) congestion for initial estimate
+    const peakCongestion = trafficProfile.get(8) ?? 0.3;
+
+    const lineResults = [];
+    for (let li = 0; li < rawLines.length; li++) {
+      const line = rawLines[li];
+      const lineStops = stopAssignment.get(li) || [];
+      const lengthKm = lineLength(line.coords);
+
+      // Per-arc traffic profile
+      let perArcProfile: { from: string; to: string; hourlycongestion: Map<number, number> }[] = [];
+      try {
+        perArcProfile = await getPerArcTrafficProfile(lineStops, 0.5);
+      } catch { /* no traffic data */ }
+
+      const stops = [];
+      let cumulativeKm = 0;
+      let cumulativeMin = 0;
+
+      for (let si = 0; si < lineStops.length; si++) {
+        const s = lineStops[si];
+        let distFromPrevKm = 0;
+        let transitTimeMin = 0;
+        let congestion = peakCongestion;
+
+        if (si > 0) {
+          distFromPrevKm = haversineKm(lineStops[si - 1].lat, lineStops[si - 1].lng, s.lat, s.lng);
+          // Get per-arc congestion if available
+          if (perArcProfile[si - 1]) {
+            const arcCong = perArcProfile[si - 1].hourlycongestion.get(8) ?? peakCongestion;
+            congestion = arcCong;
+          }
+          transitTimeMin = estimateTravelTime(distFromPrevKm, avgSpeed, congestion);
+          cumulativeKm += distFromPrevKm;
+          cumulativeMin += transitTimeMin;
+        }
+
+        stops.push({
+          index: si,
+          name: s.name,
+          stopId: s.stopId || "",
+          lng: s.lng,
+          lat: s.lat,
+          distFromPrevKm: Math.round(distFromPrevKm * 1000) / 1000,
+          transitTimeMin: Math.round(transitTimeMin * 10) / 10,
+          cumulativeKm: Math.round(cumulativeKm * 1000) / 1000,
+          cumulativeMin: Math.round(cumulativeMin * 10) / 10,
+          congestion: Math.round(congestion * 100) / 100,
+        });
+      }
+
+      const totalTimeMin = stops.length > 0 ? stops[stops.length - 1].cumulativeMin : 0;
+
+      lineResults.push({
+        lineIndex: li,
+        lineName: line.name,
+        lengthKm: Math.round(lengthKm * 100) / 100,
+        stopsCount: lineStops.length,
+        totalTimeMin: Math.round(totalTimeMin * 10) / 10,
+        stops,
+      });
+    }
+
+    res.json({ lines: lineResults, avgSpeedKmh: avgSpeed });
+  } catch (err) {
+    req.log.error(err, "Error getting line stops");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ─── GET /api/scenarios/:id/suggest-km ────────────────────────────────
 router.get("/scenarios/:id/suggest-km", async (req, res) => {
@@ -1914,7 +2548,12 @@ router.post("/scenarios/:id/generate-program", async (req, res) => {
         .from(censusSections).where(sql`${censusSections.population} > 0`),
     ]);
 
-    const program = await generateServiceProgram(row.geojson as any, config, poiRows, censusRows);
+    // Phase 17: Fetch coincidence zone data if zone IDs provided
+    const coincidenceZoneData = config.coincidenceZoneIds && config.coincidenceZoneIds.length > 0
+      ? await fetchCoincidenceZoneData(config.coincidenceZoneIds)
+      : [];
+
+    const program = await generateServiceProgram(row.geojson as any, config, poiRows, censusRows, coincidenceZoneData);
 
     const [saved] = await db.insert(scenarioServicePrograms).values({
       scenarioId: req.params.id,
@@ -1973,6 +2612,814 @@ router.delete("/scenarios/:id/programs/:programId", async (req, res) => {
   } catch (err) {
     req.log.error(err, "Error deleting program");
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// GTFS EXPORT — Calendars, Presets, Builder, Validator, Export endpoint
+// ══════════════════════════════════════════════════════════════════════════
+
+// ─── Calendar Presets (Italian standard) ──────────────────────────────
+
+function datesRange(start: string, end: string): string[] {
+  const dates: string[] = [];
+  const d = new Date(start);
+  const e = new Date(end);
+  while (d <= e) {
+    dates.push(d.toISOString().slice(0, 10));
+    d.setDate(d.getDate() + 1);
+  }
+  return dates;
+}
+
+interface CalendarPreset {
+  serviceId: string;
+  serviceName: string;
+  monday: boolean; tuesday: boolean; wednesday: boolean; thursday: boolean; friday: boolean;
+  saturday: boolean; sunday: boolean;
+  startDate: string; endDate: string;
+  cadenceMultiplier: number;
+  isVariant: boolean;
+  variantConfig?: Record<string, any>;
+  color: string;
+  exceptions: { date: string; type: number; description: string }[];
+}
+
+function getCalendarPresets(): Record<string, CalendarPreset> {
+  const nataleRange = datesRange("2026-12-23", "2027-01-06");
+  const pasquaRange = datesRange("2027-04-01", "2027-04-06");
+
+  return {
+    feriale_scolastico: {
+      serviceId: "feriale_scolastico",
+      serviceName: "Feriale periodo scolastico",
+      monday: true, tuesday: true, wednesday: true, thursday: true, friday: true,
+      saturday: false, sunday: false,
+      startDate: "2026-09-14", endDate: "2027-06-10",
+      cadenceMultiplier: 1.0,
+      isVariant: false,
+      color: "#3b82f6",
+      exceptions: [
+        { date: "2026-11-01", type: 2, description: "Tutti i Santi" },
+        { date: "2026-12-08", type: 2, description: "Immacolata" },
+        ...nataleRange.map(d => ({ date: d, type: 2, description: "Vacanze natalizie" })),
+        ...pasquaRange.map(d => ({ date: d, type: 2, description: "Vacanze pasquali" })),
+        { date: "2027-04-25", type: 2, description: "Liberazione" },
+        { date: "2027-05-01", type: 2, description: "Festa del Lavoro" },
+        { date: "2027-06-02", type: 2, description: "Repubblica" },
+      ],
+    },
+    sabato_scolastico: {
+      serviceId: "sabato_scolastico",
+      serviceName: "Sabato periodo scolastico",
+      monday: false, tuesday: false, wednesday: false, thursday: false, friday: false,
+      saturday: true, sunday: false,
+      startDate: "2026-09-14", endDate: "2027-06-10",
+      cadenceMultiplier: 1.3,
+      isVariant: false,
+      color: "#f59e0b",
+      exceptions: [],
+    },
+    festivo: {
+      serviceId: "festivo",
+      serviceName: "Domeniche e festivi",
+      monday: false, tuesday: false, wednesday: false, thursday: false, friday: false,
+      saturday: false, sunday: true,
+      startDate: "2026-09-14", endDate: "2027-06-10",
+      cadenceMultiplier: 2.0,
+      isVariant: true,
+      variantConfig: { minCadenceMin: 30, maxCadenceMin: 90 },
+      color: "#ef4444",
+      exceptions: [
+        { date: "2026-11-01", type: 1, description: "Tutti i Santi" },
+        { date: "2026-12-08", type: 1, description: "Immacolata" },
+        { date: "2026-12-25", type: 1, description: "Natale" },
+        { date: "2026-12-26", type: 1, description: "Santo Stefano" },
+        { date: "2027-01-01", type: 1, description: "Capodanno" },
+        { date: "2027-01-06", type: 1, description: "Epifania" },
+        { date: "2027-04-04", type: 1, description: "Pasqua" },
+        { date: "2027-04-05", type: 1, description: "Lunedì dell'Angelo" },
+        { date: "2027-04-25", type: 1, description: "Liberazione" },
+        { date: "2027-05-01", type: 1, description: "Festa del Lavoro" },
+        { date: "2027-06-02", type: 1, description: "Repubblica" },
+      ],
+    },
+    estivo_feriale: {
+      serviceId: "estivo_feriale",
+      serviceName: "Feriale estivo (luglio-agosto)",
+      monday: true, tuesday: true, wednesday: true, thursday: true, friday: true,
+      saturday: false, sunday: false,
+      startDate: "2027-06-11", endDate: "2027-09-13",
+      cadenceMultiplier: 1.5,
+      isVariant: true,
+      variantConfig: { minCadenceMin: 15, maxCadenceMin: 60 },
+      color: "#22c55e",
+      exceptions: [],
+    },
+    estivo_festivo: {
+      serviceId: "estivo_festivo",
+      serviceName: "Festivo estivo (sab-dom estate)",
+      monday: false, tuesday: false, wednesday: false, thursday: false, friday: false,
+      saturday: true, sunday: true,
+      startDate: "2027-06-11", endDate: "2027-09-13",
+      cadenceMultiplier: 2.5,
+      isVariant: true,
+      variantConfig: { minCadenceMin: 30, maxCadenceMin: 90 },
+      color: "#a855f7",
+      exceptions: [
+        { date: "2027-08-15", type: 1, description: "Ferragosto" },
+      ],
+    },
+  };
+}
+
+// ─── GET /api/calendar-presets ────────────────────────────────────────
+
+router.get("/calendar-presets", (_req, res) => {
+  const presets = getCalendarPresets();
+  const list = Object.entries(presets).map(([key, p]) => ({
+    key,
+    serviceId: p.serviceId,
+    serviceName: p.serviceName,
+    days: { mon: p.monday, tue: p.tuesday, wed: p.wednesday, thu: p.thursday, fri: p.friday, sat: p.saturday, sun: p.sunday },
+    startDate: p.startDate,
+    endDate: p.endDate,
+    cadenceMultiplier: p.cadenceMultiplier,
+    isVariant: p.isVariant,
+    color: p.color,
+    exceptionsCount: p.exceptions.length,
+  }));
+  res.json({ presets: list });
+});
+
+// ─── CRUD: Calendars ──────────────────────────────────────────────────
+
+// GET /api/scenarios/:id/programs/:programId/calendars
+router.get("/scenarios/:id/programs/:programId/calendars", async (req, res) => {
+  try {
+    const cals = await db.select().from(scenarioProgramCalendars)
+      .where(eq(scenarioProgramCalendars.programId, req.params.programId))
+      .orderBy(scenarioProgramCalendars.createdAt);
+
+    // Also fetch exceptions for each calendar
+    const calIds = cals.map(c => c.id);
+    const exceptions = calIds.length > 0
+      ? await db.select().from(scenarioProgramCalendarExceptions)
+          .where(inArray(scenarioProgramCalendarExceptions.calendarId, calIds))
+      : [];
+
+    const result = cals.map(cal => ({
+      ...cal,
+      exceptions: exceptions.filter(e => e.calendarId === cal.id),
+    }));
+    res.json({ calendars: result });
+  } catch (err) {
+    req.log.error(err, "Error listing calendars");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/scenarios/:id/programs/:programId/calendars
+router.post("/scenarios/:id/programs/:programId/calendars", async (req, res) => {
+  try {
+    const body = req.body as any;
+    const [created] = await db.insert(scenarioProgramCalendars).values({
+      programId: req.params.programId,
+      serviceId: body.serviceId || `svc_${Date.now()}`,
+      serviceName: body.serviceName || "Nuovo calendario",
+      monday: body.monday ?? true,
+      tuesday: body.tuesday ?? true,
+      wednesday: body.wednesday ?? true,
+      thursday: body.thursday ?? true,
+      friday: body.friday ?? true,
+      saturday: body.saturday ?? false,
+      sunday: body.sunday ?? false,
+      startDate: body.startDate || "2026-09-14",
+      endDate: body.endDate || "2027-06-10",
+      cadenceMultiplier: body.cadenceMultiplier ?? 1.0,
+      isVariant: body.isVariant ?? false,
+      variantConfig: body.variantConfig || null,
+      color: body.color || "#3b82f6",
+    }).returning();
+    res.json(created);
+  } catch (err) {
+    req.log.error(err, "Error creating calendar");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// PUT /api/scenarios/:id/programs/:programId/calendars/:calId
+router.put("/scenarios/:id/programs/:programId/calendars/:calId", async (req, res) => {
+  try {
+    const body = req.body as any;
+    const [updated] = await db.update(scenarioProgramCalendars)
+      .set({
+        serviceId: body.serviceId,
+        serviceName: body.serviceName,
+        monday: body.monday,
+        tuesday: body.tuesday,
+        wednesday: body.wednesday,
+        thursday: body.thursday,
+        friday: body.friday,
+        saturday: body.saturday,
+        sunday: body.sunday,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        cadenceMultiplier: body.cadenceMultiplier,
+        isVariant: body.isVariant,
+        variantConfig: body.variantConfig,
+        color: body.color,
+        updatedAt: new Date(),
+      })
+      .where(eq(scenarioProgramCalendars.id, req.params.calId))
+      .returning();
+    if (!updated) { res.status(404).json({ error: "Calendario non trovato" }); return; }
+    res.json(updated);
+  } catch (err) {
+    req.log.error(err, "Error updating calendar");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// DELETE /api/scenarios/:id/programs/:programId/calendars/:calId
+router.delete("/scenarios/:id/programs/:programId/calendars/:calId", async (req, res) => {
+  try {
+    await db.delete(scenarioProgramCalendars).where(eq(scenarioProgramCalendars.id, req.params.calId));
+    res.json({ ok: true });
+  } catch (err) {
+    req.log.error(err, "Error deleting calendar");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── CRUD: Calendar Exceptions ────────────────────────────────────────
+
+// POST /api/scenarios/:id/programs/:programId/calendars/:calId/exceptions
+router.post("/scenarios/:id/programs/:programId/calendars/:calId/exceptions", async (req, res) => {
+  try {
+    const body = req.body as any;
+    const [created] = await db.insert(scenarioProgramCalendarExceptions).values({
+      calendarId: req.params.calId,
+      exceptionDate: body.exceptionDate || body.date,
+      exceptionType: body.exceptionType ?? body.type ?? 2,
+      description: body.description || null,
+    }).returning();
+    res.json(created);
+  } catch (err) {
+    req.log.error(err, "Error creating exception");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// DELETE /api/scenarios/:id/programs/:programId/calendars/:calId/exceptions/:excId
+router.delete("/scenarios/:id/programs/:programId/calendars/:calId/exceptions/:excId", async (req, res) => {
+  try {
+    await db.delete(scenarioProgramCalendarExceptions).where(eq(scenarioProgramCalendarExceptions.id, req.params.excId));
+    res.json({ ok: true });
+  } catch (err) {
+    req.log.error(err, "Error deleting exception");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── Create calendar from preset ──────────────────────────────────────
+
+async function createCalendarFromPreset(programId: string, presetKey: string): Promise<any> {
+  const presets = getCalendarPresets();
+  const preset = presets[presetKey];
+  if (!preset) throw new Error(`Preset non trovato: ${presetKey}`);
+
+  const [cal] = await db.insert(scenarioProgramCalendars).values({
+    programId,
+    serviceId: preset.serviceId,
+    serviceName: preset.serviceName,
+    monday: preset.monday,
+    tuesday: preset.tuesday,
+    wednesday: preset.wednesday,
+    thursday: preset.thursday,
+    friday: preset.friday,
+    saturday: preset.saturday,
+    sunday: preset.sunday,
+    startDate: preset.startDate,
+    endDate: preset.endDate,
+    cadenceMultiplier: preset.cadenceMultiplier,
+    isVariant: preset.isVariant,
+    variantConfig: preset.variantConfig || null,
+    color: preset.color,
+  }).returning();
+
+  // Insert exceptions
+  if (preset.exceptions.length > 0) {
+    // Deduplicate by date+type
+    const seen = new Set<string>();
+    const uniqueExc = preset.exceptions.filter(e => {
+      const key = `${e.date}_${e.type}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    await db.insert(scenarioProgramCalendarExceptions).values(
+      uniqueExc.map(e => ({
+        calendarId: cal.id,
+        exceptionDate: e.date,
+        exceptionType: e.type,
+        description: e.description,
+      }))
+    );
+  }
+
+  return cal;
+}
+
+// POST /api/scenarios/:id/programs/:programId/calendars/from-preset
+router.post("/scenarios/:id/programs/:programId/calendars/from-preset", async (req, res) => {
+  try {
+    const { preset } = req.body as { preset: string };
+    if (!preset) { res.status(400).json({ error: "Campo 'preset' richiesto" }); return; }
+    const cal = await createCalendarFromPreset(req.params.programId, preset);
+    res.json(cal);
+  } catch (err: any) {
+    req.log.error(err, "Error creating calendar from preset");
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/scenarios/:id/programs/:programId/calendars/from-all-presets
+router.post("/scenarios/:id/programs/:programId/calendars/from-all-presets", async (req, res) => {
+  try {
+    // First delete existing calendars for this program
+    const existing = await db.select({ id: scenarioProgramCalendars.id }).from(scenarioProgramCalendars)
+      .where(eq(scenarioProgramCalendars.programId, req.params.programId));
+    if (existing.length > 0) {
+      await db.delete(scenarioProgramCalendars)
+        .where(eq(scenarioProgramCalendars.programId, req.params.programId));
+    }
+
+    const presets = getCalendarPresets();
+    const created = [];
+    for (const key of Object.keys(presets)) {
+      const cal = await createCalendarFromPreset(req.params.programId, key);
+      created.push(cal);
+    }
+    res.json({ calendars: created, count: created.length });
+  } catch (err) {
+    req.log.error(err, "Error creating all presets");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// GTFS FEED BUILDER
+// ══════════════════════════════════════════════════════════════════════════
+
+function csvEscape(s: string): string {
+  if (!s) return "";
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function boolToGtfs(val: boolean): string { return val ? "1" : "0"; }
+
+function formatDateGtfs(d: string | Date): string {
+  const s = typeof d === "string" ? d : d.toISOString().slice(0, 10);
+  return s.replace(/-/g, "");
+}
+
+function toGtfsTime(hhmm: string): string {
+  const parts = hhmm.split(":");
+  const h = parseInt(parts[0]);
+  const m = parseInt(parts[1]);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`;
+}
+
+function simpleHash(s: string): number {
+  let hash = 0;
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+/** Deduplicate stops by proximity (30m threshold) */
+function deduplicateStops(
+  allStops: { name: string; lng: number; lat: number }[],
+  thresholdKm = 0.03,
+): { stopId: string; stopName: string; stopLat: number; stopLon: number }[] {
+  const unique: { stopId: string; stopName: string; stopLat: number; stopLon: number }[] = [];
+  for (const stop of allStops) {
+    const existing = unique.find(u => haversineKm(u.stopLat, u.stopLon, stop.lat, stop.lng) < thresholdKm);
+    if (!existing) {
+      const slug = stop.name
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_|_$/g, "")
+        .substring(0, 30);
+      unique.push({
+        stopId: `S_${slug}_${String(unique.length).padStart(3, "0")}`,
+        stopName: stop.name,
+        stopLat: stop.lat,
+        stopLon: stop.lng,
+      });
+    }
+  }
+  return unique;
+}
+
+/** Find nearest stop_id for given coords */
+function findStopId(
+  lat: number, lng: number,
+  uniqueStops: { stopId: string; stopLat: number; stopLon: number }[],
+): string {
+  let bestId = "";
+  let bestDist = Infinity;
+  for (const us of uniqueStops) {
+    const d = haversineKm(lat, lng, us.stopLat, us.stopLon);
+    if (d < bestDist) { bestDist = d; bestId = us.stopId; }
+  }
+  return bestId;
+}
+
+/** Extract linestrings from GeoJSON for shapes.txt */
+function extractLinesFromGeojson(geojson: any): { name: string; coords: number[][] }[] {
+  const lines: { name: string; coords: number[][] }[] = [];
+  if (!geojson?.features) return lines;
+  for (const f of geojson.features) {
+    if (f.geometry.type === "LineString") {
+      lines.push({ name: f.properties?.name || `Linea ${lines.length + 1}`, coords: f.geometry.coordinates });
+    } else if (f.geometry.type === "MultiLineString") {
+      for (const seg of f.geometry.coordinates) {
+        lines.push({ name: f.properties?.name || `Linea ${lines.length + 1}`, coords: seg });
+      }
+    }
+  }
+  return lines;
+}
+
+/** Generate GTFS shapes from linestrings */
+function generateGtfsShapes(lines: { name: string; coords: number[][] }[]): string[] {
+  const rows: string[] = [];
+  for (let li = 0; li < lines.length; li++) {
+    const coords = lines[li].coords;
+    // Andata
+    const shapeIdA = `shape_L${String(li + 1).padStart(2, "0")}_A`;
+    let cumDist = 0;
+    for (let i = 0; i < coords.length; i++) {
+      if (i > 0) cumDist += haversineKm(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
+      rows.push(`${shapeIdA},${coords[i][1].toFixed(6)},${coords[i][0].toFixed(6)},${i + 1},${(cumDist).toFixed(3)}`);
+    }
+    // Ritorno (invertito)
+    const shapeIdR = `shape_L${String(li + 1).padStart(2, "0")}_R`;
+    const rev = [...coords].reverse();
+    cumDist = 0;
+    for (let i = 0; i < rev.length; i++) {
+      if (i > 0) cumDist += haversineKm(rev[i - 1][1], rev[i - 1][0], rev[i][1], rev[i][0]);
+      rows.push(`${shapeIdR},${rev[i][1].toFixed(6)},${rev[i][0].toFixed(6)},${i + 1},${(cumDist).toFixed(3)}`);
+    }
+  }
+  return rows;
+}
+
+interface GtfsConfig {
+  agencyId?: string;
+  agencyName?: string;
+  agencyUrl?: string;
+  agencyTimezone?: string;
+  agencyLang?: string;
+  agencyPhone?: string;
+  feedPublisherName?: string;
+  feedPublisherUrl?: string;
+  feedLang?: string;
+  feedVersion?: string;
+}
+
+const DEFAULT_GTFS_CONFIG: GtfsConfig = {
+  agencyId: "conerobus",
+  agencyName: "Conerobus S.p.A.",
+  agencyUrl: "https://www.conerobus.it",
+  agencyTimezone: "Europe/Rome",
+  agencyLang: "it",
+  agencyPhone: "+39 071 2837411",
+  feedPublisherName: "Conerobus S.p.A.",
+  feedPublisherUrl: "https://www.conerobus.it",
+  feedLang: "it",
+};
+
+type CalendarRow = typeof scenarioProgramCalendars.$inferSelect;
+type CalExceptionRow = typeof scenarioProgramCalendarExceptions.$inferSelect;
+
+function buildGtfsFeed(
+  program: any,
+  geojson: any,
+  calendars: CalendarRow[],
+  exceptions: CalExceptionRow[],
+  gtfsConfig: GtfsConfig = {},
+): Buffer {
+  const cfg = { ...DEFAULT_GTFS_CONFIG, ...gtfsConfig };
+  const zip = new AdmZip();
+
+  // 1. agency.txt
+  const agencyTxt = [
+    "agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone",
+    `${cfg.agencyId},${csvEscape(cfg.agencyName!)},${cfg.agencyUrl},${cfg.agencyTimezone},${cfg.agencyLang},${cfg.agencyPhone}`,
+  ].join("\n");
+  zip.addFile("agency.txt", Buffer.from(agencyTxt, "utf-8"));
+
+  // 2. calendar.txt
+  const calHeader = "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date";
+  const calRows = calendars.map(c =>
+    `${c.serviceId},${boolToGtfs(c.monday)},${boolToGtfs(c.tuesday)},${boolToGtfs(c.wednesday)},${boolToGtfs(c.thursday)},${boolToGtfs(c.friday)},${boolToGtfs(c.saturday)},${boolToGtfs(c.sunday)},${formatDateGtfs(c.startDate)},${formatDateGtfs(c.endDate)}`
+  );
+  zip.addFile("calendar.txt", Buffer.from([calHeader, ...calRows].join("\n"), "utf-8"));
+
+  // 3. calendar_dates.txt
+  if (exceptions.length > 0) {
+    const cdHeader = "service_id,date,exception_type";
+    const cdRows = exceptions.map(e => {
+      const cal = calendars.find(c => c.id === e.calendarId);
+      return `${cal?.serviceId || "unknown"},${formatDateGtfs(e.exceptionDate)},${e.exceptionType}`;
+    });
+    zip.addFile("calendar_dates.txt", Buffer.from([cdHeader, ...cdRows].join("\n"), "utf-8"));
+  }
+
+  // 4. stops.txt
+  const allTripStops = (program.trips || []).flatMap((t: any) =>
+    (t.stopTimes || []).map((st: any) => ({ name: st.stopName, lng: st.lng, lat: st.lat }))
+  );
+  const uniqueStops = deduplicateStops(allTripStops);
+  const stopsHeader = "stop_id,stop_name,stop_lat,stop_lon,location_type";
+  const stopsRows = uniqueStops.map(s =>
+    `${s.stopId},${csvEscape(s.stopName)},${s.stopLat.toFixed(6)},${s.stopLon.toFixed(6)},0`
+  );
+  zip.addFile("stops.txt", Buffer.from([stopsHeader, ...stopsRows].join("\n"), "utf-8"));
+
+  // 5. routes.txt
+  const routesHeader = "route_id,agency_id,route_short_name,route_long_name,route_type,route_color";
+  const routesRows = (program.lines || []).map((line: any) => {
+    const routeId = `R_${String((line.lineIndex ?? 0) + 1).padStart(2, "0")}`;
+    const shortName = (line.lineName || "").substring(0, 10);
+    return `${routeId},${cfg.agencyId},${csvEscape(shortName)},${csvEscape(line.lineName || "")},3,`;
+  });
+  zip.addFile("routes.txt", Buffer.from([routesHeader, ...routesRows].join("\n"), "utf-8"));
+
+  // 6. shapes.txt
+  const rawLines = extractLinesFromGeojson(geojson);
+  const shapesHeader = "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence,shape_dist_traveled";
+  const shapesRows = generateGtfsShapes(rawLines);
+  zip.addFile("shapes.txt", Buffer.from([shapesHeader, ...shapesRows].join("\n"), "utf-8"));
+
+  // 7. trips.txt + 8. stop_times.txt
+  const tripsHeader = "route_id,service_id,trip_id,trip_headsign,direction_id,shape_id";
+  const stHeader = "trip_id,arrival_time,departure_time,stop_id,stop_sequence,pickup_type,drop_off_type";
+  const tripsRows: string[] = [];
+  const stRows: string[] = [];
+
+  for (const cal of calendars) {
+    const multiplier = cal.cadenceMultiplier || 1.0;
+
+    for (let ti = 0; ti < (program.trips || []).length; ti++) {
+      const trip = (program.trips as any[])[ti];
+
+      // cadenceMultiplier > 1 → skip some trips
+      if (multiplier > 1.0) {
+        const keepRate = 1.0 / multiplier;
+        const hash = simpleHash(`${cal.serviceId}_${trip.tripId}`);
+        if ((hash % 100) / 100 > keepRate) continue;
+      }
+
+      const routeId = `R_${String((trip.lineIndex ?? 0) + 1).padStart(2, "0")}`;
+      const directionId = trip.direction === "andata" ? 0 : 1;
+      const shapeId = `shape_L${String((trip.lineIndex ?? 0) + 1).padStart(2, "0")}_${trip.direction === "andata" ? "A" : "R"}`;
+      const gtfsTripId = `${cal.serviceId}_${trip.tripId}`;
+      const headsign = trip.stopTimes?.length > 0
+        ? trip.stopTimes[trip.stopTimes.length - 1].stopName
+        : trip.lineName;
+
+      tripsRows.push(
+        `${routeId},${cal.serviceId},${gtfsTripId},${csvEscape(headsign)},${directionId},${shapeId}`
+      );
+
+      for (let si = 0; si < (trip.stopTimes || []).length; si++) {
+        const st = trip.stopTimes[si];
+        const stopId = findStopId(st.lat, st.lng, uniqueStops);
+        const arrivalGtfs = toGtfsTime(st.arrival);
+        const departureGtfs = toGtfsTime(st.departure);
+        const pickupType = si === trip.stopTimes.length - 1 ? 1 : 0;
+        const dropOffType = si === 0 ? 1 : 0;
+        stRows.push(
+          `${gtfsTripId},${arrivalGtfs},${departureGtfs},${stopId},${si + 1},${pickupType},${dropOffType}`
+        );
+      }
+    }
+  }
+
+  zip.addFile("trips.txt", Buffer.from([tripsHeader, ...tripsRows].join("\n"), "utf-8"));
+  zip.addFile("stop_times.txt", Buffer.from([stHeader, ...stRows].join("\n"), "utf-8"));
+
+  // 9. feed_info.txt
+  const allDates = calendars.flatMap(c => [c.startDate, c.endDate]);
+  const minDate = allDates.length > 0 ? allDates.reduce((a, b) => a < b ? a : b) : new Date().toISOString().slice(0, 10);
+  const maxDate = allDates.length > 0 ? allDates.reduce((a, b) => a > b ? a : b) : new Date().toISOString().slice(0, 10);
+  const feedInfoTxt = [
+    "feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version",
+    `${csvEscape(cfg.feedPublisherName!)},${cfg.feedPublisherUrl},${cfg.feedLang},${formatDateGtfs(minDate)},${formatDateGtfs(maxDate)},${cfg.feedVersion || new Date().toISOString().slice(0, 10)}`,
+  ].join("\n");
+  zip.addFile("feed_info.txt", Buffer.from(feedInfoTxt, "utf-8"));
+
+  return zip.toBuffer();
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// GTFS VALIDATOR
+// ══════════════════════════════════════════════════════════════════════════
+
+interface GtfsValidationResult {
+  valid: boolean;
+  errors: { file: string; field: string; message: string }[];
+  warnings: { file: string; field: string; message: string }[];
+  stats: {
+    agencies: number; routes: number; trips: number; stops: number;
+    stopTimes: number; shapes: number; calendars: number; calendarDates: number;
+  };
+}
+
+function validateGtfsFeed(
+  program: any,
+  calendars: CalendarRow[],
+  exceptions: CalExceptionRow[],
+): GtfsValidationResult {
+  const errors: GtfsValidationResult["errors"] = [];
+  const warnings: GtfsValidationResult["warnings"] = [];
+
+  // 1. Calendars
+  if (calendars.length === 0) {
+    errors.push({ file: "calendar.txt", field: "service_id", message: "Nessun calendario definito" });
+  }
+  for (const cal of calendars) {
+    if (!cal.startDate || !cal.endDate) {
+      errors.push({ file: "calendar.txt", field: "start_date/end_date", message: `Calendario ${cal.serviceId}: date mancanti` });
+    }
+    if (cal.endDate && cal.startDate && new Date(cal.endDate) <= new Date(cal.startDate)) {
+      errors.push({ file: "calendar.txt", field: "end_date", message: `Calendario ${cal.serviceId}: end_date <= start_date` });
+    }
+    const hasDay = cal.monday || cal.tuesday || cal.wednesday || cal.thursday || cal.friday || cal.saturday || cal.sunday;
+    if (!hasDay) {
+      warnings.push({ file: "calendar.txt", field: "days", message: `Calendario ${cal.serviceId}: nessun giorno attivo` });
+    }
+  }
+
+  // 2. Trips
+  const trips = program.trips || [];
+  if (trips.length === 0) {
+    errors.push({ file: "trips.txt", field: "trip_id", message: "Nessuna corsa nel programma" });
+  }
+
+  // 3. Stop times — check temporal order
+  for (const trip of trips) {
+    const st = trip.stopTimes || [];
+    if (st.length < 2) {
+      errors.push({ file: "stop_times.txt", field: "stop_sequence", message: `Trip ${trip.tripId}: meno di 2 fermate` });
+    }
+    for (let i = 1; i < st.length; i++) {
+      if (st[i].arrival < st[i - 1].departure) {
+        errors.push({
+          file: "stop_times.txt", field: "arrival_time",
+          message: `Trip ${trip.tripId}: arrivo fermata ${i + 1} (${st[i].arrival}) < partenza fermata ${i} (${st[i - 1].departure})`,
+        });
+        break; // one error per trip is enough
+      }
+    }
+  }
+
+  // 4. Stops — verify coordinates diversity
+  const allStops = trips.flatMap((t: any) => t.stopTimes || []);
+  const uniqueCoords = new Set(allStops.map((s: any) => `${(s.lat || 0).toFixed(4)}_${(s.lng || 0).toFixed(4)}`));
+  if (uniqueCoords.size < 2 && allStops.length > 0) {
+    errors.push({ file: "stops.txt", field: "stop_lat/stop_lon", message: "Tutte le fermate hanno le stesse coordinate" });
+  }
+
+  // 5. Warnings
+  if (trips.length < 10) {
+    warnings.push({ file: "trips.txt", field: "trip_id", message: `Solo ${trips.length} corse — servizio potrebbe essere insufficiente` });
+  }
+
+  // Stats
+  const allTripStops = trips.flatMap((t: any) => (t.stopTimes || []).map((st: any) => ({ name: st.stopName, lng: st.lng, lat: st.lat })));
+  const uniqStops = deduplicateStops(allTripStops);
+  const totalTripsGtfs = trips.length * calendars.length;
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    stats: {
+      agencies: 1,
+      routes: (program.lines || []).length,
+      trips: totalTripsGtfs,
+      stops: uniqStops.length,
+      stopTimes: allStops.length * calendars.length,
+      shapes: (program.lines || []).length * 2,
+      calendars: calendars.length,
+      calendarDates: exceptions.length,
+    },
+  };
+}
+
+
+// ─── GET /api/scenarios/:id/programs/:programId/validate-gtfs ─────────
+
+router.get("/scenarios/:id/programs/:programId/validate-gtfs", async (req, res) => {
+  try {
+    const [programRow] = await db.select().from(scenarioServicePrograms)
+      .where(eq(scenarioServicePrograms.id, req.params.programId)).limit(1);
+    if (!programRow) { res.status(404).json({ error: "Programma non trovato" }); return; }
+
+    const calendars = await db.select().from(scenarioProgramCalendars)
+      .where(eq(scenarioProgramCalendars.programId, req.params.programId));
+
+    const calIds = calendars.map(c => c.id);
+    const exceptions = calIds.length > 0
+      ? await db.select().from(scenarioProgramCalendarExceptions)
+          .where(inArray(scenarioProgramCalendarExceptions.calendarId, calIds))
+      : [];
+
+    const program = programRow.result as any;
+    const result = validateGtfsFeed(program, calendars, exceptions);
+    res.json(result);
+  } catch (err) {
+    req.log.error(err, "Error validating GTFS");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// ─── GET /api/scenarios/:id/programs/:programId/export-gtfs ───────────
+
+router.get("/scenarios/:id/programs/:programId/export-gtfs", async (req, res) => {
+  try {
+    // 1. Load program
+    const [programRow] = await db.select().from(scenarioServicePrograms)
+      .where(eq(scenarioServicePrograms.id, req.params.programId)).limit(1);
+    if (!programRow) { res.status(404).json({ error: "Programma non trovato" }); return; }
+
+    // 2. Load scenario for GeoJSON
+    const [scenarioRow] = await db.select().from(scenarios)
+      .where(eq(scenarios.id, req.params.id)).limit(1);
+    if (!scenarioRow) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    // 3. Load calendars + exceptions
+    const calendars = await db.select().from(scenarioProgramCalendars)
+      .where(eq(scenarioProgramCalendars.programId, req.params.programId));
+
+    if (calendars.length === 0) {
+      res.status(400).json({
+        error: "Nessun calendario definito. Creare almeno un calendario prima di esportare il GTFS.",
+        hint: "POST /api/scenarios/:id/programs/:programId/calendars/from-all-presets",
+      });
+      return;
+    }
+
+    const calIds = calendars.map(c => c.id);
+    const exceptions = calIds.length > 0
+      ? await db.select().from(scenarioProgramCalendarExceptions)
+          .where(inArray(scenarioProgramCalendarExceptions.calendarId, calIds))
+      : [];
+
+    // 4. Validate first
+    const program = programRow.result as any;
+    const validation = validateGtfsFeed(program, calendars, exceptions);
+    if (!validation.valid) {
+      res.status(400).json({ error: "Il feed GTFS contiene errori", validation });
+      return;
+    }
+
+    // 5. GTFS config from query params
+    const gtfsConfig: GtfsConfig = {};
+    if (req.query.agencyName) gtfsConfig.agencyName = req.query.agencyName as string;
+    if (req.query.agencyUrl) gtfsConfig.agencyUrl = req.query.agencyUrl as string;
+    if (req.query.feedVersion) gtfsConfig.feedVersion = req.query.feedVersion as string;
+
+    // 6. Build feed
+    const geojson = scenarioRow.geojson as any;
+    const zipBuffer = buildGtfsFeed(program, geojson, calendars, exceptions, gtfsConfig);
+
+    // 7. Send ZIP
+    const safeName = scenarioRow.name.replace(/[^a-zA-Z0-9_-]/g, "_").substring(0, 30);
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    const filename = `gtfs_${safeName}_${dateStr}.zip`;
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(zipBuffer);
+  } catch (err) {
+    req.log.error(err, "Error exporting GTFS");
+    res.status(500).json({ error: "Errore durante l'esportazione GTFS" });
   }
 });
 

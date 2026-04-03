@@ -15,7 +15,7 @@ interface LegendPanelProps {
 }
 
 export function LegendPanel({ collapsed, onToggle, layers, isochroneGeojson, isochroneStop, walkData }: LegendPanelProps) {
-  const showLegend = layers.mapboxTraffic || layers.traffic || layers.poi || layers.gtfsShapes || layers.demand || isochroneGeojson || walkData;
+  const showLegend = layers.mapboxTraffic || layers.poi || layers.gtfsShapes || layers.demand || isochroneGeojson || walkData;
   if (!showLegend) return null;
 
   return (
@@ -51,17 +51,6 @@ export function LegendPanel({ collapsed, onToggle, layers, isochroneGeojson, iso
                         <div className="w-7 flex items-center"><div className="w-full rounded-full" style={{ backgroundColor: color, height: `${h}px` }} /></div>
                         <span className="text-xs text-foreground/80">{label}</span>
                         <span className="text-[10px] text-muted-foreground ml-auto">({hint})</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {layers.traffic && (
-                  <div className="space-y-1.5 border-t border-border/20 pt-2">
-                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Sensori TomTom</p>
-                    {[["#22c55e", "Scorrevole"], ["#eab308", "Rallentato"], ["#ef4444", "Congestionato"]].map(([c, l]) => (
-                      <div key={l} className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: c }} />
-                        <span className="text-xs text-muted-foreground">{l}</span>
                       </div>
                     ))}
                   </div>

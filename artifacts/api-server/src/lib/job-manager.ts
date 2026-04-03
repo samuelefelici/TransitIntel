@@ -1,6 +1,13 @@
 /**
  * JobManager — gestione job asincroni con progress streaming SSE
  *
+ * Features:
+ *  - Concurrency limiter: max N solver simultanei (default 2)
+ *  - Queued jobs are FIFO-ordered with priority support
+ *  - Progress streaming via SSE (EventEmitter)
+ *  - Job state persistence to disk (survives restarts for completed jobs)
+ *  - Auto-cleanup after TTL
+ *
  * Ogni job spawna un processo Python, parsifica le righe PROGRESS su stderr,
  * e le emette tramite EventEmitter ai client SSE connessi.
  *
@@ -11,6 +18,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 
@@ -47,26 +56,91 @@ interface JobInternal extends Job {
   cleanupTimer: ReturnType<typeof setTimeout> | null;
 }
 
+interface CreateJobOpts {
+  scenarioId: string;
+  scriptPath: string;
+  args: string[];
+  inputJson: unknown;
+  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void };
+  metadata?: Record<string, unknown>;
+}
+
 /* ─── Constants ─────────────────────────────────────────────── */
 
 const JOB_TTL_MS = 30 * 60_000; // 30 min dopo completion → cleanup
 const MAX_PROGRESS_HISTORY = 200;
+const MAX_CONCURRENCY = 2; // max 2 solver Python in parallelo
+
+// ── Persistence ─────────────────────────────────────────────
+const CACHE_DIR = path.resolve(process.cwd(), ".cache");
+const JOBS_SNAPSHOT = path.join(CACHE_DIR, "jobs-snapshot.json");
 
 /* ─── Manager singleton ─────────────────────────────────────── */
 
 class JobManager {
   private jobs = new Map<string, JobInternal>();
+  private runningCount = 0;
+  private pendingQueue: { jobId: string; opts: CreateJobOpts }[] = [];
+
+  constructor() {
+    this.restoreCompletedFromDisk();
+  }
+
+  /* ── Persistence helpers ──────────────────────────────────── */
+
+  private restoreCompletedFromDisk() {
+    try {
+      if (fs.existsSync(JOBS_SNAPSHOT)) {
+        const raw = JSON.parse(fs.readFileSync(JOBS_SNAPSHOT, "utf-8")) as Job[];
+        const now = Date.now();
+        for (const j of raw) {
+          if (now - j.updatedAt > JOB_TTL_MS) continue; // expired
+          if (j.status !== "completed" && j.status !== "failed") continue; // only restore terminal states
+          const internal: JobInternal = {
+            ...j,
+            process: null,
+            emitter: new EventEmitter(),
+            cleanupTimer: null,
+          };
+          this.jobs.set(j.id, internal);
+          this.scheduleCleanup(internal);
+        }
+      }
+    } catch {
+      // corrupted → ignore
+    }
+  }
+
+  private snapshotToDisk() {
+    try {
+      if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+      const terminal: Job[] = [];
+      for (const j of this.jobs.values()) {
+        if (j.status === "completed" || j.status === "failed") {
+          terminal.push(this.toPublicJob(j));
+        }
+      }
+      fs.writeFileSync(JOBS_SNAPSHOT, JSON.stringify(terminal), "utf-8");
+    } catch {
+      // best-effort
+    }
+  }
+
+  /* ── Concurrency gate ─────────────────────────────────────── */
+
+  private tryDequeue() {
+    while (this.runningCount < MAX_CONCURRENCY && this.pendingQueue.length > 0) {
+      const next = this.pendingQueue.shift()!;
+      const job = this.jobs.get(next.jobId);
+      if (job && job.status === "queued") {
+        this.runJob(job, next.opts);
+      }
+    }
+  }
 
   /* ── Create & run job ─────────────────────────────────────── */
 
-  createJob(opts: {
-    scenarioId: string;
-    scriptPath: string;
-    args: string[];
-    inputJson: unknown;
-    logger: { info: (...a: any[]) => void; error: (...a: any[]) => void };
-    metadata?: Record<string, unknown>;
-  }): string {
+  createJob(opts: CreateJobOpts): string {
     const id = randomUUID();
     const now = Date.now();
 
@@ -77,7 +151,7 @@ class JobManager {
       id,
       scenarioId: opts.scenarioId,
       status: "queued",
-      progress: { phase: "init", percentage: 0, detail: "Avvio solver...", timestamp: now },
+      progress: { phase: "init", percentage: 0, detail: "In coda…", timestamp: now },
       progressHistory: [],
       result: null,
       error: null,
@@ -92,21 +166,33 @@ class JobManager {
 
     this.jobs.set(id, job);
 
-    // Spawn async — non bloccante
-    setImmediate(() => this.runJob(job, opts));
+    // Queue the job — it will be dequeued when a slot is free
+    this.pendingQueue.push({ jobId: id, opts });
+    this.tryDequeue();
 
     return id;
   }
 
+  /** Queue position (0-based). Returns -1 if not queued. */
+  getQueuePosition(jobId: string): number {
+    return this.pendingQueue.findIndex(q => q.jobId === jobId);
+  }
+
+  /** Number of currently running solver processes. */
+  getRunningCount(): number {
+    return this.runningCount;
+  }
+
+  /** Number of jobs waiting in queue. */
+  getQueueLength(): number {
+    return this.pendingQueue.length;
+  }
+
   private runJob(
     job: JobInternal,
-    opts: {
-      scriptPath: string;
-      args: string[];
-      inputJson: unknown;
-      logger: { info: (...a: any[]) => void; error: (...a: any[]) => void };
-    },
+    opts: CreateJobOpts,
   ) {
+    this.runningCount++;
     try {
       const py = spawn("python3", [opts.scriptPath, ...opts.args], {
         stdio: ["pipe", "pipe", "pipe"],
@@ -272,10 +358,7 @@ class JobManager {
 
   /* ── Query ────────────────────────────────────────────────── */
 
-  getJob(jobId: string): Job | null {
-    const j = this.jobs.get(jobId);
-    if (!j) return null;
-    // Return without internal fields
+  private toPublicJob(j: JobInternal): Job {
     return {
       id: j.id,
       scenarioId: j.scenarioId,
@@ -289,6 +372,12 @@ class JobManager {
       pid: j.pid,
       metadata: j.metadata,
     };
+  }
+
+  getJob(jobId: string): Job | null {
+    const j = this.jobs.get(jobId);
+    if (!j) return null;
+    return this.toPublicJob(j);
   }
 
   getJobEmitter(jobId: string): EventEmitter | null {
@@ -308,6 +397,13 @@ class JobManager {
   /* ── Cleanup ──────────────────────────────────────────────── */
 
   private scheduleCleanup(job: JobInternal) {
+    // Free a concurrency slot and try next queued job
+    this.runningCount = Math.max(0, this.runningCount - 1);
+    this.tryDequeue();
+
+    // Persist terminal states to disk
+    this.snapshotToDisk();
+
     if (job.cleanupTimer) clearTimeout(job.cleanupTimer);
     job.cleanupTimer = setTimeout(() => {
       job.emitter.removeAllListeners();

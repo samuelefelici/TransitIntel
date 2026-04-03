@@ -4,25 +4,21 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
+import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Lazy-loaded pages — each is code-split into its own chunk
+const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
 const Traffic = lazy(() => import("@/pages/traffic"));
 const Territory = lazy(() => import("@/pages/territory"));
-const Stops = lazy(() => import("@/pages/stops"));
-const Reports = lazy(() => import("@/pages/reports"));
-const Gtfs = lazy(() => import("@/pages/gtfs"));
-const RoutesPage = lazy(() => import("@/pages/routes"));
-const TravelTimePage = lazy(() => import("@/pages/travel-time"));
-const SyncPage = lazy(() => import("@/pages/sync"));
-const DemandPage = lazy(() => import("@/pages/demand"));
-const SegmentsPage = lazy(() => import("@/pages/segments"));
+const NetworkPage = lazy(() => import("@/pages/network"));
+const DataPage = lazy(() => import("@/pages/data"));
 const ScenariosPage = lazy(() => import("@/pages/scenarios"));
 const IntermodalPage = lazy(() => import("@/pages/intermodal"));
-const OptimizerRoutePage = lazy(() => import("@/pages/optimizer-route"));
-const OptimizerSchedulePage = lazy(() => import("@/pages/optimizer-schedule"));
+const OptimizationPage = lazy(() => import("@/pages/optimization"));
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
-const ClusterManagementPage = lazy(() => import("@/pages/cluster-management"));
+const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -47,45 +43,73 @@ function PageLoader() {
 function Router() {
   return (
     <Layout>
-      <Suspense fallback={<PageLoader />}>
-        <Switch>
-          <Route path="/">
-            <Redirect to="/dashboard" />
-          </Route>
-          <Route path="/dashboard" component={Dashboard} />
-          <Route path="/traffic" component={Traffic} />
-          <Route path="/territory" component={Territory} />
-          <Route path="/stops" component={Stops} />
-          <Route path="/reports" component={Reports} />
-          <Route path="/gtfs" component={Gtfs} />
-          <Route path="/routes" component={RoutesPage} />
-          <Route path="/travel-time" component={TravelTimePage} />
-          <Route path="/sync" component={SyncPage} />
-          <Route path="/demand" component={DemandPage} />
-          <Route path="/segments" component={SegmentsPage} />
-          <Route path="/scenarios" component={ScenariosPage} />
-          <Route path="/intermodal" component={IntermodalPage} />
-          <Route path="/optimizer-route" component={OptimizerRoutePage} />
-          <Route path="/optimizer-schedule" component={OptimizerSchedulePage} />
-          <Route path="/cluster-management" component={ClusterManagementPage} />
-          <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
-          <Route component={NotFound} />
-        </Switch>
-      </Suspense>
+      <ErrorBoundary context="Pagina">
+        <Suspense fallback={<PageLoader />}>
+          <Switch>
+            <Route path="/">
+              <Redirect to="/dashboard" />
+            </Route>
+            <Route path="/dashboard" component={Dashboard} />
+            <Route path="/traffic" component={Traffic} />
+            <Route path="/territory" component={Territory} />
+            <Route path="/network" component={NetworkPage} />
+            <Route path="/data" component={DataPage} />
+
+            {/* Redirects for old paths → new unified pages */}
+            <Route path="/routes"><Redirect to="/network" /></Route>
+            <Route path="/travel-time"><Redirect to="/network" /></Route>
+            <Route path="/stops"><Redirect to="/network" /></Route>
+            <Route path="/demand"><Redirect to="/territory" /></Route>
+            <Route path="/segments"><Redirect to="/territory" /></Route>
+            <Route path="/reports"><Redirect to="/territory" /></Route>
+            <Route path="/gtfs"><Redirect to="/data" /></Route>
+            <Route path="/sync"><Redirect to="/data" /></Route>
+
+            {/* Crea Servizio */}
+            <Route path="/scenarios" component={ScenariosPage} />
+            <Route path="/intermodal" component={IntermodalPage} />
+            <Route path="/coincidence-zones" component={CoincidenceZonesPage} />
+
+            {/* Ottimizzazione Servizio */}
+            <Route path="/optimization" component={OptimizationPage} />
+            <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
+
+            {/* Redirects for old optimizer paths */}
+            <Route path="/optimizer-route"><Redirect to="/optimization" /></Route>
+            <Route path="/optimizer-schedule"><Redirect to="/optimization" /></Route>
+            <Route path="/cluster-management"><Redirect to="/optimization" /></Route>
+
+            <Route component={NotFound} />
+          </Switch>
+        </Suspense>
+      </ErrorBoundary>
     </Layout>
+  );
+}
+
+function AuthGate() {
+  const { isAuthenticated } = useAuth();
+  return (
+    <Suspense fallback={<PageLoader />}>
+      {isAuthenticated ? <Router /> : <LoginPage />}
+    </Suspense>
   );
 }
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <ErrorBoundary context="App">
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AuthProvider>
+            <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+              <AuthGate />
+            </WouterRouter>
+            <Toaster />
+          </AuthProvider>
+        </TooltipProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
 

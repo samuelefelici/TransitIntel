@@ -19,6 +19,8 @@ import optimizerScheduleRouter from "./optimizer-schedule";
 import serviceProgramRouter from "./service-program";
 import driverShiftsRouter from "./driver-shifts";
 import clustersRouter from "./clusters";
+import coincidenceZonesRouter from "./coincidence-zones";
+import weatherRouter from "./weather";
 
 const router: IRouter = Router();
 
@@ -42,5 +44,7 @@ router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);
 router.use(driverShiftsRouter);
 router.use(clustersRouter);
+router.use(coincidenceZonesRouter);
+router.use(weatherRouter);
 
 export default router;

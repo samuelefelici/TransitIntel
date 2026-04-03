@@ -140,6 +140,27 @@ export default function DemandPage() {
             label="Copertura POI" value={`${pctOk}%`}
             sub={`${critici} POI critici su ${totalPoi}`} color="text-emerald-400" />
         </div>
+
+        {/* Global quality score bar */}
+        <div className="mt-2 flex items-center gap-3">
+          <div className="flex-1">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold text-muted-foreground">Score qualità globale</span>
+              <span className={`text-xs font-bold ${pctOk >= 80 ? "text-emerald-400" : pctOk >= 60 ? "text-yellow-400" : "text-red-400"}`}>
+                {pctOk}%
+              </span>
+            </div>
+            <div className="h-1.5 bg-muted/30 rounded-full overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${pctOk}%` }}
+                transition={{ duration: 1, ease: "easeOut" }}
+                className="h-full rounded-full"
+                style={{ backgroundColor: pctOk >= 80 ? "#22c55e" : pctOk >= 60 ? "#eab308" : "#ef4444" }}
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Tabs */}

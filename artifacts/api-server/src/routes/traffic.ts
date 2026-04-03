@@ -92,12 +92,92 @@ router.get("/traffic/stats", cache({ ttlSeconds: 60 }), asyncHandler(async (req,
     congestionByHour[0] ?? null
   );
 
+  // --- By day type (feriale / sabato / festivo) ---
+  const byDayType = await db.execute(sql`
+    SELECT
+      CASE
+        WHEN EXTRACT(DOW FROM captured_at) IN (0) THEN 'festivo'
+        WHEN EXTRACT(DOW FROM captured_at) IN (6) THEN 'sabato'
+        ELSE 'feriale'
+      END as day_type,
+      EXTRACT(HOUR FROM captured_at)::int as hour,
+      AVG(congestion_level) as avg_congestion,
+      AVG(speed) as avg_speed,
+      AVG(freeflow_speed) as avg_freeflow
+    FROM traffic_snapshots
+    WHERE captured_at > NOW() - INTERVAL '90 days'
+    GROUP BY day_type, EXTRACT(HOUR FROM captured_at)
+    ORDER BY day_type, hour
+  `);
+
+  const congestionByDayType: Record<string, any[]> = { feriale: [], sabato: [], festivo: [] };
+  for (const r of byDayType.rows as any[]) {
+    const dt = r.day_type as string;
+    if (!congestionByDayType[dt]) congestionByDayType[dt] = [];
+    congestionByDayType[dt].push({
+      hour: parseInt(r.hour),
+      avgCongestion: parseFloat(r.avg_congestion) || 0,
+      avgSpeed: parseFloat(r.avg_speed) || 0,
+      avgFreeflow: parseFloat(r.avg_freeflow) || 0,
+    });
+  }
+
+  // Speed impact by zone (aggregate by geographic area name)
+  const byZone = await db.execute(sql`
+    WITH zone_map AS (
+      SELECT *,
+        CASE
+          WHEN lat BETWEEN 43.59 AND 43.62 AND lng BETWEEN 13.50 AND 13.52 THEN 'Centro storico'
+          WHEN lat BETWEEN 43.60 AND 43.63 AND lng BETWEEN 13.52 AND 13.57 THEN 'Porto / Lido'
+          WHEN lat BETWEEN 43.60 AND 43.65 AND lng BETWEEN 13.42 AND 13.50 THEN 'Zona Ovest'
+          WHEN lat BETWEEN 43.62 AND 43.69 AND lng BETWEEN 13.38 AND 13.52 THEN 'Nord / Falconara'
+          ELSE 'Entroterra'
+        END as zone_name
+      FROM traffic_snapshots
+      WHERE captured_at > NOW() - INTERVAL '30 days'
+    )
+    SELECT
+      zone_name,
+      AVG(congestion_level) as avg_congestion,
+      AVG(speed) as avg_speed,
+      AVG(freeflow_speed) as avg_freeflow,
+      COUNT(*)::int as samples
+    FROM zone_map
+    GROUP BY zone_name
+    ORDER BY avg_congestion DESC
+  `);
+
+  const zoneStats = (byZone.rows as any[]).map(r => ({
+    zone: r.zone_name,
+    avgCongestion: parseFloat(r.avg_congestion) || 0,
+    avgSpeed: parseFloat(r.avg_speed) || 0,
+    avgFreeflow: parseFloat(r.avg_freeflow) || 0,
+    samples: parseInt(r.samples) || 0,
+    speedReduction: parseFloat(r.avg_freeflow) > 0
+      ? Math.round((1 - parseFloat(r.avg_speed) / parseFloat(r.avg_freeflow)) * 100)
+      : 0,
+  }));
+
+  // Overall speed stats
+  const speedResult = await db.execute(sql`
+    SELECT
+      AVG(speed) as avg_speed,
+      AVG(freeflow_speed) as avg_freeflow
+    FROM traffic_snapshots
+    WHERE captured_at > NOW() - INTERVAL '30 days'
+  `);
+  const speedSummary = (speedResult.rows as any[])[0] ?? {};
+
   res.json({
     avgCongestion: parseFloat(summary.avg_congestion) || 0,
     totalSnapshots: parseInt(summary.total_snapshots) || 0,
     lastUpdated: summary.last_updated || new Date().toISOString(),
     peakHour: peak?.hour ?? 8,
     congestionByHour,
+    congestionByDayType,
+    zoneStats,
+    avgSpeed: parseFloat(speedSummary.avg_speed) || 0,
+    avgFreeflow: parseFloat(speedSummary.avg_freeflow) || 0,
   });
 }));
 

@@ -18,6 +18,7 @@ import { eq, sql } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance, timeToMinutes } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { cache } from "../middlewares/cache";
+import { strictLimiter } from "../middlewares/rate-limit";
 
 const router: IRouter = Router();
 
@@ -458,7 +459,7 @@ function optimizeStopPlacement(params: OptimizeParams): {
  * ═══════════════════════════════════════════════════════════════ */
 
 // POST /api/optimizer/route-placement — run optimization
-router.post("/optimizer/route-placement", async (req, res) => {
+router.post("/optimizer/route-placement", strictLimiter, async (req, res) => {
   try {
     const {
       scenarioId,

@@ -16,12 +16,13 @@ import { eq, sql } from "drizzle-orm";
 import { timeToMinutes } from "../lib/geo-utils";
 import { parseCsv, buildShapeGeojson } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
+import { strictLimiter } from "../middlewares/rate-limit";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
 
 // POST /api/gtfs/upload
-router.post("/gtfs/upload", upload.single("file"), async (req, res) => {
+router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "Nessun file ricevuto. Invia uno zip GTFS come campo 'file'." });
     return;

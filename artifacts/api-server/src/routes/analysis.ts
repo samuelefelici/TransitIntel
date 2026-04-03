@@ -615,15 +615,257 @@ router.get("/territory/overview", cache({ ttlSeconds: 120 }), async (req, res) =
   }
 });
 
+// ── Territory deep analytics ──────────────────────────────────────────────
+router.get("/territory/deep", cache({ ttlSeconds: 120 }), async (req, res) => {
+  try {
+    // 1. Population coverage curve: % of population within X meters of a stop
+    const coverageCurve = await db.execute(sql`
+      WITH section_dist AS (
+        SELECT
+          c.population,
+          (SELECT MIN(
+            SQRT(
+              POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
+              + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
+            )
+          )::int FROM gtfs_stops gs) AS nearest_m
+        FROM census_sections c
+        WHERE c.population > 0
+      )
+      SELECT
+        threshold,
+        SUM(CASE WHEN nearest_m <= threshold THEN population ELSE 0 END)::bigint AS pop_covered,
+        (SELECT SUM(population) FROM section_dist)::bigint AS total_pop
+      FROM section_dist,
+        LATERAL (VALUES (100),(200),(300),(400),(500),(750),(1000),(1500),(2000),(3000),(5000)) AS t(threshold)
+      GROUP BY threshold
+      ORDER BY threshold
+    `);
+
+    // 2. Stop distance distribution (histogram)
+    const distHisto = await db.execute(sql`
+      WITH section_dist AS (
+        SELECT
+          c.population,
+          c.density,
+          (SELECT MIN(
+            SQRT(
+              POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
+              + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
+            )
+          )::int FROM gtfs_stops gs) AS nearest_m
+        FROM census_sections c
+        WHERE c.population > 0
+      ),
+      banded AS (
+        SELECT
+          CASE
+            WHEN nearest_m < 100  THEN '0–100 m'
+            WHEN nearest_m < 200  THEN '100–200 m'
+            WHEN nearest_m < 300  THEN '200–300 m'
+            WHEN nearest_m < 500  THEN '300–500 m'
+            WHEN nearest_m < 750  THEN '500–750 m'
+            WHEN nearest_m < 1000 THEN '750 m–1 km'
+            WHEN nearest_m < 2000 THEN '1–2 km'
+            ELSE '>2 km'
+          END AS distance_band,
+          CASE
+            WHEN nearest_m < 100  THEN 1
+            WHEN nearest_m < 200  THEN 2
+            WHEN nearest_m < 300  THEN 3
+            WHEN nearest_m < 500  THEN 4
+            WHEN nearest_m < 750  THEN 5
+            WHEN nearest_m < 1000 THEN 6
+            WHEN nearest_m < 2000 THEN 7
+            ELSE 8
+          END AS sort_key,
+          population
+        FROM section_dist
+      )
+      SELECT
+        distance_band,
+        COUNT(*)::int AS sections,
+        SUM(population)::int AS population,
+        sort_key
+      FROM banded
+      GROUP BY distance_band, sort_key
+      ORDER BY sort_key
+    `);
+
+    // 3. Density vs Distance scatter (sampled for performance)
+    const densityVsDistance = await db.execute(sql`
+      SELECT
+        c.density::numeric(10,1) AS density,
+        c.population,
+        (SELECT MIN(
+          SQRT(
+            POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
+            + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
+          )
+        )::int FROM gtfs_stops gs) AS nearest_m
+      FROM census_sections c
+      WHERE c.population > 0
+      ORDER BY c.population DESC
+      LIMIT 300
+    `);
+
+    // 4. Gap analysis: highest-population sections poorly served
+    const gapAnalysis = await db.execute(sql`
+      WITH section_dist AS (
+        SELECT
+          c.id,
+          c.population,
+          c.density::numeric(10,1) AS density,
+          c.centroid_lat,
+          c.centroid_lng,
+          (SELECT MIN(
+            SQRT(
+              POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
+              + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
+            )
+          )::int FROM gtfs_stops gs) AS nearest_m,
+          (SELECT COUNT(*)::int FROM points_of_interest p
+           WHERE ABS(p.lng - c.centroid_lng) < 0.03 AND ABS(p.lat - c.centroid_lat) < 0.03
+          ) AS poi_count
+        FROM census_sections c
+        WHERE c.population > 0
+      )
+      SELECT *,
+        (population * nearest_m / 100.0)::numeric(10,1) AS gap_score
+      FROM section_dist
+      WHERE nearest_m > 400
+      ORDER BY gap_score DESC
+      LIMIT 15
+    `);
+
+    // 5. Population pyramid by density class
+    const populationPyramid = await db.execute(sql`
+      WITH classes AS (
+        SELECT
+          CASE
+            WHEN density < 100  THEN 'Rurale'
+            WHEN density < 500  THEN 'Periurbano'
+            WHEN density < 1500 THEN 'Suburbano'
+            WHEN density < 5000 THEN 'Urbano'
+            WHEN density < 15000 THEN 'Urbano denso'
+            ELSE 'Centro città'
+          END AS classe,
+          population,
+          density,
+          CASE
+            WHEN density < 100  THEN 1
+            WHEN density < 500  THEN 2
+            WHEN density < 1500 THEN 3
+            WHEN density < 5000 THEN 4
+            WHEN density < 15000 THEN 5
+            ELSE 6
+          END AS sort_order
+        FROM census_sections
+        WHERE population > 0
+      )
+      SELECT
+        classe,
+        sort_order,
+        COUNT(*)::int AS sections,
+        SUM(population)::int AS population,
+        AVG(density)::numeric(10,0) AS avg_density,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY population) AS median_pop
+      FROM classes
+      GROUP BY classe, sort_order
+      ORDER BY sort_order
+    `);
+
+    // 6. POI coverage score: how many POI are near stops
+    const poiCoverage = await db.execute(sql`
+      SELECT
+        p.category,
+        COUNT(*)::int AS total,
+        SUM(CASE WHEN (
+          SELECT MIN(
+            SQRT(
+              POWER((gs.stop_lon::float - p.lng) * 111000 * COS(RADIANS(p.lat)), 2)
+              + POWER((gs.stop_lat::float - p.lat) * 111000, 2)
+            )
+          ) FROM gtfs_stops gs) < 400 THEN 1 ELSE 0 END)::int AS near_stop,
+        SUM(CASE WHEN (
+          SELECT MIN(
+            SQRT(
+              POWER((gs.stop_lon::float - p.lng) * 111000 * COS(RADIANS(p.lat)), 2)
+              + POWER((gs.stop_lat::float - p.lat) * 111000, 2)
+            )
+          ) FROM gtfs_stops gs) >= 400 THEN 1 ELSE 0 END)::int AS far_from_stop
+      FROM points_of_interest p
+      GROUP BY p.category
+      ORDER BY total DESC
+    `);
+
+    const CATEGORY_LABELS: Record<string, string> = {
+      hospital: "Sanità", transit: "Trasporto", leisure: "Svago",
+      school: "Scuole", office: "Uffici", shopping: "Commercio",
+      industrial: "Industria", workplace: "Aziende", worship: "Culto",
+      elderly: "RSA", parking: "Parcheggi", tourism: "Turismo",
+    };
+
+    const totalPop = parseInt((coverageCurve.rows as any[])[0]?.total_pop) || 1;
+
+    res.json({
+      coverageCurve: (coverageCurve.rows as any[]).map(r => ({
+        threshold: parseInt(r.threshold),
+        popCovered: parseInt(r.pop_covered),
+        totalPop: parseInt(r.total_pop),
+        pct: Math.round(parseInt(r.pop_covered) / totalPop * 1000) / 10,
+      })),
+      distanceHistogram: (distHisto.rows as any[]).map(r => ({
+        band: r.distance_band,
+        sections: parseInt(r.sections),
+        population: parseInt(r.population),
+      })),
+      densityVsDistance: (densityVsDistance.rows as any[]).map(r => ({
+        density: parseFloat(r.density),
+        distance: parseInt(r.nearest_m),
+        population: parseInt(r.population),
+      })),
+      gapAnalysis: (gapAnalysis.rows as any[]).map(r => ({
+        population: parseInt(r.population),
+        density: parseFloat(r.density),
+        nearestM: parseInt(r.nearest_m),
+        poiCount: parseInt(r.poi_count),
+        gapScore: parseFloat(r.gap_score),
+        lat: parseFloat(r.centroid_lat),
+        lng: parseFloat(r.centroid_lng),
+      })),
+      populationPyramid: (populationPyramid.rows as any[]).map(r => ({
+        classe: r.classe,
+        sections: parseInt(r.sections),
+        population: parseInt(r.population),
+        avgDensity: parseInt(r.avg_density),
+        medianPop: Math.round(parseFloat(r.median_pop)),
+      })),
+      poiCoverage: (poiCoverage.rows as any[]).map(r => ({
+        category: r.category,
+        label: CATEGORY_LABELS[r.category] ?? r.category,
+        total: parseInt(r.total),
+        nearStop: parseInt(r.near_stop),
+        farFromStop: parseInt(r.far_from_stop),
+        pct: Math.round(parseInt(r.near_stop) / Math.max(parseInt(r.total), 1) * 100),
+      })),
+    });
+  } catch (err) {
+    req.log.error(err, "Error in territory deep analytics");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────
-// OpenRouteService — Isochrone endpoints
+// OpenRouteService + Mapbox — Isochrone endpoints
 // ──────────────────────────────────────────────────────────────────
 
 const ORS_BASE = "https://api.openrouteservice.org/v2";
 const ORS_KEY  = process.env.OPENROUTE_API_KEY || "";
+const MAPBOX_TOKEN = process.env.MAPBOX_ACCESS_TOKEN || "";
 
 /** Call ORS isochrones API for a single point (foot-walking), with retry on 429 */
-async function fetchIsochrone(
+async function fetchIsochroneORS(
   lng: number, lat: number, rangeSeconds: number[],
 ): Promise<any> {
   const MAX_RETRIES = 3;
@@ -643,13 +885,11 @@ async function fetchIsochrone(
       }),
     });
     if (resp.status === 429 && attempt < MAX_RETRIES) {
-      // Rate limited — wait with exponential backoff
-      const wait = 2000 * Math.pow(2, attempt); // 2s, 4s, 8s
+      const wait = 2000 * Math.pow(2, attempt);
       await new Promise(r => setTimeout(r, wait));
       continue;
     }
     if (resp.status === 403) {
-      // Quota exceeded — no point retrying
       throw new Error(`ORS 403: Quota giornaliera esaurita`);
     }
     if (!resp.ok) {
@@ -658,6 +898,52 @@ async function fetchIsochrone(
     }
     return resp.json();
   }
+}
+
+/** Call Mapbox Isochrone API (walking profile) */
+async function fetchIsochroneMapbox(
+  lng: number, lat: number, rangeMinutes: number[],
+): Promise<any> {
+  // Mapbox accepts up to 4 contour values in minutes
+  const contours = rangeMinutes.slice(0, 4).join(",");
+  const url = `https://api.mapbox.com/isochrone/v1/mapbox/walking/${lng},${lat}?contours_minutes=${contours}&polygons=true&access_token=${MAPBOX_TOKEN}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Mapbox Isochrone ${resp.status}: ${text}`);
+  }
+  return resp.json(); // Returns GeoJSON FeatureCollection
+}
+
+/**
+ * Unified isochrone fetcher with automatic fallback.
+ * Tries the preferred provider first; if it fails, falls back to the other.
+ * @param provider "auto" | "mapbox" | "ors" — "auto" tries Mapbox first (better Italian coverage)
+ */
+async function fetchIsochrone(
+  lng: number, lat: number, rangeSeconds: number[],
+  provider: "auto" | "mapbox" | "ors" = "auto",
+): Promise<any> {
+  const rangeMinutes = rangeSeconds.map(s => Math.round(s / 60));
+
+  if (provider === "ors") {
+    return fetchIsochroneORS(lng, lat, rangeSeconds);
+  }
+  if (provider === "mapbox") {
+    if (!MAPBOX_TOKEN) throw new Error("MAPBOX_ACCESS_TOKEN not configured");
+    return fetchIsochroneMapbox(lng, lat, rangeMinutes);
+  }
+
+  // auto: try Mapbox first (if token available), fallback to ORS
+  if (MAPBOX_TOKEN) {
+    try {
+      return await fetchIsochroneMapbox(lng, lat, rangeMinutes);
+    } catch {
+      // Mapbox failed — fallback to ORS
+      return fetchIsochroneORS(lng, lat, rangeSeconds);
+    }
+  }
+  return fetchIsochroneORS(lng, lat, rangeSeconds);
 }
 
 /** Fetch isochrone geometry, using DB cache first. Returns GeoJSON geometry (Polygon/MultiPolygon) or null. */
@@ -716,11 +1002,12 @@ function pointInPolygon(lng: number, lat: number, ring: number[][]): boolean {
 // ──────────────────────────────────────────────────────────────
 router.get("/analysis/isochrone", cache({ ttlSeconds: 120 }), async (req, res) => {
   try {
-    if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
+    if (!ORS_KEY && !MAPBOX_TOKEN) return res.status(503).json({ error: "Nessun provider isochrone configurato (ORS/Mapbox)" });
 
     const lat = parseFloat(req.query.lat as string);
     const lng = parseFloat(req.query.lng as string);
     const minutesParam = (req.query.minutes as string) || "5,10,15";
+    const provider = ((req.query.provider as string) || "auto") as "auto" | "mapbox" | "ors";
 
     if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: "lat e lng richiesti" });
 
@@ -728,7 +1015,7 @@ router.get("/analysis/isochrone", cache({ ttlSeconds: 120 }), async (req, res) =
     if (minutes.length === 0) return res.status(400).json({ error: "minutes non valido (1-60)" });
 
     const rangeSeconds = minutes.map(m => m * 60);
-    const geojson = await fetchIsochrone(lng, lat, rangeSeconds);
+    const geojson = await fetchIsochrone(lng, lat, rangeSeconds, provider);
 
     // Enrich each feature with the minute label
     if (geojson.features) {

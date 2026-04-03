@@ -7,190 +7,25 @@ import {
 } from "recharts";
 import {
   TrainFront, Ship, Loader2, ChevronDown, ChevronUp, AlertTriangle,
-  CheckCircle2, Clock, ArrowRight, Lightbulb, Timer, PlusCircle,
+  Clock, ArrowRight, Lightbulb, Timer, PlusCircle,
   ArrowRightLeft, MapPin, Building2, Moon, Satellite, Route,
-  Footprints, XCircle, AlertCircle, MapPinned,
+  Footprints, XCircle, MapPinned,
   Users, RefreshCw, Briefcase, Palmtree,
-  GraduationCap, HeartPulse, ShoppingBag, Factory,
   Zap, Eye, EyeOff, Plane, HelpCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { getApiBase } from "@/lib/api";
 
+import type {
+  AnalysisResult, HubPoisGroup,
+} from "./intermodal/types";
+import {
+  type ViewMode, MAP_STYLES, HUB_COLORS, STATUS_CONFIG,
+  PRIORITY_COLORS, POI_ICONS,
+  walkCircle, shortHubName, hubIcon, hubGlowColor, hubTransportLabel,
+} from "./intermodal/constants";
+
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
-
-// ─── Types (matching backend) ────────────────────────────────
-interface NearbyStop {
-  stopId: string; stopName: string; lat: number; lng: number;
-  distKm: number; walkMin: number;
-}
-
-interface BusLine {
-  routeId: string; routeShortName: string; routeLongName: string;
-  routeColor: string | null; tripsCount: number; times: string[];
-  destinations: string[];
-}
-
-interface ArrivalConnection {
-  origin: string;
-  arrivalTime: string;
-  walkMin: number;
-  atBusStopTime: string;
-  firstBus: {
-    departureTime: string; routeShortName: string; routeLongName: string;
-    stopName: string; waitMin: number; destination: string;
-  } | null;
-  allBusOptions: { departureTime: string; routeShortName: string; waitMin: number; destination: string }[];
-  justMissed: { departureTime: string; routeShortName: string; missedByMin: number; destination: string }[];
-  status: "ok" | "long-wait" | "no-bus" | "just-missed";
-  totalTransferMin: number | null;
-}
-
-interface DepartureConnection {
-  destination: string; departureTime: string;
-  bestBusArrival: string | null; bestBusRoute: string | null;
-  waitMinutes: number | null; missedBy: number | null;
-}
-
-interface DestinationCoverage {
-  destination: string; routeShortName: string; routeLongName: string;
-  tripsPerDay: number; firstDeparture: string; lastDeparture: string;
-  avgFrequencyMin: number | null;
-}
-
-interface HubGap { hour: number; busDepartures: number; hubArrivals: number; hubDepartures: number; gap: boolean; }
-interface WaitBucket { range: string; count: number; }
-
-interface ArrivalStats {
-  totalArrivals: number; withBus: number; noBus: number;
-  justMissed: number; longWait: number; ok: number;
-  avgWaitMin: number | null; avgTotalTransferMin: number | null;
-}
-
-interface HubAnalysis {
-  hub: { id: string; name: string; type: "railway" | "port" | "airport"; lat: number; lng: number; description: string; platformWalkMinutes: number };
-  isServed: boolean;
-  nearbyStops: NearbyStop[];
-  busLines: BusLine[];
-  arrivalConnections: ArrivalConnection[];
-  departureConnections: DepartureConnection[];
-  destinationCoverage: DestinationCoverage[];
-  gapAnalysis: HubGap[];
-  waitDistribution: WaitBucket[];
-  arrivalStats: ArrivalStats;
-  stats: { totalBusTrips: number; totalHubDepartures: number; covered: number; missed: number; avgWaitMin: number | null };
-}
-
-interface Suggestion {
-  priority: "critical" | "high" | "medium" | "low";
-  type: string; hub: string; description: string;
-  details?: string; suggestedTimes?: string[];
-}
-
-interface ScheduleProposal {
-  action: "add" | "shift" | "extend";
-  hubId: string; hubName: string;
-  currentTime?: string; proposedTime: string;
-  reason: string; impact: string;
-}
-
-interface AnalysisResult {
-  hubs: HubAnalysis[];
-  summary: {
-    totalHubs: number; servedHubs: number;
-    totalArrivals: number; arrivalOk: number; arrivalLongWait: number;
-    arrivalNoBus: number; arrivalJustMissed: number; arrivalCoveragePercent: number;
-    totalDepartures: number; departureCovered: number;
-    avgWaitAtStop: number | null; avgTotalTransfer: number | null;
-    totalBusLines: number;
-  };
-  suggestions: Suggestion[];
-  proposedSchedule: ScheduleProposal[];
-  config: { maxWalkKm: number; walkSpeedKmh: number };
-}
-
-interface HubPoi {
-  id: string; name: string | null; category: string;
-  lat: number; lng: number; distKm: number; travelContext: string;
-}
-
-interface HubPoisGroup {
-  hubId: string; hubName: string; hubType: "railway" | "port" | "airport";
-  hubLat: number; hubLng: number; pois: HubPoi[];
-}
-
-// ─── Map styles — UNIQUE for intermodal (different from dashboard) ───
-type ViewMode = "neon" | "midnight" | "blueprint" | "satellite";
-const MAP_STYLES: Record<ViewMode, string> = {
-  neon: "mapbox://styles/mapbox/navigation-night-v1",
-  midnight: "mapbox://styles/mapbox/dark-v11",
-  blueprint: "mapbox://styles/mapbox/navigation-day-v1",
-  satellite: "mapbox://styles/mapbox/satellite-streets-v12",
-};
-
-const HUB_COLORS: Record<string, string> = { railway: "#06b6d4", port: "#8b5cf6", airport: "#f59e0b" };
-
-const STATUS_CONFIG: Record<string, { color: string; bg: string; border: string; label: string; icon: React.ReactNode }> = {
-  ok: { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", label: "OK", icon: <CheckCircle2 className="w-3 h-3" /> },
-  "long-wait": { color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/20", label: "Attesa lunga", icon: <Clock className="w-3 h-3" /> },
-  "no-bus": { color: "text-red-400", bg: "bg-red-500/10", border: "border-red-500/20", label: "Nessun bus", icon: <XCircle className="w-3 h-3" /> },
-  "just-missed": { color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/20", label: "Appena perso", icon: <AlertCircle className="w-3 h-3" /> },
-};
-
-const PRIORITY_COLORS: Record<string, { bg: string; border: string; text: string; label: string }> = {
-  critical: { bg: "bg-red-500/15", border: "border-red-500/30", text: "text-red-300", label: "CRITICO" },
-  high: { bg: "bg-amber-500/15", border: "border-amber-500/30", text: "text-amber-200", label: "ALTO" },
-  medium: { bg: "bg-blue-500/10", border: "border-blue-500/20", text: "text-blue-200", label: "MEDIO" },
-  low: { bg: "bg-muted/30", border: "border-border/30", text: "text-muted-foreground", label: "BASSO" },
-};
-
-const POI_ICONS: Record<string, { icon: React.ReactNode; color: string; label: string }> = {
-  office: { icon: <Briefcase className="w-3 h-3" />, color: "#3b82f6", label: "Uffici" },
-  hospital: { icon: <HeartPulse className="w-3 h-3" />, color: "#ef4444", label: "Sanità" },
-  school: { icon: <GraduationCap className="w-3 h-3" />, color: "#f59e0b", label: "Scuole" },
-  industrial: { icon: <Factory className="w-3 h-3" />, color: "#6b7280", label: "Industria" },
-  leisure: { icon: <Palmtree className="w-3 h-3" />, color: "#22c55e", label: "Tempo libero" },
-  shopping: { icon: <ShoppingBag className="w-3 h-3" />, color: "#a855f7", label: "Shopping" },
-};
-
-// ─── Helper: walk circle GeoJSON ─────────────────────────────
-function walkCircle(lat: number, lng: number, radiusKm: number, steps = 64): GeoJSON.Feature {
-  const coords: [number, number][] = [];
-  for (let i = 0; i <= steps; i++) {
-    const angle = (i / steps) * 2 * Math.PI;
-    const dLat = (radiusKm / 111.32) * Math.cos(angle);
-    const dLng = (radiusKm / (111.32 * Math.cos(lat * Math.PI / 180))) * Math.sin(angle);
-    coords.push([lng + dLng, lat + dLat]);
-  }
-  return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [coords] } };
-}
-
-function shortHubName(name: string) {
-  return name
-    .replace("Stazione FS ", "")
-    .replace("Stazione di Ancona ", "")
-    .replace("Stazione ", "")
-    .replace("Porto di Ancona (Terminal Passeggeri)", "Porto Ancona")
-    .replace("Aeroporto Raffaello Sanzio (Falconara)", "Aeroporto");
-}
-
-function hubIcon(type: string, className = "w-5 h-5") {
-  if (type === "airport") return <Plane className={className} />;
-  if (type === "port") return <Ship className={className} />;
-  return <TrainFront className={className} />;
-}
-
-function hubGlowColor(type: string) {
-  if (type === "airport") return "rgba(245,158,11,0.4)";
-  if (type === "port") return "rgba(139,92,246,0.4)";
-  return "rgba(6,182,212,0.4)";
-}
-
-function hubTransportLabel(type: string) {
-  if (type === "airport") return "volo";
-  if (type === "port") return "nave";
-  return "treno";
-}
 
 // ─── Component ──────────────────────────────────────────────
 export default function IntermodalPage() {

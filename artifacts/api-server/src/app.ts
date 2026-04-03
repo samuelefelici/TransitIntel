@@ -2,14 +2,20 @@ import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
-import { logger } from "./lib/logger";
+import { logger, getRequestId } from "./lib/logger";
 import { errorHandler } from "./middlewares/error-handler";
+import { globalLimiter } from "./middlewares/rate-limit";
 
 const app: Express = express();
 
 app.use(
   pinoHttp({
     logger,
+    // Propagate / generate correlation-id per ogni richiesta
+    genReqId: (req) => getRequestId(req as any),
+    customProps: (req) => ({
+      requestId: (req as any).id,
+    }),
     serializers: {
       req(req) {
         return {
@@ -26,6 +32,13 @@ app.use(
     },
   }),
 );
+
+// Propagate correlation-id nell'header di risposta
+app.use((req, res, next) => {
+  const reqId = (req as any).id;
+  if (reqId) res.setHeader("x-request-id", reqId);
+  next();
+});
 
 // CORS: in produzione accetta solo il frontend Vercel
 const allowedOrigins = process.env.FRONTEND_URL
@@ -45,6 +58,9 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+// Rate limiting — 100 req/min per IP
+app.use(globalLimiter);
 
 app.use("/api", router);
 

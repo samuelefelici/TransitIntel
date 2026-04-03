@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, doublePrecision, integer, timestamp, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, doublePrecision, integer, timestamp, jsonb, boolean, date, index } from "drizzle-orm/pg-core";
 
 export const trafficSnapshots = pgTable("traffic_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -9,7 +9,11 @@ export const trafficSnapshots = pgTable("traffic_snapshots", {
   freeflowSpeed: doublePrecision("freeflow_speed").notNull(),
   congestionLevel: doublePrecision("congestion_level").notNull(),
   capturedAt: timestamp("captured_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_traffic_segment_id").on(t.segmentId),
+  index("idx_traffic_captured_at").on(t.capturedAt),
+  index("idx_traffic_segment_captured").on(t.segmentId, t.capturedAt),
+]);
 
 export const censusSections = pgTable("census_sections", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -21,7 +25,9 @@ export const censusSections = pgTable("census_sections", {
   density: doublePrecision("density").notNull().default(0),
   geojson: jsonb("geojson"),                         // GeoJSON Polygon/MultiPolygon geometry (WGS84)
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_census_istat_code").on(t.istatCode),
+]);
 
 export const pointsOfInterest = pgTable("points_of_interest", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -32,7 +38,9 @@ export const pointsOfInterest = pgTable("points_of_interest", {
   lat: doublePrecision("lat").notNull(),
   properties: jsonb("properties").default({}),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_poi_category").on(t.category),
+]);
 
 export const busStops = pgTable("bus_stops", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -79,7 +87,10 @@ export const gtfsStops = pgTable("gtfs_stops", {
   morningPeakTrips: integer("morning_peak_trips").default(0),
   eveningPeakTrips: integer("evening_peak_trips").default(0),
   serviceScore: doublePrecision("service_score").default(0),
-});
+}, (t) => [
+  index("idx_gtfs_stops_feed_id").on(t.feedId),
+  index("idx_gtfs_stops_feed_stop").on(t.feedId, t.stopId),
+]);
 
 export const gtfsRoutes = pgTable("gtfs_routes", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -92,7 +103,10 @@ export const gtfsRoutes = pgTable("gtfs_routes", {
   routeColor: text("route_color"),
   routeTextColor: text("route_text_color"),
   tripsCount: integer("trips_count").default(0),
-});
+}, (t) => [
+  index("idx_gtfs_routes_feed_id").on(t.feedId),
+  index("idx_gtfs_routes_feed_route").on(t.feedId, t.routeId),
+]);
 
 export const gtfsShapes = pgTable("gtfs_shapes", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -102,7 +116,10 @@ export const gtfsShapes = pgTable("gtfs_shapes", {
   routeShortName: text("route_short_name"),
   routeColor: text("route_color"),
   geojson: jsonb("geojson").notNull(),
-});
+}, (t) => [
+  index("idx_gtfs_shapes_feed_id").on(t.feedId),
+  index("idx_gtfs_shapes_feed_shape").on(t.feedId, t.shapeId),
+]);
 
 // GTFS Trips — one record per trip in the feed
 export const gtfsTrips = pgTable("gtfs_trips", {
@@ -114,7 +131,12 @@ export const gtfsTrips = pgTable("gtfs_trips", {
   tripHeadsign: text("trip_headsign"),
   directionId: integer("direction_id").default(0),
   shapeId: text("shape_id"),
-});
+}, (t) => [
+  index("idx_gtfs_trips_feed_id").on(t.feedId),
+  index("idx_gtfs_trips_feed_trip").on(t.feedId, t.tripId),
+  index("idx_gtfs_trips_feed_route").on(t.feedId, t.routeId),
+  index("idx_gtfs_trips_feed_service").on(t.feedId, t.serviceId),
+]);
 
 // GTFS Stop Times — departure time at each stop in a trip
 export const gtfsStopTimes = pgTable("gtfs_stop_times", {
@@ -125,7 +147,12 @@ export const gtfsStopTimes = pgTable("gtfs_stop_times", {
   stopSequence: integer("stop_sequence").notNull(),
   departureTime: text("departure_time"),  // HH:MM:SS (may be >24h for overnight)
   arrivalTime: text("arrival_time"),
-});
+}, (t) => [
+  index("idx_gtfs_stop_times_feed_id").on(t.feedId),
+  index("idx_gtfs_stop_times_feed_trip").on(t.feedId, t.tripId),
+  index("idx_gtfs_stop_times_feed_stop").on(t.feedId, t.stopId),
+  index("idx_gtfs_stop_times_feed_trip_seq").on(t.feedId, t.tripId, t.stopSequence),
+]);
 
 // GTFS Calendar — regular weekly service patterns
 export const gtfsCalendar = pgTable("gtfs_calendar", {
@@ -141,7 +168,10 @@ export const gtfsCalendar = pgTable("gtfs_calendar", {
   sunday: integer("sunday").notNull().default(0),
   startDate: text("start_date").notNull(),
   endDate: text("end_date").notNull(),
-});
+}, (t) => [
+  index("idx_gtfs_calendar_feed_id").on(t.feedId),
+  index("idx_gtfs_calendar_feed_service").on(t.feedId, t.serviceId),
+]);
 
 // GTFS Calendar Dates — exceptions (added/removed service on specific dates)
 export const gtfsCalendarDates = pgTable("gtfs_calendar_dates", {
@@ -150,7 +180,11 @@ export const gtfsCalendarDates = pgTable("gtfs_calendar_dates", {
   serviceId: text("service_id").notNull(),
   date: text("date").notNull(),            // YYYYMMDD
   exceptionType: integer("exception_type").notNull(), // 1=added, 2=removed
-});
+}, (t) => [
+  index("idx_gtfs_cal_dates_feed_id").on(t.feedId),
+  index("idx_gtfs_cal_dates_feed_service").on(t.feedId, t.serviceId),
+  index("idx_gtfs_cal_dates_feed_date").on(t.feedId, t.date),
+]);
 
 // Scenarios — planned route scenarios built from KML/KMZ files
 export const scenarios = pgTable("scenarios", {
@@ -174,7 +208,9 @@ export const isochroneCache = pgTable("isochrone_cache", {
   minutes: integer("minutes").notNull(),
   geojson: jsonb("geojson").notNull(),              // GeoJSON geometry (Polygon/MultiPolygon)
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_isochrone_lat_lng_min").on(t.latRound, t.lngRound, t.minutes),
+]);
 
 // Service Program Scenarios — saved vehicle shift plans for driver shift generation
 export const serviceProgramScenarios = pgTable("service_program_scenarios", {
@@ -187,7 +223,10 @@ export const serviceProgramScenarios = pgTable("service_program_scenarios", {
   /** Full optimizer output: shifts, costs, score, advisories, summary, etc. */
   result: jsonb("result").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_sps_feed_id").on(t.feedId),
+  index("idx_sps_date").on(t.date),
+]);
 
 // Driver Shift Scenarios — scenari turni guida salvati (N:1 con turni macchina)
 export const driverShiftScenarios = pgTable("driver_shift_scenarios", {
@@ -199,7 +238,9 @@ export const driverShiftScenarios = pgTable("driver_shift_scenarios", {
   result: jsonb("result").notNull(),
   config: jsonb("config"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_dss_sps_id").on(t.serviceProgramScenarioId),
+]);
 
 // Scenario Service Programs — programmi di esercizio generati da scenari KML
 export const scenarioServicePrograms = pgTable("scenario_service_programs", {
@@ -213,7 +254,9 @@ export const scenarioServicePrograms = pgTable("scenario_service_programs", {
   /** Generated program: trips with stop times, cadences, metrics */
   result: jsonb("result").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
+}, (t) => [
+  index("idx_ssp_scenario_id").on(t.scenarioId),
+]);
 
 // Stop Clusters — gruppi di fermate per cambi in linea
 export const stopClusters = pgTable("stop_clusters", {
@@ -233,7 +276,80 @@ export const stopClusterStops = pgTable("stop_cluster_stops", {
   stopName: text("stop_name").notNull(),
   stopLat: doublePrecision("stop_lat").notNull(),
   stopLon: doublePrecision("stop_lon").notNull(),
+}, (t) => [
+  index("idx_scs_cluster_id").on(t.clusterId),
+  index("idx_scs_gtfs_stop_id").on(t.gtfsStopId),
+]);
+
+// Coincidence Zones — zone di coincidenza intermodale (treni/navi ↔ bus)
+export const coincidenceZones = pgTable("coincidence_zones", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  hubId: text("hub_id").notNull(),
+  hubName: text("hub_name").notNull(),
+  hubType: text("hub_type").notNull(),
+  hubLat: doublePrecision("hub_lat").notNull(),
+  hubLng: doublePrecision("hub_lng").notNull(),
+  walkMinutes: integer("walk_minutes").notNull().default(5),
+  radiusKm: doublePrecision("radius_km").notNull().default(0.5),
+  color: text("color").notNull().default("#06b6d4"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
+
+// Coincidence Zone Stops — fermate GTFS nella zona di coincidenza
+export const coincidenceZoneStops = pgTable("coincidence_zone_stops", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  zoneId: uuid("zone_id").references(() => coincidenceZones.id, { onDelete: "cascade" }).notNull(),
+  gtfsStopId: text("gtfs_stop_id").notNull(),
+  stopName: text("stop_name").notNull(),
+  stopLat: doublePrecision("stop_lat").notNull(),
+  stopLon: doublePrecision("stop_lon").notNull(),
+  distanceKm: doublePrecision("distance_km"),
+  walkMinFromHub: integer("walk_min_from_hub"),
+}, (t) => [
+  index("idx_czs_zone_id").on(t.zoneId),
+  index("idx_czs_gtfs_stop_id").on(t.gtfsStopId),
+]);
+
+// Scenario Program Calendars — validità temporali per programmi di esercizio (→ GTFS calendar.txt)
+export const scenarioProgramCalendars = pgTable("scenario_program_calendars", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  programId: uuid("program_id").notNull().references(() => scenarioServicePrograms.id, { onDelete: "cascade" }),
+  serviceId: text("service_id").notNull(),
+  serviceName: text("service_name").notNull(),
+  monday: boolean("monday").notNull().default(true),
+  tuesday: boolean("tuesday").notNull().default(true),
+  wednesday: boolean("wednesday").notNull().default(true),
+  thursday: boolean("thursday").notNull().default(true),
+  friday: boolean("friday").notNull().default(true),
+  saturday: boolean("saturday").notNull().default(false),
+  sunday: boolean("sunday").notNull().default(false),
+  startDate: date("start_date").notNull(),
+  endDate: date("end_date").notNull(),
+  cadenceMultiplier: doublePrecision("cadence_multiplier").notNull().default(1.0),
+  isVariant: boolean("is_variant").notNull().default(false),
+  variantConfig: jsonb("variant_config"),
+  color: text("color").default("#3b82f6"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_spc_program_id").on(t.programId),
+]);
+
+// Scenario Program Calendar Exceptions — eccezioni (festivi, scioperi, eventi)
+export const scenarioProgramCalendarExceptions = pgTable("scenario_program_calendar_exceptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  calendarId: uuid("calendar_id").notNull().references(() => scenarioProgramCalendars.id, { onDelete: "cascade" }),
+  exceptionDate: date("exception_date").notNull(),
+  exceptionType: integer("exception_type").notNull(), // 1=added, 2=removed
+  description: text("description"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_spce_calendar_id").on(t.calendarId),
+  index("idx_spce_exception_date").on(t.exceptionDate),
+]);
 
 // App Settings — configurazione globale (autovetture, ecc.)
 export const appSettings = pgTable("app_settings", {
@@ -241,6 +357,29 @@ export const appSettings = pgTable("app_settings", {
   value: jsonb("value").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
+
+// Weather Snapshots — hourly weather data from OpenWeatherMap
+export const weatherSnapshots = pgTable("weather_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  lat: doublePrecision("lat").notNull(),
+  lng: doublePrecision("lng").notNull(),
+  locationName: text("location_name"),
+  temp: doublePrecision("temp"),                  // °C
+  feelsLike: doublePrecision("feels_like"),       // °C
+  humidity: integer("humidity"),                   // %
+  windSpeed: doublePrecision("wind_speed"),       // m/s
+  weatherMain: text("weather_main"),              // "Rain", "Clear", "Clouds", etc.
+  weatherDescription: text("weather_description"),// "light rain", "overcast clouds", etc.
+  weatherIcon: text("weather_icon"),              // icon code e.g. "10d"
+  rain1h: doublePrecision("rain_1h"),             // mm precipitation last 1h
+  snow1h: doublePrecision("snow_1h"),             // mm snow last 1h
+  visibility: integer("visibility"),              // metres
+  capturedAt: timestamp("captured_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_weather_captured_at").on(t.capturedAt),
+  index("idx_weather_location").on(t.lat, t.lng),
+  index("idx_weather_main").on(t.weatherMain),
+]);
 
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
@@ -260,6 +399,11 @@ export type Scenario = typeof scenarios.$inferSelect;
 export type ServiceProgramScenario = typeof serviceProgramScenarios.$inferSelect;
 export type StopCluster = typeof stopClusters.$inferSelect;
 export type StopClusterStop = typeof stopClusterStops.$inferSelect;
+export type CoincidenceZone = typeof coincidenceZones.$inferSelect;
+export type CoincidenceZoneStop = typeof coincidenceZoneStops.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
 export type DriverShiftScenario = typeof driverShiftScenarios.$inferSelect;
 export type ScenarioServiceProgram = typeof scenarioServicePrograms.$inferSelect;
+export type ScenarioProgramCalendar = typeof scenarioProgramCalendars.$inferSelect;
+export type ScenarioProgramCalendarException = typeof scenarioProgramCalendarExceptions.$inferSelect;
+export type WeatherSnapshot = typeof weatherSnapshots.$inferSelect;

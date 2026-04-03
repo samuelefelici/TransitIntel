@@ -24,6 +24,7 @@ import { timeToMinutes, minToTime } from "../lib/geo-utils";
 import { getLatestFeedId, HOURLY_MODEL } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { strictLimiter } from "../middlewares/rate-limit";
 
 // Scripts are at the monorepo root: ../../scripts relative to api-server/
 const SCRIPTS_DIR = path.resolve(process.cwd(), "..", "..", "scripts");
@@ -556,7 +557,7 @@ async function optimizeSchedule(feedId: string, dateYMD: string) {
  * 2. Pipes them as JSON to the Python CP-SAT script
  * 3. Returns parsed JSON from stdout
  */
-router.post("/optimizer/schedule/optimize", async (req, res) => {
+router.post("/optimizer/schedule/optimize", strictLimiter, async (req, res) => {
   try {
     const feedId = await getLatestFeedId();
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
@@ -692,7 +693,7 @@ router.post("/optimizer/schedule/optimize", async (req, res) => {
 });
 
 // POST /api/optimizer/schedule — run schedule optimization for a specific date
-router.post("/optimizer/schedule", async (req, res) => {
+router.post("/optimizer/schedule", strictLimiter, async (req, res) => {
   try {
     const feedId = await getLatestFeedId();
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }

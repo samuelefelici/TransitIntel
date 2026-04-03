@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
 import {
-  useGetAnalysisStats, useGetTraffic, useGetPoi, useGetDemandScore,
+  useGetAnalysisStats, useGetPoi, useGetAnalysisDemandScore,
 } from "@workspace/api-client-react";
 import { getApiBase } from "@/lib/api";
 import {
@@ -26,6 +26,7 @@ import { LayersPanel } from "./dashboard/LayersPanel";
 import { LegendPanel } from "./dashboard/LegendPanel";
 import { WalkabilityPanel } from "./dashboard/WalkabilityPanel";
 import { ViewModeSelector } from "./dashboard/ViewModeSelector";
+import { WeatherWidget } from "./dashboard/WeatherWidget";
 
 export default function Dashboard() {
   const mapRef = useRef<MapRef>(null);
@@ -37,7 +38,6 @@ export default function Dashboard() {
   const isStandardStyle = viewMode === "city3d" || viewMode === "city3d-dark";
 
   const [layers, setLayers] = useState<LayersState>({
-    traffic: false,
     mapboxTraffic: false,
     demand: false,
     poi: true,
@@ -50,6 +50,7 @@ export default function Dashboard() {
   const [layersCollapsed, setLayersCollapsed] = useState(false);
   const [legendCollapsed, setLegendCollapsed] = useState(true);
   const [statsCollapsed, setStatsCollapsed] = useState(false);
+  const [weatherCollapsed, setWeatherCollapsed] = useState(true);
 
   // Route filter state
   const [showRouteFilter, setShowRouteFilter] = useState(false);
@@ -79,8 +80,7 @@ export default function Dashboard() {
   // ── React Query hooks ─────────────────────────────────────────
 
   const { data: statsData }   = useGetAnalysisStats();
-  const { data: trafficData } = useGetTraffic({ limit: 1000 });
-  const { data: demandData }  = useGetDemandScore({});
+  const { data: demandData }  = useGetAnalysisDemandScore();
   const { data: poiData }     = useGetPoi({});
 
   // GTFS data via custom hooks (replaces manual fetch + useEffect)
@@ -220,18 +220,6 @@ export default function Dashboard() {
 
   // ── GeoJSON builders ──────────────────────────────────────────
 
-  const trafficGeojson = useMemo(() => {
-    if (!trafficData?.data) return null;
-    return {
-      type: "FeatureCollection",
-      features: trafficData.data.map(t => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [t.lng, t.lat] },
-        properties: { congestion: t.congestionLevel, speed: t.speed, freeflow: t.freeflowSpeed, segmentId: t.segmentId },
-      })),
-    };
-  }, [trafficData]);
-
   const demandGeojson = useMemo(() => {
     if (!demandData?.data) return null;
     return {
@@ -350,7 +338,6 @@ export default function Dashboard() {
 
   const interactiveLayers = useMemo(() => {
     const ids: string[] = [];
-    if (layers.traffic) ids.push("traffic-points");
     if (layers.poi) ids.push("poi-points");
     if (layers.gtfsStops) ids.push("gtfs-stops");
     if (layers.gtfsShapes) ids.push("gtfs-shapes-line");
@@ -364,8 +351,7 @@ export default function Dashboard() {
     const layerId: string = feature.layer?.id || "";
     const props = feature.properties || {};
     const [lng, lat] = (feature.geometry as any)?.coordinates?.slice(0, 2) || [e.lngLat.lng, e.lngLat.lat];
-    if (layerId === "traffic-points")        setPopup({ lng, lat, type: "traffic",  props });
-    else if (layerId === "poi-points")       setPopup({ lng, lat, type: "poi",      props });
+    if (layerId === "poi-points")       setPopup({ lng, lat, type: "poi",      props });
     else if (layerId === "gtfs-stops")       setPopup({ lng, lat, type: "gtfsStop", props });
     else if (layerId === "gtfs-shapes-line") setPopup({ lng: e.lngLat.lng, lat: e.lngLat.lat, type: "shape", props });
     else if (layerId === "pop-choropleth-fill") setPopup({ lng: e.lngLat.lng, lat: e.lngLat.lat, type: "census", props });
@@ -626,22 +612,6 @@ export default function Dashboard() {
           </Source>
         )}
 
-        {/* TomTom Traffic Points */}
-        {layers.traffic && trafficGeojson && (
-          <Source type="geojson" data={trafficGeojson as any}>
-            <Layer id="traffic-glow" type="circle" paint={{
-              "circle-radius": ["interpolate",["linear"],["zoom"],8,18,14,35],
-              "circle-color": ["interpolate",["linear"],["get","congestion"],0,"#22c55e",0.4,"#eab308",0.7,"#f97316",1,"#ef4444"],
-              "circle-opacity": 0.1, "circle-blur": 1,
-            }} />
-            <Layer id="traffic-points" type="circle" paint={{
-              "circle-radius": ["interpolate",["linear"],["zoom"],8,7,12,14,16,22],
-              "circle-color": ["interpolate",["linear"],["get","congestion"],0,"#22c55e",0.3,"#84cc16",0.5,"#eab308",0.7,"#f97316",1,"#ef4444"],
-              "circle-opacity": 0.92, "circle-stroke-width": 2, "circle-stroke-color": "rgba(255,255,255,0.19)",
-            }} />
-          </Source>
-        )}
-
         {/* POI Points */}
         {layers.poi && poiGeojson && (
           <Source type="geojson" data={poiGeojson as any}>
@@ -751,7 +721,7 @@ export default function Dashboard() {
         onToggle={() => setStatsCollapsed(v => !v)}
         gtfsSummary={gtfsSummary}
         dayFilter={dayFilter}
-        avgCongestion={statsData?.avgCongestion}
+        avgCongestion={statsData?.avgCongestion as number | null | undefined}
       />
 
       {/* ── Layers & Legend panels ────────────────────────────── */}
@@ -796,6 +766,16 @@ export default function Dashboard() {
         walkDonut={walkDonut}
         walkBars={walkBars}
       />
+
+      {/* ── Weather Widget ───────────────────────────────────── */}
+      <div className="absolute bottom-4 right-4 w-56 pointer-events-auto z-10">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+          <WeatherWidget
+            collapsed={weatherCollapsed}
+            onToggle={() => setWeatherCollapsed(v => !v)}
+          />
+        </motion.div>
+      </div>
     </div>
   );
 }

@@ -118,17 +118,6 @@ export function LayersPanel({
                   </div>
                 </button>
               )}
-
-              {/* Compact traffic sensor toggle */}
-              <div className="flex items-center justify-between pt-1 mt-1 border-t border-border/20">
-                <span className="text-[10px] text-muted-foreground">Sensori TomTom</span>
-                <Switch
-                  id="layer-traffic"
-                  checked={layers.traffic}
-                  onCheckedChange={c => onLayerChange("traffic", c)}
-                  className="scale-75"
-                />
-              </div>
             </CardContent>
           </motion.div>
         )}

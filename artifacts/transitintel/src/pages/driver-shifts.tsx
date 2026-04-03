@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo, useCallback, Component, type ErrorInfo, type ReactNode } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useParams } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Loader2, Users, Clock, ChevronDown, ChevronUp,
   Calendar, Bus, Timer, BarChart3, AlertTriangle, TrendingUp,
   ArrowLeft, Coffee, Zap, Shield, Repeat, Car, Settings, Play,
-  DollarSign, Save, FolderOpen, Trash2, Check,
+  DollarSign,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as ReTooltip, ResponsiveContainer,
@@ -18,459 +18,17 @@ import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optim
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 
-
-/* ═══════════════════════════════════════════════════════════════
- *  ERROR BOUNDARY — prevents white/black screen on render crash
- * ═══════════════════════════════════════════════════════════════ */
-
-class DriverShiftsErrorBoundary extends Component<
-  { children: ReactNode },
-  { hasError: boolean; error: Error | null }
-> {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[DriverShifts] Render crash:", error, info);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="max-w-3xl mx-auto p-6">
-          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-6">
-            <div className="flex items-center gap-2 mb-3">
-              <AlertTriangle className="w-5 h-5 text-red-400" />
-              <h2 className="text-lg font-bold text-red-400">Errore di rendering</h2>
-            </div>
-            <p className="text-sm text-muted-foreground mb-2">
-              Si è verificato un errore durante il rendering della pagina Turni Guida.
-            </p>
-            <pre className="text-xs bg-black/30 rounded p-3 overflow-auto max-h-40 text-red-300">
-              {this.state.error?.message}
-              {"\n"}
-              {this.state.error?.stack?.split("\n").slice(0, 5).join("\n")}
-            </pre>
-            <button
-              onClick={() => this.setState({ hasError: false, error: null })}
-              className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90"
-            >
-              Riprova
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-/* ═══════════════════════════════════════════════════════════════
- *  TYPES
- * ═══════════════════════════════════════════════════════════════ */
-
-type DriverShiftType = "intero" | "semiunico" | "spezzato" | "supplemento" | "invalido";
-
-interface RipresaTrip {
-  tripId: string;
-  routeId: string;
-  routeName: string;
-  headsign: string | null;
-  departureTime: string;
-  arrivalTime: string;
-  departureMin: number;
-  arrivalMin: number;
-  firstStopName?: string;
-  lastStopName?: string;
-  vehicleId?: string;
-  vehicleType?: string;
-}
-
-interface CambioInLinea {
-  cluster: string;
-  clusterName: string;
-  fromVehicle: string;
-  toVehicle: string;
-  atMin: number;
-  atTime: string;
-}
-
-interface CarPoolInfo {
-  carId?: number | null;
-  departMin?: number;
-  departTime?: string;
-  arriveMin?: number;
-  arriveTime?: string;
-  description: string;
-}
-
-interface Ripresa {
-  startTime: string;
-  endTime: string;
-  startMin: number;
-  endMin: number;
-  preTurnoMin: number;
-  transferMin: number;
-  transferType: string;
-  transferToStop?: string;
-  transferToCluster?: string | null;
-  transferBackMin: number;
-  transferBackType: string;
-  lastStop?: string;
-  lastCluster?: string | null;
-  workMin: number;
-  vehicleIds: string[];
-  vehicleType?: string;
-  cambi: CambioInLinea[];
-  trips: RipresaTrip[];
-  carPoolOut?: CarPoolInfo | null;
-  carPoolReturn?: CarPoolInfo | null;
-}
-
-interface HandoverInfo {
-  vehicleId: string;
-  atMin: number;
-  atTime: string;
-  atStop: string;
-  cluster: string | null;
-  clusterName: string;
-  role: "incoming" | "outgoing";
-  otherDriver: string;
-  description: string;
-  cutType?: "inter" | "intra";
-  tripId?: string;
-  routeName?: string;
-}
-
-interface DriverShiftData {
-  driverId: string;
-  type: DriverShiftType;
-  nastroStart: string;
-  nastroEnd: string;
-  nastroStartMin: number;
-  nastroEndMin: number;
-  nastroMin: number;
-  nastro: string;
-  workMin: number;
-  work: string;
-  interruptionMin: number;
-  interruption: string | null;
-  transferMin: number;
-  transferBackMin: number;
-  preTurnoMin: number;
-  cambiCount: number;
-  riprese: Ripresa[];
-  handovers?: HandoverInfo[];
-  vehicleHandoverLabels?: string[];
-  /* v2 cost fields */
-  costEuro?: number;
-  costBreakdown?: Record<string, number>;
-  /* v4 BDS fields */
-  bdsValidation?: {
-    valid: boolean;
-    classificazioneValida: boolean;
-    cee561: boolean;
-    intervalloPasto: boolean;
-    staccoMinimo: boolean;
-    nastro: boolean;
-    riprese: boolean;
-    violations: string[];
-  };
-  workCalculation?: {
-    lavoroNetto: number;
-    lavoroConvenzionale: number;
-    driving: number;
-    idleAtTerminal: number;
-    prePost: number;
-    transfer: number;
-    sosteFraRipreseIR: number;
-    sosteFraRipreseFR: number;
-  };
-}
-
-interface DriverShiftSummary {
-  totalDriverShifts: number;  // Autisti = turni principali (intero + semiunico + spezzato)
-  totalSupplementi?: number;   // Supplementi = straordinari
-  totalShifts?: number;        // Tutti i turni
-  byType: Record<DriverShiftType, number>;
-  totalWorkHours: number;
-  avgWorkMin: number;
-  totalNastroHours: number;
-  avgNastroMin: number;
-  semiunicoPct: number;
-  spezzatoPct: number;
-  totalCambi: number;
-  totalInterCambi?: number;    // cambi tra corse (al capolinea)
-  totalIntraCambi?: number;    // cambi dentro corsa (a fermata intermedia)
-  companyCarsUsed: number;
-  /* v2 cost fields */
-  totalDailyCost?: number;
-  costBreakdown?: Record<string, number>;
-  efficiency?: Record<string, number>;
-}
-
-interface ClusterInfo {
-  id: string;
-  name: string;
-  transferMin: number;
-}
-
-interface DriverShiftsResult {
-  scenarioId: string;
-  scenarioName: string;
-  date: string;
-  driverShifts: DriverShiftData[];
-  summary: DriverShiftSummary;
-  unassignedBlocks: number;
-  clusters: ClusterInfo[];
-  companyCars: number;
-  /* v2 cost fields */
-  costAnalysis?: Record<string, any>;
-  costRates?: Record<string, number>;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  CONSTANTS
- * ═══════════════════════════════════════════════════════════════ */
-
-const TYPE_LABELS: Record<DriverShiftType, string> = {
-  intero: "Intero",
-  semiunico: "Semiunico",
-  spezzato: "Spezzato",
-  supplemento: "Supplemento",
-  invalido: "Invalido",
-};
-
-const TYPE_COLORS: Record<DriverShiftType, string> = {
-  intero: "#3b82f6",
-  semiunico: "#f59e0b",
-  spezzato: "#ef4444",
-  supplemento: "#8b5cf6",
-  invalido: "#6b7280",
-};
-
-const TYPE_ICONS: Record<DriverShiftType, React.ReactNode> = {
-  intero: <Clock className="w-3.5 h-3.5" />,
-  semiunico: <Coffee className="w-3.5 h-3.5" />,
-  spezzato: <Timer className="w-3.5 h-3.5" />,
-  supplemento: <Zap className="w-3.5 h-3.5" />,
-  invalido: <AlertTriangle className="w-3.5 h-3.5" />,
-};
-
-const TYPE_DESC: Record<DriverShiftType, string> = {
-  intero: "Nastro ≤ 7h15, unica ripresa",
-  semiunico: "2 riprese, pausa 1h15–2h59, nastro ≤ 9h15",
-  spezzato: "2 riprese, pausa ≥ 3h, nastro ≤ 10h30",
-  supplemento: "Turno breve, max 2h30",
-  invalido: "Turno non classificabile (violazione normativa)",
-};
-
-function ymdToDisplay(ymd: string): string {
-  if (!ymd) return "";
-  const y = ymd.slice(0, 4), m = ymd.slice(4, 6), d = ymd.slice(6, 8);
-  return `${d}/${m}/${y}`;
-}
-
-function minToTime(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-function formatDuration(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${h}h${String(m).padStart(2, "0")}`;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  SUMMARY CARD
- * ═══════════════════════════════════════════════════════════════ */
-
-function SummaryCard({ icon, label, value, sub, color }: { icon: React.ReactNode; label: string; value: string; sub?: string; color?: string }) {
-  return (
-    <div className="flex items-center gap-3 bg-muted/30 rounded-xl px-4 py-3 border border-border/30">
-      <div className="text-primary">{icon}</div>
-      <div>
-        <div className="text-[10px] text-muted-foreground">{label}</div>
-        <div className="text-lg font-bold" style={{ color }}>{value}</div>
-        {sub && <div className="text-[10px] text-muted-foreground">{sub}</div>}
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  ROUTE COLOR PALETTE — deterministic per routeId
- * ═══════════════════════════════════════════════════════════════ */
-
-const ROUTE_PALETTE = [
-  "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#8b5cf6",
-  "#ec4899", "#06b6d4", "#f97316", "#14b8a6", "#a855f7",
-  "#64748b", "#e11d48", "#0ea5e9", "#84cc16", "#d946ef",
-  "#fb923c", "#2dd4bf", "#6366f1", "#facc15", "#f43f5e",
-];
-
-function buildRouteColorMap(shifts: DriverShiftData[]): Map<string, string> {
-  const ids = new Set<string>();
-  for (const s of shifts) {
-    for (const r of s.riprese) {
-      for (const t of r.trips) {
-        if (t.routeId) ids.add(t.routeId);
-      }
-    }
-  }
-  const sorted = Array.from(ids).sort();
-  const map = new Map<string, string>();
-  sorted.forEach((id, i) => map.set(id, ROUTE_PALETTE[i % ROUTE_PALETTE.length]));
-  return map;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  GANTT CHART — Driver Shifts (route-colored per trip)
- * ═══════════════════════════════════════════════════════════════ */
-
-function DriverGantt({ shifts, routeColorMap }: { shifts: DriverShiftData[]; routeColorMap: Map<string, string> }) {
-  if (shifts.length === 0) return <p className="text-sm text-muted-foreground text-center py-4">Nessun turno guida</p>;
-
-  const minHour = Math.max(3, Math.floor(Math.min(...shifts.map(s => s.nastroStartMin)) / 60) - 1);
-  const maxHour = Math.min(27, Math.ceil(Math.max(...shifts.map(s => s.nastroEndMin)) / 60) + 1);
-  const totalMin = (maxHour - minHour) * 60;
-
-  return (
-    <div className="overflow-x-auto">
-      <div className="min-w-[800px]">
-        {/* Time header */}
-        <div className="flex border-b border-border/30 mb-1">
-          <div className="w-36 shrink-0" />
-          <div className="flex-1 relative h-6">
-            {Array.from({ length: maxHour - minHour + 1 }, (_, i) => {
-              const h = minHour + i;
-              const pct = (i * 60 / totalMin) * 100;
-              return <span key={h} className="absolute text-[9px] text-muted-foreground" style={{ left: `${pct}%` }}>{h}:00</span>;
-            })}
-          </div>
-        </div>
-
-        {shifts.map(shift => {
-          const typeColor = TYPE_COLORS[shift.type];
-          return (
-            <div key={shift.driverId} className="flex items-center h-8 group hover:bg-muted/20">
-              <div className="w-36 shrink-0 text-[10px] font-mono flex items-center gap-1 px-1">
-                <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: typeColor }} />
-                {shift.driverId}
-                <span className="text-muted-foreground">({(TYPE_LABELS[shift.type] ?? "???").slice(0, 3)})</span>
-              </div>
-              <div className="flex-1 relative h-6">
-                {/* Grid lines */}
-                {Array.from({ length: maxHour - minHour + 1 }, (_, i) => (
-                  <div key={i} className="absolute top-0 bottom-0 border-l border-border/10"
-                    style={{ left: `${(i * 60 / totalMin) * 100}%` }} />
-                ))}
-
-                {/* Riprese — individual trips colored by route */}
-                {shift.riprese.map((rip, ri) => {
-                  const ripLeft = ((rip.startMin - minHour * 60) / totalMin) * 100;
-                  const preTurnoWidth = (rip.preTurnoMin / totalMin) * 100;
-                  const transferWidth = (rip.transferMin / totalMin) * 100;
-                  const transferLeft = ripLeft + preTurnoWidth;
-                  const transferBackWidth = ((rip.transferBackMin || 0) / totalMin) * 100;
-
-                  return (
-                    <React.Fragment key={ri}>
-                      {/* Pre-turno (gray) */}
-                      <div className="absolute top-0.5 h-5 rounded-l-sm text-[7px] text-white/70 flex items-center justify-center"
-                        style={{ left: `${ripLeft}%`, width: `${preTurnoWidth}%`, backgroundColor: "#475569", opacity: 0.7 }}
-                        title={`Pre-turno ${rip.preTurnoMin}min`}
-                      >{preTurnoWidth > 1.5 ? "PT" : ""}</div>
-
-                      {/* Transfer depot → capolinea (orange dashed) */}
-                      {rip.transferMin > 0 && (
-                        <div className="absolute top-0.5 h-5 text-[7px] text-white/70 flex items-center justify-center"
-                          style={{ left: `${transferLeft}%`, width: `${transferWidth}%`, backgroundColor: "#f97316", opacity: 0.6,
-                            backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.2) 3px, rgba(255,255,255,0.2) 6px)" }}
-                          title={`\u{1F697} Trasf. deposito \u2192 ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`}
-                        >{transferWidth > 2 ? "\u{1F697}" : ""}</div>
-                      )}
-
-                      {/* Individual trips colored by route */}
-                      {rip.trips.map((trip, ti) => {
-                        const tLeft = ((trip.departureMin - minHour * 60) / totalMin) * 100;
-                        const tWidth = Math.max(0.2, ((trip.arrivalMin - trip.departureMin) / totalMin) * 100);
-                        const tripColor = routeColorMap.get(trip.routeId) || "#6b7280";
-                        const prevEnd = ti > 0 ? rip.trips[ti - 1].arrivalMin : (rip.startMin + rip.preTurnoMin + rip.transferMin);
-                        const gapMin = trip.departureMin - prevEnd;
-                        const gapLeft = ((prevEnd - minHour * 60) / totalMin) * 100;
-                        const gapWidth = (gapMin / totalMin) * 100;
-
-                        return (
-                          <React.Fragment key={`t${ri}-${ti}`}>
-                            {gapMin > 2 && (
-                              <div className="absolute top-1.5 h-3 rounded-sm"
-                                style={{ left: `${gapLeft}%`, width: `${gapWidth}%`, backgroundColor: "rgba(255,255,255,0.04)",
-                                  backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.1) 3px, rgba(255,255,255,0.1) 5px)" }}
-                                title={`Sosta/fuori linea ${gapMin}min`}
-                              />
-                            )}
-                            <div className="absolute top-0.5 h-5 rounded-sm text-[7px] text-white flex items-center justify-center overflow-hidden whitespace-nowrap hover:brightness-125 hover:z-10 transition-all cursor-default"
-                              style={{ left: `${tLeft}%`, width: `${tWidth}%`, backgroundColor: tripColor, opacity: 0.85 }}
-                              title={`${trip.routeName} \u00b7 ${trip.departureTime?.slice(0,5)}\u2192${trip.arrivalTime?.slice(0,5)} \u00b7 ${trip.firstStopName || "?"} \u2192 ${trip.lastStopName || "?"} \u00b7 Veicolo: ${trip.vehicleId || "?"}`}
-                            >{tWidth > 2 ? trip.routeName : ""}</div>
-                          </React.Fragment>
-                        );
-                      })}
-
-                      {/* Transfer back (rientro) */}
-                      {(rip.transferBackMin || 0) > 0 && (() => {
-                        const lastTrip = rip.trips[rip.trips.length - 1];
-                        const tbLeft = lastTrip ? ((lastTrip.arrivalMin - minHour * 60) / totalMin) * 100 : 0;
-                        return (
-                          <div className="absolute top-0.5 h-5 rounded-r-sm text-[7px] text-white/70 flex items-center justify-center"
-                            style={{ left: `${tbLeft}%`, width: `${transferBackWidth}%`, backgroundColor: "#f97316", opacity: 0.6,
-                              backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.2) 3px, rgba(255,255,255,0.2) 6px)" }}
-                            title={`\u{1F697} Rientro ${rip.lastStop || "capolinea"} \u2192 deposito ${rip.transferBackMin}min`}
-                          >{transferBackWidth > 2 ? "\u{1F697}" : ""}</div>
-                        );
-                      })()}
-
-                      {/* Cambio in linea markers */}
-                      {rip.cambi?.map((c, ci) => {
-                        const cLeft = ((c.atMin - minHour * 60) / totalMin) * 100;
-                        return (
-                          <div key={`c${ci}`} className="absolute"
-                            style={{ left: `${cLeft}%`, top: "-2px" }}
-                            title={`Cambio in linea @ ${c.clusterName}: ${c.fromVehicle}\u2192${c.toVehicle}`}
-                          >
-                            <div className="w-0 h-0 border-l-[3px] border-r-[3px] border-t-[5px] border-l-transparent border-r-transparent border-t-cyan-400" />
-                          </div>
-                        );
-                      })}
-                    </React.Fragment>
-                  );
-                })}
-
-                {/* Interruption gap indicator */}
-                {shift.interruptionMin > 0 && shift.riprese.length === 2 && (
-                  <div className="absolute top-2 h-2 rounded-full"
-                    style={{
-                      left: `${((shift.riprese[0].endMin - minHour * 60) / totalMin) * 100}%`,
-                      width: `${((shift.riprese[1].startMin - shift.riprese[0].endMin) / totalMin) * 100}%`,
-                      backgroundColor: "rgba(255,255,255,0.06)",
-                      backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 4px, rgba(255,255,255,0.15) 4px, rgba(255,255,255,0.15) 8px)",
-                    }}
-                    title={`Interruzione ${shift.interruption}`}
-                  />
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+import type {
+  DriverShiftType, DriverShiftData, DriverShiftsResult,
+} from "./driver-shifts/types";
+import {
+  TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
+  ymdToDisplay, minToTime, formatDuration,
+} from "./driver-shifts/constants";
+import {
+  DriverShiftsErrorBoundary, SummaryCard,
+} from "./driver-shifts/components";
+import InteractiveGantt, { type GanttBar, type GanttRow, type GanttChange } from "@/components/InteractiveGantt";
 
 /* ═══════════════════════════════════════════════════════════════
  *  PAGE COMPONENT
@@ -493,15 +51,6 @@ function DriverShiftsPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [expandedShifts, setExpandedShifts] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<DriverShiftType | "all">("all");
-
-  // ── Driver-shift scenario save/load state ──
-  const [savedDSS, setSavedDSS] = useState<any[]>([]);
-  const [savingDSS, setSavingDSS] = useState(false);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [dssName, setDssName] = useState("");
-  const [loadingDSSId, setLoadingDSSId] = useState<string | null>(null);
-  const [activeDSSId, setActiveDSSId] = useState<string | null>(null);
-  const [confirmDeleteDSSId, setConfirmDeleteDSSId] = useState<string | null>(null);
 
   // ── Solver mode ──
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("cpsat");
@@ -570,66 +119,111 @@ function DriverShiftsPageInner() {
     }
   }, [cpsat]);
 
-  // ── Load saved driver-shift scenarios ──
-  useEffect(() => {
-    if (!scenarioId) return;
-    fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios`)
-      .then(r => r.ok ? r.json() : [])
-      .then(list => setSavedDSS(list))
-      .catch(() => {});
-  }, [scenarioId]);
-
-  // ── Save current result as a driver-shift scenario ──
-  const saveDSSScenario = useCallback(async () => {
-    if (!scenarioId || !result || !dssName.trim()) return;
-    setSavingDSS(true);
-    try {
-      const body = { name: dssName.trim(), result, config: { solverMode, operatorConfig } };
-      const resp = await fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (!resp.ok) throw new Error("Errore salvataggio");
-      const saved = await resp.json();
-      setActiveDSSId(saved.id);
-      setShowSaveDialog(false);
-      setDssName("");
-      const listResp = await fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios`);
-      if (listResp.ok) setSavedDSS(await listResp.json());
-    } catch (e) { console.error(e); }
-    finally { setSavingDSS(false); }
-  }, [scenarioId, result, dssName, solverMode, operatorConfig]);
-
-  // ── Load a saved driver-shift scenario ──
-  const loadDSSScenario = useCallback(async (dssId: string) => {
-    if (!scenarioId) return;
-    setLoadingDSSId(dssId);
-    try {
-      const resp = await fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios/${dssId}`);
-      if (!resp.ok) throw new Error("Errore caricamento");
-      const data = await resp.json();
-      setResult(data.result as DriverShiftsResult);
-      setActiveDSSId(dssId);
-      setSolverMetrics(data.config?.solverMetrics || null);
-    } catch (e) { console.error(e); }
-    finally { setLoadingDSSId(null); }
-  }, [scenarioId]);
-
-  // ── Delete a saved driver-shift scenario ──
-  const deleteDSSScenario = useCallback(async (dssId: string) => {
-    if (!scenarioId) return;
-    try {
-      await fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios/${dssId}`, { method: "DELETE" });
-      setSavedDSS(prev => prev.filter(s => s.id !== dssId));
-      if (activeDSSId === dssId) setActiveDSSId(null);
-      setConfirmDeleteDSSId(null);
-    } catch (e) { console.error(e); }
-  }, [scenarioId, activeDSSId]);
-
   const filteredShifts = useMemo(() => {
     if (!result) return [];
     if (typeFilter === "all") return result.driverShifts;
     return result.driverShifts.filter(s => s.type === typeFilter);
   }, [result, typeFilter]);
+
+  // ── InteractiveGantt adapters for driver shifts ──
+  const driverGanttRows = useMemo<GanttRow[]>(() =>
+    filteredShifts.map(s => ({
+      id: s.driverId,
+      label: s.driverId,
+      sublabel: TYPE_LABELS[s.type]?.slice(0, 3),
+      dotColor: TYPE_COLORS[s.type],
+    })),
+    [filteredShifts],
+  );
+
+  const driverGanttMinHour = useMemo(() => {
+    if (filteredShifts.length === 0) return 4;
+    return Math.max(3, Math.floor(Math.min(...filteredShifts.map(s => s.nastroStartMin)) / 60) - 1);
+  }, [filteredShifts]);
+
+  const driverGanttMaxHour = useMemo(() => {
+    if (filteredShifts.length === 0) return 25;
+    return Math.min(27, Math.ceil(Math.max(...filteredShifts.map(s => s.nastroEndMin)) / 60) + 1);
+  }, [filteredShifts]);
+
+  const driverGanttBars = useMemo<GanttBar[]>(() => {
+    const out: GanttBar[] = [];
+    for (const shift of filteredShifts) {
+      const typeColor = TYPE_COLORS[shift.type];
+      shift.riprese.forEach((rip, ri) => {
+        const baseId = `${shift.driverId}__r${ri}`;
+        // Pre-turno
+        if (rip.preTurnoMin > 0) {
+          out.push({
+            id: `${baseId}_pt`, rowId: shift.driverId,
+            startMin: rip.startMin, endMin: rip.startMin + rip.preTurnoMin,
+            label: "PT", color: typeColor, style: "dashed",
+            tooltip: [`Pre-turno ${rip.preTurnoMin}min`],
+            locked: true,
+            meta: { type: "preTurno", driverId: shift.driverId, ripreseIdx: ri },
+          });
+        }
+        // Transfer in
+        if (rip.transferMin > 0) {
+          const tStart = rip.startMin + rip.preTurnoMin;
+          out.push({
+            id: `${baseId}_tf`, rowId: shift.driverId,
+            startMin: tStart, endMin: tStart + rip.transferMin,
+            label: "↝", color: typeColor, style: "dashed",
+            tooltip: [`Trasf. deposito → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
+            locked: true,
+            meta: { type: "transfer", driverId: shift.driverId, ripreseIdx: ri },
+          });
+        }
+        // Service trips block
+        const serviceStart = rip.startMin + rip.preTurnoMin + rip.transferMin;
+        const serviceEnd = rip.endMin - (rip.transferBackMin || 0);
+        if (serviceEnd > serviceStart) {
+          const tip: string[] = [
+            `${rip.trips.length} corse`,
+            `${minToTime(serviceStart)} → ${minToTime(serviceEnd)}`,
+            `Veicolo: ${rip.vehicleIds.join(", ")}`,
+          ];
+          if (rip.cambi?.length) tip.push(`${rip.cambi.length} cambi in linea`);
+          out.push({
+            id: `${baseId}_srv`, rowId: shift.driverId,
+            startMin: serviceStart, endMin: serviceEnd,
+            label: `${rip.trips.length} corse`, color: typeColor, style: "solid",
+            tooltip: tip,
+            meta: { type: "service", driverId: shift.driverId, ripreseIdx: ri, tripCount: rip.trips.length },
+          });
+        }
+        // Transfer back
+        if ((rip.transferBackMin || 0) > 0) {
+          const tbStart = rip.endMin - rip.transferBackMin;
+          out.push({
+            id: `${baseId}_tb`, rowId: shift.driverId,
+            startMin: tbStart, endMin: rip.endMin,
+            label: "↜", color: typeColor, style: "dashed",
+            tooltip: [`Rientro ${rip.lastStop || "capolinea"} → deposito ${rip.transferBackMin}min`],
+            locked: true,
+            meta: { type: "transferBack", driverId: shift.driverId, ripreseIdx: ri },
+          });
+        }
+      });
+      // Interruption gap
+      if (shift.interruptionMin > 0 && shift.riprese.length === 2) {
+        out.push({
+          id: `${shift.driverId}__gap`, rowId: shift.driverId,
+          startMin: shift.riprese[0].endMin, endMin: shift.riprese[1].startMin,
+          label: "", color: "rgba(255,255,255,0.06)", style: "striped",
+          tooltip: [`Interruzione ${shift.interruption}`],
+          locked: true,
+          meta: { type: "interruption", driverId: shift.driverId },
+        });
+      }
+    }
+    return out;
+  }, [filteredShifts]);
+
+  const handleDriverGanttChange = useCallback((change: GanttChange, _allBars: GanttBar[]) => {
+    console.log("[InteractiveGantt] Driver Gantt change:", change);
+  }, []);
 
   const typeDistData = useMemo(() => {
     if (!result) return [];
@@ -653,11 +247,6 @@ function DriverShiftsPageInner() {
     return Object.entries(buckets)
       .sort(([a], [b]) => parseInt(a) - parseInt(b))
       .map(([label, count]) => ({ label, count }));
-  }, [result]);
-
-  const routeColorMap = useMemo(() => {
-    if (!result) return new Map<string, string>();
-    return buildRouteColorMap(result.driverShifts);
   }, [result]);
 
   const toggleShift = (id: string) => {
@@ -784,91 +373,6 @@ function DriverShiftsPageInner() {
           config={operatorConfig}
           onChange={setOperatorConfig}
         />
-
-        {/* ═══ SCENARI TURNI GUIDA ═══ */}
-        {(result || savedDSS.length > 0) && (
-          <Card className="bg-muted/30 border-border/30">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold flex items-center gap-1.5">
-                  <FolderOpen className="w-4 h-4 text-primary" /> Scenari Turni Guida
-                </h3>
-                {result && (
-                  <button onClick={() => { setDssName(`Scenario ${savedDSS.length + 1}`); setShowSaveDialog(true); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
-                    <Save className="w-3.5 h-3.5" /> Salva Scenario
-                  </button>
-                )}
-              </div>
-
-              {showSaveDialog && (
-                <div className="mb-3 flex items-center gap-2 bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
-                  <input
-                    type="text"
-                    value={dssName}
-                    onChange={e => setDssName(e.target.value)}
-                    placeholder="Nome scenario..."
-                    className="flex-1 text-sm bg-background border border-border/50 rounded px-2 py-1"
-                    autoFocus
-                    onKeyDown={e => { if (e.key === "Enter") saveDSSScenario(); if (e.key === "Escape") setShowSaveDialog(false); }}
-                  />
-                  <button onClick={saveDSSScenario} disabled={savingDSS || !dssName.trim()}
-                    className="px-3 py-1 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 disabled:opacity-50">
-                    {savingDSS ? <Loader2 className="w-3 h-3 animate-spin" /> : "Salva"}
-                  </button>
-                  <button onClick={() => setShowSaveDialog(false)} className="px-3 py-1 text-xs text-muted-foreground hover:text-foreground">
-                    Annulla
-                  </button>
-                </div>
-              )}
-
-              {savedDSS.length > 0 ? (
-                <div className="space-y-1.5">
-                  {savedDSS.map(dss => (
-                    <div key={dss.id}
-                      className={`flex items-center justify-between rounded-lg px-3 py-2 border transition-colors cursor-pointer ${
-                        activeDSSId === dss.id
-                          ? "bg-primary/10 border-primary/30"
-                          : "bg-background/50 border-border/20 hover:bg-muted/30"
-                      }`}
-                      onClick={() => loadDSSScenario(dss.id)}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {activeDSSId === dss.id && <Check className="w-3.5 h-3.5 text-primary shrink-0" />}
-                        <div className="min-w-0">
-                          <div className="text-xs font-medium truncate">{dss.name}</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {dss.summary?.totalDriverShifts ?? "?"} autisti · {dss.summary?.totalWorkHours ?? "?"}h lavoro
-                            {(dss.summary?.totalDailyCost ?? 0) > 0 && ` · \u20AC${Math.round(dss.summary.totalDailyCost)}`}
-                            {" · "}{new Date(dss.createdAt).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0 ml-2">
-                        {loadingDSSId === dss.id && <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />}
-                        {confirmDeleteDSSId === dss.id ? (
-                          <>
-                            <button onClick={e => { e.stopPropagation(); deleteDSSScenario(dss.id); }}
-                              className="px-2 py-0.5 bg-red-600 text-white rounded text-[10px] hover:bg-red-700">Elimina</button>
-                            <button onClick={e => { e.stopPropagation(); setConfirmDeleteDSSId(null); }}
-                              className="px-2 py-0.5 text-[10px] text-muted-foreground hover:text-foreground">No</button>
-                          </>
-                        ) : (
-                          <button onClick={e => { e.stopPropagation(); setConfirmDeleteDSSId(dss.id); }}
-                            className="p-1 text-muted-foreground hover:text-red-400 transition-colors">
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-xs text-muted-foreground">Nessuno scenario salvato. Genera i turni guida e salva il risultato.</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
 
         {/* Summary cards */}
         {result && (<>
@@ -1061,27 +565,27 @@ function DriverShiftsPageInner() {
                   ))}
               </select>
             </div>
-            <DriverGantt shifts={filteredShifts} routeColorMap={routeColorMap} />
-            {/* Legend — route colors + special elements */}
+            {filteredShifts.length > 0 ? (
+              <InteractiveGantt
+                rows={driverGanttRows}
+                bars={driverGanttBars}
+                onBarChange={handleDriverGanttChange}
+                minHour={driverGanttMinHour}
+                maxHour={driverGanttMaxHour}
+                rowHeight={32}
+                labelWidth={160}
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-4">Nessun turno guida</p>
+            )}
+            {/* Legend */}
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 pt-3 border-t border-border/20">
-              {Array.from(routeColorMap.entries()).map(([routeId, color]) => {
-                const allTrips = result.driverShifts.flatMap(s => s.riprese.flatMap(r => r.trips));
-                const routeName = allTrips.find(t => t.routeId === routeId)?.routeName || routeId;
-                return (
-                  <div key={routeId} className="flex items-center gap-1.5">
-                    <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: color }} />
-                    <span className="text-[10px] text-muted-foreground">{routeName}</span>
-                  </div>
-                );
-              })}
-              <div className="flex items-center gap-1.5">
-                <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: "#475569" }} />
-                <span className="text-[10px] text-muted-foreground">Pre-turno</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: "#f97316" }} />
-                <span className="text-[10px] text-muted-foreground">Trasferimento</span>
-              </div>
+              {(Object.entries(TYPE_LABELS) as [DriverShiftType, string][]).map(([type, label]) => (
+                <div key={type} className="flex items-center gap-1.5">
+                  <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: TYPE_COLORS[type] }} />
+                  <span className="text-[10px] text-muted-foreground">{label}</span>
+                </div>
+              ))}
               <div className="flex items-center gap-1.5">
                 <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: "rgba(255,255,255,0.06)", backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(255,255,255,0.2) 2px, rgba(255,255,255,0.2) 4px)" }} />
                 <span className="text-[10px] text-muted-foreground">Interruzione</span>

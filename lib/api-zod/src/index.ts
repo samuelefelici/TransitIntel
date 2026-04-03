@@ -1,2 +1,2 @@
 export * from "./generated/api";
-export * from "./generated/types";
+// Types are already re-exported from generated/api – skip generated/types to avoid duplicate export ambiguity.

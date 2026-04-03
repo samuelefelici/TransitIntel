@@ -68,7 +68,6 @@ export interface WalkData {
 }
 
 export interface LayersState {
-  traffic: boolean;
   mapboxTraffic: boolean;
   demand: boolean;
   poi: boolean;
