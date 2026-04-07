@@ -9,6 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import logoImg from "/logo.png";
+import logoSidebarImg from "/logosidebar.png";
 
 interface NavItem { href: string; label: string; icon: any; }
 interface NavSection {
@@ -101,7 +102,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Mobile Header */}
       <div className="md:hidden fixed top-0 left-0 right-0 h-14 bg-background/90 backdrop-blur-md border-b border-border/50 z-50 flex items-center justify-between px-4">
         <div className="flex items-center">
-          <img src={logoImg} alt="TransitIntel" className="h-6 w-auto" />
+          <div className="relative flex items-center justify-center">
+            <div className="absolute inset-0 rounded-full bg-primary/20 blur-lg scale-150 pointer-events-none" />
+            <img src={logoSidebarImg} alt="TransitIntel" className="relative h-8 w-auto drop-shadow-[0_0_8px_rgba(var(--primary-rgb,56,189,248),0.5)]" />
+          </div>
         </div>
         <Button variant="ghost" size="icon" onClick={() => setIsMobileOpen(!isMobileOpen)}>
           {isMobileOpen ? <X /> : <Menu />}
@@ -128,8 +132,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         `}
       >
         {/* Logo + collapse toggle */}
-        <div className="px-3 py-4 border-b border-border/30 flex items-center justify-between gap-2">
-          {!collapsed && <img src={logoImg} alt="TransitIntel" className="h-8 w-auto" />}
+        <div className="px-3 pt-3 pb-3 border-b border-border/30 flex items-center justify-between gap-2">
+          {!collapsed && (
+            <div className="relative flex items-center justify-center flex-1">
+              <div className="absolute inset-0 rounded-full bg-primary/20 blur-xl scale-125 pointer-events-none" />
+              <img src={logoSidebarImg} alt="TransitIntel" className="relative h-12 w-auto drop-shadow-[0_0_10px_rgba(var(--primary-rgb,56,189,248),0.5)]" />
+            </div>
+          )}
           <button
             onClick={() => setCollapsed(c => !c)}
             className="hidden md:flex items-center justify-center w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"

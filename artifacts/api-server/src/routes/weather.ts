@@ -86,7 +86,64 @@ router.post("/cron/weather", async (req, res) => {
 // ─── GET /api/weather/current ──────────────────────────────────
 
 /**
+ * Fetch live weather from OWM for all locations (fallback / refresh).
+ * Returns data in the camelCase WeatherSnapshot shape the frontend expects.
+ */
+async function fetchLiveWeather(): Promise<any[]> {
+  if (!OWM_KEY) return [];
+  const results: any[] = [];
+  for (const loc of WEATHER_LOCATIONS) {
+    try {
+      const url = `${OWM_BASE}/weather?lat=${loc.lat}&lon=${loc.lng}&appid=${OWM_KEY}&units=metric&lang=it`;
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const data = await resp.json() as any;
+      const w = data.weather?.[0] || {};
+      results.push({
+        lat: loc.lat,
+        lng: loc.lng,
+        locationName: loc.name,
+        temp: data.main?.temp ?? null,
+        feelsLike: data.main?.feels_like ?? null,
+        humidity: data.main?.humidity ?? null,
+        windSpeed: data.wind?.speed ?? null,
+        weatherMain: w.main ?? null,
+        weatherDescription: w.description ?? null,
+        weatherIcon: w.icon ?? null,
+        rain1h: data.rain?.["1h"] ?? null,
+        snow1h: data.snow?.["1h"] ?? null,
+        visibility: data.visibility ?? null,
+        capturedAt: new Date().toISOString(),
+      });
+    } catch { /* skip location */ }
+  }
+  return results;
+}
+
+/** Convert a snake_case DB row to camelCase WeatherSnapshot */
+function rowToSnapshot(r: any): any {
+  return {
+    id: r.id,
+    lat: Number(r.lat),
+    lng: Number(r.lng),
+    locationName: r.location_name,
+    temp: r.temp != null ? Number(r.temp) : null,
+    feelsLike: r.feels_like != null ? Number(r.feels_like) : null,
+    humidity: r.humidity != null ? Number(r.humidity) : null,
+    windSpeed: r.wind_speed != null ? Number(r.wind_speed) : null,
+    weatherMain: r.weather_main,
+    weatherDescription: r.weather_description,
+    weatherIcon: r.weather_icon,
+    rain1h: r.rain_1h != null ? Number(r.rain_1h) : null,
+    snow1h: r.snow_1h != null ? Number(r.snow_1h) : null,
+    visibility: r.visibility != null ? Number(r.visibility) : null,
+    capturedAt: r.captured_at,
+  };
+}
+
+/**
  * Returns the latest weather snapshot for each monitoring location.
+ * Falls back to a live OWM call when the DB has no recent data (< 2 h).
  */
 router.get("/weather/current", cache({ ttlSeconds: 300 }), async (req, res) => {
   try {
@@ -97,13 +154,28 @@ router.get("/weather/current", cache({ ttlSeconds: 300 }), async (req, res) => {
         weather_main, weather_description, weather_icon,
         rain_1h, snow_1h, visibility, captured_at
       FROM weather_snapshots
+      WHERE captured_at > NOW() - INTERVAL '2 hours'
       ORDER BY location_name, captured_at DESC
     `);
 
-    res.json({ data: latest.rows });
+    if (latest.rows.length > 0) {
+      res.json(latest.rows.map(rowToSnapshot));
+      return;
+    }
+
+    // No recent data in DB → fetch live from OWM
+    req.log.info("No recent weather snapshots, fetching live from OWM");
+    const live = await fetchLiveWeather();
+    res.json(live);
   } catch (err: any) {
-    req.log.error(err, "Error fetching current weather");
-    res.status(500).json({ error: err.message });
+    // DB error → try live fallback
+    req.log.error(err, "Error fetching current weather, trying live fallback");
+    try {
+      const live = await fetchLiveWeather();
+      res.json(live);
+    } catch (e2: any) {
+      res.status(500).json({ error: e2.message });
+    }
   }
 });
 

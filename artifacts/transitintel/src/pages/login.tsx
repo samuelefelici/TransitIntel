@@ -287,26 +287,29 @@ export default function LoginPage() {
           </p>
         </motion.div>
 
-        {/* Logo section — image only, with floating luminous particles */}
+        {/* Logo section — image with aura glow + floating particles */}
         <motion.div
           initial={{ y: -30, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ delay: 0.5, duration: 0.8 }}
-          className="text-center mb-8"
+          className="text-center mb-3"
         >
-          <div className="relative mx-auto w-full max-w-sm h-44 flex items-center justify-center">
+          <div className="relative mx-auto w-full max-w-sm flex items-center justify-center">
+            {/* Aura glow behind logo */}
+            <div className="absolute inset-0 bg-cyan-500/15 blur-2xl rounded-full scale-110 pointer-events-none" />
+
             {/* Floating luminous particles around the logo */}
             {Array.from({ length: 12 }).map((_, i) => {
               const angle0 = (i / 12) * Math.PI * 2;
-              const rx = 110 + (i % 3) * 18;
-              const ry = 65 + (i % 2) * 15;
+              const rx = 140 + (i % 3) * 22;
+              const ry = 50 + (i % 2) * 18;
               const dur = 6 + (i % 4) * 1.5;
               const size = 2 + (i % 3);
-              const delay = (i * 0.4);
+              const delay = i * 0.4;
               return (
                 <motion.div
                   key={`p-${i}`}
-                  className="absolute rounded-full"
+                  className="absolute rounded-full pointer-events-none"
                   style={{
                     width: size,
                     height: size,
@@ -352,15 +355,15 @@ export default function LoginPage() {
               );
             })}
 
-            {/* Logo image */}
+            {/* Logo image — same width as the card (max-w-sm = 384px) */}
             <img
               src={logoImg}
               alt="TransitIntel"
-              className="relative z-10 h-auto w-full max-w-sm object-contain drop-shadow-[0_0_20px_hsla(199,89%,48%,0.35)]"
+              className="relative z-10 h-auto w-full max-w-sm object-contain drop-shadow-[0_0_25px_hsla(199,89%,48%,0.4)]"
             />
           </div>
 
-          <p className="font-mono text-xs text-cyan-500/70 -mt-10 tracking-[0.25em] uppercase">
+          <p className="font-mono text-xs text-cyan-500/70 mt-1 tracking-[0.25em] uppercase">
             Intelligence & Analytics Platform
           </p>
         </motion.div>
@@ -370,7 +373,7 @@ export default function LoginPage() {
           initial={{ y: 30, opacity: 0 }}
           animate={shake ? { x: [0, -10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
           transition={shake ? { duration: 0.5 } : { delay: 0.8, duration: 0.8 }}
-          className="w-full max-w-sm -mt-2"
+          className="w-full max-w-sm"
         >
           <div className="relative rounded-xl border border-cyan-500/20 bg-[hsl(224,71%,4%)]/80 backdrop-blur-xl p-6 shadow-[0_0_60px_-15px_hsl(199,89%,48%,0.15)]">
             {/* Corner decorations */}

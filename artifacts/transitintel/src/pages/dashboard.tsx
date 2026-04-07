@@ -768,8 +768,8 @@ export default function Dashboard() {
       />
 
       {/* ── Weather Widget ───────────────────────────────────── */}
-      <div className="absolute bottom-4 right-4 w-56 pointer-events-auto z-10">
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+      <div className="absolute top-10 left-1/2 -translate-x-1/2 w-64 pointer-events-auto z-10">
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
           <WeatherWidget
             collapsed={weatherCollapsed}
             onToggle={() => setWeatherCollapsed(v => !v)}
