@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, Database, Bus,
   Timer, PanelLeftClose, PanelLeftOpen, Users, Route, ArrowRightLeft,
-  Zap, ChevronDown, Truck, LogOut, Network,
+  Zap, ChevronDown, Truck, LogOut, Network, Ticket,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
@@ -48,6 +48,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Analisi Rete",
     items: [
       { href: "/network", label: "Linee & Fermate", icon: Network },
+      { href: "/fares", label: "Bigliettazione", icon: Ticket },
     ],
   },
   {

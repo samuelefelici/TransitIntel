@@ -10,12 +10,7 @@ export const globalLimiter = rateLimit({
   standardHeaders: "draft-7", // RateLimit-* headers (RFC draft-7)
   legacyHeaders: false,    // disabilita X-RateLimit-* vecchi
   message: { error: "Troppe richieste, riprova tra un minuto." },
-  keyGenerator: (req) => {
-    // In produzione dietro reverse-proxy, usa x-forwarded-for
-    return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim()
-      || req.ip
-      || "unknown";
-  },
+  // Use default keyGenerator (req.ip) — no custom one needed for dev
 });
 
 /**
@@ -28,9 +23,5 @@ export const strictLimiter = rateLimit({
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "Limite raggiunto per operazioni pesanti, riprova tra un minuto." },
-  keyGenerator: (req) => {
-    return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim()
-      || req.ip
-      || "unknown";
-  },
+  // Use default keyGenerator (req.ip) — no custom one needed for dev
 });

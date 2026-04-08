@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, doublePrecision, integer, timestamp, jsonb, boolean, date, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, doublePrecision, integer, timestamp, jsonb, boolean, date, index, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const trafficSnapshots = pgTable("traffic_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -381,6 +381,144 @@ export const weatherSnapshots = pgTable("weather_snapshots", {
   index("idx_weather_main").on(t.weatherMain),
 ]);
 
+// ═══════════════════════════════════════════════════════════════
+// GTFS Fares V2 — Bigliettazione Elettronica
+// ═══════════════════════════════════════════════════════════════
+
+// Fare Networks — reti tariffarie (urbano_ancona, urbano_jesi, urbano_falconara, extraurbano)
+export const gtfsFareNetworks = pgTable("gtfs_fare_networks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  networkId: text("network_id").notNull(),         // e.g. "urbano_ancona"
+  networkName: text("network_name").notNull(),     // e.g. "Urbano di Ancona"
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_fare_networks_feed_network").on(t.feedId, t.networkId),
+]);
+
+// Route–Network association — each route belongs to exactly one network
+export const gtfsRouteNetworks = pgTable("gtfs_route_networks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  routeId: text("route_id").notNull(),
+  networkId: text("network_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_route_networks_feed_route").on(t.feedId, t.routeId),
+  index("idx_route_networks_feed_network").on(t.feedId, t.networkId),
+]);
+
+// Fare Media — payment methods (contactless card, paper, cEMV, app, cash)
+export const gtfsFareMedia = pgTable("gtfs_fare_media", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fareMediaId: text("fare_media_id").notNull(),       // e.g. "carta_contactless"
+  fareMediaName: text("fare_media_name").notNull(),
+  fareMediaType: integer("fare_media_type").notNull(), // 0=cash,1=paper,2=contactless,3=cEMV,4=app
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_fare_media_feed_media").on(t.feedId, t.fareMediaId),
+]);
+
+// Rider Categories — passenger types (ordinario, studente, anziano, ...)
+export const gtfsRiderCategories = pgTable("gtfs_rider_categories", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  riderCategoryId: text("rider_category_id").notNull(),
+  riderCategoryName: text("rider_category_name").notNull(),
+  isDefault: boolean("is_default").notNull().default(false),
+  eligibilityUrl: text("eligibility_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_rider_cat_feed_cat").on(t.feedId, t.riderCategoryId),
+]);
+
+// Fare Products — actual ticket products with prices
+export const gtfsFareProducts = pgTable("gtfs_fare_products", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fareProductId: text("fare_product_id").notNull(),    // e.g. "ancona_60min"
+  fareProductName: text("fare_product_name").notNull(),
+  networkId: text("network_id"),                        // which network it belongs to
+  riderCategoryId: text("rider_category_id"),
+  fareMediaId: text("fare_media_id"),
+  amount: doublePrecision("amount").notNull(),          // price in EUR
+  currency: text("currency").notNull().default("EUR"),
+  durationMinutes: integer("duration_minutes"),         // validity in minutes (60, 100, etc.)
+  fareType: text("fare_type").notNull().default("single"), // "single", "return", "zone"
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_products_feed").on(t.feedId),
+  index("idx_fare_products_network").on(t.feedId, t.networkId),
+]);
+
+// Fare Areas — tariff zones (urban flat areas + extraurban km-based areas per route)
+export const gtfsFareAreas = pgTable("gtfs_fare_areas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  areaId: text("area_id").notNull(),               // e.g. "ancona_urban" or "A_zona_1"
+  areaName: text("area_name").notNull(),
+  networkId: text("network_id"),                    // which network
+  routeId: text("route_id"),                        // for extraurban: which route this area belongs to
+  kmFrom: doublePrecision("km_from"),              // start km for this zone (extraurban only)
+  kmTo: doublePrecision("km_to"),                  // end km for this zone (extraurban only)
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_fare_areas_feed_area").on(t.feedId, t.areaId),
+  index("idx_fare_areas_feed_network").on(t.feedId, t.networkId),
+  index("idx_fare_areas_feed_route").on(t.feedId, t.routeId),
+]);
+
+// Stop–Area assignment — a stop can belong to multiple areas
+export const gtfsStopAreas = pgTable("gtfs_stop_areas", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  areaId: text("area_id").notNull(),
+  stopId: text("stop_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_stop_areas_feed_area").on(t.feedId, t.areaId),
+  index("idx_stop_areas_feed_stop").on(t.feedId, t.stopId),
+]);
+
+// Fare Leg Rules — the pricing matrix: network × from_area × to_area → fare_product
+export const gtfsFareLegRules = pgTable("gtfs_fare_leg_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  legGroupId: text("leg_group_id").notNull(),
+  networkId: text("network_id"),
+  fromAreaId: text("from_area_id"),
+  toAreaId: text("to_area_id"),
+  fareProductId: text("fare_product_id").notNull(),
+  rulePriority: integer("rule_priority").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_leg_rules_feed").on(t.feedId),
+  index("idx_fare_leg_rules_network").on(t.feedId, t.networkId),
+]);
+
+// Fare Transfer Rules — inter-network transfer discounts/free transfers
+export const gtfsFareTransferRules = pgTable("gtfs_fare_transfer_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fromLegGroupId: text("from_leg_group_id"),
+  toLegGroupId: text("to_leg_group_id"),
+  transferCount: integer("transfer_count"),
+  durationLimit: integer("duration_limit"),             // seconds
+  durationLimitType: integer("duration_limit_type"),    // 0=start-to-start, 1=start-to-end
+  fareTransferType: integer("fare_transfer_type"),      // 0=A+B, 1=A+discount, 2=max(A,B)
+  fareProductId: text("fare_product_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_transfer_rules_feed").on(t.feedId),
+]);
+
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
@@ -407,3 +545,12 @@ export type ScenarioServiceProgram = typeof scenarioServicePrograms.$inferSelect
 export type ScenarioProgramCalendar = typeof scenarioProgramCalendars.$inferSelect;
 export type ScenarioProgramCalendarException = typeof scenarioProgramCalendarExceptions.$inferSelect;
 export type WeatherSnapshot = typeof weatherSnapshots.$inferSelect;
+export type GtfsFareNetwork = typeof gtfsFareNetworks.$inferSelect;
+export type GtfsRouteNetwork = typeof gtfsRouteNetworks.$inferSelect;
+export type GtfsFareMedia = typeof gtfsFareMedia.$inferSelect;
+export type GtfsRiderCategory = typeof gtfsRiderCategories.$inferSelect;
+export type GtfsFareProduct = typeof gtfsFareProducts.$inferSelect;
+export type GtfsFareArea = typeof gtfsFareAreas.$inferSelect;
+export type GtfsStopArea = typeof gtfsStopAreas.$inferSelect;
+export type GtfsFareLegRule = typeof gtfsFareLegRules.$inferSelect;
+export type GtfsFareTransferRule = typeof gtfsFareTransferRules.$inferSelect;

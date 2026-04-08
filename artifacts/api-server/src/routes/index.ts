@@ -21,6 +21,7 @@ import driverShiftsRouter from "./driver-shifts";
 import clustersRouter from "./clusters";
 import coincidenceZonesRouter from "./coincidence-zones";
 import weatherRouter from "./weather";
+import faresRouter from "./fares";
 
 const router: IRouter = Router();
 
@@ -46,5 +47,6 @@ router.use(driverShiftsRouter);
 router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
+router.use(faresRouter);
 
 export default router;
