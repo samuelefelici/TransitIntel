@@ -1237,69 +1237,28 @@ function GenerateTab() {
   const { toast } = useToast();
   const [result, setResult] = useState<GenerateResult | null>(null);
   const [generating, setGenerating] = useState(false);
-  const [generatingRules, setGeneratingRules] = useState(false);
+  const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
 
-  const [seedingV1, setSeedingV1] = useState(false);
-  const [downloadingZip, setDownloadingZip] = useState(false);
-
-  const generateRules = async () => {
-    setGeneratingRules(true);
-    try {
-      const r = await apiFetch<{ urbanRules: number; odRules: number; total: number }>(
-        "/api/fares/leg-rules/generate", { method: "POST" }
-      );
-      toast({
-        title: "Regole generate",
-        description: `${r.urbanRules} regole urbane + ${r.odRules} regole OD = ${r.total} totali`,
-      });
-    } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
-    }
-    setGeneratingRules(false);
-  };
-
-  const generate = async () => {
+  /** 1-click: genera regole tariffarie + seed Fares V1 + anteprima completa */
+  const generateAll = async () => {
     setGenerating(true);
     try {
+      // Step 1: genera leg rules
+      await apiFetch("/api/fares/leg-rules/generate", { method: "POST" });
+      // Step 2: seed Fares V1 (da V2)
+      await apiFetch("/api/fares/fare-attributes/seed", { method: "POST" });
+      // Step 3: genera anteprima completa
       const data = await apiFetch<GenerateResult>("/api/fares/generate-gtfs", { method: "POST" });
       setResult(data);
-      toast({ title: "GTFS Fares V2 generato", description: `${Object.keys(data.files).length} file pronti` });
+      setPreviewFile(null);
+      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti` });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
-    }
-    setGenerating(false);
+    } finally { setGenerating(false); }
   };
 
-  const downloadZip = () => {
-    if (!result) return;
-    for (const [filename, content] of Object.entries(result.files)) {
-      const blob = new Blob([content], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
-    }
-    toast({ title: "Download", description: "File CSV scaricati" });
-  };
-
-  const seedFaresV1 = async () => {
-    setSeedingV1(true);
-    try {
-      const r = await apiFetch<{ fareAttributes: number; fareRules: number }>(
-        "/api/fares/fare-attributes/seed", { method: "POST" }
-      );
-      toast({
-        title: "Fares V1 generato",
-        description: `${r.fareAttributes} fare_attributes + ${r.fareRules} fare_rules`,
-      });
-    } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
-    } finally { setSeedingV1(false); }
-  };
-
+  /** Download ZIP completo del GTFS (base + tariffe) */
   const downloadFullZip = async () => {
     setDownloadingZip(true);
     try {
@@ -1320,102 +1279,87 @@ function GenerateTab() {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Step-by-step actions */}
+    <div className="space-y-5">
+      {/* Actions row */}
       <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={generateRules} disabled={generatingRules} variant="outline" size="sm">
-          {generatingRules ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
-          1. Genera Regole Tariffarie
+        <Button onClick={generateAll} disabled={generating} size="sm">
+          {generating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+          Genera Anteprima Tariffe
         </Button>
-        <Button onClick={seedFaresV1} disabled={seedingV1} variant="outline" size="sm">
-          {seedingV1 ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
-          2. Genera Fares V1
-        </Button>
-        <Button onClick={generate} disabled={generating} size="sm">
-          {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 mr-1.5" />}
-          3. Anteprima File Fares V2
+        <Button onClick={downloadFullZip} disabled={downloadingZip} variant="outline" size="sm">
+          {downloadingZip ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
+          Scarica GTFS Completo (ZIP)
         </Button>
       </div>
 
-      {/* Export ZIP - always visible */}
-      <Card className="border-primary/20 bg-primary/5">
-        <CardContent className="pt-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm font-medium flex items-center gap-2">
-                <Archive className="w-4 h-4" />
-                Esporta GTFS Completo (ZIP)
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Include: agency, routes, trips, stops, stop_times (con pickup/drop-off), calendar, calendar_dates, shapes
-                + fare_attributes, fare_rules + tutti i file Fares V2
-              </p>
-            </div>
-            <Button onClick={downloadFullZip} disabled={downloadingZip} size="sm">
-              {downloadingZip ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              <span className="ml-2">Scarica ZIP</span>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {result && (
-        <div className="flex justify-end">
-          <Button onClick={downloadZip} variant="outline" size="sm">
-            <Download className="w-3.5 h-3.5 mr-1.5" />
-            Scarica CSV Fares V2
-          </Button>
-        </div>
-      )}
+      {/* Description */}
+      <p className="text-xs text-muted-foreground">
+        <strong>Genera Anteprima:</strong> crea le regole tariffarie, genera i file Fares V1 dai prodotti V2, e mostra l'anteprima di tutti i file di bigliettazione. —
+        <strong className="ml-1">Scarica ZIP:</strong> esporta l'intero feed GTFS (agency, routes, trips, stops, stop_times, calendar, shapes + tutti i file tariffari).
+      </p>
 
       {result && (
         <>
-          {/* Validation */}
+          {/* Validation card */}
           <Card className={result.validation.isComplete ? "bg-emerald-500/5 border-emerald-500/20" : "bg-amber-500/5 border-amber-500/20"}>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
                 {result.validation.isComplete
                   ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                  : <AlertTriangle className="w-4 h-4 text-amber-500" />
-                }
-                Validazione
+                  : <AlertTriangle className="w-4 h-4 text-amber-500" />}
+                Riepilogo Validazione
               </CardTitle>
             </CardHeader>
-            <CardContent className="text-sm space-y-1">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div><span className="text-muted-foreground">Linee classificate:</span> <span className="font-mono">{result.validation.routesClassified}/{result.validation.totalRoutes}</span></div>
-                <div><span className="text-muted-foreground">Prodotti:</span> <span className="font-mono">{result.validation.products}</span></div>
-                <div><span className="text-muted-foreground">Aree:</span> <span className="font-mono">{result.validation.areas}</span></div>
-                <div><span className="text-muted-foreground">Regole:</span> <span className="font-mono">{result.validation.legRules}</span></div>
+            <CardContent>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">Linee classificate</span><span className="font-mono">{result.validation.routesClassified}/{result.validation.totalRoutes}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Prodotti</span><span className="font-mono">{result.validation.products}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Zone/Aree</span><span className="font-mono">{result.validation.areas}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Assegnamenti fermata↔zona</span><span className="font-mono">{result.validation.stopAreaAssignments}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Regole leg</span><span className="font-mono">{result.validation.legRules}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Regole trasferimento</span><span className="font-mono">{result.validation.transferRules}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Fasce orarie</span><span className="font-mono">{result.validation.timeframes}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Fare attr/rules (V1)</span><span className="font-mono">{(result.validation as any).fareAttributes || 0}/{(result.validation as any).fareRules || 0}</span></div>
               </div>
               {result.validation.missingRoutes.length > 0 && (
-                <p className="text-amber-600 text-xs mt-2">
-                  ⚠ Linee non classificate: {result.validation.missingRoutes.join(", ")}
+                <p className="text-amber-600 text-xs mt-3">
+                  ⚠ Linee non classificate: {result.validation.missingRoutes.slice(0, 10).join(", ")}{result.validation.missingRoutes.length > 10 ? ` e altre ${result.validation.missingRoutes.length - 10}` : ""}
                 </p>
               )}
             </CardContent>
           </Card>
 
-          {/* File list */}
-          <Card className="bg-card/50">
+          {/* File grid — ALL fare files */}
+          <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm">File Generati ({Object.keys(result.files).length})</CardTitle>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                File Tariffari ({Object.keys(result.files).length})
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
                 {Object.entries(result.files).map(([filename, content]) => {
-                  const lines = content.split("\n").filter(Boolean).length;
+                  const lines = content.split("\n").filter(Boolean).length - 1; // exclude header
+                  const isV1 = filename === "fare_attributes.txt" || filename === "fare_rules.txt";
                   return (
                     <button
                       key={filename}
                       onClick={() => setPreviewFile(previewFile === filename ? null : filename)}
-                      className={`text-left p-3 rounded-lg border transition-colors ${previewFile === filename ? "border-primary/50 bg-primary/5" : "border-border/30 hover:bg-muted/20"}`}
+                      className={`text-left p-3 rounded-lg border transition-all ${
+                        previewFile === filename
+                          ? "border-primary bg-primary/5 shadow-sm"
+                          : "border-border/40 hover:bg-muted/30 hover:border-border"
+                      }`}
                     >
                       <div className="flex items-center gap-2">
                         <FileText className="w-3.5 h-3.5 text-primary shrink-0" />
-                        <span className="text-sm font-medium truncate">{filename}</span>
+                        <span className="text-xs font-medium truncate">{filename}</span>
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-1">{lines} righe</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] text-muted-foreground">{lines} record</span>
+                        {isV1 && <Badge variant="outline" className="text-[9px] px-1 py-0">V1</Badge>}
+                      </div>
                     </button>
                   );
                 })}
@@ -1423,16 +1367,56 @@ function GenerateTab() {
             </CardContent>
           </Card>
 
-          {/* Preview */}
+          {/* CSV Preview */}
           {previewFile && result.files[previewFile] && (
-            <Card className="bg-card/50">
+            <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-mono">{previewFile}</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-mono flex items-center gap-2">
+                    <FileText className="w-3.5 h-3.5" />
+                    {previewFile}
+                  </CardTitle>
+                  <button
+                    onClick={() => setPreviewFile(null)}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >✕ Chiudi</button>
+                </div>
               </CardHeader>
               <CardContent>
-                <pre className="text-[11px] font-mono bg-background/50 rounded-lg p-4 overflow-auto max-h-[300px] whitespace-pre text-muted-foreground">
-                  {result.files[previewFile]}
-                </pre>
+                <div className="overflow-auto max-h-[400px] rounded-lg border border-border/30">
+                  <table className="w-full text-[11px] font-mono">
+                    {(() => {
+                      const lines = result.files[previewFile].split("\n").filter(Boolean);
+                      const headers = lines[0]?.split(",") || [];
+                      const rows = lines.slice(1);
+                      return (
+                        <>
+                          <thead>
+                            <tr className="bg-muted/50 sticky top-0">
+                              {headers.map((h, i) => (
+                                <th key={i} className="text-left px-2 py-1.5 font-semibold text-foreground whitespace-nowrap border-b">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.slice(0, 100).map((row, ri) => (
+                              <tr key={ri} className="border-b border-border/20 hover:bg-muted/20">
+                                {row.split(",").map((cell, ci) => (
+                                  <td key={ci} className="px-2 py-1 text-muted-foreground whitespace-nowrap">{cell || "—"}</td>
+                                ))}
+                              </tr>
+                            ))}
+                            {rows.length > 100 && (
+                              <tr><td colSpan={headers.length} className="px-2 py-2 text-center text-muted-foreground italic">
+                                ... e altri {rows.length - 100} record
+                              </td></tr>
+                            )}
+                          </tbody>
+                        </>
+                      );
+                    })()}
+                  </table>
+                </div>
               </CardContent>
             </Card>
           )}

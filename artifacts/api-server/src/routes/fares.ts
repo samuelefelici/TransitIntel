@@ -952,24 +952,48 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
       tfCsv += `${tf.timeframeGroupId},${tf.startTime || ""},${tf.endTime || ""},${tf.serviceId || ""}\n`;
     }
 
+    // --- fare_attributes.txt (Fares V1) ---
+    const fareAttrs = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
+    let faCsv = "fare_id,price,currency_type,payment_method,transfers,agency_id,transfer_duration\n";
+    for (const fa of fareAttrs) {
+      faCsv += `${fa.fareId},${fa.price.toFixed(2)},${fa.currencyType},${fa.paymentMethod},${fa.transfers ?? ""},${fa.agencyId || ""},${fa.transferDuration ?? ""}\n`;
+    }
+
+    // --- fare_rules.txt (Fares V1) ---
+    const fareRulesV1 = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
+    let frCsv = "fare_id,route_id,origin_id,destination_id,contains_id\n";
+    for (const fr of fareRulesV1) {
+      frCsv += `${fr.fareId},${fr.routeId || ""},${fr.originId || ""},${fr.destinationId || ""},${fr.containsId || ""}\n`;
+    }
+
     // Validation summary
     const routeCount = routeNets.length;
     const allRoutes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
     const missingRoutes = allRoutes.filter(r => !routeNets.find(rn => rn.routeId === r.routeId));
 
+    // Build files map — only include non-empty files (beyond header)
+    const allFiles: Record<string, string> = {};
+    const maybeAdd = (name: string, csv: string) => {
+      const lines = csv.split("\n").filter(Boolean);
+      if (lines.length > 1) allFiles[name] = csv; // >1 means has data rows beyond header
+    };
+    // Fares V1
+    maybeAdd("fare_attributes.txt", faCsv);
+    maybeAdd("fare_rules.txt", frCsv);
+    // Fares V2
+    maybeAdd("networks.txt", networksCsv);
+    maybeAdd("route_networks.txt", routeNetCsv);
+    maybeAdd("fare_media.txt", mediaCsv);
+    maybeAdd("rider_categories.txt", catCsv);
+    maybeAdd("fare_products.txt", prodCsv);
+    maybeAdd("areas.txt", areasCsv);
+    maybeAdd("stop_areas.txt", stopAreasCsv);
+    maybeAdd("fare_leg_rules.txt", legCsv);
+    maybeAdd("fare_transfer_rules.txt", xferCsv);
+    maybeAdd("timeframes.txt", tfCsv);
+
     res.json({
-      files: {
-        "networks.txt": networksCsv,
-        "route_networks.txt": routeNetCsv,
-        "fare_media.txt": mediaCsv,
-        "rider_categories.txt": catCsv,
-        "fare_products.txt": prodCsv,
-        "areas.txt": areasCsv,
-        "stop_areas.txt": stopAreasCsv,
-        "fare_leg_rules.txt": legCsv,
-        "fare_transfer_rules.txt": xferCsv,
-        "timeframes.txt": tfCsv,
-      },
+      files: allFiles,
       validation: {
         routesClassified: routeCount,
         totalRoutes: allRoutes.length,
@@ -980,6 +1004,8 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
         legRules: legRules.length,
         transferRules: xferRules.length,
         timeframes: timeframes.length,
+        fareAttributes: fareAttrs.length,
+        fareRules: fareRulesV1.length,
         isComplete: missingRoutes.length === 0 && products.length > 0 && legRules.length > 0,
       },
     });
