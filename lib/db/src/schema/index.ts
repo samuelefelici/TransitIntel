@@ -147,6 +147,8 @@ export const gtfsStopTimes = pgTable("gtfs_stop_times", {
   stopSequence: integer("stop_sequence").notNull(),
   departureTime: text("departure_time"),  // HH:MM:SS (may be >24h for overnight)
   arrivalTime: text("arrival_time"),
+  pickupType: integer("pickup_type").notNull().default(0),    // 0=Regular, 1=No pickup
+  dropOffType: integer("drop_off_type").notNull().default(0), // 0=Regular, 1=No drop-off
 }, (t) => [
   index("idx_gtfs_stop_times_feed_id").on(t.feedId),
   index("idx_gtfs_stop_times_feed_trip").on(t.feedId, t.tripId),
@@ -535,6 +537,38 @@ export const gtfsFareTransferRules = pgTable("gtfs_fare_transfer_rules", {
   index("idx_fare_transfer_rules_feed").on(t.feedId),
 ]);
 
+// GTFS Fare Attributes (Fares V1) — fare_attributes.txt
+export const gtfsFareAttributes = pgTable("gtfs_fare_attributes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fareId: text("fare_id").notNull(),
+  price: doublePrecision("price").notNull(),
+  currencyType: text("currency_type").notNull().default("EUR"),
+  paymentMethod: integer("payment_method").notNull().default(0),     // 0=On board, 1=Before boarding
+  transfers: integer("transfers"),                                    // 0=None, 1=One, 2=Two, null=Unlimited
+  agencyId: text("agency_id"),
+  transferDuration: integer("transfer_duration"),                    // seconds
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_attr_feed").on(t.feedId),
+  index("idx_fare_attr_feed_fare").on(t.feedId, t.fareId),
+]);
+
+// GTFS Fare Rules (Fares V1) — fare_rules.txt
+export const gtfsFareRules = pgTable("gtfs_fare_rules", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fareId: text("fare_id").notNull(),
+  routeId: text("route_id"),
+  originId: text("origin_id"),           // zone_id of origin stop
+  destinationId: text("destination_id"), // zone_id of destination stop
+  containsId: text("contains_id"),       // zone_id of traversed zone
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_rules_feed").on(t.feedId),
+  index("idx_fare_rules_feed_fare").on(t.feedId, t.fareId),
+]);
+
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
@@ -571,3 +605,5 @@ export type GtfsStopArea = typeof gtfsStopAreas.$inferSelect;
 export type GtfsFareLegRule = typeof gtfsFareLegRules.$inferSelect;
 export type GtfsTimeframe = typeof gtfsTimeframes.$inferSelect;
 export type GtfsFareTransferRule = typeof gtfsFareTransferRules.$inferSelect;
+export type GtfsFareAttribute = typeof gtfsFareAttributes.$inferSelect;
+export type GtfsFareRule = typeof gtfsFareRules.$inferSelect;

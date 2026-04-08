@@ -33,9 +33,10 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   gtfsFeeds, gtfsRoutes, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsShapes,
+  gtfsCalendar, gtfsCalendarDates,
   gtfsFareNetworks, gtfsRouteNetworks, gtfsFareMedia, gtfsRiderCategories,
   gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
-  gtfsTimeframes,
+  gtfsTimeframes, gtfsFareAttributes, gtfsFareRules,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -1048,5 +1049,389 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
+
+// ═══════════════════════════════════════════════════════════
+// FARES V1 — fare_attributes.txt & fare_rules.txt
+// ═══════════════════════════════════════════════════════════
+
+router.get("/fares/fare-attributes", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/fare-attributes", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { fareId, price, currencyType, paymentMethod, transfers, agencyId, transferDuration } = req.body;
+    if (!fareId || price == null) { res.status(400).json({ error: "fareId and price required" }); return; }
+    const [row] = await db.insert(gtfsFareAttributes).values({
+      feedId, fareId, price: Number(price), currencyType: currencyType || "EUR",
+      paymentMethod: paymentMethod ?? 0, transfers: transfers ?? null,
+      agencyId: agencyId || "ATMA", transferDuration: transferDuration ?? null,
+    }).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.put("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
+  try {
+    const updates: any = {};
+    if (req.body.price != null) updates.price = Number(req.body.price);
+    if (req.body.paymentMethod != null) updates.paymentMethod = req.body.paymentMethod;
+    if (req.body.transfers !== undefined) updates.transfers = req.body.transfers;
+    if (req.body.transferDuration !== undefined) updates.transferDuration = req.body.transferDuration;
+    const [row] = await db.update(gtfsFareAttributes).set(updates).where(eq(gtfsFareAttributes.id, req.params.id)).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
+  try {
+    await db.delete(gtfsFareAttributes).where(eq(gtfsFareAttributes.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Auto-seed Fares V1 from existing Fares V2 products
+router.post("/fares/fare-attributes/seed", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    // Delete existing
+    await db.delete(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
+    await db.delete(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
+    // Generate from products
+    const products = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+    const routeNets = await db.select().from(gtfsRouteNetworks).where(eq(gtfsRouteNetworks.feedId, feedId));
+    const attrs: any[] = [];
+    const rules: any[] = [];
+    for (const p of products) {
+      attrs.push({
+        feedId, fareId: p.fareProductId, price: p.amount, currencyType: p.currency,
+        paymentMethod: 0, transfers: 0, agencyId: "ATMA", transferDuration: null,
+      });
+      // Create fare rules linking to routes of that product's network
+      const matchingRoutes = routeNets.filter(rn => rn.networkId === p.networkId);
+      for (const rn of matchingRoutes) {
+        rules.push({ feedId, fareId: p.fareProductId, routeId: rn.routeId });
+      }
+    }
+    if (attrs.length > 0) await db.insert(gtfsFareAttributes).values(attrs);
+    if (rules.length > 0) await db.insert(gtfsFareRules).values(rules);
+    res.json({ fareAttributes: attrs.length, fareRules: rules.length });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.get("/fares/fare-rules", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/fare-rules", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { fareId, routeId, originId, destinationId, containsId } = req.body;
+    if (!fareId) { res.status(400).json({ error: "fareId required" }); return; }
+    const [row] = await db.insert(gtfsFareRules).values({
+      feedId, fareId, routeId, originId, destinationId, containsId,
+    }).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/fares/fare-rules/:id", async (req, res): Promise<void> => {
+  try {
+    await db.delete(gtfsFareRules).where(eq(gtfsFareRules.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// STOP TIMES EDITOR — pickup_type / drop_off_type per route
+// ═══════════════════════════════════════════════════════════
+
+// GET stop_times for a route (aggregated: one row per stop with pickup/dropoff)
+router.get("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const { routeId } = req.params;
+
+    // Get the longest trip for the route (representative)
+    const tripRows = await db.execute<any>(sql`
+      SELECT t.trip_id, COUNT(*) AS cnt
+      FROM gtfs_trips t
+      JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
+      WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
+      GROUP BY t.trip_id ORDER BY cnt DESC LIMIT 1
+    `);
+    if (tripRows.rows.length === 0) { res.json([]); return; }
+    const repTripId = tripRows.rows[0].trip_id;
+
+    const stData = await db.execute<any>(sql`
+      SELECT st.stop_id, st.stop_sequence, st.pickup_type, st.drop_off_type,
+             st.arrival_time, st.departure_time,
+             s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
+      FROM gtfs_stop_times st
+      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
+      WHERE st.feed_id = ${feedId} AND st.trip_id = ${repTripId}
+      ORDER BY st.stop_sequence
+    `);
+
+    res.json(stData.rows.map((r: any) => ({
+      stopId: r.stop_id,
+      stopName: r.stop_name,
+      sequence: r.stop_sequence,
+      lat: r.lat,
+      lon: r.lon,
+      arrivalTime: r.arrival_time,
+      departureTime: r.departure_time,
+      pickupType: r.pickup_type ?? 0,
+      dropOffType: r.drop_off_type ?? 0,
+    })));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT bulk update pickup_type / drop_off_type for ALL trips of a route at a given stop
+router.put("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { routeId } = req.params;
+    const { updates } = req.body as { updates: { stopId: string; pickupType: number; dropOffType: number }[] };
+    if (!updates || !Array.isArray(updates)) { res.status(400).json({ error: "updates array required" }); return; }
+
+    // Get all trips for this route
+    const trips = await db.select({ tripId: gtfsTrips.tripId }).from(gtfsTrips)
+      .where(and(eq(gtfsTrips.feedId, feedId), eq(gtfsTrips.routeId, routeId)));
+    const tripIds = trips.map(t => t.tripId);
+
+    let updated = 0;
+    for (const u of updates) {
+      const result = await db.execute(sql`
+        UPDATE gtfs_stop_times
+        SET pickup_type = ${u.pickupType}, drop_off_type = ${u.dropOffType}
+        WHERE feed_id = ${feedId} AND stop_id = ${u.stopId}
+          AND trip_id = ANY(${tripIds})
+      `);
+      updated += (result as any).rowCount || 0;
+    }
+
+    res.json({ ok: true, updated });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// EXPORT ZIP — complete GTFS feed with all base tables + Fares V1 + Fares V2
+// ═══════════════════════════════════════════════════════════
+
+router.get("/fares/export-zip", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+
+    // Dynamically import archiver
+    const archiver = (await import("archiver")).default;
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", "attachment; filename=gtfs_export.zip");
+    archive.pipe(res);
+
+    // --- agency.txt (hardcoded from original GTFS) ---
+    archive.append(
+      'agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email\n' +
+      '"ATMA","Atma Scpa","https://www.atmaancona.it","Europe/Rome","it","0712837468","https://www.atmaancona.it/tariffe/tariffe-generale/","info@atmaancona.it"\n',
+      { name: "agency.txt" }
+    );
+
+    // --- stops.txt ---
+    const stops = await db.select().from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
+    let stopsCsv = "stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,wheelchair_boarding\n";
+    for (const s of stops) {
+      stopsCsv += `${s.stopId},${s.stopCode || ""},${csvEscape(s.stopName)},${csvEscape(s.stopDesc || "")},${s.stopLat},${s.stopLon},${s.wheelchairBoarding || 0}\n`;
+    }
+    archive.append(stopsCsv, { name: "stops.txt" });
+
+    // --- routes.txt ---
+    const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+    let routesCsv = "route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color\n";
+    for (const r of routes) {
+      routesCsv += `${r.routeId},${r.agencyId || "ATMA"},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
+    }
+    archive.append(routesCsv, { name: "routes.txt" });
+
+    // --- trips.txt ---
+    const tripsAll = await db.select().from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
+    let tripsCsv = "route_id,service_id,trip_id,trip_headsign,direction_id,shape_id\n";
+    for (const t of tripsAll) {
+      tripsCsv += `${t.routeId},${t.serviceId},${t.tripId},${csvEscape(t.tripHeadsign || "")},${t.directionId || 0},${t.shapeId || ""}\n`;
+    }
+    archive.append(tripsCsv, { name: "trips.txt" });
+
+    // --- stop_times.txt (with pickup_type and drop_off_type) ---
+    // Process in batches to handle ~321k rows
+    const batchSize = 50000;
+    let offset = 0;
+    let stCsv = "trip_id,arrival_time,departure_time,stop_id,stop_sequence,pickup_type,drop_off_type\n";
+    let hasMore = true;
+    while (hasMore) {
+      const batch = await db.execute<any>(sql`
+        SELECT trip_id, arrival_time, departure_time, stop_id, stop_sequence, pickup_type, drop_off_type
+        FROM gtfs_stop_times WHERE feed_id = ${feedId}
+        ORDER BY trip_id, stop_sequence
+        LIMIT ${batchSize} OFFSET ${offset}
+      `);
+      for (const st of batch.rows) {
+        stCsv += `${st.trip_id},${st.arrival_time || ""},${st.departure_time || ""},${st.stop_id},${st.stop_sequence},${st.pickup_type ?? 0},${st.drop_off_type ?? 0}\n`;
+      }
+      offset += batchSize;
+      hasMore = batch.rows.length === batchSize;
+    }
+    archive.append(stCsv, { name: "stop_times.txt" });
+
+    // --- calendar.txt ---
+    const calendars = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+    let calCsv = "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n";
+    for (const c of calendars) {
+      calCsv += `${c.serviceId},${c.monday},${c.tuesday},${c.wednesday},${c.thursday},${c.friday},${c.saturday},${c.sunday},${c.startDate},${c.endDate}\n`;
+    }
+    archive.append(calCsv, { name: "calendar.txt" });
+
+    // --- calendar_dates.txt ---
+    const calDates = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
+    let cdCsv = "service_id,date,exception_type\n";
+    for (const cd of calDates) {
+      cdCsv += `${cd.serviceId},${cd.date},${cd.exceptionType}\n`;
+    }
+    archive.append(cdCsv, { name: "calendar_dates.txt" });
+
+    // --- shapes.txt ---
+    const shapes = await db.select().from(gtfsShapes).where(eq(gtfsShapes.feedId, feedId));
+    let shapesCsv = "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n";
+    for (const sh of shapes) {
+      const geo = sh.geojson as any;
+      if (geo?.type === "LineString" && geo.coordinates) {
+        for (let i = 0; i < geo.coordinates.length; i++) {
+          const [lon, lat] = geo.coordinates[i];
+          shapesCsv += `${sh.shapeId},${lat},${lon},${i}\n`;
+        }
+      }
+    }
+    archive.append(shapesCsv, { name: "shapes.txt" });
+
+    // --- fare_attributes.txt (Fares V1) ---
+    const fareAttrs = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
+    if (fareAttrs.length > 0) {
+      let faCsv = "fare_id,price,currency_type,payment_method,transfers,agency_id,transfer_duration\n";
+      for (const fa of fareAttrs) {
+        faCsv += `${fa.fareId},${fa.price.toFixed(2)},${fa.currencyType},${fa.paymentMethod},${fa.transfers ?? ""},${fa.agencyId || ""},${fa.transferDuration ?? ""}\n`;
+      }
+      archive.append(faCsv, { name: "fare_attributes.txt" });
+    }
+
+    // --- fare_rules.txt (Fares V1) ---
+    const fareRulesV1 = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
+    if (fareRulesV1.length > 0) {
+      let frCsv = "fare_id,route_id,origin_id,destination_id,contains_id\n";
+      for (const fr of fareRulesV1) {
+        frCsv += `${fr.fareId},${fr.routeId || ""},${fr.originId || ""},${fr.destinationId || ""},${fr.containsId || ""}\n`;
+      }
+      archive.append(frCsv, { name: "fare_rules.txt" });
+    }
+
+    // --- Fares V2 files ---
+    const networks = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
+    if (networks.length > 0) {
+      let csv = "network_id,network_name\n";
+      for (const n of networks) csv += `${n.networkId},${n.networkName}\n`;
+      archive.append(csv, { name: "networks.txt" });
+    }
+
+    const routeNets = await db.select().from(gtfsRouteNetworks).where(eq(gtfsRouteNetworks.feedId, feedId));
+    if (routeNets.length > 0) {
+      let csv = "network_id,route_id\n";
+      for (const rn of routeNets) csv += `${rn.networkId},${rn.routeId}\n`;
+      archive.append(csv, { name: "route_networks.txt" });
+    }
+
+    const media = await db.select().from(gtfsFareMedia)
+      .where(and(eq(gtfsFareMedia.feedId, feedId), eq(gtfsFareMedia.isActive, true)));
+    if (media.length > 0) {
+      let csv = "fare_media_id,fare_media_name,fare_media_type\n";
+      for (const m of media) csv += `${m.fareMediaId},${m.fareMediaName},${m.fareMediaType}\n`;
+      archive.append(csv, { name: "fare_media.txt" });
+    }
+
+    const cats = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
+    if (cats.length > 0) {
+      let csv = "rider_category_id,rider_category_name,is_default_fare_category,eligibility_url\n";
+      for (const c of cats) csv += `${c.riderCategoryId},${c.riderCategoryName},${c.isDefault ? 1 : 0},${c.eligibilityUrl || ""}\n`;
+      archive.append(csv, { name: "rider_categories.txt" });
+    }
+
+    const prods = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+    if (prods.length > 0) {
+      let csv = "fare_product_id,fare_product_name,rider_category_id,fare_media_id,amount,currency\n";
+      for (const p of prods) csv += `${p.fareProductId},${p.fareProductName},${p.riderCategoryId || ""},${p.fareMediaId || ""},${p.amount.toFixed(2)},${p.currency}\n`;
+      archive.append(csv, { name: "fare_products.txt" });
+    }
+
+    const areas = await db.select().from(gtfsFareAreas).where(eq(gtfsFareAreas.feedId, feedId));
+    if (areas.length > 0) {
+      let csv = "area_id,area_name\n";
+      for (const a of areas) csv += `${a.areaId},${a.areaName}\n`;
+      archive.append(csv, { name: "areas.txt" });
+    }
+
+    const sa = await db.select().from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
+    if (sa.length > 0) {
+      let csv = "area_id,stop_id\n";
+      for (const s of sa) csv += `${s.areaId},${s.stopId}\n`;
+      archive.append(csv, { name: "stop_areas.txt" });
+    }
+
+    const lr = await db.select().from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
+    if (lr.length > 0) {
+      let csv = "leg_group_id,network_id,from_area_id,to_area_id,from_timeframe_group_id,to_timeframe_group_id,fare_product_id,rule_priority\n";
+      for (const l of lr) csv += `${l.legGroupId},${l.networkId || ""},${l.fromAreaId || ""},${l.toAreaId || ""},${l.fromTimeframeGroupId || ""},${l.toTimeframeGroupId || ""},${l.fareProductId},${l.rulePriority}\n`;
+      archive.append(csv, { name: "fare_leg_rules.txt" });
+    }
+
+    const xr = await db.select().from(gtfsFareTransferRules).where(eq(gtfsFareTransferRules.feedId, feedId));
+    if (xr.length > 0) {
+      let csv = "from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type,fare_transfer_type,fare_product_id\n";
+      for (const x of xr) csv += `${x.fromLegGroupId || ""},${x.toLegGroupId || ""},${x.transferCount ?? ""},${x.durationLimit ?? ""},${x.durationLimitType ?? ""},${x.fareTransferType ?? ""},${x.fareProductId || ""}\n`;
+      archive.append(csv, { name: "fare_transfer_rules.txt" });
+    }
+
+    const tf = await db.select().from(gtfsTimeframes).where(eq(gtfsTimeframes.feedId, feedId));
+    if (tf.length > 0) {
+      let csv = "timeframe_group_id,start_time,end_time,service_id\n";
+      for (const t of tf) csv += `${t.timeframeGroupId},${t.startTime || ""},${t.endTime || ""},${t.serviceId || ""}\n`;
+      archive.append(csv, { name: "timeframes.txt" });
+    }
+
+    await archive.finalize();
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+/** Escape a string for CSV (wraps in quotes if it contains commas, quotes, or newlines) */
+function csvEscape(s: string): string {
+  if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
 
 export default router;

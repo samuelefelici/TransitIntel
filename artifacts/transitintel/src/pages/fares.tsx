@@ -5,6 +5,7 @@ import {
   Ticket, Tag, MapPin, Download, Play, Loader2, CheckCircle2, AlertTriangle,
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
+  Edit3, Archive, ToggleLeft, ToggleRight,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -126,13 +127,14 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "zones" | "timeframes" | "generate" | "simulate";
+type Tab = "classify" | "products" | "zones" | "timeframes" | "editor" | "generate" | "simulate";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
   { id: "products", label: "Prodotti & Supporti", icon: <Euro className="w-3.5 h-3.5" /> },
   { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
   { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
+  { id: "editor", label: "Editor Fermate", icon: <Edit3 className="w-3.5 h-3.5" /> },
   { id: "generate", label: "Genera & Esporta", icon: <Download className="w-3.5 h-3.5" /> },
   { id: "simulate", label: "Simulatore", icon: <Play className="w-3.5 h-3.5" /> },
 ];
@@ -1023,7 +1025,212 @@ function TimeframesTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAB 5: GENERA & ESPORTA
+// TAB 5: EDITOR FERMATE — pickup_type / drop_off_type
+// ═══════════════════════════════════════════════════════════
+
+interface StopTimeRow {
+  stopId: string;
+  stopName: string;
+  sequence: number;
+  lat: number;
+  lon: number;
+  arrivalTime: string | null;
+  departureTime: string | null;
+  pickupType: number;
+  dropOffType: number;
+}
+
+function StopTimesEditorTab() {
+  const { toast } = useToast();
+  const [routes, setRoutes] = useState<RouteNetwork[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<string>("");
+  const [stops, setStops] = useState<StopTimeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingStops, setLoadingStops] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  // Load routes
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch<RouteNetwork[]>("/api/fares/route-networks");
+        setRoutes(data);
+      } catch { /* ignore */ } finally { setLoading(false); }
+    })();
+  }, []);
+
+  // Load stop times when route selected
+  const loadStops = useCallback(async (routeId: string) => {
+    if (!routeId) return;
+    setLoadingStops(true);
+    try {
+      const data = await apiFetch<StopTimeRow[]>(`/api/fares/stop-times/${routeId}`);
+      setStops(data);
+      setDirty(false);
+    } catch { /* ignore */ } finally { setLoadingStops(false); }
+  }, []);
+
+  useEffect(() => { if (selectedRoute) loadStops(selectedRoute); }, [selectedRoute, loadStops]);
+
+  const togglePickup = (idx: number) => {
+    setStops(prev => prev.map((s, i) => i === idx ? { ...s, pickupType: s.pickupType === 0 ? 1 : 0 } : s));
+    setDirty(true);
+  };
+
+  const toggleDropOff = (idx: number) => {
+    setStops(prev => prev.map((s, i) => i === idx ? { ...s, dropOffType: s.dropOffType === 0 ? 1 : 0 } : s));
+    setDirty(true);
+  };
+
+  const saveChanges = async () => {
+    setSaving(true);
+    try {
+      const updates = stops.map(s => ({
+        stopId: s.stopId,
+        pickupType: s.pickupType,
+        dropOffType: s.dropOffType,
+      }));
+      await apiFetch(`/api/fares/stop-times/${selectedRoute}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates }),
+      });
+      toast({ title: "✅ Salvataggio completato", description: "Pickup/drop-off aggiornati per tutte le corse della linea" });
+      setDirty(false);
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    } finally { setSaving(false); }
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  const selectedInfo = routes.find(r => r.routeId === selectedRoute);
+
+  return (
+    <div className="space-y-6">
+      {/* Route selector */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Bus className="w-4 h-4" />
+            Seleziona Linea
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <select
+            className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+            value={selectedRoute}
+            onChange={(e) => setSelectedRoute(e.target.value)}
+          >
+            <option value="">— Seleziona una linea —</option>
+            {routes.map(r => (
+              <option key={r.routeId} value={r.routeId}>
+                {r.shortName || r.routeId} — {r.longName || ""}
+              </option>
+            ))}
+          </select>
+        </CardContent>
+      </Card>
+
+      {/* Editor */}
+      {selectedRoute && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Edit3 className="w-4 h-4" />
+                Fermate linea {selectedInfo?.shortName || selectedRoute}
+                <Badge variant="outline" className="text-xs ml-2">
+                  {stops.length} fermate
+                </Badge>
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                {dirty && (
+                  <Badge variant="secondary" className="animate-pulse text-xs">
+                    Modifiche non salvate
+                  </Badge>
+                )}
+                <Button onClick={saveChanges} disabled={saving || !dirty} size="sm">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span className="ml-1">Salva</span>
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {loadingStops ? (
+              <LoadingSpinner />
+            ) : stops.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">Nessuna fermata trovata</p>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground mb-3">
+                  <span className="font-medium">Salita (pickup):</span> ✅ = fermata regolare, ❌ = no salita —
+                  <span className="font-medium ml-2">Discesa (drop-off):</span> ✅ = fermata regolare, ❌ = no discesa
+                </p>
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50">
+                        <th className="text-left px-3 py-2 font-medium">#</th>
+                        <th className="text-left px-3 py-2 font-medium">Fermata</th>
+                        <th className="text-left px-3 py-2 font-medium">Arrivo</th>
+                        <th className="text-left px-3 py-2 font-medium">Partenza</th>
+                        <th className="text-center px-3 py-2 font-medium">Salita</th>
+                        <th className="text-center px-3 py-2 font-medium">Discesa</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stops.map((s, i) => (
+                        <tr key={s.stopId + i} className="border-t border-border/30 hover:bg-muted/20">
+                          <td className="px-3 py-2 text-muted-foreground">{s.sequence}</td>
+                          <td className="px-3 py-2">
+                            <span className="font-medium">{s.stopName}</span>
+                            <span className="text-xs text-muted-foreground ml-2">{s.stopId}</span>
+                          </td>
+                          <td className="px-3 py-2 font-mono text-xs">{s.arrivalTime || "—"}</td>
+                          <td className="px-3 py-2 font-mono text-xs">{s.departureTime || "—"}</td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              onClick={() => togglePickup(i)}
+                              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                                s.pickupType === 0
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                              }`}
+                            >
+                              {s.pickupType === 0 ? "✅ Sì" : "❌ No"}
+                            </button>
+                          </td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              onClick={() => toggleDropOff(i)}
+                              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                                s.dropOffType === 0
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                                  : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                              }`}
+                            >
+                              {s.dropOffType === 0 ? "✅ Sì" : "❌ No"}
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB 6: GENERA & ESPORTA
 // ═══════════════════════════════════════════════════════════
 
 function GenerateTab() {
@@ -1032,6 +1239,9 @@ function GenerateTab() {
   const [generating, setGenerating] = useState(false);
   const [generatingRules, setGeneratingRules] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
+
+  const [seedingV1, setSeedingV1] = useState(false);
+  const [downloadingZip, setDownloadingZip] = useState(false);
 
   const generateRules = async () => {
     setGeneratingRules(true);
@@ -1063,7 +1273,6 @@ function GenerateTab() {
 
   const downloadZip = () => {
     if (!result) return;
-    // Create a zip-like download of all files (simplified: download individual CSVs)
     for (const [filename, content] of Object.entries(result.files)) {
       const blob = new Blob([content], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
@@ -1076,24 +1285,88 @@ function GenerateTab() {
     toast({ title: "Download", description: "File CSV scaricati" });
   };
 
+  const seedFaresV1 = async () => {
+    setSeedingV1(true);
+    try {
+      const r = await apiFetch<{ fareAttributes: number; fareRules: number }>(
+        "/api/fares/fare-attributes/seed", { method: "POST" }
+      );
+      toast({
+        title: "Fares V1 generato",
+        description: `${r.fareAttributes} fare_attributes + ${r.fareRules} fare_rules`,
+      });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    } finally { setSeedingV1(false); }
+  };
+
+  const downloadFullZip = async () => {
+    setDownloadingZip(true);
+    try {
+      const apiBase = import.meta.env.VITE_API_URL || "";
+      const response = await fetch(`${apiBase}/api/fares/export-zip`, { credentials: "include" });
+      if (!response.ok) throw new Error("Errore durante l'export");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "gtfs_export.zip";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "✅ GTFS ZIP scaricato", description: "Archivio completo con dati base + bigliettazione" });
+    } catch (e: any) {
+      toast({ title: "Errore export", description: e.message, variant: "destructive" });
+    } finally { setDownloadingZip(false); }
+  };
+
   return (
     <div className="space-y-4">
+      {/* Step-by-step actions */}
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={generateRules} disabled={generatingRules} variant="outline" size="sm">
           {generatingRules ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
           1. Genera Regole Tariffarie
         </Button>
+        <Button onClick={seedFaresV1} disabled={seedingV1} variant="outline" size="sm">
+          {seedingV1 ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+          2. Genera Fares V1
+        </Button>
         <Button onClick={generate} disabled={generating} size="sm">
           {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <FileText className="w-3.5 h-3.5 mr-1.5" />}
-          2. Genera File GTFS Fares V2
+          3. Anteprima File Fares V2
         </Button>
-        {result && (
+      </div>
+
+      {/* Export ZIP - always visible */}
+      <Card className="border-primary/20 bg-primary/5">
+        <CardContent className="pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium flex items-center gap-2">
+                <Archive className="w-4 h-4" />
+                Esporta GTFS Completo (ZIP)
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Include: agency, routes, trips, stops, stop_times (con pickup/drop-off), calendar, calendar_dates, shapes
+                + fare_attributes, fare_rules + tutti i file Fares V2
+              </p>
+            </div>
+            <Button onClick={downloadFullZip} disabled={downloadingZip} size="sm">
+              {downloadingZip ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              <span className="ml-2">Scarica ZIP</span>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {result && (
+        <div className="flex justify-end">
           <Button onClick={downloadZip} variant="outline" size="sm">
             <Download className="w-3.5 h-3.5 mr-1.5" />
-            Scarica Tutti i CSV
+            Scarica CSV Fares V2
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       {result && (
         <>
@@ -1724,6 +1997,7 @@ export default function FaresPage() {
           {tab === "products" && <ProductsTab />}
           {tab === "zones" && <ZonesTab />}
           {tab === "timeframes" && <TimeframesTab />}
+          {tab === "editor" && <StopTimesEditorTab />}
           {tab === "generate" && <GenerateTab />}
           {tab === "simulate" && <SimulateTab />}
         </motion.div>

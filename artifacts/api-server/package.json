@@ -11,9 +11,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@types/archiver": "^7.0.0",
     "@workspace/api-zod": "workspace:*",
     "@workspace/db": "workspace:*",
     "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2",
     "csv-parse": "^6.2.0",
