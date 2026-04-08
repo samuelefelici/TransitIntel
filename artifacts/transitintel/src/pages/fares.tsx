@@ -2759,34 +2759,42 @@ export default function FaresPage() {
         </div>
       </motion.div>
 
-      {/* Tab bar */}
-      <div className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 w-fit overflow-x-auto">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`
-              relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap
-              transition-all duration-200
-              ${tab === t.id
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-              }
-            `}
-          >
-            {tab === t.id && (
-              <motion.div
-                layoutId="fares-tab-bg"
-                className="absolute inset-0 bg-background/80 border border-border/50 rounded-lg shadow-sm"
-                transition={{ type: "spring", stiffness: 400, damping: 35 }}
-              />
-            )}
-            <span className="relative z-10 flex items-center gap-2">
-              {t.icon}
-              {t.label}
-            </span>
-          </button>
-        ))}
+      {/* Tab bar — scrollable */}
+      <div className="relative">
+        <div
+          className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
+            [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
+            [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
+            [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
+            hover:[&::-webkit-scrollbar-thumb]:bg-border"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`
+                relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0
+                transition-all duration-200
+                ${tab === t.id
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                }
+              `}
+            >
+              {tab === t.id && (
+                <motion.div
+                  layoutId="fares-tab-bg"
+                  className="absolute inset-0 bg-background/80 border border-border/50 rounded-lg shadow-sm"
+                  transition={{ type: "spring", stiffness: 400, damping: 35 }}
+                />
+              )}
+              <span className="relative z-10 flex items-center gap-2">
+                {t.icon}
+                {t.label}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Tab content */}
