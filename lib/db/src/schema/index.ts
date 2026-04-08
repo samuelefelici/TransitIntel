@@ -100,6 +100,7 @@ export const gtfsRoutes = pgTable("gtfs_routes", {
   routeShortName: text("route_short_name"),
   routeLongName: text("route_long_name"),
   routeType: integer("route_type").default(3),
+  routeUrl: text("route_url"),
   routeColor: text("route_color"),
   routeTextColor: text("route_text_color"),
   tripsCount: integer("trips_count").default(0),

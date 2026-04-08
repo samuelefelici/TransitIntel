@@ -138,6 +138,7 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
       routeShortName: r["route_short_name"] || null,
       routeLongName: r["route_long_name"] || null,
       routeType: parseInt(r["route_type"] || "3") || 3,
+      routeUrl: r["route_url"] || null,
       routeColor: r["route_color"] ? `#${r["route_color"]}` : null,
       routeTextColor: r["route_text_color"] ? `#${r["route_text_color"]}` : null,
       tripsCount: tripsPerRoute[r["route_id"]] || 0,

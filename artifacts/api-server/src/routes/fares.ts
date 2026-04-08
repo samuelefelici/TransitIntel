@@ -392,7 +392,7 @@ router.post("/fares/products/seed", async (_req, res): Promise<void> => {
         durationMinutes: p.durationMinutes,
         fareType: p.fareType,
         riderCategoryId: "ordinario",
-        fareMediaId: "carta_contactless",
+        fareMediaId: null, // null = any media (spec: empty fare_media_id means "all media accepted")
       }).onConflictDoNothing();
     }
 
@@ -952,19 +952,8 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
       tfCsv += `${tf.timeframeGroupId},${tf.startTime || ""},${tf.endTime || ""},${tf.serviceId || ""}\n`;
     }
 
-    // --- fare_attributes.txt (Fares V1) ---
-    const fareAttrs = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
-    let faCsv = "fare_id,price,currency_type,payment_method,transfers,agency_id,transfer_duration\n";
-    for (const fa of fareAttrs) {
-      faCsv += `${fa.fareId},${fa.price.toFixed(2)},${fa.currencyType},${fa.paymentMethod},${fa.transfers ?? ""},${fa.agencyId || ""},${fa.transferDuration ?? ""}\n`;
-    }
-
-    // --- fare_rules.txt (Fares V1) ---
-    const fareRulesV1 = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
-    let frCsv = "fare_id,route_id,origin_id,destination_id,contains_id\n";
-    for (const fr of fareRulesV1) {
-      frCsv += `${fr.fareId},${fr.routeId || ""},${fr.originId || ""},${fr.destinationId || ""},${fr.containsId || ""}\n`;
-    }
+    // --- fare_attributes.txt (Fares V1) --- REMOVED: using only Fares V2 to avoid consumer confusion
+    // --- fare_rules.txt (Fares V1) --- REMOVED: using only Fares V2 to avoid consumer confusion
 
     // Validation summary
     const routeCount = routeNets.length;
@@ -977,10 +966,7 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
       const lines = csv.split("\n").filter(Boolean);
       if (lines.length > 1) allFiles[name] = csv; // >1 means has data rows beyond header
     };
-    // Fares V1
-    maybeAdd("fare_attributes.txt", faCsv);
-    maybeAdd("fare_rules.txt", frCsv);
-    // Fares V2
+    // Fares V2 only (no V1 — spec says consumers must use only one)
     maybeAdd("networks.txt", networksCsv);
     maybeAdd("route_networks.txt", routeNetCsv);
     maybeAdd("fare_media.txt", mediaCsv);
@@ -1004,8 +990,6 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
         legRules: legRules.length,
         transferRules: xferRules.length,
         timeframes: timeframes.length,
-        fareAttributes: fareAttrs.length,
-        fareRules: fareRulesV1.length,
         isComplete: missingRoutes.length === 0 && products.length > 0 && legRules.length > 0,
       },
     });
@@ -1291,9 +1275,9 @@ router.get("/fares/export-zip", async (_req, res): Promise<void> => {
 
     // --- routes.txt ---
     const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
-    let routesCsv = "route_id,agency_id,route_short_name,route_long_name,route_type,route_color,route_text_color\n";
+    let routesCsv = "route_id,agency_id,route_short_name,route_long_name,route_type,route_url,route_color,route_text_color\n";
     for (const r of routes) {
-      routesCsv += `${r.routeId},${r.agencyId || "ATMA"},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
+      routesCsv += `${r.routeId},${r.agencyId || "ATMA"},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeUrl || "https://www.atmaancona.it"},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
     }
     archive.append(routesCsv, { name: "routes.txt" });
 
@@ -1347,34 +1331,18 @@ router.get("/fares/export-zip", async (_req, res): Promise<void> => {
     let shapesCsv = "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n";
     for (const sh of shapes) {
       const geo = sh.geojson as any;
-      if (geo?.type === "LineString" && geo.coordinates) {
-        for (let i = 0; i < geo.coordinates.length; i++) {
-          const [lon, lat] = geo.coordinates[i];
+      // Handle both Feature and bare LineString formats
+      const coords = geo?.geometry?.coordinates ?? geo?.coordinates ?? (geo?.type === "LineString" ? geo.coordinates : null);
+      if (coords && Array.isArray(coords)) {
+        for (let i = 0; i < coords.length; i++) {
+          const [lon, lat] = coords[i];
           shapesCsv += `${sh.shapeId},${lat},${lon},${i}\n`;
         }
       }
     }
     archive.append(shapesCsv, { name: "shapes.txt" });
 
-    // --- fare_attributes.txt (Fares V1) ---
-    const fareAttrs = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
-    if (fareAttrs.length > 0) {
-      let faCsv = "fare_id,price,currency_type,payment_method,transfers,agency_id,transfer_duration\n";
-      for (const fa of fareAttrs) {
-        faCsv += `${fa.fareId},${fa.price.toFixed(2)},${fa.currencyType},${fa.paymentMethod},${fa.transfers ?? ""},${fa.agencyId || ""},${fa.transferDuration ?? ""}\n`;
-      }
-      archive.append(faCsv, { name: "fare_attributes.txt" });
-    }
-
-    // --- fare_rules.txt (Fares V1) ---
-    const fareRulesV1 = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
-    if (fareRulesV1.length > 0) {
-      let frCsv = "fare_id,route_id,origin_id,destination_id,contains_id\n";
-      for (const fr of fareRulesV1) {
-        frCsv += `${fr.fareId},${fr.routeId || ""},${fr.originId || ""},${fr.destinationId || ""},${fr.containsId || ""}\n`;
-      }
-      archive.append(frCsv, { name: "fare_rules.txt" });
-    }
+    // --- Fares V1 REMOVED — using only Fares V2 to avoid consumer confusion ---
 
     // --- Fares V2 files ---
     const networks = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));

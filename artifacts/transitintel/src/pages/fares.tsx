@@ -1240,15 +1240,13 @@ function GenerateTab() {
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
 
-  /** 1-click: genera regole tariffarie + seed Fares V1 + anteprima completa */
+  /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
   const generateAll = async () => {
     setGenerating(true);
     try {
       // Step 1: genera leg rules
       await apiFetch("/api/fares/leg-rules/generate", { method: "POST" });
-      // Step 2: seed Fares V1 (da V2)
-      await apiFetch("/api/fares/fare-attributes/seed", { method: "POST" });
-      // Step 3: genera anteprima completa
+      // Step 2: genera anteprima completa
       const data = await apiFetch<GenerateResult>("/api/fares/generate-gtfs", { method: "POST" });
       setResult(data);
       setPreviewFile(null);
@@ -1294,7 +1292,7 @@ function GenerateTab() {
 
       {/* Description */}
       <p className="text-xs text-muted-foreground">
-        <strong>Genera Anteprima:</strong> crea le regole tariffarie, genera i file Fares V1 dai prodotti V2, e mostra l'anteprima di tutti i file di bigliettazione. —
+        <strong>Genera Anteprima:</strong> crea le regole tariffarie e mostra l'anteprima di tutti i file Fares V2. —
         <strong className="ml-1">Scarica ZIP:</strong> esporta l'intero feed GTFS (agency, routes, trips, stops, stop_times, calendar, shapes + tutti i file tariffari).
       </p>
 
@@ -1319,7 +1317,6 @@ function GenerateTab() {
                 <div className="flex justify-between"><span className="text-muted-foreground">Regole leg</span><span className="font-mono">{result.validation.legRules}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Regole trasferimento</span><span className="font-mono">{result.validation.transferRules}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Fasce orarie</span><span className="font-mono">{result.validation.timeframes}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Fare attr/rules (V1)</span><span className="font-mono">{(result.validation as any).fareAttributes || 0}/{(result.validation as any).fareRules || 0}</span></div>
               </div>
               {result.validation.missingRoutes.length > 0 && (
                 <p className="text-amber-600 text-xs mt-3">
@@ -1341,7 +1338,6 @@ function GenerateTab() {
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
                 {Object.entries(result.files).map(([filename, content]) => {
                   const lines = content.split("\n").filter(Boolean).length - 1; // exclude header
-                  const isV1 = filename === "fare_attributes.txt" || filename === "fare_rules.txt";
                   return (
                     <button
                       key={filename}
@@ -1358,7 +1354,6 @@ function GenerateTab() {
                       </div>
                       <div className="flex items-center gap-2 mt-1">
                         <span className="text-[10px] text-muted-foreground">{lines} record</span>
-                        {isV1 && <Badge variant="outline" className="text-[9px] px-1 py-0">V1</Badge>}
                       </div>
                     </button>
                   );
