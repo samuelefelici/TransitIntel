@@ -495,12 +495,28 @@ export const gtfsFareLegRules = pgTable("gtfs_fare_leg_rules", {
   networkId: text("network_id"),
   fromAreaId: text("from_area_id"),
   toAreaId: text("to_area_id"),
+  fromTimeframeGroupId: text("from_timeframe_group_id"),
+  toTimeframeGroupId: text("to_timeframe_group_id"),
   fareProductId: text("fare_product_id").notNull(),
   rulePriority: integer("rule_priority").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_fare_leg_rules_feed").on(t.feedId),
   index("idx_fare_leg_rules_network").on(t.feedId, t.networkId),
+]);
+
+// Timeframes — fare variation by time-of-day / day-of-week (GTFS timeframes.txt)
+export const gtfsTimeframes = pgTable("gtfs_timeframes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  timeframeGroupId: text("timeframe_group_id").notNull(),
+  startTime: text("start_time"),       // HH:MM:SS
+  endTime: text("end_time"),           // HH:MM:SS
+  serviceId: text("service_id"),       // FK → calendar.service_id
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_timeframes_feed").on(t.feedId),
+  index("idx_timeframes_group").on(t.feedId, t.timeframeGroupId),
 ]);
 
 // Fare Transfer Rules — inter-network transfer discounts/free transfers
@@ -553,4 +569,5 @@ export type GtfsFareProduct = typeof gtfsFareProducts.$inferSelect;
 export type GtfsFareArea = typeof gtfsFareAreas.$inferSelect;
 export type GtfsStopArea = typeof gtfsStopAreas.$inferSelect;
 export type GtfsFareLegRule = typeof gtfsFareLegRules.$inferSelect;
+export type GtfsTimeframe = typeof gtfsTimeframes.$inferSelect;
 export type GtfsFareTransferRule = typeof gtfsFareTransferRules.$inferSelect;

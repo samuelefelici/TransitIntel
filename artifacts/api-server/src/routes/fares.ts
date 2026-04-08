@@ -35,6 +35,7 @@ import {
   gtfsFeeds, gtfsRoutes, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsShapes,
   gtfsFareNetworks, gtfsRouteNetworks, gtfsFareMedia, gtfsRiderCategories,
   gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
+  gtfsTimeframes,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -717,6 +718,39 @@ router.get("/fares/transfer-rules", async (_req, res): Promise<void> => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// TIMEFRAMES (GTFS timeframes.txt)
+// ═══════════════════════════════════════════════════════════
+
+router.get("/fares/timeframes", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsTimeframes).where(eq(gtfsTimeframes.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/timeframes", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { timeframeGroupId, startTime, endTime, serviceId } = req.body;
+    if (!timeframeGroupId) { res.status(400).json({ error: "timeframeGroupId required" }); return; }
+    const [row] = await db.insert(gtfsTimeframes).values({
+      feedId, timeframeGroupId, startTime, endTime, serviceId,
+    }).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/fares/timeframes/:id", async (req, res): Promise<void> => {
+  try {
+    await db.delete(gtfsTimeframes).where(eq(gtfsTimeframes.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
 // SIMULATE — ticket price lookup (computes distance on-the-fly, no pre-generated zones needed)
 // ═══════════════════════════════════════════════════════════
 
@@ -900,7 +934,7 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
     const legRules = await db.select().from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
     let legCsv = "leg_group_id,network_id,from_area_id,to_area_id,from_timeframe_group_id,to_timeframe_group_id,fare_product_id,rule_priority\n";
     for (const lr of legRules) {
-      legCsv += `${lr.legGroupId},${lr.networkId || ""},${lr.fromAreaId || ""},${lr.toAreaId || ""},,,${lr.fareProductId},${lr.rulePriority}\n`;
+      legCsv += `${lr.legGroupId},${lr.networkId || ""},${lr.fromAreaId || ""},${lr.toAreaId || ""},${lr.fromTimeframeGroupId || ""},${lr.toTimeframeGroupId || ""},${lr.fareProductId},${lr.rulePriority}\n`;
     }
 
     // --- fare_transfer_rules.txt ---
@@ -908,6 +942,13 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
     let xferCsv = "from_leg_group_id,to_leg_group_id,transfer_count,duration_limit,duration_limit_type,fare_transfer_type,fare_product_id\n";
     for (const xr of xferRules) {
       xferCsv += `${xr.fromLegGroupId || ""},${xr.toLegGroupId || ""},${xr.transferCount ?? ""},${xr.durationLimit ?? ""},${xr.durationLimitType ?? ""},${xr.fareTransferType ?? ""},${xr.fareProductId || ""}\n`;
+    }
+
+    // --- timeframes.txt ---
+    const timeframes = await db.select().from(gtfsTimeframes).where(eq(gtfsTimeframes.feedId, feedId));
+    let tfCsv = "timeframe_group_id,start_time,end_time,service_id\n";
+    for (const tf of timeframes) {
+      tfCsv += `${tf.timeframeGroupId},${tf.startTime || ""},${tf.endTime || ""},${tf.serviceId || ""}\n`;
     }
 
     // Validation summary
@@ -926,6 +967,7 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
         "stop_areas.txt": stopAreasCsv,
         "fare_leg_rules.txt": legCsv,
         "fare_transfer_rules.txt": xferCsv,
+        "timeframes.txt": tfCsv,
       },
       validation: {
         routesClassified: routeCount,
@@ -936,6 +978,7 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
         stopAreaAssignments: stopAreas.length,
         legRules: legRules.length,
         transferRules: xferRules.length,
+        timeframes: timeframes.length,
         isComplete: missingRoutes.length === 0 && products.length > 0 && legRules.length > 0,
       },
     });

@@ -4,7 +4,7 @@ import Map, { Source, Layer, Marker, MapRef } from "react-map-gl/mapbox";
 import {
   Ticket, Tag, MapPin, Download, Play, Loader2, CheckCircle2, AlertTriangle,
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
-  FileText, Shield, Zap, Search, Filter, Navigation, Circle,
+  FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -110,6 +110,7 @@ interface GenerateResult {
     stopAreaAssignments: number;
     legRules: number;
     transferRules: number;
+    timeframes: number;
     isComplete: boolean;
   };
 }
@@ -125,12 +126,13 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "zones" | "generate" | "simulate";
+type Tab = "classify" | "products" | "zones" | "timeframes" | "generate" | "simulate";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
   { id: "products", label: "Prodotti & Supporti", icon: <Euro className="w-3.5 h-3.5" /> },
   { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
+  { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
   { id: "generate", label: "Genera & Esporta", icon: <Download className="w-3.5 h-3.5" /> },
   { id: "simulate", label: "Simulatore", icon: <Play className="w-3.5 h-3.5" /> },
 ];
@@ -790,7 +792,238 @@ function ZonesTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAB 4: GENERA & ESPORTA
+// TAB 4: FASCE ORARIE (GTFS timeframes.txt)
+// ═══════════════════════════════════════════════════════════
+
+interface Timeframe {
+  id: string;
+  timeframeGroupId: string;
+  startTime: string | null;
+  endTime: string | null;
+  serviceId: string | null;
+}
+
+function TimeframesTab() {
+  const { toast } = useToast();
+  const [timeframes, setTimeframes] = useState<Timeframe[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ timeframeGroupId: "", startTime: "", endTime: "", serviceId: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiFetch<Timeframe[]>("/api/fares/timeframes");
+      setTimeframes(data);
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!form.timeframeGroupId || !form.startTime || !form.endTime) {
+      toast({ title: "Compila i campi obbligatori", description: "Gruppo, ora inizio e ora fine sono richiesti", variant: "destructive" });
+      return;
+    }
+    setAdding(true);
+    try {
+      await apiFetch("/api/fares/timeframes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          timeframeGroupId: form.timeframeGroupId,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          serviceId: form.serviceId || undefined,
+        }),
+      });
+      toast({ title: "✅ Fascia oraria aggiunta" });
+      setForm({ timeframeGroupId: "", startTime: "", endTime: "", serviceId: "" });
+      load();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    } finally { setAdding(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await apiFetch(`/api/fares/timeframes/${id}`, { method: "DELETE" });
+      toast({ title: "🗑️ Fascia rimossa" });
+      load();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  // Group by timeframeGroupId
+  const grouped = useMemo(() => {
+    const map: Record<string, Timeframe[]> = {};
+    for (const tf of timeframes) {
+      if (!map[tf.timeframeGroupId]) map[tf.timeframeGroupId] = [];
+      map[tf.timeframeGroupId].push(tf);
+    }
+    return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
+  }, [timeframes]);
+
+  if (loading) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      {/* Add form */}
+      <Card className="border-primary/20 bg-primary/5">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Plus className="w-4 h-4" />
+            Aggiungi Fascia Oraria
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Gruppo *</label>
+              <input
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+                placeholder="es. peak"
+                value={form.timeframeGroupId}
+                onChange={(e) => setForm({ ...form, timeframeGroupId: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Ora Inizio *</label>
+              <input
+                type="time"
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+                value={form.startTime}
+                onChange={(e) => setForm({ ...form, startTime: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Ora Fine *</label>
+              <input
+                type="time"
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+                value={form.endTime}
+                onChange={(e) => setForm({ ...form, endTime: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-1 block">Service ID</label>
+              <input
+                className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm"
+                placeholder="opzionale"
+                value={form.serviceId}
+                onChange={(e) => setForm({ ...form, serviceId: e.target.value })}
+              />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={handleAdd} disabled={adding} className="w-full">
+                {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                <span className="ml-2">Aggiungi</span>
+              </Button>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2">
+            I timeframe definiscono fasce orarie (es. peak/off-peak) che possono essere referenziate nelle fare_leg_rules per differenziare i prezzi.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Existing timeframes */}
+      {grouped.length === 0 ? (
+        <Card className="py-12">
+          <CardContent className="text-center text-muted-foreground">
+            <Clock className="w-10 h-10 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">Nessuna fascia oraria definita</p>
+            <p className="text-sm mt-1">Aggiungi fasce orarie (peak, off-peak) per differenziare i prezzi</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {grouped.map(([groupId, items]) => (
+            <Card key={groupId}>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Badge variant="secondary" className="text-xs">
+                    {groupId}
+                  </Badge>
+                  <span className="text-muted-foreground font-normal">
+                    {items.length} {items.length === 1 ? "intervallo" : "intervalli"}
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="divide-y divide-border/50">
+                  {items.map((tf) => (
+                    <div key={tf.id} className="flex items-center justify-between py-2">
+                      <div className="flex items-center gap-4 text-sm">
+                        <span className="font-mono">
+                          {tf.startTime || "—"} → {tf.endTime || "—"}
+                        </span>
+                        {tf.serviceId && (
+                          <Badge variant="outline" className="text-xs">
+                            service: {tf.serviceId}
+                          </Badge>
+                        )}
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDelete(tf.id)}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Quick-seed presets */}
+      <Card>
+        <CardContent className="pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Preset fasce orarie standard</p>
+              <p className="text-xs text-muted-foreground">Peak (07:00-09:00, 17:00-19:00) e Off-peak (restante)</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                const presets = [
+                  { timeframeGroupId: "peak", startTime: "07:00:00", endTime: "09:00:00" },
+                  { timeframeGroupId: "peak", startTime: "17:00:00", endTime: "19:00:00" },
+                  { timeframeGroupId: "off_peak", startTime: "09:00:00", endTime: "17:00:00" },
+                  { timeframeGroupId: "off_peak", startTime: "19:00:00", endTime: "23:59:00" },
+                  { timeframeGroupId: "off_peak", startTime: "00:00:00", endTime: "07:00:00" },
+                ];
+                for (const p of presets) {
+                  await apiFetch("/api/fares/timeframes", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(p),
+                  });
+                }
+                toast({ title: "✅ Preset fasce orarie caricati" });
+                load();
+              }}
+            >
+              <Sparkles className="w-3.5 h-3.5 mr-1" />
+              Carica Preset
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB 5: GENERA & ESPORTA
 // ═══════════════════════════════════════════════════════════
 
 function GenerateTab() {
@@ -1490,6 +1723,7 @@ export default function FaresPage() {
           {tab === "classify" && <ClassifyTab />}
           {tab === "products" && <ProductsTab />}
           {tab === "zones" && <ZonesTab />}
+          {tab === "timeframes" && <TimeframesTab />}
           {tab === "generate" && <GenerateTab />}
           {tab === "simulate" && <SimulateTab />}
         </motion.div>
