@@ -14,7 +14,16 @@
  * GET    /api/fares/rider-categories         — list categories
  * POST   /api/fares/rider-categories/seed   — seed default
  * POST   /api/fares/rider-categories         — add new
+ * PUT    /api/fares/rider-categories/:id    — update
  * DELETE /api/fares/rider-categories/:id     — delete
+ * GET    /api/fares/calendar                 — list calendar entries
+ * POST   /api/fares/calendar/seed           — seed Feriale/Sabato/Festivo
+ * POST   /api/fares/calendar                 — add new entry
+ * PUT    /api/fares/calendar/:id            — update entry
+ * DELETE /api/fares/calendar/:id            — delete entry
+ * GET    /api/fares/calendar-dates           — list exceptions
+ * POST   /api/fares/calendar-dates           — add exception
+ * DELETE /api/fares/calendar-dates/:id      — delete exception
  * GET    /api/fares/products                 — list fare products
  * POST   /api/fares/products/seed           — seed default products (urban + extraurban)
  * PUT    /api/fares/products/:id            — update price
@@ -341,6 +350,139 @@ router.post("/fares/rider-categories", async (req, res): Promise<void> => {
 router.delete("/fares/rider-categories/:id", async (req, res) => {
   try {
     await db.delete(gtfsRiderCategories).where(eq(gtfsRiderCategories.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
+  try {
+    const { riderCategoryName, isDefault, eligibilityUrl } = req.body;
+    const update: Record<string, unknown> = { updatedAt: sql`now()` };
+    if (riderCategoryName !== undefined) update.riderCategoryName = riderCategoryName;
+    if (isDefault !== undefined) update.isDefault = isDefault;
+    if (eligibilityUrl !== undefined) update.eligibilityUrl = eligibilityUrl;
+    await db.update(gtfsRiderCategories).set(update).where(eq(gtfsRiderCategories.id, req.params.id));
+    const feedId = await getLatestFeedId();
+    const rows = feedId
+      ? await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId))
+      : [];
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CALENDAR (service patterns)
+// ═══════════════════════════════════════════════════════════
+
+router.get("/fares/calendar", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Seed default service patterns: Feriale, Sabato, Festivo
+router.post("/fares/calendar/seed", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const now = new Date();
+    const startDate = `${now.getFullYear()}0101`;
+    const endDate = `${now.getFullYear()}1231`;
+    const templates = [
+      { serviceId: "feriale", monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0 },
+      { serviceId: "sabato", monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 1, sunday: 0 },
+      { serviceId: "festivo", monday: 0, tuesday: 0, wednesday: 0, thursday: 0, friday: 0, saturday: 0, sunday: 1 },
+    ];
+    for (const t of templates) {
+      await db.insert(gtfsCalendar)
+        .values({ feedId, ...t, startDate, endDate })
+        .onConflictDoUpdate({
+          target: [gtfsCalendar.feedId, gtfsCalendar.serviceId],
+          set: { monday: t.monday, tuesday: t.tuesday, wednesday: t.wednesday, thursday: t.thursday, friday: t.friday, saturday: t.saturday, sunday: t.sunday, startDate, endDate },
+        });
+    }
+    const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/calendar", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { serviceId, monday, tuesday, wednesday, thursday, friday, saturday, sunday, startDate, endDate } = req.body;
+    if (!serviceId || !startDate || !endDate) { res.status(400).json({ error: "Missing required fields" }); return; }
+    await db.insert(gtfsCalendar)
+      .values({ feedId, serviceId, monday: monday ?? 0, tuesday: tuesday ?? 0, wednesday: wednesday ?? 0, thursday: thursday ?? 0, friday: friday ?? 0, saturday: saturday ?? 0, sunday: sunday ?? 0, startDate, endDate })
+      .onConflictDoUpdate({
+        target: [gtfsCalendar.feedId, gtfsCalendar.serviceId],
+        set: { monday: monday ?? 0, tuesday: tuesday ?? 0, wednesday: wednesday ?? 0, thursday: thursday ?? 0, friday: friday ?? 0, saturday: saturday ?? 0, sunday: sunday ?? 0, startDate, endDate },
+      });
+    const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
+  try {
+    const { monday, tuesday, wednesday, thursday, friday, saturday, sunday, startDate, endDate } = req.body;
+    const update: Record<string, unknown> = {};
+    if (monday !== undefined) update.monday = monday;
+    if (tuesday !== undefined) update.tuesday = tuesday;
+    if (wednesday !== undefined) update.wednesday = wednesday;
+    if (thursday !== undefined) update.thursday = thursday;
+    if (friday !== undefined) update.friday = friday;
+    if (saturday !== undefined) update.saturday = saturday;
+    if (sunday !== undefined) update.sunday = sunday;
+    if (startDate !== undefined) update.startDate = startDate;
+    if (endDate !== undefined) update.endDate = endDate;
+    await db.update(gtfsCalendar).set(update).where(eq(gtfsCalendar.id, req.params.id));
+    const feedId = await getLatestFeedId();
+    const rows = feedId
+      ? await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId))
+      : [];
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/fares/calendar/:id", async (req, res) => {
+  try {
+    await db.delete(gtfsCalendar).where(eq(gtfsCalendar.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// CALENDAR DATES (exceptions)
+// ═══════════════════════════════════════════════════════════
+
+router.get("/fares/calendar-dates", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/calendar-dates", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { serviceId, date, exceptionType } = req.body;
+    if (!serviceId || !date || !exceptionType) { res.status(400).json({ error: "Missing required fields" }); return; }
+    await db.insert(gtfsCalendarDates).values({ feedId, serviceId, date, exceptionType });
+    const rows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/fares/calendar-dates/:id", async (req, res) => {
+  try {
+    await db.delete(gtfsCalendarDates).where(eq(gtfsCalendarDates.id, req.params.id));
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

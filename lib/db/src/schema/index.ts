@@ -173,7 +173,7 @@ export const gtfsCalendar = pgTable("gtfs_calendar", {
   endDate: text("end_date").notNull(),
 }, (t) => [
   index("idx_gtfs_calendar_feed_id").on(t.feedId),
-  index("idx_gtfs_calendar_feed_service").on(t.feedId, t.serviceId),
+  uniqueIndex("idx_gtfs_calendar_feed_service").on(t.feedId, t.serviceId),
 ]);
 
 // GTFS Calendar Dates — exceptions (added/removed service on specific dates)

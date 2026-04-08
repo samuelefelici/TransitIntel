@@ -5,7 +5,7 @@ import {
   Ticket, Tag, MapPin, Download, Play, Loader2, CheckCircle2, AlertTriangle,
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
-  Edit3, Archive, ToggleLeft, ToggleRight,
+  Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -116,6 +116,27 @@ interface GenerateResult {
   };
 }
 
+interface CalendarEntry {
+  id: string;
+  serviceId: string;
+  monday: number;
+  tuesday: number;
+  wednesday: number;
+  thursday: number;
+  friday: number;
+  saturday: number;
+  sunday: number;
+  startDate: string;
+  endDate: string;
+}
+
+interface CalendarDateEntry {
+  id: string;
+  serviceId: string;
+  date: string;
+  exceptionType: number;
+}
+
 // ═══════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════
@@ -127,13 +148,15 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "zones" | "timeframes" | "editor" | "generate" | "simulate";
+type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
   { id: "products", label: "Prodotti & Supporti", icon: <Euro className="w-3.5 h-3.5" /> },
+  { id: "riders", label: "Categorie Passeggero", icon: <Users className="w-3.5 h-3.5" /> },
   { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
   { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
+  { id: "calendar", label: "Calendario Servizio", icon: <CalendarDays className="w-3.5 h-3.5" /> },
   { id: "editor", label: "Editor Fermate", icon: <Edit3 className="w-3.5 h-3.5" /> },
   { id: "generate", label: "Genera & Esporta", icon: <Download className="w-3.5 h-3.5" /> },
   { id: "simulate", label: "Simulatore", icon: <Play className="w-3.5 h-3.5" /> },
@@ -467,30 +490,6 @@ function ProductsTab() {
         </CardContent>
       </Card>
 
-      {/* Rider Categories */}
-      <Card className="bg-card/50">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Bus className="w-4 h-4 text-primary" />
-            Categorie Passeggero (rider_categories)
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {categories.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nessuna categoria configurata.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {categories.map(c => (
-                <Badge key={c.riderCategoryId} variant={c.isDefault ? "default" : "outline"} className="py-1.5 px-3">
-                  {c.riderCategoryName}
-                  {c.isDefault && <CheckCircle2 className="w-3 h-3 ml-1.5" />}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Urban Products */}
       {urbanProducts.length > 0 && (
         <Card className="bg-card/50">
@@ -593,6 +592,833 @@ function ProductsTab() {
             </div>
           </CardContent>
         </Card>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB: CATEGORIE PASSEGGERO (rider_categories) — GUIDATO
+// ═══════════════════════════════════════════════════════════
+
+const RIDER_PRESETS = [
+  { riderCategoryId: "ordinario", riderCategoryName: "Tariffa Ordinaria", desc: "Tariffa standard applicata a tutti i passeggeri adulti senza riduzioni." },
+  { riderCategoryId: "studente", riderCategoryName: "Studenti", desc: "Per studenti fino a 26 anni con tessera di iscrizione scolastica/universitaria." },
+  { riderCategoryId: "anziano", riderCategoryName: "Anziani (over 65)", desc: "Per passeggeri con età superiore a 65 anni." },
+  { riderCategoryId: "disabile", riderCategoryName: "Disabili", desc: "Per persone con disabilità certificate (L. 104/92)." },
+  { riderCategoryId: "bambino", riderCategoryName: "Bambini (6-14)", desc: "Per bambini da 6 a 14 anni. Sotto i 6 anni il trasporto è gratuito." },
+];
+
+function RiderCategoriesTab() {
+  const { toast } = useToast();
+  const [categories, setCategories] = useState<RiderCategory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{ riderCategoryName: string; eligibilityUrl: string }>({
+    riderCategoryName: "", eligibilityUrl: "",
+  });
+  const [showAdd, setShowAdd] = useState(false);
+  const [newForm, setNewForm] = useState({ riderCategoryId: "", riderCategoryName: "", eligibilityUrl: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiFetch<RiderCategory[]>("/api/fares/rider-categories");
+      if (data.length === 0) {
+        await apiFetch("/api/fares/rider-categories/seed", { method: "POST" });
+        const seeded = await apiFetch<RiderCategory[]>("/api/fares/rider-categories");
+        setCategories(seeded);
+      } else {
+        setCategories(data);
+      }
+    } catch { /* noop */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const addCategory = async () => {
+    if (!newForm.riderCategoryId || !newForm.riderCategoryName) {
+      toast({ title: "Errore", description: "ID e Nome sono obbligatori", variant: "destructive" });
+      return;
+    }
+    try {
+      const rows = await apiFetch<RiderCategory[]>("/api/fares/rider-categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newForm),
+      });
+      setCategories(rows);
+      setNewForm({ riderCategoryId: "", riderCategoryName: "", eligibilityUrl: "" });
+      setShowAdd(false);
+      toast({ title: "Categoria aggiunta" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const addPreset = async (preset: typeof RIDER_PRESETS[0]) => {
+    try {
+      const rows = await apiFetch<RiderCategory[]>("/api/fares/rider-categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ riderCategoryId: preset.riderCategoryId, riderCategoryName: preset.riderCategoryName }),
+      });
+      setCategories(rows);
+      toast({ title: `Categoria "${preset.riderCategoryName}" aggiunta` });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const saveEdit = async (id: string) => {
+    try {
+      const rows = await apiFetch<RiderCategory[]>(`/api/fares/rider-categories/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm),
+      });
+      setCategories(rows);
+      setEditingId(null);
+      toast({ title: "Categoria aggiornata" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const deleteCategory = async (id: string) => {
+    try {
+      await apiFetch(`/api/fares/rider-categories/${id}`, { method: "DELETE" });
+      setCategories(prev => prev.filter(c => c.id !== id));
+      toast({ title: "Categoria rimossa" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  if (loading && categories.length === 0) return <LoadingSpinner />;
+
+  const existingIds = new Set(categories.map(c => c.riderCategoryId));
+
+  return (
+    <div className="space-y-6">
+      {/* Spiegazione guidata */}
+      <Card className="bg-blue-500/5 border-blue-500/20">
+        <CardContent className="p-5">
+          <div className="flex gap-3">
+            <Info className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" />
+            <div className="space-y-2 text-sm">
+              <p className="font-semibold text-blue-600">Cos'è il file rider_categories.txt?</p>
+              <p className="text-muted-foreground">
+                Definisce le <strong>categorie di passeggero</strong> a cui si applicano tariffe differenziate.
+                Ogni azienda TPL può offrire sconti per studenti, anziani, disabili, ecc.
+              </p>
+              <div className="grid gap-1.5 mt-2 text-xs text-muted-foreground">
+                <div className="flex items-start gap-2">
+                  <Badge variant="outline" className="text-[10px] shrink-0 mt-0.5">rider_category_id</Badge>
+                  <span>Codice univoco (es. "studente", "anziano"). Usato internamente per collegare i prodotti tariffari.</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Badge variant="outline" className="text-[10px] shrink-0 mt-0.5">rider_category_name</Badge>
+                  <span>Nome leggibile mostrato all'utente (es. "Studenti", "Anziani over 65").</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Badge variant="outline" className="text-[10px] shrink-0 mt-0.5">is_default</Badge>
+                  <span>Se <strong>1</strong>, è la tariffa applicata quando non viene specificata una categoria (tipicamente "ordinario").</span>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Badge variant="outline" className="text-[10px] shrink-0 mt-0.5">eligibility_url</Badge>
+                  <span>URL (opzionale) a una pagina web con i requisiti per ottenere la tariffa agevolata.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Categorie esistenti */}
+      <Card className="bg-card/50">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Users className="w-4 h-4 text-primary" />
+              Categorie configurate
+            </CardTitle>
+            <Button size="sm" variant="outline" onClick={() => setShowAdd(true)} className="gap-1">
+              <Plus className="w-3.5 h-3.5" /> Aggiungi
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {categories.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nessuna categoria. Usa i preset suggeriti qui sotto.</p>
+          ) : (
+            <div className="space-y-2">
+              {categories.map(c => (
+                <div key={c.id} className="flex items-center gap-3 p-3 rounded-lg border border-border/30 hover:bg-muted/20 transition-colors">
+                  {editingId === c.id ? (
+                    <div className="flex-1 space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          className="flex-1 px-3 py-1.5 text-sm rounded border border-border bg-background/50"
+                          placeholder="Nome categoria"
+                          value={editForm.riderCategoryName}
+                          onChange={e => setEditForm(p => ({ ...p, riderCategoryName: e.target.value }))}
+                        />
+                        <input
+                          className="flex-1 px-3 py-1.5 text-sm rounded border border-border bg-background/50"
+                          placeholder="URL eleggibilità (opzionale)"
+                          value={editForm.eligibilityUrl}
+                          onChange={e => setEditForm(p => ({ ...p, eligibilityUrl: e.target.value }))}
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => saveEdit(c.id)} className="gap-1">
+                          <Save className="w-3 h-3" /> Salva
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Annulla</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">{c.riderCategoryName}</span>
+                          {c.isDefault && <Badge variant="default" className="text-[10px]">DEFAULT</Badge>}
+                        </div>
+                        <div className="flex items-center gap-3 mt-0.5">
+                          <span className="text-xs font-mono text-muted-foreground">id: {c.riderCategoryId}</span>
+                          {c.eligibilityUrl && (
+                            <a href={c.eligibilityUrl} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-blue-500 hover:underline truncate max-w-[200px]">
+                              {c.eligibilityUrl}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="ghost" className="h-8 w-8 p-0"
+                        onClick={() => { setEditingId(c.id); setEditForm({ riderCategoryName: c.riderCategoryName, eligibilityUrl: c.eligibilityUrl || "" }); }}>
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </Button>
+                      {!c.isDefault && (
+                        <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                          onClick={() => deleteCategory(c.id)}>
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Form aggiunta manuale */}
+      {showAdd && (
+        <Card className="bg-card/50 border-primary/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Nuova Categoria (manuale)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                  rider_category_id *
+                  <HelpCircle className="w-3 h-3 inline ml-1 text-muted-foreground/60" />
+                </label>
+                <input className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  placeholder="es. militare"
+                  value={newForm.riderCategoryId}
+                  onChange={e => setNewForm(p => ({ ...p, riderCategoryId: e.target.value.toLowerCase().replace(/\s+/g, "_") }))} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                  rider_category_name *
+                </label>
+                <input className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  placeholder="es. Militari e Forze dell'Ordine"
+                  value={newForm.riderCategoryName}
+                  onChange={e => setNewForm(p => ({ ...p, riderCategoryName: e.target.value }))} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                  eligibility_url
+                </label>
+                <input className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  placeholder="https://www.atmaancona.it/tariffe/..."
+                  value={newForm.eligibilityUrl}
+                  onChange={e => setNewForm(p => ({ ...p, eligibilityUrl: e.target.value }))} />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={addCategory} className="gap-1">
+                <Plus className="w-3.5 h-3.5" /> Aggiungi
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowAdd(false)}>Annulla</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Preset suggeriti */}
+      <Card className="bg-card/50">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-amber-500" />
+            Categorie Suggerite
+          </CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            Clicca per aggiungere rapidamente una categoria comune. Le categorie già presenti sono disabilitate.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {RIDER_PRESETS.map(p => (
+              <button
+                key={p.riderCategoryId}
+                disabled={existingIds.has(p.riderCategoryId)}
+                onClick={() => addPreset(p)}
+                className={`text-left p-3 rounded-lg border transition-colors ${
+                  existingIds.has(p.riderCategoryId)
+                    ? "border-border/20 bg-muted/10 opacity-50 cursor-not-allowed"
+                    : "border-border/30 hover:bg-primary/5 hover:border-primary/30 cursor-pointer"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{p.riderCategoryName}</span>
+                  {existingIds.has(p.riderCategoryId) && <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />}
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{p.desc}</p>
+                <span className="text-[10px] font-mono text-muted-foreground/60 mt-1 block">id: {p.riderCategoryId}</span>
+              </button>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB: CALENDARIO SERVIZIO (calendar.txt + calendar_dates.txt) — GUIDATO
+// ═══════════════════════════════════════════════════════════
+
+const DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
+const DAY_LABELS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+
+const CALENDAR_PRESETS = [
+  { serviceId: "feriale", label: "Feriale (Lun-Ven)", days: [1, 1, 1, 1, 1, 0, 0] },
+  { serviceId: "sabato", label: "Sabato", days: [0, 0, 0, 0, 0, 1, 0] },
+  { serviceId: "festivo", label: "Festivo (Domenica)", days: [0, 0, 0, 0, 0, 0, 1] },
+  { serviceId: "lun_sab", label: "Lun-Sab", days: [1, 1, 1, 1, 1, 1, 0] },
+  { serviceId: "tutti", label: "Tutti i giorni", days: [1, 1, 1, 1, 1, 1, 1] },
+];
+
+function CalendarTab() {
+  const { toast } = useToast();
+  const [entries, setEntries] = useState<CalendarEntry[]>([]);
+  const [dates, setDates] = useState<CalendarDateEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAddEntry, setShowAddEntry] = useState(false);
+  const [showAddException, setShowAddException] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Form per nuovo service
+  const [newServiceId, setNewServiceId] = useState("");
+  const [newDays, setNewDays] = useState([0, 0, 0, 0, 0, 0, 0]);
+  const [newStartDate, setNewStartDate] = useState(() => {
+    const y = new Date().getFullYear();
+    return `${y}-01-01`;
+  });
+  const [newEndDate, setNewEndDate] = useState(() => {
+    const y = new Date().getFullYear();
+    return `${y}-12-31`;
+  });
+
+  // Form per eccezione
+  const [excServiceId, setExcServiceId] = useState("");
+  const [excDate, setExcDate] = useState("");
+  const [excType, setExcType] = useState<1 | 2>(2);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cal, calDates] = await Promise.all([
+        apiFetch<CalendarEntry[]>("/api/fares/calendar"),
+        apiFetch<CalendarDateEntry[]>("/api/fares/calendar-dates"),
+      ]);
+      setEntries(cal);
+      setDates(calDates);
+    } catch { /* noop */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const seedDefaults = async () => {
+    try {
+      const rows = await apiFetch<CalendarEntry[]>("/api/fares/calendar/seed", { method: "POST" });
+      setEntries(rows);
+      toast({ title: "Calendario inizializzato", description: "Creati: Feriale, Sabato, Festivo" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const addEntry = async () => {
+    if (!newServiceId) {
+      toast({ title: "Errore", description: "Inserisci un Service ID", variant: "destructive" });
+      return;
+    }
+    const startDate = newStartDate.replace(/-/g, "");
+    const endDate = newEndDate.replace(/-/g, "");
+    const body: Record<string, unknown> = { serviceId: newServiceId, startDate, endDate };
+    DAY_NAMES.forEach((d, i) => { body[d] = newDays[i]; });
+    try {
+      const rows = await apiFetch<CalendarEntry[]>("/api/fares/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setEntries(rows);
+      setShowAddEntry(false);
+      setNewServiceId("");
+      setNewDays([0, 0, 0, 0, 0, 0, 0]);
+      toast({ title: "Servizio aggiunto" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const applyPreset = (preset: typeof CALENDAR_PRESETS[0]) => {
+    setNewServiceId(preset.serviceId);
+    setNewDays([...preset.days]);
+  };
+
+  const updateEntry = async (id: string, updates: Record<string, unknown>) => {
+    try {
+      const rows = await apiFetch<CalendarEntry[]>(`/api/fares/calendar/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      setEntries(rows);
+      setEditingId(null);
+      toast({ title: "Servizio aggiornato" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const deleteEntry = async (id: string) => {
+    try {
+      await apiFetch(`/api/fares/calendar/${id}`, { method: "DELETE" });
+      setEntries(prev => prev.filter(e => e.id !== id));
+      toast({ title: "Servizio rimosso" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const addException = async () => {
+    if (!excServiceId || !excDate) {
+      toast({ title: "Errore", description: "Seleziona servizio e data", variant: "destructive" });
+      return;
+    }
+    try {
+      const rows = await apiFetch<CalendarDateEntry[]>("/api/fares/calendar-dates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serviceId: excServiceId, date: excDate.replace(/-/g, ""), exceptionType: excType }),
+      });
+      setDates(rows);
+      setShowAddException(false);
+      setExcDate("");
+      toast({ title: "Eccezione aggiunta" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const deleteException = async (id: string) => {
+    try {
+      await apiFetch(`/api/fares/calendar-dates/${id}`, { method: "DELETE" });
+      setDates(prev => prev.filter(d => d.id !== id));
+      toast({ title: "Eccezione rimossa" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  const formatDate = (d: string) => {
+    if (d.length === 8) return `${d.slice(6, 8)}/${d.slice(4, 6)}/${d.slice(0, 4)}`;
+    return d;
+  };
+
+  if (loading && entries.length === 0) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-6">
+      {/* Spiegazione guidata */}
+      <Card className="bg-blue-500/5 border-blue-500/20">
+        <CardContent className="p-5">
+          <div className="flex gap-3">
+            <Info className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" />
+            <div className="space-y-2 text-sm">
+              <p className="font-semibold text-blue-600">Cos'è il file calendar.txt?</p>
+              <p className="text-muted-foreground">
+                Definisce i <strong>pattern settimanali di servizio</strong>: per ogni service_id indica in quali giorni della settimana 
+                il servizio è attivo e il periodo di validità (start_date / end_date).
+              </p>
+              <p className="text-muted-foreground">
+                Le <strong>eccezioni</strong> (calendar_dates.txt) permettono di aggiungere o rimuovere il servizio in date specifiche 
+                (es. festività infrasettimanali, scioperi, servizi speciali natalizi).
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Servizi esistenti */}
+      <Card className="bg-card/50">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <CalendarDays className="w-4 h-4 text-primary" />
+              Pattern Settimanali (calendar.txt)
+            </CardTitle>
+            <div className="flex gap-2">
+              {entries.length === 0 && (
+                <Button size="sm" variant="default" onClick={seedDefaults} className="gap-1">
+                  <Sparkles className="w-3.5 h-3.5" /> Inizializza Feriale/Sabato/Festivo
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => setShowAddEntry(true)} className="gap-1">
+                <Plus className="w-3.5 h-3.5" /> Nuovo
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {entries.length === 0 ? (
+            <div className="text-center py-6 space-y-2">
+              <CalendarDays className="w-8 h-8 text-muted-foreground/40 mx-auto" />
+              <p className="text-sm text-muted-foreground">Nessun pattern di servizio definito.</p>
+              <p className="text-xs text-muted-foreground">Clicca "Inizializza" per creare i 3 pattern base (Feriale, Sabato, Festivo).</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {entries.map(e => (
+                <CalendarRow
+                  key={e.id}
+                  entry={e}
+                  isEditing={editingId === e.id}
+                  onEdit={() => setEditingId(e.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onSave={(updates) => updateEntry(e.id, updates)}
+                  onDelete={() => deleteEntry(e.id)}
+                  formatDate={formatDate}
+                />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Form aggiunta con preset */}
+      {showAddEntry && (
+        <Card className="bg-card/50 border-primary/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Nuovo Pattern di Servizio</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Quick presets */}
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-2">Preset rapidi:</p>
+              <div className="flex flex-wrap gap-2">
+                {CALENDAR_PRESETS.map(p => (
+                  <Button
+                    key={p.serviceId}
+                    size="sm"
+                    variant={newServiceId === p.serviceId ? "default" : "outline"}
+                    onClick={() => applyPreset(p)}
+                    className="text-xs"
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">service_id *</label>
+                <input
+                  className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  placeholder="es. feriale_estivo"
+                  value={newServiceId}
+                  onChange={e => setNewServiceId(e.target.value.toLowerCase().replace(/\s+/g, "_"))}
+                />
+              </div>
+              <div className="flex gap-3 items-end">
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">Da</label>
+                  <input type="date" className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                    value={newStartDate} onChange={e => setNewStartDate(e.target.value)} />
+                </div>
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-muted-foreground mb-1 block">A</label>
+                  <input type="date" className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                    value={newEndDate} onChange={e => setNewEndDate(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            {/* Day checkboxes */}
+            <div>
+              <label className="text-xs font-medium text-muted-foreground mb-2 block">Giorni attivi:</label>
+              <div className="flex gap-2">
+                {DAY_LABELS.map((label, i) => (
+                  <button
+                    key={label}
+                    onClick={() => setNewDays(prev => { const n = [...prev]; n[i] = n[i] ? 0 : 1; return n; })}
+                    className={`w-10 h-10 rounded-lg text-xs font-bold border transition-all ${
+                      newDays[i]
+                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                        : "bg-muted/20 text-muted-foreground border-border/30 hover:bg-muted/40"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button size="sm" onClick={addEntry} className="gap-1">
+                <Plus className="w-3.5 h-3.5" /> Aggiungi
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowAddEntry(false)}>Annulla</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Eccezioni (calendar_dates.txt) */}
+      <Card className="bg-card/50">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-500" />
+              Eccezioni (calendar_dates.txt)
+            </CardTitle>
+            <Button size="sm" variant="outline" onClick={() => setShowAddException(true)} className="gap-1"
+              disabled={entries.length === 0}>
+              <Plus className="w-3.5 h-3.5" /> Aggiungi Eccezione
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {dates.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nessuna eccezione definita. Usa le eccezioni per gestire festività infrasettimanali o servizi speciali.
+            </p>
+          ) : (
+            <div className="overflow-auto max-h-[300px]">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-card">
+                  <tr className="border-b border-border/30">
+                    <th className="text-left py-2 font-medium text-muted-foreground">Servizio</th>
+                    <th className="text-left py-2 font-medium text-muted-foreground">Data</th>
+                    <th className="text-left py-2 font-medium text-muted-foreground">Tipo</th>
+                    <th className="text-right py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dates.map(d => (
+                    <tr key={d.id} className="border-b border-border/10 hover:bg-muted/10">
+                      <td className="py-1.5 font-mono text-xs">{d.serviceId}</td>
+                      <td className="py-1.5">{formatDate(d.date)}</td>
+                      <td className="py-1.5">
+                        <Badge variant={d.exceptionType === 1 ? "default" : "destructive"} className="text-[10px]">
+                          {d.exceptionType === 1 ? "Aggiunto" : "Rimosso"}
+                        </Badge>
+                      </td>
+                      <td className="py-1.5 text-right">
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive"
+                          onClick={() => deleteException(d.id)}>
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Form aggiunta eccezione */}
+      {showAddException && (
+        <Card className="bg-card/50 border-amber-500/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Nuova Eccezione</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              <strong>Tipo 1 (Aggiunto):</strong> aggiunge il servizio in una data in cui normalmente non c'è (es. servizio festivo il 25 aprile).
+              <br />
+              <strong>Tipo 2 (Rimosso):</strong> rimuove il servizio in una data in cui normalmente c'è (es. sciopero, chiusura straordinaria).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Servizio</label>
+                <select className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  value={excServiceId} onChange={e => setExcServiceId(e.target.value)}>
+                  <option value="">Seleziona…</option>
+                  {entries.map(e => (
+                    <option key={e.serviceId} value={e.serviceId}>{e.serviceId}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Data</label>
+                <input type="date" className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  value={excDate} onChange={e => setExcDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground mb-1 block">Tipo eccezione</label>
+                <select className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
+                  value={excType} onChange={e => setExcType(Number(e.target.value) as 1 | 2)}>
+                  <option value={1}>1 — Servizio AGGIUNTO</option>
+                  <option value={2}>2 — Servizio RIMOSSO</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={addException} className="gap-1">
+                <Plus className="w-3.5 h-3.5" /> Aggiungi Eccezione
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setShowAddException(false)}>Annulla</Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// Sub-component for inline editing of a calendar row
+function CalendarRow({
+  entry, isEditing, onEdit, onCancelEdit, onSave, onDelete, formatDate,
+}: {
+  entry: CalendarEntry;
+  isEditing: boolean;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (updates: Record<string, unknown>) => void;
+  onDelete: () => void;
+  formatDate: (d: string) => string;
+}) {
+  const [days, setDays] = useState(DAY_NAMES.map(d => entry[d]));
+  const [startDate, setStartDate] = useState(
+    entry.startDate.length === 8
+      ? `${entry.startDate.slice(0, 4)}-${entry.startDate.slice(4, 6)}-${entry.startDate.slice(6, 8)}`
+      : entry.startDate
+  );
+  const [endDate, setEndDate] = useState(
+    entry.endDate.length === 8
+      ? `${entry.endDate.slice(0, 4)}-${entry.endDate.slice(4, 6)}-${entry.endDate.slice(6, 8)}`
+      : entry.endDate
+  );
+
+  const handleSave = () => {
+    const updates: Record<string, unknown> = {
+      startDate: startDate.replace(/-/g, ""),
+      endDate: endDate.replace(/-/g, ""),
+    };
+    DAY_NAMES.forEach((d, i) => { updates[d] = days[i]; });
+    onSave(updates);
+  };
+
+  return (
+    <div className="p-3 rounded-lg border border-border/30 hover:bg-muted/10 transition-colors">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm font-semibold">{entry.serviceId}</span>
+          <span className="text-xs text-muted-foreground">
+            {formatDate(entry.startDate)} → {formatDate(entry.endDate)}
+          </span>
+        </div>
+        <div className="flex gap-1">
+          {isEditing ? (
+            <>
+              <Button size="sm" onClick={handleSave} className="h-7 gap-1 text-xs">
+                <Save className="w-3 h-3" /> Salva
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onCancelEdit}>Annulla</Button>
+            </>
+          ) : (
+            <>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={onEdit}>
+                <Edit3 className="w-3.5 h-3.5" />
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive" onClick={onDelete}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {isEditing ? (
+        <div className="space-y-3">
+          <div className="flex gap-2">
+            {DAY_LABELS.map((label, i) => (
+              <button
+                key={label}
+                onClick={() => setDays(prev => { const n = [...prev]; n[i] = n[i] ? 0 : 1; return n; })}
+                className={`w-10 h-10 rounded-lg text-xs font-bold border transition-all ${
+                  days[i]
+                    ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                    : "bg-muted/20 text-muted-foreground border-border/30 hover:bg-muted/40"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-3">
+            <div>
+              <label className="text-xs text-muted-foreground">Da</label>
+              <input type="date" className="w-full px-2 py-1 text-sm rounded border border-border bg-background/50"
+                value={startDate} onChange={e => setStartDate(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">A</label>
+              <input type="date" className="w-full px-2 py-1 text-sm rounded border border-border bg-background/50"
+                value={endDate} onChange={e => setEndDate(e.target.value)} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-1.5">
+          {DAY_LABELS.map((label, i) => (
+            <span
+              key={label}
+              className={`w-8 h-8 rounded text-[10px] font-bold flex items-center justify-center ${
+                entry[DAY_NAMES[i]]
+                  ? "bg-primary/15 text-primary border border-primary/30"
+                  : "bg-muted/10 text-muted-foreground/40 border border-transparent"
+              }`}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -1974,8 +2800,10 @@ export default function FaresPage() {
         >
           {tab === "classify" && <ClassifyTab />}
           {tab === "products" && <ProductsTab />}
+          {tab === "riders" && <RiderCategoriesTab />}
           {tab === "zones" && <ZonesTab />}
           {tab === "timeframes" && <TimeframesTab />}
+          {tab === "calendar" && <CalendarTab />}
           {tab === "editor" && <StopTimesEditorTab />}
           {tab === "generate" && <GenerateTab />}
           {tab === "simulate" && <SimulateTab />}
