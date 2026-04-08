@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import Map, { Source, Layer, Marker, MapRef } from "react-map-gl/mapbox";
 import {
   Ticket, Tag, MapPin, Download, Play, Loader2, CheckCircle2, AlertTriangle,
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
-  FileText, Shield, Map, Zap, Search, Filter,
+  FileText, Shield, Zap, Search, Filter, Navigation, Circle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -84,6 +85,8 @@ interface SimulationResult {
   type: "urban" | "extraurban";
   networkId: string;
   routeId?: string;
+  fromStop?: { stopId: string; name: string; lat: number; lon: number; km: number };
+  toStop?: { stopId: string; name: string; lat: number; lon: number; km: number };
   fromArea?: { areaId: string; name: string; kmFrom: number; kmTo: number };
   toArea?: { areaId: string; name: string; kmFrom: number; kmTo: number };
   distanceKm?: number;
@@ -91,6 +94,8 @@ interface SimulationResult {
   fareProductId?: string;
   amount?: number;
   currency?: string;
+  bandRange?: string;
+  intermediateStops?: { stopId: string; stopName: string; lat: number; lon: number; km: number }[];
   products?: { fareProductId: string; name: string; amount: number; currency: string; durationMinutes: number | null }[];
 }
 
@@ -146,7 +151,16 @@ function ClassifyTab() {
     setLoading(true);
     try {
       const data = await apiFetch<RouteNetwork[]>("/api/fares/route-networks");
-      setRoutes(data);
+      // Auto-classify on first load if routes exist but none assigned
+      if (data.length > 0 && data.every(r => !r.networkId)) {
+        await apiFetch("/api/fares/networks/seed", { method: "POST" });
+        await apiFetch("/api/fares/route-networks/auto-classify", { method: "POST" });
+        const fresh = await apiFetch<RouteNetwork[]>("/api/fares/route-networks");
+        setRoutes(fresh);
+        toast({ title: "Auto-classificazione eseguita", description: `${fresh.length} linee GTFS classificate automaticamente` });
+      } else {
+        setRoutes(data);
+      }
     } catch { /* noop */ }
     setLoading(false);
   }, []);
@@ -330,9 +344,26 @@ function ProductsTab() {
         apiFetch<FareMedia[]>("/api/fares/media"),
         apiFetch<RiderCategory[]>("/api/fares/rider-categories"),
       ]);
-      setProducts(p);
-      setMedia(m);
-      setCategories(c);
+      // Auto-seed on first load if products empty
+      if (p.length === 0) {
+        await apiFetch("/api/fares/networks/seed", { method: "POST" });
+        await apiFetch("/api/fares/media/seed", { method: "POST" });
+        await apiFetch("/api/fares/rider-categories/seed", { method: "POST" });
+        await apiFetch("/api/fares/products/seed", { method: "POST" });
+        const [p2, m2, c2] = await Promise.all([
+          apiFetch<FareProduct[]>("/api/fares/products"),
+          apiFetch<FareMedia[]>("/api/fares/media"),
+          apiFetch<RiderCategory[]>("/api/fares/rider-categories"),
+        ]);
+        setProducts(p2);
+        setMedia(m2);
+        setCategories(c2);
+        toast({ title: "Inizializzazione automatica", description: "Reti, supporti, categorie e prodotti configurati" });
+      } else {
+        setProducts(p);
+        setMedia(m);
+        setCategories(c);
+      }
     } catch { /* noop */ }
     setLoading(false);
   }, []);
@@ -906,11 +937,14 @@ function GenerateTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAB 5: SIMULATORE BIGLIETTO
+// TAB 5: SIMULATORE BIGLIETTO + MAPPA
 // ═══════════════════════════════════════════════════════════
+
+const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
 function SimulateTab() {
   const { toast } = useToast();
+  const mapRef = useRef<MapRef>(null);
   const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
   const [selectedNetwork, setSelectedNetwork] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("");
@@ -939,6 +973,30 @@ function SimulateTab() {
     }
   }, [selectedNetwork, selectedRoute]);
 
+  // Fit map to route stops when they load
+  useEffect(() => {
+    if (routeStops.length > 1 && mapRef.current) {
+      const lats = routeStops.map(s => s.lat);
+      const lons = routeStops.map(s => s.lon);
+      mapRef.current.fitBounds(
+        [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+        { padding: 60, duration: 800 }
+      );
+    }
+  }, [routeStops]);
+
+  // Fit to simulation result
+  useEffect(() => {
+    if (result?.intermediateStops && result.intermediateStops.length > 1 && mapRef.current) {
+      const lats = result.intermediateStops.map(s => s.lat);
+      const lons = result.intermediateStops.map(s => s.lon);
+      mapRef.current.fitBounds(
+        [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+        { padding: 60, duration: 800 }
+      );
+    }
+  }, [result]);
+
   const simulate = async () => {
     if (!selectedNetwork) return;
     setLoading(true);
@@ -957,13 +1015,66 @@ function SimulateTab() {
       });
       setResult(data);
     } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
+      toast({ title: "Errore simulazione", description: e.message, variant: "destructive" });
     }
     setLoading(false);
   };
 
+  // GeoJSON for the route line (all stops of the route)
+  const routeLineGeoJson = useMemo(() => {
+    if (routeStops.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "LineString" as const,
+          coordinates: routeStops.map(s => [s.lon, s.lat]),
+        },
+      }],
+    };
+  }, [routeStops]);
+
+  // GeoJSON for the highlighted segment (from → to)
+  const segmentGeoJson = useMemo(() => {
+    if (!result?.intermediateStops || result.intermediateStops.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "LineString" as const,
+          coordinates: result.intermediateStops.map(s => [s.lon, s.lat]),
+        },
+      }],
+    };
+  }, [result]);
+
+  // GeoJSON for all stops as points
+  const stopsGeoJson = useMemo(() => {
+    if (routeStops.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: routeStops.map(s => ({
+        type: "Feature" as const,
+        properties: {
+          stopId: s.stopId,
+          name: s.stopName,
+          km: s.progressiveKm,
+          isFrom: s.stopId === fromStop,
+          isTo: s.stopId === toStop,
+          isIntermediate: result?.intermediateStops?.some(is => is.stopId === s.stopId) ?? false,
+        },
+        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+      })),
+    };
+  }, [routeStops, fromStop, toStop, result]);
+
   return (
     <div className="space-y-4">
+      {/* Controls */}
       <Card className="bg-card/50">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
@@ -1007,7 +1118,12 @@ function SimulateTab() {
           {selectedNetwork === "extraurbano" && selectedRoute && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Fermata Salita</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
+                    Fermata Salita
+                  </span>
+                </label>
                 <select
                   value={fromStop}
                   onChange={e => { setFromStop(e.target.value); setResult(null); }}
@@ -1021,7 +1137,12 @@ function SimulateTab() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Fermata Discesa</label>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+                    Fermata Discesa
+                  </span>
+                </label>
                 <select
                   value={toStop}
                   onChange={e => { setToStop(e.target.value); setResult(null); }}
@@ -1048,67 +1169,245 @@ function SimulateTab() {
         </CardContent>
       </Card>
 
-      {/* Result */}
-      <AnimatePresence>
-        {result && (
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-            <Card className="bg-emerald-500/5 border-emerald-500/20">
+      {/* Map + Result side-by-side */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* Map (takes 3/5 on large screens) */}
+        {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && (
+          <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
+            <div className="relative w-full h-[400px] lg:h-[500px]">
+              <Map
+                ref={mapRef}
+                mapboxAccessToken={MAPBOX_TOKEN}
+                initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                style={{ width: "100%", height: "100%" }}
+                mapStyle="mapbox://styles/mapbox/dark-v11"
+                attributionControl={false}
+              >
+                {/* Full route line (grey) */}
+                {routeLineGeoJson && (
+                  <Source id="route-line" type="geojson" data={routeLineGeoJson}>
+                    <Layer
+                      id="route-line-layer"
+                      type="line"
+                      paint={{ "line-color": "#6b7280", "line-width": 3, "line-opacity": 0.5, "line-dasharray": [2, 2] }}
+                    />
+                  </Source>
+                )}
+
+                {/* Highlighted segment (bright) */}
+                {segmentGeoJson && (
+                  <Source id="segment-line" type="geojson" data={segmentGeoJson}>
+                    <Layer
+                      id="segment-line-layer"
+                      type="line"
+                      paint={{ "line-color": "#10b981", "line-width": 5, "line-opacity": 0.9 }}
+                    />
+                  </Source>
+                )}
+
+                {/* All stops */}
+                {stopsGeoJson && (
+                  <Source id="stops-points" type="geojson" data={stopsGeoJson}>
+                    {/* Default stops (small grey) */}
+                    <Layer
+                      id="stops-default"
+                      type="circle"
+                      filter={["all", ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]], ["!", ["get", "isIntermediate"]]]}
+                      paint={{
+                        "circle-radius": 4,
+                        "circle-color": "#6b7280",
+                        "circle-stroke-width": 1,
+                        "circle-stroke-color": "#374151",
+                        "circle-opacity": 0.6,
+                      }}
+                    />
+                    {/* Intermediate stops (teal) */}
+                    <Layer
+                      id="stops-intermediate"
+                      type="circle"
+                      filter={["all", ["get", "isIntermediate"], ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]]]}
+                      paint={{
+                        "circle-radius": 5,
+                        "circle-color": "#14b8a6",
+                        "circle-stroke-width": 1.5,
+                        "circle-stroke-color": "#fff",
+                        "circle-opacity": 0.8,
+                      }}
+                    />
+                  </Source>
+                )}
+
+                {/* Origin marker (green) */}
+                {fromStop && routeStops.find(s => s.stopId === fromStop) && (() => {
+                  const s = routeStops.find(s => s.stopId === fromStop)!;
+                  return (
+                    <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                      <div className="relative">
+                        <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-lg flex items-center justify-center">
+                          <Navigation className="w-3 h-3 text-white" />
+                        </div>
+                        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-emerald-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
+                          SALITA
+                        </div>
+                      </div>
+                    </Marker>
+                  );
+                })()}
+
+                {/* Destination marker (red) */}
+                {toStop && routeStops.find(s => s.stopId === toStop) && (() => {
+                  const s = routeStops.find(s => s.stopId === toStop)!;
+                  return (
+                    <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                      <div className="relative">
+                        <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center">
+                          <MapPin className="w-3 h-3 text-white" />
+                        </div>
+                        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
+                          DISCESA
+                        </div>
+                      </div>
+                    </Marker>
+                  );
+                })()}
+              </Map>
+
+              {/* Map legend overlay */}
+              <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Salita</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa</div>
+                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-teal-500" /> Tratta</div>
+                <div className="flex items-center gap-1.5"><span className="w-6 h-0.5 bg-gray-400 opacity-60" style={{ borderStyle: "dashed" }} /> Percorso</div>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {/* Result card (takes 2/5 on lg, full width if no map) */}
+        <div className={`space-y-4 ${selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 ? "lg:col-span-2" : "lg:col-span-5"}`}>
+          <AnimatePresence>
+            {result && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                <Card className="bg-emerald-500/5 border-emerald-500/20">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center gap-2 text-emerald-400">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Risultato Simulazione
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {result.type === "urban" ? (
+                      <div className="space-y-2">
+                        <p className="text-sm">Tariffa <strong>flat</strong> per la rete <Badge variant="outline">{NETWORK_OPTIONS.find(n => n.value === result.networkId)?.label}</Badge></p>
+                        <div className="space-y-2 mt-3">
+                          {result.products?.map(p => (
+                            <div key={p.fareProductId} className="flex items-center justify-between p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
+                              <div>
+                                <p className="text-sm font-medium">{p.name}</p>
+                                {p.durationMinutes && <p className="text-[10px] text-muted-foreground">Validità: {p.durationMinutes} min</p>}
+                              </div>
+                              <span className="text-xl font-bold text-emerald-400">€{p.amount.toFixed(2)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {/* Route info */}
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Bus className="w-3.5 h-3.5" />
+                          <span>Linea {result.routeId}</span>
+                        </div>
+
+                        {/* From → To */}
+                        <div className="flex items-start gap-3">
+                          <div className="flex flex-col items-center gap-1 pt-1">
+                            <div className="w-3 h-3 rounded-full bg-emerald-500 border-2 border-emerald-300" />
+                            <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-rose-500 rounded" />
+                            <div className="w-3 h-3 rounded-full bg-rose-500 border-2 border-rose-300" />
+                          </div>
+                          <div className="flex-1 space-y-2">
+                            <div>
+                              <p className="text-xs text-muted-foreground">Salita — km {result.fromStop?.km?.toFixed(1)}</p>
+                              <p className="text-sm font-medium">{result.fromStop?.name}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Discesa — km {result.toStop?.km?.toFixed(1)}</p>
+                              <p className="text-sm font-medium">{result.toStop?.name}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Stats row */}
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="p-2 rounded-lg bg-muted/20 text-center">
+                            <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
+                            <p className="text-lg font-bold">{result.distanceKm?.toFixed(1)} <span className="text-xs font-normal">km</span></p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-muted/20 text-center">
+                            <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
+                            <p className="text-lg font-bold">F{result.fascia}</p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-muted/20 text-center">
+                            <p className="text-[10px] text-muted-foreground uppercase">Range</p>
+                            <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
+                          </div>
+                        </div>
+
+                        {/* Price */}
+                        <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-emerald-500/5">
+                          <div>
+                            <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
+                            <p className="text-[10px] text-muted-foreground">
+                              {result.intermediateStops?.length || 0} fermate nel percorso
+                            </p>
+                          </div>
+                          <span className="text-4xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Stop list for context when route is selected */}
+          {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && !result && (
+            <Card className="bg-card/50">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base flex items-center gap-2 text-emerald-400">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Risultato Simulazione
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <MapPin className="w-3.5 h-3.5 text-primary" />
+                  Fermate della linea ({routeStops.length})
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {result.type === "urban" ? (
-                  <div className="space-y-2">
-                    <p className="text-sm">Tariffa <strong>flat</strong> per la rete <Badge variant="outline">{NETWORK_OPTIONS.find(n => n.value === result.networkId)?.label}</Badge></p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
-                      {result.products?.map(p => (
-                        <div key={p.fareProductId} className="flex items-center justify-between p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
-                          <div>
-                            <p className="text-sm font-medium">{p.name}</p>
-                            {p.durationMinutes && <p className="text-[10px] text-muted-foreground">Validità: {p.durationMinutes} min</p>}
-                          </div>
-                          <span className="text-xl font-bold text-emerald-400">€{p.amount.toFixed(2)}</span>
-                        </div>
-                      ))}
+                <div className="max-h-[300px] overflow-auto space-y-0.5">
+                  {routeStops.map((s, i) => (
+                    <div
+                      key={s.stopId}
+                      className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
+                        s.stopId === fromStop ? "bg-emerald-500/10 text-emerald-400" :
+                        s.stopId === toStop ? "bg-rose-500/10 text-rose-400" :
+                        "text-muted-foreground hover:bg-muted/20"
+                      }`}
+                    >
+                      <span className="w-5 text-right font-mono text-[10px] opacity-50">{i + 1}</span>
+                      <span className={`w-2 h-2 rounded-full ${
+                        s.stopId === fromStop ? "bg-emerald-500" :
+                        s.stopId === toStop ? "bg-rose-500" :
+                        "bg-gray-500/40"
+                      }`} />
+                      <span className="flex-1 truncate">{s.stopName}</span>
+                      <span className="font-mono text-[10px] opacity-60">km {s.progressiveKm.toFixed(1)}</span>
                     </div>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      <div>
-                        <p className="text-[10px] text-muted-foreground uppercase">Da zona</p>
-                        <p className="text-sm font-medium">{result.fromArea?.name}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-muted-foreground uppercase">A zona</p>
-                        <p className="text-sm font-medium">{result.toArea?.name}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
-                        <p className="text-sm font-medium">{result.distanceKm?.toFixed(1)} km</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
-                        <p className="text-sm font-medium">F{result.fascia}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between p-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
-                      <div>
-                        <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
-                        <p className="text-[10px] text-muted-foreground font-mono">{result.fareProductId}</p>
-                      </div>
-                      <span className="text-3xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
-                    </div>
-                  </div>
-                )}
+                  ))}
+                </div>
               </CardContent>
             </Card>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

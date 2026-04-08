@@ -109,20 +109,20 @@ const DEFAULT_NETWORKS = [
 ];
 
 // GET /api/fares/networks
-router.get("/fares/networks", async (_req, res) => {
+router.get("/fares/networks", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/fares/networks/seed
-router.post("/fares/networks/seed", async (_req, res) => {
+router.post("/fares/networks/seed", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed found" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed found" }); return; }
 
     for (const n of DEFAULT_NETWORKS) {
       await db.insert(gtfsFareNetworks)
@@ -142,10 +142,10 @@ router.post("/fares/networks/seed", async (_req, res) => {
 // ═══════════════════════════════════════════════════════════
 
 // GET /api/fares/route-networks
-router.get("/fares/route-networks", async (_req, res) => {
+router.get("/fares/route-networks", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
 
     // Get all routes with their current assignment (if any)
     const routes = await db.select({
@@ -172,10 +172,10 @@ router.get("/fares/route-networks", async (_req, res) => {
 });
 
 // POST /api/fares/route-networks/auto-classify — apply default classification to all unassigned
-router.post("/fares/route-networks/auto-classify", async (_req, res) => {
+router.post("/fares/route-networks/auto-classify", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const routes = await db.select({
       routeId: gtfsRoutes.routeId,
@@ -198,12 +198,12 @@ router.post("/fares/route-networks/auto-classify", async (_req, res) => {
 });
 
 // PUT /api/fares/route-networks/:routeId — manual reassign
-router.put("/fares/route-networks/:routeId", async (req, res) => {
+router.put("/fares/route-networks/:routeId", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { networkId } = req.body;
-    if (!networkId) return res.status(400).json({ error: "networkId required" });
+    if (!networkId) { res.status(400).json({ error: "networkId required" }); return; }
 
     await db.insert(gtfsRouteNetworks)
       .values({ feedId, routeId: req.params.routeId, networkId })
@@ -216,12 +216,12 @@ router.put("/fares/route-networks/:routeId", async (req, res) => {
 });
 
 // POST /api/fares/route-networks/bulk — save all assignments at once
-router.post("/fares/route-networks/bulk", async (req, res) => {
+router.post("/fares/route-networks/bulk", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { assignments } = req.body as { assignments: { routeId: string; networkId: string }[] };
-    if (!Array.isArray(assignments)) return res.status(400).json({ error: "assignments array required" });
+    if (!Array.isArray(assignments)) { res.status(400).json({ error: "assignments array required" }); return; }
 
     let count = 0;
     for (const a of assignments) {
@@ -249,19 +249,19 @@ const DEFAULT_MEDIA = [
   { fareMediaId: "contanti", fareMediaName: "Pagamento a bordo", fareMediaType: 0 },
 ];
 
-router.get("/fares/media", async (_req, res) => {
+router.get("/fares/media", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareMedia).where(eq(gtfsFareMedia.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/media/seed", async (_req, res) => {
+router.post("/fares/media/seed", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     for (const m of DEFAULT_MEDIA) {
       await db.insert(gtfsFareMedia)
         .values({ feedId, ...m })
@@ -275,10 +275,10 @@ router.post("/fares/media/seed", async (_req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.put("/fares/media/:fareMediaId", async (req, res) => {
+router.put("/fares/media/:fareMediaId", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { isActive, fareMediaName } = req.body;
     const update: Record<string, any> = { updatedAt: sql`now()` };
     if (typeof isActive === "boolean") update.isActive = isActive;
@@ -295,19 +295,19 @@ router.put("/fares/media/:fareMediaId", async (req, res) => {
 // RIDER CATEGORIES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/rider-categories", async (_req, res) => {
+router.get("/fares/rider-categories", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/rider-categories/seed", async (_req, res) => {
+router.post("/fares/rider-categories/seed", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     await db.insert(gtfsRiderCategories)
       .values({ feedId, riderCategoryId: "ordinario", riderCategoryName: "Tariffa Ordinaria", isDefault: true })
       .onConflictDoUpdate({
@@ -319,12 +319,12 @@ router.post("/fares/rider-categories/seed", async (_req, res) => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/rider-categories", async (req, res) => {
+router.post("/fares/rider-categories", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { riderCategoryId, riderCategoryName, eligibilityUrl } = req.body;
-    if (!riderCategoryId || !riderCategoryName) return res.status(400).json({ error: "Missing fields" });
+    if (!riderCategoryId || !riderCategoryName) { res.status(400).json({ error: "Missing fields" }); return; }
     await db.insert(gtfsRiderCategories)
       .values({ feedId, riderCategoryId, riderCategoryName, isDefault: false, eligibilityUrl })
       .onConflictDoUpdate({
@@ -347,19 +347,19 @@ router.delete("/fares/rider-categories/:id", async (req, res) => {
 // FARE PRODUCTS
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/products", async (_req, res) => {
+router.get("/fares/products", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/products/seed", async (_req, res) => {
+router.post("/fares/products/seed", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const urbanProducts = [
       { fareProductId: "ancona_60min", fareProductName: "Biglietto Urbano Ancona 60 min", networkId: "urbano_ancona", amount: 1.35, durationMinutes: 60, fareType: "single" as const },
@@ -415,29 +415,29 @@ router.put("/fares/products/:id", async (req, res) => {
 // AREAS & STOP-AREAS (Zone extraurbane)
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/areas", async (_req, res) => {
+router.get("/fares/areas", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareAreas).where(eq(gtfsFareAreas.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.get("/fares/stop-areas", async (_req, res) => {
+router.get("/fares/stop-areas", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/fares/zones/generate/:routeId — build zones for one extraurban route
-router.post("/fares/zones/generate/:routeId", async (req, res) => {
+router.post("/fares/zones/generate/:routeId", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId } = req.params;
 
     const result = await generateZonesForRoute(feedId, routeId);
@@ -446,10 +446,10 @@ router.post("/fares/zones/generate/:routeId", async (req, res) => {
 });
 
 // POST /api/fares/zones/generate-all — build zones for ALL extraurban routes + urban areas
-router.post("/fares/zones/generate-all", async (_req, res) => {
+router.post("/fares/zones/generate-all", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // 1) Create urban flat areas
     const urbanNets = ["urbano_ancona", "urbano_jesi", "urbano_falconara"];
@@ -622,20 +622,20 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
 // FARE LEG RULES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/leg-rules", async (_req, res) => {
+router.get("/fares/leg-rules", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // POST /api/fares/leg-rules/generate — generate from current areas & products
-router.post("/fares/leg-rules/generate", async (_req, res) => {
+router.post("/fares/leg-rules/generate", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // Delete existing leg rules
     await db.delete(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
@@ -707,32 +707,43 @@ router.post("/fares/leg-rules/generate", async (_req, res) => {
 // FARE TRANSFER RULES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/transfer-rules", async (_req, res) => {
+router.get("/fares/transfer-rules", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareTransferRules).where(eq(gtfsFareTransferRules.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // ═══════════════════════════════════════════════════════════
-// SIMULATE — ticket price lookup
+// SIMULATE — ticket price lookup (computes distance on-the-fly, no pre-generated zones needed)
 // ═══════════════════════════════════════════════════════════
 
-router.post("/fares/simulate", async (req, res) => {
+router.post("/fares/simulate", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { networkId, routeId, fromStopId, toStopId } = req.body;
 
-    if (!networkId) return res.status(400).json({ error: "networkId required" });
+    if (!networkId) { res.status(400).json({ error: "networkId required" }); return; }
 
     // Urban → flat fare, just return all products for the network
     if (networkId !== "extraurbano") {
       const products = await db.select().from(gtfsFareProducts)
         .where(and(eq(gtfsFareProducts.feedId, feedId), eq(gtfsFareProducts.networkId, networkId)));
-      return res.json({
+      
+      // If no products seeded yet, still return a default response
+      if (products.length === 0) {
+        res.json({
+          type: "urban",
+          networkId,
+          products: [{ fareProductId: "default_60", name: "Biglietto 60 min", amount: 1.35, currency: "EUR", durationMinutes: 60 }],
+        });
+        return;
+      }
+      
+      res.json({
         type: "urban",
         networkId,
         products: products.map(p => ({
@@ -743,41 +754,79 @@ router.post("/fares/simulate", async (req, res) => {
           durationMinutes: p.durationMinutes,
         })),
       });
+      return;
     }
 
     // Extraurban → need routeId + stops to compute distance
     if (!routeId || !fromStopId || !toStopId) {
-      return res.status(400).json({ error: "For extraurban, routeId + fromStopId + toStopId required" });
+      res.status(400).json({ error: "For extraurban, routeId + fromStopId + toStopId required" });
+      return;
     }
 
-    // Find the areas for these stops on this route
-    const fromAreaRows = await db.execute<any>(sql`
-      SELECT sa.area_id, a.km_from, a.km_to, a.area_name
-      FROM gtfs_stop_areas sa
-      JOIN gtfs_fare_areas a ON a.area_id = sa.area_id AND a.feed_id = sa.feed_id
-      WHERE sa.feed_id = ${feedId} AND sa.stop_id = ${fromStopId} AND a.route_id = ${routeId}
-      LIMIT 1
+    // ── Compute distance on-the-fly from stop sequence ──
+    // Get the longest trip for this route
+    const tripRows = await db.execute<any>(sql`
+      SELECT t.trip_id, COUNT(*) AS cnt
+      FROM gtfs_trips t
+      JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
+      WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
+      GROUP BY t.trip_id ORDER BY cnt DESC LIMIT 1
     `);
-    const toAreaRows = await db.execute<any>(sql`
-      SELECT sa.area_id, a.km_from, a.km_to, a.area_name
-      FROM gtfs_stop_areas sa
-      JOIN gtfs_fare_areas a ON a.area_id = sa.area_id AND a.feed_id = sa.feed_id
-      WHERE sa.feed_id = ${feedId} AND sa.stop_id = ${toStopId} AND a.route_id = ${routeId}
-      LIMIT 1
-    `);
-
-    if (fromAreaRows.rows.length === 0 || toAreaRows.rows.length === 0) {
-      return res.status(404).json({ error: "Stop not found in any zone for this route" });
+    if (tripRows.rows.length === 0) {
+      res.status(404).json({ error: "No trips found for this route" }); return;
     }
 
-    const fromArea = fromAreaRows.rows[0];
-    const toArea = toAreaRows.rows[0];
-    const fromMid = ((fromArea.km_from || 0) + (fromArea.km_to || 0)) / 2;
-    const toMid = ((toArea.km_from || 0) + (toArea.km_to || 0)) / 2;
-    const distKm = Math.abs(toMid - fromMid);
-    const band = getBandForDistance(distKm);
+    const tripId = tripRows.rows[0].trip_id;
 
-    if (!band) return res.status(404).json({ error: "No fare band for this distance" });
+    // Get ordered stops with coordinates
+    const stopsData = await db.execute<any>(sql`
+      SELECT st.stop_id, st.stop_sequence, s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
+      FROM gtfs_stop_times st
+      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
+      WHERE st.feed_id = ${feedId} AND st.trip_id = ${tripId}
+      ORDER BY st.stop_sequence
+    `);
+
+    const stops = stopsData.rows as { stop_id: string; stop_sequence: number; lat: number; lon: number; stop_name: string }[];
+
+    // Build progressive km map
+    const kmMap = new Map<string, { km: number; name: string; lat: number; lon: number }>();
+    let cumulativeKm = 0;
+    for (let i = 0; i < stops.length; i++) {
+      if (i > 0) {
+        cumulativeKm += haversineKm(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon);
+      }
+      kmMap.set(stops[i].stop_id, {
+        km: Math.round(cumulativeKm * 100) / 100,
+        name: stops[i].stop_name,
+        lat: stops[i].lat,
+        lon: stops[i].lon,
+      });
+    }
+
+    const fromInfo = kmMap.get(fromStopId);
+    const toInfo = kmMap.get(toStopId);
+
+    if (!fromInfo || !toInfo) {
+      res.status(404).json({ error: "Stop not found in this route's trip sequence" }); return;
+    }
+
+    const distKm = Math.abs(toInfo.km - fromInfo.km);
+    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
+
+    if (!band) {
+      res.status(404).json({ error: `No fare band for distance ${distKm.toFixed(1)} km` }); return;
+    }
+
+    // Build intermediate stops for the map
+    const fromIdx = stops.findIndex(s => s.stop_id === fromStopId);
+    const toIdx = stops.findIndex(s => s.stop_id === toStopId);
+    const minIdx = Math.min(fromIdx, toIdx);
+    const maxIdx = Math.max(fromIdx, toIdx);
+    const intermediateStops = stops.slice(minIdx, maxIdx + 1).map(s => {
+      const info = kmMap.get(s.stop_id)!;
+      return { stopId: s.stop_id, stopName: s.stop_name, lat: s.lat, lon: s.lon, km: info.km };
+    });
 
     res.json({
       type: "extraurban",
@@ -785,13 +834,15 @@ router.post("/fares/simulate", async (req, res) => {
       routeId,
       fromStopId,
       toStopId,
-      fromArea: { areaId: fromArea.area_id, name: fromArea.area_name, kmFrom: fromArea.km_from, kmTo: fromArea.km_to },
-      toArea: { areaId: toArea.area_id, name: toArea.area_name, kmFrom: toArea.km_from, kmTo: toArea.km_to },
+      fromStop: { stopId: fromStopId, name: fromInfo.name, lat: fromInfo.lat, lon: fromInfo.lon, km: fromInfo.km },
+      toStop: { stopId: toStopId, name: toInfo.name, lat: toInfo.lat, lon: toInfo.lon, km: toInfo.km },
       distanceKm: Math.round(distKm * 100) / 100,
       fascia: band.fascia,
       fareProductId: `extra_fascia_${band.fascia}`,
       amount: band.price,
       currency: "EUR",
+      bandRange: `${band.kmFrom}-${band.kmTo} km`,
+      intermediateStops,
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -800,10 +851,10 @@ router.post("/fares/simulate", async (req, res) => {
 // GENERATE GTFS FILES — returns JSON with all CSV content
 // ═══════════════════════════════════════════════════════════
 
-router.post("/fares/generate-gtfs", async (_req, res) => {
+router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.status(400).json({ error: "No GTFS feed" });
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // --- networks.txt ---
     const networks = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
@@ -892,10 +943,10 @@ router.post("/fares/generate-gtfs", async (_req, res) => {
 });
 
 // GET /api/fares/route-stops/:routeId — get ordered stops with progressive km (for zone editor)
-router.get("/fares/route-stops/:routeId", async (req, res) => {
+router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
-    if (!feedId) return res.json([]);
+    if (!feedId) { res.json([]); return; }
     const { routeId } = req.params;
 
     // Get longest trip
@@ -906,7 +957,7 @@ router.get("/fares/route-stops/:routeId", async (req, res) => {
       WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
       GROUP BY t.trip_id ORDER BY cnt DESC LIMIT 1
     `);
-    if (tripRows.rows.length === 0) return res.json([]);
+    if (tripRows.rows.length === 0) { res.json([]); return; }
 
     const tripId = tripRows.rows[0].trip_id;
     const stopsData = await db.execute<any>(sql`
