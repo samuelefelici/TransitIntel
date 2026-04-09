@@ -1570,4 +1570,111 @@ function csvEscape(s: string): string {
   return s;
 }
 
+// ═══════════════════════════════════════════════════════════
+// STOPS CLASSIFICATION (Urbana=0, Extraurbana=1, Mista=2)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * For each stop, determines whether it is served by:
+ *   - Only urban routes → 0
+ *   - Only extraurban routes → 1
+ *   - Both → 2
+ * Uses: stop_times → trips → routes → route_networks
+ */
+async function computeStopsClassification(feedId: string) {
+  // 1. Get all stops
+  const stops = await db.select({
+    stopId: gtfsStops.stopId,
+    stopCode: gtfsStops.stopCode,
+    stopName: gtfsStops.stopName,
+    stopLat: gtfsStops.stopLat,
+    stopLon: gtfsStops.stopLon,
+    wheelchairBoarding: gtfsStops.wheelchairBoarding,
+  }).from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
+
+  // 2. Get route_networks classification map
+  const assignments = await db.select().from(gtfsRouteNetworks).where(eq(gtfsRouteNetworks.feedId, feedId));
+  const routeNetworkMap = new Map<string, string>();
+  for (const a of assignments) {
+    routeNetworkMap.set(a.routeId, a.networkId);
+  }
+
+  // 3. Raw SQL: for each stop, get distinct route IDs via stop_times → trips
+  const stopRoutesQuery = await db.execute(sql`
+    SELECT DISTINCT st.stop_id, t.route_id
+    FROM gtfs_stop_times st
+    JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+    WHERE st.feed_id = ${feedId}
+  `);
+
+  // Build map: stopId → Set<routeId>
+  const stopRoutesMap = new Map<string, Set<string>>();
+  for (const row of stopRoutesQuery.rows) {
+    const stopId = row.stop_id as string;
+    const routeId = row.route_id as string;
+    if (!stopRoutesMap.has(stopId)) stopRoutesMap.set(stopId, new Set());
+    stopRoutesMap.get(stopId)!.add(routeId);
+  }
+
+  // 4. Classify each stop
+  return stops.map(s => {
+    const routeIds = stopRoutesMap.get(s.stopId);
+    if (!routeIds || routeIds.size === 0) {
+      return { ...s, classification: 0, classLabel: "Urbana", routeCount: 0, urbanRoutes: 0, extraRoutes: 0 };
+    }
+
+    let urban = 0;
+    let extra = 0;
+    for (const rid of routeIds) {
+      const net = routeNetworkMap.get(rid);
+      if (net === "extraurbano") extra++;
+      else urban++;
+    }
+
+    let classification: number;
+    let classLabel: string;
+    if (urban > 0 && extra > 0) { classification = 2; classLabel = "Mista"; }
+    else if (extra > 0) { classification = 1; classLabel = "Extraurbana"; }
+    else { classification = 0; classLabel = "Urbana"; }
+
+    return {
+      ...s,
+      classification,
+      classLabel,
+      routeCount: routeIds.size,
+      urbanRoutes: urban,
+      extraRoutes: extra,
+    };
+  });
+}
+
+// GET /api/fares/stops-classification — JSON with classification data
+router.get("/fares/stops-classification", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const result = await computeStopsClassification(feedId);
+    res.json(result);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/stops-classification/export — stops.txt with extra stop_classification field
+router.get("/fares/stops-classification/export", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const classified = await computeStopsClassification(feedId);
+
+    // Build stops.txt with extended field
+    let csv = "stop_id,stop_code,stop_name,stop_lat,stop_lon,wheelchair_boarding,stop_classification\n";
+    for (const s of classified) {
+      csv += `${s.stopId},${s.stopCode || ""},${csvEscape(s.stopName)},${s.stopLat},${s.stopLon},${s.wheelchairBoarding ?? 0},${s.classification}\n`;
+    }
+
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="stops.txt"');
+    res.send(csv);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;

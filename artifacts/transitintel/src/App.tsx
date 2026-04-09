@@ -20,6 +20,7 @@ const OptimizationPage = lazy(() => import("@/pages/optimization"));
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
 const FaresPage = lazy(() => import("@/pages/fares"));
+const StopsClassificationPage = lazy(() => import("@/pages/stops-classification"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -73,6 +74,7 @@ function Router() {
 
             {/* Bigliettazione */}
             <Route path="/fares" component={FaresPage} />
+            <Route path="/stops-classification" component={StopsClassificationPage} />
 
             {/* Ottimizzazione Servizio */}
             <Route path="/optimization" component={OptimizationPage} />
