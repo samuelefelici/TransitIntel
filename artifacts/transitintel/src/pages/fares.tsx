@@ -3314,18 +3314,17 @@ function SimulateTab() {
   const [loadingStops, setLoadingStops] = useState(false);
 
   // ── Cluster-based state ──
-  const [clExtraStops, setClExtraStops] = useState<ExtraStop[]>([]);
+  const [clSelectedRoute, setClSelectedRoute] = useState("");
+  const [clRouteStops, setClRouteStops] = useState<RouteStop[]>([]);
+  const [clLoadingStops, setClLoadingStops] = useState(false);
   const [clFrom, setClFrom] = useState("");
   const [clTo, setClTo] = useState("");
   const [clResult, setClResult] = useState<ClusterSimResult | null>(null);
   const [clLoading, setClLoading] = useState(false);
-  const [clSearchFrom, setClSearchFrom] = useState("");
-  const [clSearchTo, setClSearchTo] = useState("");
 
-  // ── Load route networks + cluster extraurban stops ──
+  // ── Load route networks ──
   useEffect(() => {
     apiFetch<RouteNetwork[]>("/api/fares/route-networks").then(setRouteNets).catch(() => {});
-    apiFetch<ExtraStop[]>("/api/fares/extraurban-stops").then(setClExtraStops).catch(() => {});
   }, []);
 
   // ──────────── LINE MODE logic ──────────────
@@ -3389,17 +3388,30 @@ function SimulateTab() {
   };
 
   // ──────────── CLUSTER MODE logic ──────────────
-  const filteredFromStops = useMemo(() => {
-    if (!clSearchFrom) return clExtraStops.slice(0, 100);
-    const q = clSearchFrom.toLowerCase();
-    return clExtraStops.filter(s => s.stop_name.toLowerCase().includes(q) || s.stop_id.includes(q)).slice(0, 100);
-  }, [clExtraStops, clSearchFrom]);
+  const clFilteredRoutes = routeNets.filter(r => r.networkId === "extraurbano");
 
-  const filteredToStops = useMemo(() => {
-    if (!clSearchTo) return clExtraStops.slice(0, 100);
-    const q = clSearchTo.toLowerCase();
-    return clExtraStops.filter(s => s.stop_name.toLowerCase().includes(q) || s.stop_id.includes(q)).slice(0, 100);
-  }, [clExtraStops, clSearchTo]);
+  useEffect(() => {
+    if (clSelectedRoute) {
+      setClLoadingStops(true);
+      apiFetch<RouteStop[]>(`/api/fares/route-stops/${clSelectedRoute}`)
+        .then(setClRouteStops)
+        .catch(() => setClRouteStops([]))
+        .finally(() => setClLoadingStops(false));
+    } else {
+      setClRouteStops([]);
+    }
+  }, [clSelectedRoute]);
+
+  useEffect(() => {
+    if (clRouteStops.length > 1 && mapRef.current && simMode === "cluster") {
+      const lats = clRouteStops.map(s => s.lat);
+      const lons = clRouteStops.map(s => s.lon);
+      mapRef.current.fitBounds(
+        [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+        { padding: 60, duration: 800 }
+      );
+    }
+  }, [clRouteStops, simMode]);
 
   const simulateCluster = async () => {
     if (!clFrom || !clTo) return;
@@ -3478,6 +3490,30 @@ function SimulateTab() {
       }],
     };
   }, [clResult]);
+
+  // ── Cluster-mode route line + stops GeoJSON ──
+  const clRouteLineGeoJson = useMemo(() => {
+    if (clRouteStops.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: clRouteStops.map(s => [s.lon, s.lat]) } }],
+    };
+  }, [clRouteStops]);
+
+  const clStopsGeoJson = useMemo(() => {
+    if (clRouteStops.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: clRouteStops.map(s => ({
+        type: "Feature" as const,
+        properties: {
+          stopId: s.stopId, name: s.stopName, km: s.progressiveKm,
+          isFrom: s.stopId === clFrom, isTo: s.stopId === clTo,
+        },
+        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+      })),
+    };
+  }, [clRouteStops, clFrom, clTo]);
 
   // ── Line-mode GeoJSON ──
   const routeLineGeoJson = useMemo(() => {
@@ -3769,48 +3805,43 @@ function SimulateTab() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">
-                    <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Fermata Salita</span>
-                  </label>
-                  <input value={clSearchFrom} onChange={e => { setClSearchFrom(e.target.value); setClFrom(""); setClResult(null); }}
-                    placeholder="Cerca fermata di salita..."
-                    className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30 mb-1" />
-                  {(clSearchFrom && !clFrom) && (
-                    <div className="max-h-[150px] overflow-auto rounded-lg border border-border/30 bg-background/80">
-                      {filteredFromStops.map(s => (
-                        <button key={s.stop_id} onClick={() => { setClFrom(s.stop_id); setClSearchFrom(s.stop_name); setClResult(null); }}
-                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors border-b border-border/10 truncate">
-                          <span className="font-medium">{s.stop_name}</span> <span className="text-muted-foreground ml-1">({s.stop_id})</span>
-                        </button>
-                      ))}
-                      {filteredFromStops.length === 0 && <p className="p-3 text-xs text-muted-foreground">Nessun risultato</p>}
-                    </div>
-                  )}
-                  {clFrom && <p className="text-[10px] text-emerald-400 mt-0.5">✓ {clExtraStops.find(s => s.stop_id === clFrom)?.stop_name}</p>}
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground mb-1">
-                    <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fermata Discesa</span>
-                  </label>
-                  <input value={clSearchTo} onChange={e => { setClSearchTo(e.target.value); setClTo(""); setClResult(null); }}
-                    placeholder="Cerca fermata di discesa..."
-                    className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30 mb-1" />
-                  {(clSearchTo && !clTo) && (
-                    <div className="max-h-[150px] overflow-auto rounded-lg border border-border/30 bg-background/80">
-                      {filteredToStops.map(s => (
-                        <button key={s.stop_id} onClick={() => { setClTo(s.stop_id); setClSearchTo(s.stop_name); setClResult(null); }}
-                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors border-b border-border/10 truncate">
-                          <span className="font-medium">{s.stop_name}</span> <span className="text-muted-foreground ml-1">({s.stop_id})</span>
-                        </button>
-                      ))}
-                      {filteredToStops.length === 0 && <p className="p-3 text-xs text-muted-foreground">Nessun risultato</p>}
-                    </div>
-                  )}
-                  {clTo && <p className="text-[10px] text-rose-400 mt-0.5">✓ {clExtraStops.find(s => s.stop_id === clTo)?.stop_name}</p>}
-                </div>
+              {/* Line selector (extraurbano only) */}
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Linea Extraurbana</label>
+                <select value={clSelectedRoute}
+                  onChange={e => { setClSelectedRoute(e.target.value); setClFrom(""); setClTo(""); setClResult(null); }}
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30">
+                  <option value="">— Seleziona linea —</option>
+                  {clFilteredRoutes.map(r => (
+                    <option key={r.routeId} value={r.routeId}>{r.shortName || r.routeId} — {r.longName}</option>
+                  ))}
+                </select>
               </div>
+              {/* From / To stop selectors */}
+              {clSelectedRoute && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Fermata Salita</span>
+                    </label>
+                    <select value={clFrom} onChange={e => { setClFrom(e.target.value); setClResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={clLoadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {clRouteStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fermata Discesa</span>
+                    </label>
+                    <select value={clTo} onChange={e => { setClTo(e.target.value); setClResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={clLoadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {clRouteStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                </div>
+              )}
               <Button onClick={simulateCluster} disabled={clLoading || !clFrom || !clTo} className="w-full sm:w-auto">
                 {clLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
                 Calcola Tariffa per Cluster
@@ -3821,12 +3852,28 @@ function SimulateTab() {
           {/* Map + Result for cluster mode */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
             {/* Map with cluster hulls */}
-            {(clFrom || clTo || clResult) && (
+            {(clSelectedRoute && clRouteStops.length > 0) && (
               <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
                     initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
                     style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/navigation-night-v1" attributionControl={false}>
+
+                    {/* Route line (dashed, as background) */}
+                    {clRouteLineGeoJson && (
+                      <Source id="cl-route-line" type="geojson" data={clRouteLineGeoJson}>
+                        <Layer id="cl-route-line-layer" type="line" paint={{ "line-color": "#6b7280", "line-width": 2.5, "line-opacity": 0.4, "line-dasharray": [2, 2] }} />
+                      </Source>
+                    )}
+
+                    {/* Route stops (small dots) */}
+                    {clStopsGeoJson && (
+                      <Source id="cl-stops-pts" type="geojson" data={clStopsGeoJson}>
+                        <Layer id="cl-stops-default" type="circle"
+                          filter={["all", ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]]]}
+                          paint={{ "circle-radius": 3.5, "circle-color": "#6b7280", "circle-stroke-width": 1, "circle-stroke-color": "#374151", "circle-opacity": 0.5 }} />
+                      </Source>
+                    )}
 
                     {/* Cluster hull fills */}
                     {clusterHullsGeoJSON && (
@@ -3853,7 +3900,33 @@ function SimulateTab() {
                       </Source>
                     )}
 
-                    {/* From stop marker */}
+                    {/* From stop marker (pre-simulation) */}
+                    {!clResult && clFrom && clRouteStops.find(s => s.stopId === clFrom) && (() => {
+                      const s = clRouteStops.find(s => s.stopId === clFrom)!;
+                      return (
+                        <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                          <div className="relative">
+                            <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-lg flex items-center justify-center"><Navigation className="w-3 h-3 text-white" /></div>
+                            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-emerald-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">SALITA</div>
+                          </div>
+                        </Marker>
+                      );
+                    })()}
+
+                    {/* To stop marker (pre-simulation) */}
+                    {!clResult && clTo && clRouteStops.find(s => s.stopId === clTo) && (() => {
+                      const s = clRouteStops.find(s => s.stopId === clTo)!;
+                      return (
+                        <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                          <div className="relative">
+                            <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center"><MapPin className="w-3 h-3 text-white" /></div>
+                            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">DISCESA</div>
+                          </div>
+                        </Marker>
+                      );
+                    })()}
+
+                    {/* From stop marker (post-simulation with cluster color) */}
                     {clResult?.fromStop && (
                       <Marker longitude={clResult.fromStop.lon} latitude={clResult.fromStop.lat} anchor="center">
                         <div className="relative">
@@ -3901,7 +3974,7 @@ function SimulateTab() {
                   </Map>
 
                   {/* Legend */}
-                  {clResult && (
+                  {clResult ? (
                     <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2.5 rounded-lg space-y-1.5">
                       <div className="flex items-center gap-1.5">
                         <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: clResult.fromCluster.color + "44", border: `2px solid ${clResult.fromCluster.color}` }} />
@@ -3918,13 +3991,19 @@ function SimulateTab() {
                         Distanza centroidi
                       </div>
                     </div>
+                  ) : (
+                    <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
+                      <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Salita</div>
+                      <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa</div>
+                      <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-gray-500" /> Fermate</div>
+                    </div>
                   )}
                 </div>
               </Card>
             )}
 
             {/* Result card */}
-            <div className={`space-y-4 ${(clFrom || clTo || clResult) ? "lg:col-span-2" : "lg:col-span-5"}`}>
+            <div className={`space-y-4 ${(clSelectedRoute && clRouteStops.length > 0) ? "lg:col-span-2" : "lg:col-span-5"}`}>
               <AnimatePresence>
                 {clResult && (
                   <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
@@ -4002,16 +4081,40 @@ function SimulateTab() {
               </AnimatePresence>
 
               {/* Info panel when no result */}
-              {!clResult && (
+              {!clResult && !clSelectedRoute && (
                 <Card className="bg-card/50">
                   <CardContent className="p-4">
                     <div className="flex items-start gap-3">
                       <Info className="w-4 h-4 text-violet-400 mt-0.5 shrink-0" />
                       <div className="text-xs text-muted-foreground space-y-1">
                         <p className="font-medium text-foreground">Come funziona</p>
-                        <p>Seleziona una fermata di <strong>salita</strong> e una di <strong>discesa</strong>. Il simulatore troverà a quale cluster appartiene ciascuna e calcolerà la tariffa in base alla <strong>distanza tra i centroidi</strong> dei due cluster.</p>
+                        <p>Seleziona una <strong>linea extraurbana</strong>, poi scegli una fermata di <strong>salita</strong> e una di <strong>discesa</strong>. Il simulatore troverà a quale cluster appartiene ciascuna e calcolerà la tariffa in base alla <strong>distanza tra i centroidi</strong> dei due cluster.</p>
                         <p>La mappa mostrerà le aree colorate dei cluster coinvolti.</p>
                       </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+              {/* Stops list when line selected but no result */}
+              {!clResult && clSelectedRoute && clRouteStops.length > 0 && (
+                <Card className="bg-card/50">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-violet-400" /> Fermate della linea ({clRouteStops.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="max-h-[300px] overflow-auto space-y-0.5">
+                      {clRouteStops.map((s, i) => (
+                        <div key={s.stopId}
+                          className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
+                            s.stopId === clFrom ? "bg-emerald-500/10 text-emerald-400" :
+                            s.stopId === clTo ? "bg-rose-500/10 text-rose-400" : "text-muted-foreground hover:bg-muted/20"
+                          }`}>
+                          <span className="w-5 text-right font-mono text-[10px] opacity-50">{i + 1}</span>
+                          <span className={`w-2 h-2 rounded-full ${s.stopId === clFrom ? "bg-emerald-500" : s.stopId === clTo ? "bg-rose-500" : "bg-gray-500/40"}`} />
+                          <span className="flex-1 truncate">{s.stopName}</span>
+                          <span className="font-mono text-[10px] opacity-60">km {s.progressiveKm.toFixed(1)}</span>
+                        </div>
+                      ))}
                     </div>
                   </CardContent>
                 </Card>
