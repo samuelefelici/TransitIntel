@@ -47,6 +47,7 @@ import {
   gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
   gtfsTimeframes, gtfsFareAttributes, gtfsFareRules,
   gtfsFareZoneClusters, gtfsFareZoneClusterStops,
+  gtfsFeedInfo,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -796,7 +797,7 @@ router.post("/fares/leg-rules/generate", async (_req, res): Promise<void> => {
     ];
 
     for (const r of urbanRules) {
-      await db.insert(gtfsFareLegRules).values({ feedId, ...r, rulePriority: 0 });
+      await db.insert(gtfsFareLegRules).values({ feedId, ...r, rulePriority: 10 });
     }
 
     // 2) Extraurban OD matrix
@@ -1193,6 +1194,15 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
     maybeAdd("fare_leg_rules.txt", legCsv);
     maybeAdd("fare_transfer_rules.txt", xferCsv);
     maybeAdd("timeframes.txt", tfCsv);
+
+    // --- feed_info.txt ---
+    const feedInfoRows = await db.select().from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
+    if (feedInfoRows.length > 0) {
+      const fi = feedInfoRows[0];
+      let fiCsv = "feed_publisher_name,feed_publisher_url,feed_lang,default_lang,feed_start_date,feed_end_date,feed_version,feed_contact_email,feed_contact_url\n";
+      fiCsv += `${fi.feedPublisherName},${fi.feedPublisherUrl},${fi.feedLang},${fi.defaultLang || ""},${fi.feedStartDate || ""},${fi.feedEndDate || ""},${fi.feedVersion || ""},${fi.feedContactEmail || ""},${fi.feedContactUrl || ""}\n`;
+      allFiles["feed_info.txt"] = fiCsv;
+    }
 
     res.json({
       files: allFiles,
@@ -1630,6 +1640,15 @@ router.get("/fares/export-zip", async (_req, res): Promise<void> => {
       let csv = "timeframe_group_id,start_time,end_time,service_id\n";
       for (const t of tf) csv += `${t.timeframeGroupId},${t.startTime || ""},${t.endTime || ""},${t.serviceId || ""}\n`;
       archive.append(csv, { name: "timeframes.txt" });
+    }
+
+    // --- feed_info.txt ---
+    const feedInfoRows = await db.select().from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
+    if (feedInfoRows.length > 0) {
+      const fi = feedInfoRows[0];
+      let fiCsv = "feed_publisher_name,feed_publisher_url,feed_lang,default_lang,feed_start_date,feed_end_date,feed_version,feed_contact_email,feed_contact_url\n";
+      fiCsv += `${fi.feedPublisherName},${fi.feedPublisherUrl},${fi.feedLang},${fi.defaultLang || ""},${fi.feedStartDate || ""},${fi.feedEndDate || ""},${fi.feedVersion || ""},${fi.feedContactEmail || ""},${fi.feedContactUrl || ""}\n`;
+      archive.append(fiCsv, { name: "feed_info.txt" });
     }
 
     await archive.finalize();
@@ -2296,6 +2315,154 @@ router.get("/fares/extraurban-stops", async (_req, res): Promise<void> => {
       ORDER BY s.stop_name
     `);
     res.json(rows.rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// BUG FIX: Deduplicate stop_areas
+// ═══════════════════════════════════════════════════════════
+router.post("/fares/stop-areas/deduplicate", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const result = await db.execute<any>(sql`
+      DELETE FROM gtfs_stop_areas
+      WHERE id NOT IN (
+        SELECT DISTINCT ON (feed_id, area_id, stop_id) id
+        FROM gtfs_stop_areas
+        WHERE feed_id = ${feedId}
+        ORDER BY feed_id, area_id, stop_id, created_at ASC
+      ) AND feed_id = ${feedId}
+    `);
+    const deleted = result.rowCount ?? 0;
+    const remaining = await db.select({ count: sql<number>`count(*)` }).from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
+    res.json({ deleted, remaining: Number(remaining[0]?.count ?? 0) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// BUG FIX: Set fare_media_id = NULL on existing products
+// ═══════════════════════════════════════════════════════════
+router.post("/fares/products/fix-media", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const result = await db.execute<any>(sql`
+      UPDATE gtfs_fare_products
+      SET fare_media_id = NULL
+      WHERE feed_id = ${feedId} AND fare_media_id IS NOT NULL
+    `);
+    res.json({ updated: result.rowCount ?? 0 });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FEED INFO — CRUD
+// ═══════════════════════════════════════════════════════════
+router.get("/fares/feed-info", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json(null); return; }
+    const rows = await db.select().from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
+    res.json(rows[0] ?? null);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/fares/feed-info", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { feedPublisherName, feedPublisherUrl, feedLang, defaultLang, feedStartDate, feedEndDate, feedVersion, feedContactEmail, feedContactUrl } = req.body;
+    // Upsert: delete existing + insert
+    await db.delete(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
+    const [row] = await db.insert(gtfsFeedInfo).values({
+      feedId,
+      feedPublisherName: feedPublisherName || "ATMA Scpa",
+      feedPublisherUrl: feedPublisherUrl || "https://www.atmaancona.it",
+      feedLang: feedLang || "it",
+      defaultLang: defaultLang || null,
+      feedStartDate: feedStartDate || null,
+      feedEndDate: feedEndDate || null,
+      feedVersion: feedVersion || null,
+      feedContactEmail: feedContactEmail || null,
+      feedContactUrl: feedContactUrl || null,
+    }).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// VALIDATE — pre-export checklist
+// ═══════════════════════════════════════════════════════════
+router.get("/fares/validate", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+
+    const checks: { id: string; label: string; ok: boolean; detail?: string }[] = [];
+
+    // 1. Networks exist
+    const networks = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
+    const netCount = Number(networks[0]?.count ?? 0);
+    checks.push({ id: "networks", label: "Reti tariffarie definite", ok: netCount >= 1, detail: `${netCount} reti` });
+
+    // 2. All routes classified
+    const allRoutes = await db.select({ count: sql<number>`count(*)` }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+    const classifiedRoutes = await db.select({ count: sql<number>`count(*)` }).from(gtfsRouteNetworks).where(eq(gtfsRouteNetworks.feedId, feedId));
+    const totalR = Number(allRoutes[0]?.count ?? 0);
+    const classR = Number(classifiedRoutes[0]?.count ?? 0);
+    checks.push({ id: "routes_classified", label: "Linee classificate", ok: classR >= totalR, detail: `${classR}/${totalR}` });
+
+    // 3. Products exist
+    const prods = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+    const prodCount = Number(prods[0]?.count ?? 0);
+    checks.push({ id: "products", label: "Prodotti tariffari", ok: prodCount > 0, detail: `${prodCount} prodotti` });
+
+    // 4. No products with fare_media_id set
+    const prodsWithMedia = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareProducts)
+      .where(and(eq(gtfsFareProducts.feedId, feedId), sql`fare_media_id IS NOT NULL`));
+    const mediaCount = Number(prodsWithMedia[0]?.count ?? 0);
+    checks.push({ id: "products_media_null", label: "Prodotti senza fare_media_id forzato", ok: mediaCount === 0, detail: mediaCount > 0 ? `${mediaCount} prodotti hanno fare_media_id ≠ NULL` : "OK" });
+
+    // 5. Areas exist
+    const areasCount = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareAreas).where(eq(gtfsFareAreas.feedId, feedId));
+    const ac = Number(areasCount[0]?.count ?? 0);
+    checks.push({ id: "areas", label: "Aree tariffarie", ok: ac > 0, detail: `${ac} aree` });
+
+    // 6. Stop areas — no duplicates
+    const saTotal = await db.select({ count: sql<number>`count(*)` }).from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
+    const saUnique = await db.execute<any>(sql`
+      SELECT count(*) AS cnt FROM (SELECT DISTINCT feed_id, area_id, stop_id FROM gtfs_stop_areas WHERE feed_id = ${feedId}) t
+    `);
+    const tot = Number(saTotal[0]?.count ?? 0);
+    const uniq = Number(saUnique.rows[0]?.cnt ?? 0);
+    checks.push({ id: "stop_areas_no_dups", label: "Stop-areas senza duplicati", ok: tot === uniq, detail: tot !== uniq ? `${tot - uniq} duplicati` : `${tot} assegnazioni` });
+
+    // 7. Leg rules exist
+    const lrCount = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
+    const lrc = Number(lrCount[0]?.count ?? 0);
+    checks.push({ id: "leg_rules", label: "Regole di tratta (leg rules)", ok: lrc > 0, detail: `${lrc} regole` });
+
+    // 8. Urban rules have priority > 0
+    const urbanP0 = await db.execute<any>(sql`
+      SELECT count(*) AS cnt FROM gtfs_fare_leg_rules
+      WHERE feed_id = ${feedId} AND network_id IN ('urbano_ancona','urbano_jesi','urbano_falconara') AND rule_priority = 0
+    `);
+    const up0 = Number(urbanP0.rows[0]?.cnt ?? 0);
+    checks.push({ id: "urban_priority", label: "Priorità regole urbane > 0", ok: up0 === 0, detail: up0 > 0 ? `${up0} regole urbane con priority=0` : "OK" });
+
+    // 9. Calendar entries
+    const calCount = await db.select({ count: sql<number>`count(*)` }).from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+    const cc = Number(calCount[0]?.count ?? 0);
+    checks.push({ id: "calendar", label: "Calendario servizio", ok: cc > 0, detail: `${cc} entry` });
+
+    // 10. Feed info exists
+    const fiCount = await db.select({ count: sql<number>`count(*)` }).from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
+    const fic = Number(fiCount[0]?.count ?? 0);
+    checks.push({ id: "feed_info", label: "Feed info compilato", ok: fic > 0, detail: fic > 0 ? "Presente" : "Mancante" });
+
+    const allOk = checks.every(c => c.ok);
+    res.json({ ok: allOk, checks });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

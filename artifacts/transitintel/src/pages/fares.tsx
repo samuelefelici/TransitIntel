@@ -54,6 +54,8 @@ interface FareProduct {
   fareProductId: string;
   fareProductName: string;
   networkId: string | null;
+  riderCategoryId: string | null;
+  fareMediaId: string | null;
   amount: number;
   currency: string;
   durationMinutes: number | null;
@@ -149,7 +151,7 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate";
+type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
@@ -158,6 +160,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
   { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
   { id: "calendar", label: "Calendario Servizio", icon: <CalendarDays className="w-3.5 h-3.5" /> },
+  { id: "feedinfo", label: "Feed Info", icon: <Info className="w-3.5 h-3.5" /> },
   { id: "editor", label: "Editor Fermate", icon: <Edit3 className="w-3.5 h-3.5" /> },
   { id: "generate", label: "Genera & Esporta", icon: <Download className="w-3.5 h-3.5" /> },
   { id: "simulate", label: "Simulatore", icon: <Play className="w-3.5 h-3.5" /> },
@@ -455,6 +458,36 @@ function ProductsTab() {
               <Sparkles className="w-4 h-4 mr-2" />
               Inizializza Tutto
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Warning: products with fare_media_id set */}
+      {products.filter(p => p.fareMediaId).length > 0 && (
+        <Card className="bg-amber-500/5 border-amber-500/20">
+          <CardContent className="p-4 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-amber-700">Attenzione: {products.filter(p => p.fareMediaId).length} prodotti hanno <code className="text-xs bg-amber-100 px-1 rounded">fare_media_id</code> impostato</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Nello standard GTFS Fares V2, i prodotti non dovrebbero avere <code>fare_media_id</code> forzato.
+                Il legame prodotto↔supporto avviene tramite le leg rules. Clicca per correggere.
+              </p>
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2 border-amber-500/30 text-amber-700 hover:bg-amber-500/10"
+                onClick={async () => {
+                  try {
+                    const res = await apiFetch<{ updated: number }>("/api/fares/products/fix-media", { method: "POST" });
+                    toast({ title: "✅ Corretto", description: `${res.updated} prodotti aggiornati (fare_media_id → NULL)` });
+                    await load();
+                  } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+                }}
+              >
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Rimuovi fare_media_id
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -3031,6 +3064,9 @@ function GenerateTab() {
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [zoningMethod, setZoningMethod] = useState<"km" | "cluster">("km");
+  const [validating, setValidating] = useState(false);
+  const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
+  const [deduplicating, setDeduplicating] = useState(false);
 
   /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
   const generateAll = async () => {
@@ -3120,7 +3156,66 @@ function GenerateTab() {
           {downloadingZip ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
           Scarica GTFS Completo (ZIP)
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={deduplicating}
+          onClick={async () => {
+            setDeduplicating(true);
+            try {
+              const res = await apiFetch<{ deleted: number; remaining: number }>("/api/fares/stop-areas/deduplicate", { method: "POST" });
+              toast({ title: "Deduplicazione completata", description: `${res.deleted} duplicati rimossi, ${res.remaining} assegnamenti rimasti` });
+            } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+            setDeduplicating(false);
+          }}
+        >
+          {deduplicating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+          Deduplica Stop-Areas
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={validating}
+          onClick={async () => {
+            setValidating(true);
+            try {
+              const res = await apiFetch<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] }>("/api/fares/validate");
+              setValidation(res);
+            } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+            setValidating(false);
+          }}
+        >
+          {validating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+          Valida Feed
+        </Button>
       </div>
+
+      {/* Validation checklist */}
+      {validation && (
+        <Card className={validation.ok ? "bg-emerald-500/5 border-emerald-500/20" : "bg-amber-500/5 border-amber-500/20"}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              {validation.ok
+                ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                : <AlertTriangle className="w-4 h-4 text-amber-500" />}
+              Checklist Pre-Export ({validation.checks.filter(c => c.ok).length}/{validation.checks.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1.5">
+              {validation.checks.map((c) => (
+                <div key={c.id} className="flex items-center gap-2 text-sm">
+                  {c.ok
+                    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    : <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                  <span className={c.ok ? "text-foreground" : "text-amber-700 font-medium"}>{c.label}</span>
+                  {c.detail && <span className="text-xs text-muted-foreground ml-auto font-mono">{c.detail}</span>}
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Description */}
       <p className="text-xs text-muted-foreground">
@@ -4140,6 +4235,119 @@ function LoadingSpinner() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// TAB: FEED INFO
+// ═══════════════════════════════════════════════════════════
+
+function FeedInfoTab() {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    feedPublisherName: "ATMA Scpa",
+    feedPublisherUrl: "https://www.atmaancona.it",
+    feedLang: "it",
+    defaultLang: "",
+    feedStartDate: "",
+    feedEndDate: "",
+    feedVersion: "",
+    feedContactEmail: "info@atmaancona.it",
+    feedContactUrl: "https://www.atmaancona.it",
+  });
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch<any>("/api/fares/feed-info");
+        if (data) {
+          setForm({
+            feedPublisherName: data.feedPublisherName || "",
+            feedPublisherUrl: data.feedPublisherUrl || "",
+            feedLang: data.feedLang || "it",
+            defaultLang: data.defaultLang || "",
+            feedStartDate: data.feedStartDate || "",
+            feedEndDate: data.feedEndDate || "",
+            feedVersion: data.feedVersion || "",
+            feedContactEmail: data.feedContactEmail || "",
+            feedContactUrl: data.feedContactUrl || "",
+          });
+        }
+      } catch { /* noop */ }
+      setLoading(false);
+    })();
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiFetch("/api/fares/feed-info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      toast({ title: "✅ Feed Info salvato" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setSaving(false);
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  const fields: { key: keyof typeof form; label: string; placeholder: string; required?: boolean }[] = [
+    { key: "feedPublisherName", label: "Publisher Name", placeholder: "ATMA Scpa", required: true },
+    { key: "feedPublisherUrl", label: "Publisher URL", placeholder: "https://www.atmaancona.it", required: true },
+    { key: "feedLang", label: "Lingua (BCP-47)", placeholder: "it", required: true },
+    { key: "defaultLang", label: "Default Lang", placeholder: "it" },
+    { key: "feedStartDate", label: "Data inizio (YYYYMMDD)", placeholder: "20260101" },
+    { key: "feedEndDate", label: "Data fine (YYYYMMDD)", placeholder: "20261231" },
+    { key: "feedVersion", label: "Versione feed", placeholder: "1.0.0" },
+    { key: "feedContactEmail", label: "Email contatto", placeholder: "info@atmaancona.it" },
+    { key: "feedContactUrl", label: "URL contatto", placeholder: "https://www.atmaancona.it" },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Card className="bg-card/50">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Info className="w-4 h-4 text-primary" />
+            Feed Info (feed_info.txt)
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-4">
+            Metadati del feed GTFS — identificano il publisher e la validità temporale del dataset.
+            Questi dati finiscono nel file <code>feed_info.txt</code> incluso nell'export ZIP.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {fields.map((f) => (
+              <div key={f.key} className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">
+                  {f.label}{f.required && <span className="text-red-500 ml-0.5">*</span>}
+                </label>
+                <input
+                  type="text"
+                  value={form[f.key]}
+                  onChange={(e) => setForm({ ...form, [f.key]: e.target.value })}
+                  placeholder={f.placeholder}
+                  className="w-full px-3 py-2 rounded-lg border border-border/50 bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end mt-4">
+            <Button onClick={save} disabled={saving} size="sm">
+              {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+              Salva Feed Info
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════
 
@@ -4219,6 +4427,7 @@ export default function FaresPage() {
           {tab === "editor" && <StopTimesEditorTab />}
           {tab === "generate" && <GenerateTab />}
           {tab === "simulate" && <SimulateTab />}
+          {tab === "feedinfo" && <FeedInfoTab />}
         </motion.div>
       </AnimatePresence>
     </div>

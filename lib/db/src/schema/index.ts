@@ -486,6 +486,7 @@ export const gtfsStopAreas = pgTable("gtfs_stop_areas", {
   stopId: text("stop_id").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
+  uniqueIndex("idx_stop_areas_unique_feed_area_stop").on(t.feedId, t.areaId, t.stopId),
   index("idx_stop_areas_feed_area").on(t.feedId, t.areaId),
   index("idx_stop_areas_feed_stop").on(t.feedId, t.stopId),
 ]);
@@ -601,6 +602,24 @@ export const gtfsFareZoneClusterStops = pgTable("gtfs_fare_zone_cluster_stops", 
   index("idx_fare_zone_cs_feed_stop").on(t.feedId, t.stopId),
 ]);
 
+// Feed Info — metadata about the GTFS feed (feed_info.txt)
+export const gtfsFeedInfo = pgTable("gtfs_feed_info", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  feedPublisherName: text("feed_publisher_name").notNull(),
+  feedPublisherUrl: text("feed_publisher_url").notNull(),
+  feedLang: text("feed_lang").notNull().default("it"),
+  defaultLang: text("default_lang"),
+  feedStartDate: text("feed_start_date"),
+  feedEndDate: text("feed_end_date"),
+  feedVersion: text("feed_version"),
+  feedContactEmail: text("feed_contact_email"),
+  feedContactUrl: text("feed_contact_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_feed_info_feed").on(t.feedId),
+]);
+
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
@@ -641,3 +660,4 @@ export type GtfsFareAttribute = typeof gtfsFareAttributes.$inferSelect;
 export type GtfsFareRule = typeof gtfsFareRules.$inferSelect;
 export type GtfsFareZoneCluster = typeof gtfsFareZoneClusters.$inferSelect;
 export type GtfsFareZoneClusterStop = typeof gtfsFareZoneClusterStops.$inferSelect;
+export type GtfsFeedInfo = typeof gtfsFeedInfo.$inferSelect;
