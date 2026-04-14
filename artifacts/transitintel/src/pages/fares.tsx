@@ -1658,10 +1658,10 @@ function ZonesContainerTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAB 3b: ZONE CLUSTER — cluster-based zoning with polygon draw
+// TAB 3b: ZONE CLUSTER — partition-based zoning
 // ═══════════════════════════════════════════════════════════
 
-interface ClusterData {
+interface ClusterFull {
   id: string;
   clusterId: string;
   clusterName: string;
@@ -1670,13 +1670,7 @@ interface ClusterData {
   centroidLon: number | null;
   color: string;
   stopCount: number;
-}
-
-interface ClusterStop {
-  stopId: string;
-  stopName: string;
-  stopLat: number;
-  stopLon: number;
+  stops: { stopId: string; stopName: string; stopLat: number; stopLon: number }[];
 }
 
 interface ExtraStop {
@@ -1700,6 +1694,19 @@ const CLUSTER_COLORS = [
   "#ec4899", "#14b8a6", "#f59e0b", "#6366f1", "#d946ef", "#84cc16", "#0ea5e9",
 ];
 
+// ─── Convex hull (Graham scan) ──────────────────────────
+function convexHull(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points;
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const p of sorted) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper: [number, number][] = [];
+  for (const p of sorted.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
 // ─── Point-in-polygon (ray casting) ────────────────────────
 function pointInPolygon(lon: number, lat: number, polygon: [number, number][]): boolean {
   let inside = false;
@@ -1717,60 +1724,68 @@ function ClustersTab() {
   const { toast } = useToast();
   const mapRef = useRef<MapRef>(null);
 
-  // Data
-  const [clusters, setClusters] = useState<ClusterData[]>([]);
+  // All data loaded once from /full endpoint
+  const [clusters, setClusters] = useState<ClusterFull[]>([]);
   const [extraStops, setExtraStops] = useState<ExtraStop[]>([]);
-  const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
-  const [clusterStops, setClusterStops] = useState<ClusterStop[]>([]);
-  const [distMatrix, setDistMatrix] = useState<DistanceEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [showMatrix, setShowMatrix] = useState(false);
 
-  // New cluster form
-  const [newName, setNewName] = useState("");
-  const [adding, setAdding] = useState(false);
+  // Active cluster being edited
+  const [activeClusterId, setActiveClusterId] = useState<string | null>(null);
+  // Pending stop set for the active cluster (local edits before save)
+  const [pendingStops, setPendingStops] = useState<Set<string>>(new Set());
+  const [dirty, setDirty] = useState(false);
 
-  // Drawing state
+  // Drawing
   const [drawMode, setDrawMode] = useState(false);
   const [polygonPoints, setPolygonPoints] = useState<[number, number][]>([]);
   const [hoveredPoint, setHoveredPoint] = useState<[number, number] | null>(null);
 
-  // Selected stops (for current cluster editing)
-  const [selectedStops, setSelectedStops] = useState<Set<string>>(new Set());
-  const [editMode, setEditMode] = useState(false);
+  // Matrix
+  const [distMatrix, setDistMatrix] = useState<DistanceEntry[]>([]);
+  const [showMatrix, setShowMatrix] = useState(false);
+
+  // New cluster form
+  const [newName, setNewName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
-  const load = useCallback(async () => {
+  // ── Build ownership map: stopId → clusterId (from saved data) ──
+  const ownershipMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const c of clusters) {
+      for (const s of c.stops) m[s.stopId] = c.clusterId;
+    }
+    return m;
+  }, [clusters]);
+
+  // ── Load everything ──
+  const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [cl, es] = await Promise.all([
-        apiFetch<ClusterData[]>("/api/fares/zone-clusters"),
+      const [full, es] = await Promise.all([
+        apiFetch<ClusterFull[]>("/api/fares/zone-clusters/full"),
         apiFetch<ExtraStop[]>("/api/fares/extraurban-stops"),
       ]);
-      setClusters(cl);
+      setClusters(full);
       setExtraStops(es);
     } catch { /* ignore */ }
     setLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadAll(); }, [loadAll]);
 
-  const loadClusterStops = async (clusterId: string) => {
-    try {
-      const data = await apiFetch<any[]>(`/api/fares/zone-clusters/${clusterId}/stops`);
-      const stops = data.map(d => ({ stopId: d.stopId, stopName: d.stopName, stopLat: d.stopLat, stopLon: d.stopLon }));
-      setClusterStops(stops);
-      setSelectedStops(new Set(stops.map(s => s.stopId)));
-    } catch { setClusterStops([]); setSelectedStops(new Set()); }
-  };
+  // Active cluster object
+  const activeCluster = clusters.find(c => c.clusterId === activeClusterId) || null;
 
-  // Select cluster
-  const selectCluster = (c: ClusterData) => {
-    setSelectedCluster(c.clusterId);
-    loadClusterStops(c.clusterId);
-    setEditMode(false);
+  // ── Select a cluster ──
+  const selectCluster = (c: ClusterFull) => {
+    if (dirty) {
+      if (!confirm("Hai modifiche non salvate. Vuoi scartarle?")) return;
+    }
+    setActiveClusterId(c.clusterId);
+    setPendingStops(new Set(c.stops.map(s => s.stopId)));
+    setDirty(false);
     setDrawMode(false);
     setPolygonPoints([]);
     if (c.centroidLat && c.centroidLon && mapRef.current) {
@@ -1778,163 +1793,80 @@ function ClustersTab() {
     }
   };
 
-  // Create cluster
+  // ── Create cluster ──
   const createCluster = async () => {
     if (!newName.trim()) return;
-    setAdding(true);
     try {
       const id = newName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
       const color = CLUSTER_COLORS[clusters.length % CLUSTER_COLORS.length];
-      const created = await apiFetch<ClusterData>("/api/fares/zone-clusters", {
+      await apiFetch("/api/fares/zone-clusters", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clusterId: id, clusterName: newName.trim(), color }),
       });
       setNewName("");
-      await load();
-      // Auto-select and enter edit mode
-      setSelectedCluster(id);
-      setClusterStops([]);
-      setSelectedStops(new Set());
-      setEditMode(true);
-      toast({ title: "Cluster creato", description: `"${newName.trim()}" — seleziona le fermate sulla mappa` });
+      await loadAll();
+      setActiveClusterId(id);
+      setPendingStops(new Set());
+      setDirty(false);
+      toast({ title: "Cluster creato", description: `"${newName.trim()}" — clicca sulle fermate per assegnarle` });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     }
-    setAdding(false);
   };
 
-  // Delete cluster
+  // ── Delete cluster ──
   const deleteCluster = async (id: string) => {
     try {
       await apiFetch(`/api/fares/zone-clusters/${id}`, { method: "DELETE" });
-      if (selectedCluster) { setSelectedCluster(null); setClusterStops([]); }
-      await load();
+      if (activeClusterId && clusters.find(c => c.id === id)?.clusterId === activeClusterId) {
+        setActiveClusterId(null); setPendingStops(new Set()); setDirty(false);
+      }
+      await loadAll();
       toast({ title: "Cluster eliminato" });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     }
   };
 
-  // Toggle stop
-  const toggleStop = (stopId: string) => {
-    setSelectedStops(prev => {
+  // ── Toggle stop in pending set ──
+  const toggleStop = useCallback((stopId: string) => {
+    if (!activeClusterId) return;
+    // Check if stop belongs to another cluster
+    const owner = ownershipMap[stopId];
+    if (owner && owner !== activeClusterId && !pendingStops.has(stopId)) {
+      const ownerCluster = clusters.find(c => c.clusterId === owner);
+      toast({
+        title: "Fermata già assegnata",
+        description: `Questa fermata appartiene a "${ownerCluster?.clusterName || owner}". Verrà spostata nel cluster attivo al salvataggio.`,
+      });
+    }
+    setPendingStops(prev => {
       const next = new Set(prev);
-      if (next.has(stopId)) next.delete(stopId);
-      else next.add(stopId);
+      if (next.has(stopId)) next.delete(stopId); else next.add(stopId);
       return next;
     });
-  };
+    setDirty(true);
+  }, [activeClusterId, ownershipMap, pendingStops, clusters, toast]);
 
-  // Drawing: polygon GeoJSON
-  const polygonGeoJSON = useMemo(() => {
-    if (polygonPoints.length < 2) return null;
-    const coords = [...polygonPoints];
-    if (hoveredPoint) coords.push(hoveredPoint);
-    if (coords.length >= 3) {
-      const closed = [...coords, coords[0]];
-      return {
-        type: "FeatureCollection" as const,
-        features: [
-          { type: "Feature" as const, geometry: { type: "Polygon" as const, coordinates: [closed] }, properties: { kind: "fill" } },
-          { type: "Feature" as const, geometry: { type: "LineString" as const, coordinates: coords }, properties: { kind: "line" } },
-        ],
-      };
-    }
-    return {
-      type: "FeatureCollection" as const,
-      features: [{ type: "Feature" as const, geometry: { type: "LineString" as const, coordinates: coords }, properties: { kind: "line" } }],
-    };
-  }, [polygonPoints, hoveredPoint]);
-
-  // Stops GeoJSON for map
-  const activeColor = selectedCluster ? (clusters.find(c => c.clusterId === selectedCluster)?.color || "#3b82f6") : "#3b82f6";
-
-  const stopsGeoJSON = useMemo(() => {
-    if (!extraStops.length) return null;
-    return {
-      type: "FeatureCollection" as const,
-      features: extraStops.map(s => ({
-        type: "Feature" as const,
-        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
-        properties: {
-          stopId: s.stop_id,
-          stopName: s.stop_name,
-          selected: selectedStops.has(s.stop_id) ? 1 : 0,
-        },
-      })),
-    };
-  }, [extraStops, selectedStops]);
-
-  // Map click
-  const handleMapClick = useCallback((e: any) => {
-    if (drawMode) {
-      const { lng, lat } = e.lngLat;
-      setPolygonPoints(prev => [...prev, [lng, lat]]);
-      return;
-    }
-    if (!editMode) return;
-    // Toggle stop on click
-    const features = e.features;
-    if (features && features.length > 0) {
-      const stopId = features[0].properties?.stopId;
-      if (stopId) toggleStop(stopId);
-    }
-  }, [drawMode, editMode]);
-
-  // Double-click: close polygon and select stops inside
-  const handleMapDblClick = useCallback((e: any) => {
-    if (!drawMode || polygonPoints.length < 3) return;
-    e.preventDefault();
-    // Select all stops inside polygon
-    const poly = polygonPoints.map(p => [p[0], p[1]] as [number, number]);
-    const stopsInside = extraStops.filter(s => pointInPolygon(s.lon, s.lat, poly));
-    setSelectedStops(prev => {
-      const next = new Set(prev);
-      stopsInside.forEach(s => next.add(s.stop_id));
-      return next;
-    });
-    setDrawMode(false);
-    setPolygonPoints([]);
-    setHoveredPoint(null);
-    toast({ title: `${stopsInside.length} fermate selezionate`, description: "dal poligono disegnato" });
-  }, [drawMode, polygonPoints, extraStops, toast]);
-
-  // Mouse move for polygon preview
-  const handleMapMouseMove = useCallback((e: any) => {
-    if (!drawMode || polygonPoints.length === 0) return;
-    setHoveredPoint([e.lngLat.lng, e.lngLat.lat]);
-  }, [drawMode, polygonPoints.length]);
-
-  // Start/clear drawing
-  const startDrawing = () => { setPolygonPoints([]); setHoveredPoint(null); setDrawMode(true); };
-  const clearPolygon = () => { setPolygonPoints([]); setHoveredPoint(null); setDrawMode(false); };
-
-  // Enter edit mode
-  const enterEditMode = () => {
-    setEditMode(true);
-    // Pre-populate with current stops
-    setSelectedStops(new Set(clusterStops.map(s => s.stopId)));
-  };
-
-  // Save stops to cluster
+  // ── Save stops ──
   const saveStops = async () => {
-    if (!selectedCluster) return;
+    if (!activeClusterId) return;
     setSaving(true);
     try {
       const stops = extraStops
-        .filter(s => selectedStops.has(s.stop_id))
+        .filter(s => pendingStops.has(s.stop_id))
         .map(s => ({ stopId: s.stop_id, stopName: s.stop_name, stopLat: s.lat, stopLon: s.lon }));
-      await apiFetch(`/api/fares/zone-clusters/${selectedCluster}/stops`, {
+      await apiFetch(`/api/fares/zone-clusters/${activeClusterId}/stops`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ stops }),
       });
-      await load();
-      await loadClusterStops(selectedCluster);
-      setEditMode(false);
-      setDrawMode(false);
-      setPolygonPoints([]);
+      await loadAll();
+      // Re-select to refresh pending
+      const updated = (await apiFetch<ClusterFull[]>("/api/fares/zone-clusters/full")).find(c => c.clusterId === activeClusterId);
+      if (updated) setPendingStops(new Set(updated.stops.map(s => s.stopId)));
+      setDirty(false);
       toast({ title: "Fermate salvate", description: `${stops.length} fermate nel cluster` });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
@@ -1942,89 +1874,200 @@ function ClustersTab() {
     setSaving(false);
   };
 
-  // Generate zones from clusters
+  // ── Generate zones ──
   const generateFromClusters = async () => {
     setGenerating(true);
     try {
       const result = await apiFetch<any>("/api/fares/zone-clusters/generate-zones", { method: "POST" });
-      toast({
-        title: "Zone generate da cluster",
-        description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD`,
-      });
-    } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
-    }
+      toast({ title: "Zone generate", description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD` });
+    } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
     setGenerating(false);
   };
 
-  // Load distance matrix
+  // ── Distance matrix ──
   const loadMatrix = async () => {
     try {
       const data = await apiFetch<{ clusters: any[]; matrix: DistanceEntry[] }>("/api/fares/zone-clusters/distance-matrix");
-      setDistMatrix(data.matrix);
-      setShowMatrix(true);
-    } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
-    }
+      setDistMatrix(data.matrix); setShowMatrix(true);
+    } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
   };
 
-  // Filtered list for stop search
-  const selectedStopsList = useMemo(() => {
-    return extraStops.filter(s => selectedStops.has(s.stop_id));
-  }, [extraStops, selectedStops]);
+  // ── Polygon drawing ──
+  const polygonGeoJSON = useMemo(() => {
+    if (polygonPoints.length < 2) return null;
+    const coords = [...polygonPoints];
+    if (hoveredPoint) coords.push(hoveredPoint);
+    if (coords.length >= 3) {
+      const closed = [...coords, coords[0]];
+      return { type: "FeatureCollection" as const, features: [
+        { type: "Feature" as const, geometry: { type: "Polygon" as const, coordinates: [closed] }, properties: { kind: "fill" } },
+        { type: "Feature" as const, geometry: { type: "LineString" as const, coordinates: coords }, properties: { kind: "line" } },
+      ]};
+    }
+    return { type: "FeatureCollection" as const, features: [
+      { type: "Feature" as const, geometry: { type: "LineString" as const, coordinates: coords }, properties: { kind: "line" } },
+    ]};
+  }, [polygonPoints, hoveredPoint]);
 
-  // Interactive layer IDs for click
-  const interactiveLayerIds = useMemo(() => editMode ? ["stops-circle-layer"] : [], [editMode]);
+  // ── Cluster partition polygons (convex hulls) ──
+  const partitionsGeoJSON = useMemo(() => {
+    const features: any[] = [];
+    for (const c of clusters) {
+      if (c.stops.length < 3) continue;
+      const pts: [number, number][] = c.stops.map(s => [s.stopLon, s.stopLat]);
+      const hull = convexHull(pts);
+      if (hull.length >= 3) {
+        // Add buffer by expanding hull slightly outward from centroid
+        const cx = hull.reduce((s, p) => s + p[0], 0) / hull.length;
+        const cy = hull.reduce((s, p) => s + p[1], 0) / hull.length;
+        const buffered = hull.map(p => {
+          const dx = p[0] - cx, dy = p[1] - cy;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const buf = 0.003; // ~300m buffer
+          return [p[0] + (len > 0 ? (dx / len) * buf : 0), p[1] + (len > 0 ? (dy / len) * buf : 0)] as [number, number];
+        });
+        const closed = [...buffered, buffered[0]];
+        features.push({
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [closed] },
+          properties: { clusterId: c.clusterId, color: c.color, name: c.clusterName },
+        });
+      }
+    }
+    return { type: "FeatureCollection", features };
+  }, [clusters]);
+
+  // ── Stops GeoJSON: all extraurban stops with ownership coloring ──
+  const activeColor = activeCluster?.color || "#3b82f6";
+
+  const stopsGeoJSON = useMemo(() => {
+    if (!extraStops.length) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: extraStops.map(s => {
+        const owner = ownershipMap[s.stop_id];
+        const ownerCluster = owner ? clusters.find(c => c.clusterId === owner) : null;
+        const isPending = pendingStops.has(s.stop_id);
+        // Determine color
+        let color = "#475569"; // unassigned: slate-600
+        if (activeClusterId && isPending) {
+          color = activeColor; // belongs to active cluster (pending)
+        } else if (ownerCluster) {
+          color = ownerCluster.color; // belongs to some cluster
+        }
+        return {
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+          properties: {
+            stopId: s.stop_id,
+            stopName: s.stop_name,
+            color,
+            isPending: isPending ? 1 : 0,
+            isOwned: owner ? 1 : 0,
+            isActiveCluster: (activeClusterId && isPending) ? 1 : 0,
+          },
+        };
+      }),
+    };
+  }, [extraStops, ownershipMap, pendingStops, activeClusterId, activeColor, clusters]);
+
+  // ── Map click ──
+  const handleMapClick = useCallback((e: any) => {
+    if (drawMode) {
+      setPolygonPoints(prev => [...prev, [e.lngLat.lng, e.lngLat.lat]]);
+      return;
+    }
+    if (!activeClusterId) return;
+    const features = e.features;
+    if (features && features.length > 0) {
+      const stopId = features[0].properties?.stopId;
+      if (stopId) toggleStop(stopId);
+    }
+  }, [drawMode, activeClusterId, toggleStop]);
+
+  // ── Double-click: close polygon ──
+  const handleMapDblClick = useCallback((e: any) => {
+    if (!drawMode || polygonPoints.length < 3) return;
+    e.preventDefault();
+    const poly = polygonPoints as [number, number][];
+    const inside = extraStops.filter(s => pointInPolygon(s.lon, s.lat, poly));
+    setPendingStops(prev => {
+      const next = new Set(prev);
+      inside.forEach(s => next.add(s.stop_id));
+      return next;
+    });
+    setDirty(true);
+    setDrawMode(false);
+    setPolygonPoints([]);
+    setHoveredPoint(null);
+    toast({ title: `${inside.length} fermate selezionate`, description: "dal poligono disegnato" });
+  }, [drawMode, polygonPoints, extraStops, toast]);
+
+  const handleMapMouseMove = useCallback((e: any) => {
+    if (!drawMode || polygonPoints.length === 0) return;
+    setHoveredPoint([e.lngLat.lng, e.lngLat.lat]);
+  }, [drawMode, polygonPoints.length]);
+
+  // ── Pending stops list for display ──
+  const pendingStopsList = useMemo(() => {
+    return extraStops
+      .filter(s => pendingStops.has(s.stop_id))
+      .filter(s => !searchTerm || s.stop_name.toLowerCase().includes(searchTerm.toLowerCase()) || s.stop_id.includes(searchTerm));
+  }, [extraStops, pendingStops, searchTerm]);
+
+  // Total assigned
+  const totalAssigned = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of clusters) for (const s of c.stops) set.add(s.stopId);
+    return set.size;
+  }, [clusters]);
+
+  const interactiveLayerIds = useMemo(() => activeClusterId ? ["stops-circle-layer"] : [], [activeClusterId]);
 
   if (loading && clusters.length === 0) return <LoadingSpinner />;
 
   return (
     <div className="space-y-4">
-      {/* Info banner */}
+      {/* Info */}
       <div className="rounded-lg bg-blue-500/5 border border-blue-500/20 p-3 flex items-start gap-3">
         <Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
         <div className="text-xs text-muted-foreground space-y-1">
-          <p className="font-medium text-foreground">Zonizzazione basata su Cluster</p>
+          <p className="font-medium text-foreground">Partizioni Territoriali (Cluster)</p>
           <p>
-            Crea cluster di fermate disegnando un'area poligonale sulla mappa.
-            Le tariffe vengono calcolate in base alla distanza tra i <strong>centroidi</strong> dei cluster.
+            Ogni fermata appartiene a <strong>un solo cluster</strong>.
+            Seleziona un cluster, poi clicca sulle fermate o disegna un'area per assegnarle.
+            Le tariffe si calcolano in base alla distanza tra i centroidi.
           </p>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card className="bg-card/50">
-          <CardContent className="p-3">
-            <p className="text-xs text-muted-foreground">Cluster Definiti</p>
-            <p className="text-2xl font-bold">{clusters.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50">
-          <CardContent className="p-3">
-            <p className="text-xs text-muted-foreground">Fermate Extraurbane</p>
-            <p className="text-2xl font-bold">{extraStops.length}</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50">
-          <CardContent className="p-3">
-            <p className="text-xs text-muted-foreground">Fermate Assegnate</p>
-            <p className="text-2xl font-bold">{clusters.reduce((s, c) => s + c.stopCount, 0)}</p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-4 gap-3">
+        <Card className="bg-card/50"><CardContent className="p-3">
+          <p className="text-xs text-muted-foreground">Cluster</p>
+          <p className="text-2xl font-bold">{clusters.length}</p>
+        </CardContent></Card>
+        <Card className="bg-card/50"><CardContent className="p-3">
+          <p className="text-xs text-muted-foreground">Fermate Totali</p>
+          <p className="text-2xl font-bold">{extraStops.length}</p>
+        </CardContent></Card>
+        <Card className="bg-card/50"><CardContent className="p-3">
+          <p className="text-xs text-muted-foreground">Assegnate</p>
+          <p className="text-2xl font-bold text-green-400">{totalAssigned}</p>
+        </CardContent></Card>
+        <Card className="bg-card/50"><CardContent className="p-3">
+          <p className="text-xs text-muted-foreground">Non Assegnate</p>
+          <p className="text-2xl font-bold text-yellow-400">{extraStops.length - totalAssigned}</p>
+        </CardContent></Card>
       </div>
 
-      {/* Actions row */}
+      {/* Actions */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1.5">
-          <input
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            placeholder="Nome nuovo cluster..."
+          <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nome nuovo cluster..."
             className="h-8 px-2 text-sm rounded-md border border-border/50 bg-background/50 w-48"
-            onKeyDown={e => e.key === "Enter" && createCluster()}
-          />
-          <Button onClick={createCluster} disabled={adding || !newName.trim()} size="sm" variant="outline">
+            onKeyDown={e => e.key === "Enter" && createCluster()} />
+          <Button onClick={createCluster} disabled={!newName.trim()} size="sm" variant="outline">
             <Plus className="w-3.5 h-3.5 mr-1" /> Crea
           </Button>
         </div>
@@ -2034,14 +2077,15 @@ function ClustersTab() {
         </Button>
         <Button onClick={generateFromClusters} disabled={generating || clusters.length === 0} size="sm">
           {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
-          Genera Zone da Cluster
+          Genera Zone GTFS
         </Button>
       </div>
 
-      {/* Main layout: cluster list + map */}
+      {/* Main: sidebar + map */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        {/* Cluster list — narrower */}
+        {/* Sidebar */}
         <div className="lg:col-span-1 space-y-3">
+          {/* Cluster list */}
           <Card className="bg-card/50">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
@@ -2049,125 +2093,123 @@ function ClustersTab() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="max-h-[30vh] overflow-auto">
+              <div className="max-h-[28vh] overflow-auto">
                 {clusters.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground">Nessun cluster. Creane uno sopra.</p>
-                ) : (
-                  clusters.map(c => (
-                    <div
-                      key={c.id}
-                      onClick={() => selectCluster(c)}
-                      className={`cursor-pointer w-full text-left px-3 py-2 border-b border-border/10 hover:bg-muted/20 transition-colors ${
-                        selectedCluster === c.clusterId ? "bg-primary/10 border-l-2 border-l-primary" : ""
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="w-3 h-3 rounded-full shrink-0" style={{ background: c.color }} />
-                        <div className="min-w-0 flex-1">
-                          <span className="font-medium text-xs block truncate">{c.clusterName}</span>
-                          <span className="text-[10px] text-muted-foreground font-mono">{c.stopCount} fermate</span>
-                        </div>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); deleteCluster(c.id); }}
-                          className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
+                  <p className="p-4 text-xs text-muted-foreground">Nessun cluster. Creane uno sopra.</p>
+                ) : clusters.map(c => (
+                  <div key={c.id} onClick={() => selectCluster(c)}
+                    className={`cursor-pointer w-full text-left px-3 py-2.5 border-b border-border/10 hover:bg-muted/20 transition-all ${
+                      activeClusterId === c.clusterId ? "bg-primary/10 border-l-3 shadow-sm" : ""
+                    }`}
+                    style={activeClusterId === c.clusterId ? { borderLeftColor: c.color } : {}}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-3.5 h-3.5 rounded-full shrink-0 ring-1 ring-white/20" style={{ background: c.color }} />
+                      <div className="min-w-0 flex-1">
+                        <span className="font-medium text-xs block truncate">{c.clusterName}</span>
+                        <span className="text-[10px] text-muted-foreground">{c.stopCount} fermate</span>
                       </div>
+                      <button onClick={(e) => { e.stopPropagation(); deleteCluster(c.id); }}
+                        className="text-muted-foreground hover:text-destructive transition-colors shrink-0">
+                        <Trash2 className="w-3 h-3" />
+                      </button>
                     </div>
-                  ))
-                )}
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>
 
-          {/* Cluster stop list */}
-          {selectedCluster && (
+          {/* Active cluster: stop list + tools */}
+          {activeClusterId && (
             <Card className="bg-card/50">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-xs">
-                    Fermate ({editMode ? selectedStops.size : clusterStops.length})
+                  <CardTitle className="text-xs flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: activeColor }} />
+                    {activeCluster?.clusterName} ({pendingStops.size})
                   </CardTitle>
-                  {!editMode ? (
-                    <Button onClick={enterEditMode} size="sm" variant="ghost" className="h-6 text-[10px] px-2">
-                      <Edit3 className="w-3 h-3 mr-1" /> Modifica
-                    </Button>
-                  ) : (
-                    <div className="flex gap-1">
+                  <div className="flex gap-1">
+                    {dirty && (
                       <Button onClick={saveStops} disabled={saving} size="sm" className="h-6 text-[10px] px-2">
                         {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3 mr-1" />}
                         Salva
                       </Button>
-                      <Button onClick={() => { setEditMode(false); setDrawMode(false); setPolygonPoints([]); }} size="sm" variant="ghost" className="h-6 text-[10px] px-2">✕</Button>
-                    </div>
-                  )}
+                    )}
+                    <Button size="sm" variant={drawMode ? "default" : "outline"} className="h-6 text-[10px] px-2"
+                      onClick={() => { if (drawMode) { setDrawMode(false); setPolygonPoints([]); setHoveredPoint(null); } else { setPolygonPoints([]); setHoveredPoint(null); setDrawMode(true); } }}>
+                      {drawMode ? "✕ Stop" : "✏️ Area"}
+                    </Button>
+                  </div>
                 </div>
+                {drawMode && (
+                  <p className="text-[9px] text-muted-foreground mt-1">
+                    Click per vertici, <strong>doppio-click</strong> per chiudere e selezionare
+                  </p>
+                )}
               </CardHeader>
               <CardContent className="p-0">
-                {editMode && (
-                  <div className="px-3 pb-2 space-y-1.5">
-                    <div className="relative">
-                      <Search className="absolute left-2 top-1.5 w-3 h-3 text-muted-foreground" />
-                      <input
-                        value={searchTerm}
-                        onChange={e => setSearchTerm(e.target.value)}
-                        placeholder="Cerca fermata..."
-                        className="w-full h-6 pl-6 pr-2 text-[10px] rounded border border-border/50 bg-background/50"
-                      />
-                    </div>
-                    <div className="flex gap-1">
-                      <Button size="sm" variant={drawMode ? "default" : "outline"} className="h-6 text-[10px] px-2 flex-1"
-                        onClick={drawMode ? clearPolygon : startDrawing}
-                      >
-                        {drawMode ? "✕ Annulla" : "✏️ Disegna Area"}
-                      </Button>
-                    </div>
-                    {drawMode && (
-                      <p className="text-[9px] text-muted-foreground">
-                        Click per vertici, <strong>doppio-click</strong> per chiudere e selezionare
-                      </p>
-                    )}
+                <div className="px-3 pb-2">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1.5 w-3 h-3 text-muted-foreground" />
+                    <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} placeholder="Cerca fermata..."
+                      className="w-full h-6 pl-6 pr-2 text-[10px] rounded border border-border/50 bg-background/50" />
                   </div>
-                )}
-                <div className="max-h-[25vh] overflow-auto">
+                </div>
+                <div className="max-h-[28vh] overflow-auto">
                   <table className="w-full text-[10px]">
-                    <thead className="sticky top-0 bg-card">
+                    <thead className="sticky top-0 bg-card z-10">
                       <tr className="border-b border-border/30">
                         <th className="text-left py-1 px-2 font-medium text-muted-foreground">ID</th>
                         <th className="text-left py-1 px-2 font-medium text-muted-foreground">Nome</th>
-                        {editMode && <th className="w-6"></th>}
+                        <th className="w-6"></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {(editMode ? selectedStopsList : clusterStops.map(s => ({ stop_id: s.stopId, stop_name: s.stopName, lat: s.stopLat, lon: s.stopLon })))
-                        .filter(s => !searchTerm || s.stop_name.toLowerCase().includes(searchTerm.toLowerCase()) || s.stop_id.includes(searchTerm))
-                        .map(s => (
-                          <tr key={s.stop_id} className="border-b border-border/5 hover:bg-muted/10">
-                            <td className="py-0.5 px-2 font-mono text-muted-foreground">{s.stop_id}</td>
-                            <td className="py-0.5 px-2">{s.stop_name}</td>
-                            {editMode && (
-                              <td className="py-0.5 px-1">
-                                <button onClick={() => toggleStop(s.stop_id)} className="text-muted-foreground hover:text-destructive">
-                                  <Trash2 className="w-2.5 h-2.5" />
-                                </button>
-                              </td>
-                            )}
-                          </tr>
-                        ))}
+                      {pendingStopsList.map(s => (
+                        <tr key={s.stop_id} className="border-b border-border/5 hover:bg-muted/10">
+                          <td className="py-0.5 px-2 font-mono text-muted-foreground">{s.stop_id}</td>
+                          <td className="py-0.5 px-2 truncate max-w-[120px]">{s.stop_name}</td>
+                          <td className="py-0.5 px-1">
+                            <button onClick={() => toggleStop(s.stop_id)} className="text-muted-foreground hover:text-destructive">
+                              <Trash2 className="w-2.5 h-2.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                      {pendingStopsList.length === 0 && (
+                        <tr><td colSpan={3} className="py-3 text-center text-muted-foreground text-[10px]">
+                          {pendingStops.size === 0 ? "Clicca le fermate sulla mappa per aggiungerle" : "Nessun risultato"}
+                        </td></tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
               </CardContent>
             </Card>
           )}
+
+          {/* Legend */}
+          <div className="px-1 space-y-1">
+            <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Legenda</p>
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <div className="w-3 h-3 rounded-full bg-[#475569] ring-1 ring-white/20" />
+              Non assegnata
+            </div>
+            {clusters.map(c => (
+              <div key={c.clusterId} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                <div className="w-3 h-3 rounded-full ring-1 ring-white/20" style={{ background: c.color }} />
+                {c.clusterName}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* MAP — large, 3/4 width */}
+        {/* MAP */}
         <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
           <CardContent className="p-0">
             {CLUSTER_MAPBOX_TOKEN ? (
-              <div className="h-[550px] relative">
+              <div className="h-[600px] relative">
                 <Map
                   ref={mapRef}
                   mapboxAccessToken={CLUSTER_MAPBOX_TOKEN}
@@ -2179,108 +2221,141 @@ function ClustersTab() {
                   onClick={handleMapClick}
                   onDblClick={handleMapDblClick}
                   onMouseMove={handleMapMouseMove}
-                  cursor={drawMode ? "crosshair" : editMode ? "pointer" : "grab"}
+                  cursor={drawMode ? "crosshair" : activeClusterId ? "pointer" : "grab"}
                 >
-                  {/* All extraurban stops */}
+                  {/* ── Partition polygons (convex hull per cluster) ── */}
+                  {partitionsGeoJSON.features.length > 0 && (
+                    <Source id="partitions" type="geojson" data={partitionsGeoJSON as any}>
+                      <Layer id="partitions-fill" type="fill" paint={{
+                        "fill-color": ["get", "color"],
+                        "fill-opacity": 0.1,
+                      }} />
+                      <Layer id="partitions-stroke" type="line" paint={{
+                        "line-color": ["get", "color"],
+                        "line-width": 2,
+                        "line-opacity": 0.5,
+                        "line-dasharray": [4, 2],
+                      }} />
+                      <Layer id="partitions-label" type="symbol" layout={{
+                        "text-field": ["get", "name"],
+                        "text-size": 11,
+                        "text-font": ["DIN Pro Bold", "Arial Unicode MS Bold"],
+                      }} paint={{
+                        "text-color": ["get", "color"],
+                        "text-halo-color": "#0f172a",
+                        "text-halo-width": 1.5,
+                        "text-opacity": 0.7,
+                      }} />
+                    </Source>
+                  )}
+
+                  {/* ── All stops (colored by ownership) ── */}
                   {stopsGeoJSON && (
                     <Source id="cluster-stops" type="geojson" data={stopsGeoJSON as any}>
                       <Layer
                         id="stops-circle-layer"
                         type="circle"
                         paint={{
-                          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 2, 12, 4, 15, 7],
-                          "circle-color": [
-                            "case",
-                            ["==", ["get", "selected"], 1], activeColor,
-                            "#64748b",
-                          ],
+                          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 3.5, 11, 5, 14, 8, 17, 12],
+                          "circle-color": ["get", "color"],
                           "circle-opacity": [
                             "case",
-                            ["==", ["get", "selected"], 1], 1,
-                            editMode ? 0.6 : 0.35,
+                            ["==", ["get", "isActiveCluster"], 1], 1,
+                            ["==", ["get", "isOwned"], 1], 0.75,
+                            activeClusterId ? 0.6 : 0.4,
                           ],
-                          "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 2, 0.5],
-                          "circle-stroke-color": ["case", ["==", ["get", "selected"], 1], "#ffffff", "rgba(255,255,255,0.2)"],
+                          "circle-stroke-width": [
+                            "case",
+                            ["==", ["get", "isActiveCluster"], 1], 2.5,
+                            ["==", ["get", "isOwned"], 1], 1.5,
+                            0.8,
+                          ],
+                          "circle-stroke-color": [
+                            "case",
+                            ["==", ["get", "isActiveCluster"], 1], "#ffffff",
+                            ["==", ["get", "isOwned"], 1], "rgba(255,255,255,0.4)",
+                            "rgba(255,255,255,0.15)",
+                          ],
                         }}
                       />
                       <Layer
                         id="stops-label-layer"
                         type="symbol"
-                        minzoom={13}
+                        minzoom={12}
                         layout={{
                           "text-field": ["get", "stopName"],
-                          "text-size": 9,
-                          "text-offset": [0, 1.2],
+                          "text-size": ["interpolate", ["linear"], ["zoom"], 12, 8, 15, 10],
+                          "text-offset": [0, 1.3],
                           "text-anchor": "top",
                           "text-max-width": 8,
                         }}
                         paint={{
-                          "text-color": "#cbd5e1",
+                          "text-color": ["get", "color"],
                           "text-halo-color": "#0f172a",
-                          "text-halo-width": 1,
-                          "text-opacity": ["case", ["==", ["get", "selected"], 1], 1, 0.4],
+                          "text-halo-width": 1.2,
+                          "text-opacity": [
+                            "case",
+                            ["==", ["get", "isActiveCluster"], 1], 1,
+                            ["==", ["get", "isOwned"], 1], 0.6,
+                            0.3,
+                          ],
                         }}
                       />
                     </Source>
                   )}
 
-                  {/* Drawing polygon overlay */}
+                  {/* ── Drawing polygon ── */}
                   {polygonGeoJSON && (
                     <Source id="draw-polygon" type="geojson" data={polygonGeoJSON as any}>
-                      <Layer
-                        id="draw-polygon-fill"
-                        type="fill"
-                        filter={["==", ["get", "kind"], "fill"]}
-                        paint={{ "fill-color": activeColor, "fill-opacity": 0.15 }}
-                      />
-                      <Layer
-                        id="draw-polygon-stroke"
-                        type="line"
-                        paint={{ "line-color": activeColor, "line-width": 2, "line-dasharray": [3, 2], "line-opacity": 0.8 }}
-                      />
+                      <Layer id="draw-fill" type="fill" filter={["==", ["get", "kind"], "fill"]}
+                        paint={{ "fill-color": activeColor, "fill-opacity": 0.15 }} />
+                      <Layer id="draw-stroke" type="line"
+                        paint={{ "line-color": activeColor, "line-width": 2, "line-dasharray": [3, 2], "line-opacity": 0.8 }} />
                     </Source>
                   )}
 
-                  {/* Polygon vertex markers */}
+                  {/* Polygon vertices */}
                   {polygonPoints.map((pt, i) => (
                     <Marker key={`v-${i}`} longitude={pt[0]} latitude={pt[1]} anchor="center">
-                      <div className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-md" style={{ backgroundColor: activeColor }} />
+                      <div className="w-3 h-3 rounded-full border-2 border-white shadow-lg" style={{ backgroundColor: activeColor }} />
                     </Marker>
                   ))}
 
-                  {/* Cluster centroid markers */}
+                  {/* Cluster centroid labels */}
                   {clusters.map(c => c.centroidLat && c.centroidLon ? (
                     <Marker key={`ctr-${c.clusterId}`} longitude={c.centroidLon} latitude={c.centroidLat} anchor="center">
-                      <div
+                      <div onClick={() => selectCluster(c)}
                         className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-white text-[9px] font-bold shadow-lg cursor-pointer whitespace-nowrap transition-all ${
-                          selectedCluster === c.clusterId ? "scale-110 ring-2 ring-white/30" : "opacity-80 hover:opacity-100"
+                          activeClusterId === c.clusterId ? "scale-110 ring-2 ring-white/40" : "opacity-70 hover:opacity-100"
                         }`}
-                        style={{ backgroundColor: c.color + "cc" }}
-                        onClick={() => selectCluster(c)}
-                      >
+                        style={{ backgroundColor: c.color + "dd" }}>
                         <Hexagon className="w-2.5 h-2.5" />
                         {c.clusterName}
-                        <span className="ml-0.5 opacity-70">{c.stopCount}</span>
+                        <span className="ml-0.5 opacity-60">{c.stopCount}</span>
                       </div>
                     </Marker>
                   ) : null)}
                 </Map>
 
-                {/* Draw mode indicator */}
+                {/* Draw mode banner */}
                 {drawMode && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10">
-                    <motion.div
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="bg-primary/90 text-primary-foreground px-4 py-2 rounded-full text-xs font-medium flex items-center gap-2 shadow-lg"
-                    >
-                      ✏️
-                      {polygonPoints.length === 0
-                        ? "Clicca sulla mappa per iniziare a disegnare"
-                        : polygonPoints.length < 3
-                        ? `${polygonPoints.length} vertici — aggiungine ${3 - polygonPoints.length}`
-                        : `${polygonPoints.length} vertici — doppio-click per chiudere`}
+                    <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+                      className="bg-primary/90 text-primary-foreground px-4 py-2 rounded-full text-xs font-medium flex items-center gap-2 shadow-lg">
+                      ✏️ {polygonPoints.length === 0 ? "Clicca per iniziare" : polygonPoints.length < 3 ? `${polygonPoints.length} vertici — min 3` : `${polygonPoints.length} vertici — doppio-click per chiudere`}
                     </motion.div>
+                  </div>
+                )}
+
+                {/* Active cluster indicator */}
+                {activeClusterId && !drawMode && (
+                  <div className="absolute top-4 left-4 z-10">
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium shadow-lg backdrop-blur"
+                      style={{ backgroundColor: activeColor + "22", borderColor: activeColor + "44", border: "1px solid" }}>
+                      <div className="w-2.5 h-2.5 rounded-full" style={{ background: activeColor }} />
+                      <span style={{ color: activeColor }}>{activeCluster?.clusterName}</span>
+                      <span className="text-muted-foreground">— clicca fermate per assegnare</span>
+                    </div>
                   </div>
                 )}
 
@@ -2289,15 +2364,15 @@ function ClustersTab() {
                   <Badge variant="secondary" className="text-[10px] bg-background/80 backdrop-blur">
                     {extraStops.length} fermate
                   </Badge>
-                  {editMode && (
-                    <Badge variant="default" className="text-[10px]">
-                      {selectedStops.size} selezionate
+                  {activeClusterId && dirty && (
+                    <Badge className="text-[10px] bg-yellow-500/80">
+                      {pendingStops.size} selezionate • non salvate
                     </Badge>
                   )}
                 </div>
               </div>
             ) : (
-              <div className="h-[550px] flex items-center justify-center text-muted-foreground text-sm">
+              <div className="h-[600px] flex items-center justify-center text-muted-foreground text-sm">
                 Token Mapbox non configurato (VITE_MAPBOX_TOKEN)
               </div>
             )}

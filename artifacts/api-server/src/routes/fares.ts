@@ -1777,6 +1777,7 @@ router.get("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<vo
 });
 
 // POST /api/fares/zone-clusters/:clusterId/stops — set stops for a cluster (replace all)
+// ENFORCES PARTITION: each stop can belong to only one cluster
 router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
@@ -1785,20 +1786,31 @@ router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<v
     if (!Array.isArray(stops)) { res.status(400).json({ error: "stops array required" }); return; }
 
     const cid = req.params.clusterId;
+    const stopIds = stops.map(s => s.stopId);
 
-    // Delete existing stops for this cluster
+    // 1. Remove these stops from ANY other cluster (partition rule)
+    if (stopIds.length > 0) {
+      await db.delete(gtfsFareZoneClusterStops).where(
+        and(
+          eq(gtfsFareZoneClusterStops.feedId, feedId),
+          inArray(gtfsFareZoneClusterStops.stopId, stopIds),
+        )
+      );
+    }
+
+    // 2. Delete existing stops for this cluster (handles stops removed from this cluster)
     await db.delete(gtfsFareZoneClusterStops).where(
       and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, cid))
     );
 
-    // Insert new stops
+    // 3. Insert new stops for this cluster
     if (stops.length > 0) {
       await db.insert(gtfsFareZoneClusterStops).values(
         stops.map(s => ({ feedId, clusterId: cid, stopId: s.stopId, stopName: s.stopName, stopLat: s.stopLat, stopLon: s.stopLon }))
       );
     }
 
-    // Recalculate centroid from stops
+    // 4. Recalculate centroid from stops
     if (stops.length > 0) {
       const avgLat = stops.reduce((s, st) => s + st.stopLat, 0) / stops.length;
       const avgLon = stops.reduce((s, st) => s + st.stopLon, 0) / stops.length;
@@ -1807,7 +1819,57 @@ router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<v
         .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, cid)));
     }
 
+    // 5. Recalculate stop counts for ALL clusters (since we may have removed stops from others)
+    const allStopCounts = await db.execute(sql`
+      SELECT cluster_id, COUNT(*)::int AS cnt
+      FROM gtfs_fare_zone_cluster_stops
+      WHERE feed_id = ${feedId}
+      GROUP BY cluster_id
+    `);
+    // Update centroids for affected clusters too
+    for (const row of allStopCounts.rows as any[]) {
+      if (row.cluster_id !== cid) {
+        const clStops = await db.select().from(gtfsFareZoneClusterStops)
+          .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, row.cluster_id)));
+        if (clStops.length > 0) {
+          const aLat = clStops.reduce((s, st) => s + (st.stopLat || 0), 0) / clStops.length;
+          const aLon = clStops.reduce((s, st) => s + (st.stopLon || 0), 0) / clStops.length;
+          await db.update(gtfsFareZoneClusters)
+            .set({ centroidLat: aLat, centroidLon: aLon, updatedAt: sql`now()` })
+            .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, row.cluster_id)));
+        }
+      }
+    }
+
     res.json({ ok: true, stops: stops.length });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/zone-clusters/full — returns all clusters with ALL their stops in one call
+router.get("/fares/zone-clusters/full", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json({ clusters: [], allStops: [] }); return; }
+    const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId)).orderBy(gtfsFareZoneClusters.clusterName);
+    const allClusterStops = await db.select().from(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+
+    // Group stops by clusterId
+    const stopsByCluster = new Map<string, typeof allClusterStops>();
+    for (const s of allClusterStops) {
+      const arr = stopsByCluster.get(s.clusterId) || [];
+      arr.push(s);
+      stopsByCluster.set(s.clusterId, arr);
+    }
+
+    const result = clusters.map(c => ({
+      ...c,
+      stopCount: stopsByCluster.get(c.clusterId)?.length || 0,
+      stops: (stopsByCluster.get(c.clusterId) || []).map(s => ({
+        stopId: s.stopId, stopName: s.stopName, stopLat: s.stopLat, stopLon: s.stopLon,
+      })),
+    }));
+
+    res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
