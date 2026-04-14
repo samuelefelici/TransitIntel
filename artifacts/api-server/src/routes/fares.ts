@@ -1026,6 +1026,79 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// SIMULATE CLUSTER — ticket price based on cluster centroid distance
+// ═══════════════════════════════════════════════════════════
+router.post("/fares/simulate-cluster", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { fromStopId, toStopId } = req.body;
+    if (!fromStopId || !toStopId) { res.status(400).json({ error: "fromStopId and toStopId required" }); return; }
+
+    // Find the clusters these stops belong to
+    const allClusterStops = await db.select().from(gtfsFareZoneClusterStops)
+      .where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+
+    const fromCS = allClusterStops.find(s => s.stopId === fromStopId);
+    const toCS = allClusterStops.find(s => s.stopId === toStopId);
+
+    if (!fromCS) { res.status(404).json({ error: `Fermata partenza ${fromStopId} non assegnata a nessun cluster` }); return; }
+    if (!toCS) { res.status(404).json({ error: `Fermata arrivo ${toStopId} non assegnata a nessun cluster` }); return; }
+
+    // Load full cluster info
+    const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    const fromCluster = clusters.find(c => c.clusterId === fromCS.clusterId);
+    const toCluster = clusters.find(c => c.clusterId === toCS.clusterId);
+
+    if (!fromCluster || !toCluster) { res.status(404).json({ error: "Cluster non trovato" }); return; }
+
+    // Centroid-to-centroid distance
+    const distKm = fromCluster.clusterId === toCluster.clusterId
+      ? 0
+      : haversineKm(fromCluster.centroidLat!, fromCluster.centroidLon!, toCluster.centroidLat!, toCluster.centroidLon!);
+    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
+
+    // Get all stops for both clusters (for hull rendering)
+    const fromClusterStops = allClusterStops.filter(s => s.clusterId === fromCS.clusterId)
+      .map(s => ({ stopId: s.stopId, stopName: s.stopName, lat: s.stopLat!, lon: s.stopLon! }));
+    const toClusterStops = allClusterStops.filter(s => s.clusterId === toCS.clusterId)
+      .map(s => ({ stopId: s.stopId, stopName: s.stopName, lat: s.stopLat!, lon: s.stopLon! }));
+
+    // Stop info for from/to
+    const fromStopInfo = fromClusterStops.find(s => s.stopId === fromStopId);
+    const toStopInfo = toClusterStops.find(s => s.stopId === toStopId);
+
+    res.json({
+      type: "cluster",
+      fromStop: fromStopInfo ? { stopId: fromStopInfo.stopId, name: fromStopInfo.stopName, lat: fromStopInfo.lat, lon: fromStopInfo.lon } : null,
+      toStop: toStopInfo ? { stopId: toStopInfo.stopId, name: toStopInfo.stopName, lat: toStopInfo.lat, lon: toStopInfo.lon } : null,
+      fromCluster: {
+        clusterId: fromCluster.clusterId,
+        clusterName: fromCluster.clusterName,
+        color: fromCluster.color,
+        centroidLat: fromCluster.centroidLat,
+        centroidLon: fromCluster.centroidLon,
+        stops: fromClusterStops,
+      },
+      toCluster: {
+        clusterId: toCluster.clusterId,
+        clusterName: toCluster.clusterName,
+        color: toCluster.color,
+        centroidLat: toCluster.centroidLat,
+        centroidLon: toCluster.centroidLon,
+        stops: toClusterStops,
+      },
+      sameCluster: fromCluster.clusterId === toCluster.clusterId,
+      distanceKm: Math.round(distKm * 100) / 100,
+      fascia: band ? band.fascia : null,
+      amount: band ? band.price : null,
+      currency: "EUR",
+      bandRange: band ? `${band.kmFrom}-${band.kmTo} km` : null,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
 // GENERATE GTFS FILES — returns JSON with all CSV content
 // ═══════════════════════════════════════════════════════════
 

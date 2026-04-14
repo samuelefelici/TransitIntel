@@ -3254,14 +3254,55 @@ function GenerateTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// TAB 5: SIMULATORE BIGLIETTO + MAPPA
+// TAB 5: SIMULATORE BIGLIETTO + MAPPA (dual mode: Km Linea / Cluster)
 // ═══════════════════════════════════════════════════════════
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
+// ─── types for cluster simulation ──────────────────────
+interface ClusterSimResult {
+  type: "cluster";
+  fromStop: { stopId: string; name: string; lat: number; lon: number } | null;
+  toStop: { stopId: string; name: string; lat: number; lon: number } | null;
+  fromCluster: {
+    clusterId: string; clusterName: string; color: string;
+    centroidLat: number; centroidLon: number;
+    stops: { stopId: string; stopName: string; lat: number; lon: number }[];
+  };
+  toCluster: {
+    clusterId: string; clusterName: string; color: string;
+    centroidLat: number; centroidLon: number;
+    stops: { stopId: string; stopName: string; lat: number; lon: number }[];
+  };
+  sameCluster: boolean;
+  distanceKm: number;
+  fascia: number | null;
+  amount: number | null;
+  currency: string;
+  bandRange: string | null;
+}
+
+// Convex hull for map display (reuse logic from ClustersTab)
+function simConvexHull(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points;
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const p of sorted) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  const upper: [number, number][] = [];
+  for (const p of sorted.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
 function SimulateTab() {
   const { toast } = useToast();
   const mapRef = useRef<MapRef>(null);
+
+  // ── Sim mode ──
+  const [simMode, setSimMode] = useState<"line" | "cluster">("line");
+
+  // ── Line-based (km) state ──
   const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
   const [selectedNetwork, setSelectedNetwork] = useState("");
   const [selectedRoute, setSelectedRoute] = useState("");
@@ -3272,10 +3313,22 @@ function SimulateTab() {
   const [loading, setLoading] = useState(false);
   const [loadingStops, setLoadingStops] = useState(false);
 
+  // ── Cluster-based state ──
+  const [clExtraStops, setClExtraStops] = useState<ExtraStop[]>([]);
+  const [clFrom, setClFrom] = useState("");
+  const [clTo, setClTo] = useState("");
+  const [clResult, setClResult] = useState<ClusterSimResult | null>(null);
+  const [clLoading, setClLoading] = useState(false);
+  const [clSearchFrom, setClSearchFrom] = useState("");
+  const [clSearchTo, setClSearchTo] = useState("");
+
+  // ── Load route networks + cluster extraurban stops ──
   useEffect(() => {
     apiFetch<RouteNetwork[]>("/api/fares/route-networks").then(setRouteNets).catch(() => {});
+    apiFetch<ExtraStop[]>("/api/fares/extraurban-stops").then(setClExtraStops).catch(() => {});
   }, []);
 
+  // ──────────── LINE MODE logic ──────────────
   const filteredRoutes = routeNets.filter(r => r.networkId === selectedNetwork);
 
   useEffect(() => {
@@ -3290,7 +3343,6 @@ function SimulateTab() {
     }
   }, [selectedNetwork, selectedRoute]);
 
-  // Fit map to route stops when they load
   useEffect(() => {
     if (routeStops.length > 1 && mapRef.current) {
       const lats = routeStops.map(s => s.lat);
@@ -3302,7 +3354,6 @@ function SimulateTab() {
     }
   }, [routeStops]);
 
-  // Fit to simulation result
   useEffect(() => {
     if (result?.intermediateStops && result.intermediateStops.length > 1 && mapRef.current) {
       const lats = result.intermediateStops.map(s => s.lat);
@@ -3314,7 +3365,7 @@ function SimulateTab() {
     }
   }, [result]);
 
-  const simulate = async () => {
+  const simulateLine = async () => {
     if (!selectedNetwork) return;
     setLoading(true);
     setResult(null);
@@ -3337,39 +3388,114 @@ function SimulateTab() {
     setLoading(false);
   };
 
-  // GeoJSON for the route line (all stops of the route)
+  // ──────────── CLUSTER MODE logic ──────────────
+  const filteredFromStops = useMemo(() => {
+    if (!clSearchFrom) return clExtraStops.slice(0, 100);
+    const q = clSearchFrom.toLowerCase();
+    return clExtraStops.filter(s => s.stop_name.toLowerCase().includes(q) || s.stop_id.includes(q)).slice(0, 100);
+  }, [clExtraStops, clSearchFrom]);
+
+  const filteredToStops = useMemo(() => {
+    if (!clSearchTo) return clExtraStops.slice(0, 100);
+    const q = clSearchTo.toLowerCase();
+    return clExtraStops.filter(s => s.stop_name.toLowerCase().includes(q) || s.stop_id.includes(q)).slice(0, 100);
+  }, [clExtraStops, clSearchTo]);
+
+  const simulateCluster = async () => {
+    if (!clFrom || !clTo) return;
+    setClLoading(true);
+    setClResult(null);
+    try {
+      const data = await apiFetch<ClusterSimResult>("/api/fares/simulate-cluster", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fromStopId: clFrom, toStopId: clTo }),
+      });
+      setClResult(data);
+      // Fit map to show both clusters
+      if (data.fromCluster && data.toCluster && mapRef.current) {
+        const allPts = [...data.fromCluster.stops, ...data.toCluster.stops];
+        if (allPts.length > 0) {
+          const lats = allPts.map(s => s.lat);
+          const lons = allPts.map(s => s.lon);
+          mapRef.current.fitBounds(
+            [[Math.min(...lons) - 0.03, Math.min(...lats) - 0.02], [Math.max(...lons) + 0.03, Math.max(...lats) + 0.02]],
+            { padding: 50, duration: 800 }
+          );
+        }
+      }
+    } catch (e: any) {
+      toast({ title: "Errore simulazione", description: e.message, variant: "destructive" });
+    }
+    setClLoading(false);
+  };
+
+  // ── Cluster hulls GeoJSON ──
+  const clusterHullsGeoJSON = useMemo(() => {
+    if (!clResult) return null;
+    const features: any[] = [];
+    const makeHull = (cluster: ClusterSimResult["fromCluster"], label: string) => {
+      if (cluster.stops.length < 3) return;
+      const pts: [number, number][] = cluster.stops.map(s => [s.lon, s.lat]);
+      const hull = simConvexHull(pts);
+      if (hull.length >= 3) {
+        const cx = hull.reduce((s, p) => s + p[0], 0) / hull.length;
+        const cy = hull.reduce((s, p) => s + p[1], 0) / hull.length;
+        const buffered = hull.map(p => {
+          const dx = p[0] - cx, dy = p[1] - cy;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const buf = 0.004;
+          return [p[0] + (len > 0 ? (dx / len) * buf : 0), p[1] + (len > 0 ? (dy / len) * buf : 0)] as [number, number];
+        });
+        const closed = [...buffered, buffered[0]];
+        features.push({
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [closed] },
+          properties: { color: cluster.color, name: cluster.clusterName, label },
+        });
+      }
+    };
+    makeHull(clResult.fromCluster, "from");
+    if (!clResult.sameCluster) makeHull(clResult.toCluster, "to");
+    return { type: "FeatureCollection", features };
+  }, [clResult]);
+
+  // ── Centroid line GeoJSON ──
+  const centroidLineGeoJSON = useMemo(() => {
+    if (!clResult || clResult.sameCluster) return null;
+    return {
+      type: "FeatureCollection",
+      features: [{
+        type: "Feature",
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [clResult.fromCluster.centroidLon, clResult.fromCluster.centroidLat],
+            [clResult.toCluster.centroidLon, clResult.toCluster.centroidLat],
+          ],
+        },
+        properties: {},
+      }],
+    };
+  }, [clResult]);
+
+  // ── Line-mode GeoJSON ──
   const routeLineGeoJson = useMemo(() => {
     if (routeStops.length < 2) return null;
     return {
       type: "FeatureCollection" as const,
-      features: [{
-        type: "Feature" as const,
-        properties: {},
-        geometry: {
-          type: "LineString" as const,
-          coordinates: routeStops.map(s => [s.lon, s.lat]),
-        },
-      }],
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: routeStops.map(s => [s.lon, s.lat]) } }],
     };
   }, [routeStops]);
 
-  // GeoJSON for the highlighted segment (from → to)
   const segmentGeoJson = useMemo(() => {
     if (!result?.intermediateStops || result.intermediateStops.length < 2) return null;
     return {
       type: "FeatureCollection" as const,
-      features: [{
-        type: "Feature" as const,
-        properties: {},
-        geometry: {
-          type: "LineString" as const,
-          coordinates: result.intermediateStops.map(s => [s.lon, s.lat]),
-        },
-      }],
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: result.intermediateStops.map(s => [s.lon, s.lat]) } }],
     };
   }, [result]);
 
-  // GeoJSON for all stops as points
   const stopsGeoJson = useMemo(() => {
     if (routeStops.length === 0) return null;
     return {
@@ -3377,11 +3503,8 @@ function SimulateTab() {
       features: routeStops.map(s => ({
         type: "Feature" as const,
         properties: {
-          stopId: s.stopId,
-          name: s.stopName,
-          km: s.progressiveKm,
-          isFrom: s.stopId === fromStop,
-          isTo: s.stopId === toStop,
+          stopId: s.stopId, name: s.stopName, km: s.progressiveKm,
+          isFrom: s.stopId === fromStop, isTo: s.stopId === toStop,
           isIntermediate: result?.intermediateStops?.some(is => is.stopId === s.stopId) ?? false,
         },
         geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
@@ -3389,342 +3512,514 @@ function SimulateTab() {
     };
   }, [routeStops, fromStop, toStop, result]);
 
+  // ═══════════ RENDER ═══════════
   return (
     <div className="space-y-4">
-      {/* Controls */}
-      <Card className="bg-card/50">
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base flex items-center gap-2">
-            <Play className="w-4 h-4 text-primary" />
-            Simulatore Validazione Biglietto
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Network selection */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Rete Tariffaria</label>
-              <select
-                value={selectedNetwork}
-                onChange={e => { setSelectedNetwork(e.target.value); setSelectedRoute(""); setResult(null); }}
-                className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-              >
-                <option value="">— Seleziona rete —</option>
-                {NETWORK_OPTIONS.map(n => <option key={n.value} value={n.value}>{n.label}</option>)}
-              </select>
-            </div>
+      {/* Mode switcher */}
+      <div className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 w-fit">
+        <button
+          onClick={() => { setSimMode("line"); setClResult(null); }}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            simMode === "line" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <ArrowRightLeft className="w-3.5 h-3.5" /> Km per Linea
+        </button>
+        <button
+          onClick={() => { setSimMode("cluster"); setResult(null); }}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            simMode === "cluster" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Hexagon className="w-3.5 h-3.5" /> Cluster
+        </button>
+      </div>
 
-            {selectedNetwork === "extraurbano" && (
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">Linea</label>
-                <select
-                  value={selectedRoute}
-                  onChange={e => { setSelectedRoute(e.target.value); setFromStop(""); setToStop(""); setResult(null); }}
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                >
-                  <option value="">— Seleziona linea —</option>
-                  {filteredRoutes.map(r => (
-                    <option key={r.routeId} value={r.routeId}>{r.shortName || r.routeId} — {r.longName}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
-
-          {/* Stop selection for extraurban */}
-          {selectedNetwork === "extraurbano" && selectedRoute && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                    Fermata Salita
-                  </span>
-                </label>
-                <select
-                  value={fromStop}
-                  onChange={e => { setFromStop(e.target.value); setResult(null); }}
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                  disabled={loadingStops}
-                >
-                  <option value="">— Seleziona fermata —</option>
-                  {routeStops.map(s => (
-                    <option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted-foreground mb-1">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-                    Fermata Discesa
-                  </span>
-                </label>
-                <select
-                  value={toStop}
-                  onChange={e => { setToStop(e.target.value); setResult(null); }}
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30"
-                  disabled={loadingStops}
-                >
-                  <option value="">— Seleziona fermata —</option>
-                  {routeStops.map(s => (
-                    <option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
-          <Button
-            onClick={simulate}
-            disabled={loading || !selectedNetwork || (selectedNetwork === "extraurbano" && (!selectedRoute || !fromStop || !toStop))}
-            className="w-full sm:w-auto"
-          >
-            {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-            Calcola Tariffa
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Map + Result side-by-side */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Map (takes 3/5 on large screens) */}
-        {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && (
-          <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
-            <div className="relative w-full h-[400px] lg:h-[500px]">
-              <Map
-                ref={mapRef}
-                mapboxAccessToken={MAPBOX_TOKEN}
-                initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
-                style={{ width: "100%", height: "100%" }}
-                mapStyle="mapbox://styles/mapbox/dark-v11"
-                attributionControl={false}
-              >
-                {/* Full route line (grey) */}
-                {routeLineGeoJson && (
-                  <Source id="route-line" type="geojson" data={routeLineGeoJson}>
-                    <Layer
-                      id="route-line-layer"
-                      type="line"
-                      paint={{ "line-color": "#6b7280", "line-width": 3, "line-opacity": 0.5, "line-dasharray": [2, 2] }}
-                    />
-                  </Source>
+      {/* ══════════════ LINE MODE ══════════════ */}
+      {simMode === "line" && (
+        <>
+          <Card className="bg-card/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Play className="w-4 h-4 text-primary" />
+                Simulatore per Km Linea
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">Rete Tariffaria</label>
+                  <select value={selectedNetwork}
+                    onChange={e => { setSelectedNetwork(e.target.value); setSelectedRoute(""); setResult(null); }}
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30">
+                    <option value="">— Seleziona rete —</option>
+                    {NETWORK_OPTIONS.map(n => <option key={n.value} value={n.value}>{n.label}</option>)}
+                  </select>
+                </div>
+                {selectedNetwork === "extraurbano" && (
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">Linea</label>
+                    <select value={selectedRoute}
+                      onChange={e => { setSelectedRoute(e.target.value); setFromStop(""); setToStop(""); setResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30">
+                      <option value="">— Seleziona linea —</option>
+                      {filteredRoutes.map(r => (
+                        <option key={r.routeId} value={r.routeId}>{r.shortName || r.routeId} — {r.longName}</option>
+                      ))}
+                    </select>
+                  </div>
                 )}
-
-                {/* Highlighted segment (bright) */}
-                {segmentGeoJson && (
-                  <Source id="segment-line" type="geojson" data={segmentGeoJson}>
-                    <Layer
-                      id="segment-line-layer"
-                      type="line"
-                      paint={{ "line-color": "#10b981", "line-width": 5, "line-opacity": 0.9 }}
-                    />
-                  </Source>
-                )}
-
-                {/* All stops */}
-                {stopsGeoJson && (
-                  <Source id="stops-points" type="geojson" data={stopsGeoJson}>
-                    {/* Default stops (small grey) */}
-                    <Layer
-                      id="stops-default"
-                      type="circle"
-                      filter={["all", ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]], ["!", ["get", "isIntermediate"]]]}
-                      paint={{
-                        "circle-radius": 4,
-                        "circle-color": "#6b7280",
-                        "circle-stroke-width": 1,
-                        "circle-stroke-color": "#374151",
-                        "circle-opacity": 0.6,
-                      }}
-                    />
-                    {/* Intermediate stops (teal) */}
-                    <Layer
-                      id="stops-intermediate"
-                      type="circle"
-                      filter={["all", ["get", "isIntermediate"], ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]]]}
-                      paint={{
-                        "circle-radius": 5,
-                        "circle-color": "#14b8a6",
-                        "circle-stroke-width": 1.5,
-                        "circle-stroke-color": "#fff",
-                        "circle-opacity": 0.8,
-                      }}
-                    />
-                  </Source>
-                )}
-
-                {/* Origin marker (green) */}
-                {fromStop && routeStops.find(s => s.stopId === fromStop) && (() => {
-                  const s = routeStops.find(s => s.stopId === fromStop)!;
-                  return (
-                    <Marker longitude={s.lon} latitude={s.lat} anchor="center">
-                      <div className="relative">
-                        <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-lg flex items-center justify-center">
-                          <Navigation className="w-3 h-3 text-white" />
-                        </div>
-                        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-emerald-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
-                          SALITA
-                        </div>
-                      </div>
-                    </Marker>
-                  );
-                })()}
-
-                {/* Destination marker (red) */}
-                {toStop && routeStops.find(s => s.stopId === toStop) && (() => {
-                  const s = routeStops.find(s => s.stopId === toStop)!;
-                  return (
-                    <Marker longitude={s.lon} latitude={s.lat} anchor="center">
-                      <div className="relative">
-                        <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center">
-                          <MapPin className="w-3 h-3 text-white" />
-                        </div>
-                        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">
-                          DISCESA
-                        </div>
-                      </div>
-                    </Marker>
-                  );
-                })()}
-              </Map>
-
-              {/* Map legend overlay */}
-              <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Salita</div>
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa</div>
-                <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-teal-500" /> Tratta</div>
-                <div className="flex items-center gap-1.5"><span className="w-6 h-0.5 bg-gray-400 opacity-60" style={{ borderStyle: "dashed" }} /> Percorso</div>
               </div>
-            </div>
+              {selectedNetwork === "extraurbano" && selectedRoute && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Fermata Salita</span>
+                    </label>
+                    <select value={fromStop} onChange={e => { setFromStop(e.target.value); setResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={loadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {routeStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fermata Discesa</span>
+                    </label>
+                    <select value={toStop} onChange={e => { setToStop(e.target.value); setResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={loadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {routeStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                </div>
+              )}
+              <Button onClick={simulateLine}
+                disabled={loading || !selectedNetwork || (selectedNetwork === "extraurbano" && (!selectedRoute || !fromStop || !toStop))}
+                className="w-full sm:w-auto">
+                {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                Calcola Tariffa
+              </Button>
+            </CardContent>
           </Card>
-        )}
 
-        {/* Result card (takes 2/5 on lg, full width if no map) */}
-        <div className={`space-y-4 ${selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 ? "lg:col-span-2" : "lg:col-span-5"}`}>
-          <AnimatePresence>
-            {result && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                <Card className="bg-emerald-500/5 border-emerald-500/20">
+          {/* Map + Result for line mode */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && (
+              <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
+                <div className="relative w-full h-[400px] lg:h-[500px]">
+                  <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
+                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
+                    {routeLineGeoJson && (
+                      <Source id="route-line" type="geojson" data={routeLineGeoJson}>
+                        <Layer id="route-line-layer" type="line" paint={{ "line-color": "#6b7280", "line-width": 3, "line-opacity": 0.5, "line-dasharray": [2, 2] }} />
+                      </Source>
+                    )}
+                    {segmentGeoJson && (
+                      <Source id="segment-line" type="geojson" data={segmentGeoJson}>
+                        <Layer id="segment-line-layer" type="line" paint={{ "line-color": "#10b981", "line-width": 5, "line-opacity": 0.9 }} />
+                      </Source>
+                    )}
+                    {stopsGeoJson && (
+                      <Source id="stops-points" type="geojson" data={stopsGeoJson}>
+                        <Layer id="stops-default" type="circle"
+                          filter={["all", ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]], ["!", ["get", "isIntermediate"]]]}
+                          paint={{ "circle-radius": 4, "circle-color": "#6b7280", "circle-stroke-width": 1, "circle-stroke-color": "#374151", "circle-opacity": 0.6 }} />
+                        <Layer id="stops-intermediate" type="circle"
+                          filter={["all", ["get", "isIntermediate"], ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]]]}
+                          paint={{ "circle-radius": 5, "circle-color": "#14b8a6", "circle-stroke-width": 1.5, "circle-stroke-color": "#fff", "circle-opacity": 0.8 }} />
+                      </Source>
+                    )}
+                    {fromStop && routeStops.find(s => s.stopId === fromStop) && (() => {
+                      const s = routeStops.find(s => s.stopId === fromStop)!;
+                      return (
+                        <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                          <div className="relative">
+                            <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-lg flex items-center justify-center"><Navigation className="w-3 h-3 text-white" /></div>
+                            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-emerald-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">SALITA</div>
+                          </div>
+                        </Marker>
+                      );
+                    })()}
+                    {toStop && routeStops.find(s => s.stopId === toStop) && (() => {
+                      const s = routeStops.find(s => s.stopId === toStop)!;
+                      return (
+                        <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                          <div className="relative">
+                            <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center"><MapPin className="w-3 h-3 text-white" /></div>
+                            <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">DISCESA</div>
+                          </div>
+                        </Marker>
+                      );
+                    })()}
+                  </Map>
+                  <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Salita</div>
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa</div>
+                    <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-teal-500" /> Tratta</div>
+                  </div>
+                </div>
+              </Card>
+            )}
+            <div className={`space-y-4 ${selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 ? "lg:col-span-2" : "lg:col-span-5"}`}>
+              <AnimatePresence>
+                {result && (
+                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                    <Card className="bg-emerald-500/5 border-emerald-500/20">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2 text-emerald-400">
+                          <CheckCircle2 className="w-4 h-4" /> Risultato Simulazione
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {result.type === "urban" ? (
+                          <div className="space-y-2">
+                            <p className="text-sm">Tariffa <strong>flat</strong> per la rete <Badge variant="outline">{NETWORK_OPTIONS.find(n => n.value === result.networkId)?.label}</Badge></p>
+                            <div className="space-y-2 mt-3">
+                              {result.products?.map(p => (
+                                <div key={p.fareProductId} className="flex items-center justify-between p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
+                                  <div>
+                                    <p className="text-sm font-medium">{p.name}</p>
+                                    {p.durationMinutes && <p className="text-[10px] text-muted-foreground">Validità: {p.durationMinutes} min</p>}
+                                  </div>
+                                  <span className="text-xl font-bold text-emerald-400">€{p.amount.toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground"><Bus className="w-3.5 h-3.5" /><span>Linea {result.routeId}</span></div>
+                            <div className="flex items-start gap-3">
+                              <div className="flex flex-col items-center gap-1 pt-1">
+                                <div className="w-3 h-3 rounded-full bg-emerald-500 border-2 border-emerald-300" />
+                                <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-rose-500 rounded" />
+                                <div className="w-3 h-3 rounded-full bg-rose-500 border-2 border-rose-300" />
+                              </div>
+                              <div className="flex-1 space-y-2">
+                                <div><p className="text-xs text-muted-foreground">Salita — km {result.fromStop?.km?.toFixed(1)}</p><p className="text-sm font-medium">{result.fromStop?.name}</p></div>
+                                <div><p className="text-xs text-muted-foreground">Discesa — km {result.toStop?.km?.toFixed(1)}</p><p className="text-sm font-medium">{result.toStop?.name}</p></div>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-2">
+                              <div className="p-2 rounded-lg bg-muted/20 text-center">
+                                <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
+                                <p className="text-lg font-bold">{result.distanceKm?.toFixed(1)} <span className="text-xs font-normal">km</span></p>
+                              </div>
+                              <div className="p-2 rounded-lg bg-muted/20 text-center">
+                                <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
+                                <p className="text-lg font-bold">F{result.fascia}</p>
+                              </div>
+                              <div className="p-2 rounded-lg bg-muted/20 text-center">
+                                <p className="text-[10px] text-muted-foreground uppercase">Range</p>
+                                <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-emerald-500/5">
+                              <div>
+                                <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
+                                <p className="text-[10px] text-muted-foreground">{result.intermediateStops?.length || 0} fermate nel percorso</p>
+                              </div>
+                              <span className="text-4xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && !result && (
+                <Card className="bg-card/50">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2 text-emerald-400">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Risultato Simulazione
-                    </CardTitle>
+                    <CardTitle className="text-sm flex items-center gap-2"><MapPin className="w-3.5 h-3.5 text-primary" /> Fermate della linea ({routeStops.length})</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {result.type === "urban" ? (
-                      <div className="space-y-2">
-                        <p className="text-sm">Tariffa <strong>flat</strong> per la rete <Badge variant="outline">{NETWORK_OPTIONS.find(n => n.value === result.networkId)?.label}</Badge></p>
-                        <div className="space-y-2 mt-3">
-                          {result.products?.map(p => (
-                            <div key={p.fareProductId} className="flex items-center justify-between p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
-                              <div>
-                                <p className="text-sm font-medium">{p.name}</p>
-                                {p.durationMinutes && <p className="text-[10px] text-muted-foreground">Validità: {p.durationMinutes} min</p>}
-                              </div>
-                              <span className="text-xl font-bold text-emerald-400">€{p.amount.toFixed(2)}</span>
-                            </div>
-                          ))}
+                    <div className="max-h-[300px] overflow-auto space-y-0.5">
+                      {routeStops.map((s, i) => (
+                        <div key={s.stopId}
+                          className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
+                            s.stopId === fromStop ? "bg-emerald-500/10 text-emerald-400" :
+                            s.stopId === toStop ? "bg-rose-500/10 text-rose-400" : "text-muted-foreground hover:bg-muted/20"
+                          }`}>
+                          <span className="w-5 text-right font-mono text-[10px] opacity-50">{i + 1}</span>
+                          <span className={`w-2 h-2 rounded-full ${s.stopId === fromStop ? "bg-emerald-500" : s.stopId === toStop ? "bg-rose-500" : "bg-gray-500/40"}`} />
+                          <span className="flex-1 truncate">{s.stopName}</span>
+                          <span className="font-mono text-[10px] opacity-60">km {s.progressiveKm.toFixed(1)}</span>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        {/* Route info */}
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Bus className="w-3.5 h-3.5" />
-                          <span>Linea {result.routeId}</span>
-                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
-                        {/* From → To */}
+      {/* ══════════════ CLUSTER MODE ══════════════ */}
+      {simMode === "cluster" && (
+        <>
+          <Card className="bg-card/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Hexagon className="w-4 h-4 text-violet-400" />
+                Simulatore per Cluster
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">
+                    <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Fermata Salita</span>
+                  </label>
+                  <input value={clSearchFrom} onChange={e => { setClSearchFrom(e.target.value); setClFrom(""); setClResult(null); }}
+                    placeholder="Cerca fermata di salita..."
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30 mb-1" />
+                  {(clSearchFrom && !clFrom) && (
+                    <div className="max-h-[150px] overflow-auto rounded-lg border border-border/30 bg-background/80">
+                      {filteredFromStops.map(s => (
+                        <button key={s.stop_id} onClick={() => { setClFrom(s.stop_id); setClSearchFrom(s.stop_name); setClResult(null); }}
+                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors border-b border-border/10 truncate">
+                          <span className="font-medium">{s.stop_name}</span> <span className="text-muted-foreground ml-1">({s.stop_id})</span>
+                        </button>
+                      ))}
+                      {filteredFromStops.length === 0 && <p className="p-3 text-xs text-muted-foreground">Nessun risultato</p>}
+                    </div>
+                  )}
+                  {clFrom && <p className="text-[10px] text-emerald-400 mt-0.5">✓ {clExtraStops.find(s => s.stop_id === clFrom)?.stop_name}</p>}
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-muted-foreground mb-1">
+                    <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fermata Discesa</span>
+                  </label>
+                  <input value={clSearchTo} onChange={e => { setClSearchTo(e.target.value); setClTo(""); setClResult(null); }}
+                    placeholder="Cerca fermata di discesa..."
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30 mb-1" />
+                  {(clSearchTo && !clTo) && (
+                    <div className="max-h-[150px] overflow-auto rounded-lg border border-border/30 bg-background/80">
+                      {filteredToStops.map(s => (
+                        <button key={s.stop_id} onClick={() => { setClTo(s.stop_id); setClSearchTo(s.stop_name); setClResult(null); }}
+                          className="w-full text-left px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors border-b border-border/10 truncate">
+                          <span className="font-medium">{s.stop_name}</span> <span className="text-muted-foreground ml-1">({s.stop_id})</span>
+                        </button>
+                      ))}
+                      {filteredToStops.length === 0 && <p className="p-3 text-xs text-muted-foreground">Nessun risultato</p>}
+                    </div>
+                  )}
+                  {clTo && <p className="text-[10px] text-rose-400 mt-0.5">✓ {clExtraStops.find(s => s.stop_id === clTo)?.stop_name}</p>}
+                </div>
+              </div>
+              <Button onClick={simulateCluster} disabled={clLoading || !clFrom || !clTo} className="w-full sm:w-auto">
+                {clLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                Calcola Tariffa per Cluster
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Map + Result for cluster mode */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            {/* Map with cluster hulls */}
+            {(clFrom || clTo || clResult) && (
+              <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
+                <div className="relative w-full h-[400px] lg:h-[500px]">
+                  <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
+                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/navigation-night-v1" attributionControl={false}>
+
+                    {/* Cluster hull fills */}
+                    {clusterHullsGeoJSON && (
+                      <Source id="cl-hulls" type="geojson" data={clusterHullsGeoJSON as any}>
+                        <Layer id="cl-hull-fill" type="fill"
+                          paint={{ "fill-color": ["get", "color"], "fill-opacity": 0.2 }} />
+                        <Layer id="cl-hull-stroke" type="line"
+                          paint={{ "line-color": ["get", "color"], "line-width": 2.5, "line-opacity": 0.7 }} />
+                        <Layer id="cl-hull-label" type="symbol"
+                          layout={{
+                            "text-field": ["get", "name"],
+                            "text-size": 11,
+                            "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"],
+                          }}
+                          paint={{ "text-color": ["get", "color"], "text-halo-color": "#0f172a", "text-halo-width": 1.5 }} />
+                      </Source>
+                    )}
+
+                    {/* Centroid-to-centroid line */}
+                    {centroidLineGeoJSON && (
+                      <Source id="cl-centroid-line" type="geojson" data={centroidLineGeoJSON as any}>
+                        <Layer id="cl-centroid-line-layer" type="line"
+                          paint={{ "line-color": "#ffffff", "line-width": 2, "line-dasharray": [4, 3], "line-opacity": 0.6 }} />
+                      </Source>
+                    )}
+
+                    {/* From stop marker */}
+                    {clResult?.fromStop && (
+                      <Marker longitude={clResult.fromStop.lon} latitude={clResult.fromStop.lat} anchor="center">
+                        <div className="relative">
+                          <div className="w-7 h-7 rounded-full border-3 border-white shadow-xl flex items-center justify-center"
+                            style={{ backgroundColor: clResult.fromCluster.color }}>
+                            <Navigation className="w-3.5 h-3.5 text-white" />
+                          </div>
+                          <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-white text-[8px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap shadow-lg"
+                            style={{ backgroundColor: clResult.fromCluster.color + "dd" }}>
+                            SALITA
+                          </div>
+                        </div>
+                      </Marker>
+                    )}
+
+                    {/* To stop marker */}
+                    {clResult?.toStop && (
+                      <Marker longitude={clResult.toStop.lon} latitude={clResult.toStop.lat} anchor="center">
+                        <div className="relative">
+                          <div className="w-7 h-7 rounded-full border-3 border-white shadow-xl flex items-center justify-center"
+                            style={{ backgroundColor: clResult.toCluster.color }}>
+                            <MapPin className="w-3.5 h-3.5 text-white" />
+                          </div>
+                          <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-white text-[8px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap shadow-lg"
+                            style={{ backgroundColor: clResult.toCluster.color + "dd" }}>
+                            DISCESA
+                          </div>
+                        </div>
+                      </Marker>
+                    )}
+
+                    {/* Centroid markers */}
+                    {clResult && (
+                      <>
+                        <Marker longitude={clResult.fromCluster.centroidLon} latitude={clResult.fromCluster.centroidLat} anchor="center">
+                          <div className="w-3 h-3 rounded-full border-2 border-white/60 opacity-70" style={{ backgroundColor: clResult.fromCluster.color }} />
+                        </Marker>
+                        {!clResult.sameCluster && (
+                          <Marker longitude={clResult.toCluster.centroidLon} latitude={clResult.toCluster.centroidLat} anchor="center">
+                            <div className="w-3 h-3 rounded-full border-2 border-white/60 opacity-70" style={{ backgroundColor: clResult.toCluster.color }} />
+                          </Marker>
+                        )}
+                      </>
+                    )}
+                  </Map>
+
+                  {/* Legend */}
+                  {clResult && (
+                    <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2.5 rounded-lg space-y-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: clResult.fromCluster.color + "44", border: `2px solid ${clResult.fromCluster.color}` }} />
+                        {clResult.fromCluster.clusterName}
+                      </div>
+                      {!clResult.sameCluster && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: clResult.toCluster.color + "44", border: `2px solid ${clResult.toCluster.color}` }} />
+                          {clResult.toCluster.clusterName}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-4 h-0 border-t-2 border-dashed border-white/60" />
+                        Distanza centroidi
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {/* Result card */}
+            <div className={`space-y-4 ${(clFrom || clTo || clResult) ? "lg:col-span-2" : "lg:col-span-5"}`}>
+              <AnimatePresence>
+                {clResult && (
+                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                    <Card className="bg-violet-500/5 border-violet-500/20">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2 text-violet-400">
+                          <CheckCircle2 className="w-4 h-4" /> Risultato Simulazione Cluster
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {/* From cluster → To cluster */}
                         <div className="flex items-start gap-3">
                           <div className="flex flex-col items-center gap-1 pt-1">
-                            <div className="w-3 h-3 rounded-full bg-emerald-500 border-2 border-emerald-300" />
-                            <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-rose-500 rounded" />
-                            <div className="w-3 h-3 rounded-full bg-rose-500 border-2 border-rose-300" />
+                            <div className="w-4 h-4 rounded-full border-2" style={{ backgroundColor: clResult.fromCluster.color, borderColor: clResult.fromCluster.color + "88" }} />
+                            <div className="w-0.5 h-10 rounded" style={{ background: `linear-gradient(${clResult.fromCluster.color}, ${clResult.toCluster.color})` }} />
+                            <div className="w-4 h-4 rounded-full border-2" style={{ backgroundColor: clResult.toCluster.color, borderColor: clResult.toCluster.color + "88" }} />
                           </div>
-                          <div className="flex-1 space-y-2">
+                          <div className="flex-1 space-y-3">
                             <div>
-                              <p className="text-xs text-muted-foreground">Salita — km {result.fromStop?.km?.toFixed(1)}</p>
-                              <p className="text-sm font-medium">{result.fromStop?.name}</p>
+                              <p className="text-[10px] text-muted-foreground">Salita</p>
+                              <p className="text-sm font-medium">{clResult.fromStop?.name}</p>
+                              <p className="text-[10px] mt-0.5 px-1.5 py-0.5 rounded-full w-fit" style={{ backgroundColor: clResult.fromCluster.color + "22", color: clResult.fromCluster.color }}>
+                                {clResult.fromCluster.clusterName}
+                              </p>
                             </div>
                             <div>
-                              <p className="text-xs text-muted-foreground">Discesa — km {result.toStop?.km?.toFixed(1)}</p>
-                              <p className="text-sm font-medium">{result.toStop?.name}</p>
+                              <p className="text-[10px] text-muted-foreground">Discesa</p>
+                              <p className="text-sm font-medium">{clResult.toStop?.name}</p>
+                              <p className="text-[10px] mt-0.5 px-1.5 py-0.5 rounded-full w-fit" style={{ backgroundColor: clResult.toCluster.color + "22", color: clResult.toCluster.color }}>
+                                {clResult.toCluster.clusterName}
+                              </p>
                             </div>
                           </div>
                         </div>
 
-                        {/* Stats row */}
-                        <div className="grid grid-cols-3 gap-2">
-                          <div className="p-2 rounded-lg bg-muted/20 text-center">
-                            <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
-                            <p className="text-lg font-bold">{result.distanceKm?.toFixed(1)} <span className="text-xs font-normal">km</span></p>
+                        {clResult.sameCluster ? (
+                          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-sm text-center">
+                            <p className="font-medium text-blue-300">Stesso Cluster</p>
+                            <p className="text-xs text-muted-foreground">Le fermate appartengono allo stesso cluster</p>
                           </div>
-                          <div className="p-2 rounded-lg bg-muted/20 text-center">
-                            <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
-                            <p className="text-lg font-bold">F{result.fascia}</p>
+                        ) : (
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
+                              <p className="text-lg font-bold">{clResult.distanceKm.toFixed(1)} <span className="text-xs font-normal">km</span></p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
+                              <p className="text-lg font-bold">{clResult.fascia ? `F${clResult.fascia}` : "—"}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Range</p>
+                              <p className="text-lg font-bold text-xs mt-1">{clResult.bandRange || "—"}</p>
+                            </div>
                           </div>
-                          <div className="p-2 rounded-lg bg-muted/20 text-center">
-                            <p className="text-[10px] text-muted-foreground uppercase">Range</p>
-                            <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
-                          </div>
-                        </div>
+                        )}
 
                         {/* Price */}
-                        <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-emerald-500/5">
+                        <div className="flex items-center justify-between p-4 rounded-xl border bg-gradient-to-r"
+                          style={{ borderColor: (clResult.sameCluster ? clResult.fromCluster.color : "#8b5cf6") + "44", background: `linear-gradient(135deg, ${(clResult.sameCluster ? clResult.fromCluster.color : "#8b5cf6")}11, transparent)` }}>
                           <div>
                             <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
                             <p className="text-[10px] text-muted-foreground">
-                              {result.intermediateStops?.length || 0} fermate nel percorso
+                              {clResult.sameCluster ? "Spostamento intra-cluster" : `${clResult.fromCluster.clusterName} → ${clResult.toCluster.clusterName}`}
                             </p>
                           </div>
-                          <span className="text-4xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
+                          <span className="text-4xl font-bold" style={{ color: clResult.sameCluster ? clResult.fromCluster.color : "#a78bfa" }}>
+                            €{(clResult.amount ?? 0).toFixed(2)}
+                          </span>
                         </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Info panel when no result */}
+              {!clResult && (
+                <Card className="bg-card/50">
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <Info className="w-4 h-4 text-violet-400 mt-0.5 shrink-0" />
+                      <div className="text-xs text-muted-foreground space-y-1">
+                        <p className="font-medium text-foreground">Come funziona</p>
+                        <p>Seleziona una fermata di <strong>salita</strong> e una di <strong>discesa</strong>. Il simulatore troverà a quale cluster appartiene ciascuna e calcolerà la tariffa in base alla <strong>distanza tra i centroidi</strong> dei due cluster.</p>
+                        <p>La mappa mostrerà le aree colorate dei cluster coinvolti.</p>
                       </div>
-                    )}
+                    </div>
                   </CardContent>
                 </Card>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Stop list for context when route is selected */}
-          {selectedNetwork === "extraurbano" && selectedRoute && routeStops.length > 0 && !result && (
-            <Card className="bg-card/50">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <MapPin className="w-3.5 h-3.5 text-primary" />
-                  Fermate della linea ({routeStops.length})
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="max-h-[300px] overflow-auto space-y-0.5">
-                  {routeStops.map((s, i) => (
-                    <div
-                      key={s.stopId}
-                      className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
-                        s.stopId === fromStop ? "bg-emerald-500/10 text-emerald-400" :
-                        s.stopId === toStop ? "bg-rose-500/10 text-rose-400" :
-                        "text-muted-foreground hover:bg-muted/20"
-                      }`}
-                    >
-                      <span className="w-5 text-right font-mono text-[10px] opacity-50">{i + 1}</span>
-                      <span className={`w-2 h-2 rounded-full ${
-                        s.stopId === fromStop ? "bg-emerald-500" :
-                        s.stopId === toStop ? "bg-rose-500" :
-                        "bg-gray-500/40"
-                      }`} />
-                      <span className="flex-1 truncate">{s.stopName}</span>
-                      <span className="font-mono text-[10px] opacity-60">km {s.progressiveKm.toFixed(1)}</span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
