@@ -570,6 +570,37 @@ export const gtfsFareRules = pgTable("gtfs_fare_rules", {
   index("idx_fare_rules_feed_fare").on(t.feedId, t.fareId),
 ]);
 
+// Fare Zone Clusters — polygonal clusters for cluster-based zoning (alternative to km-based)
+export const gtfsFareZoneClusters = pgTable("gtfs_fare_zone_clusters", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  clusterId: text("cluster_id").notNull(),          // e.g. "cluster_ancona_nord"
+  clusterName: text("cluster_name").notNull(),       // human name
+  polygon: jsonb("polygon"),                         // GeoJSON Polygon geometry
+  centroidLat: doublePrecision("centroid_lat"),
+  centroidLon: doublePrecision("centroid_lon"),
+  color: text("color").notNull().default("#3b82f6"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_fare_zone_clusters_feed_cluster").on(t.feedId, t.clusterId),
+]);
+
+// Fare Zone Cluster Stops — stops assigned to a cluster
+export const gtfsFareZoneClusterStops = pgTable("gtfs_fare_zone_cluster_stops", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  clusterId: text("cluster_id").notNull(),
+  stopId: text("stop_id").notNull(),
+  stopName: text("stop_name").notNull(),
+  stopLat: doublePrecision("stop_lat").notNull(),
+  stopLon: doublePrecision("stop_lon").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_zone_cs_feed_cluster").on(t.feedId, t.clusterId),
+  index("idx_fare_zone_cs_feed_stop").on(t.feedId, t.stopId),
+]);
+
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
@@ -608,3 +639,5 @@ export type GtfsTimeframe = typeof gtfsTimeframes.$inferSelect;
 export type GtfsFareTransferRule = typeof gtfsFareTransferRules.$inferSelect;
 export type GtfsFareAttribute = typeof gtfsFareAttributes.$inferSelect;
 export type GtfsFareRule = typeof gtfsFareRules.$inferSelect;
+export type GtfsFareZoneCluster = typeof gtfsFareZoneClusters.$inferSelect;
+export type GtfsFareZoneClusterStop = typeof gtfsFareZoneClusterStops.$inferSelect;

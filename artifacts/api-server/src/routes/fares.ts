@@ -46,6 +46,7 @@ import {
   gtfsFareNetworks, gtfsRouteNetworks, gtfsFareMedia, gtfsRiderCategories,
   gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
   gtfsTimeframes, gtfsFareAttributes, gtfsFareRules,
+  gtfsFareZoneClusters, gtfsFareZoneClusterStops,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -1674,6 +1675,260 @@ router.get("/fares/stops-classification/export", async (_req, res): Promise<void
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="stops.txt"');
     res.send(csv);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// FARE ZONE CLUSTERS — cluster-based zoning (alternative to km-based)
+// ═══════════════════════════════════════════════════════════
+
+// GET /api/fares/zone-clusters — list all clusters
+router.get("/fares/zone-clusters", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    // Also fetch stop counts
+    const stopCounts = await db.execute<any>(sql`
+      SELECT cluster_id, COUNT(*)::int AS cnt
+      FROM gtfs_fare_zone_cluster_stops
+      WHERE feed_id = ${feedId}
+      GROUP BY cluster_id
+    `);
+    const countMap = new Map<string, number>();
+    for (const r of stopCounts.rows) countMap.set(r.cluster_id, r.cnt);
+    res.json(clusters.map(c => ({ ...c, stopCount: countMap.get(c.clusterId) || 0 })));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/fares/zone-clusters — create or update a cluster
+router.post("/fares/zone-clusters", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { clusterId, clusterName, polygon, color } = req.body;
+    if (!clusterId || !clusterName) { res.status(400).json({ error: "clusterId and clusterName required" }); return; }
+
+    // Calculate centroid from polygon or from stops
+    let centroidLat: number | null = null;
+    let centroidLon: number | null = null;
+    if (polygon?.coordinates?.[0]) {
+      const ring = polygon.coordinates[0] as number[][];
+      centroidLon = ring.reduce((s, c) => s + c[0], 0) / ring.length;
+      centroidLat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
+    }
+
+    const [row] = await db.insert(gtfsFareZoneClusters).values({
+      feedId, clusterId, clusterName,
+      polygon: polygon || null,
+      centroidLat, centroidLon,
+      color: color || "#3b82f6",
+    }).onConflictDoUpdate({
+      target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
+      set: { clusterName, polygon: polygon || null, centroidLat, centroidLon, color: color || "#3b82f6", updatedAt: sql`now()` },
+    }).returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/fares/zone-clusters/:id — update cluster
+router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
+  try {
+    const { clusterName, polygon, color } = req.body;
+    let centroidLat: number | null = null;
+    let centroidLon: number | null = null;
+    if (polygon?.coordinates?.[0]) {
+      const ring = polygon.coordinates[0] as number[][];
+      centroidLon = ring.reduce((s, c) => s + c[0], 0) / ring.length;
+      centroidLat = ring.reduce((s, c) => s + c[1], 0) / ring.length;
+    }
+    const [row] = await db.update(gtfsFareZoneClusters)
+      .set({ clusterName, polygon: polygon || null, centroidLat, centroidLon, color, updatedAt: sql`now()` })
+      .where(eq(gtfsFareZoneClusters.id, req.params.id))
+      .returning();
+    res.json(row);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/fares/zone-clusters/:id — delete cluster + its stops
+router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
+  try {
+    // Get the cluster to find its clusterId for stop cleanup
+    const [cluster] = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.id, req.params.id));
+    if (cluster) {
+      await db.delete(gtfsFareZoneClusterStops).where(
+        and(eq(gtfsFareZoneClusterStops.feedId, cluster.feedId!), eq(gtfsFareZoneClusterStops.clusterId, cluster.clusterId))
+      );
+    }
+    await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.id, req.params.id));
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/zone-clusters/:clusterId/stops — get stops for a cluster
+router.get("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.select().from(gtfsFareZoneClusterStops)
+      .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, req.params.clusterId)));
+    res.json(rows);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/fares/zone-clusters/:clusterId/stops — set stops for a cluster (replace all)
+router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const { stops } = req.body as { stops: { stopId: string; stopName: string; stopLat: number; stopLon: number }[] };
+    if (!Array.isArray(stops)) { res.status(400).json({ error: "stops array required" }); return; }
+
+    const cid = req.params.clusterId;
+
+    // Delete existing stops for this cluster
+    await db.delete(gtfsFareZoneClusterStops).where(
+      and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, cid))
+    );
+
+    // Insert new stops
+    if (stops.length > 0) {
+      await db.insert(gtfsFareZoneClusterStops).values(
+        stops.map(s => ({ feedId, clusterId: cid, stopId: s.stopId, stopName: s.stopName, stopLat: s.stopLat, stopLon: s.stopLon }))
+      );
+    }
+
+    // Recalculate centroid from stops
+    if (stops.length > 0) {
+      const avgLat = stops.reduce((s, st) => s + st.stopLat, 0) / stops.length;
+      const avgLon = stops.reduce((s, st) => s + st.stopLon, 0) / stops.length;
+      await db.update(gtfsFareZoneClusters)
+        .set({ centroidLat: avgLat, centroidLon: avgLon, updatedAt: sql`now()` })
+        .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, cid)));
+    }
+
+    res.json({ ok: true, stops: stops.length });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/zone-clusters/distance-matrix — centroid-to-centroid distance matrix
+router.get("/fares/zone-clusters/distance-matrix", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json({ clusters: [], matrix: [] }); return; }
+    const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    const valid = clusters.filter(c => c.centroidLat != null && c.centroidLon != null);
+
+    const matrix: { from: string; to: string; distanceKm: number; fascia: number | null }[] = [];
+    for (let i = 0; i < valid.length; i++) {
+      for (let j = 0; j < valid.length; j++) {
+        if (i === j) continue;
+        const dist = haversineKm(valid[i].centroidLat!, valid[i].centroidLon!, valid[j].centroidLat!, valid[j].centroidLon!);
+        const band = getBandForDistance(dist);
+        matrix.push({
+          from: valid[i].clusterId,
+          to: valid[j].clusterId,
+          distanceKm: Math.round(dist * 100) / 100,
+          fascia: band ? band.fascia : null,
+        });
+      }
+    }
+
+    res.json({ clusters: valid.map(c => ({ clusterId: c.clusterId, clusterName: c.clusterName, centroidLat: c.centroidLat, centroidLon: c.centroidLon })), matrix });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/fares/zone-clusters/generate-zones — generate areas + stop_areas + leg_rules from clusters
+router.post("/fares/zone-clusters/generate-zones", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+
+    const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    if (clusters.length === 0) { res.status(400).json({ error: "No clusters defined" }); return; }
+
+    // 1) Delete existing extraurban areas, stop_areas, and leg_rules (only extraurban — keep urban)
+    const existingExtraAreas = await db.select().from(gtfsFareAreas)
+      .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
+    if (existingExtraAreas.length > 0) {
+      const areaIds = existingExtraAreas.map(a => a.areaId);
+      await db.delete(gtfsStopAreas).where(and(eq(gtfsStopAreas.feedId, feedId), inArray(gtfsStopAreas.areaId, areaIds)));
+      await db.delete(gtfsFareAreas).where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
+    }
+    // Delete existing extraurban leg rules
+    await db.delete(gtfsFareLegRules).where(
+      and(eq(gtfsFareLegRules.feedId, feedId), eq(gtfsFareLegRules.networkId, "extraurbano"))
+    );
+
+    // 2) Create one area per cluster
+    let areasCreated = 0;
+    for (const c of clusters) {
+      await db.insert(gtfsFareAreas).values({
+        feedId,
+        areaId: `cluster_${c.clusterId}`,
+        areaName: c.clusterName,
+        networkId: "extraurbano",
+      }).onConflictDoUpdate({
+        target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
+        set: { areaName: c.clusterName, updatedAt: sql`now()` },
+      });
+      areasCreated++;
+    }
+
+    // 3) Assign cluster stops to areas
+    let stopsAssigned = 0;
+    for (const c of clusters) {
+      const cStops = await db.select().from(gtfsFareZoneClusterStops)
+        .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, c.clusterId)));
+      for (const s of cStops) {
+        await db.insert(gtfsStopAreas).values({
+          feedId, areaId: `cluster_${c.clusterId}`, stopId: s.stopId,
+        }).onConflictDoNothing();
+        stopsAssigned++;
+      }
+    }
+
+    // 4) Generate OD leg rules based on centroid distances
+    const validClusters = clusters.filter(c => c.centroidLat != null && c.centroidLon != null);
+    let odRules = 0;
+    for (let i = 0; i < validClusters.length; i++) {
+      for (let j = 0; j < validClusters.length; j++) {
+        if (i === j) continue;
+        const dist = haversineKm(validClusters[i].centroidLat!, validClusters[i].centroidLon!, validClusters[j].centroidLat!, validClusters[j].centroidLon!);
+        const band = getBandForDistance(dist);
+        if (!band) continue;
+        await db.insert(gtfsFareLegRules).values({
+          feedId,
+          legGroupId: "lg_extra_cluster",
+          networkId: "extraurbano",
+          fromAreaId: `cluster_${validClusters[i].clusterId}`,
+          toAreaId: `cluster_${validClusters[j].clusterId}`,
+          fareProductId: `extra_fascia_${band.fascia}`,
+          rulePriority: 0,
+        });
+        odRules++;
+      }
+    }
+
+    res.json({ areasCreated, stopsAssigned, odRules, totalClusters: clusters.length });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/extraurban-stops — all stops served by extraurban routes (for cluster assignment)
+router.get("/fares/extraurban-stops", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.json([]); return; }
+    const rows = await db.execute<any>(sql`
+      SELECT DISTINCT s.stop_id, s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
+      FROM gtfs_stops s
+      JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
+      JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
+      JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
+      WHERE s.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
+      ORDER BY s.stop_name
+    `);
+    res.json(rows.rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

@@ -6,6 +6,7 @@ import {
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
+  Hexagon, Crosshair, MousePointer2, Layers,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -148,13 +149,14 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate";
+type Tab = "classify" | "products" | "riders" | "zones" | "clusters" | "timeframes" | "calendar" | "editor" | "generate" | "simulate";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
   { id: "products", label: "Prodotti & Supporti", icon: <Euro className="w-3.5 h-3.5" /> },
   { id: "riders", label: "Categorie Passeggero", icon: <Users className="w-3.5 h-3.5" /> },
-  { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
+  { id: "zones", label: "Zone Km", icon: <MapPin className="w-3.5 h-3.5" /> },
+  { id: "clusters", label: "Zone Cluster", icon: <Hexagon className="w-3.5 h-3.5" /> },
   { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
   { id: "calendar", label: "Calendario Servizio", icon: <CalendarDays className="w-3.5 h-3.5" /> },
   { id: "editor", label: "Editor Fermate", icon: <Edit3 className="w-3.5 h-3.5" /> },
@@ -1620,6 +1622,571 @@ function ZonesTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// TAB 3b: ZONE CLUSTER — cluster-based zoning
+// ═══════════════════════════════════════════════════════════
+
+interface ClusterData {
+  id: string;
+  clusterId: string;
+  clusterName: string;
+  polygon: any;
+  centroidLat: number | null;
+  centroidLon: number | null;
+  color: string;
+  stopCount: number;
+}
+
+interface ClusterStop {
+  stopId: string;
+  stopName: string;
+  stopLat: number;
+  stopLon: number;
+}
+
+interface ExtraStop {
+  stop_id: string;
+  stop_name: string;
+  lat: number;
+  lon: number;
+}
+
+interface DistanceEntry {
+  from: string;
+  to: string;
+  distanceKm: number;
+  fascia: number | null;
+}
+
+const CLUSTER_MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
+
+const CLUSTER_COLORS = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6",
+  "#ec4899", "#14b8a6", "#f59e0b", "#6366f1", "#d946ef", "#84cc16", "#0ea5e9",
+];
+
+function ClustersTab() {
+  const { toast } = useToast();
+  const mapRef = useRef<MapRef>(null);
+  const [clusters, setClusters] = useState<ClusterData[]>([]);
+  const [extraStops, setExtraStops] = useState<ExtraStop[]>([]);
+  const [selectedCluster, setSelectedCluster] = useState<string | null>(null);
+  const [clusterStops, setClusterStops] = useState<ClusterStop[]>([]);
+  const [distMatrix, setDistMatrix] = useState<DistanceEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [showMatrix, setShowMatrix] = useState(false);
+
+  // New cluster form
+  const [newName, setNewName] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  // Selection mode: picking stops on map
+  const [selectMode, setSelectMode] = useState(false);
+  const [pendingStops, setPendingStops] = useState<ExtraStop[]>([]);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [cl, es] = await Promise.all([
+        apiFetch<ClusterData[]>("/api/fares/zone-clusters"),
+        apiFetch<ExtraStop[]>("/api/fares/extraurban-stops"),
+      ]);
+      setClusters(cl);
+      setExtraStops(es);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const loadClusterStops = async (clusterId: string) => {
+    try {
+      const data = await apiFetch<any[]>(`/api/fares/zone-clusters/${clusterId}/stops`);
+      setClusterStops(data.map(d => ({ stopId: d.stopId, stopName: d.stopName, stopLat: d.stopLat, stopLon: d.stopLon })));
+    } catch { setClusterStops([]); }
+  };
+
+  const selectCluster = (c: ClusterData) => {
+    setSelectedCluster(c.clusterId);
+    loadClusterStops(c.clusterId);
+    setSelectMode(false);
+    setPendingStops([]);
+    // Fly to centroid
+    if (c.centroidLat && c.centroidLon && mapRef.current) {
+      mapRef.current.flyTo({ center: [c.centroidLon, c.centroidLat], zoom: 11 });
+    }
+  };
+
+  const createCluster = async () => {
+    if (!newName.trim()) return;
+    setAdding(true);
+    try {
+      const id = newName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+      const color = CLUSTER_COLORS[clusters.length % CLUSTER_COLORS.length];
+      await apiFetch("/api/fares/zone-clusters", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clusterId: id, clusterName: newName.trim(), color }),
+      });
+      setNewName("");
+      await load();
+      toast({ title: "Cluster creato", description: newName.trim() });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setAdding(false);
+  };
+
+  const deleteCluster = async (id: string) => {
+    try {
+      await apiFetch(`/api/fares/zone-clusters/${id}`, { method: "DELETE" });
+      if (selectedCluster) setSelectedCluster(null);
+      await load();
+      toast({ title: "Cluster eliminato" });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  // Toggle stop selection
+  const toggleStop = (stop: ExtraStop) => {
+    setPendingStops(prev => {
+      const exists = prev.find(s => s.stop_id === stop.stop_id);
+      if (exists) return prev.filter(s => s.stop_id !== stop.stop_id);
+      return [...prev, stop];
+    });
+  };
+
+  // Save pending stops to cluster
+  const saveStops = async () => {
+    if (!selectedCluster) return;
+    setSaving(true);
+    try {
+      const stops = pendingStops.map(s => ({
+        stopId: s.stop_id, stopName: s.stop_name, stopLat: s.lat, stopLon: s.lon,
+      }));
+      await apiFetch(`/api/fares/zone-clusters/${selectedCluster}/stops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stops }),
+      });
+      await load();
+      await loadClusterStops(selectedCluster);
+      setSelectMode(false);
+      setPendingStops([]);
+      toast({ title: "Fermate salvate", description: `${stops.length} fermate assegnate al cluster` });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setSaving(false);
+  };
+
+  // Enter select mode: pre-populate with current cluster stops
+  const enterSelectMode = () => {
+    setSelectMode(true);
+    setPendingStops(clusterStops.map(s => ({ stop_id: s.stopId, stop_name: s.stopName, lat: s.stopLat, lon: s.stopLon })));
+  };
+
+  // Generate zones from clusters
+  const generateFromClusters = async () => {
+    setGenerating(true);
+    try {
+      const result = await apiFetch<any>("/api/fares/zone-clusters/generate-zones", { method: "POST" });
+      toast({
+        title: "Zone generate da cluster",
+        description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD`,
+      });
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setGenerating(false);
+  };
+
+  // Load distance matrix
+  const loadMatrix = async () => {
+    try {
+      const data = await apiFetch<{ clusters: any[]; matrix: DistanceEntry[] }>("/api/fares/zone-clusters/distance-matrix");
+      setDistMatrix(data.matrix);
+      setShowMatrix(true);
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+  };
+
+  // Map data
+  const clusterWithStops = selectedCluster ? clusters.find(c => c.clusterId === selectedCluster) : null;
+  const stopsToShow = selectMode ? extraStops : (clusterStops.length > 0 ? clusterStops.map(s => ({ stop_id: s.stopId, stop_name: s.stopName, lat: s.stopLat, lon: s.stopLon })) : []);
+  const pendingSet = new Set(pendingStops.map(s => s.stop_id));
+
+  // Filter stops by search
+  const filteredStops = selectMode && searchTerm
+    ? extraStops.filter(s => s.stop_name.toLowerCase().includes(searchTerm.toLowerCase()) || s.stop_id.includes(searchTerm))
+    : selectMode ? extraStops : [];
+
+  // Build centroid line features for visualization
+  const centroidFeatures = useMemo(() => {
+    if (!showMatrix || clusters.length < 2) return null;
+    const features = distMatrix
+      .filter(d => d.fascia !== null)
+      .map(d => {
+        const from = clusters.find(c => c.clusterId === d.from);
+        const to = clusters.find(c => c.clusterId === d.to);
+        if (!from?.centroidLat || !from?.centroidLon || !to?.centroidLat || !to?.centroidLon) return null;
+        return {
+          type: "Feature" as const,
+          properties: { from: d.from, to: d.to, distKm: d.distanceKm, fascia: d.fascia },
+          geometry: {
+            type: "LineString" as const,
+            coordinates: [[from.centroidLon, from.centroidLat], [to.centroidLon, to.centroidLat]],
+          },
+        };
+      })
+      .filter(Boolean);
+    return { type: "FeatureCollection" as const, features };
+  }, [showMatrix, distMatrix, clusters]);
+
+  if (loading && clusters.length === 0) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-4">
+      {/* Info banner */}
+      <div className="rounded-lg bg-blue-500/5 border border-blue-500/20 p-3 flex items-start gap-3">
+        <Info className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+        <div className="text-xs text-muted-foreground space-y-1">
+          <p className="font-medium text-foreground">Zonizzazione basata su Cluster</p>
+          <p>
+            Metodo alternativo a quello km-per-linea: crei cluster di fermate (aree poligonali),
+            le tariffe vengono calcolate in base alla distanza tra i <strong>centroidi</strong> dei cluster.
+            L'export GTFS produce gli stessi file (<code>areas.txt</code>, <code>stop_areas.txt</code>, <code>fare_leg_rules.txt</code>).
+          </p>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Cluster Definiti</p>
+            <p className="text-2xl font-bold">{clusters.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Fermate Extraurbane</p>
+            <p className="text-2xl font-bold">{extraStops.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Fermate Assegnate</p>
+            <p className="text-2xl font-bold">{clusters.reduce((s, c) => s + c.stopCount, 0)}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Actions row */}
+      <div className="flex flex-wrap items-center gap-2">
+        {/* New cluster */}
+        <div className="flex items-center gap-1.5">
+          <input
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            placeholder="Nome nuovo cluster..."
+            className="h-8 px-2 text-sm rounded-md border border-border/50 bg-background/50 w-48"
+            onKeyDown={e => e.key === "Enter" && createCluster()}
+          />
+          <Button onClick={createCluster} disabled={adding || !newName.trim()} size="sm" variant="outline">
+            <Plus className="w-3.5 h-3.5 mr-1" /> Crea
+          </Button>
+        </div>
+        <div className="border-l border-border/30 h-6" />
+        <Button onClick={loadMatrix} size="sm" variant="outline">
+          <Crosshair className="w-3.5 h-3.5 mr-1.5" /> Matrice Distanze
+        </Button>
+        <Button onClick={generateFromClusters} disabled={generating || clusters.length === 0} size="sm">
+          {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
+          Genera Zone da Cluster
+        </Button>
+      </div>
+
+      {/* Main layout: cluster list + map */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Cluster list */}
+        <Card className="bg-card/50 lg:col-span-1">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Hexagon className="w-3.5 h-3.5" /> Cluster ({clusters.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[50vh] overflow-auto">
+              {clusters.length === 0 ? (
+                <p className="p-4 text-sm text-muted-foreground">Nessun cluster. Creane uno sopra.</p>
+              ) : (
+                clusters.map(c => (
+                  <div
+                    key={c.id}
+                    onClick={() => selectCluster(c)}
+                    className={`cursor-pointer w-full text-left px-4 py-2.5 border-b border-border/10 hover:bg-muted/20 transition-colors flex items-center justify-between ${selectedCluster === c.clusterId ? "bg-primary/10 border-l-2 border-l-primary" : ""}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="w-3 h-3 rounded-full shrink-0" style={{ background: c.color }} />
+                      <div className="min-w-0">
+                        <span className="font-medium text-sm block truncate">{c.clusterName}</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">{c.clusterId}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge variant="secondary" className="text-[10px]">{c.stopCount} stop</Badge>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteCluster(c.id); }}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Map + stop management */}
+        <Card className="bg-card/50 lg:col-span-2">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">
+                {selectedCluster
+                  ? `Cluster: ${clusters.find(c => c.clusterId === selectedCluster)?.clusterName || selectedCluster}`
+                  : "Seleziona un cluster"}
+              </CardTitle>
+              {selectedCluster && !selectMode && (
+                <Button onClick={enterSelectMode} size="sm" variant="outline">
+                  <MousePointer2 className="w-3 h-3 mr-1" /> Modifica Fermate
+                </Button>
+              )}
+              {selectMode && (
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-[10px]">{pendingStops.length} selezionate</Badge>
+                  <Button onClick={saveStops} disabled={saving} size="sm">
+                    {saving ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Save className="w-3 h-3 mr-1" />}
+                    Salva
+                  </Button>
+                  <Button onClick={() => { setSelectMode(false); setPendingStops([]); }} size="sm" variant="ghost">Annulla</Button>
+                </div>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {!selectedCluster ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">
+                ← Seleziona un cluster per vedere le fermate e la mappa
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {/* Search in select mode */}
+                {selectMode && (
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-muted-foreground" />
+                    <input
+                      value={searchTerm}
+                      onChange={e => setSearchTerm(e.target.value)}
+                      placeholder="Cerca fermate per nome o ID..."
+                      className="w-full h-8 pl-8 pr-3 text-sm rounded-md border border-border/50 bg-background/50"
+                    />
+                  </div>
+                )}
+
+                {/* Map */}
+                {CLUSTER_MAPBOX_TOKEN && (
+                  <div className="h-[350px] rounded-lg overflow-hidden border border-border/30">
+                    <Map
+                      ref={mapRef}
+                      mapboxAccessToken={CLUSTER_MAPBOX_TOKEN}
+                      initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 9.5 }}
+                      mapStyle="mapbox://styles/mapbox/dark-v11"
+                      style={{ width: "100%", height: "100%" }}
+                    >
+                      {/* Cluster centroids */}
+                      {clusters.map(c => c.centroidLat && c.centroidLon ? (
+                        <Marker key={`cen-${c.clusterId}`} longitude={c.centroidLon} latitude={c.centroidLat}>
+                          <div
+                            className="w-4 h-4 rounded-full border-2 border-white shadow-lg cursor-pointer"
+                            style={{ background: c.color, opacity: c.clusterId === selectedCluster ? 1 : 0.5 }}
+                            title={c.clusterName}
+                            onClick={() => selectCluster(c)}
+                          />
+                        </Marker>
+                      ) : null)}
+
+                      {/* Stops on map */}
+                      {selectMode ? (
+                        // Show all extraurban stops, highlight selected ones
+                        (searchTerm ? filteredStops : extraStops).map(s => (
+                          <Marker key={`es-${s.stop_id}`} longitude={s.lon} latitude={s.lat}>
+                            <div
+                              onClick={() => toggleStop(s)}
+                              className={`w-2.5 h-2.5 rounded-full cursor-pointer border transition-all ${
+                                pendingSet.has(s.stop_id)
+                                  ? "bg-primary border-white scale-150 shadow-lg"
+                                  : "bg-muted-foreground/40 border-transparent hover:bg-primary/60 hover:scale-125"
+                              }`}
+                              title={`${s.stop_name} (${s.stop_id})`}
+                            />
+                          </Marker>
+                        ))
+                      ) : (
+                        // Show only cluster stops
+                        clusterStops.map(s => (
+                          <Marker key={`cs-${s.stopId}`} longitude={s.stopLon} latitude={s.stopLat}>
+                            <div
+                              className="w-2.5 h-2.5 rounded-full border border-white shadow"
+                              style={{ background: clusterWithStops?.color || "#3b82f6" }}
+                              title={`${s.stopName} (${s.stopId})`}
+                            />
+                          </Marker>
+                        ))
+                      )}
+
+                      {/* Distance matrix lines */}
+                      {centroidFeatures && (
+                        <Source id="cluster-lines" type="geojson" data={centroidFeatures as any}>
+                          <Layer
+                            id="cluster-lines-layer"
+                            type="line"
+                            paint={{
+                              "line-color": "#6366f1",
+                              "line-width": 1,
+                              "line-opacity": 0.3,
+                              "line-dasharray": [2, 2],
+                            }}
+                          />
+                        </Source>
+                      )}
+                    </Map>
+                  </div>
+                )}
+
+                {/* Stop list (in select mode — scrollable table) */}
+                {selectMode && (
+                  <div className="overflow-auto max-h-[200px] rounded-lg border border-border/30">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-card">
+                        <tr className="border-b border-border/30">
+                          <th className="w-8 py-1.5 px-2"></th>
+                          <th className="text-left py-1.5 px-2 font-medium text-muted-foreground text-xs">Fermata</th>
+                          <th className="text-left py-1.5 px-2 font-medium text-muted-foreground text-xs">ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredStops.slice(0, 200).map(s => (
+                          <tr
+                            key={s.stop_id}
+                            onClick={() => toggleStop(s)}
+                            className={`cursor-pointer border-b border-border/10 hover:bg-muted/20 transition-colors ${pendingSet.has(s.stop_id) ? "bg-primary/10" : ""}`}
+                          >
+                            <td className="py-1 px-2 text-center">
+                              <div className={`w-3.5 h-3.5 rounded border ${pendingSet.has(s.stop_id) ? "bg-primary border-primary" : "border-border"} flex items-center justify-center`}>
+                                {pendingSet.has(s.stop_id) && <CheckCircle2 className="w-2.5 h-2.5 text-primary-foreground" />}
+                              </div>
+                            </td>
+                            <td className="py-1 px-2 text-xs">{s.stop_name}</td>
+                            <td className="py-1 px-2 text-xs font-mono text-muted-foreground">{s.stop_id}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Current cluster stops (view mode) */}
+                {!selectMode && clusterStops.length > 0 && (
+                  <div className="overflow-auto max-h-[200px] rounded-lg border border-border/30">
+                    <table className="w-full text-sm">
+                      <thead className="sticky top-0 bg-card">
+                        <tr className="border-b border-border/30">
+                          <th className="text-left py-1.5 px-2 font-medium text-muted-foreground text-xs">Fermata</th>
+                          <th className="text-left py-1.5 px-2 font-medium text-muted-foreground text-xs">ID</th>
+                          <th className="text-right py-1.5 px-2 font-medium text-muted-foreground text-xs">Lat</th>
+                          <th className="text-right py-1.5 px-2 font-medium text-muted-foreground text-xs">Lon</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {clusterStops.map(s => (
+                          <tr key={s.stopId} className="border-b border-border/10">
+                            <td className="py-1 px-2 text-xs">{s.stopName}</td>
+                            <td className="py-1 px-2 text-xs font-mono text-muted-foreground">{s.stopId}</td>
+                            <td className="py-1 px-2 text-xs font-mono text-right">{s.stopLat.toFixed(5)}</td>
+                            <td className="py-1 px-2 text-xs font-mono text-right">{s.stopLon.toFixed(5)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {!selectMode && clusterStops.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    Nessuna fermata nel cluster. Clicca "Modifica Fermate" per assegnarle.
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Distance matrix */}
+      {showMatrix && distMatrix.length > 0 && (
+        <Card className="bg-card/50">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Layers className="w-3.5 h-3.5" /> Matrice Distanze Centroidi
+              </CardTitle>
+              <button onClick={() => setShowMatrix(false)} className="text-xs text-muted-foreground hover:text-foreground">✕</button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-auto max-h-[300px] rounded-lg border border-border/30">
+              <table className="w-full text-[11px] font-mono">
+                <thead className="sticky top-0 bg-card">
+                  <tr className="border-b">
+                    <th className="text-left px-2 py-1.5 font-semibold">Da → A</th>
+                    <th className="text-right px-2 py-1.5 font-semibold">Km</th>
+                    <th className="text-center px-2 py-1.5 font-semibold">Fascia</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {distMatrix.map((d, i) => (
+                    <tr key={i} className="border-b border-border/10 hover:bg-muted/10">
+                      <td className="px-2 py-1">
+                        <span className="text-foreground">{clusters.find(c => c.clusterId === d.from)?.clusterName || d.from}</span>
+                        <span className="text-muted-foreground mx-1">→</span>
+                        <span className="text-foreground">{clusters.find(c => c.clusterId === d.to)?.clusterName || d.to}</span>
+                      </td>
+                      <td className="px-2 py-1 text-right">{d.distanceKm}</td>
+                      <td className="px-2 py-1 text-center">
+                        {d.fascia ? (
+                          <Badge variant="outline" className="text-[10px]">F{d.fascia}</Badge>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // TAB 4: FASCE ORARIE (GTFS timeframes.txt)
 // ═══════════════════════════════════════════════════════════
 
@@ -2065,18 +2632,23 @@ function GenerateTab() {
   const [generating, setGenerating] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
+  const [zoningMethod, setZoningMethod] = useState<"km" | "cluster">("km");
 
   /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
   const generateAll = async () => {
     setGenerating(true);
     try {
-      // Step 1: genera leg rules
+      if (zoningMethod === "cluster") {
+        // First generate zones from clusters, then leg rules
+        await apiFetch("/api/fares/zone-clusters/generate-zones", { method: "POST" });
+      }
+      // Generate leg rules (uses whatever areas/stop_areas exist)
       await apiFetch("/api/fares/leg-rules/generate", { method: "POST" });
-      // Step 2: genera anteprima completa
+      // Generate preview
       const data = await apiFetch<GenerateResult>("/api/fares/generate-gtfs", { method: "POST" });
       setResult(data);
       setPreviewFile(null);
-      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti` });
+      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti (metodo: ${zoningMethod === "km" ? "Km per linea" : "Cluster"})` });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     } finally { setGenerating(false); }
@@ -2104,6 +2676,42 @@ function GenerateTab() {
 
   return (
     <div className="space-y-5">
+      {/* Zoning method selector */}
+      <Card className="bg-card/50">
+        <CardContent className="p-3">
+          <div className="flex items-center gap-4">
+            <p className="text-xs font-medium text-muted-foreground shrink-0">Metodo zonizzazione extraurbana:</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setZoningMethod("km")}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  zoningMethod === "km"
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "border-border/30 text-muted-foreground hover:bg-muted/30"
+                }`}
+              >
+                <MapPin className="w-3 h-3" /> Km per Linea
+              </button>
+              <button
+                onClick={() => setZoningMethod("cluster")}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                  zoningMethod === "cluster"
+                    ? "bg-primary/10 border-primary/30 text-primary"
+                    : "border-border/30 text-muted-foreground hover:bg-muted/30"
+                }`}
+              >
+                <Hexagon className="w-3 h-3" /> Cluster
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              {zoningMethod === "km"
+                ? "Zone calcolate sulla distanza progressiva per ogni linea extraurbana"
+                : "Zone calcolate dalla distanza tra centroidi dei cluster"}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Actions row */}
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={generateAll} disabled={generating} size="sm">
@@ -2118,7 +2726,7 @@ function GenerateTab() {
 
       {/* Description */}
       <p className="text-xs text-muted-foreground">
-        <strong>Genera Anteprima:</strong> crea le regole tariffarie e mostra l'anteprima di tutti i file Fares V2. —
+        <strong>Genera Anteprima:</strong> crea le regole tariffarie e mostra l'anteprima di tutti i file Fares V2 (usa metodo "{zoningMethod === "km" ? "Km per Linea" : "Cluster"}"). —
         <strong className="ml-1">Scarica ZIP:</strong> esporta l'intero feed GTFS (agency, routes, trips, stops, stop_times, calendar, shapes + tutti i file tariffari).
       </p>
 
@@ -2810,6 +3418,7 @@ export default function FaresPage() {
           {tab === "products" && <ProductsTab />}
           {tab === "riders" && <RiderCategoriesTab />}
           {tab === "zones" && <ZonesTab />}
+          {tab === "clusters" && <ClustersTab />}
           {tab === "timeframes" && <TimeframesTab />}
           {tab === "calendar" && <CalendarTab />}
           {tab === "editor" && <StopTimesEditorTab />}
