@@ -1979,140 +1979,232 @@ router.post("/fares/zone-clusters/generate-zones", async (_req, res): Promise<vo
 // ═══════════════════════════════════════════════════════════
 // AUTO-GENERATE CLUSTERS from extraurban route data
 // ═══════════════════════════════════════════════════════════
+
+// Shared color palette for auto-generated clusters
+const AUTO_CLUSTER_COLORS = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6",
+  "#ec4899", "#14b8a6", "#f59e0b", "#6366f1", "#d946ef", "#84cc16", "#0ea5e9",
+];
+
+type AutoStop = { stop_id: string; stop_name: string; lat: number; lon: number };
+
+/** Fetch all extraurban stops for the given feed */
+async function fetchExtraStops(feedId: string): Promise<AutoStop[]> {
+  const r = await db.execute<any>(sql`
+    SELECT DISTINCT s.stop_id, s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
+    FROM gtfs_stops s
+    JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
+    JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
+    JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
+    WHERE s.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
+    ORDER BY s.stop_name
+  `);
+  return r.rows as AutoStop[];
+}
+
+/** Delete all clusters + stops for a feed, then persist the given cluster→stops mapping */
+async function persistClusters(
+  feedId: string,
+  clusterDefs: { clusterId: string; clusterName: string; color: string; stops: AutoStop[] }[],
+) {
+  await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+  await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+
+  let clustersCreated = 0;
+  let totalStopsAssigned = 0;
+
+  for (const def of clusterDefs) {
+    if (def.stops.length === 0) continue;
+    const cLat = def.stops.reduce((s, st) => s + st.lat, 0) / def.stops.length;
+    const cLon = def.stops.reduce((s, st) => s + st.lon, 0) / def.stops.length;
+
+    await db.insert(gtfsFareZoneClusters).values({
+      feedId, clusterId: def.clusterId, clusterName: def.clusterName,
+      polygon: null, centroidLat: cLat, centroidLon: cLon, color: def.color,
+    }).onConflictDoUpdate({
+      target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
+      set: { clusterName: def.clusterName, centroidLat: cLat, centroidLon: cLon, color: def.color, updatedAt: sql`now()` },
+    });
+
+    const batchSize = 500;
+    for (let b = 0; b < def.stops.length; b += batchSize) {
+      const batch = def.stops.slice(b, b + batchSize);
+      await db.insert(gtfsFareZoneClusterStops).values(
+        batch.map(s => ({ feedId, clusterId: def.clusterId, stopId: s.stop_id, stopName: s.stop_name, stopLat: s.lat, stopLon: s.lon }))
+      );
+    }
+
+    clustersCreated++;
+    totalStopsAssigned += def.stops.length;
+  }
+  return { clustersCreated, totalStopsAssigned };
+}
+
+// ─── K-Means implementation (geographic, haversine-based) ───
+function kMeansSpatial(stops: AutoStop[], k: number, maxIter = 40): { centroid: { lat: number; lon: number }; stops: AutoStop[] }[] {
+  // Initialize centroids using k-means++ for better spread
+  const centroids: { lat: number; lon: number }[] = [];
+  // Pick first centroid randomly
+  centroids.push({ lat: stops[Math.floor(Math.random() * stops.length)].lat, lon: stops[Math.floor(Math.random() * stops.length)].lon });
+
+  for (let c = 1; c < k; c++) {
+    // For each stop, compute distance to nearest existing centroid
+    const dists = stops.map(s => {
+      let minD = Infinity;
+      for (const ctr of centroids) {
+        const d = haversineKm(s.lat, s.lon, ctr.lat, ctr.lon);
+        if (d < minD) minD = d;
+      }
+      return minD * minD; // square for probability weighting
+    });
+    const totalDist = dists.reduce((a, b) => a + b, 0);
+    // Weighted random pick
+    let r = Math.random() * totalDist;
+    for (let i = 0; i < dists.length; i++) {
+      r -= dists[i];
+      if (r <= 0) { centroids.push({ lat: stops[i].lat, lon: stops[i].lon }); break; }
+    }
+    if (centroids.length === c) centroids.push({ lat: stops[Math.floor(Math.random() * stops.length)].lat, lon: stops[Math.floor(Math.random() * stops.length)].lon });
+  }
+
+  let assignments = new Int32Array(stops.length);
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    // Assign each stop to nearest centroid
+    let changed = false;
+    for (let i = 0; i < stops.length; i++) {
+      let bestC = 0, bestD = Infinity;
+      for (let c = 0; c < centroids.length; c++) {
+        const d = haversineKm(stops[i].lat, stops[i].lon, centroids[c].lat, centroids[c].lon);
+        if (d < bestD) { bestD = d; bestC = c; }
+      }
+      if (assignments[i] !== bestC) { assignments[i] = bestC; changed = true; }
+    }
+    if (!changed) break;
+
+    // Recalculate centroids
+    for (let c = 0; c < centroids.length; c++) {
+      let sumLat = 0, sumLon = 0, cnt = 0;
+      for (let i = 0; i < stops.length; i++) {
+        if (assignments[i] === c) { sumLat += stops[i].lat; sumLon += stops[i].lon; cnt++; }
+      }
+      if (cnt > 0) { centroids[c] = { lat: sumLat / cnt, lon: sumLon / cnt }; }
+    }
+  }
+
+  // Group
+  const groups: { centroid: { lat: number; lon: number }; stops: AutoStop[] }[] = centroids.map(c => ({ centroid: c, stops: [] }));
+  for (let i = 0; i < stops.length; i++) groups[assignments[i]].stops.push(stops[i]);
+  return groups.filter(g => g.stops.length > 0);
+}
+
 /**
  * POST /api/fares/zone-clusters/auto-generate
  *
- * Algorithm:
- * 1. Fetch all extraurban stops (unique, via route_networks)
- * 2. Compute the geographic centroid of all stops (center of gravity)
- * 3. For each stop compute haversine distance from the centroid
- * 4. Group stops into concentric rings matching the EXTRA_BANDS thresholds
- *    (0-6 km → Zona 1, 6-12 km → Zona 2, etc.)
- * 5. Delete all existing clusters & stops for this feed
- * 6. Create one cluster per occupied ring, assign stops, compute centroid per cluster
+ * Body: { mode?: "concentric" | "spatial", k?: number }
  *
- * The result is a set of concentric-ring partitions whose inter-centroid distances
- * naturally align with the ~6 km fare band increments.
+ * mode="concentric" (default): concentric rings from geographic centroid using EXTRA_BANDS
+ * mode="spatial": k-means clustering that finds natural stop density groupings
+ *   k = number of clusters (default: auto-calculated from geographic spread)
  */
-router.post("/fares/zone-clusters/auto-generate", async (_req, res): Promise<void> => {
+router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // 1. Fetch all extraurban stops
-    const stopsResult = await db.execute<any>(sql`
-      SELECT DISTINCT s.stop_id, s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
-      FROM gtfs_stops s
-      JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
-      JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
-      JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
-      WHERE s.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
-      ORDER BY s.stop_name
-    `);
-    const stops = stopsResult.rows as { stop_id: string; stop_name: string; lat: number; lon: number }[];
+    const mode: string = req.body?.mode || "concentric";
+    const stops = await fetchExtraStops(feedId);
     if (stops.length === 0) { res.status(400).json({ error: "Nessuna fermata extraurbana trovata" }); return; }
 
-    // 2. Compute geographic centroid of all stops
-    const centerLat = stops.reduce((sum, s) => sum + s.lat, 0) / stops.length;
-    const centerLon = stops.reduce((sum, s) => sum + s.lon, 0) / stops.length;
+    if (mode === "spatial") {
+      // ─── SPATIAL MODE: k-means on geographic coordinates ───
+      // Determine k: if user provided, use it; otherwise auto-calculate
+      // Heuristic: find geographic bounding box, divide area into ~6km cells
+      let k: number = req.body?.k ? Number(req.body.k) : 0;
+      if (!k || k < 2) {
+        const minLat = Math.min(...stops.map(s => s.lat));
+        const maxLat = Math.max(...stops.map(s => s.lat));
+        const minLon = Math.min(...stops.map(s => s.lon));
+        const maxLon = Math.max(...stops.map(s => s.lon));
+        const spanKmLat = haversineKm(minLat, minLon, maxLat, minLon);
+        const spanKmLon = haversineKm(minLat, minLon, minLat, maxLon);
+        // ~8km grid → k = area / (8*8)
+        const area = spanKmLat * spanKmLon;
+        k = Math.max(4, Math.min(25, Math.round(area / 64)));
+      }
+      k = Math.min(k, Math.floor(stops.length / 3)); // at least 3 stops per cluster
 
-    // 3. For each stop compute distance from centroid
-    const stopsWithDist = stops.map(s => ({
-      ...s,
-      distKm: haversineKm(centerLat, centerLon, s.lat, s.lon),
-    }));
+      const groups = kMeansSpatial(stops, k);
 
-    // 4. Group into rings using EXTRA_BANDS thresholds
-    // Each band defines a ring: kmFrom < dist <= kmTo
-    // Band 1: 0-6km, Band 2: 6-12km, etc.
-    const rings = new Map<number, typeof stopsWithDist>();
-    for (const s of stopsWithDist) {
-      const band = getBandForDistance(s.distKm);
-      const fascia = band ? band.fascia : (s.distKm === 0 ? 1 : EXTRA_BANDS[EXTRA_BANDS.length - 1].fascia);
-      if (!rings.has(fascia)) rings.set(fascia, []);
-      rings.get(fascia)!.push(s);
-    }
+      // Sort groups by centroid latitude (north to south) for consistent naming
+      groups.sort((a, b) => b.centroid.lat - a.centroid.lat);
 
-    // Sort rings by fascia number
-    const sortedFasce = Array.from(rings.keys()).sort((a, b) => a - b);
+      // Name clusters by the most central stop (closest to centroid)
+      const clusterDefs = groups.map((g, idx) => {
+        const centralStop = g.stops.reduce((best, s) => {
+          const d = haversineKm(s.lat, s.lon, g.centroid.lat, g.centroid.lon);
+          return d < best.d ? { s, d } : best;
+        }, { s: g.stops[0], d: Infinity }).s;
 
-    // Cluster colors palette (14 colors, will cycle)
-    const COLORS = [
-      "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6",
-      "#ec4899", "#14b8a6", "#f59e0b", "#6366f1", "#d946ef", "#84cc16", "#0ea5e9",
-    ];
-
-    // 5. Delete all existing clusters & stops for this feed
-    await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
-    await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
-
-    // 6. Create one cluster per occupied ring
-    let clustersCreated = 0;
-    let totalStopsAssigned = 0;
-
-    for (let idx = 0; idx < sortedFasce.length; idx++) {
-      const fascia = sortedFasce[idx];
-      const band = EXTRA_BANDS[fascia - 1];
-      const ringStops = rings.get(fascia)!;
-      if (ringStops.length === 0) continue;
-
-      const clusterId = `zona_${fascia}`;
-      const clusterName = `Zona ${fascia} (${band.kmFrom}-${band.kmTo} km)`;
-      const color = COLORS[idx % COLORS.length];
-
-      // Centroid of the ring's stops
-      const cLat = ringStops.reduce((s, st) => s + st.lat, 0) / ringStops.length;
-      const cLon = ringStops.reduce((s, st) => s + st.lon, 0) / ringStops.length;
-
-      // Insert cluster
-      await db.insert(gtfsFareZoneClusters).values({
-        feedId,
-        clusterId,
-        clusterName,
-        polygon: null,
-        centroidLat: cLat,
-        centroidLon: cLon,
-        color,
-      }).onConflictDoUpdate({
-        target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
-        set: { clusterName, centroidLat: cLat, centroidLon: cLon, color, updatedAt: sql`now()` },
+        // Clean up name: use the central stop's locality
+        const baseName = centralStop.stop_name.replace(/\s*[-–(].*/g, "").trim();
+        return {
+          clusterId: `area_${idx + 1}`,
+          clusterName: `${baseName} (${g.stops.length})`,
+          color: AUTO_CLUSTER_COLORS[idx % AUTO_CLUSTER_COLORS.length],
+          stops: g.stops,
+        };
       });
 
-      // Insert stops for this cluster
-      if (ringStops.length > 0) {
-        const batchSize = 500;
-        for (let b = 0; b < ringStops.length; b += batchSize) {
-          const batch = ringStops.slice(b, b + batchSize);
-          await db.insert(gtfsFareZoneClusterStops).values(
-            batch.map(s => ({
-              feedId,
-              clusterId,
-              stopId: s.stop_id,
-              stopName: s.stop_name,
-              stopLat: s.lat,
-              stopLon: s.lon,
-            }))
-          );
-        }
+      const { clustersCreated, totalStopsAssigned } = await persistClusters(feedId, clusterDefs);
+
+      res.json({
+        ok: true, mode: "spatial",
+        clustersCreated, totalStopsAssigned, totalExtraStops: stops.length, k,
+        clusters: clusterDefs.map(d => ({ id: d.clusterId, name: d.clusterName, stops: d.stops.length })),
+      });
+
+    } else {
+      // ─── CONCENTRIC MODE: rings from geographic centroid ───
+      const centerLat = stops.reduce((sum, s) => sum + s.lat, 0) / stops.length;
+      const centerLon = stops.reduce((sum, s) => sum + s.lon, 0) / stops.length;
+
+      const stopsWithDist = stops.map(s => ({
+        ...s,
+        distKm: haversineKm(centerLat, centerLon, s.lat, s.lon),
+      }));
+
+      const rings = new Map<number, typeof stopsWithDist>();
+      for (const s of stopsWithDist) {
+        const band = getBandForDistance(s.distKm);
+        const fascia = band ? band.fascia : (s.distKm === 0 ? 1 : EXTRA_BANDS[EXTRA_BANDS.length - 1].fascia);
+        if (!rings.has(fascia)) rings.set(fascia, []);
+        rings.get(fascia)!.push(s);
       }
 
-      clustersCreated++;
-      totalStopsAssigned += ringStops.length;
-    }
+      const sortedFasce = Array.from(rings.keys()).sort((a, b) => a - b);
 
-    res.json({
-      ok: true,
-      clustersCreated,
-      totalStopsAssigned,
-      totalExtraStops: stops.length,
-      center: { lat: centerLat, lon: centerLon },
-      rings: sortedFasce.map(f => ({
-        fascia: f,
-        kmFrom: EXTRA_BANDS[f - 1].kmFrom,
-        kmTo: EXTRA_BANDS[f - 1].kmTo,
-        stops: rings.get(f)!.length,
-      })),
-    });
+      const clusterDefs = sortedFasce.filter(f => (rings.get(f)?.length || 0) > 0).map((fascia, idx) => {
+        const band = EXTRA_BANDS[fascia - 1];
+        return {
+          clusterId: `zona_${fascia}`,
+          clusterName: `Zona ${fascia} (${band.kmFrom}-${band.kmTo} km)`,
+          color: AUTO_CLUSTER_COLORS[idx % AUTO_CLUSTER_COLORS.length],
+          stops: rings.get(fascia)!,
+        };
+      });
+
+      const { clustersCreated, totalStopsAssigned } = await persistClusters(feedId, clusterDefs);
+
+      res.json({
+        ok: true, mode: "concentric",
+        clustersCreated, totalStopsAssigned, totalExtraStops: stops.length,
+        center: { lat: centerLat, lon: centerLon },
+        rings: sortedFasce.map(f => ({
+          fascia: f, kmFrom: EXTRA_BANDS[f - 1].kmFrom, kmTo: EXTRA_BANDS[f - 1].kmTo, stops: rings.get(f)!.length,
+        })),
+      });
+    }
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
