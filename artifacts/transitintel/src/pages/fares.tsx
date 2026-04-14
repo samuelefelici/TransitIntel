@@ -1730,6 +1730,8 @@ function ClustersTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [autoGenerating, setAutoGenerating] = useState(false);
+  const [showAutoConfirm, setShowAutoConfirm] = useState(false);
 
   // Active cluster being edited
   const [activeClusterId, setActiveClusterId] = useState<string | null>(null);
@@ -1882,6 +1884,26 @@ function ClustersTab() {
       toast({ title: "Zone generate", description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD` });
     } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
     setGenerating(false);
+  };
+
+  // ── Auto-generate clusters ──
+  const autoGenerateClusters = async () => {
+    setShowAutoConfirm(false);
+    setAutoGenerating(true);
+    try {
+      const result = await apiFetch<any>("/api/fares/zone-clusters/auto-generate", { method: "POST" });
+      setActiveClusterId(null);
+      setPendingStops(new Set());
+      setDirty(false);
+      await loadAll();
+      toast({
+        title: "✨ Cluster generati automaticamente",
+        description: `${result.clustersCreated} cluster creati, ${result.totalStopsAssigned} fermate assegnate su ${result.totalExtraStops}`,
+      });
+    } catch (e: any) {
+      toast({ title: "Errore generazione", description: e.message, variant: "destructive" });
+    }
+    setAutoGenerating(false);
   };
 
   // ── Distance matrix ──
@@ -2072,6 +2094,12 @@ function ClustersTab() {
           </Button>
         </div>
         <div className="border-l border-border/30 h-6" />
+        <Button onClick={() => setShowAutoConfirm(true)} disabled={autoGenerating} size="sm"
+          className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white shadow-lg shadow-violet-500/20">
+          {autoGenerating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+          Genera Automaticamente
+        </Button>
+        <div className="border-l border-border/30 h-6" />
         <Button onClick={loadMatrix} size="sm" variant="outline">
           <Crosshair className="w-3.5 h-3.5 mr-1.5" /> Matrice Distanze
         </Button>
@@ -2080,6 +2108,62 @@ function ClustersTab() {
           Genera Zone GTFS
         </Button>
       </div>
+
+      {/* Auto-generate confirmation dialog */}
+      <AnimatePresence>
+        {showAutoConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setShowAutoConfirm(false)}>
+            <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              transition={{ type: "spring", duration: 0.3 }}
+              className="bg-card border border-border/50 rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden"
+              onClick={e => e.stopPropagation()}>
+              {/* Header gradient */}
+              <div className="bg-gradient-to-r from-violet-600/20 to-blue-600/20 border-b border-border/30 px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-blue-500 flex items-center justify-center shadow-lg shadow-violet-500/30">
+                    <Sparkles className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-base">Generazione Automatica Cluster</h3>
+                    <p className="text-xs text-muted-foreground">Basata sulle fasce chilometriche regionali</p>
+                  </div>
+                </div>
+              </div>
+              {/* Body */}
+              <div className="px-6 py-4 space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Questa operazione genererà automaticamente i cluster come <strong>anelli concentrici</strong> attorno al baricentro delle fermate extraurbane, 
+                  seguendo le fasce tariffarie regionali (~6 km per fascia).
+                </p>
+                {clusters.length > 0 && (
+                  <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                    <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                    <p className="text-xs text-yellow-200/80">
+                      <strong>Attenzione:</strong> i {clusters.length} cluster esistenti e le relative assegnazioni verranno <strong>sostituiti</strong>.
+                      Potrai poi modificarli manualmente.
+                    </p>
+                  </div>
+                )}
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-400" /> Ogni fermata in un solo cluster (partizione)</p>
+                  <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-400" /> Fasce: 0-6, 6-12, 12-18 km…</p>
+                  <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-400" /> Modificabile manualmente dopo la generazione</p>
+                </div>
+              </div>
+              {/* Footer */}
+              <div className="px-6 py-3 border-t border-border/30 flex items-center justify-end gap-2 bg-muted/10">
+                <Button variant="ghost" size="sm" onClick={() => setShowAutoConfirm(false)}>Annulla</Button>
+                <Button size="sm" onClick={autoGenerateClusters}
+                  className="bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white">
+                  <Sparkles className="w-3.5 h-3.5 mr-1.5" /> Genera
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main: sidebar + map */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
