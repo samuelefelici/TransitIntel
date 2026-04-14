@@ -79,6 +79,10 @@ interface RouteStop {
   lat: number;
   lon: number;
   progressiveKm: number;
+  kmMin?: number;
+  kmMax?: number;
+  percorsiCount?: number;
+  percorsiDetail?: { shapeId: string; km: number }[];
   suggestedFascia: number | null;
   suggestedAreaId: string | null;
   currentAreaId: string | null;
@@ -101,6 +105,8 @@ interface SimulationResult {
   bandRange?: string;
   intermediateStops?: { stopId: string; stopName: string; lat: number; lon: number; km: number }[];
   products?: { fareProductId: string; name: string; amount: number; currency: string; durationMinutes: number | null }[];
+  percorsiCount?: number;
+  distanceVariants?: { km: number; shapeId: string }[];
 }
 
 interface GenerateResult {
@@ -1595,6 +1601,11 @@ function ZonesTab() {
             <CardTitle className="text-sm">
               {selectedRoute ? `Fermate Linea ${selectedRoute}` : "Seleziona una linea"}
             </CardTitle>
+            {routeStops.length > 0 && routeStops[0]?.percorsiCount != null && routeStops[0].percorsiCount > 1 && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Km calcolati come media su {routeStops[0].percorsiCount} percorsi distinti — DGR 1036/2022 art. 2.d
+              </p>
+            )}
           </CardHeader>
           <CardContent>
             {!selectedRoute ? (
@@ -1612,13 +1623,17 @@ function ZonesTab() {
                     <tr className="border-b border-border/30">
                       <th className="text-left py-2 px-2 font-medium text-muted-foreground">#</th>
                       <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fermata</th>
-                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Km</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Km (media)</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Min–Max</th>
+                      <th className="text-center py-2 px-2 font-medium text-muted-foreground">Percorsi</th>
                       <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fascia</th>
                       <th className="text-left py-2 px-2 font-medium text-muted-foreground">Zona</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {routeStops.map((s, i) => (
+                    {routeStops.map((s, i) => {
+                      const dispersion = (s.kmMax != null && s.kmMin != null) ? (s.kmMax - s.kmMin) : 0;
+                      return (
                       <tr key={`${s.stopId}-${i}`} className="border-b border-border/10 hover:bg-muted/10">
                         <td className="py-1.5 px-2 text-muted-foreground">{s.sequence}</td>
                         <td className="py-1.5 px-2">
@@ -1628,6 +1643,17 @@ function ZonesTab() {
                           </div>
                         </td>
                         <td className="py-1.5 px-2 text-right font-mono">{s.progressiveKm.toFixed(1)}</td>
+                        <td className="py-1.5 px-2 text-right font-mono text-[11px]">
+                          {s.kmMin != null && s.kmMax != null ? (
+                            <span className={dispersion > 2 ? "text-amber-400" : "text-muted-foreground"}>
+                              {s.kmMin.toFixed(1)}–{s.kmMax.toFixed(1)}
+                              {dispersion > 2 && " ⚠"}
+                            </span>
+                          ) : "—"}
+                        </td>
+                        <td className="py-1.5 px-2 text-center font-mono text-[11px]">
+                          {s.percorsiCount ?? "—"}
+                        </td>
                         <td className="py-1.5 px-2">
                           {s.suggestedFascia && (
                             <Badge variant="outline" className="text-[10px]">F{s.suggestedFascia}</Badge>
@@ -1641,7 +1667,8 @@ function ZonesTab() {
                           ) : "—"}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -3847,6 +3874,19 @@ function SimulateTab() {
                                 <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
                               </div>
                             </div>
+                            {result.percorsiCount && result.percorsiCount > 1 && result.distanceVariants && (
+                              <div className="p-2.5 rounded-lg bg-muted/20 border border-border/20 text-xs space-y-1.5">
+                                <p className="font-medium text-foreground">
+                                  Media su {result.percorsiCount} percorsi distinti (DGR 1036/2022 art. 2.d)
+                                </p>
+                                {result.distanceVariants.map((v, i) => (
+                                  <div key={i} className="flex items-center justify-between text-muted-foreground">
+                                    <span className="truncate max-w-[180px]">shape {v.shapeId || "n/a"}</span>
+                                    <span className="font-mono">{v.km.toFixed(2)} km</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                             <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-emerald-500/5">
                               <div>
                                 <p className="text-sm font-medium">Biglietto Corsa Semplice</p>

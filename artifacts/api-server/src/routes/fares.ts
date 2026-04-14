@@ -111,6 +111,191 @@ function getBandForDistance(distKm: number): typeof EXTRA_BANDS[0] | undefined {
 }
 
 // ═══════════════════════════════════════════════════════════
+// HELPER: Percorsi distinti per linea (DGR 1036/2022 art. 2.d)
+// Deduplicazione su (stop_ids_signature + shape_id) per gestire
+// sia varianti di fermata sia percorsi stradali diversi
+// ═══════════════════════════════════════════════════════════
+
+interface Percorso {
+  tripId: string;
+  shapeId: string | null;
+  stops: {
+    stop_id: string;
+    stop_sequence: number;
+    lat: number;
+    lon: number;
+    stop_name: string;
+  }[];
+  shapeCoords: [number, number][] | null; // [lon, lat] pairs from GeoJSON
+}
+
+async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percorso[]> {
+  // Recupera tutti i trip con il loro shape_id
+  const tripRows = await db.execute<any>(sql`
+    SELECT DISTINCT t.trip_id, t.shape_id, COUNT(st.stop_id) AS cnt
+    FROM gtfs_trips t
+    JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
+    WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
+    GROUP BY t.trip_id, t.shape_id
+    ORDER BY cnt DESC
+  `);
+
+  if (tripRows.rows.length === 0) return [];
+
+  // Cache shape geometries: shape_id → coordinate array
+  const shapeCache = new Map<string, [number, number][] | null>();
+  const loadShape = async (shapeId: string | null): Promise<[number, number][] | null> => {
+    if (!shapeId) return null;
+    if (shapeCache.has(shapeId)) return shapeCache.get(shapeId)!;
+    const rows = await db.execute<any>(sql`
+      SELECT geojson FROM gtfs_shapes
+      WHERE feed_id = ${feedId} AND shape_id = ${shapeId}
+      LIMIT 1
+    `);
+    if (rows.rows.length === 0) { shapeCache.set(shapeId, null); return null; }
+    const geo = rows.rows[0].geojson;
+    const coords: [number, number][] | null =
+      geo?.geometry?.coordinates ??
+      geo?.coordinates ??
+      (geo?.type === "LineString" ? geo.coordinates : null);
+    shapeCache.set(shapeId, coords ?? null);
+    return coords ?? null;
+  };
+
+  const percorsi: Percorso[] = [];
+  const seenSignatures = new Set<string>();
+
+  for (const row of tripRows.rows) {
+    const stopsData = await db.execute<any>(sql`
+      SELECT st.stop_id, st.stop_sequence,
+             s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
+      FROM gtfs_stop_times st
+      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
+      WHERE st.feed_id = ${feedId} AND st.trip_id = ${row.trip_id}
+      ORDER BY st.stop_sequence
+    `);
+
+    const stops = stopsData.rows;
+    if (stops.length === 0) continue;
+
+    const stopSeqSig = stops.map((s: any) => s.stop_id).join("|");
+    // Deduplicazione su ENTRAMBI gli assi: sequenza fermate + shape
+    const signature = `${stopSeqSig}::${row.shape_id ?? "noshape"}`;
+    if (seenSignatures.has(signature)) continue;
+    seenSignatures.add(signature);
+
+    const shapeCoords = await loadShape(row.shape_id);
+
+    percorsi.push({
+      tripId: row.trip_id,
+      shapeId: row.shape_id ?? null,
+      stops,
+      shapeCoords,
+    });
+  }
+
+  return percorsi;
+}
+
+/**
+ * Calcola la distanza progressiva di ogni fermata lungo il percorso.
+ *
+ * Se shapeCoords è disponibile:
+ *   Per ogni fermata, trova il punto dello shape più vicino (proiezione)
+ *   e accumula la distanza percorsa lungo i segmenti dello shape fino a quel punto.
+ *
+ * Se shapeCoords è null:
+ *   Fallback: haversine tra fermate consecutive (comportamento precedente).
+ */
+function computeKmAlongShape(
+  stops: Percorso["stops"],
+  shapeCoords: [number, number][] | null
+): Map<string, { km: number; name: string; lat: number; lon: number }> {
+  const result = new Map<string, { km: number; name: string; lat: number; lon: number }>();
+
+  if (!shapeCoords || shapeCoords.length < 2) {
+    // Fallback: haversine tra fermate consecutive
+    let cumKm = 0;
+    for (let i = 0; i < stops.length; i++) {
+      if (i > 0) {
+        cumKm += haversineKm(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon);
+      }
+      result.set(stops[i].stop_id, {
+        km: Math.round(cumKm * 100) / 100,
+        name: stops[i].stop_name,
+        lat: stops[i].lat,
+        lon: stops[i].lon,
+      });
+    }
+    return result;
+  }
+
+  // Calcola distanze cumulative lungo i segmenti dello shape
+  // shapeCoords = [[lon0,lat0],[lon1,lat1],...]
+  const shapeCumKm: number[] = [0];
+  for (let i = 1; i < shapeCoords.length; i++) {
+    const [lon0, lat0] = shapeCoords[i - 1];
+    const [lon1, lat1] = shapeCoords[i];
+    shapeCumKm.push(shapeCumKm[i - 1] + haversineKm(lat0, lon0, lat1, lon1));
+  }
+
+  // Per ogni fermata, trova il punto dello shape più vicino (proiezione ortogonale)
+  // e leggi la distanza cumulativa dello shape fino a quel punto
+  let lastProjectedIdx = 0;
+
+  for (const stop of stops) {
+    let bestDist = Infinity;
+    let bestShapeIdx = lastProjectedIdx;
+    let bestT = 0;
+
+    // Cerca il segmento dello shape più vicino alla fermata
+    for (let i = lastProjectedIdx; i < shapeCoords.length - 1; i++) {
+      const [lonA, latA] = shapeCoords[i];
+      const [lonB, latB] = shapeCoords[i + 1];
+
+      // Proiezione del punto (stop) sul segmento (A→B)
+      const dx = lonB - lonA;
+      const dy = latB - latA;
+      const lenSq = dx * dx + dy * dy;
+      let t = 0;
+      if (lenSq > 0) {
+        t = ((stop.lon - lonA) * dx + (stop.lat - latA) * dy) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+      }
+
+      const projLon = lonA + t * dx;
+      const projLat = latA + t * dy;
+      const dist = haversineKm(stop.lat, stop.lon, projLat, projLon);
+
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestShapeIdx = i;
+        bestT = t;
+      }
+
+      // Ottimizzazione: se abbiamo trovato un punto molto vicino e stiamo
+      // andando troppo lontano, possiamo fermarci
+      if (dist > 2 && bestDist < 0.1) break;
+    }
+
+    // Distanza cumulativa lungo lo shape fino alla proiezione della fermata
+    const kmAtProjection = shapeCumKm[bestShapeIdx] +
+      bestT * (shapeCumKm[bestShapeIdx + 1] - shapeCumKm[bestShapeIdx]);
+
+    result.set(stop.stop_id, {
+      km: Math.round(kmAtProjection * 100) / 100,
+      name: stop.stop_name,
+      lat: stop.lat,
+      lon: stop.lon,
+    });
+
+    lastProjectedIdx = bestShapeIdx;
+  }
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════
 // NETWORKS
 // ═══════════════════════════════════════════════════════════
 
@@ -657,111 +842,89 @@ router.post("/fares/zones/generate-all", async (_req, res): Promise<void> => {
 
 /**
  * Generate km-based zones for a single extraurban route.
- * 1. Pick the trip with most stops (longest variant)
- * 2. For each stop, compute progressive distance from first stop using shape or haversine
- * 3. Assign each stop to a zone based on which fare band its distance falls into
+ * Rev.2: Uses getRoutePercorsi + computeKmAlongShape for accurate
+ * distance calculation along shape geometry with multi-variant averaging.
+ * (DGR Marche 1036/2022 art. 2.d — media percorsi distinti)
  */
 async function generateZonesForRoute(feedId: string, routeId: string) {
-  // Get the trip with the most stops for this route
-  const tripRows = await db.execute<any>(sql`
-    SELECT t.trip_id, t.shape_id, COUNT(*) AS cnt
-    FROM gtfs_trips t
-    JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
-    WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
-    GROUP BY t.trip_id, t.shape_id
-    ORDER BY cnt DESC
-    LIMIT 1
-  `);
+  const allPercorsi = await getRoutePercorsi(feedId, routeId);
+  if (allPercorsi.length === 0) return { routeId, zones: 0, stops: 0, percorsiAnalizzati: 0, percorsiConShape: 0 };
 
-  if (tripRows.rows.length === 0) return { routeId, zones: 0, stops: 0 };
+  // Filtra per famiglia direzionale (stessa prima/ultima fermata del percorso più lungo)
+  const ref = allPercorsi.reduce((a, b) => a.stops.length >= b.stops.length ? a : b);
+  const refFirst = ref.stops[0]?.stop_id;
+  const refLast = ref.stops[ref.stops.length - 1]?.stop_id;
+  const percorsi = allPercorsi.filter(p => {
+    const first = p.stops[0]?.stop_id;
+    const last = p.stops[p.stops.length - 1]?.stop_id;
+    return first === refFirst && last === refLast;
+  });
+  const filtered = percorsi.length > 0 ? percorsi : allPercorsi;
 
-  const tripId = tripRows.rows[0].trip_id;
-  const shapeId = tripRows.rows[0].shape_id;
+  // Per ogni fermata, accumula i km da tutti i percorsi in cui appare
+  const stopKmAccumulator = new Map<string, {
+    name: string; lat: number; lon: number;
+    kmValues: number[];
+  }>();
 
-  // Get ordered stops for this trip
-  const stopsData = await db.execute<any>(sql`
-    SELECT st.stop_id, st.stop_sequence, s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
-    FROM gtfs_stop_times st
-    JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
-    WHERE st.feed_id = ${feedId} AND st.trip_id = ${tripId}
-    ORDER BY st.stop_sequence
-  `);
-
-  if (stopsData.rows.length === 0) return { routeId, zones: 0, stops: 0 };
-
-  // Try to get shape coordinates for more accurate distances
-  let shapeCoords: number[][] | null = null;
-  if (shapeId) {
-    const shapeRows = await db.execute<any>(sql`
-      SELECT geojson FROM gtfs_shapes WHERE feed_id = ${feedId} AND shape_id = ${shapeId} LIMIT 1
-    `);
-    if (shapeRows.rows.length > 0) {
-      const geo = shapeRows.rows[0].geojson;
-      if (geo?.geometry?.coordinates) shapeCoords = geo.geometry.coordinates;
+  for (const percorso of filtered) {
+    const kmMap = computeKmAlongShape(percorso.stops, percorso.shapeCoords);
+    for (const [stopId, info] of kmMap) {
+      if (!stopKmAccumulator.has(stopId)) {
+        stopKmAccumulator.set(stopId, { name: info.name, lat: info.lat, lon: info.lon, kmValues: [] });
+      }
+      stopKmAccumulator.get(stopId)!.kmValues.push(info.km);
     }
   }
 
-  // Compute progressive distance for each stop
-  const stops = stopsData.rows as { stop_id: string; stop_sequence: number; lat: number; lon: number; stop_name: string }[];
-  const progressiveKm: { stopId: string; stopName: string; km: number; lat: number; lon: number }[] = [];
-
-  let cumulativeKm = 0;
-  for (let i = 0; i < stops.length; i++) {
-    if (i > 0) {
-      cumulativeKm += haversineKm(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon);
-    }
-    progressiveKm.push({
-      stopId: stops[i].stop_id,
-      stopName: stops[i].stop_name,
-      km: Math.round(cumulativeKm * 100) / 100,
-      lat: stops[i].lat,
-      lon: stops[i].lon,
-    });
-  }
-
-  // Determine which bands are needed and create zones
+  // Distanza tariffaria = media dei km su tutti i percorsi (DGR 1036/2022 punto 2.d)
   const usedBands = new Set<number>();
-  for (const s of progressiveKm) {
-    const band = getBandForDistance(s.km);
+  const stopFinalKm = new Map<string, { name: string; lat: number; lon: number; km: number }>();
+
+  for (const [stopId, data] of stopKmAccumulator) {
+    const avgKm = data.kmValues.reduce((a, b) => a + b, 0) / data.kmValues.length;
+    const km = Math.round(avgKm * 100) / 100;
+    stopFinalKm.set(stopId, { name: data.name, lat: data.lat, lon: data.lon, km });
+    const band = getBandForDistance(km);
     if (band) usedBands.add(band.fascia);
-    else if (s.km === 0) usedBands.add(1); // first stop → zone 1
+    else if (km === 0) usedBands.add(1);
   }
 
-  // Create area records for this route
+  // Crea aree e assegna fermate
   const createdZones: string[] = [];
   for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
     const band = EXTRA_BANDS[fascia - 1];
     const areaId = `${routeId}_zona_${fascia}`;
-    const areaName = `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`;
-
-    await db.insert(gtfsFareAreas)
-      .values({
-        feedId, areaId, areaName,
-        networkId: "extraurbano", routeId,
-        kmFrom: band.kmFrom, kmTo: band.kmTo,
-      })
-      .onConflictDoUpdate({
-        target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-        set: { areaName, kmFrom: band.kmFrom, kmTo: band.kmTo, updatedAt: sql`now()` },
-      });
+    await db.insert(gtfsFareAreas).values({
+      feedId, areaId,
+      areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`,
+      networkId: "extraurbano", routeId,
+      kmFrom: band.kmFrom, kmTo: band.kmTo,
+    }).onConflictDoUpdate({
+      target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
+      set: { areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`, kmFrom: band.kmFrom, kmTo: band.kmTo, updatedAt: sql`now()` },
+    });
     createdZones.push(areaId);
   }
 
-  // Assign stops to zones
   let stopsAssigned = 0;
-  for (const s of progressiveKm) {
-    let band = getBandForDistance(s.km);
-    if (!band && s.km === 0) band = EXTRA_BANDS[0];
+  for (const [stopId, info] of stopFinalKm) {
+    let band = getBandForDistance(info.km);
+    if (!band && info.km === 0) band = EXTRA_BANDS[0];
     if (!band) continue;
-
-    const areaId = `${routeId}_zona_${band.fascia}`;
     await db.insert(gtfsStopAreas)
-      .values({ feedId, areaId, stopId: s.stopId })
+      .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
       .onConflictDoNothing();
     stopsAssigned++;
   }
 
-  return { routeId, zones: createdZones.length, stops: stopsAssigned };
+  return {
+    routeId,
+    zones: createdZones.length,
+    stops: stopsAssigned,
+    percorsiAnalizzati: filtered.length,
+    percorsiConShape: filtered.filter(p => p.shapeCoords !== null).length,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -942,70 +1105,59 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       return;
     }
 
-    // ── Compute distance on-the-fly from stop sequence ──
-    // Get the longest trip for this route
-    const tripRows = await db.execute<any>(sql`
-      SELECT t.trip_id, COUNT(*) AS cnt
-      FROM gtfs_trips t
-      JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
-      WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
-      GROUP BY t.trip_id ORDER BY cnt DESC LIMIT 1
-    `);
-    if (tripRows.rows.length === 0) {
+    // Rev.2: Use getRoutePercorsi + computeKmAlongShape for multi-variant averaging
+    const percorsi = await getRoutePercorsi(feedId, routeId);
+    if (percorsi.length === 0) {
       res.status(404).json({ error: "No trips found for this route" }); return;
     }
 
-    const tripId = tripRows.rows[0].trip_id;
+    // Raccoglie distanza OD da ogni percorso che serve entrambe le fermate
+    const odDistances: { km: number; shapeId: string | null }[] = [];
+    let fromInfoFinal: { name: string; lat: number; lon: number; km: number } | null = null;
+    let toInfoFinal: { name: string; lat: number; lon: number; km: number } | null = null;
+    let bestIntermediateStops: any[] = [];
 
-    // Get ordered stops with coordinates
-    const stopsData = await db.execute<any>(sql`
-      SELECT st.stop_id, st.stop_sequence, s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
-      FROM gtfs_stop_times st
-      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
-      WHERE st.feed_id = ${feedId} AND st.trip_id = ${tripId}
-      ORDER BY st.stop_sequence
-    `);
+    for (const percorso of percorsi) {
+      const kmMap = computeKmAlongShape(percorso.stops, percorso.shapeCoords);
+      const fromInfo = kmMap.get(fromStopId);
+      const toInfo = kmMap.get(toStopId);
+      if (!fromInfo || !toInfo) continue;
 
-    const stops = stopsData.rows as { stop_id: string; stop_sequence: number; lat: number; lon: number; stop_name: string }[];
-
-    // Build progressive km map
-    const kmMap = new Map<string, { km: number; name: string; lat: number; lon: number }>();
-    let cumulativeKm = 0;
-    for (let i = 0; i < stops.length; i++) {
-      if (i > 0) {
-        cumulativeKm += haversineKm(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon);
-      }
-      kmMap.set(stops[i].stop_id, {
-        km: Math.round(cumulativeKm * 100) / 100,
-        name: stops[i].stop_name,
-        lat: stops[i].lat,
-        lon: stops[i].lon,
+      odDistances.push({
+        km: Math.round(Math.abs(toInfo.km - fromInfo.km) * 100) / 100,
+        shapeId: percorso.shapeId,
       });
+
+      if (!fromInfoFinal) {
+        fromInfoFinal = fromInfo;
+        toInfoFinal = toInfo;
+        const fromIdx = percorso.stops.findIndex(s => s.stop_id === fromStopId);
+        const toIdx = percorso.stops.findIndex(s => s.stop_id === toStopId);
+        const minIdx = Math.min(fromIdx, toIdx);
+        const maxIdx = Math.max(fromIdx, toIdx);
+        bestIntermediateStops = percorso.stops.slice(minIdx, maxIdx + 1).map(s => ({
+          stopId: s.stop_id,
+          stopName: s.stop_name,
+          lat: s.lat,
+          lon: s.lon,
+          km: kmMap.get(s.stop_id)!.km,
+        }));
+      }
     }
 
-    const fromInfo = kmMap.get(fromStopId);
-    const toInfo = kmMap.get(toStopId);
-
-    if (!fromInfo || !toInfo) {
-      res.status(404).json({ error: "Stop not found in this route's trip sequence" }); return;
+    if (odDistances.length === 0 || !fromInfoFinal || !toInfoFinal) {
+      res.status(404).json({ error: "Stop not found in any trip for this route" }); return;
     }
 
-    const distKm = Math.abs(toInfo.km - fromInfo.km);
+    // Media delle distanze su tutti i percorsi distinti (DGR 1036/2022 punto 2.d)
+    const distKm = Math.round(
+      (odDistances.reduce((a, b) => a + b.km, 0) / odDistances.length) * 100
+    ) / 100;
+
     const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
-
     if (!band) {
       res.status(404).json({ error: `No fare band for distance ${distKm.toFixed(1)} km` }); return;
     }
-
-    // Build intermediate stops for the map
-    const fromIdx = stops.findIndex(s => s.stop_id === fromStopId);
-    const toIdx = stops.findIndex(s => s.stop_id === toStopId);
-    const minIdx = Math.min(fromIdx, toIdx);
-    const maxIdx = Math.max(fromIdx, toIdx);
-    const intermediateStops = stops.slice(minIdx, maxIdx + 1).map(s => {
-      const info = kmMap.get(s.stop_id)!;
-      return { stopId: s.stop_id, stopName: s.stop_name, lat: s.lat, lon: s.lon, km: info.km };
-    });
 
     res.json({
       type: "extraurban",
@@ -1013,15 +1165,17 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       routeId,
       fromStopId,
       toStopId,
-      fromStop: { stopId: fromStopId, name: fromInfo.name, lat: fromInfo.lat, lon: fromInfo.lon, km: fromInfo.km },
-      toStop: { stopId: toStopId, name: toInfo.name, lat: toInfo.lat, lon: toInfo.lon, km: toInfo.km },
-      distanceKm: Math.round(distKm * 100) / 100,
+      fromStop: { stopId: fromStopId, name: fromInfoFinal.name, lat: fromInfoFinal.lat, lon: fromInfoFinal.lon, km: fromInfoFinal.km },
+      toStop: { stopId: toStopId, name: toInfoFinal.name, lat: toInfoFinal.lat, lon: toInfoFinal.lon, km: toInfoFinal.km },
+      distanceKm: distKm,
+      distanceVariants: odDistances,
+      percorsiCount: odDistances.length,
       fascia: band.fascia,
       fareProductId: `extra_fascia_${band.fascia}`,
       amount: band.price,
       currency: "EUR",
       bandRange: `${band.kmFrom}-${band.kmTo} km`,
-      intermediateStops,
+      intermediateStops: bestIntermediateStops,
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1223,36 +1377,54 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
 });
 
 // GET /api/fares/route-stops/:routeId — get ordered stops with progressive km (for zone editor)
+// Rev.2: Uses getRoutePercorsi + computeKmAlongShape, returns kmMin/kmMax/percorsiCount/percorsiDetail
 router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId();
     if (!feedId) { res.json([]); return; }
     const { routeId } = req.params;
 
-    // Get longest trip
-    const tripRows = await db.execute<any>(sql`
-      SELECT t.trip_id, COUNT(*) AS cnt
-      FROM gtfs_trips t
-      JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
-      WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
-      GROUP BY t.trip_id ORDER BY cnt DESC LIMIT 1
-    `);
-    if (tripRows.rows.length === 0) { res.json([]); return; }
+    const allPercorsi = await getRoutePercorsi(feedId, routeId);
+    if (allPercorsi.length === 0) { res.json([]); return; }
 
-    const tripId = tripRows.rows[0].trip_id;
-    const stopsData = await db.execute<any>(sql`
-      SELECT st.stop_id, st.stop_sequence, s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
-      FROM gtfs_stop_times st
-      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
-      WHERE st.feed_id = ${feedId} AND st.trip_id = ${tripId}
-      ORDER BY st.stop_sequence
-    `);
+    // Filtra per "famiglia direzionale": prendi il percorso con più fermate come
+    // riferimento, poi includi solo i percorsi con stessa prima E ultima fermata
+    // (stessa direzione). Questo evita di mescolare andata e ritorno.
+    const ref = allPercorsi.reduce((a, b) => a.stops.length >= b.stops.length ? a : b);
+    const refFirst = ref.stops[0]?.stop_id;
+    const refLast = ref.stops[ref.stops.length - 1]?.stop_id;
+    const percorsi = allPercorsi.filter(p => {
+      const first = p.stops[0]?.stop_id;
+      const last = p.stops[p.stops.length - 1]?.stop_id;
+      return first === refFirst && last === refLast;
+    });
+    // fallback: se nessuno matcha (impossibile dato che ref è incluso), usa tutti
+    const filtered = percorsi.length > 0 ? percorsi : allPercorsi;
 
-    const stops = stopsData.rows as { stop_id: string; stop_sequence: number; lat: number; lon: number; stop_name: string }[];
-    const result: any[] = [];
-    let cumulativeKm = 0;
+    const stopKmAccumulator = new Map<string, {
+      name: string; lat: number; lon: number; sequence: number;
+      kmValues: number[];
+      percorsiDetail: { shapeId: string | null; km: number }[];
+    }>();
 
-    // Also get existing area assignments for this route
+    for (const percorso of filtered) {
+      const kmMap = computeKmAlongShape(percorso.stops, percorso.shapeCoords);
+      for (let i = 0; i < percorso.stops.length; i++) {
+        const s = percorso.stops[i];
+        const info = kmMap.get(s.stop_id)!;
+        if (!stopKmAccumulator.has(s.stop_id)) {
+          stopKmAccumulator.set(s.stop_id, {
+            name: s.stop_name, lat: s.lat, lon: s.lon,
+            sequence: s.stop_sequence,
+            kmValues: [], percorsiDetail: [],
+          });
+        }
+        const acc = stopKmAccumulator.get(s.stop_id)!;
+        acc.kmValues.push(info.km);
+        acc.percorsiDetail.push({ shapeId: percorso.shapeId, km: info.km });
+      }
+    }
+
     const existingAreas = await db.execute<any>(sql`
       SELECT sa.stop_id, sa.area_id, a.area_name, a.km_from, a.km_to
       FROM gtfs_stop_areas sa
@@ -1261,26 +1433,32 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
     `);
     const areaMap = new Map(existingAreas.rows.map((r: any) => [r.stop_id, r]));
 
-    for (let i = 0; i < stops.length; i++) {
-      if (i > 0) {
-        cumulativeKm += haversineKm(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon);
-      }
-      const band = getBandForDistance(cumulativeKm) || (cumulativeKm === 0 ? EXTRA_BANDS[0] : null);
-      const existing = areaMap.get(stops[i].stop_id);
+    const result = Array.from(stopKmAccumulator.entries()).map(([stopId, data]) => {
+      const avgKm = Math.round(
+        (data.kmValues.reduce((a, b) => a + b, 0) / data.kmValues.length) * 100
+      ) / 100;
+      const kmMin = Math.round(Math.min(...data.kmValues) * 100) / 100;
+      const kmMax = Math.round(Math.max(...data.kmValues) * 100) / 100;
+      const band = getBandForDistance(avgKm) || (avgKm === 0 ? EXTRA_BANDS[0] : null);
+      const existing = areaMap.get(stopId);
 
-      result.push({
-        stopId: stops[i].stop_id,
-        stopName: stops[i].stop_name,
-        sequence: stops[i].stop_sequence,
-        lat: stops[i].lat,
-        lon: stops[i].lon,
-        progressiveKm: Math.round(cumulativeKm * 100) / 100,
+      return {
+        stopId,
+        stopName: data.name,
+        sequence: data.sequence,
+        lat: data.lat,
+        lon: data.lon,
+        progressiveKm: avgKm,
+        kmMin,
+        kmMax,
+        percorsiCount: data.kmValues.length,
+        percorsiDetail: data.percorsiDetail,
         suggestedFascia: band?.fascia || null,
         suggestedAreaId: band ? `${routeId}_zona_${band.fascia}` : null,
         currentAreaId: existing?.area_id || null,
         currentAreaName: existing?.area_name || null,
-      });
-    }
+      };
+    }).sort((a, b) => a.sequence - b.sequence);
 
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
