@@ -130,69 +130,91 @@ interface Percorso {
 }
 
 async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percorso[]> {
-  // Recupera tutti i trip con il loro shape_id
+  // ── STEP 1: Tutti i trip con shape_id (singola query) ──
   const tripRows = await db.execute<any>(sql`
-    SELECT DISTINCT t.trip_id, t.shape_id, COUNT(st.stop_id) AS cnt
+    SELECT t.trip_id, t.shape_id
     FROM gtfs_trips t
-    JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
     WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
-    GROUP BY t.trip_id, t.shape_id
-    ORDER BY cnt DESC
   `);
-
   if (tripRows.rows.length === 0) return [];
 
-  // Cache shape geometries: shape_id → coordinate array
-  const shapeCache = new Map<string, [number, number][] | null>();
-  const loadShape = async (shapeId: string | null): Promise<[number, number][] | null> => {
-    if (!shapeId) return null;
-    if (shapeCache.has(shapeId)) return shapeCache.get(shapeId)!;
-    const rows = await db.execute<any>(sql`
-      SELECT geojson FROM gtfs_shapes
-      WHERE feed_id = ${feedId} AND shape_id = ${shapeId}
-      LIMIT 1
-    `);
-    if (rows.rows.length === 0) { shapeCache.set(shapeId, null); return null; }
-    const geo = rows.rows[0].geojson;
-    const coords: [number, number][] | null =
-      geo?.geometry?.coordinates ??
-      geo?.coordinates ??
-      (geo?.type === "LineString" ? geo.coordinates : null);
-    shapeCache.set(shapeId, coords ?? null);
-    return coords ?? null;
-  };
+  const tripIds = tripRows.rows.map((r: any) => r.trip_id);
+  const tripShapeMap = new Map<string, string | null>(
+    tripRows.rows.map((r: any) => [r.trip_id, r.shape_id ?? null])
+  );
 
-  const percorsi: Percorso[] = [];
+  // ── STEP 2: Tutte le fermate di tutti i trip in una sola query (subquery) ──
+  const allStopsData = await db.execute<any>(sql`
+    SELECT st.trip_id, st.stop_id, st.stop_sequence,
+           s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
+    FROM gtfs_stop_times st
+    JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
+    WHERE st.feed_id = ${feedId}
+      AND st.trip_id IN (
+        SELECT t.trip_id FROM gtfs_trips t
+        WHERE t.feed_id = ${feedId} AND t.route_id = ${routeId}
+      )
+    ORDER BY st.trip_id, st.stop_sequence
+  `);
+
+  // Raggruppa le fermate per trip_id
+  const tripStopsMap = new Map<string, any[]>();
+  for (const row of allStopsData.rows) {
+    if (!tripStopsMap.has(row.trip_id)) tripStopsMap.set(row.trip_id, []);
+    tripStopsMap.get(row.trip_id)!.push(row);
+  }
+
+  // ── STEP 3: Deduplicazione e raccolta shape_id univoci ──
   const seenSignatures = new Set<string>();
+  const uniqueTrips: { tripId: string; shapeId: string | null; stops: any[] }[] = [];
+  const neededShapeIds = new Set<string>();
 
-  for (const row of tripRows.rows) {
-    const stopsData = await db.execute<any>(sql`
-      SELECT st.stop_id, st.stop_sequence,
-             s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
-      FROM gtfs_stop_times st
-      JOIN gtfs_stops s ON s.stop_id = st.stop_id AND s.feed_id = st.feed_id
-      WHERE st.feed_id = ${feedId} AND st.trip_id = ${row.trip_id}
-      ORDER BY st.stop_sequence
-    `);
+  // Ordina trip per numero fermate decrescente (preferisci il più lungo)
+  const sortedTripIds = [...tripStopsMap.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([tid]) => tid);
 
-    const stops = stopsData.rows;
-    if (stops.length === 0) continue;
+  for (const tripId of sortedTripIds) {
+    const stops = tripStopsMap.get(tripId);
+    if (!stops || stops.length === 0) continue;
 
+    const shapeId = tripShapeMap.get(tripId) ?? null;
     const stopSeqSig = stops.map((s: any) => s.stop_id).join("|");
-    // Deduplicazione su ENTRAMBI gli assi: sequenza fermate + shape
-    const signature = `${stopSeqSig}::${row.shape_id ?? "noshape"}`;
+    const signature = `${stopSeqSig}::${shapeId ?? "noshape"}`;
     if (seenSignatures.has(signature)) continue;
     seenSignatures.add(signature);
 
-    const shapeCoords = await loadShape(row.shape_id);
-
-    percorsi.push({
-      tripId: row.trip_id,
-      shapeId: row.shape_id ?? null,
-      stops,
-      shapeCoords,
-    });
+    uniqueTrips.push({ tripId, shapeId, stops });
+    if (shapeId) neededShapeIds.add(shapeId);
   }
+
+  // ── STEP 4: Carica tutte le shape necessarie in una sola query ──
+  const shapeCache = new Map<string, [number, number][] | null>();
+  if (neededShapeIds.size > 0) {
+    const shapeIdsArr = Array.from(neededShapeIds);
+    // Use IN (...) with sql.join for proper parameterization
+    const shapeIdParams = sql.join(shapeIdsArr.map(id => sql`${id}`), sql`, `);
+    const shapeRows = await db.execute<any>(sql`
+      SELECT shape_id, geojson FROM gtfs_shapes
+      WHERE feed_id = ${feedId} AND shape_id IN (${shapeIdParams})
+    `);
+    for (const row of shapeRows.rows) {
+      const geo = row.geojson;
+      const coords: [number, number][] | null =
+        geo?.geometry?.coordinates ??
+        geo?.coordinates ??
+        (geo?.type === "LineString" ? geo.coordinates : null);
+      shapeCache.set(row.shape_id, coords ?? null);
+    }
+  }
+
+  // ── STEP 5: Assembla i percorsi ──
+  const percorsi: Percorso[] = uniqueTrips.map(({ tripId, shapeId, stops }) => ({
+    tripId,
+    shapeId,
+    stops,
+    shapeCoords: shapeId ? (shapeCache.get(shapeId) ?? null) : null,
+  }));
 
   return percorsi;
 }

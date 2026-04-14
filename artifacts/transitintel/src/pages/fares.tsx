@@ -1499,14 +1499,21 @@ function ZonesTab() {
   const generateAll = async () => {
     setGenerating(true);
     try {
-      const result = await apiFetch<any>("/api/fares/zones/generate-all", { method: "POST" });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5 * 60 * 1000); // 5 min timeout
+      const result = await apiFetch<any>("/api/fares/zones/generate-all", {
+        method: "POST",
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
       toast({
         title: "Zone generate",
         description: `${result.urbanAreas} aree urbane + ${result.totalZones} zone extraurbane su ${result.extraurbanRoutes} linee`,
       });
       await load();
     } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
+      const msg = e.name === "AbortError" ? "Timeout: operazione troppo lunga (>5 min)" : e.message;
+      toast({ title: "Errore", description: msg, variant: "destructive" });
     }
     setGenerating(false);
   };
