@@ -12,6 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 
@@ -4540,6 +4543,10 @@ function TabButton({
 export default function FaresPage() {
   const [tab, setTab] = useState<Tab>("classify");
 
+  // Check if current tab is a utility tab (for highlight)
+  const isUtilityTab = UTILITY_TABS.some(t => t.id === tab);
+  const activeUtility = UTILITY_TABS.find(t => t.id === tab);
+
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-8">
       {/* Header */}
@@ -4557,64 +4564,77 @@ export default function FaresPage() {
         </div>
       </motion.div>
 
-      {/* ── Step guidati 1→4 ──────────────────────────── */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 px-1">
-          <Navigation className="w-3.5 h-3.5 text-primary" />
-          <span className="text-xs font-semibold text-primary uppercase tracking-wider">Configurazione guidata</span>
-          <div className="flex-1 h-px bg-border/30" />
-        </div>
-        <div className="relative">
-          <div
-            className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
-              [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
-              [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
-              [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
-              hover:[&::-webkit-scrollbar-thumb]:bg-border"
-          >
-            {GUIDED_STEPS.map((s) => (
-              <TabButton
-                key={s.id}
-                id={s.id}
-                label={s.label}
-                icon={s.icon}
-                info={s.info}
-                step={s.step}
-                isActive={tab === s.id}
-                onClick={() => setTab(s.id)}
-              />
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* ── Single tab bar: guided steps + utility dropdown ── */}
+      <div className="relative">
+        <div
+          className="flex items-center gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
+            [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
+            [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
+            [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
+            hover:[&::-webkit-scrollbar-thumb]:bg-border"
+        >
+          {/* 4 step guidati */}
+          {GUIDED_STEPS.map((s) => (
+            <TabButton
+              key={s.id}
+              id={s.id}
+              label={s.label}
+              icon={s.icon}
+              info={s.info}
+              step={s.step}
+              isActive={tab === s.id}
+              onClick={() => setTab(s.id)}
+            />
+          ))}
 
-      {/* ── Sezioni utility ───────────────────────────── */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 px-1">
-          <Layers className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Strumenti & Export</span>
-          <div className="flex-1 h-px bg-border/30" />
-        </div>
-        <div className="relative">
-          <div
-            className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
-              [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
-              [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
-              [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
-              hover:[&::-webkit-scrollbar-thumb]:bg-border"
-          >
-            {UTILITY_TABS.map((t) => (
-              <TabButton
-                key={t.id}
-                id={t.id}
-                label={t.label}
-                icon={t.icon}
-                info={t.info}
-                isActive={tab === t.id}
-                onClick={() => setTab(t.id)}
-              />
-            ))}
-          </div>
+          {/* Separatore verticale */}
+          <div className="w-px h-7 bg-border/40 mx-1 shrink-0" />
+
+          {/* Dropdown Strumenti & Export */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className={`
+                  relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0
+                  transition-all duration-200 outline-none
+                  ${isUtilityTab
+                    ? "text-foreground bg-background/80 border border-border/50 shadow-sm"
+                    : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                  }
+                `}
+              >
+                {isUtilityTab ? activeUtility?.icon : <Layers className="w-3.5 h-3.5" />}
+                {isUtilityTab ? activeUtility?.label : "Strumenti"}
+                <ChevronDown className="w-3 h-3 opacity-50" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {UTILITY_TABS.map((t) => (
+                <DropdownMenuItem
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`flex items-center gap-3 cursor-pointer ${tab === t.id ? "bg-accent" : ""}`}
+                >
+                  <span className="text-muted-foreground">{t.icon}</span>
+                  <div className="flex-1">
+                    <span className="text-sm">{t.label}</span>
+                  </div>
+                  <TooltipProvider delayDuration={200}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-muted-foreground/40 hover:text-muted-foreground" onClick={e => e.stopPropagation()}>
+                          <HelpCircle className="w-3 h-3" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="left" className="max-w-xs text-xs leading-relaxed">
+                        {t.info}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
