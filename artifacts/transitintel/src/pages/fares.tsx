@@ -11,6 +11,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 
@@ -159,17 +160,87 @@ const NETWORK_OPTIONS = [
 
 type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-  { id: "classify", label: "Classificazione Linee", icon: <Tag className="w-3.5 h-3.5" /> },
-  { id: "products", label: "Prodotti & Supporti", icon: <Euro className="w-3.5 h-3.5" /> },
-  { id: "riders", label: "Categorie Passeggero", icon: <Users className="w-3.5 h-3.5" /> },
-  { id: "zones", label: "Zone Extraurbane", icon: <MapPin className="w-3.5 h-3.5" /> },
-  { id: "timeframes", label: "Fasce Orarie", icon: <Clock className="w-3.5 h-3.5" /> },
-  { id: "calendar", label: "Calendario Servizio", icon: <CalendarDays className="w-3.5 h-3.5" /> },
-  { id: "feedinfo", label: "Feed Info", icon: <Info className="w-3.5 h-3.5" /> },
-  { id: "editor", label: "Editor Fermate", icon: <Edit3 className="w-3.5 h-3.5" /> },
-  { id: "generate", label: "Genera & Esporta", icon: <Download className="w-3.5 h-3.5" /> },
-  { id: "simulate", label: "Simulatore", icon: <Play className="w-3.5 h-3.5" /> },
+// ── Step guidati (percorso obbligatorio 1→4) ───────────
+const GUIDED_STEPS: {
+  step: number;
+  id: Tab;
+  label: string;
+  icon: React.ReactNode;
+  info: string;
+}[] = [
+  {
+    step: 1,
+    id: "classify",
+    label: "Classificazione Linee",
+    icon: <Tag className="w-3.5 h-3.5" />,
+    info: "Associa ogni linea GTFS a una rete tariffaria (urbano Ancona, Jesi, Falconara, extraurbano). Questo determina quali regole tariffarie verranno generate per ciascuna linea.",
+  },
+  {
+    step: 2,
+    id: "products",
+    label: "Prodotti & Supporti",
+    icon: <Euro className="w-3.5 h-3.5" />,
+    info: "Configura i supporti tariffari (biglietto cartaceo, tessera elettronica, app mobile) e definisci i prodotti con i relativi prezzi. I prodotti urbani hanno prezzo fisso, quelli extraurbani seguono le fasce chilometriche DGR Marche.",
+  },
+  {
+    step: 3,
+    id: "riders",
+    label: "Categorie Passeggero",
+    icon: <Users className="w-3.5 h-3.5" />,
+    info: "Definisci le categorie di viaggiatori a cui applicare tariffe differenziate: ordinario, studenti, anziani, disabili, ecc. La categoria 'ordinario' è quella predefinita.",
+  },
+  {
+    step: 4,
+    id: "zones",
+    label: "Zone Extraurbane",
+    icon: <MapPin className="w-3.5 h-3.5" />,
+    info: "Genera le zone tariffarie extraurbane. Il metodo ufficiale (DGR 1036/2022) calcola i km lungo il tracciato shape proiettando le fermate e facendo la media su tutti i percorsi distinti di ciascuna linea.",
+  },
+];
+
+// ── Sezioni utility (non numerate, ordine libero) ──────
+const UTILITY_TABS: {
+  id: Tab;
+  label: string;
+  icon: React.ReactNode;
+  info: string;
+}[] = [
+  {
+    id: "timeframes",
+    label: "Fasce Orarie",
+    icon: <Clock className="w-3.5 h-3.5" />,
+    info: "Definisci le fasce orarie per tariffe differenziate (es. notturno, punta). Se non servono tariffe orarie, puoi saltare questa sezione.",
+  },
+  {
+    id: "calendar",
+    label: "Calendario Servizio",
+    icon: <CalendarDays className="w-3.5 h-3.5" />,
+    info: "Gestisci i calendari di servizio (calendar.txt) e le eccezioni (calendar_dates.txt): feriali, sabato, festivi, chiusure straordinarie.",
+  },
+  {
+    id: "feedinfo",
+    label: "Feed Info",
+    icon: <Info className="w-3.5 h-3.5" />,
+    info: "Informazioni generali sul feed GTFS: nome dell'agenzia, URL, lingua, date di validità. Obbligatorio per un feed valido.",
+  },
+  {
+    id: "editor",
+    label: "Editor Fermate",
+    icon: <Edit3 className="w-3.5 h-3.5" />,
+    info: "Editor avanzato per modificare manualmente le assegnazioni fermata→zona. Utile per correzioni puntuali dopo la generazione automatica.",
+  },
+  {
+    id: "simulate",
+    label: "Simulatore",
+    icon: <Play className="w-3.5 h-3.5" />,
+    info: "Simula il costo di un viaggio selezionando linea, fermata di salita e discesa. Verifica che le tariffe generate siano corrette prima dell'export.",
+  },
+  {
+    id: "generate",
+    label: "Genera & Esporta",
+    icon: <Download className="w-3.5 h-3.5" />,
+    info: "Genera tutti i file GTFS Fares V2 (leg_rules, fare_leg_join_rules, ecc.), validali e scarica lo ZIP completo pronto per la pubblicazione.",
+  },
 ];
 
 // ═══════════════════════════════════════════════════════════
@@ -4395,6 +4466,74 @@ function FeedInfoTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// HELPER: Tab Button con info tooltip
+// ═══════════════════════════════════════════════════════════
+
+function TabButton({
+  id,
+  label,
+  icon,
+  info,
+  step,
+  isActive,
+  onClick,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  info: string;
+  step?: number;
+  isActive: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-0 shrink-0">
+      <button
+        onClick={onClick}
+        className={`
+          relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0
+          transition-all duration-200
+          ${isActive
+            ? "text-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }
+        `}
+      >
+        {isActive && (
+          <motion.div
+            layoutId="fares-tab-bg"
+            className="absolute inset-0 bg-background/80 border border-border/50 rounded-lg shadow-sm"
+            transition={{ type: "spring", stiffness: 400, damping: 35 }}
+          />
+        )}
+        <span className="relative z-10 flex items-center gap-2">
+          {step != null && (
+            <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold leading-none
+              ${isActive ? "bg-primary text-primary-foreground" : "bg-muted-foreground/20 text-muted-foreground"}`}>
+              {step}
+            </span>
+          )}
+          {icon}
+          {label}
+        </span>
+      </button>
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className="relative z-10 p-1 -ml-1 text-muted-foreground/40 hover:text-muted-foreground transition-colors" tabIndex={-1}>
+              <HelpCircle className="w-3.5 h-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-xs text-xs leading-relaxed">
+            {info}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════
 
@@ -4412,47 +4551,70 @@ export default function FaresPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Bigliettazione Elettronica</h1>
             <p className="text-sm text-muted-foreground">
-              GTFS Fares V2 — Classificazione reti, prodotti tariffari, zone e generazione file
+              GTFS Fares V2 — Segui gli step 1→4 per configurare la bigliettazione, poi genera ed esporta
             </p>
           </div>
         </div>
       </motion.div>
 
-      {/* Tab bar — scrollable */}
-      <div className="relative">
-        <div
-          className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
-            [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
-            [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
-            [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
-            hover:[&::-webkit-scrollbar-thumb]:bg-border"
-        >
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`
-                relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap shrink-0
-                transition-all duration-200
-                ${tab === t.id
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-                }
-              `}
-            >
-              {tab === t.id && (
-                <motion.div
-                  layoutId="fares-tab-bg"
-                  className="absolute inset-0 bg-background/80 border border-border/50 rounded-lg shadow-sm"
-                  transition={{ type: "spring", stiffness: 400, damping: 35 }}
-                />
-              )}
-              <span className="relative z-10 flex items-center gap-2">
-                {t.icon}
-                {t.label}
-              </span>
-            </button>
-          ))}
+      {/* ── Step guidati 1→4 ──────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <Navigation className="w-3.5 h-3.5 text-primary" />
+          <span className="text-xs font-semibold text-primary uppercase tracking-wider">Configurazione guidata</span>
+          <div className="flex-1 h-px bg-border/30" />
+        </div>
+        <div className="relative">
+          <div
+            className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
+              [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
+              [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
+              [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
+              hover:[&::-webkit-scrollbar-thumb]:bg-border"
+          >
+            {GUIDED_STEPS.map((s) => (
+              <TabButton
+                key={s.id}
+                id={s.id}
+                label={s.label}
+                icon={s.icon}
+                info={s.info}
+                step={s.step}
+                isActive={tab === s.id}
+                onClick={() => setTab(s.id)}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Sezioni utility ───────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <Layers className="w-3.5 h-3.5 text-muted-foreground" />
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Strumenti & Export</span>
+          <div className="flex-1 h-px bg-border/30" />
+        </div>
+        <div className="relative">
+          <div
+            className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 overflow-x-auto scroll-smooth
+              [scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]
+              [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-track]:bg-transparent
+              [&::-webkit-scrollbar-thumb]:bg-border/50 [&::-webkit-scrollbar-thumb]:rounded-full
+              hover:[&::-webkit-scrollbar-thumb]:bg-border"
+          >
+            {UTILITY_TABS.map((t) => (
+              <TabButton
+                key={t.id}
+                id={t.id}
+                label={t.label}
+                icon={t.icon}
+                info={t.info}
+                isActive={tab === t.id}
+                onClick={() => setTab(t.id)}
+              />
+            ))}
+          </div>
         </div>
       </div>
 
