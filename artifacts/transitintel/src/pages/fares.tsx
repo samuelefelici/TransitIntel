@@ -3955,19 +3955,116 @@ function SimulateTab() {
                                 <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
                               </div>
                             </div>
-                            {result.percorsiCount && result.percorsiCount > 1 && result.distanceVariants && (
-                              <div className="p-2.5 rounded-lg bg-muted/20 border border-border/20 text-xs space-y-1.5">
-                                <p className="font-medium text-foreground">
-                                  Media su {result.percorsiCount} percorsi distinti (DGR 1036/2022 art. 2.d)
-                                </p>
-                                {result.distanceVariants.map((v, i) => (
-                                  <div key={i} className="flex items-center justify-between text-muted-foreground">
-                                    <span className="truncate max-w-[180px]">shape {v.shapeId || "n/a"}</span>
-                                    <span className="font-mono">{v.km.toFixed(2)} km</span>
+                            {result.percorsiCount && result.percorsiCount > 1 && result.distanceVariants && (() => {
+                              const variants = result.distanceVariants;
+                              const avgKm = result.distanceKm ?? 0;
+                              const minKm = Math.min(...variants.map(v => v.km));
+                              const maxKm = Math.max(...variants.map(v => v.km));
+                              const dispersion = maxKm - minKm;
+                              return (
+                                <div className="space-y-3">
+                                  {/* Varianti percorso — barra grafica */}
+                                  <div className="p-3 rounded-lg bg-muted/20 border border-border/20 space-y-2.5">
+                                    <div className="flex items-center justify-between">
+                                      <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                                        <Layers className="w-3.5 h-3.5 text-primary" />
+                                        {result.percorsiCount} percorsi distinti analizzati
+                                      </p>
+                                      <Badge variant="outline" className={`text-[10px] ${dispersion > 2 ? "border-amber-500/50 text-amber-500" : "border-emerald-500/50 text-emerald-500"}`}>
+                                        Δ {dispersion.toFixed(2)} km
+                                      </Badge>
+                                    </div>
+                                    {/* Visual bar per ogni variante */}
+                                    <div className="space-y-1">
+                                      {variants.map((v, i) => {
+                                        const barMin = minKm * 0.95;
+                                        const barMax = maxKm * 1.05;
+                                        const range = barMax - barMin || 1;
+                                        const pct = ((v.km - barMin) / range) * 100;
+                                        const avgPct = ((avgKm - barMin) / range) * 100;
+                                        return (
+                                          <div key={i} className="flex items-center gap-2">
+                                            <span className="text-[10px] text-muted-foreground font-mono w-16 truncate" title={v.shapeId || "n/a"}>
+                                              {v.shapeId ? v.shapeId.slice(-8) : "n/a"}
+                                            </span>
+                                            <div className="flex-1 h-4 bg-muted/30 rounded-full relative overflow-hidden">
+                                              <div
+                                                className={`h-full rounded-full transition-all ${
+                                                  Math.abs(v.km - avgKm) > 1 ? "bg-amber-500/60" : "bg-primary/50"
+                                                }`}
+                                                style={{ width: `${Math.max(4, pct)}%` }}
+                                              />
+                                              {/* Linea media */}
+                                              <div
+                                                className="absolute top-0 bottom-0 w-0.5 bg-emerald-400"
+                                                style={{ left: `${avgPct}%` }}
+                                                title={`Media: ${avgKm.toFixed(2)} km`}
+                                              />
+                                            </div>
+                                            <span className="text-[10px] font-mono text-muted-foreground w-14 text-right">
+                                              {v.km.toFixed(2)} km
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    <div className="flex items-center gap-4 text-[10px] text-muted-foreground pt-1 border-t border-border/10">
+                                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary/50" /> Distanza percorso</span>
+                                      <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-emerald-400" /> Media ({avgKm.toFixed(2)} km)</span>
+                                      {dispersion > 2 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60" /> Outlier (&gt;1 km dalla media)</span>}
+                                    </div>
                                   </div>
-                                ))}
-                              </div>
-                            )}
+
+                                  {/* Calcolo step-by-step */}
+                                  <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
+                                    <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
+                                      <FileText className="w-3.5 h-3.5" />
+                                      Trasparenza calcolo — DGR 1036/2022 art. 2.d
+                                    </p>
+                                    <div className="grid gap-1.5 text-[10px] text-muted-foreground">
+                                      <div className="flex items-start gap-2">
+                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
+                                        <span>Caricati <strong>{result.percorsiCount} percorsi distinti</strong> (trip con combinazione fermate + shape unica)</span>
+                                      </div>
+                                      <div className="flex items-start gap-2">
+                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
+                                        <span>Per ogni percorso: <strong>proiezione ortogonale</strong> delle fermate sulla geometria shape (tracciato reale su strada)</span>
+                                      </div>
+                                      <div className="flex items-start gap-2">
+                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
+                                        <span>Distanza OD = km lungo shape dal punto proiettato di salita a quello di discesa</span>
+                                      </div>
+                                      <div className="flex items-start gap-2">
+                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">4</span>
+                                        <span>Distanza finale = <strong>media aritmetica</strong> delle {result.percorsiCount} distanze OD → <strong className="text-foreground">{avgKm.toFixed(2)} km</strong></span>
+                                      </div>
+                                      <div className="flex items-start gap-2">
+                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">5</span>
+                                        <span>Fascia tariffaria: {avgKm.toFixed(2)} km → <strong className="text-foreground">F{result.fascia}</strong> ({result.bandRange})</span>
+                                      </div>
+                                    </div>
+                                    {/* Mini schema proiezione */}
+                                    <div className="mt-2 pt-2 border-t border-blue-500/10">
+                                      <p className="text-[10px] text-blue-400/70 mb-1.5">Schema proiezione ortogonale su shape:</p>
+                                      <div className="flex items-center gap-1 text-[10px]">
+                                        <span className="text-emerald-400">●</span>
+                                        <span className="text-muted-foreground">Fermata</span>
+                                        <span className="text-muted-foreground/40 mx-1">┄┄┄</span>
+                                        <span className="text-blue-400">⊥</span>
+                                        <span className="text-muted-foreground">proiezione</span>
+                                        <span className="text-muted-foreground/40 mx-1">→</span>
+                                        <span className="text-primary">━━━</span>
+                                        <span className="text-muted-foreground">Shape (tracciato strada)</span>
+                                      </div>
+                                      <p className="text-[10px] text-muted-foreground/60 mt-1 italic">
+                                        La distanza è misurata lungo la geometria dello shape, non in linea d'aria (haversine), 
+                                        per riflettere il percorso reale del mezzo su strada.
+                                      </p>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                             <div className="flex items-center justify-between p-4 rounded-xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 to-emerald-500/5">
                               <div>
                                 <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
@@ -3975,6 +4072,29 @@ function SimulateTab() {
                               </div>
                               <span className="text-4xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
                             </div>
+                            {/* Metodo calcolo per percorso singolo */}
+                            {(!result.percorsiCount || result.percorsiCount <= 1) && (
+                              <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
+                                <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
+                                  <FileText className="w-3.5 h-3.5" />
+                                  Metodo calcolo — DGR 1036/2022
+                                </p>
+                                <div className="grid gap-1.5 text-[10px] text-muted-foreground">
+                                  <div className="flex items-start gap-2">
+                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
+                                    <span>Percorso unico per questa coppia O-D (1 shape disponibile)</span>
+                                  </div>
+                                  <div className="flex items-start gap-2">
+                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
+                                    <span><strong>Proiezione ortogonale</strong> delle fermate sulla geometria shape (tracciato su strada)</span>
+                                  </div>
+                                  <div className="flex items-start gap-2">
+                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
+                                    <span>Distanza = <strong className="text-foreground">{result.distanceKm?.toFixed(2)} km</strong> lungo shape → Fascia <strong className="text-foreground">F{result.fascia}</strong> ({result.bandRange})</span>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </CardContent>
