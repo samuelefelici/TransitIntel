@@ -119,6 +119,7 @@ function getBandForDistance(distKm: number): typeof EXTRA_BANDS[0] | undefined {
 interface Percorso {
   tripId: string;
   shapeId: string | null;
+  tripCount: number; // quante corse (trip) usano questo percorso distinto
   stops: {
     stop_id: string;
     stop_sequence: number;
@@ -165,11 +166,23 @@ async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percor
   }
 
   // ── STEP 3: Deduplicazione e raccolta shape_id univoci ──
+  // Conta quanti trip (corse) condividono lo stesso percorso (signature)
+  const signatureCount = new Map<string, number>();
   const seenSignatures = new Set<string>();
-  const uniqueTrips: { tripId: string; shapeId: string | null; stops: any[] }[] = [];
+  const uniqueTrips: { tripId: string; shapeId: string | null; stops: any[]; signature: string }[] = [];
   const neededShapeIds = new Set<string>();
 
-  // Ordina trip per numero fermate decrescente (preferisci il più lungo)
+  // Prima passata: calcola tutte le signature e conta le occorrenze
+  for (const tripId of tripIds) {
+    const stops = tripStopsMap.get(tripId);
+    if (!stops || stops.length === 0) continue;
+    const shapeId = tripShapeMap.get(tripId) ?? null;
+    const stopSeqSig = stops.map((s: any) => s.stop_id).join("|");
+    const signature = `${stopSeqSig}::${shapeId ?? "noshape"}`;
+    signatureCount.set(signature, (signatureCount.get(signature) ?? 0) + 1);
+  }
+
+  // Ordina trip per numero fermate decrescente (preferisci il più lungo come rappresentante)
   const sortedTripIds = [...tripStopsMap.entries()]
     .sort((a, b) => b[1].length - a[1].length)
     .map(([tid]) => tid);
@@ -184,7 +197,7 @@ async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percor
     if (seenSignatures.has(signature)) continue;
     seenSignatures.add(signature);
 
-    uniqueTrips.push({ tripId, shapeId, stops });
+    uniqueTrips.push({ tripId, shapeId, stops, signature });
     if (shapeId) neededShapeIds.add(shapeId);
   }
 
@@ -209,9 +222,10 @@ async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percor
   }
 
   // ── STEP 5: Assembla i percorsi ──
-  const percorsi: Percorso[] = uniqueTrips.map(({ tripId, shapeId, stops }) => ({
+  const percorsi: Percorso[] = uniqueTrips.map(({ tripId, shapeId, stops, signature }) => ({
     tripId,
     shapeId,
+    tripCount: signatureCount.get(signature) ?? 1,
     stops,
     shapeCoords: shapeId ? (shapeCache.get(shapeId) ?? null) : null,
   }));
@@ -883,28 +897,29 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
   });
   const filtered = percorsi.length > 0 ? percorsi : allPercorsi;
 
-  // Per ogni fermata, accumula i km da tutti i percorsi in cui appare
+  // Per ogni fermata, accumula i km ponderati per tripCount da tutti i percorsi
   const stopKmAccumulator = new Map<string, {
     name: string; lat: number; lon: number;
-    kmValues: number[];
+    weightedKmValues: { km: number; weight: number }[];
   }>();
 
   for (const percorso of filtered) {
     const kmMap = computeKmAlongShape(percorso.stops, percorso.shapeCoords);
     for (const [stopId, info] of kmMap) {
       if (!stopKmAccumulator.has(stopId)) {
-        stopKmAccumulator.set(stopId, { name: info.name, lat: info.lat, lon: info.lon, kmValues: [] });
+        stopKmAccumulator.set(stopId, { name: info.name, lat: info.lat, lon: info.lon, weightedKmValues: [] });
       }
-      stopKmAccumulator.get(stopId)!.kmValues.push(info.km);
+      stopKmAccumulator.get(stopId)!.weightedKmValues.push({ km: info.km, weight: percorso.tripCount });
     }
   }
 
-  // Distanza tariffaria = media dei km su tutti i percorsi (DGR 1036/2022 punto 2.d)
+  // Distanza tariffaria = media ponderata per tripCount (DGR 1036/2022 punto 2.d)
   const usedBands = new Set<number>();
   const stopFinalKm = new Map<string, { name: string; lat: number; lon: number; km: number }>();
 
   for (const [stopId, data] of stopKmAccumulator) {
-    const avgKm = data.kmValues.reduce((a, b) => a + b, 0) / data.kmValues.length;
+    const totalWeight = data.weightedKmValues.reduce((a, b) => a + b.weight, 0);
+    const avgKm = data.weightedKmValues.reduce((a, b) => a + b.km * b.weight, 0) / totalWeight;
     const km = Math.round(avgKm * 100) / 100;
     stopFinalKm.set(stopId, { name: data.name, lat: data.lat, lon: data.lon, km });
     const band = getBandForDistance(km);
@@ -1134,7 +1149,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
     }
 
     // Raccoglie distanza OD da ogni percorso che serve entrambe le fermate
-    const odDistances: { km: number; shapeId: string | null }[] = [];
+    const odDistances: { km: number; shapeId: string | null; tripCount: number }[] = [];
     let fromInfoFinal: { name: string; lat: number; lon: number; km: number } | null = null;
     let toInfoFinal: { name: string; lat: number; lon: number; km: number } | null = null;
     let bestIntermediateStops: any[] = [];
@@ -1148,6 +1163,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       odDistances.push({
         km: Math.round(Math.abs(toInfo.km - fromInfo.km) * 100) / 100,
         shapeId: percorso.shapeId,
+        tripCount: percorso.tripCount,
       });
 
       if (!fromInfoFinal) {
@@ -1171,9 +1187,11 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       res.status(404).json({ error: "Stop not found in any trip for this route" }); return;
     }
 
-    // Media delle distanze su tutti i percorsi distinti (DGR 1036/2022 punto 2.d)
+    // Media ponderata per tripCount (DGR 1036/2022 punto 2.d)
+    // Peso = numero di corse giornaliere che usano quel percorso
+    const totalWeight = odDistances.reduce((a, b) => a + b.tripCount, 0);
     const distKm = Math.round(
-      (odDistances.reduce((a, b) => a + b.km, 0) / odDistances.length) * 100
+      (odDistances.reduce((a, b) => a + b.km * b.tripCount, 0) / totalWeight) * 100
     ) / 100;
 
     const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
@@ -1192,6 +1210,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       distanceKm: distKm,
       distanceVariants: odDistances,
       percorsiCount: odDistances.length,
+      totalTrips: totalWeight,
       fascia: band.fascia,
       fareProductId: `extra_fascia_${band.fascia}`,
       amount: band.price,
@@ -1425,8 +1444,8 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
 
     const stopKmAccumulator = new Map<string, {
       name: string; lat: number; lon: number; sequence: number;
-      kmValues: number[];
-      percorsiDetail: { shapeId: string | null; km: number }[];
+      weightedKmValues: { km: number; weight: number }[];
+      percorsiDetail: { shapeId: string | null; km: number; tripCount: number }[];
     }>();
 
     for (const percorso of filtered) {
@@ -1438,12 +1457,12 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
           stopKmAccumulator.set(s.stop_id, {
             name: s.stop_name, lat: s.lat, lon: s.lon,
             sequence: s.stop_sequence,
-            kmValues: [], percorsiDetail: [],
+            weightedKmValues: [], percorsiDetail: [],
           });
         }
         const acc = stopKmAccumulator.get(s.stop_id)!;
-        acc.kmValues.push(info.km);
-        acc.percorsiDetail.push({ shapeId: percorso.shapeId, km: info.km });
+        acc.weightedKmValues.push({ km: info.km, weight: percorso.tripCount });
+        acc.percorsiDetail.push({ shapeId: percorso.shapeId, km: info.km, tripCount: percorso.tripCount });
       }
     }
 
@@ -1456,11 +1475,13 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
     const areaMap = new Map(existingAreas.rows.map((r: any) => [r.stop_id, r]));
 
     const result = Array.from(stopKmAccumulator.entries()).map(([stopId, data]) => {
+      const totalWeight = data.weightedKmValues.reduce((a, b) => a + b.weight, 0);
       const avgKm = Math.round(
-        (data.kmValues.reduce((a, b) => a + b, 0) / data.kmValues.length) * 100
+        (data.weightedKmValues.reduce((a, b) => a + b.km * b.weight, 0) / totalWeight) * 100
       ) / 100;
-      const kmMin = Math.round(Math.min(...data.kmValues) * 100) / 100;
-      const kmMax = Math.round(Math.max(...data.kmValues) * 100) / 100;
+      const allKms = data.weightedKmValues.map(v => v.km);
+      const kmMin = Math.round(Math.min(...allKms) * 100) / 100;
+      const kmMax = Math.round(Math.max(...allKms) * 100) / 100;
       const band = getBandForDistance(avgKm) || (avgKm === 0 ? EXTRA_BANDS[0] : null);
       const existing = areaMap.get(stopId);
 
@@ -1473,7 +1494,8 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
         progressiveKm: avgKm,
         kmMin,
         kmMax,
-        percorsiCount: data.kmValues.length,
+        percorsiCount: data.weightedKmValues.length,
+        totalTrips: totalWeight,
         percorsiDetail: data.percorsiDetail,
         suggestedFascia: band?.fascia || null,
         suggestedAreaId: band ? `${routeId}_zona_${band.fascia}` : null,
