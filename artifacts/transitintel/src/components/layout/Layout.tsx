@@ -5,6 +5,7 @@ import {
   Map, Activity, MapPin, BarChart3, Menu, X, LayoutDashboard, Database, Bus,
   Timer, PanelLeftClose, PanelLeftOpen, Users, Route, ArrowRightLeft,
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
+  Flame,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
@@ -42,6 +43,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Ottimizzazione Servizio",
     items: [
       { href: "/optimization", label: "Ottimizzazione", icon: Truck },
+      { href: "/fucina", label: "Fucina", icon: Flame },
     ],
   },
   {

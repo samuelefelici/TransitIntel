@@ -17,6 +17,7 @@ const DataPage = lazy(() => import("@/pages/data"));
 const ScenariosPage = lazy(() => import("@/pages/scenarios"));
 const IntermodalPage = lazy(() => import("@/pages/intermodal"));
 const OptimizationPage = lazy(() => import("@/pages/optimization"));
+const FucinaPage = lazy(() => import("@/pages/fucina"));
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
 const FaresPage = lazy(() => import("@/pages/fares"));
@@ -78,6 +79,7 @@ function Router() {
 
             {/* Ottimizzazione Servizio */}
             <Route path="/optimization" component={OptimizationPage} />
+            <Route path="/fucina" component={FucinaPage} />
             <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
 
             {/* Redirects for old optimizer paths */}
