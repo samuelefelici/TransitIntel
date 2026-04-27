@@ -903,8 +903,25 @@ def load_input() -> dict[str, Any]:
 
 
 def write_output(data: dict[str, Any]) -> None:
-    """Scrive JSON su stdout."""
-    json.dump(data, sys.stdout, ensure_ascii=False)
+    """Scrive JSON su stdout.
+
+    FIX: sanitizza Infinity/NaN → None (JSON.parse() lato JS non accetta
+    i token Python `Infinity`/`NaN`). Inoltre passa allow_nan=False per
+    fallire fast su qualsiasi residuo non-JSON-standard, in modo da non
+    rompere silenziosamente la pipeline frontend.
+    """
+    def _clean(obj: Any) -> Any:
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        if isinstance(obj, dict):
+            return {k: _clean(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_clean(v) for v in obj]
+        return obj
+
+    json.dump(_clean(data), sys.stdout, ensure_ascii=False, allow_nan=False)
     sys.stdout.flush()
 
 

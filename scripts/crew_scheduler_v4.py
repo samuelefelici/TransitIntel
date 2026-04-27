@@ -2146,7 +2146,9 @@ def optimize_multi_scenario(
                 "idx": sc_idx,
                 "scenarioNum": sc_idx + 1,
                 "status": status_name,
-                "score": float('inf'),
+                # FIX: None invece di float('inf') — JSON standard non ammette Infinity
+                # e JSON.parse() lato JS fallisce. Lato UI rappresentare come "n/d".
+                "score": None,
                 "feasible": False,
                 "elapsed": round(sc_elapsed, 1),
                 "params": params_out,
