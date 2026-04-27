@@ -6,7 +6,7 @@ services:
     name: transitintel-api
     runtime: node
     plan: free
-    buildCommand: pnpm install --prod=false && pnpm run build:deploy && python3 -m pip install --user -r requirements.txt
+    buildCommand: pnpm install --prod=false && pnpm run build:deploy && python3 -m pip install --upgrade pip && python3 -m pip install --target=/opt/render/project/src/.python_packages -r requirements.txt && python3 -c "import sys; sys.path.insert(0, '/opt/render/project/src/.python_packages'); from ortools.sat.python import cp_model; print('ortools OK')"
     startCommand: node artifacts/api-server/dist/index.cjs
     envVars:
       - key: DATABASE_URL
@@ -16,9 +16,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: PYTHONPATH
-        value: /opt/render/project/src/scripts
+        value: /opt/render/project/src/.python_packages:/opt/render/project/src/scripts
       - key: PATH
-        value: /opt/render/project/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        value: /opt/render/project/src/.python_packages/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - key: CRON_SECRET
         sync: false
       - key: TOMTOM_API_KEY
