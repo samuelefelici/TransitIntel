@@ -22,18 +22,22 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
-  Download, FileText, FileSpreadsheet, Printer, ChevronDown,
+  Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
-import InteractiveGantt from "@/components/InteractiveGantt";
+import InteractiveGantt, { type GanttChange } from "@/components/InteractiveGantt";
 import { SummaryCard } from "@/pages/driver-shifts/components";
 import { formatDuration } from "@/pages/driver-shifts/constants";
 import {
-  driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours,
+  driverShiftsToRows,
+  driverShiftsToBars,
+  driverShiftsToTripBars,
+  driverShiftsBoundsHours,
+  applyDriverTripChange,
 } from "@/pages/driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
@@ -86,6 +90,13 @@ export default function DriverWorkspace({
   const [dssName, setDssName] = useState("");
   const [savingDss, setSavingDss] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  /* ── Modalità visualizzazione Gantt ──
+   *  exploded = 1 bar per corsa (drag-and-drop); aggregated = 1 bar per ripresa (read-only) */
+  const [ganttMode, setGanttMode] = useState<"exploded" | "aggregated">("exploded");
+  /* ── History undo/redo per modifiche al risultato ── */
+  const [history, setHistory] = useState<DriverShiftsResult[]>([]);
+  const [historyIdx, setHistoryIdx] = useState(-1);
+  const [modifiedCount, setModifiedCount] = useState(0);
 
   const cpsat = useCrewOptimization();
 
@@ -95,6 +106,7 @@ export default function DriverWorkspace({
       setResult(cpsat.result as any);
       setLoading(false);
       setError(null);
+      setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
       toast.success("Ottimizzazione completata", {
         description: `${(cpsat.result as any).summary?.totalDriverShifts ?? "?"} turni guida generati`,
       });
@@ -197,8 +209,97 @@ export default function DriverWorkspace({
 
   // Gantt rows/bars
   const ganttRows = useMemo(() => result ? driverShiftsToRows(result.driverShifts) : [], [result]);
-  const ganttBars = useMemo(() => result ? driverShiftsToBars(result.driverShifts) : [], [result]);
+  const ganttBars = useMemo(() => {
+    if (!result) return [];
+    return ganttMode === "exploded"
+      ? driverShiftsToTripBars(result.driverShifts)
+      : driverShiftsToBars(result.driverShifts);
+  }, [result, ganttMode]);
   const ganttBounds = useMemo(() => result ? driverShiftsBoundsHours(result.driverShifts) : { min: 4, max: 25 }, [result]);
+
+  /* ── History + drag handler ─────────────────────────── */
+  const pushHistory = useCallback((newRes: DriverShiftsResult) => {
+    setHistory(prev => {
+      // Tronca eventuali "future" se siamo in mezzo
+      const truncated = historyIdx >= 0 ? prev.slice(0, historyIdx + 1) : prev;
+      // Capacità: max 30
+      const next = [...truncated, newRes].slice(-30);
+      setHistoryIdx(next.length - 1);
+      return next;
+    });
+    setModifiedCount(c => c + 1);
+  }, [historyIdx]);
+
+  const handleBarChange = useCallback((change: GanttChange) => {
+    if (!result) return;
+    // Ignora bar non-trip (locked)
+    const bar = ganttBars.find(b => b.id === change.barId);
+    if (!bar || bar.meta?.type !== "trip") return;
+    if (change.fromRowId === change.toRowId && change.oldStartMin === change.newStartMin) return;
+
+    const tripId: string | undefined = bar.meta?.tripId;
+    if (!tripId) return;
+
+    const { shifts: newShifts, movedTrip, warning } = applyDriverTripChange(
+      result.driverShifts,
+      {
+        tripId,
+        fromDriverId: change.fromRowId,
+        toDriverId: change.toRowId,
+        newStartMin: change.newStartMin,
+        newEndMin: change.newEndMin,
+      },
+    );
+    if (warning) { toast.warning(warning); return; }
+
+    const reassigned = change.fromRowId !== change.toRowId;
+    const shifted = change.newStartMin !== change.oldStartMin;
+    const desc = reassigned && shifted
+      ? `${movedTrip?.routeName} ${change.fromRowId}→${change.toRowId} (${change.newStartMin - change.oldStartMin > 0 ? "+" : ""}${change.newStartMin - change.oldStartMin}′)`
+      : reassigned
+        ? `${movedTrip?.routeName} ${change.fromRowId}→${change.toRowId}`
+        : `${movedTrip?.routeName} ${change.newStartMin - change.oldStartMin > 0 ? "+" : ""}${change.newStartMin - change.oldStartMin}′`;
+
+    const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts };
+    setResult(newResult);
+    pushHistory(newResult);
+    toast.success("Corsa spostata", { description: desc });
+  }, [result, ganttBars, pushHistory]);
+
+  const canUndo = historyIdx > 0;
+  const canRedo = historyIdx >= 0 && historyIdx < history.length - 1;
+
+  const handleUndo = useCallback(() => {
+    if (!canUndo) return;
+    const newIdx = historyIdx - 1;
+    setHistoryIdx(newIdx);
+    setResult(history[newIdx]);
+    toast.info("Annullato");
+  }, [canUndo, historyIdx, history]);
+
+  const handleRedo = useCallback(() => {
+    if (!canRedo) return;
+    const newIdx = historyIdx + 1;
+    setHistoryIdx(newIdx);
+    setResult(history[newIdx]);
+    toast.info("Ripristinato");
+  }, [canRedo, historyIdx, history]);
+
+  // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || target?.isContentEditable) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [handleUndo, handleRedo]);
 
   const optimizerCfg = operatorConfig.bds?.optimizer;
 
@@ -484,16 +585,65 @@ export default function DriverWorkspace({
         {/* Gantt */}
         {result && result.driverShifts.length > 0 && (
           <div className="rounded-lg border border-purple-500/15 bg-purple-950/10 overflow-hidden">
-            <div className="px-3 py-2 border-b border-purple-500/15 flex items-center justify-between">
+            <div className="px-3 py-2 border-b border-purple-500/15 flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-semibold uppercase tracking-wider text-purple-300">Gantt Turni Guida</span>
                 <span className="text-[10px] text-muted-foreground">
                   {result.driverShifts.length} turni · {ganttBars.length} elementi
                 </span>
+                {modifiedCount > 0 && (
+                  <span className="text-[10px] font-medium text-amber-300 bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 rounded">
+                    ● {modifiedCount} modific{modifiedCount === 1 ? "a" : "he"}
+                  </span>
+                )}
               </div>
-              <span className="text-[10px] text-muted-foreground italic">
-                PT pre-turno · ↝ transfer · solid corse · ↜ rientro · griglio interruzione
-              </span>
+              <div className="flex items-center gap-2">
+                {/* Toggle vista esplosa/aggregata */}
+                <div className="flex rounded-md overflow-hidden border border-purple-500/30 text-[10px]">
+                  <button
+                    onClick={() => setGanttMode("exploded")}
+                    className={`px-2 py-1 font-medium transition flex items-center gap-1 ${
+                      ganttMode === "exploded"
+                        ? "bg-purple-500/30 text-white"
+                        : "text-purple-300/60 hover:bg-purple-500/10"
+                    }`}
+                    title="1 bar per corsa (drag-and-drop tra autisti)"
+                  >
+                    <Layers className="w-3 h-3" /> Corse
+                  </button>
+                  <button
+                    onClick={() => setGanttMode("aggregated")}
+                    className={`px-2 py-1 font-medium transition ${
+                      ganttMode === "aggregated"
+                        ? "bg-purple-500/30 text-white"
+                        : "text-purple-300/60 hover:bg-purple-500/10"
+                    }`}
+                    title="1 bar per ripresa (vista compatta)"
+                  >
+                    Riprese
+                  </button>
+                </div>
+                {/* Undo / Redo */}
+                <button
+                  onClick={handleUndo}
+                  disabled={!canUndo}
+                  className="flex items-center gap-1 text-[10px] text-purple-300 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Annulla (Ctrl+Z)"
+                >
+                  <Undo2 className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={handleRedo}
+                  disabled={!canRedo}
+                  className="flex items-center gap-1 text-[10px] text-purple-300 px-2 py-1 rounded border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Ripristina (Ctrl+Shift+Z)"
+                >
+                  <Redo2 className="w-3 h-3" />
+                </button>
+                <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
+                  {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
+                </span>
+              </div>
             </div>
             <div className="p-2">
               <InteractiveGantt
@@ -501,7 +651,8 @@ export default function DriverWorkspace({
                 bars={ganttBars}
                 minHour={ganttBounds.min}
                 maxHour={ganttBounds.max}
-                editable={false}
+                editable={ganttMode === "exploded"}
+                onBarChange={ganttMode === "exploded" ? handleBarChange : undefined}
                 onBarClick={(bar) => {
                   const meta: any = bar.meta || {};
                   toast.info(`${meta.type ?? "elemento"} · ${meta.driverId ?? bar.rowId}`, {
