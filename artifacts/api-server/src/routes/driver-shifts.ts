@@ -916,10 +916,19 @@ async function runCPSATCrewScheduler(
   const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
   // Carica cluster e autovetture dal DB
-  const [dbClusters, dbCompanyCars] = await Promise.all([
+  const [allDbClusters, dbCompanyCars] = await Promise.all([
     loadClustersForPython(),
     loadCompanyCars(),
   ]);
+
+  // Filtro cluster se l'utente ha selezionato un sottoinsieme
+  const selectedIds = Array.isArray(extraConfig?.selectedClusterIds) ? (extraConfig!.selectedClusterIds as string[]) : null;
+  const dbClusters = selectedIds && selectedIds.length > 0
+    ? allDbClusters.filter(c => selectedIds.includes(c.id))
+    : allDbClusters;
+
+  // Override del numero di autovetture aziendali se presente nel config
+  const companyCarsEffective = typeof extraConfig?.companyCars === "number" ? extraConfig!.companyCars : dbCompanyCars;
 
   // Arricchisci ogni trip con le fermate intermedie in cluster (per tagli intra-corsa)
   await enrichTripsWithClusterStops(vehicleShifts, logger);
@@ -949,13 +958,14 @@ async function runCPSATCrewScheduler(
       }
     });
 
+    const { selectedClusterIds: _sci, companyCars: _cc, ...restConfig } = (extraConfig ?? {}) as any;
     const inputJson = JSON.stringify({
       vehicleShifts,
       config: {
         timeLimit: timeLimitSec,
+        ...restConfig,
         clusters: dbClusters,
-        companyCars: dbCompanyCars,
-        ...extraConfig,
+        companyCars: companyCarsEffective,
       },
     });
     py.stdin.write(inputJson);
@@ -1026,10 +1036,18 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
     // Carica cluster e autovetture dal DB
-    const [dbClusters, dbCompanyCars] = await Promise.all([
+    const [allDbClusters, dbCompanyCars] = await Promise.all([
       loadClustersForPython(),
       loadCompanyCars(),
     ]);
+
+    // Applica filtro cluster / override companyCars se presenti nel config dell'operatore
+    const selectedIds = Array.isArray(operatorConfig?.selectedClusterIds) ? (operatorConfig.selectedClusterIds as string[]) : null;
+    const dbClusters = selectedIds && selectedIds.length > 0
+      ? allDbClusters.filter((c: any) => selectedIds.includes(c.id))
+      : allDbClusters;
+    const companyCarsEffective = typeof operatorConfig?.companyCars === "number" ? operatorConfig.companyCars : dbCompanyCars;
+    const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorConfig } = operatorConfig || {};
 
     const jobId = jobManager.createJob({
       scenarioId: (req.params.scenarioId as string),
@@ -1039,9 +1057,9 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
         vehicleShifts,
         config: {
           timeLimit: timeLimitSec,
+          ...restOperatorConfig,
           clusters: dbClusters,
-          companyCars: dbCompanyCars,
-          ...operatorConfig,
+          companyCars: companyCarsEffective,
         },
       },
       logger: req.log,

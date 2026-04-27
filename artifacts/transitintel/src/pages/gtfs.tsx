@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getApiBase } from "@/lib/api";
+import PlanningAnalysisTab from "@/components/planning/PlanningAnalysisTab";
 
 interface GtfsFeed {
   id: string; filename: string; agencyName: string | null;
@@ -623,7 +624,7 @@ export default function GtfsPage() {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null);
   const [selectedFeed, setSelectedFeed] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"upload" | "analysis">("upload");
+  const [activeTab, setActiveTab] = useState<"upload" | "analysis" | "planning">("upload");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -730,7 +731,7 @@ export default function GtfsPage() {
 
       {/* Tabs */}
       <div className="flex gap-1 p-1 bg-card/40 rounded-xl border border-border/40 w-fit">
-        {(["upload", "analysis"] as const).map(tab => (
+        {(["upload", "analysis", "planning"] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -740,7 +741,7 @@ export default function GtfsPage() {
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            {tab === "upload" ? "Feed & Caricamento" : "Analisi Qualità"}
+            {tab === "upload" ? "Feed & Caricamento" : tab === "analysis" ? "Analisi Qualità" : "Pianificazione & Costi"}
           </button>
         ))}
       </div>
@@ -856,6 +857,29 @@ export default function GtfsPage() {
             </div>
           )}
           <AnalysisTab feedId={selectedFeed} />
+        </div>
+      )}
+
+      {activeTab === "planning" && (
+        <div className="space-y-4">
+          {feeds.length > 1 && (
+            <div className="flex flex-wrap gap-2">
+              {feeds.map(f => (
+                <button
+                  key={f.id}
+                  onClick={() => setSelectedFeed(f.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                    selectedFeed === f.id
+                      ? "bg-primary/15 border-primary/50 text-primary"
+                      : "bg-card/40 border-border/40 text-muted-foreground hover:border-border"
+                  }`}
+                >
+                  {f.agencyName || f.filename}
+                </button>
+              ))}
+            </div>
+          )}
+          <PlanningAnalysisTab feedId={selectedFeed} />
         </div>
       )}
     </div>

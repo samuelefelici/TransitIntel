@@ -76,6 +76,8 @@
   },
   "dependencies": {
     "mapbox-gl": "^3.20.0",
-    "react-map-gl": "^8.1.0"
+    "react-map-gl": "^8.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   }
 }

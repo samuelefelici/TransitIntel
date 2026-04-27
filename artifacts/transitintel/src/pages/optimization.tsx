@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Truck, ClipboardList, Clock, Grip } from "lucide-react";
+import { Flame, ClipboardList, Clock, Grip } from "lucide-react";
 
 // Lazy-load each heavy sub-page
 const OptimizerRouteContent = lazy(() => import("@/pages/optimizer-route"));
@@ -18,7 +18,7 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; desc: string }[] = 
 function TabSpinner() {
   return (
     <div className="flex items-center justify-center h-[60vh] gap-3 text-muted-foreground">
-      <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+      <div className="w-5 h-5 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
       <p className="text-sm">Caricamento modulo…</p>
     </div>
   );
@@ -30,11 +30,16 @@ export default function OptimizationPage() {
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Header + Tab bar */}
-      <div className="px-4 pt-3 pb-0 border-b border-border/30 shrink-0">
+      <div className="px-4 pt-3 pb-0 border-b border-orange-500/15 shrink-0 bg-gradient-to-r from-orange-950/20 via-transparent to-transparent">
         <div className="flex items-center gap-2 mb-2">
-          <Truck className="w-4 h-4 text-primary" />
-          <h1 className="text-base font-display font-bold">Ottimizzazione Servizio</h1>
-          <span className="text-[10px] text-muted-foreground ml-1">· programma esercizio · orari · cluster</span>
+          <div className="relative">
+            <Flame className="w-4 h-4 text-orange-400" />
+            <div className="absolute inset-0 blur-sm bg-orange-400/20 rounded pointer-events-none" />
+          </div>
+          <h1 className="text-sm font-bold bg-gradient-to-r from-orange-400 to-amber-400 bg-clip-text text-transparent">
+            Ottimizzazione Servizio
+          </h1>
+          <span className="text-[10px] text-muted-foreground ml-1">programma esercizio · orari · cluster</span>
         </div>
 
         <div className="flex gap-1 pb-1.5 flex-wrap">
@@ -42,10 +47,11 @@ export default function OptimizationPage() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
+              title={t.desc}
               className={`flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition-all ${
                 tab === t.id
-                  ? "bg-primary/10 border-primary/30 text-primary font-medium"
-                  : "border-border/30 text-muted-foreground hover:text-foreground hover:border-border"
+                  ? "bg-orange-500/10 border-orange-500/30 text-orange-300 font-medium"
+                  : "border-border/30 text-muted-foreground hover:text-orange-300 hover:border-orange-500/30"
               }`}
             >
               {t.icon}

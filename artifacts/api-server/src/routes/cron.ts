@@ -1,7 +1,13 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { trafficSnapshots, pointsOfInterest, censusSections } from "@workspace/db/schema";
+import { trafficSnapshots, pointsOfInterest, censusSections, istatCommutingOd } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
+import * as fs from "node:fs";
+import * as fsp from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
+import { spawnSync } from "node:child_process";
+import * as readline from "node:readline";
 
 const router: IRouter = Router();
 
@@ -662,6 +668,263 @@ router.post("/cron/population", async (req, res) => {
     });
   } catch (err: any) {
     req.log.error(err, "Error in population cron");
+    res.status(500).json({ success: false, message: err.message ?? "Internal error" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ISTAT Matrice del pendolarismo 2011 (O/D inter-comunale)
+//   Sorgente: Censimento popolazione 2011, file fixed-width pubblico.
+//   I record `S` rappresentano i flussi inter-comunali aggregati per
+//   (origine, destinazione, motivo). Il dettaglio mezzo/orario/durata è
+//   disponibile solo nei record `L` (intra-comunali) — qui ignorati.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ISTAT_PENDOLO_URL =
+  "http://www.istat.it/storage/cartografia/matrici_pendolarismo/matrici_pendolarismo_2011.zip";
+const ISTAT_PENDOLO_TXT_NAME = "MATRICE PENDOLARISMO 2011/matrix_pendo2011_10112014.txt";
+
+/**
+ * Lista ufficiale comuni provincia di Ancona (042) al 1 gennaio 2011 —
+ * estratta dal file `Codici Comuni italiani` allegato alla matrice.
+ * Chiave = codice 6-cifre PRO_COM_T, valore = denominazione ufficiale.
+ */
+const ANCONA_COMUNI_2011_NAMES: Record<string, string> = {
+  "042001": "Agugliano",
+  "042002": "Ancona",
+  "042003": "Arcevia",
+  "042004": "Barbara",
+  "042005": "Belvedere Ostrense",
+  "042006": "Camerano",
+  "042007": "Camerata Picena",
+  "042008": "Castelbellino",
+  "042009": "Castel Colonna",
+  "042010": "Castelfidardo",
+  "042011": "Castelleone di Suasa",
+  "042012": "Castelplanio",
+  "042013": "Cerreto d'Esi",
+  "042014": "Chiaravalle",
+  "042015": "Corinaldo",
+  "042016": "Cupramontana",
+  "042017": "Fabriano",
+  "042018": "Falconara Marittima",
+  "042019": "Filottrano",
+  "042020": "Genga",
+  "042021": "Jesi",
+  "042022": "Loreto",
+  "042023": "Maiolati Spontini",
+  "042024": "Mergo",
+  "042025": "Monsano",
+  "042026": "Montecarotto",
+  "042027": "Montemarciano",
+  "042028": "Monterado",
+  "042029": "Monte Roberto",
+  "042030": "Monte San Vito",
+  "042031": "Morro d'Alba",
+  "042032": "Numana",
+  "042033": "Offagna",
+  "042034": "Osimo",
+  "042035": "Ostra",
+  "042036": "Ostra Vetere",
+  "042037": "Poggio San Marcello",
+  "042038": "Polverigi",
+  "042039": "Ripe",
+  "042040": "Rosora",
+  "042041": "San Marcello",
+  "042042": "San Paolo di Jesi",
+  "042043": "Santa Maria Nuova",
+  "042044": "Sassoferrato",
+  "042045": "Senigallia",
+  "042046": "Serra de' Conti",
+  "042047": "Serra San Quirico",
+  "042048": "Sirolo",
+  "042049": "Staffolo",
+};
+
+/**
+ * Calcola il centroide geografico di ogni comune aggregando le sezioni
+ * censuarie (table `census_sections`). Restituisce mappa codice6 → coords.
+ * Il `census_sections.istat_code` è 12 caratteri: PRO_COM (5 senza zero
+ * leading) + LOC (4) + SEZ (3) — i primi 5 caratteri identificano il comune.
+ */
+async function buildMunicipalityCentroidsFromCensus(provinceCode: string): Promise<
+  Map<string, { lat: number; lng: number; population: number }>
+> {
+  // Per provincia "042" → prefisso census = "42" (senza leading 0)
+  const provNum = String(parseInt(provinceCode, 10)); // "042" → "42"
+  const rows = await db.execute(sql`
+    SELECT SUBSTRING(istat_code, 1, 5) AS muni5,
+           AVG(centroid_lat)::float8 AS lat,
+           AVG(centroid_lng)::float8 AS lng,
+           SUM(COALESCE(population, 0))::int AS pop
+    FROM census_sections
+    WHERE istat_code IS NOT NULL
+      AND SUBSTRING(istat_code, 1, ${provNum.length}) = ${provNum}
+    GROUP BY 1
+  `);
+  const m = new Map<string, { lat: number; lng: number; population: number }>();
+  for (const r of rows.rows as any[]) {
+    // muni5 = "42001"  → standard ISTAT 6-cifre = "0" + "42" + last3 = "042001"
+    const muni5 = String(r.muni5);
+    const last3 = muni5.slice(-3);
+    const code6 = `${provinceCode}${last3}`;
+    if (typeof r.lat === "number" && typeof r.lng === "number") {
+      m.set(code6, { lat: r.lat, lng: r.lng, population: Number(r.pop) || 0 });
+    }
+  }
+  return m;
+}
+
+/**
+ * Sync ISTAT commuting matrix (origine→destinazione) for the area of interest.
+ * Filters to inter-comunal flows where origin AND destination are within the
+ * configured province (default 042 = Ancona). Coordinates come from real
+ * census-sections centroids; names from the official ISTAT 2011 list.
+ */
+export async function syncCommutingOdFromIstat(opts?: {
+  provinceCode?: string;
+  url?: string;
+}): Promise<{ inserted: number; source: string; parsed: number; kept: number }> {
+  const province = opts?.provinceCode ?? "042";
+  const url = opts?.url ?? ISTAT_PENDOLO_URL;
+
+  // Risolvi coordinate dai centroidi census + nomi dalla lista ufficiale
+  const coords = await buildMunicipalityCentroidsFromCensus(province);
+  const nameMap: Record<string, string> = ANCONA_COMUNI_2011_NAMES; // estendibile per altre province
+  const muniInfo = new Map<string, { name: string; lat: number; lng: number }>();
+  for (const [code, c] of coords.entries()) {
+    muniInfo.set(code, {
+      name: nameMap[code] ?? `Comune ${code}`,
+      lat: c.lat,
+      lng: c.lng,
+    });
+  }
+  console.log(`[ISTAT-OD] Mapping comuni: ${muniInfo.size} (provincia ${province})`);
+
+  // 1. Download ZIP (cache in /tmp)
+  const tmpDir = os.tmpdir();
+  const zipPath = path.join(tmpDir, "istat_pendo_2011.zip");
+  const stat = fs.existsSync(zipPath) ? fs.statSync(zipPath) : null;
+  if (!stat || stat.size < 5_000_000) {
+    console.log(`[ISTAT-OD] Scarico ${url}…`);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(240_000) });
+    if (!resp.ok) throw new Error(`ISTAT download HTTP ${resp.status}`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    await fsp.writeFile(zipPath, buf);
+    console.log(`[ISTAT-OD] Scaricato ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+  } else {
+    console.log(`[ISTAT-OD] Uso cache ${zipPath} (${(stat.size / 1024 / 1024).toFixed(1)} MB)`);
+  }
+
+  // 2. Estrai il txt
+  const extractDir = path.join(tmpDir, "istat_pendo_extract");
+  await fsp.mkdir(extractDir, { recursive: true });
+  const txtPath = path.join(extractDir, "matrix_pendo2011_10112014.txt");
+  const tStat = fs.existsSync(txtPath) ? fs.statSync(txtPath) : null;
+  if (!tStat || tStat.size < 100_000_000) {
+    const r = spawnSync("unzip", ["-o", "-j", zipPath, ISTAT_PENDOLO_TXT_NAME, "-d", extractDir], {
+      stdio: "pipe",
+    });
+    if (r.status !== 0) throw new Error(`unzip failed: ${r.stderr?.toString() || r.stdout?.toString()}`);
+  }
+
+  // 3. Parsa per linea, aggrega per (origin, dest, reason)
+  type Agg = { origin: string; dest: string; reason: string; flow: number };
+  const aggregated = new Map<string, Agg>();
+  let parsed = 0;
+  let kept = 0;
+
+  const stream = fs.createReadStream(txtPath, { encoding: "latin1" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  for await (const line of rl) {
+    if (!line || line.length < 48) continue;
+    if (line[0] !== "S") continue;
+    parsed++;
+
+    // Layout fixed-width (1-based positions, derivato da ispezione file):
+    //   1   tipo (S/L)
+    //   5- 7  PROV_RES (3)
+    //   9-11  COM_RES  (3)
+    //  14    MOTIVO (1=lavoro, 2=studio)
+    //  20-22 PROV_DEST (3)
+    //  24-26 COM_DEST  (3)
+    //  39-48 NUMERO_STIMATO (10, formato "0000254.00")
+    const provRes = line.substring(4, 7);
+    const comRes = line.substring(8, 11);
+    const motivo = line.substring(13, 14);
+    const provDest = line.substring(19, 22);
+    const comDest = line.substring(23, 26);
+    const numStr = line.substring(38, 48).trim();
+
+    if (provRes !== province || provDest !== province) continue;
+
+    const origin = `${provRes}${comRes}`;
+    const dest = `${provDest}${comDest}`;
+    if (origin === dest) continue;
+    if (!muniInfo.has(origin) || !muniInfo.has(dest)) continue;
+
+    const num = parseFloat(numStr);
+    if (!Number.isFinite(num) || num <= 0) continue;
+
+    const reason = motivo === "1" ? "work" : motivo === "2" ? "study" : "other";
+    const key = `${origin}|${dest}|${reason}`;
+    const ex = aggregated.get(key);
+    if (ex) ex.flow += num;
+    else aggregated.set(key, { origin, dest, reason, flow: num });
+    kept++;
+  }
+
+  console.log(
+    `[ISTAT-OD] parsed=${parsed} kept=${kept} aggregated=${aggregated.size} (provincia ${province})`,
+  );
+
+  // 4. Truncate + bulk insert
+  await db.execute(sql`TRUNCATE istat_commuting_od`);
+
+  const rows = Array.from(aggregated.values());
+  const BATCH = 500;
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    const values = batch.map((r) => {
+      const o = muniInfo.get(r.origin)!;
+      const d = muniInfo.get(r.dest)!;
+      return {
+        originIstat: r.origin,
+        originName: o.name,
+        originLat: o.lat,
+        originLon: o.lng,
+        destIstat: r.dest,
+        destName: d.name,
+        destLat: d.lat,
+        destLon: d.lng,
+        reason: r.reason,
+        mode: null,
+        timeSlot: null,
+        durationMin: null,
+        flow: Math.round(r.flow),
+      };
+    });
+    await db.insert(istatCommutingOd).values(values);
+    inserted += batch.length;
+  }
+
+  return { inserted, source: "istat-pendolarismo-2011", parsed, kept };
+}
+
+router.post("/cron/commuting", async (req, res) => {
+  if (!verifyCronSecret(req, res)) return;
+  try {
+    const province = (req.query.province as string | undefined) ?? "042";
+    const result = await syncCommutingOdFromIstat({ provinceCode: province });
+    res.json({
+      success: true,
+      ...result,
+      message: `Importati ${result.inserted} archi O/D ISTAT (provincia ${province})`,
+    });
+  } catch (err: any) {
+    req.log.error(err, "Error in commuting cron");
     res.status(500).json({ success: false, message: err.message ?? "Internal error" });
   }
 });

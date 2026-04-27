@@ -297,6 +297,9 @@ export const coincidenceZones = pgTable("coincidence_zones", {
   radiusKm: doublePrecision("radius_km").notNull().default(0.5),
   color: text("color").notNull().default("#06b6d4"),
   notes: text("notes"),
+  // Orari custom della zona: { arrivals: [{label, times[]}], departures: [{label, times[]}] }
+  // Es. { "arrivals":[{"label":"Roma","times":["07:42","09:42"]}], "departures":[...] }
+  schedules: jsonb("schedules"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 });
@@ -602,6 +605,21 @@ export const gtfsFareZoneClusterStops = pgTable("gtfs_fare_zone_cluster_stops", 
   index("idx_fare_zone_cs_feed_stop").on(t.feedId, t.stopId),
 ]);
 
+// Fare Audit Log — tracciamento normativo delle azioni sulla tariffazione
+export const gtfsFareAuditLog = pgTable("gtfs_fare_audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  feedId: uuid("feed_id").references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  action: text("action").notNull(),         // "generate_gtfs" | "validate" | "update_product" | "update_price" | "manual_note" | "seed_products" | "generate_zones" | "generate_leg_rules"
+  description: text("description").notNull(),
+  actor: text("actor").notNull().default("system"), // "system" or username
+  metadata: jsonb("metadata").default({}),           // snapshot of what changed (product old/new price, etc.)
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_fare_audit_feed").on(t.feedId),
+  index("idx_fare_audit_created").on(t.createdAt),
+  index("idx_fare_audit_action").on(t.action),
+]);
+
 // Feed Info — metadata about the GTFS feed (feed_info.txt)
 export const gtfsFeedInfo = pgTable("gtfs_feed_info", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -661,3 +679,217 @@ export type GtfsFareRule = typeof gtfsFareRules.$inferSelect;
 export type GtfsFareZoneCluster = typeof gtfsFareZoneClusters.$inferSelect;
 export type GtfsFareZoneClusterStop = typeof gtfsFareZoneClusterStops.$inferSelect;
 export type GtfsFeedInfo = typeof gtfsFeedInfo.$inferSelect;
+export type GtfsFareAuditLog = typeof gtfsFareAuditLog.$inferSelect;
+
+/* ── Depots ─────────────────────────────────────────────────────────────────
+ * Depositi — punti di rimessaggio autobus e presa di servizio dei conducenti.
+ *
+ * Ogni deposito ha:
+ *   - Dati anagrafici: nome, indirizzo
+ *   - Posizione geografica: lat/lon (obbligatoria per la mappa e i calcoli)
+ *   - Operatività: capacità (n. bus), orari apertura/chiusura
+ *   - Rifornimento: tipi carburante (diesel | methane | electric),
+ *       punti ricarica elettrica, punti metano
+ *   - Metadati: note libere, colore per la mappa
+ * ─────────────────────────────────────────────────────────────────────────── */
+export const depots = pgTable("depots", {
+  id:                  uuid("id").primaryKey().defaultRandom(),
+  name:                text("name").notNull(),
+  address:             text("address"),
+  lat:                 doublePrecision("lat"),               // WGS84
+  lon:                 doublePrecision("lon"),               // WGS84
+  // Operatività
+  capacity:            integer("capacity"),                  // n. max autobus ospitabili
+  operatingHoursStart: text("operating_hours_start"),        // "HH:mm"
+  operatingHoursEnd:   text("operating_hours_end"),          // "HH:mm"
+  // Rifornimento
+  hasDiesel:           boolean("has_diesel").default(false),
+  hasMethane:          boolean("has_methane").default(false),
+  hasElectric:         boolean("has_electric").default(false),
+  chargingPoints:      integer("charging_points").default(0), // colonnine elettriche
+  cngPoints:           integer("cng_points").default(0),      // distributori metano
+  // Presentazione
+  color:               text("color").default("#3b82f6"),
+  notes:               text("notes"),
+  // Audit
+  createdAt:           timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt:           timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+export type Depot = typeof depots.$inferSelect;
+
+/* ── PlannerStudio ──────────────────────────────────────────────────────────
+ * Scenari di pianificazione GTFS: si parte da un feed baseline e si
+ * applicano modifiche (edit log) → nuovo scenario simulato. Single-tenant.
+ * ─────────────────────────────────────────────────────────────────────────── */
+export const planningScenarios = pgTable("planning_scenarios", {
+  id:               uuid("id").primaryKey().defaultRandom(),
+  name:             text("name").notNull(),
+  description:      text("description"),
+  baselineFeedId:   uuid("baseline_feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "restrict" }),
+  mode:             text("mode").notNull().default("ab"),    // "single" | "ab"
+  status:           text("status").notNull().default("draft"), // "draft" | "validated" | "archived"
+  economicParams:   jsonb("economic_params"),                  // override parametri economici (€/km, €/h, …)
+  summary:          jsonb("summary"),                          // { editsCount, routesAffected, … }
+  createdBy:        text("created_by"),
+  createdAt:        timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt:        timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_planning_scenarios_baseline").on(t.baselineFeedId),
+  index("idx_planning_scenarios_status").on(t.status),
+]);
+
+export const planningScenarioEdits = pgTable("planning_scenario_edits", {
+  id:            uuid("id").primaryKey().defaultRandom(),
+  scenarioId:    uuid("scenario_id").notNull().references(() => planningScenarios.id, { onDelete: "cascade" }),
+  kind:          text("kind").notNull(),          // "route.update" | "route.suspend" | "stop.update" | "stop.delete" | …
+  targetType:    text("target_type"),             // "route" | "stop" | "trip" | "pattern"
+  targetGtfsId:  text("target_gtfs_id"),          // GTFS id (route_id, stop_id, …)
+  payload:       jsonb("payload").notNull(),      // dati dell'edit (campi modificati)
+  undoOfEditId:  uuid("undo_of_edit_id"),         // se è un undo, id dell'edit annullato
+  appliedBy:     text("applied_by"),
+  appliedAt:     timestamp("applied_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_planning_edits_scenario").on(t.scenarioId),
+  index("idx_planning_edits_scenario_applied").on(t.scenarioId, t.appliedAt),
+]);
+
+export const planningAnalysisResults = pgTable("planning_analysis_results", {
+  id:           uuid("id").primaryKey().defaultRandom(),
+  scenarioId:   uuid("scenario_id").notNull().references(() => planningScenarios.id, { onDelete: "cascade" }),
+  module:       text("module").notNull(),         // "service-coverage" | "demand-supply" | "trip-utility" | "economic"
+  inputParams:  jsonb("input_params"),
+  result:       jsonb("result").notNull(),
+  editsHash:    text("edits_hash"),               // hash della sequenza edit per cache invalidation
+  computedAt:   timestamp("computed_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_planning_analysis_scenario").on(t.scenarioId),
+  index("idx_planning_analysis_scenario_module").on(t.scenarioId, t.module),
+]);
+
+export type PlanningScenario = typeof planningScenarios.$inferSelect;
+export type PlanningScenarioEdit = typeof planningScenarioEdits.$inferSelect;
+export type PlanningAnalysisResult = typeof planningAnalysisResults.$inferSelect;
+
+/* ── Analisi feed GTFS (Sprint S1) ──────────────────────────────────────────
+ * gtfs_feed_analysis: KPI calcolati una volta dopo upload (vetture-km,
+ *   vetture-ore, n. corse, costi/ricavi, copertura, gap di servizio).
+ * gtfs_feed_economic_params: parametri economici per feed (override default).
+ * ─────────────────────────────────────────────────────────────────────────── */
+export const gtfsFeedAnalysis = pgTable("gtfs_feed_analysis", {
+  id:                uuid("id").primaryKey().defaultRandom(),
+  feedId:            uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  // KPI aggregati giornalieri (giorno feriale tipo)
+  totalKmDay:        doublePrecision("total_km_day").default(0),
+  totalHoursDay:     doublePrecision("total_hours_day").default(0),
+  totalTripsDay:     integer("total_trips_day").default(0),
+  activeRoutes:      integer("active_routes").default(0),
+  activeStops:       integer("active_stops").default(0),
+  // Copertura
+  bboxMinLat:        doublePrecision("bbox_min_lat"),
+  bboxMaxLat:        doublePrecision("bbox_max_lat"),
+  bboxMinLon:        doublePrecision("bbox_min_lon"),
+  bboxMaxLon:        doublePrecision("bbox_max_lon"),
+  populationCovered: integer("population_covered").default(0),  // popolazione entro 300m da una fermata
+  populationTotal:   integer("population_total").default(0),    // popolazione bbox
+  // Economia (calcolata con i parametri attivi al momento dell'analisi)
+  totalCostDay:      doublePrecision("total_cost_day").default(0),       // €/giorno
+  totalRevenueDay:   doublePrecision("total_revenue_day").default(0),    // €/giorno (corrispettivi)
+  marginDay:         doublePrecision("margin_day").default(0),           // ricavi - costi
+  // Per linea / dettagli (jsonb)
+  perRoute:          jsonb("per_route"),         // [{ routeId, name, kmDay, hoursDay, trips, costDay, revenueDay, margin, ... }]
+  anomalies:         jsonb("anomalies"),         // { tripsWithoutShape, orphanStops, irregularHeadways, ... }
+  computedAt:        timestamp("computed_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_gtfs_feed_analysis_feed").on(t.feedId),
+]);
+
+export const gtfsFeedEconomicParams = pgTable("gtfs_feed_economic_params", {
+  id:                  uuid("id").primaryKey().defaultRandom(),
+  feedId:              uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  // Costi
+  fuelConsumptionL100: doublePrecision("fuel_consumption_l_100").notNull().default(35),    // l/100km
+  fuelPriceEurL:       doublePrecision("fuel_price_eur_l").notNull().default(1.65),        // €/l
+  driverCostEurH:      doublePrecision("driver_cost_eur_h").notNull().default(28),         // €/h guida
+  maintenanceEurKm:    doublePrecision("maintenance_eur_km").notNull().default(0.35),      // €/km
+  amortizationEurKm:   doublePrecision("amortization_eur_km").notNull().default(0.25),     // €/km
+  // Ricavi (corrispettivi €/vetture-km per tipo servizio)
+  fareUrbanEurKm:      doublePrecision("fare_urban_eur_km").notNull().default(2.50),
+  fareSuburbanEurKm:   doublePrecision("fare_suburban_eur_km").notNull().default(1.80),
+  fareNightEurKm:      doublePrecision("fare_night_eur_km").notNull().default(2.20),
+  // Override per linea (mappa routeId → { serviceType, ... })
+  perRouteOverrides:   jsonb("per_route_overrides"),
+  updatedAt:           timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_gtfs_feed_econ_feed").on(t.feedId),
+]);
+
+export type GtfsFeedAnalysis = typeof gtfsFeedAnalysis.$inferSelect;
+export type GtfsFeedEconomicParams = typeof gtfsFeedEconomicParams.$inferSelect;
+
+/* ── ISTAT pendolari (matrice O/D) ──────────────────────────────────────────
+ * Matrice degli spostamenti pendolari ISTAT (Censimento 2011, 9.1.1):
+ *   per ogni coppia comune-origine → comune-destinazione, quante persone
+ *   si spostano per motivo (lavoro/studio), mezzo, fascia oraria.
+ * ─────────────────────────────────────────────────────────────────────────── */
+export const istatCommutingOd = pgTable("istat_commuting_od", {
+  id:               uuid("id").primaryKey().defaultRandom(),
+  originIstat:      text("origin_istat").notNull(),   // codice ISTAT comune origine (es. "042002")
+  originName:       text("origin_name"),
+  destIstat:        text("dest_istat").notNull(),
+  destName:         text("dest_name"),
+  reason:           text("reason"),                   // "work" | "study"
+  mode:             text("mode"),                     // "car_driver" | "car_passenger" | "bus_urban" | "bus_extraurban" | "train" | "bike" | "walk" | "other"
+  timeSlot:         text("time_slot"),                // "before_715" | "715_815" | "815_915" | "after_915"
+  durationMin:      integer("duration_min"),          // categoria durata (5, 15, 30, 60)
+  flow:             integer("flow").notNull().default(0), // n. persone
+  // geografia precomputata (centroide comune)
+  originLat:        doublePrecision("origin_lat"),
+  originLon:        doublePrecision("origin_lon"),
+  destLat:          doublePrecision("dest_lat"),
+  destLon:          doublePrecision("dest_lon"),
+  importedAt:       timestamp("imported_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_istat_od_origin").on(t.originIstat),
+  index("idx_istat_od_dest").on(t.destIstat),
+  index("idx_istat_od_pair").on(t.originIstat, t.destIstat),
+]);
+
+export type IstatCommutingOd = typeof istatCommutingOd.$inferSelect;
+
+/* ── PlannerStudio v2: classificazione linee + POI ──────────────────────────
+ * route_classifications: l'utente assegna una categoria custom a ogni linea
+ *   (es. "urbano-ancona", "urbano-falconara", "urbano-jesi", "extraurbano",
+ *   "notturno"). Influenza il calcolo del corrispettivo €/km.
+ * pois: punti di interesse della zona (scuole, ospedali, stazioni, mall, …)
+ *   usati nel modello di stima passeggeri.
+ * ─────────────────────────────────────────────────────────────────────────── */
+export const planningRouteClassifications = pgTable("planning_route_classifications", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  feedId:    uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  routeId:   text("route_id").notNull(),
+  category:  text("category").notNull(),  // libera: "urbano-ancona", "urbano-falconara", "urbano-jesi", "extraurbano", "notturno", "altro"
+  fareType:  text("fare_type"),           // "urban" | "suburban" | "night" — derivato/forzabile
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  uniqueIndex("idx_planning_routeclass_unique").on(t.feedId, t.routeId),
+  index("idx_planning_routeclass_cat").on(t.feedId, t.category),
+]);
+
+export const planningPois = pgTable("planning_pois", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  feedId:    uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  name:      text("name").notNull(),
+  category:  text("category").notNull(),  // "school" | "hospital" | "station" | "mall" | "office" | "tourism" | "other"
+  lat:       doublePrecision("lat").notNull(),
+  lng:       doublePrecision("lng").notNull(),
+  weight:    doublePrecision("weight").notNull().default(1),  // attrattività relativa
+  notes:     text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_planning_pois_feed").on(t.feedId),
+  index("idx_planning_pois_geo").on(t.feedId, t.lat, t.lng),
+]);
+
+export type PlanningRouteClassification = typeof planningRouteClassifications.$inferSelect;
+export type PlanningPoi = typeof planningPois.$inferSelect;

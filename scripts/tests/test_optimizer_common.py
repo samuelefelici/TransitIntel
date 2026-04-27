@@ -281,7 +281,7 @@ class TestVehicleCostRatesFromConfig:
     def test_default(self):
         rates = VehicleCostRates.from_config(None)
         assert rates.fixed_daily["12m"] == 42.0
-        assert rates.max_idle_at_terminal == 90
+        assert rates.max_idle_at_terminal == 240
 
     def test_override_scalar(self):
         rates = VehicleCostRates.from_config({"maxIdleAtTerminal": 120})

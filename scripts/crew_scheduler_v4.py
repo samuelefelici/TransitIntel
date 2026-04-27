@@ -92,12 +92,95 @@ MIN_CUT_GAP = 3
 SUPPLEMENTO_NASTRO_MAX = 150
 COLLASSA_MIN_GAP = 45  # gap minimo tra tagli per collasso
 
+
+def apply_shift_rules_override(cfg: dict) -> None:
+    """Permette all'utente di sovrascrivere SHIFT_RULES e costanti correlate
+    da config.bds.shiftRules. Modifica le globali IN-PLACE prima di ogni run.
+
+    Schema atteso:
+      config.bds.shiftRules = {
+        "intero":      {"maxNastro": 435, "maxLavoro": 435, "sostaMinCapolinea": 15},
+        "semiunico":   {"maxNastro": 555, "maxLavoro": 480, "intMin": 75, "intMax": 179, "maxPct": 12},
+        "spezzato":    {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13},
+        "supplemento": {"maxNastro": 150, "maxLavoro": 150}
+      }
+      config.bds.targetWork = {"low": 390, "high": 435, "mid": 408}
+    """
+    global NASTRO_INTERO_MAX, NASTRO_LUNGO_THRESHOLD, SUPPLEMENTO_NASTRO_MAX
+    global TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID
+
+    bds = cfg.get("bds", {}) if cfg else {}
+    overrides = bds.get("shiftRules") or {}
+    if not overrides:
+        return
+
+    for duty_type in ("intero", "semiunico", "spezzato", "supplemento"):
+        ov = overrides.get(duty_type)
+        if not ov:
+            continue
+        if duty_type not in SHIFT_RULES:
+            continue
+        for k in ("maxNastro", "maxLavoro", "intMin", "intMax", "maxPct", "sostaMinCapolinea"):
+            if k in ov:
+                try:
+                    SHIFT_RULES[duty_type][k] = int(ov[k])
+                except (ValueError, TypeError):
+                    pass
+
+    # Aggiorna costanti derivate
+    if "intero" in overrides and "maxNastro" in overrides["intero"]:
+        NASTRO_INTERO_MAX = SHIFT_RULES["intero"]["maxNastro"]
+    if "semiunico" in overrides and "maxNastro" in overrides["semiunico"]:
+        NASTRO_LUNGO_THRESHOLD = SHIFT_RULES["semiunico"]["maxNastro"]
+    if "supplemento" in overrides and "maxNastro" in overrides["supplemento"]:
+        SUPPLEMENTO_NASTRO_MAX = SHIFT_RULES["supplemento"]["maxNastro"]
+
+    target = bds.get("targetWork") or {}
+    if "low" in target:
+        TARGET_WORK_LOW = int(target["low"])
+    if "high" in target:
+        TARGET_WORK_HIGH = int(target["high"])
+    if "mid" in target:
+        TARGET_WORK_MID = int(target["mid"])
+
+    log(f"[V4] SHIFT_RULES override applicato: "
+        f"intero={SHIFT_RULES['intero']['maxNastro']}/{SHIFT_RULES['intero']['maxLavoro']}, "
+        f"semi={SHIFT_RULES['semiunico']['maxNastro']}/{SHIFT_RULES['semiunico']['maxLavoro']}, "
+        f"spez={SHIFT_RULES['spezzato']['maxNastro']}/{SHIFT_RULES['spezzato']['maxLavoro']}, "
+        f"target=[{TARGET_WORK_LOW},{TARGET_WORK_HIGH}]")
+
+
 # ----------------------------------------------------------------
 # Multi-scenario
 # ----------------------------------------------------------------
-MIN_SCENARIOS = 8                  # minimo scenari
-MAX_SCENARIOS = 20                 # massimo scenari
-SCENARIO_TIME_FRACTION = 0.85     # 85% del tempo totale per scenari
+MIN_SCENARIOS = 14                 # minimo scenari (intensita 1)
+MAX_SCENARIOS = 36                 # massimo scenari (intensita 3)
+DEFAULT_SCENARIOS = 24             # intensita 2 (medio)
+SCENARIO_TIME_FRACTION = 0.78     # 78% agli scenari, 22% alla polish phase
+SCENARIO_MIN_BUDGET = 6           # almeno 6s per scenario (piu scenari -> meno tempo ciascuno)
+POLISH_TIME_FRACTION = 0.20       # 20% del tempo totale alla rifinitura finale
+POLISH_MIN_BUDGET = 15            # almeno 15s alla polish
+
+# ----------------------------------------------------------------
+# Portfolio di strategie (obiettivi alternativi)
+# Ogni strategia riscala selettivamente i pesi dell'obiettivo CP-SAT
+# per esplorare soluzioni strutturalmente diverse.
+# ----------------------------------------------------------------
+SCENARIO_STRATEGIES = {
+    "balanced":         {"label": "Bilanciato",           "desc": "Costo + qualita in equilibrio (baseline)",        "mul_cost": 1.0, "mul_balance": 1.0, "mul_suppl": 1.0, "mul_spezz": 1.0, "mul_transfer": 1.0},
+    "min_cost":         {"label": "Minimo costo",          "desc": "Spinge al risparmio puro (orario)",               "mul_cost": 1.4, "mul_balance": 0.6, "mul_suppl": 0.8, "mul_spezz": 0.8, "mul_transfer": 0.8},
+    "min_drivers":      {"label": "Meno autisti",          "desc": "Favorisce pair (meno turni totali)",              "mul_cost": 1.1, "mul_balance": 0.8, "mul_suppl": 3.0, "mul_spezz": 0.5, "mul_transfer": 1.0},
+    "max_quality":      {"label": "Alta qualita",          "desc": "Carichi di lavoro bilanciati",                    "mul_cost": 0.9, "mul_balance": 2.5, "mul_suppl": 1.2, "mul_spezz": 1.2, "mul_transfer": 1.0},
+    "min_supplementi":  {"label": "Zero supplementi",      "desc": "Elimina straordinari",                            "mul_cost": 1.0, "mul_balance": 1.0, "mul_suppl": 5.0, "mul_spezz": 1.0, "mul_transfer": 1.0},
+    "min_spezzati":     {"label": "Zero spezzati",         "desc": "Evita turni spezzati (preferisce interi/semi)",   "mul_cost": 1.0, "mul_balance": 1.0, "mul_suppl": 1.0, "mul_spezz": 4.0, "mul_transfer": 1.0},
+    "min_transfer":     {"label": "Minimi cambi",          "desc": "Minimizza trasferimenti/auto aziendali",          "mul_cost": 1.0, "mul_balance": 1.0, "mul_suppl": 1.0, "mul_spezz": 1.5, "mul_transfer": 3.0},
+    "aggressive":       {"label": "Aggressivo",            "desc": "Costo bassissimo anche con semi/spezz",           "mul_cost": 1.8, "mul_balance": 0.4, "mul_suppl": 0.5, "mul_spezz": 0.6, "mul_transfer": 0.7},
+}
+
+# Container globali: metriche di tutti gli scenari + analisi dell'ultima run
+# (letti da main() per serializzare nell'output)
+LAST_SCENARIO_RESULTS: list[dict] = []
+LAST_OPTIMIZATION_ANALYSIS: dict = {}
 
 # ----------------------------------------------------------------
 # Scoring tagli
@@ -1367,10 +1450,20 @@ def _build_cpsat_model(
     clusters: list[Cluster],
     scenario_seed: int,
     scenario_noise: float = 0.0,
+    strategy: str = "balanced",
 ) -> tuple[cp_model.CpModel, dict, dict, dict]:
-    """Costruisce un modello CP-SAT. Parametro scenario_noise perturba i costi
-    per esplorare soluzioni diverse in multi-scenario."""
+    """Costruisce un modello CP-SAT. Parametri:
+    - scenario_noise: perturba i costi per esplorare soluzioni alternative
+    - strategy: profilo di pesi (vedi SCENARIO_STRATEGIES) per obiettivi alternativi.
+    """
     import random
+
+    strat = SCENARIO_STRATEGIES.get(strategy, SCENARIO_STRATEGIES["balanced"])
+    mul_cost = strat["mul_cost"]
+    mul_balance = strat["mul_balance"]
+    mul_suppl = strat["mul_suppl"]
+    mul_spezz = strat["mul_spezz"]
+    mul_transfer = strat["mul_transfer"]
 
     model = cp_model.CpModel()
     n_seg = len(segments)
@@ -1479,11 +1572,11 @@ def _build_cpsat_model(
         dev_from_target = abs(work_with_overhead - TARGET_WORK_MID)
 
         if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
-            cost_cents = int(rates.supplemento_daily * COST_SCALE)
+            cost_cents = int(rates.supplemento_daily * COST_SCALE * mul_suppl)
         else:
             hours = work_with_overhead / 60.0
-            cost_cents = int((hours * rates.hourly_rate
-                             + dev_from_target * rates.work_imbalance_per_min) * COST_SCALE)
+            cost_cents = int((hours * rates.hourly_rate * mul_cost
+                             + dev_from_target * rates.work_imbalance_per_min * mul_balance) * COST_SCALE)
 
         # Perturbazione per esplorare soluzioni diverse
         if scenario_noise > 0:
@@ -1495,6 +1588,7 @@ def _build_cpsat_model(
     for key, pv in pair_vars.items():
         s1_idx, s2_idx = key
         s1, s2 = seg_by_idx[s1_idx], seg_by_idx[s2_idx]
+        ptype = pair_types[key]
 
         pp = bds.pre_post
         combined_work = (s1.work_min + s2.work_min
@@ -1504,9 +1598,12 @@ def _build_cpsat_model(
         hours = combined_work / 60.0
         dev = abs(combined_work - TARGET_WORK_MID)
 
-        cost_cents = int((hours * rates.hourly_rate
-                         + dev * rates.work_imbalance_per_min
-                         + rates.company_car_per_use) * COST_SCALE)
+        # Moltiplicatore specifico per tipo pair (spezzato vs semiunico)
+        pair_type_mul = mul_spezz if ptype == "spezzato" else 1.0
+
+        cost_cents = int((hours * rates.hourly_rate * mul_cost
+                         + dev * rates.work_imbalance_per_min * mul_balance
+                         + rates.company_car_per_use * mul_transfer) * COST_SCALE * pair_type_mul)
 
         if scenario_noise > 0:
             noise = rng.gauss(0, scenario_noise * cost_cents)
@@ -1635,6 +1732,87 @@ def _score_solution(
     return score
 
 
+def _compute_scenario_metrics(
+    duties: list[DriverDutyV3],
+    rates: CostRates,
+    bds: BDSConfig,
+    clusters: list[Cluster],
+) -> dict:
+    """Calcola un dizionario di metriche complete per uno scenario risolto.
+
+    Riporta tutte le metriche significative perche l'utente possa confrontarle e
+    scegliere lo scenario migliore non solo sul costo.
+    """
+    n_total = len(duties)
+    type_counts = {"intero": 0, "semiunico": 0, "spezzato": 0, "supplemento": 0, "invalido": 0}
+    total_work_min = 0
+    total_nastro_min = 0
+    total_driving_min = 0
+    total_interruption_min = 0
+    total_pre_turno_min = 0
+    total_transfer_min = 0
+    total_cost = 0.0
+    n_violations = 0
+    idle_per_duty: list[int] = []   # minuti "vuoti" (nastro - work) per turno
+
+    for d in duties:
+        type_counts[d.duty_type] = type_counts.get(d.duty_type, 0) + 1
+        total_work_min += d.work_min
+        total_nastro_min += d.nastro_min
+        total_driving_min += d.driving_min
+        total_interruption_min += d.interruption_min
+        total_pre_turno_min += d.pre_turno_min
+        total_transfer_min += d.transfer_min + d.transfer_back_min
+
+        cb = compute_duty_cost_v4(d, rates, bds, clusters)
+        total_cost += cb.total
+
+        v = validate_duty_bds(d, bds, clusters)
+        n_violations += len(v.violations)
+
+        idle = max(0, d.nastro_min - d.work_min)
+        idle_per_duty.append(idle)
+
+    n_princ = max(1, n_total - type_counts["supplemento"])
+    semi_pct = round(type_counts["semiunico"] / n_princ * 100, 1)
+    spez_pct = round(type_counts["spezzato"] / n_princ * 100, 1)
+    suppl_pct = round(type_counts["supplemento"] / max(n_total, 1) * 100, 1)
+
+    total_idle = sum(idle_per_duty)
+    avg_idle = round(total_idle / max(n_total, 1), 1)
+
+    # "Vuoti" significativi: turni con idle > 60min (nastro molto piu lungo del lavoro)
+    n_vuoti_significativi = sum(1 for v in idle_per_duty if v >= 60)
+
+    return {
+        "duties": n_total,
+        "interi": type_counts["intero"],
+        "semiunici": type_counts["semiunico"],
+        "spezzati": type_counts["spezzato"],
+        "supplementi": type_counts["supplemento"],
+        "invalidi": type_counts["invalido"],
+        "semiPct": semi_pct,
+        "spezPct": spez_pct,
+        "supplPct": suppl_pct,
+        "totalWorkH": round(total_work_min / 60, 1),
+        "totalNastroH": round(total_nastro_min / 60, 1),
+        "totalDrivingH": round(total_driving_min / 60, 1),
+        "totalInterruptionH": round(total_interruption_min / 60, 1),
+        "totalTransferH": round(total_transfer_min / 60, 1),
+        "avgWorkMin": round(total_work_min / max(n_total, 1), 1),
+        "avgNastroMin": round(total_nastro_min / max(n_total, 1), 1),
+        "avgIdleMin": avg_idle,                 # media minuti "vuoti" per turno
+        "totalIdleH": round(total_idle / 60, 1), # ore totali "vuote"
+        "vuotiSignificativi": n_vuoti_significativi,
+        "totalCost": round(total_cost, 2),
+        "costPerDuty": round(total_cost / max(n_total, 1), 2),
+        "bdsViolations": n_violations,
+        # conformita
+        "semiCompliant": semi_pct <= 12,
+        "spezCompliant": spez_pct <= 13,
+    }
+
+
 def optimize_multi_scenario(
     blocks: list[VehicleBlock],
     segments: list[Segment],
@@ -1657,16 +1835,22 @@ def optimize_multi_scenario(
     n_seg = len(segments)
 
     # Determina numero scenari in base all'intensita
+    # Accetta sia int legacy (1/2/3) sia stringhe (fast/normal/deep/extreme)
     intensity = config.get("solverIntensity", 2)
-    n_scenarios = {1: MIN_SCENARIOS, 2: 12, 3: MAX_SCENARIOS}.get(intensity, 12)
+    if isinstance(intensity, str):
+        intensity_map = {"fast": 1, "normal": 2, "deep": 3, "extreme": 4}
+        intensity = intensity_map.get(intensity, 2)
+    n_scenarios = {1: MIN_SCENARIOS, 2: DEFAULT_SCENARIOS, 3: MAX_SCENARIOS, 4: MAX_SCENARIOS + 12}.get(intensity, DEFAULT_SCENARIOS)
 
-    # Tempo per scenario
-    scenario_budget = int(time_limit_sec * SCENARIO_TIME_FRACTION / n_scenarios)
-    scenario_budget = max(5, scenario_budget)  # almeno 5 secondi per scenario
+    # Tempo: frazione agli scenari, frazione alla polish phase
+    scenario_time_total = time_limit_sec * SCENARIO_TIME_FRACTION
+    polish_time_total = max(POLISH_MIN_BUDGET, int(time_limit_sec * POLISH_TIME_FRACTION))
+    scenario_budget = int(scenario_time_total / n_scenarios)
+    scenario_budget = max(SCENARIO_MIN_BUDGET, scenario_budget)
 
     log(f"Multi-scenario: {n_scenarios} scenari x {scenario_budget}s = {n_scenarios * scenario_budget}s "
-        f"(budget totale {time_limit_sec}s, intensita {intensity})")
-    report_progress("optimize", 30, f"Multi-scenario: {n_scenarios} scenari x {scenario_budget}s")
+        f"+ polish {polish_time_total}s (totale budget {time_limit_sec}s, intensita {intensity})")
+    report_progress("optimize", 28, f"Portfolio: {n_scenarios} scenari x {scenario_budget}s + rifinitura")
 
     # -- Pre-calcola coppie fattibili (uguale per tutti gli scenari) --
     feasible_pairs: list[tuple[int, int, str]] = []
@@ -1684,24 +1868,38 @@ def optimize_multi_scenario(
 
     log(f"CP-SAT: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili")
 
-    # -- Scenari --
+    # -- Scenari: portfolio di strategie diverse --
     best_duties: list[DriverDutyV3] | None = None
     best_score = float('inf')
     best_scenario_idx = -1
+    best_strategy_used: str = "balanced"
     scenario_results: list[dict] = []
 
     base_seed = int(time.time()) % 10000
 
+    # Rotazione ampia delle strategie + parametri diversificati
+    strategy_keys = list(SCENARIO_STRATEGIES.keys())
+    lin_levels = [2, 1, 0, 2, 1, 0, 2, 1, 2, 0, 1, 2]
+    worker_pool = [8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4]
+
     scenario_params = []
     for sc_idx in range(n_scenarios):
-        noise = 0.0 if sc_idx == 0 else 0.02 + (sc_idx / n_scenarios) * 0.12
-        lin_level = [2, 1, 2, 0, 2, 1, 0, 2, 1, 2, 0, 1, 2, 0, 1, 2, 1, 0, 2, 1][sc_idx % 20]
-        n_workers = [8, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4, 8, 6, 4][sc_idx % 20]
+        # Scenario 0 = balanced, pure (no noise) → baseline di riferimento
+        # Scenari 1..N-1 = rotazione strategie + noise crescente per diversita
+        if sc_idx == 0:
+            strategy = "balanced"
+            noise = 0.0
+        else:
+            strategy = strategy_keys[(sc_idx - 1) % len(strategy_keys)]
+            # Noise progressivo: pochi scenari con noise basso (exploit), altri con noise alto (explore)
+            bucket = (sc_idx - 1) // len(strategy_keys)  # 0, 1, 2...
+            noise = 0.03 + bucket * 0.06 + ((sc_idx * 17) % 7) * 0.01  # 0.03..~0.25
         scenario_params.append({
-            "seed": base_seed + sc_idx * 137,
-            "noise": noise,
-            "lin_level": lin_level,
-            "n_workers": n_workers,
+            "seed": base_seed + sc_idx * 137 + hash(strategy) % 500,
+            "noise": min(0.30, noise),
+            "lin_level": lin_levels[sc_idx % len(lin_levels)],
+            "n_workers": worker_pool[sc_idx % len(worker_pool)],
+            "strategy": strategy,
         })
 
     t_total_start = time.time()
@@ -1712,14 +1910,16 @@ def optimize_multi_scenario(
             break
 
         sc_start = time.time()
-        pct = 30 + int(50 * sc_idx / n_scenarios)
+        pct = 28 + int(50 * sc_idx / n_scenarios)
+        strat_label = SCENARIO_STRATEGIES.get(params["strategy"], {}).get("label", params["strategy"])
         report_progress("optimize", pct,
-                       f"Scenario {sc_idx+1}/{n_scenarios} (noise={params['noise']:.2f}, seed={params['seed']})")
+                       f"Scenario {sc_idx+1}/{n_scenarios} [{strat_label}] noise={params['noise']:.2f}")
 
         model, single, pvars, ptypes = _build_cpsat_model(
             segments, feasible_pairs, rules, rates, bds, clusters,
             scenario_seed=params["seed"],
             scenario_noise=params["noise"],
+            strategy=params["strategy"],
         )
 
         solver = cp_model.CpSolver()
@@ -1728,6 +1928,13 @@ def optimize_multi_scenario(
         solver.parameters.log_search_progress = False
         solver.parameters.random_seed = params["seed"]
         solver.parameters.linearization_level = params["lin_level"]
+        # Diversificazione extra: alcuni scenari abilitano LNS focalizzata
+        if sc_idx % 3 == 2:
+            try:
+                solver.parameters.use_lns_only = False
+                solver.parameters.diversify_lns_params = True
+            except Exception:
+                pass
 
         status = solver.solve(model)
         sc_elapsed = time.time() - sc_start
@@ -1740,9 +1947,26 @@ def optimize_multi_scenario(
             cp_model.UNKNOWN: "UNKNOWN",
         }.get(status, f"CODE_{status}")
 
+        params_out = {
+            "seed": params["seed"],
+            "noise": round(params["noise"], 3),
+            "linLevel": params["lin_level"],
+            "nWorkers": params["n_workers"],
+            "strategy": params["strategy"],
+            "strategyLabel": strat_label,
+        }
+
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            log(f"  Scenario {sc_idx+1}: {status_name} in {sc_elapsed:.1f}s -- skip")
-            scenario_results.append({"idx": sc_idx, "status": status_name, "score": float('inf')})
+            log(f"  Scenario {sc_idx+1} [{strat_label}]: {status_name} in {sc_elapsed:.1f}s -- skip")
+            scenario_results.append({
+                "idx": sc_idx,
+                "scenarioNum": sc_idx + 1,
+                "status": status_name,
+                "score": float('inf'),
+                "feasible": False,
+                "elapsed": round(sc_elapsed, 1),
+                "params": params_out,
+            })
             continue
 
         duties = _extract_duties_from_solution(
@@ -1750,38 +1974,198 @@ def optimize_multi_scenario(
         )
 
         score = _score_solution(duties, rates, bds, clusters)
+        metrics = _compute_scenario_metrics(duties, rates, bds, clusters)
 
         n_total = len(duties)
         n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
         obj_val = solver.objective_value
 
-        is_best = " ★ BEST" if score < best_score else ""
-        log(f"  Scenario {sc_idx+1}: {status_name} in {sc_elapsed:.1f}s -- "
-            f"{n_total} turni ({n_suppl} suppl), obj={obj_val:.0f}, score={score:.0f}{is_best}")
+        is_best = " * BEST" if score < best_score else ""
+        log(f"  Scenario {sc_idx+1} [{strat_label}]: {status_name} in {sc_elapsed:.1f}s -- "
+            f"{n_total} turni ({n_suppl} suppl), work={metrics['totalWorkH']}h, "
+            f"cost=EUR{metrics['totalCost']:.0f}, score={score:.0f}{is_best}")
 
         scenario_results.append({
             "idx": sc_idx,
+            "scenarioNum": sc_idx + 1,
             "status": status_name,
+            "feasible": True,
             "score": round(score, 2),
-            "duties": n_total,
-            "supplementi": n_suppl,
             "obj": round(obj_val, 0),
             "elapsed": round(sc_elapsed, 1),
+            "params": params_out,
+            **metrics,
         })
 
         if score < best_score:
             best_score = score
             best_duties = duties
             best_scenario_idx = sc_idx
+            best_strategy_used = params["strategy"]
 
-        if time.time() - t_total_start > time_limit_sec * SCENARIO_TIME_FRACTION:
+        if time.time() - t_total_start > scenario_time_total:
             log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
             break
 
+    total_scenario_elapsed = time.time() - t_total_start
+
+    # ═══════════ POLISH PHASE ═══════════
+    # Prendi il migliore e rifiniscilo: stessa strategia + tempo piu lungo + noise=0
+    # per convergere verso l'ottimo della strategia vincente.
+    polish_improved = False
+    polish_score_before = best_score
+    polish_score_after = best_score
+    polish_elapsed = 0.0
+
+    if best_duties is not None and not _stop_requested.is_set():
+        polish_budget = min(polish_time_total, max(POLISH_MIN_BUDGET, int(polish_time_total)))
+        report_progress("optimize", 82, f"Rifinitura: polish {polish_budget}s su strategia {best_strategy_used}")
+        log(f"Polish phase: strategia={best_strategy_used}, tempo={polish_budget}s")
+
+        polish_start = time.time()
+        polish_model, p_single, p_pvars, p_ptypes = _build_cpsat_model(
+            segments, feasible_pairs, rules, rates, bds, clusters,
+            scenario_seed=base_seed + 99991,
+            scenario_noise=0.0,
+            strategy=best_strategy_used,
+        )
+        polish_solver = cp_model.CpSolver()
+        polish_solver.parameters.max_time_in_seconds = polish_budget
+        polish_solver.parameters.num_workers = 8
+        polish_solver.parameters.log_search_progress = False
+        polish_solver.parameters.random_seed = base_seed + 99991
+        polish_solver.parameters.linearization_level = 2
+
+        polish_status = polish_solver.solve(polish_model)
+        polish_elapsed = time.time() - polish_start
+
+        if polish_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            polish_duties = _extract_duties_from_solution(
+                polish_solver, segments, p_single, p_pvars, p_ptypes, clusters, bds,
+            )
+            polish_score = _score_solution(polish_duties, rates, bds, clusters)
+            polish_metrics = _compute_scenario_metrics(polish_duties, rates, bds, clusters)
+
+            log(f"  Polish: score={polish_score:.0f} (prima={best_score:.0f}) in {polish_elapsed:.1f}s")
+
+            # Aggiungi il risultato polish come "scenario" speciale
+            scenario_results.append({
+                "idx": len(scenario_results),
+                "scenarioNum": 0,  # 0 = polish
+                "status": {cp_model.OPTIMAL: "OPTIMAL", cp_model.FEASIBLE: "FEASIBLE"}.get(polish_status, "?"),
+                "feasible": True,
+                "score": round(polish_score, 2),
+                "obj": round(polish_solver.objective_value, 0),
+                "elapsed": round(polish_elapsed, 1),
+                "params": {
+                    "seed": base_seed + 99991,
+                    "noise": 0.0,
+                    "linLevel": 2,
+                    "nWorkers": 8,
+                    "strategy": best_strategy_used,
+                    "strategyLabel": SCENARIO_STRATEGIES.get(best_strategy_used, {}).get("label", best_strategy_used),
+                    "isPolish": True,
+                },
+                "isPolish": True,
+                **polish_metrics,
+            })
+
+            if polish_score < best_score:
+                log(f"  Polish MIGLIORATO -> delta={best_score - polish_score:.0f} ({((best_score - polish_score) / best_score * 100):.1f}%)")
+                polish_improved = True
+                polish_score_after = polish_score
+                best_duties = polish_duties
+                best_score = polish_score
+
     total_elapsed = time.time() - t_total_start
-    log(f"Multi-scenario: {len(scenario_results)} scenari in {total_elapsed:.1f}s, "
-        f"migliore = scenario {best_scenario_idx+1} (score={best_score:.0f})")
-    report_progress("optimize", 80, f"Migliore: scenario {best_scenario_idx+1}/{len(scenario_results)}")
+    log(f"Portfolio: {len(scenario_results)} scenari in {total_elapsed:.1f}s, "
+        f"migliore = scenario {best_scenario_idx+1} strategia '{best_strategy_used}' (score={best_score:.0f})")
+    report_progress("optimize", 88, f"Rifinitura completata (score {best_score:.0f})")
+
+    # Ranking: scenari fattibili ordinati per score asc, poi gli infattibili in fondo
+    feasible = [s for s in scenario_results if s.get("feasible")]
+    infeasible = [s for s in scenario_results if not s.get("feasible")]
+    feasible.sort(key=lambda s: s["score"])
+    for rank, s in enumerate(feasible, start=1):
+        s["rank"] = rank
+        s["isBest"] = (rank == 1)
+    ranked = feasible + infeasible
+
+    # Salva in container globale per il main()
+    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS
+    LAST_SCENARIO_RESULTS = ranked
+
+    # -- Costruisci analisi sintetica per il frontend --
+    # Raggruppa per strategia
+    by_strategy: dict[str, list[dict]] = {}
+    for s in feasible:
+        k = s.get("params", {}).get("strategy", "balanced")
+        by_strategy.setdefault(k, []).append(s)
+
+    strategy_summary = []
+    for strat_key, strat_runs in by_strategy.items():
+        meta = SCENARIO_STRATEGIES.get(strat_key, {})
+        best_of_strat = min(strat_runs, key=lambda x: x["score"])
+        strategy_summary.append({
+            "key": strat_key,
+            "label": meta.get("label", strat_key),
+            "desc": meta.get("desc", ""),
+            "nRuns": len(strat_runs),
+            "bestScore": round(best_of_strat["score"], 2),
+            "bestCost": best_of_strat.get("totalCost"),
+            "bestDuties": best_of_strat.get("duties"),
+            "isWinner": strat_key == best_strategy_used,
+        })
+    strategy_summary.sort(key=lambda x: x["bestScore"])
+
+    # Best metrics overview (dalla soluzione migliore finale)
+    best_metrics_final = None
+    best_entry = next((s for s in ranked if s.get("isBest")), None)
+    if best_entry:
+        best_metrics_final = {
+            "duties": best_entry.get("duties"),
+            "totalCost": best_entry.get("totalCost"),
+            "totalWorkH": best_entry.get("totalWorkH"),
+            "bdsViolations": best_entry.get("bdsViolations"),
+            "vuotiSignificativi": best_entry.get("vuotiSignificativi"),
+            "score": best_entry.get("score"),
+        }
+
+    # Score spread (min vs max feasible) -> da' idea di quanta variabilita c'e
+    if len(feasible) >= 2:
+        score_min = feasible[0]["score"]
+        score_max = feasible[-1]["score"]
+        score_spread_pct = round((score_max - score_min) / max(score_min, 1) * 100, 1)
+    else:
+        score_spread_pct = 0.0
+
+    LAST_OPTIMIZATION_ANALYSIS = {
+        "nScenariosRun": len([s for s in scenario_results if not s.get("isPolish")]),
+        "nScenariosRequested": n_scenarios,
+        "nFeasible": len(feasible),
+        "nInfeasible": len(infeasible),
+        "totalElapsedSec": round(total_elapsed, 1),
+        "scenarioElapsedSec": round(total_scenario_elapsed, 1),
+        "polishElapsedSec": round(polish_elapsed, 1),
+        "polishImproved": polish_improved,
+        "polishDeltaScore": round(polish_score_before - polish_score_after, 2) if polish_improved else 0.0,
+        "polishDeltaPct": round((polish_score_before - polish_score_after) / max(polish_score_before, 1) * 100, 2) if polish_improved else 0.0,
+        "bestScore": round(best_score, 2),
+        "bestStrategy": best_strategy_used,
+        "bestStrategyLabel": SCENARIO_STRATEGIES.get(best_strategy_used, {}).get("label", best_strategy_used),
+        "bestStrategyDesc": SCENARIO_STRATEGIES.get(best_strategy_used, {}).get("desc", ""),
+        "scoreSpreadPct": score_spread_pct,
+        "strategiesExplored": len(by_strategy),
+        "totalStrategiesAvailable": len(SCENARIO_STRATEGIES),
+        "strategySummary": strategy_summary,
+        "bestMetrics": best_metrics_final,
+        "intensity": intensity,
+        "timeBudgetSec": time_limit_sec,
+        "scenarioBudgetSec": scenario_budget,
+        "polishBudgetSec": polish_time_total,
+        "nSegments": n_seg,
+        "nFeasiblePairs": len(feasible_pairs),
+    }
 
     if best_duties is None:
         log("Tutti gli scenari falliti -- fallback a greedy")
@@ -2248,11 +2632,16 @@ def main() -> None:
     t_start = time.time()
 
     # ── Input ──
-    time_limit_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 120
+    # Default tempo PIÙ ALTO (Maior-style): 240s anziché 120s, scala con intensità via UI
+    time_limit_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 240
     raw = load_input()
     vehicle_shifts_raw = raw.get("vehicleShifts", [])
     user_config = raw.get("config", {})
     config = merge_config(user_config)
+
+    # Permetti override delle SHIFT_RULES da config.bds.shiftRules
+    apply_shift_rules_override(config)
+
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
 
@@ -2320,6 +2709,16 @@ def main() -> None:
         duties, blocks, segments, config, clusters, validation,
         elapsed, bds, handovers, car_movements,
     )
+
+    # Inietta la classifica di tutti gli scenari multi-CP-SAT
+    if LAST_SCENARIO_RESULTS:
+        output["scenarios"] = LAST_SCENARIO_RESULTS
+        feasible_count = sum(1 for s in LAST_SCENARIO_RESULTS if s.get("feasible"))
+        log(f"Scenari classificati: {feasible_count}/{len(LAST_SCENARIO_RESULTS)} fattibili")
+
+    # Inietta l'analisi sintetica del processo di ottimizzazione
+    if LAST_OPTIMIZATION_ANALYSIS:
+        output["optimizationAnalysis"] = LAST_OPTIMIZATION_ANALYSIS
 
     log(f"=== DONE in {elapsed:.1f}s — {n_total} turni, {n_suppl} supplementi "
         f"({n_suppl * 100 // max(n_total, 1)}%), €{output['summary']['totalDailyCost']:.0f}/giorno, "

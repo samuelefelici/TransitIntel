@@ -172,7 +172,7 @@ router.get("/analysis/demand-score", cache({ ttlSeconds: 60 }), async (req, res)
 
 // Underserved areas: high demand (census/POI) with no stop nearby
 // Uses real geographic points only — no synthetic grid
-router.get("/analysis/underserved", cache({ ttlSeconds: 60 }), async (req, res) => {
+router.get("/analysis/underserved", cache({ ttlSeconds: 3600 }), async (req, res) => {
   try {
     const radius = parseInt((req.query.radius as string) || "600");
     const minScore = parseFloat((req.query.minScore as string) || "0.25");
@@ -452,7 +452,7 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
 });
 
 // ── Territory overview ────────────────────────────────────────────────────
-router.get("/territory/overview", cache({ ttlSeconds: 120 }), async (req, res) => {
+router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) => {
   try {
     // 1. Global stats
     const globalStats = await db.execute(sql`
@@ -616,7 +616,7 @@ router.get("/territory/overview", cache({ ttlSeconds: 120 }), async (req, res) =
 });
 
 // ── Territory deep analytics ──────────────────────────────────────────────
-router.get("/territory/deep", cache({ ttlSeconds: 120 }), async (req, res) => {
+router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
   try {
     // 1. Population coverage curve: % of population within X meters of a stop
     const coverageCurve = await db.execute(sql`

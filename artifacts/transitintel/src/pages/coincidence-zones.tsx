@@ -197,6 +197,9 @@ export default function CoincidenceZonesPage() {
   const [selectedStops, setSelectedStops] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
 
+  // Schedules editor (orari arrivi/partenze custom per zona)
+  const [schedulesEditorZone, setSchedulesEditorZone] = useState<ZoneData | null>(null);
+
   // NEW: selected hub type for new zone creation
   const [selectedHubType, setSelectedHubType] = useState<HubType>("railway");
   // NEW: center point placed on map for new zone
@@ -793,6 +796,11 @@ export default function CoincidenceZonesPage() {
                                     onClick={() => startEdit(zone)} disabled={isEditing}>
                                     <Edit3 className="w-3 h-3 mr-1" /> Modifica
                                   </Button>
+                                  <Button size="sm" variant="outline" className="h-7 text-xs"
+                                    onClick={() => setSchedulesEditorZone(zone)} disabled={isEditing}
+                                    title="Modifica orari arrivi/partenze">
+                                    <Clock className="w-3 h-3 mr-1" /> Orari
+                                  </Button>
                                   <Button size="sm" variant="destructive" className="h-7 text-xs"
                                     onClick={() => setConfirmDeleteId(zone.id)} disabled={isEditing}>
                                     <Trash2 className="w-3 h-3" />
@@ -1178,6 +1186,17 @@ export default function CoincidenceZonesPage() {
           )}
         </AnimatePresence>
 
+        {/* ── Schedules editor dialog ── */}
+        <AnimatePresence>
+          {schedulesEditorZone && (
+            <SchedulesEditorDialog
+              zone={schedulesEditorZone}
+              onClose={() => setSchedulesEditorZone(null)}
+              onSaved={() => setSchedulesEditorZone(null)}
+            />
+          )}
+        </AnimatePresence>
+
         {/* Stats badges */}
         <div className="absolute bottom-4 right-4 z-10 flex gap-2 flex-wrap">
           <Badge variant="secondary" className="text-xs bg-background/80 backdrop-blur">
@@ -1239,5 +1258,217 @@ export default function CoincidenceZonesPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Schedules Editor Dialog — editor "snello" per orari arrivi/partenze zona
+// ═══════════════════════════════════════════════════════════════════════
+interface ScheduleEntry { label: string; times: string[] }
+
+function SchedulesEditorDialog({
+  zone,
+  onClose,
+  onSaved,
+}: {
+  zone: ZoneData;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [arrivals, setArrivals] = useState<ScheduleEntry[]>([]);
+  const [departures, setDepartures] = useState<ScheduleEntry[]>([]);
+  const [source, setSource] = useState<"custom" | "preset" | "empty">("empty");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setLoading(true);
+        const r = await apiFetch<{
+          arrivals: { label?: string; origin?: string; times: string[] }[];
+          departures: { label?: string; destination?: string; times: string[] }[];
+          source?: "custom" | "preset" | "empty";
+        }>(`/api/coincidence-zones/${zone.id}/schedules`);
+        const arr = (r.arrivals || []).map(a => ({ label: a.label ?? a.origin ?? "", times: a.times || [] }));
+        const dep = (r.departures || []).map(a => ({ label: a.label ?? a.destination ?? "", times: a.times || [] }));
+        setArrivals(arr.length > 0 ? arr : [{ label: "", times: [] }]);
+        setDepartures(dep.length > 0 ? dep : [{ label: "", times: [] }]);
+        setSource(r.source || "empty");
+      } catch (e: any) {
+        setErr(e?.message || "Errore caricamento orari");
+      } finally { setLoading(false); }
+    })();
+  }, [zone.id]);
+
+  const addRow = (kind: "arr" | "dep") => {
+    const setFn = kind === "arr" ? setArrivals : setDepartures;
+    setFn(prev => [...prev, { label: "", times: [] }]);
+  };
+  const removeRow = (kind: "arr" | "dep", idx: number) => {
+    const setFn = kind === "arr" ? setArrivals : setDepartures;
+    setFn(prev => prev.filter((_, i) => i !== idx));
+  };
+  const updateLabel = (kind: "arr" | "dep", idx: number, label: string) => {
+    const setFn = kind === "arr" ? setArrivals : setDepartures;
+    setFn(prev => prev.map((r, i) => i === idx ? { ...r, label } : r));
+  };
+  const updateTimes = (kind: "arr" | "dep", idx: number, raw: string) => {
+    // parse: accetta spazi, virgole, a-capo
+    const times = raw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+    const setFn = kind === "arr" ? setArrivals : setDepartures;
+    setFn(prev => prev.map((r, i) => i === idx ? { ...r, times } : r));
+  };
+
+  const save = async () => {
+    try {
+      setSaving(true);
+      setErr(null);
+      await apiFetch(`/api/coincidence-zones/${zone.id}/schedules`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          arrivals: arrivals.filter(r => r.times.length > 0).map(r => ({ label: r.label || "—", times: r.times })),
+          departures: departures.filter(r => r.times.length > 0).map(r => ({ label: r.label || "—", times: r.times })),
+        }),
+      });
+      onSaved();
+    } catch (e: any) {
+      setErr(e?.message || "Errore salvataggio");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-card border border-border/50 rounded-xl shadow-2xl w-full max-w-3xl mx-4 max-h-[85vh] flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-border/50 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+              style={{ backgroundColor: (HUB_COLORS[zone.hubType] || "#94a3b8") + "22", color: HUB_COLORS[zone.hubType] || "#94a3b8" }}>
+              <Clock className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-sm font-semibold truncate">Orari di {zone.name}</h3>
+              <p className="text-[11px] text-muted-foreground">
+                Arrivi e partenze (hh:mm) · sorgente: <span className="font-medium">{source === "custom" ? "custom" : source === "preset" ? "preset" : "vuoto"}</span>
+              </p>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
+            <X className="w-4 h-4" />
+          </Button>
+        </div>
+
+        {loading ? (
+          <div className="p-10 flex items-center justify-center">
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            {err && (
+              <div className="text-[11px] text-destructive bg-destructive/10 border border-destructive/30 rounded px-2 py-1">
+                {err}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              Inserisci una riga per ogni linea/destinazione. Gli orari possono essere separati da spazi, virgole o a-capo. Formato: <code className="bg-muted px-1 rounded">hh:mm</code>
+            </p>
+
+            {/* Arrivi */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-semibold flex items-center gap-2">
+                  <ArrowRight className="w-3.5 h-3.5 rotate-180 text-emerald-500" /> Arrivi
+                  <Badge variant="secondary" className="text-[9px]">{arrivals.filter(a => a.times.length > 0).length}</Badge>
+                </h4>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => addRow("arr")}>
+                  <Plus className="w-3 h-3 mr-1" /> Riga
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {arrivals.map((row, i) => (
+                  <div key={i} className="grid grid-cols-[1fr_2fr_auto] gap-2 items-start">
+                    <Input
+                      placeholder="Origine (es. Roma, Bologna…)"
+                      value={row.label}
+                      onChange={e => updateLabel("arr", i, e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    <textarea
+                      placeholder="07:42  09:12  11:45…"
+                      value={row.times.join(" ")}
+                      onChange={e => updateTimes("arr", i, e.target.value)}
+                      className="min-h-[32px] px-2 py-1 text-xs font-mono rounded border border-input bg-background resize-y"
+                      rows={1}
+                    />
+                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => removeRow("arr", i)}>
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Partenze */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-xs font-semibold flex items-center gap-2">
+                  <ArrowRight className="w-3.5 h-3.5 text-cyan-500" /> Partenze
+                  <Badge variant="secondary" className="text-[9px]">{departures.filter(a => a.times.length > 0).length}</Badge>
+                </h4>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => addRow("dep")}>
+                  <Plus className="w-3 h-3 mr-1" /> Riga
+                </Button>
+              </div>
+              <div className="space-y-2">
+                {departures.map((row, i) => (
+                  <div key={i} className="grid grid-cols-[1fr_2fr_auto] gap-2 items-start">
+                    <Input
+                      placeholder="Destinazione (es. Roma, Bologna…)"
+                      value={row.label}
+                      onChange={e => updateLabel("dep", i, e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                    <textarea
+                      placeholder="07:42  09:12  11:45…"
+                      value={row.times.join(" ")}
+                      onChange={e => updateTimes("dep", i, e.target.value)}
+                      className="min-h-[32px] px-2 py-1 text-xs font-mono rounded border border-input bg-background resize-y"
+                      rows={1}
+                    />
+                    <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => removeRow("dep", i)}>
+                      <X className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-border/50 flex items-center justify-between shrink-0">
+          <p className="text-[10px] text-muted-foreground">
+            Solo righe con almeno un orario valido verranno salvate.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onClose}>Annulla</Button>
+            <Button size="sm" className="h-8 text-xs" onClick={save} disabled={saving || loading}>
+              {saving ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Save className="w-3 h-3 mr-1" />}
+              Salva orari
+            </Button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }

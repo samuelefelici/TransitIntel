@@ -94,8 +94,32 @@ class VehicleCostRates:
     downsize_peak_per_level_per_min: float = 0.10   # €/min/livello in ora di punta
     downsize_offpeak_per_level_per_min: float = 0.01  # quasi zero fuori punta
 
-    # Sosta massima al capolinea prima del rientro deposito
-    max_idle_at_terminal: int = 90      # minuti (alzato da 60 per saturare meglio)
+    # Sosta massima al capolinea prima del rientro deposito.
+    # NOTA: questo valore controlla ANCHE l'ampiezza della finestra di
+    # generazione archi: max_window = max_idle_at_terminal + 30. Valori bassi
+    # tagliano fuori dal grafo le fusioni "con lunga sosta in deposito",
+    # forzando il solver ad aprire più veicoli del necessario. Default alzato
+    # a 240 (4h) per consentire al solver di esplorare riassorbimenti che a
+    # occhio sono fattibili (es. una corsa serale isolata che riempie un buco
+    # in una catena pomeridiana).
+    max_idle_at_terminal: int = 240     # minuti (alzato da 90)
+
+    # FIX-VSP-1: sosta massima al capolinea per generare un arco. Indipendente
+    # da max_idle_at_terminal (che resta soglia per "depot_return"). Default
+    # alto (10h) per non escludere a priori riassorbimenti che il solver
+    # potrebbe accettare quando l'utente forza la minimizzazione veicoli.
+    max_idle_for_arc_min: int = 600     # 10 ore
+
+    # FIX-VSP-CLUSTER: raggio (in metri) entro cui due fermate terminale con
+    # stop_id diversi vengono trattate come "stesso punto" — deadhead km=0,
+    # tempo=0, nessun buffer. Riproduce la logica dei cluster MAIOR/BDS:
+    # capolinea fisicamente coincidenti ma con codifica GTFS multipla
+    # (es. "Stazione FS lato A/B/C", "Ugo Bassi sud/nord").
+    # CRITICO per minimizzazione veicoli: senza questo, archi tight (corsa che
+    # arriva alle 14:00 e parte un'altra alle 14:05 dallo stesso piazzale ma
+    # con stop_id differente) vengono SCARTATI dal filtro
+    # `arrival + max(dh_min, MIN_LAYOVER) > departure`.
+    terminal_cluster_radius_m: int = 250    # metri (~2-3 isolati urbani)
 
     # Soglia sotto la quale il deadhead è trascurabile
     min_deadhead_km: float = 0.5
@@ -108,6 +132,8 @@ class VehicleCostRates:
             return r
         _map = {
             "maxIdleAtTerminal": "max_idle_at_terminal",
+            "maxIdleForArcMin": "max_idle_for_arc_min",
+            "terminalClusterRadiusM": "terminal_cluster_radius_m",
             "targetShiftDuration": "target_shift_duration",
             "balanceCoeff": "balance_quadratic_coeff",
             "gapCoeff": "gap_quadratic_coeff",

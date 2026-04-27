@@ -2,7 +2,7 @@ import React from "react";
 import {
   CheckCircle2, Clock, XCircle, AlertCircle,
   Briefcase, Palmtree, GraduationCap, HeartPulse,
-  ShoppingBag, Factory, Ship, TrainFront, Plane,
+  ShoppingBag, Factory, Ship, TrainFront, Plane, Bus,
 } from "lucide-react";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -23,6 +23,7 @@ export const HUB_COLORS: Record<string, string> = {
   railway: "#06b6d4",
   port: "#8b5cf6",
   airport: "#f59e0b",
+  bus_terminal: "#10b981",
 };
 
 export const STATUS_CONFIG: Record<string, {
@@ -74,17 +75,20 @@ export function shortHubName(name: string) {
 export function hubIcon(type: string, className = "w-5 h-5") {
   if (type === "airport") return <Plane className={className} />;
   if (type === "port") return <Ship className={className} />;
+  if (type === "bus_terminal") return <Bus className={className} />;
   return <TrainFront className={className} />;
 }
 
 export function hubGlowColor(type: string) {
   if (type === "airport") return "rgba(245,158,11,0.4)";
   if (type === "port") return "rgba(139,92,246,0.4)";
+  if (type === "bus_terminal") return "rgba(16,185,129,0.4)";
   return "rgba(6,182,212,0.4)";
 }
 
 export function hubTransportLabel(type: string) {
   if (type === "airport") return "volo";
   if (type === "port") return "nave";
+  if (type === "bus_terminal") return "bus extraurbano";
   return "treno";
 }

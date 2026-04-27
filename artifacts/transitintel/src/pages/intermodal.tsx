@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { getApiBase } from "@/lib/api";
+import { toast } from "sonner";
 
 import type {
   AnalysisResult, HubPoisGroup,
@@ -27,8 +28,22 @@ import {
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
+// ─── Props (optional for standalone page usage) ──────────────
+export interface IntermodalPageProps {
+  /** When provided, analysis is scoped to these GTFS route IDs */
+  routeIds?: string[];
+  /** When true, hides the top "quick actions" badges and standalone chrome */
+  embedded?: boolean;
+  /** Called when the user clicks "Applica proposte" (embedded flow) */
+  onApplyProposals?: (proposals: AnalysisResult["proposedSchedule"]) => void;
+  /** Custom POI radius (km) — default 3 */
+  poiRadiusKm?: number;
+}
+
 // ─── Component ──────────────────────────────────────────────
-export default function IntermodalPage() {
+export default function IntermodalPage(props: IntermodalPageProps = {}) {
+  const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
+  const routeIdsKey = routeIds && routeIds.length > 0 ? routeIds.join(",") : "";
   const mapRef = useRef<MapRef>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("neon");
   const [loading, setLoading] = useState(false);
@@ -48,40 +63,151 @@ export default function IntermodalPage() {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [showInfoTooltip, setShowInfoTooltip] = useState(false);
+  // Schedule settimanale (popup hub): cache per hubId + giorno selezionato
+  type WeeklyHubSchedule = {
+    hubId: string;
+    source: string;
+    weekStart: string | null;
+    weeklyDepartures: { destination: string; times: string[] }[][] | null;
+    weeklyArrivals: { origin: string; times: string[] }[][] | null;
+    typicalDepartures: { destination: string; times: string[] }[];
+    typicalArrivals: { origin: string; times: string[] }[];
+  };
+  const [hubScheduleCache, setHubScheduleCache] = useState<Record<string, WeeklyHubSchedule | "loading" | "error">>({});
+  const [weeklyDayIdx, setWeeklyDayIdx] = useState<number>(() => {
+    // Default = giorno corrente (0=Lun..6=Dom)
+    const js = new Date().getDay();
+    return js === 0 ? 6 : js - 1;
+  });
+
+  // ─── Ambito geografico (Provincia / Comune / Linee selezionate) ──
+  type ScopeMode = "province" | "municipality" | "routes";
+  const initialScope: ScopeMode = routeIdsKey ? "routes" : "province";
+  const [scopeMode, setScopeMode] = useState<ScopeMode>(initialScope);
+  const [municipality, setMunicipality] = useState<string>(""); // codice ISTAT 6-digit
+  const [municipalities, setMunicipalities] = useState<{ code: string; name: string }[]>([]);
+  const [discoveredHubs, setDiscoveredHubs] = useState<Array<{
+    id: string; name: string; type: string; lat: number; lng: number;
+    source: "curated" | "gtfs-auto"; description: string;
+  }>>([]);
+
+  // Carica lista comuni una sola volta
+  useEffect(() => {
+    fetch(`${getApiBase()}/api/intermodal/municipalities`)
+      .then(r => r.json())
+      .then(data => Array.isArray(data) && setMunicipalities(data))
+      .catch(() => { /* silent */ });
+  }, []);
 
   // ─── Fetch analysis ──────────────────────────────────────
   const runAnalysis = useCallback(async () => {
     setLoading(true);
     try {
-      const [analysisRes, shapesRes, poisRes, syncRes] = await Promise.all([
-        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}`),
-        fetch(`${getApiBase()}/api/intermodal/shapes?radius=${radius}`),
-        fetch(`${getApiBase()}/api/intermodal/pois?radius=3`),
+      const routeIdsQs = routeIdsKey && scopeMode === "routes" ? `&routeIds=${encodeURIComponent(routeIdsKey)}` : "";
+      const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
+      const [analysisRes, shapesRes, poisRes, hubsRes, syncRes] = await Promise.all([
+        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/shapes?radius=${radius}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/pois?radius=${poiRadiusKm}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/hubs?${(muniQs + routeIdsQs).replace(/^&/, "")}`),
         fetch(`${getApiBase()}/api/intermodal/sync-status`),
       ]);
-      const [data, shapes, pois, syncStatus] = await Promise.all([
-        analysisRes.json(), shapesRes.json(), poisRes.json(), syncRes.json(),
+      const [data, shapes, pois, hubsData, syncStatus] = await Promise.all([
+        analysisRes.json(), shapesRes.json(), poisRes.json(), hubsRes.json(), syncRes.json(),
       ]);
       setResult(data);
       setShapesGeoJSON(shapes);
       setHubPoisData(pois.hubPois || []);
+      setDiscoveredHubs(Array.isArray(hubsData) ? hubsData : []);
       setLastSync(syncStatus.lastSyncedAt);
     } catch {
       alert("Errore nell'analisi intermodale");
     } finally {
       setLoading(false);
     }
-  }, [radius]);
+  }, [radius, routeIdsKey, poiRadiusKm, scopeMode, municipality]);
 
   useEffect(() => { runAnalysis(); }, [runAnalysis]);
+
+  // ─── Ricentra mappa quando cambia ambito/hub ─────────────
+  // Se ci sono hub nei risultati, calcola bounding box e fitBounds.
+  // Così selezionando "Jesi" la mappa vola sopra la Stazione FS Jesi.
+  useEffect(() => {
+    if (!result || !result.hubs || result.hubs.length === 0) return;
+    const lats = result.hubs.map(h => h.hub.lat);
+    const lngs = result.hubs.map(h => h.hub.lng);
+    if (lats.length === 0) return;
+    const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+    // Se un solo hub, flyTo
+    if (result.hubs.length === 1) {
+      mapRef.current?.flyTo({
+        center: [result.hubs[0].hub.lng, result.hubs[0].hub.lat],
+        zoom: 14, duration: 1200,
+      });
+    } else {
+      const padLat = (maxLat - minLat) * 0.2 + 0.005;
+      const padLng = (maxLng - minLng) * 0.2 + 0.005;
+      mapRef.current?.fitBounds(
+        [[minLng - padLng, minLat - padLat], [maxLng + padLng, maxLat + padLat]],
+        { padding: { top: 80, bottom: 80, left: 460, right: 80 }, duration: 1200, maxZoom: 14 },
+      );
+    }
+  }, [result]);
+
+  // Auto-sync hub schedules on mount (acquisisce orari treni/navi/aerei)
+  // quando la pagina standalone viene aperta. In modalità embedded saltiamo
+  // (l'owner del flusso decide quando sincronizzare).
+  useEffect(() => {
+    if (embedded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const statusRes = await fetch(`${getApiBase()}/api/intermodal/sync-status`);
+        const status = await statusRes.json();
+        const hoursSince = status.lastSyncedAt
+          ? (Date.now() - new Date(status.lastSyncedAt).getTime()) / 36e5
+          : Infinity;
+        // Ri-sincronizza se mai fatto o se passate più di 6 ore
+        if (hoursSince >= 6 && !cancelled) {
+          await fetch(`${getApiBase()}/api/intermodal/sync-schedules`, { method: "POST" });
+          if (!cancelled) {
+            const s2 = await fetch(`${getApiBase()}/api/intermodal/sync-status`);
+            const d2 = await s2.json();
+            setLastSync(d2.lastSyncedAt);
+          }
+        }
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, [embedded]);
 
   const syncSchedules = useCallback(async () => {
     setSyncing(true);
     try {
-      const r = await fetch(`${getApiBase()}/api/intermodal/sync-schedules`, { method: "POST" });
+      const muniQs = scopeMode === "municipality" && municipality ? `?municipality=${encodeURIComponent(municipality)}` : "";
+      const r = await fetch(`${getApiBase()}/api/intermodal/sync-schedules${muniQs}`, { method: "POST" });
       const data = await r.json();
       if (data.success) {
         setLastSync(data.syncedAt);
+        // Mostra riepilogo sync (quanti hub fetched live + giorni della settimana coperti)
+        if (data.summary && data.summary.liveFetched > 0) {
+          const liveHubs = (data.hubs || []).filter((h: any) => h.source === "live");
+          const totalDays = liveHubs.reduce((s: number, h: any) => s + (h.daysCovered || 0), 0);
+          const avgDays = liveHubs.length > 0 ? (totalDays / liveHubs.length).toFixed(1) : "0";
+          const weekStart = liveHubs[0]?.weekStart;
+          const totalDeps = liveHubs.reduce((s: number, h: any) => s + (h.departures || 0), 0);
+          const totalArrs = liveHubs.reduce((s: number, h: any) => s + (h.arrivals || 0), 0);
+          console.info(`[Intermodal] Sync OK: ${data.summary.liveFetched} hub aggiornati da API live (${data.summary.total} totali) — copertura media ${avgDays}/7 giorni${weekStart ? ` (settimana del ${weekStart})` : ""}`);
+          toast.success(`Sincronizzati ${data.summary.liveFetched} hub ferroviari`, {
+            description: `${totalDeps} partenze · ${totalArrs} arrivi · ${avgDays}/7 giorni della settimana${weekStart ? ` (dal ${weekStart})` : ""}${data.summary.skipped > 0 ? ` · ${data.summary.skipped} hub senza API live (porti/aeroporti)` : ""}`,
+            duration: 6000,
+          });
+        } else if (data.summary) {
+          toast.info(data.message || "Sync completato", {
+            description: `${data.summary.total} hub processati, nessun fetch live disponibile`,
+          });
+        }
         await runAnalysis();
       }
     } catch {
@@ -89,7 +215,34 @@ export default function IntermodalPage() {
     } finally {
       setSyncing(false);
     }
-  }, [runAnalysis]);
+  }, [runAnalysis, scopeMode, municipality]);
+
+  // Fetch on-demand dello schedule settimanale di un singolo hub.
+  // NIENTE auto-fetch: l'utente deve cliccare il pulsante "Carica orari treni"
+  // nel pannello hub. Questo evita richieste invasive ad ogni selezione.
+  const loadHubSchedule = useCallback(async (hubId: string, force = false) => {
+    if (!force && hubScheduleCache[hubId] && hubScheduleCache[hubId] !== "error") return;
+    setHubScheduleCache(prev => ({ ...prev, [hubId]: "loading" }));
+    try {
+      const r = await fetch(`${getApiBase()}/api/intermodal/hub-schedule/${encodeURIComponent(hubId)}`);
+      if (!r.ok) {
+        setHubScheduleCache(prev => ({ ...prev, [hubId]: "error" }));
+        toast.error("Orari non disponibili", { description: "Premi 'Sincronizza orari' nella toolbar in alto." });
+        return;
+      }
+      const data = await r.json();
+      setHubScheduleCache(prev => ({ ...prev, [hubId]: data }));
+      // Auto-seleziona il primo giorno con dati
+      if (data.weeklyDepartures && data.weeklyArrivals) {
+        const firstWithData = (data.weeklyDepartures as any[]).findIndex((dd, i) =>
+          dd.length > 0 || (data.weeklyArrivals as any[])[i].length > 0
+        );
+        if (firstWithData >= 0) setWeeklyDayIdx(firstWithData);
+      }
+    } catch {
+      setHubScheduleCache(prev => ({ ...prev, [hubId]: "error" }));
+    }
+  }, [hubScheduleCache]);
 
   const selectedHubData = useMemo(() => {
     if (!result || !selectedHub) return null;
@@ -307,8 +460,13 @@ export default function IntermodalPage() {
 
         {/* Hub Markers */}
         {result?.hubs.map(h => {
+          const isAuto = (h.hub as any).source === "gtfs-auto";
           const pct = h.arrivalStats.totalArrivals > 0 ? h.arrivalStats.ok / h.arrivalStats.totalArrivals : 0;
-          const statusColor = pct >= 0.7 ? "border-emerald-400" : pct >= 0.4 ? "border-amber-400" : "border-red-500";
+          // Per hub auto-detected usiamo il serviceScore (0-100) → normalizziamo 0-1 per status
+          const score = (h as any).serviceScore?.score as number | undefined;
+          const metric = isAuto && score != null ? score / 100 : pct;
+          const hasMetric = isAuto ? score != null : h.arrivalStats.totalArrivals > 0;
+          const statusColor = metric >= 0.7 ? "border-emerald-400" : metric >= 0.4 ? "border-amber-400" : "border-red-500";
           const glowColor = hubGlowColor(h.hub.type);
           return (
             <Marker key={h.hub.id} longitude={h.hub.lng} latitude={h.hub.lat} anchor="center"
@@ -316,19 +474,22 @@ export default function IntermodalPage() {
               <div className={`relative cursor-pointer transition-transform hover:scale-110 ${selectedHub === h.hub.id ? "scale-125" : ""}`}>
                 <div className="absolute inset-0 -m-3 rounded-full animate-ping opacity-15" style={{ backgroundColor: glowColor }} />
                 <div className="absolute inset-0 -m-2 rounded-full animate-pulse opacity-25" style={{ backgroundColor: glowColor }} />
-                <div className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center shadow-xl border-2 ${statusColor}`}
-                  style={{ backgroundColor: HUB_COLORS[h.hub.type] + "ee", boxShadow: `0 0 20px ${glowColor}, 0 0 40px ${glowColor}` }}>
+                <div className={`relative z-10 w-11 h-11 rounded-full flex items-center justify-center shadow-xl ${isAuto ? "border-2 border-dashed" : "border-2"} ${statusColor}`}
+                  style={{ backgroundColor: HUB_COLORS[h.hub.type] + (isAuto ? "aa" : "ee"), boxShadow: `0 0 20px ${glowColor}, 0 0 40px ${glowColor}` }}>
                   {hubIcon(h.hub.type, "w-5 h-5 text-white drop-shadow-lg")}
                 </div>
                 <div className={`absolute -bottom-1.5 -right-1.5 text-[7px] font-bold w-5 h-5 rounded-full flex items-center justify-center z-20 border border-black ${
-                  pct >= 0.7 ? "bg-emerald-500 text-white" : pct >= 0.4 ? "bg-amber-500 text-black" : "bg-red-500 text-white"
+                  metric >= 0.7 ? "bg-emerald-500 text-white" : metric >= 0.4 ? "bg-amber-500 text-black" : "bg-red-500 text-white"
                 }`} style={{ boxShadow: "0 0 6px rgba(0,0,0,0.5)" }}>
-                  {h.arrivalStats.totalArrivals > 0 ? Math.round(pct * 100) + "%" : "—"}
+                  {hasMetric ? Math.round(metric * 100) + (isAuto ? "" : "%") : "—"}
                 </div>
               </div>
             </Marker>
           );
         })}
+
+        {/* ── I vecchi marker "discoveredHubs" separati non servono più: ─── */}
+        {/*    /analyze ora restituisce anche gli hub auto-detected.       */}
 
         {/* ── POPUP: Hub detail card — HIGHLY visible ── */}
         {selectedHubData && (
@@ -385,6 +546,160 @@ export default function IntermodalPage() {
                   </div>
                 )}
               </div>
+
+              {/* ── Orari settimanali (live da ViaggiaTreno per hub ferroviari) ── */}
+              {(() => {
+                const sched = hubScheduleCache[selectedHubData.hub.id];
+                if (!sched) return null;
+                if (sched === "loading") {
+                  return (
+                    <div className="px-4 pb-3 text-[10px] text-slate-400 flex items-center gap-2">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Caricamento orari…
+                    </div>
+                  );
+                }
+                if (sched === "error") {
+                  return (
+                    <div className="px-4 pb-3 text-[10px] text-amber-400">
+                      Orari non disponibili. Premi "Sincronizza" per scaricarli.
+                    </div>
+                  );
+                }
+                const weekly = sched.weeklyDepartures && sched.weeklyArrivals;
+                const dayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+                if (!weekly) {
+                  // Hub curato (typical only) — mostra prime 8 partenze
+                  const dep = sched.typicalDepartures || [];
+                  if (dep.length === 0) return null;
+                  return (
+                    <div className="px-4 pb-3">
+                      <p className="text-[10px] font-bold text-slate-300 uppercase tracking-wider mb-1.5">Orari indicativi</p>
+                      <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                        {dep.slice(0, 4).map((d, i) => (
+                          <div key={i} className="flex items-start gap-2 text-[10px]">
+                            <span className="text-cyan-400 font-medium min-w-[60px] truncate">{d.destination}</span>
+                            <span className="text-slate-300 font-mono">{d.times.slice(0, 6).join(" · ")}{d.times.length > 6 ? "…" : ""}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
+                const dayDepartures = sched.weeklyDepartures![weeklyDayIdx] || [];
+                const dayArrivals = sched.weeklyArrivals![weeklyDayIdx] || [];
+                const totalDep = dayDepartures.reduce((s, d) => s + d.times.length, 0);
+                const totalArr = dayArrivals.reduce((s, a) => s + a.times.length, 0);
+                return (
+                  <div className="px-4 pb-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <p className="text-[10px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1">
+                        <Clock className="w-3 h-3" /> Orari settimanali
+                      </p>
+                      {sched.weekStart && (
+                        <span className="text-[9px] text-slate-500">sett. {sched.weekStart}</span>
+                      )}
+                    </div>
+                    {/* Tab giorni */}
+                    <div className="flex gap-1 mb-2">
+                      {dayLabels.map((lbl, i) => {
+                        const has = (sched.weeklyDepartures![i] || []).length > 0 || (sched.weeklyArrivals![i] || []).length > 0;
+                        const active = i === weeklyDayIdx;
+                        return (
+                          <button key={i} onClick={() => setWeeklyDayIdx(i)}
+                            className={`flex-1 text-[9px] py-1 rounded transition ${active ? "bg-cyan-500/30 text-cyan-200 font-bold" : has ? "bg-slate-800/60 text-slate-400 hover:bg-slate-700/60" : "bg-slate-900/40 text-slate-600"}`}>
+                            {lbl}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="text-[9px] text-slate-500 mb-1.5">
+                      {totalDep} partenze · {totalArr} arrivi
+                    </div>
+                    {totalDep === 0 && totalArr === 0 ? (
+                      <p className="text-[10px] text-slate-500 italic">
+                        Nessun dato per {dayLabels[weeklyDayIdx]}.
+                        {sched.weekStart && (() => {
+                          const weekStartDate = new Date(sched.weekStart);
+                          const dayDate = new Date(weekStartDate);
+                          dayDate.setDate(weekStartDate.getDate() + weeklyDayIdx);
+                          const today = new Date(); today.setHours(0,0,0,0);
+                          if (dayDate < today) return " (giorno passato — l'API live non fornisce dati storici)";
+                          return null;
+                        })()}
+                      </p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-[9px] text-emerald-400 font-bold mb-0.5">PARTENZE</p>
+                          <div className="space-y-0.5 max-h-32 overflow-y-auto pr-1">
+                            {dayDepartures.slice(0, 6).map((d, i) => (
+                              <div key={i} className="text-[9px]">
+                                <span className="text-emerald-300 font-medium block truncate">{d.destination}</span>
+                                <span className="text-slate-400 font-mono">{d.times.slice(0, 4).join(" ")}{d.times.length > 4 ? "…" : ""}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-sky-400 font-bold mb-0.5">ARRIVI</p>
+                          <div className="space-y-0.5 max-h-32 overflow-y-auto pr-1">
+                            {dayArrivals.slice(0, 6).map((a, i) => (
+                              <div key={i} className="text-[9px]">
+                                <span className="text-sky-300 font-medium block truncate">{a.origin}</span>
+                                <span className="text-slate-400 font-mono">{a.times.slice(0, 4).join(" ")}{a.times.length > 4 ? "…" : ""}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-[8px] text-slate-600 mt-1.5 italic">Fonte: {sched.source}</p>
+                  </div>
+                );
+              })()}
+
+              {/* ── Service Score (per hub auto-detected senza orari curati) ── */}
+              {(() => {
+                const ss = (selectedHubData as any).serviceScore as {
+                  score: number; hoursCovered: number; linesServing: number;
+                  destinationsReached: number; avgFrequencyMin: number | null;
+                  level: "eccellente" | "buono" | "sufficiente" | "carente" | "assente";
+                } | null;
+                if (!ss) return null;
+                const levelColor =
+                  ss.level === "eccellente" ? "#22c55e" :
+                  ss.level === "buono" ? "#84cc16" :
+                  ss.level === "sufficiente" ? "#eab308" :
+                  ss.level === "carente" ? "#f97316" : "#ef4444";
+                return (
+                  <div className="mx-4 mb-3 p-3 rounded-lg border"
+                    style={{ backgroundColor: levelColor + "11", borderColor: levelColor + "44" }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-[10px] font-semibold text-slate-300 flex items-center gap-1.5">
+                        <Zap className="w-3 h-3" style={{ color: levelColor }} />
+                        Copertura servizio urbano
+                      </p>
+                      <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded"
+                        style={{ backgroundColor: levelColor + "33", color: levelColor }}>
+                        {ss.level}
+                      </span>
+                    </div>
+                    <div className="flex items-end gap-3">
+                      <div>
+                        <p className="text-2xl font-bold" style={{ color: levelColor }}>{ss.score}<span className="text-xs text-slate-500">/100</span></p>
+                      </div>
+                      <div className="flex-1 grid grid-cols-2 gap-1 text-[9px] text-slate-400">
+                        <div><span className="text-slate-200 font-semibold">{ss.linesServing}</span> linee</div>
+                        <div><span className="text-slate-200 font-semibold">{ss.destinationsReached}</span> destinazioni</div>
+                        <div><span className="text-slate-200 font-semibold">{ss.hoursCovered}/17</span> ore coperte</div>
+                        {ss.avgFrequencyMin != null && (
+                          <div>Freq. <span className="text-slate-200 font-semibold">~{ss.avgFrequencyMin} min</span></div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* POI summary for this hub */}
               {(() => {
@@ -528,6 +843,61 @@ export default function IntermodalPage() {
               <CardContent className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
                 {/* Sync + Radius + Toggles */}
                 <div className="space-y-2">
+                  {/* ─── Ambito geografico ───────────────────────── */}
+                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <MapPinned className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <p className="text-[10px] text-slate-300 font-medium">Ambito analisi</p>
+                      {discoveredHubs.length > 0 && (
+                        <span className="ml-auto text-[9px] text-slate-500">
+                          {discoveredHubs.length} hub
+                          {discoveredHubs.filter(h => h.source === "gtfs-auto").length > 0 &&
+                            ` (${discoveredHubs.filter(h => h.source === "gtfs-auto").length} auto)`}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => setScopeMode("province")}
+                        className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
+                          scopeMode === "province"
+                            ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                            : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
+                        }`}
+                      >Provincia</button>
+                      <button
+                        onClick={() => setScopeMode("municipality")}
+                        className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
+                          scopeMode === "municipality"
+                            ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                            : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
+                        }`}
+                      >Comune</button>
+                      {routeIdsKey && (
+                        <button
+                          onClick={() => setScopeMode("routes")}
+                          className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
+                            scopeMode === "routes"
+                              ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
+                              : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
+                          }`}
+                        >Linee sel.</button>
+                      )}
+                    </div>
+                    {scopeMode === "municipality" && (
+                      <select
+                        value={municipality}
+                        onChange={e => setMunicipality(e.target.value)}
+                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50"
+                      >
+                        <option value="">— Seleziona comune —</option>
+                        {municipalities.map(m => (
+                          <option key={m.code} value={m.code}>{m.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
                   {/* Sync button */}
                   <div className="flex items-center gap-2 bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40">
                     <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 shrink-0 ${syncing ? "animate-spin" : ""}`} />
@@ -712,6 +1082,95 @@ export default function IntermodalPage() {
                                       <span className="flex items-center gap-1"><Footprints className="w-3 h-3 text-cyan-400" /> Piattaforma → uscita: {hc.hub.platformWalkMinutes} min</span>
                                       {hc.nearbyStops.length > 0 && <span className="flex items-center gap-1"><MapPin className="w-3 h-3 text-amber-400" /> Fermata più vicina: {hc.nearbyStops[0].walkMin} min tot.</span>}
                                     </div>
+
+                                    {/* ── Orari live ViaggiaTreno per giorno della settimana ── */}
+                                    {hc.hub.type === "railway" && (() => {
+                                      const sched = hubScheduleCache[hc.hub.id];
+                                      // Stato: niente in cache → bottone esplicito
+                                      if (!sched) {
+                                        return (
+                                          <button onClick={e => { e.stopPropagation(); loadHubSchedule(hc.hub.id); }}
+                                            className="w-full text-[10px] px-2 py-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 transition flex items-center justify-center gap-1.5 font-semibold">
+                                            <TrainFront className="w-3 h-3" /> Carica orari treni (settimanale, live)
+                                          </button>
+                                        );
+                                      }
+                                      if (sched === "loading") {
+                                        return <div className="text-[10px] text-slate-400 flex items-center gap-1.5 px-2 py-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Scarico orari da ViaggiaTreno (~15-30s)…</div>;
+                                      }
+                                      if (sched === "error") {
+                                        return (
+                                          <button onClick={e => { e.stopPropagation(); loadHubSchedule(hc.hub.id, true); }}
+                                            className="w-full text-[10px] px-2 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition flex items-center justify-center gap-1.5 font-semibold">
+                                            <RefreshCw className="w-3 h-3" /> Riprova caricamento orari
+                                          </button>
+                                        );
+                                      }
+                                      const wd = sched.weeklyDepartures, wa = sched.weeklyArrivals;
+                                      if (!wd || !wa) return null;
+                                      const dayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+                                      const dayDep = wd[weeklyDayIdx] || [];
+                                      const dayArr = wa[weeklyDayIdx] || [];
+                                      const totalDep = dayDep.reduce((s, d) => s + d.times.length, 0);
+                                      const totalArr = dayArr.reduce((s, a) => s + a.times.length, 0);
+                                      return (
+                                        <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-2 space-y-1.5">
+                                          <div className="flex items-center justify-between gap-2">
+                                            <p className="text-[9px] font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1">
+                                              <Clock className="w-2.5 h-2.5" /> Orari treni — settimana {sched.weekStart || ""}
+                                            </p>
+                                            <button onClick={e => { e.stopPropagation(); loadHubSchedule(hc.hub.id, true); }}
+                                              title="Aggiorna orari"
+                                              className="text-[9px] text-slate-400 hover:text-cyan-300 transition flex items-center gap-1">
+                                              <RefreshCw className="w-2.5 h-2.5" /> Aggiorna
+                                            </button>
+                                          </div>
+                                          <div className="flex gap-0.5">
+                                            {dayLabels.map((lbl, i) => {
+                                              const has = (wd[i] || []).length > 0 || (wa[i] || []).length > 0;
+                                              const active = i === weeklyDayIdx;
+                                              return (
+                                                <button key={i} onClick={e => { e.stopPropagation(); setWeeklyDayIdx(i); }}
+                                                  className={`flex-1 text-[9px] py-0.5 rounded transition ${active ? "bg-cyan-500/40 text-white font-bold" : has ? "bg-slate-800/60 text-slate-300 hover:bg-slate-700/60" : "bg-slate-900/40 text-slate-600"}`}>
+                                                  {lbl}
+                                                </button>
+                                              );
+                                            })}
+                                          </div>
+                                          <div className="text-[9px] text-slate-400">
+                                            {dayLabels[weeklyDayIdx]}: <span className="text-emerald-400 font-semibold">{totalDep}</span> partenze · <span className="text-sky-400 font-semibold">{totalArr}</span> arrivi
+                                          </div>
+                                          {totalDep === 0 && totalArr === 0 ? (
+                                            <p className="text-[9px] text-slate-500 italic">Nessun dato per {dayLabels[weeklyDayIdx]}.</p>
+                                          ) : (
+                                            <div className="grid grid-cols-2 gap-1.5">
+                                              <div>
+                                                <p className="text-[8px] text-emerald-400 font-bold mb-0.5">PARTENZE</p>
+                                                <div className="space-y-0.5 max-h-40 overflow-y-auto pr-1">
+                                                  {dayDep.map((d, i) => (
+                                                    <div key={i} className="text-[9px] leading-tight">
+                                                      <span className="text-emerald-300 font-medium block truncate">→ {d.destination}</span>
+                                                      <span className="text-slate-400 font-mono text-[8px]">{d.times.join(" · ")}</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                              <div>
+                                                <p className="text-[8px] text-sky-400 font-bold mb-0.5">ARRIVI</p>
+                                                <div className="space-y-0.5 max-h-40 overflow-y-auto pr-1">
+                                                  {dayArr.map((a, i) => (
+                                                    <div key={i} className="text-[9px] leading-tight">
+                                                      <span className="text-sky-300 font-medium block truncate">← {a.origin}</span>
+                                                      <span className="text-slate-400 font-mono text-[8px]">{a.times.join(" · ")}</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
 
                                     {/* Tabs */}
                                     <div className="flex gap-1 border-b border-slate-700/30 pb-1">

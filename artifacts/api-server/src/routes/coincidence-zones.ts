@@ -30,7 +30,7 @@ const DEFAULT_RADIUS_KM = 0.1;
 
 
 // ─── Hub intermodali — NO AIRPORT ──────────────────────────
-interface IntermodalHub {
+export interface IntermodalHub {
   id: string; name: string; type: "railway" | "port" | "park-ride";
   lat: number; lng: number; gtfsStopIds: string[];
   description: string; platformWalkMinutes: number;
@@ -38,7 +38,7 @@ interface IntermodalHub {
   typicalDepartures: { destination: string; times: string[] }[];
 }
 
-const INTERMODAL_HUBS: IntermodalHub[] = [
+export const INTERMODAL_HUBS: IntermodalHub[] = [
   {
     id: "rail-ancona", name: "Stazione FS Ancona", type: "railway",
     lat: 43.607348, lng: 13.49776447, gtfsStopIds: ["13","18","153","20006","20044"],
@@ -322,14 +322,53 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/coincidence-zones/:id/schedules
+// Restituisce gli orari della zona: prima i custom (zone.schedules), poi fallback al preset INTERMODAL_HUBS
 // ═══════════════════════════════════════════════════════════════
 router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
   const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
   if (!zone) { res.status(404).json({ error: "Not found" }); return; }
+  const custom = (zone as any).schedules as
+    | { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] }
+    | null
+    | undefined;
   const hub = INTERMODAL_HUBS.find(h => h.id === zone.hubId);
-  if (!hub) { res.json({ arrivals: [], departures: [] }); return; }
-  res.json({ arrivals: hub.typicalArrivals, departures: hub.typicalDepartures,
-    hubType: hub.type, platformWalkMinutes: hub.platformWalkMinutes });
+  // Mappa preset (origin/destination) → label
+  const presetArrivals = (hub?.typicalArrivals ?? []).map(a => ({ label: a.origin, times: a.times }));
+  const presetDepartures = (hub?.typicalDepartures ?? []).map(a => ({ label: a.destination, times: a.times }));
+  const arrivals = (custom?.arrivals && custom.arrivals.length > 0) ? custom.arrivals : presetArrivals;
+  const departures = (custom?.departures && custom.departures.length > 0) ? custom.departures : presetDepartures;
+  res.json({
+    arrivals,
+    departures,
+    source: (custom?.arrivals?.length || custom?.departures?.length) ? "custom" : (hub ? "preset" : "empty"),
+    hubType: zone.hubType,
+    platformWalkMinutes: zone.walkMinutes,
+  });
+}));
+
+// ═══════════════════════════════════════════════════════════════
+// PATCH /api/coincidence-zones/:id/schedules
+// Aggiorna gli orari custom della zona. Body: { arrivals: [{label,times}], departures: [{label,times}] }
+// ═══════════════════════════════════════════════════════════════
+router.patch("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
+  const id = req.params.id as string;
+  const body = req.body as { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] };
+  const arrivals = Array.isArray(body?.arrivals)
+    ? body.arrivals
+        .map(a => ({ label: String(a?.label ?? "").trim() || "—", times: Array.isArray(a?.times) ? a.times.filter(t => /^\d{1,2}:\d{2}$/.test(String(t).trim())).map(t => String(t).trim().padStart(5, "0")) : [] }))
+        .filter(a => a.times.length > 0)
+    : [];
+  const departures = Array.isArray(body?.departures)
+    ? body.departures
+        .map(a => ({ label: String(a?.label ?? "").trim() || "—", times: Array.isArray(a?.times) ? a.times.filter(t => /^\d{1,2}:\d{2}$/.test(String(t).trim())).map(t => String(t).trim().padStart(5, "0")) : [] }))
+        .filter(a => a.times.length > 0)
+    : [];
+  const [updated] = await db.update(coincidenceZones)
+    .set({ schedules: { arrivals, departures } as any, updatedAt: new Date() })
+    .where(eq(coincidenceZones.id, id))
+    .returning();
+  if (!updated) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({ ok: true, arrivals, departures });
 }));
 
 // ═══════════════════════════════════════════════════════════════

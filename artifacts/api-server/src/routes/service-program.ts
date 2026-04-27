@@ -1482,9 +1482,23 @@ router.post("/service-program/cpsat", async (req, res) => {
       date?: string;
       routes?: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
       tripVehicleOverrides?: Record<string, VehicleType>;
+      /**
+       * Override degli orari di partenza/arrivo per singolo tripId (in minuti dalla mezzanotte).
+       * Usato dalla ri-ottimizzazione post-Analisi Intermodale: gli orari sono già stati
+       * spostati per garantire le coincidenze, qui ricalcoliamo i turni macchina con i
+       * nuovi tempi senza dover modificare il GTFS.
+       */
+      tripTimeOverrides?: Record<string, { departureMin: number; arrivalMin: number; departureTime?: string; arrivalTime?: string }>;
       timeLimit?: number;
       vehicleCosts?: Record<string, any>;
       solverIntensity?: string;
+      /**
+       * Parametri avanzati VSP esposti via UI (Fucina/OptimizerStep):
+       * - minVehiclesPriority: off | soft | strict | lexicographic (regola #1)
+       * - costRatesOverride: tariffe utente che sovrascrivono i default
+       * - intensity, scenariosOverride, enableNoGoodCuts, ...
+       */
+      vspAdvanced?: Record<string, any>;
     };
 
     const rawDate = body.date;
@@ -1590,16 +1604,25 @@ router.post("/service-program/cpsat", async (req, res) => {
       const lastStop = stopCoords.get(sts[sts.length - 1].stop_id);
       const routeName = routeNameMap.get(t.routeId) || t.routeId;
 
+      // Applica eventuale override degli orari (post-Analisi Intermodale): gli orari
+      // sono già stati spostati per garantire le coincidenze, qui ricalcoliamo i turni
+      // macchina con i nuovi tempi senza dover modificare il GTFS.
+      const ovr = body.tripTimeOverrides?.[t.tripId];
+      const finalDepartureTime = ovr?.departureTime ?? firstDep;
+      const finalArrivalTime = ovr?.arrivalTime ?? lastArr;
+      const finalDepartureMin = typeof ovr?.departureMin === "number" ? ovr.departureMin : timeToMinutes(firstDep);
+      const finalArrivalMin = typeof ovr?.arrivalMin === "number" ? ovr.arrivalMin : timeToMinutes(lastArr);
+
       tripBlocks.push({
         tripId: t.tripId,
         routeId: t.routeId,
         routeName,
         headsign: t.headsign,
         directionId: t.directionId ?? 0,
-        departureTime: firstDep,
-        arrivalTime: lastArr,
-        departureMin: timeToMinutes(firstDep),
-        arrivalMin: timeToMinutes(lastArr),
+        departureTime: finalDepartureTime,
+        arrivalTime: finalArrivalTime,
+        departureMin: finalDepartureMin,
+        arrivalMin: finalArrivalMin,
         stopCount: sts.length,
         firstStopId: sts[0].stop_id,
         lastStopId: sts[sts.length - 1].stop_id,
@@ -1629,6 +1652,8 @@ router.post("/service-program/cpsat", async (req, res) => {
       {
         vehicleCosts: body.vehicleCosts || {},
         solverIntensity: body.solverIntensity || "normal",
+        // Parametri avanzati VSP (regola #1 + override costi dalla UI)
+        ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
       },
       routeDetailsForPy,
     );
@@ -1769,6 +1794,31 @@ router.get("/service-program/scenarios", async (_req, res) => {
 
     res.json(scenarios);
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** PUT /api/service-program/scenarios/:id — overwrite an existing scenario (name + result + input) */
+router.put("/service-program/scenarios/:id", async (req, res) => {
+  try {
+    const { name, input, result: scenarioResult } = req.body as {
+      name?: string; input?: unknown; result?: unknown;
+    };
+    if (!scenarioResult) {
+      res.status(400).json({ error: "Parametro 'result' obbligatorio" });
+      return;
+    }
+    const update: Record<string, unknown> = { result: scenarioResult as any };
+    if (name) update.name = name;
+    if (input !== undefined) update.input = input as any;
+    const [row] = await db.update(serviceProgramScenarios)
+      .set(update as any)
+      .where(eq(serviceProgramScenarios.id, req.params.id))
+      .returning({ id: serviceProgramScenarios.id });
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    res.json({ id: row.id, ok: true });
+  } catch (err: any) {
+    req.log.error(err, "Error updating scenario");
     res.status(500).json({ error: err.message });
   }
 });

@@ -142,17 +142,23 @@ const ScatterTooltip = ({ active, payload }: any) => {
 export default function Territory() {
   const [data, setData] = useState<TerritoryData | null>(null);
   const [deep, setDeep] = useState<DeepData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);     // blocca solo finché overview non è pronto
+  const [deepLoading, setDeepLoading] = useState(true); // spinner inline per le sezioni che dipendono da deep
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"popolazione" | "copertura" | "gap" | "qualita" | "segmenti">("popolazione");
 
   useEffect(() => {
-    Promise.all([
-      fetch(`${getApiBase()}/api/territory/overview`).then(r => r.json()),
-      fetch(`${getApiBase()}/api/territory/deep`).then(r => r.json()),
-    ])
-      .then(([overview, deepData]) => { setData(overview); setDeep(deepData); setLoading(false); })
+    // Fetch disaccoppiati: l'overview è veloce (~5s cold, ms warm) e sblocca il render.
+    // Il deep è pesante (~27s cold) ma serve solo per chart secondari → spinner inline.
+    fetch(`${getApiBase()}/api/territory/overview`)
+      .then(r => r.json())
+      .then(overview => { setData(overview); setLoading(false); })
       .catch(() => { setError("Errore nel caricamento dei dati."); setLoading(false); });
+
+    fetch(`${getApiBase()}/api/territory/deep`)
+      .then(r => r.json())
+      .then(deepData => { setDeep(deepData); setDeepLoading(false); })
+      .catch(() => { setDeepLoading(false); /* deep è opzionale, non blocca la pagina */ });
   }, []);
 
   // Underserved areas from API
@@ -198,6 +204,12 @@ export default function Territory() {
               {data.stats.totalPoi.toLocaleString("it-IT")} punti di interesse e{" "}
               {(data.stats.totalPop / 1000).toFixed(0)}k abitanti analizzati in relazione alla rete TPL.
             </p>
+            {deepLoading && (
+              <div className="mt-3 inline-flex items-center gap-2 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-400/30 rounded-full px-3 py-1">
+                <div className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+                Calcolo analisi avanzate (copertura · gap · POI)…
+              </div>
+            )}
           </div>
         </div>
       </motion.div>
@@ -752,7 +764,11 @@ export default function Territory() {
                       </thead>
                       <tbody>
                         {underservedAreas.slice(0, 15).map((area, i) => (
-                          <tr key={area.cellId ?? i} className="border-b border-border/20 hover:bg-white/[0.02] transition-colors">
+                          <tr
+                            key={area.cellId ?? i}
+                            data-virgilio-id={area.cellId ? `zone:${area.cellId}` : undefined}
+                            className="border-b border-border/20 hover:bg-white/[0.02] transition-colors scroll-mt-24"
+                          >
                             <td className="px-4 py-2">
                               <span className="mr-1">
                                 {(area.score ?? 0) >= 7 ? "🔴" : (area.score ?? 0) >= 5 ? "🟠" : "🟡"}

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsShapes, pointsOfInterest } from "@workspace/db/schema";
+import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsShapes, pointsOfInterest, censusSections } from "@workspace/db/schema";
 import { sql, inArray } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
 
@@ -21,6 +21,10 @@ const INTERMODAL_HUBS: {
   typicalDepartures: { destination: string; times: string[] }[];
   // Arrivals TO this hub (treno/nave arriva — passeggero scende)
   typicalArrivals: { origin: string; times: string[] }[];
+  // Vista settimanale opzionale (popolata da sync-schedules per hub auto)
+  weeklyDepartures?: { destination: string; times: string[] }[][];
+  weeklyArrivals?: { origin: string; times: string[] }[][];
+  weekStart?: string;
   description: string;
   // Walk time from platform to nearest bus stop area (minutes)
   platformWalkMinutes: number;
@@ -152,20 +156,519 @@ const INTERMODAL_HUBS: {
 // Alias for backward-compat: intermodal code used timeToMin / minToTime
 const timeToMin = timeToMinutes;
 
+// ═══════════════════════════════════════════════════════════════════════
+//  DYNAMIC SCHEDULE STORE — orari sincronizzati per hub auto-discovered
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Ogni volta che viene chiamato POST /intermodal/sync-schedules per un
+// hub non curato (railway/port/airport scoperto da GTFS), proviamo a
+// recuperare orari reali e li salviamo in memoria (in-process cache).
+// Chiave: hubId generato da discoverHubs (es. "gtfs-railway-CI001").
+// ═══════════════════════════════════════════════════════════════════════
+// Indice 0 = Lunedì, 6 = Domenica
+type WeeklyDepartures = { destination: string; times: string[] }[][];
+type WeeklyArrivals = { origin: string; times: string[] }[][];
+
+interface HubSchedule {
+  // Vista aggregata (unione di tutti i giorni) — back-compat UI esistente
+  typicalArrivals: { origin: string; times: string[] }[];
+  typicalDepartures: { destination: string; times: string[] }[];
+  // Vista settimanale: weeklyDepartures[0] = lun, [6] = dom
+  weeklyDepartures?: WeeklyDepartures;
+  weeklyArrivals?: WeeklyArrivals;
+  weekStart?: string; // ISO date del lunedì di riferimento
+  fetchedAt: string;
+  source: string; // "viaggiatreno" | "fallback" | ...
+}
+const dynamicHubSchedules = new Map<string, HubSchedule>();
+export { dynamicHubSchedules };
+export type { HubSchedule };
+
+/**
+ * Prova a recuperare arrivi/partenze treni per una stazione dal suo nome
+ * usando l'API pubblica ViaggiaTreno (RFI). Best-effort: se non trova la
+ * stazione o l'API è irraggiungibile, ritorna null.
+ *
+ * @param stationName Nome della fermata GTFS (es. "STAZIONE FS - CAPOLINEA")
+ * @param hint Nome del comune come fallback (es. "Jesi")
+ */
+export async function fetchTrainScheduleFromViaggiaTreno(
+  stationName: string,
+  hint?: string | null,
+): Promise<HubSchedule | null> {
+  // Lista di candidate query: prima pulita dallo stopName, poi il hint
+  const candidates: string[] = [];
+  const cleaned = stationName
+    .replace(/STAZIONE\s+(FS|AUTOLINEE)\s*/i, "")
+    .replace(/\bFS\b/i, "")
+    .replace(/CAPOLINEA/i, "")
+    .replace(/FRONTE\s+CAVALCAVIA/i, "")
+    .replace(/[-–—]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(w => w.length >= 3)[0];
+  if (cleaned && cleaned.length >= 3) candidates.push(cleaned.toUpperCase());
+  if (hint && hint.length >= 3) candidates.push(hint.toUpperCase());
+
+  for (const q of candidates) {
+    const sched = await tryFetchViaggiaTreno(q);
+    if (sched) return sched;
+  }
+  return null;
+}
+
+async function tryFetchViaggiaTreno(query: string): Promise<HubSchedule | null> {
+  try {
+    // 1) Autocomplete per trovare stationCode
+    const autocompleteUrl = `http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno/autocompletaStazione/${encodeURIComponent(query)}`;
+    const acResp = await fetch(autocompleteUrl, { signal: AbortSignal.timeout(5000) });
+    if (!acResp.ok) { console.warn("[viaggiatreno] autocomplete !ok for", query, acResp.status); return null; }
+    const acText = await acResp.text();
+    const firstLine = acText.split("\n").find(l => l.includes("|"));
+    if (!firstLine) { console.warn("[viaggiatreno] no results for", query, "body:", acText.slice(0, 200)); return null; }
+    const parts = firstLine.split("|").map(s => s.trim());
+    const stationCode = parts[1];
+    if (!stationCode) { console.warn("[viaggiatreno] no stationCode in", firstLine); return null; }
+    console.info(`[viaggiatreno] ${query} → ${stationCode}`);
+
+    // 2) Strategia: scarichiamo orari per OGGI + 6 giorni successivi (rolling)
+    //    e li indicizziamo per dayOfWeek (0=Lun..6=Dom). ViaggiaTreno NON
+    //    ritorna dati per giorni passati, quindi questa strategia copre
+    //    sempre tutti i 7 giorni della settimana con dati reali.
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+
+    // 3) Per ogni giorno (offset 0..6), scarichiamo 8 fasce orarie
+    //    (05,08,11,13,15,17,19,21). Ogni call copre ~90 min.
+    //    Totale: 7 × 8 × 2 (dep+arr) = 112 chiamate per stazione.
+    const hoursToSample = [5, 8, 11, 13, 15, 17, 19, 21];
+    type Job = { dayIdx: number; type: "dep" | "arr"; url: string };
+    const jobs: Job[] = [];
+    for (let offset = 0; offset < 7; offset++) {
+      const day = new Date(today0.getFullYear(), today0.getMonth(), today0.getDate() + offset);
+      // Indice 0 = Lunedì, 6 = Domenica
+      const jsDow = day.getDay();
+      const dayIdx = jsDow === 0 ? 6 : jsDow - 1;
+      for (const h of hoursToSample) {
+        const d = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, 0, 0);
+        const ts = d.toString().replace(/GMT.*$/, "").trim();
+        jobs.push({ dayIdx, type: "dep", url: `http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno/partenze/${stationCode}/${encodeURIComponent(ts)}` });
+        jobs.push({ dayIdx, type: "arr", url: `http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno/arrivi/${stationCode}/${encodeURIComponent(ts)}` });
+      }
+    }
+
+    // weekDepMaps[dayIdx] = Map<destination, Set<HH:MM>>
+    const weekDepMaps: Map<string, Set<string>>[] = Array.from({ length: 7 }, () => new Map());
+    const weekArrMaps: Map<string, Set<string>>[] = Array.from({ length: 7 }, () => new Map());
+
+    // Batch di 6 chiamate parallele per non stressare l'API (totale 84/stazione)
+    const BATCH = 6;
+    for (let i = 0; i < jobs.length; i += BATCH) {
+      const batch = jobs.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(({ url }) =>
+        fetch(url, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+      ));
+      for (let j = 0; j < batch.length; j++) {
+        const data = results[j];
+        const job = batch[j];
+        if (!Array.isArray(data)) continue;
+        if (job.type === "dep") {
+          const m = weekDepMaps[job.dayIdx];
+          for (const t of data) {
+            const dest = t?.destinazione || t?.destinazioneEstera;
+            const time = t?.compOrarioPartenza;
+            if (dest && time && /^\d{2}:\d{2}/.test(time)) {
+              if (!m.has(dest)) m.set(dest, new Set());
+              m.get(dest)!.add(time.slice(0, 5));
+            }
+          }
+        } else {
+          const m = weekArrMaps[job.dayIdx];
+          for (const t of data) {
+            const origin = t?.origine || t?.origineEstera;
+            const time = t?.compOrarioArrivo;
+            if (origin && time && /^\d{2}:\d{2}/.test(time)) {
+              if (!m.has(origin)) m.set(origin, new Set());
+              m.get(origin)!.add(time.slice(0, 5));
+            }
+          }
+        }
+      }
+    }
+
+    // Trasforma i Map per giorno in array serializzabili
+    const weeklyDepartures: WeeklyDepartures = weekDepMaps.map(m =>
+      [...m.entries()].map(([destination, s]) => ({ destination, times: [...s].sort() }))
+    );
+    const weeklyArrivals: WeeklyArrivals = weekArrMaps.map(m =>
+      [...m.entries()].map(([origin, s]) => ({ origin, times: [...s].sort() }))
+    );
+
+    // Aggregazione globale (unione di tutti i giorni) per back-compat UI
+    const aggDep = new Map<string, Set<string>>();
+    const aggArr = new Map<string, Set<string>>();
+    for (const dayMap of weekDepMaps) {
+      for (const [dest, times] of dayMap.entries()) {
+        if (!aggDep.has(dest)) aggDep.set(dest, new Set());
+        for (const t of times) aggDep.get(dest)!.add(t);
+      }
+    }
+    for (const dayMap of weekArrMaps) {
+      for (const [orig, times] of dayMap.entries()) {
+        if (!aggArr.has(orig)) aggArr.set(orig, new Set());
+        for (const t of times) aggArr.get(orig)!.add(t);
+      }
+    }
+    const typicalDepartures = [...aggDep.entries()].map(([destination, s]) => ({ destination, times: [...s].sort() }));
+    const typicalArrivals = [...aggArr.entries()].map(([origin, s]) => ({ origin, times: [...s].sort() }));
+
+    const dayLabels = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+    const perDayCount = weekDepMaps.map((m, i) => `${dayLabels[i]}=${[...m.values()].reduce((s, set) => s + set.size, 0)}`).join(" ");
+    console.info(`[viaggiatreno] ${stationCode} weekly dep counts: ${perDayCount} | total dest=${aggDep.size} orig=${aggArr.size}`);
+
+    if (typicalDepartures.length === 0 && typicalArrivals.length === 0) return null;
+
+    // weekStart = oggi (data della prima campionatura)
+    const yyyy = today0.getFullYear();
+    const mm = String(today0.getMonth() + 1).padStart(2, "0");
+    const dd = String(today0.getDate()).padStart(2, "0");
+    const weekStart = `${yyyy}-${mm}-${dd}`;
+
+    return {
+      typicalDepartures,
+      typicalArrivals,
+      weeklyDepartures,
+      weeklyArrivals,
+      weekStart,
+      fetchedAt: new Date().toISOString(),
+      source: "viaggiatreno",
+    };
+  } catch (e) {
+    console.warn("[viaggiatreno] error:", (e as Error).message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  HUB DISCOVERY — scopre dinamicamente hub da GTFS stops + bbox
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Trova stazioni, autostazioni, porti, aeroporti leggendo i nomi delle
+// fermate GTFS. Utile quando l'area servita è diversa da quella degli
+// hub hardcoded (es. urbano di Jesi, Senigallia, Fabriano).
+//
+// Pattern di detection (case-insensitive) applicati a `stop_name`:
+//   ▸ RAILWAY  : "stazione", "staz.", " fs ", "ferrovia", "railway"
+//   ▸ BUS HUB  : "autostazione", "terminal bus", "stazione autolinee"
+//   ▸ AIRPORT  : "aeroporto", "airport"
+//   ▸ PORT     : "porto", "scalo marittimo", "ferry"
+// ═══════════════════════════════════════════════════════════════════════
+
+type HubType = "railway" | "port" | "airport" | "bus_terminal";
+
+interface DiscoveredHub {
+  id: string;
+  name: string;
+  type: HubType;
+  lat: number;
+  lng: number;
+  gtfsStopIds: string[];
+  description: string;
+  platformWalkMinutes: number;
+  typicalDepartures: { destination: string; times: string[] }[];
+  typicalArrivals: { origin: string; times: string[] }[];
+  weeklyDepartures?: { destination: string; times: string[] }[][];
+  weeklyArrivals?: { origin: string; times: string[] }[][];
+  weekStart?: string;
+  source: "curated" | "gtfs-auto";
+}
+export type { HubType, DiscoveredHub };
+
+const HUB_PATTERNS: Array<{ re: RegExp; type: HubType; walkMin: number }> = [
+  { re: /\b(aeroporto|airport)\b/i,                                                                           type: "airport",       walkMin: 5 },
+  { re: /\b(porto|scalo maritti|ferry|marina)\b/i,                                                            type: "port",          walkMin: 4 },
+  { re: /\b(autostazione|stazione autolinee|terminal bus|capolinea bus)\b/i,                                  type: "bus_terminal",  walkMin: 1 },
+  { re: /\b(stazione|staz\.|ferrovia(ria)?|railway|\bf\.s\.\b|\bfs\b|treno|binar)/i,                           type: "railway",       walkMin: 2 },
+];
+
+/**
+ * Classifica una fermata in base al nome. Restituisce null se non è un hub.
+ */
+function classifyStopAsHub(stopName: string | null): { type: HubType; walkMin: number } | null {
+  if (!stopName) return null;
+  for (const p of HUB_PATTERNS) {
+    if (p.re.test(stopName)) return { type: p.type, walkMin: p.walkMin };
+  }
+  return null;
+}
+
+/**
+ * Raggruppa fermate classificate come hub che si trovano entro ~250m l'una
+ * dall'altra e con stessa tipologia: vengono unite in un unico hub logico
+ * (tipicamente binari/capolinea diversi dello stesso scalo).
+ */
+function clusterHubStops(
+  hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }>,
+): DiscoveredHub[] {
+  const CLUSTER_KM = 0.25;
+  const clusters: Array<typeof hubStops> = [];
+  const used = new Set<number>();
+  for (let i = 0; i < hubStops.length; i++) {
+    if (used.has(i)) continue;
+    const group = [hubStops[i]]; used.add(i);
+    for (let j = i + 1; j < hubStops.length; j++) {
+      if (used.has(j)) continue;
+      if (hubStops[j].type !== hubStops[i].type) continue;
+      if (haversineKm(hubStops[i].lat, hubStops[i].lng, hubStops[j].lat, hubStops[j].lng) <= CLUSTER_KM) {
+        group.push(hubStops[j]); used.add(j);
+      }
+    }
+    clusters.push(group);
+  }
+  return clusters.map((group, idx) => {
+    const latAvg = group.reduce((s, x) => s + x.lat, 0) / group.length;
+    const lngAvg = group.reduce((s, x) => s + x.lng, 0) / group.length;
+    const baseName = group[0].stopName.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    const cleanName = baseName.length > 60 ? baseName.slice(0, 57) + "…" : baseName;
+    return {
+      id: `gtfs-${group[0].type}-${group[0].stopId}`,
+      name: cleanName,
+      type: group[0].type,
+      lat: latAvg,
+      lng: lngAvg,
+      gtfsStopIds: group.map(g => g.stopId),
+      description: group[0].type === "railway"
+        ? "Stazione rilevata automaticamente dai dati GTFS"
+        : group[0].type === "bus_terminal"
+          ? "Autostazione / capolinea rilevato dai dati GTFS"
+          : group[0].type === "airport"
+            ? "Aeroporto rilevato dai dati GTFS"
+            : "Scalo marittimo rilevato dai dati GTFS",
+      platformWalkMinutes: group[0].walkMin,
+      typicalDepartures: [],
+      typicalArrivals: [],
+      source: "gtfs-auto" as const,
+    };
+  });
+}
+
+/**
+ * Discovery principale: dati i filtri (bbox / municipality / routeIds)
+ * restituisce la lista di hub da considerare, unione di:
+ *   1) hub curati (INTERMODAL_HUBS) interni al bbox
+ *   2) hub rilevati automaticamente dalle fermate GTFS
+ */
+export async function discoverHubs(opts: {
+  bbox?: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null;
+  routeIds?: Set<string> | null;
+  municipality?: string | null; // codice ISTAT 5-6 cifre (es. 42021 = Jesi)
+  includeCurated?: boolean;
+}): Promise<DiscoveredHub[]> {
+  const { bbox, routeIds, includeCurated = true } = opts;
+  const out: DiscoveredHub[] = [];
+
+  // 1. Hub curati filtrati per bbox
+  if (includeCurated) {
+    const curated: DiscoveredHub[] = INTERMODAL_HUBS.map(h => ({
+      id: h.id, name: h.name, type: h.type as HubType, lat: h.lat, lng: h.lng,
+      gtfsStopIds: [...h.gtfsStopIds],
+      description: h.description,
+      platformWalkMinutes: h.platformWalkMinutes,
+      typicalDepartures: h.typicalDepartures,
+      typicalArrivals: h.typicalArrivals,
+      source: "curated",
+    }));
+    for (const h of curated) {
+      if (!bbox) { out.push(h); continue; }
+      if (h.lat >= bbox.minLat && h.lat <= bbox.maxLat && h.lng >= bbox.minLng && h.lng <= bbox.maxLng) {
+        out.push(h);
+      }
+    }
+  }
+
+  // 2. Scopri hub dalle fermate GTFS
+  // Se routeIds è specificato, limitiamo alle fermate di quelle routes
+  let candidateStopIds: Set<string> | null = null;
+  if (routeIds && routeIds.size > 0) {
+    const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId }).from(gtfsTrips);
+    const relevantTripIds = new Set(tripRows.filter(t => routeIds.has(t.routeId)).map(t => t.tripId));
+    candidateStopIds = new Set();
+    const tripArr = [...relevantTripIds];
+    for (let i = 0; i < tripArr.length; i += 500) {
+      const batch = tripArr.slice(i, i + 500);
+      if (batch.length === 0) continue;
+      const stRows = await db.select({ stopId: gtfsStopTimes.stopId }).from(gtfsStopTimes)
+        .where(sql`${gtfsStopTimes.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+      for (const r of stRows) candidateStopIds.add(r.stopId);
+    }
+  }
+
+  const allStops = await db.select({
+    stopId: gtfsStops.stopId,
+    stopName: gtfsStops.stopName,
+    lat: gtfsStops.stopLat,
+    lng: gtfsStops.stopLon,
+  }).from(gtfsStops);
+
+  const hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }> = [];
+  for (const s of allStops) {
+    const sLat = typeof s.lat === "string" ? parseFloat(s.lat) : s.lat;
+    const sLng = typeof s.lng === "string" ? parseFloat(s.lng) : s.lng;
+    if (!sLat || !sLng) continue;
+    if (bbox && (sLat < bbox.minLat || sLat > bbox.maxLat || sLng < bbox.minLng || sLng > bbox.maxLng)) continue;
+    if (candidateStopIds && !candidateStopIds.has(s.stopId)) continue;
+    const cls = classifyStopAsHub(s.stopName);
+    if (!cls) continue;
+    // Evita duplicati con hub curati (match diretto su stopId)
+    if (out.some(h => h.gtfsStopIds.includes(s.stopId))) continue;
+    hubStops.push({
+      stopId: s.stopId, stopName: s.stopName || "", lat: sLat as number, lng: sLng as number,
+      type: cls.type, walkMin: cls.walkMin,
+    });
+  }
+
+  const discovered = clusterHubStops(hubStops);
+  // Evita duplicati per vicinanza con hub curati (≤ 300m stesso tipo)
+  const filtered = discovered.filter(d => !out.some(h => h.type === d.type && haversineKm(h.lat, h.lng, d.lat, d.lng) <= 0.3));
+  out.push(...filtered);
+
+  // ─── Applica orari cacheati (dal sync-schedules) ai discovered hubs ──
+  for (const h of out) {
+    if (h.source === "gtfs-auto") {
+      const cached = dynamicHubSchedules.get(h.id);
+      if (cached) {
+        h.typicalArrivals = cached.typicalArrivals;
+        h.typicalDepartures = cached.typicalDepartures;
+        if (cached.weeklyDepartures) h.weeklyDepartures = cached.weeklyDepartures;
+        if (cached.weeklyArrivals) h.weeklyArrivals = cached.weeklyArrivals;
+        if (cached.weekStart) h.weekStart = cached.weekStart;
+      }
+    }
+  }
+
+  // ─── Fallback: se dopo tutto questo non ci sono hub nel bbox ──────
+  // Crea un hub sintetico "Centro città" al centro del bbox, tipo
+  // bus_terminal, per permettere comunque l'analisi POI/fermate.
+  // Utile per comuni piccoli i cui GTFS non taggano esplicitamente
+  // stazioni/autostazioni (es. linee urbane di servizio).
+  if (out.length === 0 && bbox) {
+    out.push({
+      id: `synthetic-center-${Date.now().toString(36)}`,
+      name: "Centro urbano (riferimento)",
+      type: "bus_terminal",
+      lat: (bbox.minLat + bbox.maxLat) / 2,
+      lng: (bbox.minLng + bbox.maxLng) / 2,
+      gtfsStopIds: [],
+      description: "Nessun hub intermodale rilevato automaticamente. Riferimento sintetico al centro dell'area analizzata.",
+      platformWalkMinutes: 0,
+      typicalDepartures: [],
+      typicalArrivals: [],
+      source: "gtfs-auto",
+    });
+  }
+
+  return out;
+}
+
 // ──────────────────────────────────────────────────────────
 // GET /api/intermodal/hubs — return hub definitions for map
+//   Query params (tutti opzionali):
+//     - municipality : codice ISTAT 5-6 cifre (es. 42021 = Jesi) o nome comune
+//     - routeIds     : CSV di routeId GTFS (limita a fermate di quelle routes)
+//     - bbox         : "minLat,minLng,maxLat,maxLng"
 // ──────────────────────────────────────────────────────────
-router.get("/intermodal/hubs", (_req, res) => {
-  res.json(INTERMODAL_HUBS.map(h => ({
-    id: h.id, name: h.name, type: h.type,
-    lat: h.lat, lng: h.lng,
-    description: h.description,
-    platformWalkMinutes: h.platformWalkMinutes,
-    departures: h.typicalDepartures.reduce((sum, d) => sum + d.times.length, 0),
-    arrivals: h.typicalArrivals.reduce((sum, a) => sum + a.times.length, 0),
-    destinations: h.typicalDepartures.map(d => d.destination),
-    origins: h.typicalArrivals.map(a => a.origin),
-  })));
+router.get("/intermodal/hubs", async (req, res) => {
+  try {
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+    const routeIdsCsv = (req.query.routeIds as string | undefined)?.trim() || "";
+    const bboxStr = (req.query.bbox as string | undefined)?.trim() || "";
+
+    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (bboxStr) {
+      const [a, b, c, d] = bboxStr.split(",").map(Number);
+      if ([a, b, c, d].every(n => Number.isFinite(n))) {
+        bbox = { minLat: Math.min(a, c), maxLat: Math.max(a, c), minLng: Math.min(b, d), maxLng: Math.max(b, d) };
+      }
+    } else if (municipality) {
+      // Deriva bbox dalle census sections del comune
+      const muniPrefix = municipality.slice(0, 6);
+      const muniPrefixShort = municipality.slice(0, 5);
+      const rows = await db.select({
+        istatCode: censusSections.istatCode,
+        centroidLat: censusSections.centroidLat,
+        centroidLng: censusSections.centroidLng,
+      }).from(censusSections);
+      const matching = rows.filter(r =>
+        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
+      );
+      if (matching.length > 0) {
+        const lats = matching.map(r => r.centroidLat);
+        const lngs = matching.map(r => r.centroidLng);
+        const padLat = 0.02, padLng = 0.03; // ~2-3km di margine
+        bbox = {
+          minLat: Math.min(...lats) - padLat, maxLat: Math.max(...lats) + padLat,
+          minLng: Math.min(...lngs) - padLng, maxLng: Math.max(...lngs) + padLng,
+        };
+      }
+    }
+
+    const routeIds = routeIdsCsv
+      ? new Set(routeIdsCsv.split(",").map(s => s.trim()).filter(Boolean))
+      : null;
+
+    const hubs = await discoverHubs({ bbox, routeIds, municipality });
+
+    res.json(hubs.map(h => ({
+      id: h.id, name: h.name, type: h.type,
+      lat: h.lat, lng: h.lng,
+      description: h.description,
+      platformWalkMinutes: h.platformWalkMinutes,
+      source: h.source,
+      departures: h.typicalDepartures.reduce((s, d) => s + d.times.length, 0),
+      arrivals: h.typicalArrivals.reduce((s, a) => s + a.times.length, 0),
+      destinations: h.typicalDepartures.map(d => d.destination),
+      origins: h.typicalArrivals.map(a => a.origin),
+    })));
+  } catch (err) {
+    req.log.error(err, "Error discovering intermodal hubs");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────
+// GET /api/intermodal/municipalities — lista comuni disponibili
+// Estratti dai census sections per permettere all'utente di
+// selezionare l'ambito (es. "Jesi", "Senigallia") dalla UI.
+// ──────────────────────────────────────────────────────────
+router.get("/intermodal/municipalities", async (_req, res) => {
+  try {
+    const rows = await db.select({ istatCode: censusSections.istatCode }).from(censusSections);
+    const set = new Set<string>();
+    for (const r of rows) if (r.istatCode) set.add(r.istatCode.slice(0, 6));
+    const COMUNE_NAMES: Record<string, string> = {
+      "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
+      "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
+      "420100": "Castelfidardo", "420110": "Castelleone di Suasa", "420120": "Castelplanio",
+      "420130": "Cerreto d'Esi", "420140": "Chiaravalle", "420150": "Corinaldo",
+      "420160": "Cupramontana", "420170": "Fabriano", "420180": "Falconara Marittima",
+      "420190": "Filottrano", "420200": "Genga", "420210": "Jesi", "420220": "Loreto",
+      "420230": "Maiolati Spontini", "420240": "Mergo", "420250": "Monsano",
+      "420260": "Montecarotto", "420270": "Montemarciano", "420290": "Monte Roberto",
+      "420300": "Monte San Vito", "420310": "Morro d'Alba", "420320": "Numana",
+      "420330": "Offagna", "420340": "Osimo", "420350": "Ostra", "420360": "Ostra Vetere",
+      "420370": "Poggio San Marcello", "420380": "Polverigi", "420400": "Rosora",
+      "420410": "San Marcello", "420420": "San Paolo di Jesi", "420430": "Santa Maria Nuova",
+      "420440": "Sassoferrato", "420450": "Senigallia", "420460": "Serra de' Conti",
+      "420470": "Serra San Quirico", "420480": "Sirolo", "420490": "Staffolo",
+      "420500": "Trecastelli",
+    };
+    const out = [...set]
+      .map(code => ({ code, name: COMUNE_NAMES[code] || `Comune ${code}` }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // ──────────────────────────────────────────────────────────────────
@@ -183,6 +686,35 @@ router.get("/intermodal/hubs", (_req, res) => {
 router.get("/intermodal/analyze", async (req, res) => {
   try {
     const maxWalkKm = parseFloat(req.query.radius as string) || 0.5;
+    const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
+    const routeIdsFilter: Set<string> | null = routeIdsParam
+      ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
+      : null;
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+
+    // ─── Hub list: curated + auto-discovered (filtered by ambito) ──────
+    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (municipality) {
+      const muniPrefix = municipality.slice(0, 6);
+      const muniPrefixShort = municipality.slice(0, 5);
+      const rows = await db.select({
+        istatCode: censusSections.istatCode,
+        centroidLat: censusSections.centroidLat,
+        centroidLng: censusSections.centroidLng,
+      }).from(censusSections);
+      const matching = rows.filter(r =>
+        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
+      );
+      if (matching.length > 0) {
+        const lats = matching.map(r => r.centroidLat);
+        const lngs = matching.map(r => r.centroidLng);
+        bbox = {
+          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
+          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
+        };
+      }
+    }
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality });
 
     // 1. Fetch all GTFS stops & find those near each hub
     const allStops = await db.select({
@@ -194,7 +726,7 @@ router.get("/intermodal/analyze", async (req, res) => {
 
     // 2. Find nearby bus stops per hub (within maxWalkKm)
     const hubNearbyStops: Record<string, { stopId: string; stopName: string; lat: number; lng: number; distKm: number; walkMin: number }[]> = {};
-    for (const hub of INTERMODAL_HUBS) {
+    for (const hub of effectiveHubs) {
       const nearby: typeof hubNearbyStops[string] = [];
       for (const stop of allStops) {
         const sLat = typeof stop.lat === "string" ? parseFloat(stop.lat) : stop.lat;
@@ -216,7 +748,7 @@ router.get("/intermodal/analyze", async (req, res) => {
 
     // 3. Fetch stop_times for all relevant stops
     const allRelevantStopIds = [
-      ...INTERMODAL_HUBS.flatMap(h => h.gtfsStopIds),
+      ...effectiveHubs.flatMap(h => h.gtfsStopIds),
       ...Object.values(hubNearbyStops).flatMap(arr => arr.map(s => s.stopId)),
     ];
     const uniqueStopIds = [...new Set(allRelevantStopIds)];
@@ -252,6 +784,14 @@ router.get("/intermodal/analyze", async (req, res) => {
       }
     }
 
+    // Apply routeIds filter (if provided): keep only stop_times belonging to selected routes
+    if (routeIdsFilter && routeIdsFilter.size > 0) {
+      hubStopTimes = hubStopTimes.filter(st => {
+        const rId = tripRouteMap[st.tripId];
+        return rId ? routeIdsFilter.has(rId) : false;
+      });
+    }
+
     // Route info
     const gtfsRoutesAll = await db.select({
       routeId: gtfsRoutes.routeId,
@@ -284,7 +824,7 @@ router.get("/intermodal/analyze", async (req, res) => {
     // 6. Analyze each hub — ARRIVAL PERSPECTIVE
     const hubAnalyses: any[] = [];
 
-    for (const hub of INTERMODAL_HUBS) {
+    for (const hub of effectiveHubs) {
       const nearbyStops = hubNearbyStops[hub.id] || [];
       const nearbyStopIds = new Set([...hub.gtfsStopIds, ...nearbyStops.map(s => s.stopId)]);
       const isServed = nearbyStops.length > 0 || hub.gtfsStopIds.length > 0;
@@ -652,12 +1192,44 @@ router.get("/intermodal/analyze", async (req, res) => {
         })(),
       };
 
+      // ── SERVICE SCORE per hub senza orari curati (auto-discovered) ──
+      // Metrica 0-100 basata su: copertura oraria (6-22), linee servite,
+      // destinazioni coperte, frequenza media.
+      // Serve a valutare "quanto bene il servizio urbano copre questo nodo"
+      // anche quando non disponiamo di orari treni/navi.
+      let serviceScore: {
+        score: number;               // 0-100
+        hoursCovered: number;         // ore 6-22 con almeno 1 bus
+        linesServing: number;
+        destinationsReached: number;
+        avgFrequencyMin: number | null;
+        level: "eccellente" | "buono" | "sufficiente" | "carente" | "assente";
+      } | null = null;
+      if (hub.source === "gtfs-auto") {
+        const hoursCovered = gapAnalysis.filter(g => g.busDepartures > 0).length;
+        const linesServing = busLines.length;
+        const destinationsReached = new Set(destinationCoverage.map(d => d.destination)).size;
+        const freqs = destinationCoverage.map(d => d.avgFrequencyMin).filter((f): f is number => f != null);
+        const avgFrequencyMin = freqs.length > 0 ? Math.round(freqs.reduce((s, f) => s + f, 0) / freqs.length) : null;
+        // Score: 40% copertura oraria + 25% linee + 20% destinazioni + 15% frequenza
+        const hourScore = Math.min(100, (hoursCovered / 17) * 100); // 17 ore attese 6-22
+        const lineScore = Math.min(100, linesServing * 20);           // 5 linee = max
+        const destScore = Math.min(100, destinationsReached * 12);    // 8+ destinazioni = max
+        const freqScore = avgFrequencyMin != null ? Math.max(0, 100 - avgFrequencyMin * 2) : 50;
+        const raw = hourScore * 0.4 + lineScore * 0.25 + destScore * 0.2 + freqScore * 0.15;
+        const score = Math.round(raw);
+        const level: "eccellente" | "buono" | "sufficiente" | "carente" | "assente" =
+          score >= 80 ? "eccellente" : score >= 60 ? "buono" : score >= 40 ? "sufficiente" : score > 0 ? "carente" : "assente";
+        serviceScore = { score, hoursCovered, linesServing, destinationsReached, avgFrequencyMin, level };
+      }
+
       hubAnalyses.push({
         hub: {
           id: hub.id, name: hub.name, type: hub.type,
           lat: hub.lat, lng: hub.lng,
           description: hub.description,
           platformWalkMinutes: hub.platformWalkMinutes,
+          source: hub.source,
         },
         isServed,
         nearbyStops: nearbyStops.slice(0, 20),
@@ -668,6 +1240,7 @@ router.get("/intermodal/analyze", async (req, res) => {
         gapAnalysis,
         waitDistribution,         // NEW: histogram of wait times
         arrivalStats,             // NEW: stats focused on arrivals
+        serviceScore,             // NEW: 0-100 score for auto-discovered hubs (urban coverage)
         stats: {
           totalBusTrips: allBusDepartureMinutes.length,
           totalHubDepartures: departureConnections.length,
@@ -757,6 +1330,28 @@ router.get("/intermodal/analyze", async (req, res) => {
           description: `Tempo medio di cammino piattaforma→fermata: ${avgWalk} min. Considerare fermata più vicina.`,
         });
       }
+
+      // ── Hub auto-discovered: suggerimenti basati su serviceScore ──
+      if (hc.serviceScore) {
+        const ss = hc.serviceScore;
+        if (ss.level === "assente" || ss.level === "carente") {
+          suggestions.push({
+            priority: ss.level === "assente" ? "critical" : "high",
+            type: "weak-coverage",
+            hub: hc.hub.name,
+            description: `Copertura del servizio urbano ${ss.level} su questo hub (score ${ss.score}/100).`,
+            details: `${ss.linesServing} linee · ${ss.destinationsReached} destinazioni · ${ss.hoursCovered}/17 ore coperte${ss.avgFrequencyMin != null ? ` · frequenza media ${ss.avgFrequencyMin} min` : ""}. Aggiungere corse o estendere linee per migliorare l'accessibilità del nodo intermodale.`,
+          });
+        } else if (ss.level === "sufficiente") {
+          suggestions.push({
+            priority: "medium",
+            type: "moderate-coverage",
+            hub: hc.hub.name,
+            description: `Copertura sufficiente ma migliorabile (score ${ss.score}/100).`,
+            details: `${ss.hoursCovered}/17 ore coperte${ss.avgFrequencyMin != null ? ` · frequenza ${ss.avgFrequencyMin} min` : ""}. Valutare potenziamento fasce orarie scoperte.`,
+          });
+        }
+      }
     }
 
     const priorityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -808,7 +1403,9 @@ router.get("/intermodal/analyze", async (req, res) => {
     res.json({
       hubs: hubAnalyses,
       summary: {
-        totalHubs: INTERMODAL_HUBS.length,
+        totalHubs: effectiveHubs.length,
+        curatedHubs: effectiveHubs.filter(h => h.source === "curated").length,
+        discoveredHubs: effectiveHubs.filter(h => h.source === "gtfs-auto").length,
         servedHubs: hubAnalyses.filter((h: any) => h.isServed && h.nearbyStops.length > 0).length,
         // Arrival-based (primary)
         totalArrivals: totalArrivalConnections,
@@ -918,6 +1515,10 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
 router.get("/intermodal/shapes", async (req, res) => {
   try {
     const hubId = req.query.hubId as string | undefined;
+    const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
+    const routeIdsFilter: Set<string> | null = routeIdsParam
+      ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
+      : null;
 
     // Get route IDs serving the requested hub (or all hubs)
     const hubs = hubId ? INTERMODAL_HUBS.filter(h => h.id === hubId) : INTERMODAL_HUBS;
@@ -963,7 +1564,9 @@ router.get("/intermodal/shapes", async (req, res) => {
     }
 
     // Fetch shapes for these routes
-    const routeIdArr = [...routeIds];
+    const routeIdArr = routeIdsFilter
+      ? [...routeIds].filter(r => routeIdsFilter.has(r))
+      : [...routeIds];
     if (routeIdArr.length === 0) { res.json({ type: "FeatureCollection", features: [] }); return; }
 
     const shapes: { shapeId: string; routeId: string | null; routeShortName: string | null; routeColor: string | null; geojson: any }[] = [];
@@ -1024,6 +1627,36 @@ router.get("/intermodal/shapes", async (req, res) => {
 router.get("/intermodal/pois", async (req, res) => {
   try {
     const maxDistKm = parseFloat(req.query.radius as string) || 3;
+    const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
+    const routeIdsFilter: Set<string> | null = routeIdsParam
+      ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
+      : null;
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+
+    // Calcola bbox dal municipality se fornito
+    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (municipality) {
+      const muniPrefix = municipality.slice(0, 6);
+      const muniPrefixShort = municipality.slice(0, 5);
+      const rows = await db.select({
+        istatCode: censusSections.istatCode,
+        centroidLat: censusSections.centroidLat,
+        centroidLng: censusSections.centroidLng,
+      }).from(censusSections);
+      const matching = rows.filter(r =>
+        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
+      );
+      if (matching.length > 0) {
+        const lats = matching.map(r => r.centroidLat);
+        const lngs = matching.map(r => r.centroidLng);
+        bbox = {
+          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
+          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
+        };
+      }
+    }
+
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality });
 
     // Define POI categories per hub type
     const WORK_CATEGORIES = ["office", "hospital", "school", "industrial"];
@@ -1038,7 +1671,7 @@ router.get("/intermodal/pois", async (req, res) => {
       lat: pointsOfInterest.lat,
     }).from(pointsOfInterest)
       .where(inArray(pointsOfInterest.category, WORK_CATEGORIES))
-      .limit(2000);
+      .limit(5000);
 
     const tourismPois = await db.select({
       id: pointsOfInterest.id,
@@ -1048,13 +1681,13 @@ router.get("/intermodal/pois", async (req, res) => {
       lat: pointsOfInterest.lat,
     }).from(pointsOfInterest)
       .where(inArray(pointsOfInterest.category, TOURISM_CATEGORIES))
-      .limit(1000);
+      .limit(3000);
 
     // For each hub, find relevant POIs within radius and build connections
     const hubPois: {
       hubId: string;
       hubName: string;
-      hubType: "railway" | "port" | "airport";
+      hubType: HubType;
       hubLat: number;
       hubLng: number;
       pois: {
@@ -1064,16 +1697,25 @@ router.get("/intermodal/pois", async (req, res) => {
         lat: number;
         lng: number;
         distKm: number;
-        travelContext: string; // e.g. "Lavoro", "Turismo"
+        travelContext: string;
       }[];
     }[] = [];
 
-    for (const hub of INTERMODAL_HUBS) {
+    for (const hub of effectiveHubs) {
       const isPort = hub.type === "port";
       const isAirport = hub.type === "airport";
-      // Airport: mix lavoro+turismo (both categories). Port: tourism. Railway: work
-      const relevantPois = isAirport ? [...workPois, ...tourismPois] : isPort ? tourismPois : workPois;
-      const travelContext = isAirport ? "Lavoro + Turismo" : isPort ? "Turismo" : "Lavoro";
+      const isBusTerm = hub.type === "bus_terminal";
+      // Railway & bus_terminal: lavoro. Port: turismo. Airport: entrambi.
+      const relevantPois = isAirport
+        ? [...workPois, ...tourismPois]
+        : isPort
+          ? tourismPois
+          : isBusTerm
+            ? [...workPois, ...tourismPois]
+            : workPois;
+      const travelContext = isAirport ? "Lavoro + Turismo"
+        : isPort ? "Turismo"
+        : isBusTerm ? "Intermodale" : "Lavoro";
 
       const nearby = relevantPois
         .map(p => ({
@@ -1087,7 +1729,7 @@ router.get("/intermodal/pois", async (req, res) => {
         }))
         .filter(p => p.distKm <= maxDistKm)
         .sort((a, b) => a.distKm - b.distKm)
-        .slice(0, 50); // max 50 POIs per hub
+        .slice(0, 50);
 
       hubPois.push({
         hubId: hub.id,
@@ -1110,7 +1752,7 @@ router.get("/intermodal/pois", async (req, res) => {
 
     res.json({
       hubPois,
-      summary: { totalPois, categoryBreakdown },
+      summary: { totalPois, categoryBreakdown, hubCount: effectiveHubs.length },
       config: { maxDistKm, workCategories: WORK_CATEGORIES, tourismCategories: TOURISM_CATEGORIES },
     });
   } catch (err) {
@@ -1128,26 +1770,128 @@ let lastSyncTimestamp: string | null = null;
 
 router.post("/intermodal/sync-schedules", async (req, res) => {
   try {
-    // Simulate sync delay (in production: call Trenitalia API, scrape ferry schedules, etc.)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+
+    // Calcola bbox dal municipality se fornito (come negli altri endpoint)
+    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (municipality) {
+      const muniPrefix = municipality.slice(0, 6);
+      const muniPrefixShort = municipality.slice(0, 5);
+      const rows = await db.select({
+        istatCode: censusSections.istatCode,
+        centroidLat: censusSections.centroidLat,
+        centroidLng: censusSections.centroidLng,
+      }).from(censusSections);
+      const matching = rows.filter(r =>
+        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
+      );
+      if (matching.length > 0) {
+        const lats = matching.map(r => r.centroidLat);
+        const lngs = matching.map(r => r.centroidLng);
+        bbox = {
+          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
+          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
+        };
+      }
+    }
+
+    const effectiveHubs = await discoverHubs({ bbox, municipality });
+
+    // Mappa codice ISTAT → nome comune (per hint a ViaggiaTreno)
+    let municipalityName: string | null = null;
+    if (municipality) {
+      const COMUNE_NAMES: Record<string, string> = {
+        "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
+        "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
+        "420100": "Castelfidardo", "420110": "Castelleone di Suasa", "420120": "Castelplanio",
+        "420130": "Cerreto d'Esi", "420140": "Chiaravalle", "420150": "Corinaldo",
+        "420160": "Cupramontana", "420170": "Fabriano", "420180": "Falconara Marittima",
+        "420190": "Filottrano", "420200": "Genga", "420210": "Jesi", "420220": "Loreto",
+        "420230": "Maiolati Spontini", "420240": "Mergo", "420250": "Monsano",
+        "420260": "Montecarotto", "420270": "Montemarciano", "420290": "Monte Roberto",
+        "420300": "Monte San Vito", "420310": "Morro d'Alba", "420320": "Numana",
+        "420330": "Offagna", "420340": "Osimo", "420350": "Ostra", "420360": "Ostra Vetere",
+        "420370": "Poggio San Marcello", "420380": "Polverigi", "420400": "Rosora",
+        "420410": "San Marcello", "420420": "San Paolo di Jesi", "420430": "Santa Maria Nuova",
+        "420440": "Sassoferrato", "420450": "Senigallia", "420460": "Serra de' Conti",
+        "420470": "Serra San Quirico", "420480": "Sirolo", "420490": "Staffolo",
+        "420500": "Trecastelli",
+      };
+      municipalityName = COMUNE_NAMES[municipality.slice(0, 6)] || COMUNE_NAMES[municipality.slice(0, 5) + "0"] || null;
+    }
+
+    // ─── Sync per hub railway discovered (ViaggiaTreno) ─────────────
+    const syncResults: Array<{
+      id: string; name: string; type: string;
+      source: "curated" | "gtfs-auto" | "live";
+      status: "ok" | "skipped" | "failed";
+      arrivals: number; departures: number;
+      daysCovered?: number;
+      weekStart?: string;
+      fetchedFrom: string | null;
+    }> = [];
+
+    for (const h of effectiveHubs) {
+      if (h.source === "curated") {
+        // Hub curati: orari già hardcoded (in futuro: fetch reale da Trenitalia)
+        syncResults.push({
+          id: h.id, name: h.name, type: h.type, source: "curated", status: "ok",
+          arrivals: h.typicalArrivals.reduce((s, a) => s + a.times.length, 0),
+          departures: h.typicalDepartures.reduce((s, d) => s + d.times.length, 0),
+          fetchedFrom: "builtin",
+        });
+        continue;
+      }
+      // Solo railway: proviamo ViaggiaTreno
+      if (h.type === "railway") {
+        const sched = await fetchTrainScheduleFromViaggiaTreno(h.name, municipalityName);
+        if (sched) {
+          dynamicHubSchedules.set(h.id, sched);
+          const daysCovered = sched.weeklyDepartures
+            ? sched.weeklyDepartures.filter(d => d.length > 0).length
+            : undefined;
+          syncResults.push({
+            id: h.id, name: h.name, type: h.type, source: "live", status: "ok",
+            arrivals: sched.typicalArrivals.reduce((s, a) => s + a.times.length, 0),
+            departures: sched.typicalDepartures.reduce((s, d) => s + d.times.length, 0),
+            daysCovered,
+            weekStart: sched.weekStart,
+            fetchedFrom: sched.source,
+          });
+        } else {
+          syncResults.push({
+            id: h.id, name: h.name, type: h.type, source: "gtfs-auto", status: "failed",
+            arrivals: 0, departures: 0, fetchedFrom: null,
+          });
+        }
+      } else {
+        // Port / airport / bus_terminal discovered: skip per ora (no API pubbliche gratuite)
+        syncResults.push({
+          id: h.id, name: h.name, type: h.type, source: "gtfs-auto", status: "skipped",
+          arrivals: 0, departures: 0, fetchedFrom: null,
+        });
+      }
+    }
 
     lastSyncTimestamp = new Date().toISOString();
 
-    // Return current hub data as "synced"
-    const hubSchedules = INTERMODAL_HUBS.map(h => ({
-      id: h.id,
-      name: h.name,
-      type: h.type,
-      arrivals: h.typicalArrivals.reduce((sum, a) => sum + a.times.length, 0),
-      departures: h.typicalDepartures.reduce((sum, d) => sum + d.times.length, 0),
-      sources: h.typicalArrivals.map(a => a.origin),
-    }));
+    const okLive = syncResults.filter(r => r.status === "ok" && r.source === "live").length;
+    const failed = syncResults.filter(r => r.status === "failed").length;
 
     res.json({
       success: true,
       syncedAt: lastSyncTimestamp,
-      hubs: hubSchedules,
-      message: `Orari aggiornati per ${hubSchedules.length} hub intermodali`,
+      hubs: syncResults,
+      summary: {
+        total: syncResults.length,
+        liveFetched: okLive,
+        curated: syncResults.filter(r => r.source === "curated").length,
+        failed,
+        skipped: syncResults.filter(r => r.status === "skipped").length,
+      },
+      message: okLive > 0
+        ? `Orari aggiornati: ${okLive} hub da ViaggiaTreno, ${syncResults.length - okLive} da dati interni${failed > 0 ? `, ${failed} falliti` : ""}`
+        : `Sincronizzati ${syncResults.length} hub (nessuna API live disponibile per questi hub)`,
     });
   } catch (err) {
     req.log.error(err, "Error syncing schedules");
@@ -1155,8 +1899,50 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
   }
 });
 
-router.get("/intermodal/sync-status", (_req, res) => {
-  res.json({ lastSyncedAt: lastSyncTimestamp, hubCount: INTERMODAL_HUBS.length });
+router.get("/intermodal/sync-status", async (_req, res) => {
+  res.json({
+    lastSyncedAt: lastSyncTimestamp,
+    curatedHubCount: INTERMODAL_HUBS.length,
+    dynamicHubCount: dynamicHubSchedules.size,
+  });
+});
+
+// GET /api/intermodal/hub-schedule/:hubId
+// Restituisce lo schedule settimanale completo (weeklyDepartures/Arrivals)
+// per un hub. Utile per il popup hub nel frontend.
+router.get("/intermodal/hub-schedule/:hubId", async (req, res) => {
+  const hubId = req.params.hubId;
+  // 1) Hub curato? Restituisci typical (no weekly per ora)
+  const curated = INTERMODAL_HUBS.find(h => h.id === hubId);
+  if (curated) {
+    res.json({
+      hubId,
+      source: "curated",
+      typicalDepartures: curated.typicalDepartures,
+      typicalArrivals: curated.typicalArrivals,
+      weeklyDepartures: null,
+      weeklyArrivals: null,
+      weekStart: null,
+      fetchedAt: null,
+    });
+    return;
+  }
+  // 2) Hub dinamico (cache da sync)
+  const dyn = dynamicHubSchedules.get(hubId);
+  if (dyn) {
+    res.json({
+      hubId,
+      source: dyn.source,
+      typicalDepartures: dyn.typicalDepartures,
+      typicalArrivals: dyn.typicalArrivals,
+      weeklyDepartures: dyn.weeklyDepartures || null,
+      weeklyArrivals: dyn.weeklyArrivals || null,
+      weekStart: dyn.weekStart || null,
+      fetchedAt: dyn.fetchedAt,
+    });
+    return;
+  }
+  res.status(404).json({ error: "Hub schedule non trovato — sincronizza prima" });
 });
 
 export default router;

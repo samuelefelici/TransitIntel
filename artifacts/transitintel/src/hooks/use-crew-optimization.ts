@@ -55,6 +55,9 @@ export interface OperatorConfig {
   enableTaxiFallback?: boolean;
   cutOnlyAtClusters?: boolean;
   costRates?: CostRates;
+  /* scenario-level scope */
+  selectedClusterIds?: string[];
+  companyCars?: number;
   /* v4 BDS normativa */
   bds?: {
     prePost?: Record<string, number>;

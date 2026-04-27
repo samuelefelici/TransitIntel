@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat } from "./cron.js";
+import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
 
@@ -16,7 +16,7 @@ function setCooldown(key: string) {
   cooldown[key] = Date.now();
 }
 
-const ALLOWED_SOURCES = ["google-poi", "poi", "traffic", "census"] as const;
+const ALLOWED_SOURCES = ["google-poi", "poi", "traffic", "census", "commuting"] as const;
 const STATUS_SOURCES = [...ALLOWED_SOURCES];
 
 /**
@@ -48,6 +48,8 @@ router.post("/admin/sync/:source", async (req, res) => {
       result = await syncTrafficFromTomTom();
     } else if (source === "census") {
       result = await syncCensusFromIstat();
+    } else if (source === "commuting") {
+      result = await syncCommutingOdFromIstat();
     }
 
     res.json({ success: true, source, ...result });

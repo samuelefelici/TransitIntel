@@ -6,7 +6,7 @@ import {
   ChevronDown, Save, RefreshCw, Sparkles, Bus, ArrowRightLeft, Euro,
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
-  Hexagon, Crosshair, MousePointer2, Layers,
+  Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -83,11 +83,18 @@ interface RouteStop {
   lat: number;
   lon: number;
   progressiveKm: number;
+  // Media ponderata fields (shape mode)
   kmMin?: number;
   kmMax?: number;
   percorsiCount?: number;
   totalTrips?: number;
-  percorsiDetail?: { shapeId: string; km: number; tripCount: number }[];
+  percorsiDetail?: { shapeId: string | null; km: number; trips: number }[];
+  // Dominant fields (dominant mode)
+  dominantTripCount?: number;
+  dominantShapeId?: string | null;
+  altPercorsi?: { shapeId: string | null; km: number; tripCount: number }[];
+  totalTripsDay?: number;
+  refServiceId?: string;
   suggestedFascia: number | null;
   suggestedAreaId: string | null;
   currentAreaId: string | null;
@@ -95,7 +102,7 @@ interface RouteStop {
 }
 
 interface SimulationResult {
-  type: "urban" | "extraurban";
+  type: "urban" | "extraurban" | "dominant";
   networkId: string;
   routeId?: string;
   fromStop?: { stopId: string; name: string; lat: number; lon: number; km: number };
@@ -110,9 +117,35 @@ interface SimulationResult {
   bandRange?: string;
   intermediateStops?: { stopId: string; stopName: string; lat: number; lon: number; km: number }[];
   products?: { fareProductId: string; name: string; amount: number; currency: string; durationMinutes: number | null }[];
+  // Media ponderata fields (shape mode)
+  distanceVariants?: { shapeId: string | null; km: number; tripCount: number }[];
   percorsiCount?: number;
   totalTrips?: number;
-  distanceVariants?: { km: number; shapeId: string; tripCount: number }[];
+  // Dominant fields (dominant mode)
+  dominantTripCount?: number;
+  dominantShapeId?: string | null;
+  altDistances?: { shapeId: string | null; tripCount: number; km: number }[];
+  ruleApplied?: string;
+  totalTripsDay?: number;
+  refServiceId?: string;
+  // Regola 2 fields
+  capolineaFirst?: string;
+  capolineaLast?: string;
+  lineResults?: {
+    routeId: string;
+    km: number;
+    fromKm?: number;
+    toKm?: number;
+    totalPathKm?: number;
+    fromStopName?: string;
+    toStopName?: string;
+    dominantTripCount: number;
+    dominantShapeId?: string | null;
+    totalTripsDay?: number;
+    capolineaFirst?: string;
+    capolineaLast?: string;
+    intermediateStops?: { stopId: string; stopName: string; lat: number; lon: number; km: number }[];
+  }[];
 }
 
 interface GenerateResult {
@@ -157,10 +190,13 @@ interface CalendarDateEntry {
 // ═══════════════════════════════════════════════════════════
 
 const NETWORK_OPTIONS = [
-  { value: "urbano_ancona", label: "Urbano Ancona", color: "#3b82f6" },
-  { value: "urbano_jesi", label: "Urbano Jesi", color: "#8b5cf6" },
-  { value: "urbano_falconara", label: "Urbano Falconara", color: "#06b6d4" },
-  { value: "extraurbano", label: "Extraurbano", color: "#f59e0b" },
+  { value: "urbano_ancona",        label: "Urbano Ancona",        color: "#3b82f6" },
+  { value: "urbano_jesi",          label: "Urbano Jesi",          color: "#8b5cf6" },
+  { value: "urbano_falconara",     label: "Urbano Falconara",     color: "#06b6d4" },
+  { value: "urbano_senigallia",    label: "Urbano Senigallia",    color: "#10b981" },
+  { value: "urbano_castelfidardo", label: "Urbano Castelfidardo", color: "#f97316" },
+  { value: "urbano_sassoferrato",  label: "Urbano Sassoferrato",  color: "#ec4899" },
+  { value: "extraurbano",          label: "Extraurbano",          color: "#f59e0b" },
 ];
 
 type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
@@ -335,7 +371,7 @@ function ClassifyTab() {
   return (
     <div className="space-y-4">
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {stats.map(s => (
           <Card key={s.value} className="bg-card/50">
             <CardContent className="p-3">
@@ -1608,6 +1644,19 @@ function ZonesTab() {
 
   return (
     <div className="space-y-4">
+      {/* Description */}
+      <Card className="bg-primary/5 border-primary/20">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-3">
+            <Layers className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p><strong className="text-primary">Proiezione su Shape</strong> — Proietta ogni fermata sulla geometria shape (tracciato su strada) di <em>tutti</em> i percorsi della famiglia direzionale, poi calcola la <strong>media ponderata</strong> per numero di corse (tripCount).</p>
+              <p className="text-[11px]">Metodo robusto: tiene conto delle varianti di percorso pesandole per frequenza. Mostra anche il range min-max per ogni fermata.</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
         <Card className="bg-card/50">
@@ -1684,9 +1733,9 @@ function ZonesTab() {
             <CardTitle className="text-sm">
               {selectedRoute ? `Fermate Linea ${selectedRoute}` : "Seleziona una linea"}
             </CardTitle>
-            {routeStops.length > 0 && routeStops[0]?.percorsiCount != null && routeStops[0].percorsiCount > 1 && (
+            {routeStops.length > 0 && routeStops[0]?.percorsiCount != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Km calcolati come media su {routeStops[0].percorsiCount} percorsi distinti — DGR 1036/2022 art. 2.d
+                Km media ponderata su {routeStops[0].percorsiCount} percorsi ({routeStops[0].totalTrips ?? "?"} corse) — DGR 1036/2022 art. 2.d
               </p>
             )}
           </CardHeader>
@@ -1714,11 +1763,9 @@ function ZonesTab() {
                     </tr>
                   </thead>
                   <tbody>
-                    {routeStops.map((s, i) => {
-                      const dispersion = (s.kmMax != null && s.kmMin != null) ? (s.kmMax - s.kmMin) : 0;
-                      return (
+                    {routeStops.map((s, i) => (
                       <tr key={`${s.stopId}-${i}`} className="border-b border-border/10 hover:bg-muted/10">
-                        <td className="py-1.5 px-2 text-muted-foreground">{s.sequence}</td>
+                        <td className="py-1.5 px-2 text-muted-foreground">{i + 1}</td>
                         <td className="py-1.5 px-2">
                           <div>
                             <span className="font-medium">{s.stopName}</span>
@@ -1727,12 +1774,9 @@ function ZonesTab() {
                         </td>
                         <td className="py-1.5 px-2 text-right font-mono">{s.progressiveKm.toFixed(1)}</td>
                         <td className="py-1.5 px-2 text-right font-mono text-[11px]">
-                          {s.kmMin != null && s.kmMax != null ? (
-                            <span className={dispersion > 2 ? "text-amber-400" : "text-muted-foreground"}>
-                              {s.kmMin.toFixed(1)}–{s.kmMax.toFixed(1)}
-                              {dispersion > 2 && " ⚠"}
-                            </span>
-                          ) : "—"}
+                          {s.kmMin != null && s.kmMax != null && s.kmMin !== s.kmMax
+                            ? <span className="text-muted-foreground">{s.kmMin.toFixed(1)}–{s.kmMax.toFixed(1)}</span>
+                            : <span className="text-muted-foreground/40">—</span>}
                         </td>
                         <td className="py-1.5 px-2 text-center font-mono text-[11px]">
                           {s.percorsiCount ?? "—"}
@@ -1750,6 +1794,419 @@ function ZonesTab() {
                           ) : "—"}
                         </td>
                       </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB 3-direct: ZONE EXTRAURBANE — Km per Linea (haversine)
+// ═══════════════════════════════════════════════════════════
+
+function ZonesDirectTab() {
+  const { toast } = useToast();
+  const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
+  const [areas, setAreas] = useState<FareArea[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [routeStops, setRouteStops] = useState<RouteStop[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [loadingStops, setLoadingStops] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [rn, a] = await Promise.all([
+        apiFetch<RouteNetwork[]>("/api/fares/route-networks"),
+        apiFetch<FareArea[]>("/api/fares/areas"),
+      ]);
+      setRouteNets(rn);
+      setAreas(a);
+    } catch { /* noop */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const extraRoutes = routeNets.filter(r => r.networkId === "extraurbano");
+  const extraAreas = areas.filter(a => a.networkId === "extraurbano");
+
+  const generateAll = async () => {
+    setGenerating(true);
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 5 * 60 * 1000);
+      const result = await apiFetch<any>("/api/fares/zones/generate-all-direct", {
+        method: "POST",
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      toast({
+        title: "Zone generate (Km per Linea)",
+        description: `${result.urbanAreas} aree urbane + ${result.totalZones} zone extraurbane su ${result.extraurbanRoutes} linee`,
+      });
+      await load();
+    } catch (e: any) {
+      const msg = e.name === "AbortError" ? "Timeout: operazione troppo lunga (>5 min)" : e.message;
+      toast({ title: "Errore", description: msg, variant: "destructive" });
+    }
+    setGenerating(false);
+  };
+
+  const loadRouteStops = async (routeId: string) => {
+    setSelectedRoute(routeId);
+    setLoadingStops(true);
+    try {
+      const data = await apiFetch<RouteStop[]>(`/api/fares/route-stops/${routeId}`);
+      setRouteStops(data);
+    } catch { setRouteStops([]); }
+    setLoadingStops(false);
+  };
+
+  if (loading && routeNets.length === 0) return <LoadingSpinner />;
+
+  return (
+    <div className="space-y-4">
+      {/* Info */}
+      <Card className="bg-amber-500/5 border-amber-500/20">
+        <CardContent className="p-3">
+          <div className="flex items-start gap-2">
+            <Info className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+            <p className="text-xs text-muted-foreground">
+              <strong className="text-foreground">Km per Linea:</strong> calcola la distanza progressiva come haversine cumulativa tra fermate consecutive.
+              Non utilizza la shape GTFS né la media pesata tra percorsi. È il metodo più semplice e diretto.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Linee Extraurbane</p>
+            <p className="text-2xl font-bold">{extraRoutes.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Zone Create</p>
+            <p className="text-2xl font-bold">{extraAreas.length}</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50">
+          <CardContent className="p-3">
+            <p className="text-xs text-muted-foreground">Aree Totali</p>
+            <p className="text-2xl font-bold">{areas.length}</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2">
+        <Button onClick={generateAll} disabled={generating} size="sm">
+          {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
+          Genera Zone (Km per Linea)
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          Haversine cumulativa fermata→fermata per ogni linea extraurbana
+        </p>
+      </div>
+
+      {/* Route picker + detail */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="bg-card/50 lg:col-span-1">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Linee Extraurbane</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="max-h-[50vh] overflow-auto">
+              {extraRoutes.length === 0 ? (
+                <p className="p-4 text-sm text-muted-foreground">
+                  Nessuna linea classificata come extraurbana.
+                </p>
+              ) : (
+                extraRoutes.map(r => {
+                  const routeAreaCount = extraAreas.filter(a => a.routeId === r.routeId).length;
+                  return (
+                    <button
+                      key={r.routeId}
+                      onClick={() => loadRouteStops(r.routeId)}
+                      className={`w-full text-left px-4 py-2.5 border-b border-border/10 hover:bg-muted/20 transition-colors flex items-center justify-between ${selectedRoute === r.routeId ? "bg-primary/10 border-l-2 border-l-primary" : ""}`}
+                    >
+                      <div>
+                        <span className="font-medium text-sm">{r.shortName || r.routeId}</span>
+                        <span className="text-xs text-muted-foreground ml-2 truncate">{r.longName}</span>
+                      </div>
+                      {routeAreaCount > 0 && (
+                        <Badge variant="secondary" className="text-[10px] shrink-0">{routeAreaCount} zone</Badge>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-card/50 lg:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">
+              {selectedRoute ? `Fermate Linea ${selectedRoute}` : "Seleziona una linea"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!selectedRoute ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">
+                ← Seleziona una linea extraurbana per vedere le fermate e le zone assegnate
+              </p>
+            ) : loadingStops ? (
+              <LoadingSpinner />
+            ) : routeStops.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">Nessuna fermata trovata per questa linea.</p>
+            ) : (
+              <div className="overflow-auto max-h-[50vh]">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-card">
+                    <tr className="border-b border-border/30">
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">#</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fermata</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Km</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fascia</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Zona</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeStops.map((s, i) => (
+                      <tr key={`${s.stopId}-${i}`} className="border-b border-border/10 hover:bg-muted/10">
+                        <td className="py-1.5 px-2 text-muted-foreground">{s.sequence}</td>
+                        <td className="py-1.5 px-2">
+                          <div>
+                            <span className="font-medium">{s.stopName}</span>
+                            <span className="text-[10px] text-muted-foreground ml-2 font-mono">{s.stopId}</span>
+                          </div>
+                        </td>
+                        <td className="py-1.5 px-2 text-right font-mono">{s.progressiveKm.toFixed(1)}</td>
+                        <td className="py-1.5 px-2">
+                          {s.suggestedFascia && (
+                            <Badge variant="outline" className="text-[10px]">F{s.suggestedFascia}</Badge>
+                          )}
+                        </td>
+                        <td className="py-1.5 px-2">
+                          {s.currentAreaId ? (
+                            <Badge variant="secondary" className="text-[10px]">{s.currentAreaId}</Badge>
+                          ) : s.suggestedAreaId ? (
+                            <span className="text-[10px] text-muted-foreground italic">{s.suggestedAreaId}</span>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB 3d: ZONE EXTRAURBANE — Percorso Dominante
+// ═══════════════════════════════════════════════════════════
+
+function ZonesDominantTab() {
+  const { toast } = useToast();
+  const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
+  const [areas, setAreas] = useState<FareArea[]>([]);
+  const [selectedRoute, setSelectedRoute] = useState<string | null>(null);
+  const [routeStops, setRouteStops] = useState<RouteStop[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [loadingStops, setLoadingStops] = useState(false);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nets, fa] = await Promise.all([
+        apiFetch<RouteNetwork[]>("/api/fares/route-networks"),
+        apiFetch<FareArea[]>("/api/fares/areas"),
+      ]);
+      setRouteNets(nets);
+      setAreas(fa);
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setLoading(false);
+  }, [toast]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  useEffect(() => {
+    if (selectedRoute) {
+      setLoadingStops(true);
+      apiFetch<RouteStop[]>(`/api/fares/route-stops-dominant/${selectedRoute}`)
+        .then(setRouteStops)
+        .catch(() => setRouteStops([]))
+        .finally(() => setLoadingStops(false));
+    } else {
+      setRouteStops([]);
+    }
+  }, [selectedRoute]);
+
+  const generateAll = async () => {
+    setGenerating(true);
+    try {
+      const res = await apiFetch<{ generated: number; routes: any[] }>("/api/fares/zones/generate-all-dominant", { method: "POST" });
+      toast({ title: "Zone Percorso Dominante generate", description: `${res.generated} linee processate` });
+      loadData();
+      if (selectedRoute) {
+        apiFetch<RouteStop[]>(`/api/fares/route-stops-dominant/${selectedRoute}`).then(setRouteStops).catch(() => {});
+      }
+    } catch (e: any) {
+      toast({ title: "Errore generazione", description: e.message, variant: "destructive" });
+    }
+    setGenerating(false);
+  };
+
+  if (loading) return <LoadingSpinner />;
+
+  const extraRoutes = routeNets.filter(r => r.networkId === "extraurbano");
+  const extraAreas = areas.filter(a => a.networkId === "extraurbano");
+
+  return (
+    <div className="space-y-4">
+      {/* Description */}
+      <Card className="bg-amber-500/5 border-amber-500/20">
+        <CardContent className="py-3">
+          <div className="flex items-start gap-3">
+            <Target className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-sm text-muted-foreground space-y-1">
+              <p><strong className="text-amber-400">Percorso Dominante</strong> — Seleziona il percorso con più corse giornaliere (tripCount massimo) nella famiglia direzionale e usa <em>solo</em> quello come shape di riferimento.</p>
+              <p className="text-[11px]">Metodo deterministico: zero ambiguità, massima rappresentatività. I percorsi alternativi sono mostrati a titolo informativo.</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex items-center gap-3">
+        <Button onClick={generateAll} disabled={generating} variant="outline">
+          {generating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Target className="w-4 h-4 mr-2" />}
+          Genera zone (Percorso Dominante)
+        </Button>
+        <span className="text-xs text-muted-foreground">{extraRoutes.length} linee extraurbane — {extraAreas.length} aree totali</span>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Route list */}
+        <Card className="bg-card/50">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Linee Extraurbane</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-0.5 max-h-[50vh] overflow-auto">
+              {extraRoutes.map(r => {
+                const routeAreaCount = extraAreas.filter(a => a.routeId === r.routeId).length;
+                return (
+                  <button key={r.routeId}
+                    onClick={() => setSelectedRoute(r.routeId)}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
+                      selectedRoute === r.routeId ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted/30 text-muted-foreground"
+                    }`}>
+                    <Badge variant="outline" className="text-[10px] shrink-0"
+                      style={r.routeColor ? { borderColor: `#${r.routeColor}`, color: `#${r.routeColor}` } : {}}>
+                      {r.shortName || r.routeId}
+                    </Badge>
+                    <span className="truncate flex-1">{r.longName}</span>
+                    {routeAreaCount > 0 && (
+                      <Badge variant="secondary" className="text-[10px] shrink-0">{routeAreaCount} zone</Badge>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Stop detail */}
+        <Card className="bg-card/50 lg:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">
+              {selectedRoute ? `Fermate Linea ${selectedRoute}` : "Seleziona una linea"}
+            </CardTitle>
+            {routeStops.length > 0 && routeStops[0]?.dominantTripCount != null && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Km da percorso dominante ({routeStops[0].dominantTripCount} corse/giorno su {routeStops[0].totalTripsDay ?? "?"} totali) — DGR 1036/2022 art. 2.d
+              </p>
+            )}
+          </CardHeader>
+          <CardContent>
+            {!selectedRoute ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">
+                ← Seleziona una linea extraurbana per vedere le fermate e le zone assegnate
+              </p>
+            ) : loadingStops ? (
+              <LoadingSpinner />
+            ) : routeStops.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">Nessuna fermata trovata per questa linea.</p>
+            ) : (
+              <div className="overflow-auto max-h-[50vh]">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-card">
+                    <tr className="border-b border-border/30">
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">#</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fermata</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Km</th>
+                      <th className="text-right py-2 px-2 font-medium text-muted-foreground">Corse dom.</th>
+                      <th className="text-center py-2 px-2 font-medium text-muted-foreground">Alt. percorsi</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Fascia</th>
+                      <th className="text-left py-2 px-2 font-medium text-muted-foreground">Zona</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeStops.map((s, i) => {
+                      const altCount = s.altPercorsi?.length ?? 0;
+                      return (
+                        <tr key={`${s.stopId}-${i}`} className="border-b border-border/10 hover:bg-muted/10">
+                          <td className="py-1.5 px-2 text-muted-foreground">{s.sequence}</td>
+                          <td className="py-1.5 px-2">
+                            <div>
+                              <span className="font-medium">{s.stopName}</span>
+                              <span className="text-[10px] text-muted-foreground ml-2 font-mono">{s.stopId}</span>
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-right font-mono">{s.progressiveKm.toFixed(1)}</td>
+                          <td className="py-1.5 px-2 text-right font-mono text-[11px]">
+                            {s.dominantTripCount ?? "—"}
+                          </td>
+                          <td className="py-1.5 px-2 text-center font-mono text-[11px]">
+                            {altCount > 0 ? (
+                              <span className="text-muted-foreground" title={s.altPercorsi?.map((a: any) => `${a.shapeId?.slice(-6)}: ${a.km.toFixed(1)}km (${a.tripCount}c)`).join("\n")}>
+                                {altCount}
+                              </span>
+                            ) : "—"}
+                          </td>
+                          <td className="py-1.5 px-2">
+                            {s.suggestedFascia && (
+                              <Badge variant="outline" className="text-[10px]">F{s.suggestedFascia}</Badge>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2">
+                            {s.currentAreaId ? (
+                              <Badge variant="secondary" className="text-[10px]">{s.currentAreaId}</Badge>
+                            ) : s.suggestedAreaId ? (
+                              <span className="text-[10px] text-muted-foreground italic">{s.suggestedAreaId}</span>
+                            ) : "—"}
+                          </td>
+                        </tr>
                       );
                     })}
                   </tbody>
@@ -1764,23 +2221,15 @@ function ZonesTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// ZONES CONTAINER — macro-tab with sub-tabs: Km per Linea / Cluster
+// ZONES CONTAINER — macro-tab with sub-tabs: Cluster / Proiezione su Shape / Percorso Dominante
 // ═══════════════════════════════════════════════════════════
 
 function ZonesContainerTab() {
-  const [subTab, setSubTab] = useState<"km" | "cluster">("km");
+  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant">("cluster");
   return (
     <div className="space-y-4">
       {/* Sub-tab switcher */}
       <div className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 w-fit">
-        <button
-          onClick={() => setSubTab("km")}
-          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            subTab === "km" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-          }`}
-        >
-          <MapPin className="w-3.5 h-3.5" /> Km per Linea
-        </button>
         <button
           onClick={() => setSubTab("cluster")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -1789,11 +2238,27 @@ function ZonesContainerTab() {
         >
           <Hexagon className="w-3.5 h-3.5" /> Cluster
         </button>
+        <button
+          onClick={() => setSubTab("shape")}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === "shape" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" /> Proiezione su Shape
+        </button>
+        <button
+          onClick={() => setSubTab("dominant")}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === "dominant" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Target className="w-3.5 h-3.5" /> Percorso Dominante
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
         <motion.div key={subTab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.15 }}>
-          {subTab === "km" ? <ZonesTab /> : <ClustersTab />}
+          {subTab === "cluster" ? <ClustersTab /> : subTab === "shape" ? <ZonesTab /> : <ZonesDominantTab />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -1890,6 +2355,8 @@ function ClustersTab() {
   // Matrix
   const [distMatrix, setDistMatrix] = useState<DistanceEntry[]>([]);
   const [showMatrix, setShowMatrix] = useState(false);
+  // Generated zones result
+  const [genZonesResult, setGenZonesResult] = useState<{ areasCreated: number; stopsAssigned: number; odRules: number } | null>(null);
 
   // New cluster form
   const [newName, setNewName] = useState("");
@@ -2024,6 +2491,7 @@ function ClustersTab() {
     setGenerating(true);
     try {
       const result = await apiFetch<any>("/api/fares/zone-clusters/generate-zones", { method: "POST" });
+      setGenZonesResult(result);
       toast({ title: "Zone generate", description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD` });
     } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
     setGenerating(false);
@@ -2381,6 +2849,58 @@ function ClustersTab() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Generated zones result table */}
+      {genZonesResult && clusters.length > 0 && (
+        <Card className="bg-card/50">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Zap className="w-4 h-4 text-primary" /> Zone Generate dai Cluster
+              </CardTitle>
+              <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
+                <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">{genZonesResult.areasCreated} aree</span>
+                <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-400 font-medium">{genZonesResult.stopsAssigned} fermate</span>
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-medium">{genZonesResult.odRules} regole OD</span>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-auto max-h-56">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card z-10">
+                  <tr className="border-b border-border/30">
+                    <th className="text-left py-2 px-3 font-medium text-muted-foreground">Cluster / Area</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">Fermate</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">Centroide Lat</th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">Centroide Lon</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clusters.map((c) => (
+                    <tr key={c.clusterId} className="border-b border-border/5 hover:bg-muted/10">
+                      <td className="py-1.5 px-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: c.color }} />
+                          <span className="font-medium">{c.clusterName}</span>
+                          <span className="text-[10px] text-muted-foreground font-mono">cluster_{c.clusterId}</span>
+                        </div>
+                      </td>
+                      <td className="py-1.5 px-3 text-right font-mono">{c.stopCount}</td>
+                      <td className="py-1.5 px-3 text-right font-mono text-muted-foreground">
+                        {c.centroidLat ? c.centroidLat.toFixed(5) : "—"}
+                      </td>
+                      <td className="py-1.5 px-3 text-right font-mono text-muted-foreground">
+                        {c.centroidLon ? c.centroidLon.toFixed(5) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Main: sidebar + map */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
@@ -3173,7 +3693,7 @@ function GenerateTab() {
   const [generating, setGenerating] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
-  const [zoningMethod, setZoningMethod] = useState<"km" | "cluster">("km");
+  const [zoningMethod, setZoningMethod] = useState<"shape" | "direct" | "dominant" | "cluster">("direct");
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
@@ -3185,6 +3705,12 @@ function GenerateTab() {
       if (zoningMethod === "cluster") {
         // First generate zones from clusters, then leg rules
         await apiFetch("/api/fares/zone-clusters/generate-zones", { method: "POST" });
+      } else if (zoningMethod === "shape") {
+        await apiFetch("/api/fares/zones/generate-all", { method: "POST" });
+      } else if (zoningMethod === "direct") {
+        await apiFetch("/api/fares/zones/generate-all-direct", { method: "POST" });
+      } else if (zoningMethod === "dominant") {
+        await apiFetch("/api/fares/zones/generate-all-dominant", { method: "POST" });
       }
       // Generate leg rules (uses whatever areas/stop_areas exist)
       await apiFetch("/api/fares/leg-rules/generate", { method: "POST" });
@@ -3192,7 +3718,7 @@ function GenerateTab() {
       const data = await apiFetch<GenerateResult>("/api/fares/generate-gtfs", { method: "POST" });
       setResult(data);
       setPreviewFile(null);
-      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti (metodo: ${zoningMethod === "km" ? "Km per linea" : "Cluster"})` });
+      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti (metodo: ${{shape:"Shape",direct:"Km Diretto",dominant:"Percorso Dominante",cluster:"Cluster"}[zoningMethod]})` });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     } finally { setGenerating(false); }
@@ -3223,34 +3749,33 @@ function GenerateTab() {
       {/* Zoning method selector */}
       <Card className="bg-card/50">
         <CardContent className="p-3">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
             <p className="text-xs font-medium text-muted-foreground shrink-0">Metodo zonizzazione extraurbana:</p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setZoningMethod("km")}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                  zoningMethod === "km"
-                    ? "bg-primary/10 border-primary/30 text-primary"
-                    : "border-border/30 text-muted-foreground hover:bg-muted/30"
-                }`}
-              >
-                <MapPin className="w-3 h-3" /> Km per Linea
-              </button>
-              <button
-                onClick={() => setZoningMethod("cluster")}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
-                  zoningMethod === "cluster"
-                    ? "bg-primary/10 border-primary/30 text-primary"
-                    : "border-border/30 text-muted-foreground hover:bg-muted/30"
-                }`}
-              >
-                <Hexagon className="w-3 h-3" /> Cluster
-              </button>
+            <div className="flex gap-2 flex-wrap">
+              {([
+                { value: "direct",   label: "Km Diretto",          icon: <MapPin className="w-3 h-3" />,   desc: "Haversine stop→stop (consigliato)" },
+                { value: "shape",    label: "Proiezione Shape",     icon: <Route className="w-3 h-3" />,    desc: "Km progressivi sul shape del percorso" },
+                { value: "dominant", label: "Percorso Dominante",   icon: <TrendingUp className="w-3 h-3" />, desc: "Fermata più frequente per tratta" },
+                { value: "cluster",  label: "Cluster Territoriali", icon: <Hexagon className="w-3 h-3" />,  desc: "Zone da partizioni geografiche" },
+              ] as const).map(opt => (
+                <button key={opt.value}
+                  onClick={() => setZoningMethod(opt.value)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                    zoningMethod === opt.value
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "border-border/30 text-muted-foreground hover:bg-muted/30"
+                  }`}
+                  title={opt.desc}
+                >
+                  {opt.icon} {opt.label}
+                </button>
+              ))}
             </div>
             <p className="text-[10px] text-muted-foreground">
-              {zoningMethod === "km"
-                ? "Zone calcolate sulla distanza progressiva per ogni linea extraurbana"
-                : "Zone calcolate dalla distanza tra centroidi dei cluster"}
+              { zoningMethod === "direct"   && "Zone extraurbane calcolate con distanza Haversine tra stop consecutivi" }
+              { zoningMethod === "shape"    && "Zone calcolate sulla distanza progressiva lungo il shape GTFS del percorso" }
+              { zoningMethod === "dominant" && "Zone basate sul percorso con il maggior numero di corse (linea dominante)" }
+              { zoningMethod === "cluster"  && "Zone derivate dai cluster geografici delle fermate extraurbane" }
             </p>
           </div>
         </CardContent>
@@ -3329,7 +3854,7 @@ function GenerateTab() {
 
       {/* Description */}
       <p className="text-xs text-muted-foreground">
-        <strong>Genera Anteprima:</strong> crea le regole tariffarie e mostra l'anteprima di tutti i file Fares V2 (usa metodo "{zoningMethod === "km" ? "Km per Linea" : "Cluster"}"). —
+        <strong>Genera Anteprima:</strong> crea le regole tariffarie e mostra l'anteprima di tutti i file Fares V2 (usa metodo "{({shape:"Shape",direct:"Km Diretto",dominant:"Dominante",cluster:"Cluster"} as const)[zoningMethod]}"). —
         <strong className="ml-1">Scarica ZIP:</strong> esporta l'intero feed GTFS (agency, routes, trips, stops, stop_times, calendar, shapes + tutti i file tariffari).
       </p>
 
@@ -3487,6 +4012,17 @@ interface ClusterSimResult {
   bandRange: string | null;
 }
 
+interface DirectSimResult {
+  type: "direct";
+  fromStop: { stopId: string; name: string; lat: number; lon: number };
+  toStop: { stopId: string; name: string; lat: number; lon: number };
+  distanceKm: number;
+  fascia: number | null;
+  amount: number | null;
+  currency: string;
+  bandRange: string | null;
+}
+
 // Convex hull for map display (reuse logic from ClustersTab)
 function simConvexHull(points: [number, number][]): [number, number][] {
   if (points.length < 3) return points;
@@ -3505,7 +4041,7 @@ function SimulateTab() {
   const mapRef = useRef<MapRef>(null);
 
   // ── Sim mode ──
-  const [simMode, setSimMode] = useState<"line" | "cluster">("line");
+  const [simMode, setSimMode] = useState<"shape" | "cluster" | "dominant">("dominant");
 
   // ── Line-based (km) state ──
   const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
@@ -3526,6 +4062,25 @@ function SimulateTab() {
   const [clTo, setClTo] = useState("");
   const [clResult, setClResult] = useState<ClusterSimResult | null>(null);
   const [clLoading, setClLoading] = useState(false);
+
+  // ── Direct (fermata-a-fermata) state ──
+  const [dirSelectedRoute, setDirSelectedRoute] = useState("");
+  const [dirRouteStops, setDirRouteStops] = useState<RouteStop[]>([]);
+  const [dirLoadingStops, setDirLoadingStops] = useState(false);
+  const [dirFrom, setDirFrom] = useState("");
+  const [dirTo, setDirTo] = useState("");
+  const [dirResult, setDirResult] = useState<DirectSimResult | null>(null);
+  const [dirLoading, setDirLoading] = useState(false);
+
+  // ── Dominant (percorso dominante) state ──
+  const [domSelectedRoute, setDomSelectedRoute] = useState("");
+  const [domRouteStops, setDomRouteStops] = useState<RouteStop[]>([]);
+  const [domShapePoints, setDomShapePoints] = useState<[number, number][]>([]);
+  const [domLoadingStops, setDomLoadingStops] = useState(false);
+  const [domFrom, setDomFrom] = useState("");
+  const [domTo, setDomTo] = useState("");
+  const [domResult, setDomResult] = useState<SimulationResult | null>(null);
+  const [domLoading, setDomLoading] = useState(false);
 
   // ── Load route networks ──
   useEffect(() => {
@@ -3647,6 +4202,100 @@ function SimulateTab() {
     setClLoading(false);
   };
 
+  // ──────────── DIRECT MODE logic ──────────────
+  const dirFilteredRoutes = routeNets.filter(r => r.networkId === "extraurbano");
+
+  useEffect(() => {
+    if (dirSelectedRoute) {
+      setDirLoadingStops(true);
+      apiFetch<RouteStop[]>(`/api/fares/route-stops/${dirSelectedRoute}`)
+        .then(setDirRouteStops)
+        .catch(() => setDirRouteStops([]))
+        .finally(() => setDirLoadingStops(false));
+    } else {
+      setDirRouteStops([]);
+    }
+  }, [dirSelectedRoute]);
+
+  useEffect(() => {
+    if (dirRouteStops.length > 1 && mapRef.current) {
+      const lats = dirRouteStops.map(s => s.lat);
+      const lons = dirRouteStops.map(s => s.lon);
+      mapRef.current.fitBounds(
+        [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+        { padding: 60, duration: 800 }
+      );
+    }
+  }, [dirRouteStops, simMode]);
+
+  const simulateDirect = async () => {
+    if (!dirFrom || !dirTo) return;
+    setDirLoading(true);
+    setDirResult(null);
+    try {
+      const data = await apiFetch<DirectSimResult>("/api/fares/simulate-direct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fromStopId: dirFrom, toStopId: dirTo }),
+      });
+      setDirResult(data);
+      // Fit map to show both stops
+      if (data.fromStop && data.toStop && mapRef.current) {
+        const lats = [data.fromStop.lat, data.toStop.lat];
+        const lons = [data.fromStop.lon, data.toStop.lon];
+        mapRef.current.fitBounds(
+          [[Math.min(...lons) - 0.03, Math.min(...lats) - 0.02], [Math.max(...lons) + 0.03, Math.max(...lats) + 0.02]],
+          { padding: 60, duration: 800 }
+        );
+      }
+    } catch (e: any) {
+      toast({ title: "Errore simulazione", description: e.message, variant: "destructive" });
+    }
+    setDirLoading(false);
+  };
+
+  // ── Direct-mode GeoJSON ──
+  const dirRouteLineGeoJson = useMemo(() => {
+    if (dirRouteStops.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: dirRouteStops.map(s => [s.lon, s.lat]) } }],
+    };
+  }, [dirRouteStops]);
+
+  const dirStopsGeoJson = useMemo(() => {
+    if (dirRouteStops.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: dirRouteStops.map(s => ({
+        type: "Feature" as const,
+        properties: {
+          stopId: s.stopId, name: s.stopName, km: s.progressiveKm,
+          isFrom: s.stopId === dirFrom, isTo: s.stopId === dirTo,
+        },
+        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+      })),
+    };
+  }, [dirRouteStops, dirFrom, dirTo]);
+
+  const dirLineGeoJson = useMemo(() => {
+    if (!dirResult) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{
+        type: "Feature" as const,
+        properties: {},
+        geometry: {
+          type: "LineString" as const,
+          coordinates: [
+            [dirResult.fromStop.lon, dirResult.fromStop.lat],
+            [dirResult.toStop.lon, dirResult.toStop.lat],
+          ],
+        },
+      }],
+    };
+  }, [dirResult]);
+
   // ── Cluster hulls GeoJSON ──
   const clusterHullsGeoJSON = useMemo(() => {
     if (!clResult) return null;
@@ -3753,37 +4402,169 @@ function SimulateTab() {
     };
   }, [routeStops, fromStop, toStop, result]);
 
+  // ──────────── DOMINANT MODE logic ──────────────
+  const domFilteredRoutes = routeNets.filter(r => r.networkId === "extraurbano");
+
+  useEffect(() => {
+    if (domSelectedRoute) {
+      setDomLoadingStops(true);
+      apiFetch<{ stops: RouteStop[]; shapePoints: [number, number][] }>(`/api/fares/route-stops-dominant/${domSelectedRoute}`)
+        .then(data => {
+          setDomRouteStops(data.stops ?? []);
+          setDomShapePoints(data.shapePoints ?? []);
+        })
+        .catch(() => { setDomRouteStops([]); setDomShapePoints([]); })
+        .finally(() => setDomLoadingStops(false));
+    } else {
+      setDomRouteStops([]);
+      setDomShapePoints([]);
+    }
+  }, [domSelectedRoute]);
+
+  useEffect(() => {
+    if (domRouteStops.length > 1 && mapRef.current && simMode === "dominant") {
+      const lats = domRouteStops.map(s => s.lat);
+      const lons = domRouteStops.map(s => s.lon);
+      mapRef.current.fitBounds(
+        [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+        { padding: 60, duration: 800 }
+      );
+    }
+  }, [domRouteStops, simMode]);
+
+  const simulateDominant = async () => {
+    if (!domFrom || !domTo) return;
+    setDomLoading(true);
+    setDomResult(null);
+    try {
+      const data = await apiFetch<SimulationResult>("/api/fares/simulate-dominant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ networkId: "extraurbano", fromStopId: domFrom, toStopId: domTo }),
+      });
+      setDomResult(data);
+      if (mapRef.current) {
+        // Regola 2: fitBounds su tutte le tratte di tutte le linee
+        const allStops = data.ruleApplied === "regola2"
+          ? (data.lineResults ?? []).flatMap(lr => lr.intermediateStops ?? [])
+          : (data.intermediateStops ?? []);
+        if (allStops.length > 1) {
+          const lats = allStops.map(s => s.lat);
+          const lons = allStops.map(s => s.lon);
+          mapRef.current.fitBounds(
+            [[Math.min(...lons) - 0.02, Math.min(...lats) - 0.01], [Math.max(...lons) + 0.02, Math.max(...lats) + 0.01]],
+            { padding: 60, duration: 800 }
+          );
+        }
+      }
+    } catch (e: any) {
+      toast({ title: "Errore simulazione", description: e.message, variant: "destructive" });
+    }
+    setDomLoading(false);
+  };
+
+  // ── Dominant-mode GeoJSON ──
+  // Colori per le linee in Regola 2
+  const REGOLA2_COLORS = ["#f59e0b", "#60a5fa", "#34d399", "#f87171", "#a78bfa"];
+
+  const domRouteLineGeoJson = useMemo(() => {
+    // Preferisce le coordinate dello shape GTFS reale; fallback alle coordinate delle fermate
+    const coords: [number, number][] = domShapePoints.length >= 2
+      ? domShapePoints
+      : domRouteStops.map(s => [s.lon, s.lat] as [number, number]);
+    if (coords.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: coords } }],
+    };
+  }, [domRouteStops, domShapePoints]);
+
+  const domSegmentGeoJson = useMemo(() => {
+    // Per Regola 1: usa intermediateStops dal top-level, fallback a lineResults[0].intermediateStops
+    const stops = domResult?.intermediateStops?.length
+      ? domResult.intermediateStops
+      : (domResult?.ruleApplied === "regola1" ? (domResult.lineResults?.[0]?.intermediateStops ?? []) : []);
+    if (stops.length < 2) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: stops.map((s: any) => [s.lon, s.lat]) } }],
+    };
+  }, [domResult]);
+
+  // Regola 2: un GeoJSON per ogni linea, con la tratta OD evidenziata
+  const domRegola2GeoJsons = useMemo(() => {
+    if (domResult?.ruleApplied !== "regola2" || !domResult.lineResults) return [];
+    return domResult.lineResults.map((lr, idx) => {
+      const stops = lr.intermediateStops ?? [];
+      if (stops.length < 2) return null;
+      return {
+        routeId: lr.routeId,
+        color: REGOLA2_COLORS[idx % REGOLA2_COLORS.length],
+        geojson: {
+          type: "FeatureCollection" as const,
+          features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: stops.map(s => [s.lon, s.lat]) } }],
+        },
+        fromStop: stops[0],
+        toStop: stops[stops.length - 1],
+      };
+    }).filter(Boolean) as { routeId: string; color: string; geojson: any; fromStop: any; toStop: any }[];
+  }, [domResult]);
+
+  const domStopsGeoJson = useMemo(() => {
+    if (domRouteStops.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: domRouteStops.map(s => ({
+        type: "Feature" as const,
+        properties: {
+          stopId: s.stopId, name: s.stopName, km: s.progressiveKm,
+          isFrom: s.stopId === domFrom, isTo: s.stopId === domTo,
+          isIntermediate: domResult?.intermediateStops?.some(is => is.stopId === s.stopId) ?? false,
+        },
+        geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
+      })),
+    };
+  }, [domRouteStops, domFrom, domTo, domResult]);
+
   // ═══════════ RENDER ═══════════
   return (
     <div className="space-y-4">
       {/* Mode switcher */}
       <div className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 w-fit">
         <button
-          onClick={() => { setSimMode("line"); setClResult(null); }}
-          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            simMode === "line" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
-          }`}
-        >
-          <ArrowRightLeft className="w-3.5 h-3.5" /> Km per Linea
-        </button>
-        <button
-          onClick={() => { setSimMode("cluster"); setResult(null); }}
+          onClick={() => { setSimMode("cluster"); setResult(null); setDirResult(null); setDomResult(null); }}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
             simMode === "cluster" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
           }`}
         >
           <Hexagon className="w-3.5 h-3.5" /> Cluster
         </button>
+        <button
+          onClick={() => { setSimMode("shape"); setClResult(null); setDirResult(null); setDomResult(null); }}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            simMode === "shape" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" /> Proiezione su Shape
+        </button>
+        <button
+          onClick={() => { setSimMode("dominant"); setResult(null); setClResult(null); setDirResult(null); }}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            simMode === "dominant" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Target className="w-3.5 h-3.5" /> Percorso Dominante
+        </button>
       </div>
 
-      {/* ══════════════ LINE MODE ══════════════ */}
-      {simMode === "line" && (
+      {/* ══════════════ SHAPE MODE ══════════════ */}
+      {simMode === "shape" && (
         <>
           <Card className="bg-card/50">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
                 <Play className="w-4 h-4 text-primary" />
-                Simulatore per Km Linea
+                Simulatore — Proiezione su Shape
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -3957,141 +4738,38 @@ function SimulateTab() {
                                 <p className="text-lg font-bold text-xs mt-1">{result.bandRange}</p>
                               </div>
                             </div>
-                            {result.percorsiCount && result.percorsiCount > 1 && result.distanceVariants && (() => {
-                              const variants = result.distanceVariants;
+                            {/* Dettaglio percorsi (media ponderata) */}
+                            {(result.percorsiCount ?? 0) > 1 && result.distanceVariants && (() => {
+                              const variants = result.distanceVariants!;
                               const avgKm = result.distanceKm ?? 0;
-                              const totalTrips = result.totalTrips ?? variants.reduce((a, v) => a + (v.tripCount || 1), 0);
-                              const minKm = Math.min(...variants.map(v => v.km));
-                              const maxKm = Math.max(...variants.map(v => v.km));
-                              const dispersion = maxKm - minKm;
-                              // Calcolo anche media aritmetica semplice per confronto
-                              const simpleAvg = variants.reduce((a, v) => a + v.km, 0) / variants.length;
-                              const avgDiffers = Math.abs(avgKm - simpleAvg) > 0.05;
+                              const maxKm = Math.max(...variants.map(v => v.km), avgKm);
                               return (
                                 <div className="space-y-3">
-                                  {/* Varianti percorso — barra grafica con corse */}
-                                  <div className="p-3 rounded-lg bg-muted/20 border border-border/20 space-y-2.5">
-                                    <div className="flex items-center justify-between flex-wrap gap-2">
-                                      <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                                        <Layers className="w-3.5 h-3.5 text-primary" />
-                                        {result.percorsiCount} percorsi distinti · {totalTrips} corse totali
-                                      </p>
-                                      <div className="flex gap-1.5">
-                                        <Badge variant="outline" className={`text-[10px] ${dispersion > 2 ? "border-amber-500/50 text-amber-500" : "border-emerald-500/50 text-emerald-500"}`}>
-                                          Δ {dispersion.toFixed(2)} km
-                                        </Badge>
-                                        {avgDiffers && (
-                                          <Badge variant="outline" className="text-[10px] border-violet-500/50 text-violet-400">
-                                            ponderata ≠ semplice
-                                          </Badge>
-                                        )}
-                                      </div>
-                                    </div>
-                                    {/* Intestazione colonne */}
-                                    <div className="flex items-center gap-2 text-[9px] text-muted-foreground/60 uppercase tracking-wider px-0.5">
-                                      <span className="w-16">Shape</span>
-                                      <span className="flex-1">Distanza</span>
-                                      <span className="w-12 text-right">Km</span>
-                                      <span className="w-14 text-right">Corse</span>
-                                      <span className="w-10 text-right">Peso</span>
-                                    </div>
-                                    {/* Visual bar per ogni variante */}
+                                  <div className="p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20 space-y-2">
+                                    <p className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                                      <Layers className="w-3.5 h-3.5" />
+                                      Media ponderata — {result.percorsiCount} percorsi, {result.totalTrips} corse totali
+                                    </p>
                                     <div className="space-y-1">
-                                      {variants.map((v, i) => {
-                                        const barMin = minKm * 0.95;
-                                        const barMax = maxKm * 1.05;
-                                        const range = barMax - barMin || 1;
-                                        const pct = ((v.km - barMin) / range) * 100;
-                                        const avgPct = ((avgKm - barMin) / range) * 100;
-                                        const trips = v.tripCount || 1;
-                                        const weightPct = Math.round((trips / totalTrips) * 100);
+                                      {variants.map((v: any, i: number) => {
+                                        const pct = maxKm > 0 ? (v.km / maxKm) * 100 : 0;
                                         return (
                                           <div key={i} className="flex items-center gap-2">
-                                            <span className="text-[10px] text-muted-foreground font-mono w-16 truncate" title={v.shapeId || "n/a"}>
-                                              {v.shapeId ? v.shapeId.slice(-8) : "n/a"}
+                                            <span className="text-[10px] text-muted-foreground font-mono w-16 truncate" title={v.shapeId ?? "n/a"}>
+                                              {v.shapeId ? String(v.shapeId).slice(-8) : "n/a"}
                                             </span>
-                                            <div className="flex-1 h-5 bg-muted/30 rounded-full relative overflow-hidden">
-                                              <div
-                                                className={`h-full rounded-full transition-all ${
-                                                  Math.abs(v.km - avgKm) > 1 ? "bg-amber-500/60" : "bg-primary/50"
-                                                }`}
-                                                style={{ width: `${Math.max(4, pct)}%` }}
-                                              />
-                                              {/* Linea media ponderata */}
-                                              <div
-                                                className="absolute top-0 bottom-0 w-0.5 bg-emerald-400"
-                                                style={{ left: `${avgPct}%` }}
-                                                title={`Media ponderata: ${avgKm.toFixed(2)} km`}
-                                              />
+                                            <div className="flex-1 h-4 bg-muted/20 rounded-full overflow-hidden">
+                                              <div className="h-full rounded-full bg-emerald-500/40" style={{ width: `${Math.max(4, pct)}%` }} />
                                             </div>
-                                            <span className="text-[10px] font-mono text-muted-foreground w-12 text-right">
-                                              {v.km.toFixed(2)}
-                                            </span>
-                                            <span className={`text-[10px] font-mono w-14 text-right ${trips >= 10 ? "text-emerald-400 font-semibold" : trips <= 2 ? "text-amber-400" : "text-muted-foreground"}`}>
-                                              {trips} {trips === 1 ? "corsa" : "corse"}
-                                            </span>
-                                            <span className="text-[10px] font-mono text-muted-foreground/60 w-10 text-right">
-                                              {weightPct}%
-                                            </span>
+                                            <span className="text-[10px] font-mono text-muted-foreground w-14 text-right">{v.km.toFixed(2)} km</span>
+                                            <span className="text-[10px] font-mono text-muted-foreground/60 w-12 text-right">{v.tripCount}c</span>
                                           </div>
                                         );
                                       })}
                                     </div>
-                                    <div className="flex items-center gap-4 text-[10px] text-muted-foreground pt-1 border-t border-border/10 flex-wrap">
-                                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-primary/50" /> Distanza percorso</span>
-                                      <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-emerald-400" /> Media ponderata ({avgKm.toFixed(2)} km)</span>
-                                      {dispersion > 2 && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500/60" /> Outlier</span>}
-                                      <span className="flex items-center gap-1 text-emerald-400">●</span>
-                                      <span>≥10 corse</span>
-                                      <span className="flex items-center gap-1 text-amber-400">●</span>
-                                      <span>≤2 corse</span>
-                                    </div>
-                                  </div>
-
-                                  {/* Calcolo step-by-step */}
-                                  <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
-                                    <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
-                                      <FileText className="w-3.5 h-3.5" />
-                                      Trasparenza calcolo — DGR 1036/2022 art. 2.d
-                                    </p>
-                                    <div className="grid gap-1.5 text-[10px] text-muted-foreground">
-                                      <div className="flex items-start gap-2">
-                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
-                                        <span>Caricati <strong>{result.percorsiCount} percorsi distinti</strong> che servono <strong>{totalTrips} corse/giorno</strong></span>
-                                      </div>
-                                      <div className="flex items-start gap-2">
-                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
-                                        <span>Per ogni percorso: <strong>proiezione ortogonale</strong> delle fermate sulla geometria shape (tracciato reale su strada)</span>
-                                      </div>
-                                      <div className="flex items-start gap-2">
-                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
-                                        <span>Distanza OD = km lungo shape dal punto proiettato di salita a quello di discesa</span>
-                                      </div>
-                                      <div className="flex items-start gap-2">
-                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">4</span>
-                                        <span>
-                                          Distanza finale = <strong>media ponderata per numero corse</strong>
-                                          {avgDiffers && (
-                                            <span className="text-violet-400"> (media semplice sarebbe {simpleAvg.toFixed(2)} km)</span>
-                                          )}
-                                          {" → "}<strong className="text-foreground">{avgKm.toFixed(2)} km</strong>
-                                        </span>
-                                      </div>
-                                      <div className="flex items-start gap-2">
-                                        <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">5</span>
-                                        <span>Fascia tariffaria: {avgKm.toFixed(2)} km → <strong className="text-foreground">F{result.fascia}</strong> ({result.bandRange})</span>
-                                      </div>
-                                    </div>
-                                    {/* Formula ponderata */}
-                                    <div className="mt-2 pt-2 border-t border-blue-500/10 space-y-1.5">
-                                      <p className="text-[10px] text-blue-400/70">Formula media ponderata:</p>
-                                      <p className="text-[10px] font-mono text-muted-foreground/80">
-                                        km = Σ(km_i × corse_i) / Σ(corse_i) = {variants.map(v => `${v.km.toFixed(1)}×${v.tripCount || 1}`).join(" + ")} / {totalTrips} = <strong className="text-foreground">{avgKm.toFixed(2)}</strong>
-                                      </p>
-                                      <p className="text-[10px] text-muted-foreground/60 italic">
-                                        Un percorso con 20 corse/giorno pesa 20× rispetto a uno con 1 sola corsa.
-                                        La distanza è misurata lungo la geometria dello shape, non in linea d'aria.
-                                      </p>
+                                    <div className="flex items-center gap-2 pt-1 border-t border-emerald-500/10">
+                                      <span className="text-[10px] font-semibold text-emerald-400">→ Media ponderata:</span>
+                                      <span className="text-sm font-bold text-emerald-400">{avgKm.toFixed(2)} km</span>
                                     </div>
                                   </div>
                                 </div>
@@ -4104,29 +4782,27 @@ function SimulateTab() {
                               </div>
                               <span className="text-4xl font-bold text-emerald-400">€{result.amount?.toFixed(2)}</span>
                             </div>
-                            {/* Metodo calcolo per percorso singolo */}
-                            {(!result.percorsiCount || result.percorsiCount <= 1) && (
-                              <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
-                                <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
-                                  <FileText className="w-3.5 h-3.5" />
-                                  Metodo calcolo — DGR 1036/2022
-                                </p>
-                                <div className="grid gap-1.5 text-[10px] text-muted-foreground">
-                                  <div className="flex items-start gap-2">
-                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
-                                    <span>Percorso unico per questa coppia O-D (1 shape disponibile)</span>
-                                  </div>
-                                  <div className="flex items-start gap-2">
-                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
-                                    <span><strong>Proiezione ortogonale</strong> delle fermate sulla geometria shape (tracciato su strada)</span>
-                                  </div>
-                                  <div className="flex items-start gap-2">
-                                    <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
-                                    <span>Distanza = <strong className="text-foreground">{result.distanceKm?.toFixed(2)} km</strong> lungo shape → Fascia <strong className="text-foreground">F{result.fascia}</strong> ({result.bandRange})</span>
-                                  </div>
+                            {/* Metodo calcolo */}
+                            <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
+                              <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
+                                <FileText className="w-3.5 h-3.5" />
+                                Trasparenza calcolo — DGR 1036/2022 art. 2.d (Proiezione su Shape)
+                              </p>
+                              <div className="grid gap-1.5 text-[10px] text-muted-foreground">
+                                <div className="flex items-start gap-2">
+                                  <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
+                                  <span>Analizzati <strong>{result.percorsiCount ?? 1} percorsi</strong> della famiglia direzionale ({result.totalTrips ?? "?"} corse totali)</span>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                  <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
+                                  <span><strong>Proiezione ortogonale</strong> di ogni fermata sulla geometria shape di ciascun percorso</span>
+                                </div>
+                                <div className="flex items-start gap-2">
+                                  <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
+                                  <span><strong>Media ponderata</strong> per numero corse → Distanza = <strong className="text-foreground">{result.distanceKm?.toFixed(2)} km</strong> → Fascia <strong className="text-foreground">F{result.fascia}</strong> ({result.bandRange})</span>
                                 </div>
                               </div>
-                            )}
+                            </div>
                           </div>
                         )}
                       </CardContent>
@@ -4491,13 +5167,395 @@ function SimulateTab() {
           </div>
         </>
       )}
+
+      {/* ══════════════ DOMINANT MODE (Percorso Dominante) ══════════════ */}
+      {simMode === "dominant" && (
+        <>
+          <Card className="bg-card/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Target className="w-4 h-4 text-amber-400" />
+                Simulatore — Percorso Dominante
+              </CardTitle>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Usa il percorso con più corse giornaliere come shape unico di riferimento
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-muted-foreground mb-1">Linea Extraurbana</label>
+                <select value={domSelectedRoute}
+                  onChange={e => { setDomSelectedRoute(e.target.value); setDomFrom(""); setDomTo(""); setDomResult(null); }}
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30">
+                  <option value="">— Seleziona linea —</option>
+                  {domFilteredRoutes.map(r => (
+                    <option key={r.routeId} value={r.routeId}>{r.shortName || r.routeId} — {r.longName}</option>
+                  ))}
+                </select>
+              </div>
+              {domSelectedRoute && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Fermata Salita</span>
+                    </label>
+                    <select value={domFrom} onChange={e => { setDomFrom(e.target.value); setDomResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={domLoadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {domRouteStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-muted-foreground mb-1">
+                      <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Fermata Discesa</span>
+                    </label>
+                    <select value={domTo} onChange={e => { setDomTo(e.target.value); setDomResult(null); }}
+                      className="w-full px-3 py-2 text-sm rounded-lg border border-border/50 bg-background/50 focus:outline-none focus:ring-1 focus:ring-primary/30" disabled={domLoadingStops}>
+                      <option value="">— Seleziona fermata —</option>
+                      {domRouteStops.map(s => (<option key={s.stopId} value={s.stopId}>{s.stopName} (km {s.progressiveKm.toFixed(1)})</option>))}
+                    </select>
+                  </div>
+                </div>
+              )}
+              <Button onClick={simulateDominant} disabled={domLoading || !domFrom || !domTo} className="w-full sm:w-auto">
+                {domLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                Calcola Tariffa (Percorso Dominante)
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Map + Result for dominant mode */}
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+            {(domSelectedRoute && domRouteStops.length > 0) || (domResult?.ruleApplied === "regola2" && domRegola2GeoJsons.length > 0) ? (
+              <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
+                <div className="relative w-full h-[400px] lg:h-[500px]">
+                  <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
+                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
+
+                    {/* ── Regola 1: singola linea selezionata ── */}
+                    {domResult?.ruleApplied !== "regola2" && (
+                      <>
+                        {domRouteLineGeoJson && (
+                          <Source id="dom-route-line" type="geojson" data={domRouteLineGeoJson}>
+                            <Layer id="dom-route-line-layer" type="line" paint={{ "line-color": "#6b7280", "line-width": 3, "line-opacity": 0.5, "line-dasharray": [2, 2] }} />
+                          </Source>
+                        )}
+                        {domSegmentGeoJson && (
+                          <Source id="dom-segment-line" type="geojson" data={domSegmentGeoJson}>
+                            <Layer id="dom-segment-line-layer" type="line" paint={{ "line-color": "#f59e0b", "line-width": 5, "line-opacity": 0.9 }} />
+                          </Source>
+                        )}
+                        {domStopsGeoJson && (
+                          <Source id="dom-stops-points" type="geojson" data={domStopsGeoJson}>
+                            <Layer id="dom-stops-default" type="circle"
+                              filter={["all", ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]], ["!", ["get", "isIntermediate"]]]}
+                              paint={{ "circle-radius": 4, "circle-color": "#6b7280", "circle-stroke-width": 1, "circle-stroke-color": "#374151", "circle-opacity": 0.6 }} />
+                            <Layer id="dom-stops-intermediate" type="circle"
+                              filter={["all", ["get", "isIntermediate"], ["!", ["get", "isFrom"]], ["!", ["get", "isTo"]]]}
+                              paint={{ "circle-radius": 5, "circle-color": "#f59e0b", "circle-stroke-width": 1.5, "circle-stroke-color": "#fff", "circle-opacity": 0.8 }} />
+                          </Source>
+                        )}
+                        {domFrom && domRouteStops.find(s => s.stopId === domFrom) && (() => {
+                          const s = domRouteStops.find(s => s.stopId === domFrom)!;
+                          return (
+                            <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                              <div className="relative">
+                                <div className="w-6 h-6 rounded-full bg-emerald-500 border-2 border-white shadow-lg flex items-center justify-center"><Navigation className="w-3 h-3 text-white" /></div>
+                                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-emerald-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">SALITA</div>
+                              </div>
+                            </Marker>
+                          );
+                        })()}
+                        {domTo && domRouteStops.find(s => s.stopId === domTo) && (() => {
+                          const s = domRouteStops.find(s => s.stopId === domTo)!;
+                          return (
+                            <Marker longitude={s.lon} latitude={s.lat} anchor="center">
+                              <div className="relative">
+                                <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center"><MapPin className="w-3 h-3 text-white" /></div>
+                                <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">DISCESA</div>
+                              </div>
+                            </Marker>
+                          );
+                        })()}
+                      </>
+                    )}
+
+                    {/* ── Regola 2: una tratta colorata per ogni linea ── */}
+                    {domResult?.ruleApplied === "regola2" && domRegola2GeoJsons.map((item, idx) => (
+                      <React.Fragment key={item.routeId}>
+                        <Source id={`r2-line-${item.routeId}`} type="geojson" data={item.geojson}>
+                          {/* Alone (halo) per leggibilità */}
+                          <Layer id={`r2-halo-${item.routeId}`} type="line"
+                            paint={{ "line-color": "#000", "line-width": 9, "line-opacity": 0.3 }} />
+                          <Layer id={`r2-line-layer-${item.routeId}`} type="line"
+                            paint={{ "line-color": item.color, "line-width": 5, "line-opacity": 0.95 }} />
+                        </Source>
+                        {/* Marker salita per ogni linea */}
+                        <Marker longitude={item.fromStop.lon} latitude={item.fromStop.lat} anchor="center">
+                          <div className="relative flex flex-col items-center">
+                            <div className="w-5 h-5 rounded-full border-2 border-white shadow-lg flex items-center justify-center text-[8px] font-bold text-white"
+                              style={{ backgroundColor: item.color }}>
+                              {item.routeId}
+                            </div>
+                          </div>
+                        </Marker>
+                        {/* Marker discesa solo per l'ultima linea (sono la stessa fermata) */}
+                        {idx === domRegola2GeoJsons.length - 1 && (
+                          <Marker longitude={item.toStop.lon} latitude={item.toStop.lat} anchor="center">
+                            <div className="relative">
+                              <div className="w-6 h-6 rounded-full bg-rose-500 border-2 border-white shadow-lg flex items-center justify-center"><MapPin className="w-3 h-3 text-white" /></div>
+                              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 bg-rose-600/90 text-white text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">DISCESA</div>
+                            </div>
+                          </Marker>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </Map>
+
+                  {/* Legenda dinamica */}
+                  <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
+                    {domResult?.ruleApplied === "regola2" ? (
+                      <>
+                        <div className="text-[9px] text-white/50 uppercase tracking-wider mb-1">Regola 2</div>
+                        {domRegola2GeoJsons.map(item => (
+                          <div key={item.routeId} className="flex items-center gap-1.5">
+                            <span className="w-5 h-1.5 rounded-full" style={{ backgroundColor: item.color }} />
+                            <span>Linea {item.routeId} — {(domResult.lineResults?.find(lr => lr.routeId === item.routeId)?.km ?? 0).toFixed(2)} km</span>
+                          </div>
+                        ))}
+                        <div className="flex items-center gap-1.5 mt-1 pt-1 border-t border-white/10">
+                          <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Salita</div>
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Discesa</div>
+                        <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Tratta dominante</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            ) : null}
+            <div className={`space-y-4 ${domSelectedRoute && domRouteStops.length > 0 ? "lg:col-span-2" : "lg:col-span-5"}`}>
+              <AnimatePresence>
+                {domResult && (
+                  <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+                    <Card className="bg-amber-500/5 border-amber-500/20">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2 text-amber-400">
+                          <CheckCircle2 className="w-4 h-4" /> Risultato — Percorso Dominante
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground"><Bus className="w-3.5 h-3.5" /><span>Linea {domResult.routeId ?? domResult.lineResults?.[0]?.routeId}</span></div>
+                          <div className="flex items-start gap-3">
+                            <div className="flex flex-col items-center gap-1 pt-1">
+                              <div className="w-3 h-3 rounded-full bg-emerald-500 border-2 border-emerald-300" />
+                              <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-rose-500 rounded" />
+                              <div className="w-3 h-3 rounded-full bg-rose-500 border-2 border-rose-300" />
+                            </div>
+                            <div className="flex-1 space-y-2">
+                              {(() => {
+                                const lr0 = domResult.lineResults?.[0];
+                                const fromName = domResult.fromStop?.name ?? lr0?.fromStopName;
+                                const fromKm = domResult.fromStop?.km ?? lr0?.fromKm;
+                                const fromId = domResult.fromStop?.stopId;
+                                const toName = domResult.toStop?.name ?? lr0?.toStopName;
+                                const toKm = domResult.toStop?.km ?? lr0?.toKm;
+                                const toId = domResult.toStop?.stopId;
+                                return (
+                                  <>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Salita — km {fromKm?.toFixed(2) ?? "—"}</p>
+                                      <p className="text-sm font-medium">{fromName ?? "—"}</p>
+                                      {fromId && <p className="text-[10px] text-muted-foreground/50 font-mono">ID: {fromId}</p>}
+                                    </div>
+                                    <div>
+                                      <p className="text-xs text-muted-foreground">Discesa — km {toKm?.toFixed(2) ?? "—"}</p>
+                                      <p className="text-sm font-medium">{toName ?? "—"}</p>
+                                      {toId && <p className="text-[10px] text-muted-foreground/50 font-mono">ID: {toId}</p>}
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Distanza</p>
+                              <p className="text-lg font-bold">{domResult.distanceKm?.toFixed(1)} <span className="text-xs font-normal">km</span></p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Fascia</p>
+                              <p className="text-lg font-bold">F{domResult.fascia}</p>
+                            </div>
+                            <div className="p-2 rounded-lg bg-muted/20 text-center">
+                              <p className="text-[10px] text-muted-foreground uppercase">Range</p>
+                              <p className="text-lg font-bold text-xs mt-1">{domResult.bandRange}</p>
+                            </div>
+                          </div>
+                          {/* Regola 2 — barra progressiva km per linea */}
+                          {domResult.ruleApplied === "regola2" && (
+                            <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 space-y-3">
+                              <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                                <Target className="w-3.5 h-3.5" />
+                                Regola 2 — media sulle linee con stesso capolinea
+                              </p>
+                              <div className="text-[11px] text-muted-foreground">Capolinea: <strong>{domResult?.capolineaFirst}</strong> → <strong>{domResult?.capolineaLast}</strong></div>
+                              <div className="space-y-4">
+                                {domResult.lineResults?.map((lr: any) => {
+                                  const total = lr.totalPathKm ?? lr.km;
+                                  const fKm   = lr.fromKm ?? 0;
+                                  const tKm   = lr.toKm   ?? lr.km;
+                                  const segStart = Math.min(fKm, tKm);
+                                  const segEnd   = Math.max(fKm, tKm);
+                                  const pctStart = total > 0 ? (segStart / total) * 100 : 0;
+                                  const pctEnd   = total > 0 ? (segEnd   / total) * 100 : 100;
+                                  const pctWidth = pctEnd - pctStart;
+                                  return (
+                                    <div key={lr.routeId} className="space-y-1">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-semibold text-amber-300">Linea {String(lr.routeId)}</span>
+                                        <span className="text-[10px] text-muted-foreground">{lr.dominantTripCount} corse/giorno · {lr.km.toFixed(2)} km OD</span>
+                                      </div>
+                                      {/* Barra progressiva: sfondo = percorso totale, segmento colorato = tratta OD */}
+                                      <div className="relative h-5 bg-muted/20 rounded-full overflow-hidden">
+                                        <div
+                                          className="absolute h-full rounded-full bg-amber-500/70"
+                                          style={{ left: `${pctStart}%`, width: `${Math.max(4, pctWidth)}%` }}
+                                        />
+                                        {/* Indicatori capolinea */}
+                                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-muted-foreground/30" />
+                                        <div className="absolute right-0 top-0 bottom-0 w-0.5 bg-muted-foreground/30" />
+                                      </div>
+                                      <div className="flex justify-between text-[9px] text-muted-foreground/50 px-0.5">
+                                        <span>0 km</span>
+                                        <span className="text-amber-400/70 truncate max-w-[45%] text-center">{lr.fromStopName ?? "—"}</span>
+                                        <span className="text-amber-400/70 truncate max-w-[45%] text-center">{lr.toStopName ?? "—"}</span>
+                                        <span>{total.toFixed(1)} km</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                          {domResult.dominantTripCount != null && (() => {
+                            const altDists = domResult.altDistances ?? [];
+                            const domKm = domResult.distanceKm ?? 0;
+                            return (
+                              <div className="space-y-3">
+                                <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 space-y-2">
+                                  <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
+                                    <Target className="w-3.5 h-3.5" />
+                                    Percorso dominante — {domResult.dominantTripCount} corse/giorno
+                                  </p>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-muted-foreground font-mono w-16 truncate" title={domResult.dominantShapeId ?? "n/a"}>
+                                      {domResult.dominantShapeId ? String(domResult.dominantShapeId).slice(-8) : "n/a"}
+                                    </span>
+                                    <div className="flex-1 h-5 bg-muted/30 rounded-full overflow-hidden">
+                                      <div className="h-full rounded-full bg-amber-500/60" style={{ width: "100%" }} />
+                                    </div>
+                                    <span className="text-sm font-bold text-amber-400">{domKm.toFixed(2)} km</span>
+                                  </div>
+                                </div>
+                                {altDists.length > 0 && (
+                                  <div className="p-3 rounded-lg bg-muted/10 border border-border/20 space-y-2">
+                                    <p className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">
+                                      Percorsi alternativi (informativi, non usati per il prezzo)
+                                    </p>
+                                    <div className="space-y-1">
+                                      {altDists.map((a: any, i: number) => {
+                                        const maxKm = Math.max(domKm, ...altDists.map((x: any) => x.km));
+                                        const pct = maxKm > 0 ? (a.km / maxKm) * 100 : 0;
+                                        return (
+                                          <div key={i} className="flex items-center gap-2">
+                                            <span className="text-[10px] text-muted-foreground/40 font-mono w-16 truncate" title={a.shapeId ?? "n/a"}>
+                                              {a.shapeId ? String(a.shapeId).slice(-8) : "n/a"}
+                                            </span>
+                                            <div className="flex-1 h-4 bg-muted/20 rounded-full overflow-hidden">
+                                              <div className="h-full rounded-full bg-muted-foreground/20" style={{ width: `${Math.max(4, pct)}%` }} />
+                                            </div>
+                                            <span className="text-[10px] font-mono text-muted-foreground/40 w-14 text-right">{a.km.toFixed(2)} km</span>
+                                            <span className="text-[10px] font-mono text-muted-foreground/30 w-12 text-right">{a.tripCount}c</span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
+                          <div className="flex items-center justify-between p-4 rounded-xl border border-amber-500/30 bg-gradient-to-r from-amber-500/10 to-amber-500/5">
+                            <div>
+                              <p className="text-sm font-medium">Biglietto Corsa Semplice</p>
+                              <p className="text-[10px] text-muted-foreground">{domResult.intermediateStops?.length || 0} fermate nel percorso</p>
+                            </div>
+                            <span className="text-4xl font-bold text-amber-400">€{domResult.amount?.toFixed(2)}</span>
+                          </div>
+                          {/* Trasparenza calcolo */}
+                          <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
+                            <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
+                              <FileText className="w-3.5 h-3.5" />
+                              Trasparenza calcolo — DGR 1036/2022 art. 2.d (Percorso Dominante)
+                            </p>
+                            <div className="grid gap-1.5 text-[10px] text-muted-foreground">
+                              <div className="flex items-start gap-2">
+                                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">1</span>
+                                <span>Selezionato <strong>percorso dominante</strong> ({domResult.dominantTripCount ?? domResult.lineResults?.[0]?.dominantTripCount} corse/giorno su {domResult.totalTripsDay ?? domResult.lineResults?.[0]?.totalTripsDay ?? "?"} totali)</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">2</span>
+                                <span>Distanza letta direttamente lungo la geometria shape GTFS del percorso dominante (shape ID: <span className="font-mono">{(domResult.dominantShapeId ?? domResult.lineResults?.[0]?.dominantShapeId ?? "n/a")}</span>)</span>
+                              </div>
+                              <div className="flex items-start gap-2">
+                                <span className="flex items-center justify-center w-4 h-4 rounded-full bg-blue-500/10 text-blue-400 text-[9px] font-bold shrink-0 mt-0.5">3</span>
+                                <span>Distanza OD = <strong className="text-foreground">{(domResult.distanceKm ?? 0).toFixed(2)} km</strong> → Fascia <strong className="text-foreground">F{domResult.fascia}</strong> ({domResult.bandRange})</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              {!domResult && domSelectedRoute && domRouteStops.length > 0 && (
+                <Card className="bg-card/50">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2"><Target className="w-3.5 h-3.5 text-amber-400" /> Fermate del percorso dominante ({domRouteStops.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="max-h-[300px] overflow-auto space-y-0.5">
+                      {domRouteStops.map((s, i) => (
+                        <div key={s.stopId}
+                          className={`flex items-center gap-2 px-2 py-1 rounded text-xs transition-colors ${
+                            s.stopId === domFrom ? "bg-emerald-500/10 text-emerald-400" :
+                            s.stopId === domTo ? "bg-rose-500/10 text-rose-400" : "text-muted-foreground hover:bg-muted/20"
+                          }`}>
+                          <span className="w-5 text-right font-mono text-[10px] opacity-50">{i + 1}</span>
+                          <span className={`w-2 h-2 rounded-full ${s.stopId === domFrom ? "bg-emerald-500" : s.stopId === domTo ? "bg-rose-500" : "bg-gray-500/40"}`} />
+                          <span className="flex-1 truncate">{s.stopName}</span>
+                          <span className="font-mono text-[10px] opacity-60">km {s.progressiveKm.toFixed(1)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
-
-// ═══════════════════════════════════════════════════════════
-// SHARED COMPONENTS
-// ═══════════════════════════════════════════════════════════
 
 function LoadingSpinner() {
   return (

@@ -22,6 +22,11 @@ import clustersRouter from "./clusters";
 import coincidenceZonesRouter from "./coincidence-zones";
 import weatherRouter from "./weather";
 import faresRouter from "./fares";
+import depotsRouter from "./depots";
+import deadheadsRouter from "./deadheads";
+import intermodalOptimizerRouter from "./intermodal-optimizer";
+import aiRouter from "./ai";
+import planningRouter from "./planning";
 
 const router: IRouter = Router();
 
@@ -40,6 +45,7 @@ router.use(gtfsTravelRouter);
 router.use(adminRouter);
 router.use(scenariosRouter);
 router.use(intermodalRouter);
+router.use(intermodalOptimizerRouter);
 router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);
@@ -48,5 +54,9 @@ router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
 router.use(faresRouter);
+router.use(depotsRouter);
+router.use(deadheadsRouter);
+router.use(aiRouter);
+router.use(planningRouter);
 
 export default router;

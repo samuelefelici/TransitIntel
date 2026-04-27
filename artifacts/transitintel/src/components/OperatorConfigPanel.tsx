@@ -361,22 +361,23 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
               {/* Solver Intensity */}
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5 text-amber-400" /> Intensità Solver
+                  <Zap className="w-3.5 h-3.5 text-amber-400" /> Intensità Solver (portfolio multi-scenario)
                 </h3>
-                <div className="grid grid-cols-3 gap-1">
-                  {([1, 2, 3] as const).map(v => (
+                <div className="grid grid-cols-4 gap-1">
+                  {([1, 2, 3, 4] as const).map(v => (
                     <button key={v} onClick={() => setIntensity(v)}
                       className={`px-2 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                        intensity === v ? "bg-primary text-primary-foreground" : "bg-muted/20 hover:bg-muted/40"
+                        intensity === v ? "bg-orange-600 text-white" : "bg-muted/20 hover:bg-muted/40"
                       }`}>
-                      {v === 1 ? "⚡ Rapido" : v === 2 ? "⚖️ Standard" : "🧠 Aggressivo"}
+                      {v === 1 ? "⚡ Rapido" : v === 2 ? "⚖️ Standard" : v === 3 ? "🧠 Aggressivo" : "🔥 Estremo"}
                     </button>
                   ))}
                 </div>
                 <div className="text-[10px] text-muted-foreground">
-                  {intensity === 1 ? "1 round, ricerca veloce" :
-                   intensity === 2 ? "3 round, buon compromesso" :
-                   "5 round, linearizzazione avanzata, simmetria"}
+                  {intensity === 1 ? "14 scenari · ~90s · ricerca veloce" :
+                   intensity === 2 ? "24 scenari · ~4min · buon compromesso (consigliato)" :
+                   intensity === 3 ? "36 scenari · ~8min · linearizzazione + simmetria" :
+                   "48 scenari · ~15min · esplora ogni combinazione possibile"}
                 </div>
               </div>
 
@@ -782,6 +783,79 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
                             />
                           </div>
                         ))}
+                      </div>
+
+                      {/* ─── LIMITI TURNI GUIDA (RD 131/1938 — modificabili) ─── */}
+                      <div className="space-y-3 pt-2 border-t border-orange-500/20">
+                        <h4 className="text-[11px] font-semibold flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-orange-400" /> Limiti Turni Guida (RD 131/1938)
+                        </h4>
+                        <p className="text-[10px] text-muted-foreground -mt-1">
+                          Massimali di nastro e lavoro per ogni tipo di turno (in minuti). Modifica per sperimentare scenari alternativi.
+                        </p>
+                        {([
+                          { type: "intero",      label: "Intero",       defaults: { maxNastro: 435, maxLavoro: 435 } },
+                          { type: "semiunico",   label: "Semiunico",    defaults: { maxNastro: 555, maxLavoro: 480, intMin: 75, intMax: 179 } },
+                          { type: "spezzato",    label: "Spezzato",     defaults: { maxNastro: 630, maxLavoro: 450, intMin: 180, intMax: 999 } },
+                          { type: "supplemento", label: "Supplemento",  defaults: { maxNastro: 150, maxLavoro: 150 } },
+                        ] as const).map(({ type, label, defaults }) => (
+                          <div key={type} className="bg-background/30 rounded p-2 border border-border/20">
+                            <div className="text-[10px] font-semibold text-orange-300 mb-1.5">{label}</div>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {(Object.keys(defaults) as Array<keyof typeof defaults>).map((k) => (
+                                <div key={k} className="flex items-center gap-1">
+                                  <label className="text-[9px] flex-1 min-w-0 text-muted-foreground uppercase tracking-wider">{k}</label>
+                                  <input type="number" min={0} max={1000} step={5}
+                                    value={(config as any).bds?.shiftRules?.[type]?.[k] ?? defaults[k]}
+                                    onChange={e => onChange({
+                                      ...config,
+                                      bds: {
+                                        ...(config as any).bds,
+                                        shiftRules: {
+                                          ...((config as any).bds?.shiftRules || {}),
+                                          [type]: {
+                                            ...((config as any).bds?.shiftRules?.[type] || {}),
+                                            [k]: parseInt(e.target.value) || defaults[k],
+                                          },
+                                        },
+                                      },
+                                    })}
+                                    className="w-14 text-[10px] bg-background border border-border/50 rounded px-1.5 py-0.5 text-center"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        {/* Target lavoro */}
+                        <div className="bg-background/30 rounded p-2 border border-border/20">
+                          <div className="text-[10px] font-semibold text-orange-300 mb-1.5">Target lavoro giornaliero (min)</div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {([
+                              { key: "low" as const, label: "Min", default: 390 },
+                              { key: "mid" as const, label: "Mid", default: 408 },
+                              { key: "high" as const, label: "Max", default: 435 },
+                            ]).map(({ key, label, default: def }) => (
+                              <div key={key} className="flex items-center gap-1">
+                                <label className="text-[9px] flex-1 min-w-0 text-muted-foreground uppercase">{label}</label>
+                                <input type="number" min={0} max={1000} step={5}
+                                  value={(config as any).bds?.targetWork?.[key] ?? def}
+                                  onChange={e => onChange({
+                                    ...config,
+                                    bds: {
+                                      ...(config as any).bds,
+                                      targetWork: {
+                                        ...((config as any).bds?.targetWork || {}),
+                                        [key]: parseInt(e.target.value) || def,
+                                      },
+                                    },
+                                  })}
+                                  className="w-14 text-[10px] bg-background border border-border/50 rounded px-1.5 py-0.5 text-center"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
 
                     </motion.div>

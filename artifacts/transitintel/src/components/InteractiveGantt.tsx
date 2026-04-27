@@ -14,12 +14,13 @@
  */
 
 import React, {
-  useCallback, useEffect, useMemo, useRef, useState,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ZoomIn, ZoomOut, Undo2, Redo2, RotateCcw, GripVertical,
   Clock, ArrowRight, Navigation, MapPin, AlertTriangle,
+  Pencil, Check, X, Sparkles, Move,
 } from "lucide-react";
 
 // ─── Shared types ────────────────────────────────────────────
@@ -81,6 +82,20 @@ export interface InteractiveGanttProps {
   labelWidth?: number;
   /** Whether editing is enabled (default true) */
   editable?: boolean;
+  /** Called when a row label is renamed inline */
+  onRowRename?: (rowId: string, newLabel: string) => void;
+  /** Compute suggestions of compatible rows where the given bar could be moved */
+  getSuggestions?: (bar: GanttBar) => GanttSuggestion[];
+  /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). */
+  onBarClick?: (bar: GanttBar) => void;
+}
+
+export interface GanttSuggestion {
+  rowId: string;
+  label: string;
+  reason?: string;
+  /** Optional extra detail like free gap window */
+  detail?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -120,6 +135,9 @@ export default function InteractiveGantt({
   rowHeight = 32,
   labelWidth = 160,
   editable = true,
+  onRowRename,
+  getSuggestions,
+  onBarClick,
 }: InteractiveGanttProps) {
   // ── State ──
   const [bars, setBars] = useState<GanttBar[]>(initialBars);
@@ -129,6 +147,12 @@ export default function InteractiveGantt({
   const [undoStack, setUndoStack] = useState<GanttBar[][]>([]);
   const [redoStack, setRedoStack] = useState<GanttBar[][]>([]);
   const [hoveredBar, setHoveredBar] = useState<{ bar: GanttBar; x: number; y: number } | null>(null);
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
+  const [pinnedTooltip, setPinnedTooltip] = useState<string | null>(null);
+  // FIX-TOOLTIP: posizione finale dopo misurazione + clamp viewport
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
 
   // Sync when parent passes new bars (e.g. new optimization result)
   useEffect(() => {
@@ -140,6 +164,54 @@ export default function InteractiveGantt({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  // FIX-TOOLTIP: dopo che il tooltip è renderizzato, misuriamo le dimensioni
+  // reali e ricalcoliamo top/left per garantire che resti dentro il viewport.
+  // Se non c'è abbastanza spazio sotto la barra, lo flippiamo sopra.
+  useLayoutEffect(() => {
+    if (!hoveredBar || !tooltipRef.current || !containerRef.current) {
+      setTipPos(null);
+      return;
+    }
+    const tipEl = tooltipRef.current;
+    const tipRect = tipEl.getBoundingClientRect();
+    const conRect = containerRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 8;
+
+    // Default: ancora alla "y" calcolata in onMouseEnter (sotto la barra)
+    let top = hoveredBar.y;
+    let left = hoveredBar.x;
+
+    // Clamp orizzontale dentro il viewport
+    const absLeft = conRect.left + left;
+    if (absLeft + tipRect.width + margin > vw) {
+      left = vw - tipRect.width - margin - conRect.left;
+    }
+    if (conRect.left + left < margin) {
+      left = margin - conRect.left;
+    }
+
+    // Verifica overflow verticale (sotto al viewport)
+    const absTop = conRect.top + top;
+    if (absTop + tipRect.height + margin > vh) {
+      // Prova a flippare sopra: y "default" è bottom-bar+4, quindi
+      // sopra la barra serve sottrarre altezza tooltip + altezza barra (~rowHeight) + 8.
+      const flipped = top - tipRect.height - rowHeight - 12;
+      if (conRect.top + flipped > margin) {
+        top = flipped;
+      } else {
+        // Né sotto né sopra entrano: ancora il bordo inferiore al viewport
+        top = vh - conRect.top - tipRect.height - margin;
+      }
+    }
+    if (conRect.top + top < margin) {
+      top = margin - conRect.top;
+    }
+
+    setTipPos({ left, top });
+  }, [hoveredBar, rowHeight]);
 
   const totalRangeMin = (maxHour - minHour) * 60;
   const timelineWidthPx = useMemo(
@@ -171,6 +243,31 @@ export default function InteractiveGantt({
       onBarChange?.(change, newBars);
     },
     [bars, onBarChange],
+  );
+
+  // ── Move a bar to another row (used by suggestion buttons) ──
+  const moveBarToRow = useCallback(
+    (barId: string, targetRowId: string) => {
+      const bar = bars.find(b => b.id === barId);
+      if (!bar || bar.locked) return;
+      if (bar.rowId === targetRowId) return;
+      // Keep same start/end; verify no collision on target row
+      if (detectCollision(bars, barId, targetRowId, bar.startMin, bar.endMin)) return;
+      const change: GanttChange = {
+        barId,
+        fromRowId: bar.rowId,
+        toRowId: targetRowId,
+        oldStartMin: bar.startMin,
+        oldEndMin: bar.endMin,
+        newStartMin: bar.startMin,
+        newEndMin: bar.endMin,
+      };
+      const newBars = bars.map(b => b.id === barId ? { ...b, rowId: targetRowId } : b);
+      commitChange(newBars, change);
+      setHoveredBar(null);
+      setPinnedTooltip(null);
+    },
+    [bars, commitChange],
   );
 
   // ── Undo / Redo ──
@@ -379,9 +476,15 @@ export default function InteractiveGantt({
         opacity: 0.6,
       };
     } else if (bar.style === "depot") {
+      // Se la barra ha un colore esplicito (non rgba "vuoto"), usalo come fondo solido
+      // — così i rientri/uscite deposito sono ben visibili nel Gantt.
+      const explicit = bar.color && !bar.color.startsWith("rgba");
       bgStyle = {
-        backgroundColor: "rgba(255,255,255,0.05)",
-        border: "1px dashed rgba(255,255,255,0.15)",
+        backgroundColor: explicit ? bar.color : "rgba(255,255,255,0.05)",
+        border: explicit ? "1px dashed rgba(255,255,255,0.4)" : "1px dashed rgba(255,255,255,0.15)",
+        opacity: explicit ? 0.85 : 1,
+        backgroundImage:
+          "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.18) 4px, rgba(255,255,255,0.18) 8px)",
       };
     }
 
@@ -415,6 +518,28 @@ export default function InteractiveGantt({
           ...bgStyle,
         }}
         onPointerDown={(e) => onPointerDown(e, bar.id, "move")}
+        onClick={(e) => {
+          // Click su QUALSIASI bar (anche locked): invoca callback custom — il parent
+          // decide se gestire (es. apre dialog deadhead per bar locked).
+          if (onBarClick && !dragState.current) {
+            onBarClick(bar);
+          }
+          // Pin tooltip with suggestions on click (only if not locked and we have suggestions)
+          if (!editable || bar.locked || !getSuggestions) return;
+          // avoid firing after a drag
+          if (dragState.current || modifiedIds.has(bar.id) === false && isBeingDragged) return;
+          e.stopPropagation();
+          setPinnedTooltip(prev => prev === bar.id ? null : bar.id);
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const pRect = containerRef.current?.getBoundingClientRect();
+          if (pRect) {
+            setHoveredBar({
+              bar,
+              x: rect.left - pRect.left + rect.width / 2,
+              y: rect.bottom - pRect.top + 4,
+            });
+          }
+        }}
         onMouseEnter={(e) => {
           if (dragState.current) return;
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -427,10 +552,13 @@ export default function InteractiveGantt({
             });
           }
         }}
-        onMouseLeave={() => setHoveredBar(null)}
+        onMouseLeave={() => {
+          if (pinnedTooltip === bar.id) return;
+          setHoveredBar(null);
+        }}
       >
         {/* Resize handles */}
-        {editable && !bar.locked && bar.style === "solid" && (
+        {editable && !bar.locked && (
           <>
             <div
               className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/20 transition-colors rounded-l"
@@ -559,9 +687,54 @@ export default function InteractiveGantt({
                       style={{ backgroundColor: row.dotColor }}
                     />
                   )}
-                  <span className="truncate">{row.label}</span>
-                  {row.sublabel && (
+                  {editingRowId === row.id ? (
+                    <input
+                      autoFocus
+                      value={editingValue}
+                      onChange={(e) => setEditingValue(e.target.value)}
+                      onBlur={() => {
+                        const v = editingValue.trim();
+                        if (v && v !== row.label) onRowRename?.(row.id, v);
+                        setEditingRowId(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          const v = editingValue.trim();
+                          if (v && v !== row.label) onRowRename?.(row.id, v);
+                          setEditingRowId(null);
+                        } else if (e.key === "Escape") {
+                          setEditingRowId(null);
+                        }
+                      }}
+                      className="flex-1 min-w-0 bg-background border border-primary/60 rounded px-1 text-[10px] font-mono focus:outline-none"
+                    />
+                  ) : (
+                    <span
+                      className={`truncate ${editable && onRowRename ? "cursor-text hover:text-primary" : ""}`}
+                      title={editable && onRowRename ? "Doppio click per rinominare" : undefined}
+                      onDoubleClick={() => {
+                        if (!editable || !onRowRename) return;
+                        setEditingValue(row.label);
+                        setEditingRowId(row.id);
+                      }}
+                    >
+                      {row.label}
+                    </span>
+                  )}
+                  {row.sublabel && editingRowId !== row.id && (
                     <span className="text-muted-foreground text-[9px] shrink-0">({row.sublabel})</span>
+                  )}
+                  {editable && onRowRename && editingRowId !== row.id && (
+                    <button
+                      className="ml-auto shrink-0 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+                      title="Rinomina turno"
+                      onClick={() => {
+                        setEditingValue(row.label);
+                        setEditingRowId(row.id);
+                      }}
+                    >
+                      <Pencil className="w-2.5 h-2.5" />
+                    </button>
                   )}
                 </div>
 
@@ -599,21 +772,36 @@ export default function InteractiveGantt({
       <AnimatePresence>
         {hoveredBar && !dragState.current && (
           <motion.div
+            ref={tooltipRef}
             initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
+            animate={{ opacity: tipPos ? 1 : 0, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            className="absolute z-50 pointer-events-none"
+            className={`absolute z-50 ${pinnedTooltip === hoveredBar.bar.id ? "pointer-events-auto" : "pointer-events-none"}`}
             style={{
-              left: Math.min(hoveredBar.x, (containerRef.current?.clientWidth ?? 800) - 280),
-              top: hoveredBar.y,
+              // FIX-TOOLTIP: useLayoutEffect calcola posizione finale dentro viewport.
+              // Finché tipPos è null (primo paint), nascondiamo via opacity 0.
+              left: tipPos?.left ?? hoveredBar.x,
+              top: tipPos?.top ?? hoveredBar.y,
+              maxHeight: "calc(100vh - 24px)",
+              overflowY: "auto",
             }}
+            onMouseEnter={() => { /* keep open */ }}
           >
-            <div className="bg-card border border-border rounded-lg shadow-xl p-3 min-w-[220px] max-w-[320px] text-xs space-y-1">
+            <div className="bg-card border border-border rounded-lg shadow-xl p-3 min-w-[240px] max-w-[340px] text-xs space-y-1">
               <div className="flex items-center gap-2">
                 <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: hoveredBar.bar.color }} />
                 <span className="font-semibold">{hoveredBar.bar.label}</span>
                 {modifiedIds.has(hoveredBar.bar.id) && (
                   <span className="text-[9px] text-amber-400 ml-auto">✏️ Modificato</span>
+                )}
+                {pinnedTooltip === hoveredBar.bar.id && (
+                  <button
+                    className="ml-auto p-0.5 hover:bg-muted rounded"
+                    onClick={() => { setPinnedTooltip(null); setHoveredBar(null); }}
+                    title="Chiudi"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
                 )}
               </div>
               <div className="flex items-center gap-1.5 text-muted-foreground">
@@ -626,9 +814,49 @@ export default function InteractiveGantt({
               {hoveredBar.bar.tooltip?.map((line, i) => (
                 <div key={i} className="text-muted-foreground">{line}</div>
               ))}
+
+              {/* Smart suggestions */}
+              {editable && !hoveredBar.bar.locked && getSuggestions && (() => {
+                const suggestions = getSuggestions(hoveredBar.bar).slice(0, 4);
+                if (suggestions.length === 0) {
+                  return (
+                    <div className="text-[9px] text-muted-foreground/60 pt-1.5 mt-1.5 border-t border-border/20 flex items-center gap-1">
+                      <Sparkles className="w-2.5 h-2.5" />
+                      Nessun turno compatibile trovato
+                    </div>
+                  );
+                }
+                return (
+                  <div className="pt-1.5 mt-1.5 border-t border-border/20 space-y-1">
+                    <div className="flex items-center gap-1 text-[9px] text-muted-foreground font-semibold uppercase tracking-wide">
+                      <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                      Turni compatibili
+                    </div>
+                    {suggestions.map((s) => (
+                      <button
+                        key={s.rowId}
+                        onClick={() => moveBarToRow(hoveredBar.bar.id, s.rowId)}
+                        className="w-full flex items-center gap-2 text-left bg-muted/40 hover:bg-primary/20 border border-border/30 hover:border-primary/50 rounded px-1.5 py-1 transition-colors group"
+                      >
+                        <Move className="w-3 h-3 text-muted-foreground group-hover:text-primary shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[10px] font-mono truncate">{s.label}</div>
+                          {s.reason && (
+                            <div className="text-[9px] text-muted-foreground truncate">{s.reason}</div>
+                          )}
+                        </div>
+                        {s.detail && (
+                          <span className="text-[9px] text-muted-foreground/60 shrink-0">{s.detail}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {editable && !hoveredBar.bar.locked && (
                 <div className="text-[9px] text-muted-foreground/50 pt-1 border-t border-border/20">
-                  Trascina per spostare · Bordi per ridimensionare
+                  Trascina per spostare · Bordi per ridimensionare{getSuggestions ? " · Click per suggerimenti" : ""}
                 </div>
               )}
             </div>

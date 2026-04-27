@@ -140,6 +140,24 @@
   /* Force dark mode to be the same, as the app is designed dark mode professional */
 }
 
+/* ── Fares Engine zone: override primary/accent palette to emerald/lime ──
+ * Applied via .fares-zone class on <main> when location is in Fares Engine.
+ * Tailwind utilities like text-primary, bg-primary/15, border-primary etc.
+ * automatically pick up the emerald palette inside this zone.
+ */
+.fares-zone {
+  --primary: 152 76% 40%;            /* emerald-600 ≈ #10a060 */
+  --primary-foreground: 152 100% 6%;
+  --primary-rgb: 16, 160, 96;
+
+  --accent: 84 81% 44%;               /* lime-500 ≈ #80c040 */
+  --accent-foreground: 84 100% 6%;
+
+  --ring: 152 76% 45%;
+  --chart-1: 152 76% 45%;
+  --chart-2: 84 81% 50%;
+}
+
 @layer base {
   * {
     @apply border-border;

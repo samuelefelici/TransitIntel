@@ -148,6 +148,99 @@ export interface ClusterInfo {
   transferMin: number;
 }
 
+/** Metriche di un singolo scenario CP-SAT valutato nel multi-scenario. */
+export interface ScenarioResult {
+  idx: number;
+  scenarioNum: number;
+  rank?: number;
+  isBest?: boolean;
+  isPolish?: boolean;
+  status: string;
+  feasible: boolean;
+  score: number;
+  obj?: number;
+  elapsed: number;
+  params?: {
+    seed: number;
+    noise: number;
+    linLevel: number;
+    nWorkers: number;
+    strategy?: string;
+    strategyLabel?: string;
+    isPolish?: boolean;
+  };
+  /* metriche (popolate solo per scenari fattibili) */
+  duties?: number;
+  interi?: number;
+  semiunici?: number;
+  spezzati?: number;
+  supplementi?: number;
+  invalidi?: number;
+  semiPct?: number;
+  spezPct?: number;
+  supplPct?: number;
+  totalWorkH?: number;
+  totalNastroH?: number;
+  totalDrivingH?: number;
+  totalInterruptionH?: number;
+  totalTransferH?: number;
+  avgWorkMin?: number;
+  avgNastroMin?: number;
+  avgIdleMin?: number;
+  totalIdleH?: number;
+  vuotiSignificativi?: number;
+  totalCost?: number;
+  costPerDuty?: number;
+  bdsViolations?: number;
+  semiCompliant?: boolean;
+  spezCompliant?: boolean;
+}
+
+/** Sintesi del processo di ottimizzazione multi-scenario. */
+export interface OptimizationAnalysis {
+  nScenariosRun: number;
+  nScenariosRequested: number;
+  nFeasible: number;
+  nInfeasible: number;
+  totalElapsedSec: number;
+  scenarioElapsedSec: number;
+  polishElapsedSec: number;
+  polishImproved: boolean;
+  polishDeltaScore: number;
+  polishDeltaPct: number;
+  bestScore: number;
+  bestStrategy: string;
+  bestStrategyLabel: string;
+  bestStrategyDesc: string;
+  scoreSpreadPct: number;
+  strategiesExplored: number;
+  totalStrategiesAvailable: number;
+  strategySummary: Array<{
+    key: string;
+    label: string;
+    desc: string;
+    nRuns: number;
+    bestScore: number;
+    bestCost?: number;
+    bestDuties?: number;
+    isWinner: boolean;
+  }>;
+  bestMetrics?: {
+    duties?: number;
+    totalCost?: number;
+    totalWorkH?: number;
+    bdsViolations?: number;
+    vuotiSignificativi?: number;
+    score?: number;
+  };
+  intensity: number;
+  timeBudgetSec: number;
+  scenarioBudgetSec: number;
+  polishBudgetSec: number;
+  nSegments: number;
+  nFeasiblePairs: number;
+}
+
 export interface DriverShiftsResult {
   scenarioId: string;
   scenarioName: string;
@@ -160,4 +253,7 @@ export interface DriverShiftsResult {
   /* v2 cost fields */
   costAnalysis?: Record<string, any>;
   costRates?: Record<string, number>;
+  /* v4 multi-scenario */
+  scenarios?: ScenarioResult[];
+  optimizationAnalysis?: OptimizationAnalysis;
 }
