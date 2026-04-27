@@ -14,7 +14,7 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import {
   Flame, ArrowLeft, ChevronRight, Zap,
-  Database, Bus, Truck, CheckCircle2, ArrowRight, Layers, Route, Building2,
+  Database, Bus, Truck, CheckCircle2, ArrowRight, Layers, Route, Building2, Users,
 } from "lucide-react";
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
@@ -27,6 +27,7 @@ const ClustersStep = lazy(() => import("@/pages/fucina/steps/ClustersStep"));
 const DeadheadStep = lazy(() => import("@/pages/fucina/steps/DeadheadStep"));
 const OptimizerStep = lazy(() => import("@/pages/fucina/steps/OptimizerStep"));
 const WorkspaceStep = lazy(() => import("@/pages/fucina/steps/WorkspaceStep"));
+const DriverWorkspaceStep = lazy(() => import("@/pages/fucina/steps/DriverWorkspaceStep"));
 
 /* ── Tipi condivisi tra step ─────────────────────────────── */
 export interface GtfsSelection {
@@ -52,6 +53,7 @@ const STEPS = [
   { id: 4, label: "Fuori Linea",         icon: Route,    desc: "Distanze · tempi · costi" },
   { id: 5, label: "Ottimizzazione",      icon: Zap,      desc: "CP-SAT · analisi · salva" },
   { id: 6, label: "Area di Lavoro",      icon: Truck,    desc: "Gantt · drag & drop · esporta" },
+  { id: 7, label: "Turni Guida",         icon: Users,    desc: "CSP · saturazione · cap vetture · idle" },
 ] as const;
 
 /* ── Splash Screen ───────────────────────────────────────── */
@@ -248,7 +250,7 @@ export default function FucinaPage() {
       }
       if (d.action === "goto_step" && typeof d.step === "number") {
         setShowSplash(false);
-        setStep(Math.max(0, Math.min(6, d.step)));
+        setStep(Math.max(0, Math.min(7, d.step)));
         return;
       }
       if (d.action === "highlight_field" && d.field_id) {
@@ -414,6 +416,14 @@ export default function FucinaPage() {
                       optimizationResult={optimizationResult!}
                       savedScenarioId={savedScenarioId ?? undefined}
                       onBack={() => setStep(5)}
+                      onContinueToDriverShifts={savedScenarioId ? () => setStep(7) : undefined}
+                    />
+                  )}
+                  {step === 7 && (
+                    <DriverWorkspaceStep
+                      gtfsSelection={gtfsSelection!}
+                      vehicleScenarioId={savedScenarioId ?? ""}
+                      onBack={() => setStep(6)}
                     />
                   )}
                 </Suspense>

@@ -67,6 +67,15 @@ export interface OperatorConfig {
     riprese?: Record<string, any>;
     copertura?: Record<string, any>;
     collegamento?: Record<string, any>;
+    /* CSP optimizer overrides — saturazione & cap vetture */
+    optimizer?: {
+      minWorkPerDuty?: number;     // min lavoro/turno (min) — default 360
+      maxCompanyCars?: number;     // cap HARD vetture aziendali — default 5
+      weightDutyCount?: number;    // peso minimizzazione N turni — default 20000 (FIX-CSP-1)
+      weightIdlePenalty?: number;  // peso penalizzazione idle time — default 30
+      idlePenaltyMaxMin?: number;  // soglia max idle penalizzato — default 60
+      scorePerDuty?: number;       // bonus score per duty (FIX-CSP-2) — default 100
+    };
   };
 }
 

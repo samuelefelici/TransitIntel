@@ -16,9 +16,11 @@ interface Props {
   optimizationResult: ServiceProgramResult;
   savedScenarioId?: string;
   onBack: () => void;
+  /** Vai allo step 7 — Area di Lavoro Turni Guida (interno fucina) */
+  onContinueToDriverShifts?: () => void;
 }
 
-export default function WorkspaceStep({ gtfsSelection, optimizationResult, savedScenarioId, onBack }: Props) {
+export default function WorkspaceStep({ gtfsSelection, optimizationResult, savedScenarioId, onBack, onContinueToDriverShifts }: Props) {
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(optimizationResult, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -53,7 +55,13 @@ export default function WorkspaceStep({ gtfsSelection, optimizationResult, saved
             className="flex items-center gap-1.5 text-[11px] text-orange-300 font-medium px-3 py-1.5 rounded-lg border border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/15 transition-all">
             <Download className="w-3.5 h-3.5" /> Esporta JSON
           </button>
-          {savedScenarioId && (
+          {savedScenarioId && onContinueToDriverShifts && (
+            <button onClick={onContinueToDriverShifts}
+              className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
+              Turni Guida →
+            </button>
+          )}
+          {savedScenarioId && !onContinueToDriverShifts && (
             <a href={`/driver-shifts/${savedScenarioId}`}
               className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
               Turni Guida →
