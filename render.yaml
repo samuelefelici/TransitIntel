@@ -6,7 +6,7 @@ services:
     name: transitintel-api
     runtime: node
     plan: free
-    buildCommand: pnpm install --prod=false && pnpm run build:deploy
+    buildCommand: pnpm install --prod=false && pnpm run build:deploy && python3 -m pip install --user -r requirements.txt
     startCommand: node artifacts/api-server/dist/index.cjs
     envVars:
       - key: DATABASE_URL
@@ -15,6 +15,10 @@ services:
         value: 3000
       - key: NODE_ENV
         value: production
+      - key: PYTHONPATH
+        value: /opt/render/project/src/scripts
+      - key: PATH
+        value: /opt/render/project/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - key: CRON_SECRET
         sync: false
       - key: TOMTOM_API_KEY
