@@ -39,11 +39,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { jobManager } from "../lib/job-manager.js";
 import { strictLimiter } from "../middlewares/rate-limit";
-
-// Scripts are at the monorepo root: ../../scripts relative to api-server/
-// process.cwd() is artifacts/api-server when started via start-backend.sh,
-// so we go up two levels to reach the monorepo root.
-const SCRIPTS_DIR = path.resolve(process.cwd(), "..", "..", "scripts");
+import { SCRIPTS_DIR } from "../lib/scripts-dir";
 
 const router: IRouter = Router();
 

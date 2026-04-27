@@ -21,9 +21,7 @@ import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
-
-// Scripts dir: go up from api-server (cwd) to workspace root, then into scripts/
-const SCRIPTS_DIR = path.resolve(process.cwd(), "..", "..", "scripts");
+import { SCRIPTS_DIR } from "../lib/scripts-dir";
 
 const router: IRouter = Router();
 
