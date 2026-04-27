@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
     "build:deploy": "pnpm run typecheck:libs && pnpm --filter @workspace/api-server run build && pnpm run install:python",
-    "install:python": "python3 -m pip install --upgrade pip && python3 -m pip install --target=./.python_packages -r requirements.txt && python3 -c \"import sys; sys.path.insert(0, './.python_packages'); from ortools.sat.python import cp_model; print('ortools OK')\"",
+    "install:python": "python3 -m pip install --break-system-packages --target=./.python_packages -r requirements.txt && python3 -c \"import sys; sys.path.insert(0, './.python_packages'); from ortools.sat.python import cp_model; print('ortools OK')\"",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
