@@ -856,6 +856,44 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
                             ))}
                           </div>
                         </div>
+                        {/* ═══ FIX-CSP: Parametri avanzati ottimizzatore CSP ═══ */}
+                        <div className="bg-background/30 rounded p-2 border border-border/20">
+                          <div className="text-[10px] font-semibold text-orange-300 mb-1.5">
+                            Ottimizzatore CSP — saturazione & vetture
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {([
+                              { key: "minWorkPerDuty" as const,    label: "Min lavoro/turno (min)",   default: 360,   min: 0,    max: 600,    step: 15 },
+                              { key: "maxCompanyCars" as const,    label: "Max vetture aziendali",    default: 5,     min: 0,    max: 50,     step: 1 },
+                              { key: "weightDutyCount" as const,   label: "Peso N turni (FIX-CSP-1)", default: 20000, min: 1000, max: 100000, step: 1000 },
+                              { key: "weightIdlePenalty" as const, label: "Peso idle/min",            default: 30,    min: 0,    max: 200,    step: 5 },
+                              { key: "idlePenaltyMaxMin" as const, label: "Cap idle (min) FIX-CSP-1", default: 60,    min: 0,    max: 300,    step: 15 },
+                              { key: "scorePerDuty" as const,      label: "Score/turno (FIX-CSP-2)",  default: 100,   min: 0,    max: 500,    step: 10 },
+                            ]).map(({ key, label, default: def, min, max, step }) => (
+                              <div key={key} className="flex items-center gap-1">
+                                <label className="text-[9px] flex-1 min-w-0 text-muted-foreground">{label}</label>
+                                <input type="number" min={min} max={max} step={step}
+                                  value={(config as any).bds?.optimizer?.[key] ?? def}
+                                  onChange={e => onChange({
+                                    ...config,
+                                    bds: {
+                                      ...(config as any).bds,
+                                      optimizer: {
+                                        ...((config as any).bds?.optimizer || {}),
+                                        [key]: parseFloat(e.target.value) || def,
+                                      },
+                                    },
+                                  })}
+                                  className="w-16 text-[10px] bg-background border border-border/50 rounded px-1.5 py-0.5 text-center"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-1.5 text-[9px] text-muted-foreground/70 leading-snug">
+                            Più alti <span className="font-semibold">peso N turni</span> e <span className="font-semibold">score/turno</span> ⇒ il solver minimizza più aggressivamente il numero di autisti (a parità di costo orario).
+                          </div>
+                        </div>
+
                       </div>
 
                     </motion.div>

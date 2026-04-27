@@ -151,6 +151,89 @@ def apply_shift_rules_override(cfg: dict) -> None:
 
 
 # ----------------------------------------------------------------
+# Iperparametri ottimizzatore CP-SAT (override-abili da UI)
+# ----------------------------------------------------------------
+# Saturazione: lavoro minimo (minuti) per un turno "intero" o pair principale.
+# Sotto questa soglia, il segmento NON puo' essere assegnato come single intero
+# se esiste almeno un pair che lo copre (forza accorpamento → meno turni vuoti).
+MIN_WORK_PER_DUTY = 360            # 6h00
+
+# Cap HARD sulle vetture aziendali necessarie ai trasferimenti a vuoto driver
+# (transfer fra fine s1 e inizio s2 di un pair semiunico/spezzato).
+# Vincolo cumulative: massimo MAX_COMPANY_CARS pair "in trasferimento" in
+# qualunque istante del giorno.
+MAX_COMPANY_CARS = COMPANY_CARS    # default 5
+
+# FIX-CSP-1: Peso per minimizzare aggressivamente il numero di turni.
+# Default alzato da 5000 a 20000 per dominare le differenze di costo orario
+# tra "1 pair lungo" vs "2 single corti" che oggi rendono 5000 insufficiente.
+# Letto da config.bds.optimizer.weightDutyCount.
+WEIGHT_DUTY_COUNT = 20000          # = ~200 € extra "virtuali" per ogni turno
+
+# FIX-CSP-1: Penalita per minuto di idle (nastro - lavoro) sui single non
+# supplemento. CAPPATA a IDLE_PENALTY_MAX_MIN minuti per evitare doppia
+# penalita' con work_imbalance_per_min che gia' copre la deviazione dal target.
+WEIGHT_IDLE_PENALTY = 30
+IDLE_PENALTY_MAX_MIN = 60          # cap sopra il quale non aumenta piu'
+
+# FIX-CSP-2: score penalty per turno totale, applicata in _score_solution.
+# Rappresenta il "costo nascosto" per turno (reperibilita', gestione HR, ferie).
+# Permette al portfolio di preferire scenari con MENO turni anche se costo +1-2%.
+# Letto da config.bds.optimizer.scorePerDuty.
+SCORE_PER_DUTY = 100.0
+
+
+def apply_optimizer_overrides(cfg: dict) -> None:
+    """Applica override agli iperparametri di ottimizzazione da
+    config.bds.optimizer. Modifica le globali IN-PLACE.
+
+    Schema atteso:
+      config.bds.optimizer = {
+        "minWorkPerDuty": 360,     # minuti lavoro min per turno intero/pair
+        "maxCompanyCars": 5,       # cap HARD vetture aziendali simultanee
+        "weightDutyCount": 5000,   # peso per minimizzare N turni guida
+        "weightIdlePenalty": 30    # peso per minuto idle (nastro - lavoro)
+      }
+    """
+    global MIN_WORK_PER_DUTY, MAX_COMPANY_CARS
+    global WEIGHT_DUTY_COUNT, WEIGHT_IDLE_PENALTY, IDLE_PENALTY_MAX_MIN
+    global SCORE_PER_DUTY
+
+    bds = cfg.get("bds", {}) if cfg else {}
+    opt = bds.get("optimizer") or {}
+    if not opt:
+        return
+
+    def _set_int(key: str, current: int) -> int:
+        if key in opt:
+            try:
+                return int(opt[key])
+            except (ValueError, TypeError):
+                return current
+        return current
+
+    def _set_float(key: str, current: float) -> float:
+        if key in opt:
+            try:
+                return float(opt[key])
+            except (ValueError, TypeError):
+                return current
+        return current
+
+    MIN_WORK_PER_DUTY    = _set_int("minWorkPerDuty",    MIN_WORK_PER_DUTY)
+    MAX_COMPANY_CARS     = _set_int("maxCompanyCars",    MAX_COMPANY_CARS)
+    WEIGHT_DUTY_COUNT    = _set_int("weightDutyCount",   WEIGHT_DUTY_COUNT)
+    WEIGHT_IDLE_PENALTY  = _set_int("weightIdlePenalty", WEIGHT_IDLE_PENALTY)
+    IDLE_PENALTY_MAX_MIN = _set_int("idlePenaltyMaxMin", IDLE_PENALTY_MAX_MIN)
+    SCORE_PER_DUTY       = _set_float("scorePerDuty",    SCORE_PER_DUTY)
+
+    log(f"[V4] Optimizer overrides: minWork={MIN_WORK_PER_DUTY}min, "
+        f"maxCompanyCars={MAX_COMPANY_CARS}, "
+        f"wDuty={WEIGHT_DUTY_COUNT}, wIdle={WEIGHT_IDLE_PENALTY} (cap {IDLE_PENALTY_MAX_MIN}min), "
+        f"scorePerDuty={SCORE_PER_DUTY}")
+
+
+# ----------------------------------------------------------------
 # Multi-scenario
 # ----------------------------------------------------------------
 MIN_SCENARIOS = 14                 # minimo scenari (intensita 1)
@@ -1493,6 +1576,69 @@ def _build_cpsat_model(
         pair_vars[key] = model.new_bool_var(f"pair_{s1_idx}_{s2_idx}")
         pair_types[key] = ptype
 
+    # -- Indice rapido: per ogni segmento i pair che lo coprono --
+    pairs_by_seg: dict[int, list[tuple[int, int]]] = {s.idx: [] for s in segments}
+    for key in pair_vars:
+        pairs_by_seg[key[0]].append(key)
+        pairs_by_seg[key[1]].append(key)
+
+    # -- HARD: saturazione (min lavoro per turno intero) --
+    # Se un segmento da solo (single) genererebbe un turno "intero" sotto la
+    # soglia minima di lavoro, lo VIETIAMO purche' esista almeno un pair che
+    # lo possa coprire (altrimenti rendiamo il modello infeasible).
+    # I supplementi (nastro <= SUPPLEMENTO_NASTRO_MAX) sono esentati per
+    # definizione: hanno regole di durata proprie.
+    n_forbidden_single = 0
+    if MIN_WORK_PER_DUTY > 0:
+        for s in segments:
+            _t = depot_transfer_min(s.first_stop, clusters)
+            _tb = depot_transfer_min(s.last_stop, clusters)
+            _pt = pre_turno_for(_t)
+            nastro_s = s.work_min + _pt + _t + _tb
+            if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
+                continue  # supplementi esentati
+            pp = bds.pre_post
+            pre_post_val = pp.pre_turno_deposito if _t > 0 else pp.pre_turno_cambio
+            work_w = s.work_min + pre_post_val + _tb
+            if work_w >= MIN_WORK_PER_DUTY:
+                continue
+            if pairs_by_seg.get(s.idx):
+                model.add(single[s.idx] == 0)
+                n_forbidden_single += 1
+    if n_forbidden_single > 0:
+        log(f"[V4][CPSAT] Saturazione: vietati {n_forbidden_single} single sotto {MIN_WORK_PER_DUTY}min lavoro")
+
+    # -- HARD: cap vetture aziendali simultanee per trasferimenti a vuoto --
+    # Ogni pair (semiunico/spezzato) richiede UNA vettura aziendale per spostare
+    # il driver da fine s1 a inizio s2. Modelliamo come cumulative su intervalli
+    # opzionali con capacita' MAX_COMPANY_CARS.
+    if MAX_COMPANY_CARS > 0 and pair_vars:
+        car_intervals = []
+        for key, pv in pair_vars.items():
+            s1_idx, s2_idx = key
+            s1, s2 = seg_by_idx[s1_idx], seg_by_idx[s2_idx]
+            if s1.start_min > s2.start_min:
+                s1, s2 = s2, s1
+            car_start = s1.end_min
+            car_end = s2.start_min
+            duration = car_end - car_start
+            if duration <= 0:
+                continue
+            iv = model.new_optional_fixed_size_interval_var(
+                start=car_start,
+                size=duration,
+                is_present=pv,
+                name=f"car_iv_{key[0]}_{key[1]}",
+            )
+            car_intervals.append(iv)
+        if car_intervals:
+            model.add_cumulative(
+                car_intervals,
+                [1] * len(car_intervals),
+                MAX_COMPANY_CARS,
+            )
+            log(f"[V4][CPSAT] Cap HARD vetture aziendali = {MAX_COMPANY_CARS} su {len(car_intervals)} pair")
+
     # -- Vincoli: copertura esatta --
     for s in segments:
         involved = [single[s.idx]]
@@ -1577,6 +1723,13 @@ def _build_cpsat_model(
             hours = work_with_overhead / 60.0
             cost_cents = int((hours * rates.hourly_rate * mul_cost
                              + dev_from_target * rates.work_imbalance_per_min * mul_balance) * COST_SCALE)
+            # FIX-CSP-1: penalita' idle CAPPATA per evitare doppia penalita' con
+            # work_imbalance. Solo i primi IDLE_PENALTY_MAX_MIN minuti contano:
+            # oltre, il segmento e' strutturalmente isolato e non c'e' alternativa.
+            if WEIGHT_IDLE_PENALTY > 0:
+                idle_min_raw = max(0, nastro_s - work_with_overhead)
+                idle_min_capped = min(idle_min_raw, IDLE_PENALTY_MAX_MIN)
+                cost_cents += WEIGHT_IDLE_PENALTY * idle_min_capped * COST_SCALE
 
         # Perturbazione per esplorare soluzioni diverse
         if scenario_noise > 0:
@@ -1613,6 +1766,13 @@ def _build_cpsat_model(
 
     for s_idx, penalty in nastro_violation_penalty.items():
         obj_terms.append(penalty * single[s_idx])
+
+    # -- Minimizzazione AGGRESSIVA del numero di turni guida --
+    # Aggiunge un costo "virtuale" fisso per ogni turno selezionato:
+    # spinge il solver a preferire pair (1 turno copre 2 segmenti) rispetto
+    # a 2 single, anche quando l'aritmetica oraria sarebbe quasi pari.
+    if WEIGHT_DUTY_COUNT > 0:
+        obj_terms.append(WEIGHT_DUTY_COUNT * COST_SCALE * total_duties)
 
     model.minimize(sum(obj_terms))
 
@@ -1673,7 +1833,10 @@ def _extract_duties_from_solution(
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
             nastro = s2.end_min - s1.start_min + pt + transfer + transfer_back
-            work = s1.work_min + s2.work_min + pt + transfer_back
+            # Bugfix: includere pre_ripresa nel work_min coerentemente con la
+            # cost function di _build_cpsat_model (combined_work).
+            work = (s1.work_min + s2.work_min + pt + transfer_back
+                    + bds.pre_post.pre_ripresa)
 
             duties.append(DriverDutyV3(
                 idx=duty_idx,
@@ -1701,6 +1864,18 @@ def _extract_duties_from_solution(
     return duties
 
 
+def _capture_solver_decisions(
+    solver: cp_model.CpSolver,
+    single: dict[int, Any],
+    pair_vars: dict[tuple[int, int], Any],
+) -> tuple[dict[int, bool], dict[tuple[int, int], bool]]:
+    """FIX-CSP-3: Estrae le decisioni booleane di una soluzione CP-SAT per
+    riusarle come hint in un modello successivo (polish phase warm-start)."""
+    single_decisions = {s_idx: bool(solver.value(sv)) for s_idx, sv in single.items()}
+    pair_decisions = {key: bool(solver.value(pv)) for key, pv in pair_vars.items()}
+    return single_decisions, pair_decisions
+
+
 def _score_solution(
     duties: list[DriverDutyV3],
     rates: CostRates,
@@ -1724,6 +1899,12 @@ def _score_solution(
     score = total_cost + n_violations * 50.0 + n_invalido * 500.0
 
     n_total = len(duties)
+
+    # FIX-CSP-2: termine esplicito n_turni × SCORE_PER_DUTY
+    # Permette al portfolio di preferire scenari con meno turni anche se
+    # marginalmente piu' costosi sul costo orario.
+    score += n_total * SCORE_PER_DUTY
+
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
     suppl_pct = n_suppl / max(n_total, 1)
     if suppl_pct > 0.15:
@@ -1873,6 +2054,9 @@ def optimize_multi_scenario(
     best_score = float('inf')
     best_scenario_idx = -1
     best_strategy_used: str = "balanced"
+    # FIX-CSP-3: salva decisioni del best per warm-start polish
+    best_single_decisions: dict[int, bool] = {}
+    best_pair_decisions: dict[tuple[int, int], bool] = {}
     scenario_results: list[dict] = []
 
     base_seed = int(time.time()) % 10000
@@ -2002,6 +2186,10 @@ def optimize_multi_scenario(
             best_duties = duties
             best_scenario_idx = sc_idx
             best_strategy_used = params["strategy"]
+            # FIX-CSP-3: cattura decisioni per warm-start polish
+            best_single_decisions, best_pair_decisions = _capture_solver_decisions(
+                solver, single, pvars,
+            )
 
         if time.time() - t_total_start > scenario_time_total:
             log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
@@ -2020,7 +2208,8 @@ def optimize_multi_scenario(
     if best_duties is not None and not _stop_requested.is_set():
         polish_budget = min(polish_time_total, max(POLISH_MIN_BUDGET, int(polish_time_total)))
         report_progress("optimize", 82, f"Rifinitura: polish {polish_budget}s su strategia {best_strategy_used}")
-        log(f"Polish phase: strategia={best_strategy_used}, tempo={polish_budget}s")
+        log(f"Polish phase: strategia={best_strategy_used}, tempo={polish_budget}s, "
+            f"warm-start da scenario {best_scenario_idx + 1}")
 
         polish_start = time.time()
         polish_model, p_single, p_pvars, p_ptypes = _build_cpsat_model(
@@ -2029,6 +2218,23 @@ def optimize_multi_scenario(
             scenario_noise=0.0,
             strategy=best_strategy_used,
         )
+
+        # FIX-CSP-3: warm-start dal best scenario.
+        # Senza questo, il polish parte cieco e raramente trova soluzioni
+        # migliori perche' il budget tempo (15-30s) e' troppo basso per
+        # ricominciare da zero.
+        n_hints_single = 0
+        n_hints_pair = 0
+        for s_idx, sv in p_single.items():
+            if s_idx in best_single_decisions:
+                polish_model.add_hint(sv, 1 if best_single_decisions[s_idx] else 0)
+                n_hints_single += 1
+        for key, pv in p_pvars.items():
+            if key in best_pair_decisions:
+                polish_model.add_hint(pv, 1 if best_pair_decisions[key] else 0)
+                n_hints_pair += 1
+        log(f"Polish: applicati {n_hints_single} hint single + {n_hints_pair} hint pair")
+
         polish_solver = cp_model.CpSolver()
         polish_solver.parameters.max_time_in_seconds = polish_budget
         polish_solver.parameters.num_workers = 8
@@ -2240,7 +2446,7 @@ def greedy_fallback(
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
             nastro = s2.end_min - s1.start_min + pt + transfer + transfer_back
-            work = s1.work_min + s2.work_min + pt + transfer_back
+            work = s1.work_min + s2.work_min + pt + transfer_back + bds.pre_post.pre_ripresa
 
             d = DriverDutyV3(
                 idx=duty_idx,
@@ -2613,6 +2819,14 @@ def serialize_output(
             for c in clusters
         ],
         "companyCars": COMPANY_CARS,
+        "optimizerParams": {
+            "minWorkPerDuty": MIN_WORK_PER_DUTY,
+            "maxCompanyCars": MAX_COMPANY_CARS,
+            "weightDutyCount": WEIGHT_DUTY_COUNT,
+            "weightIdlePenalty": WEIGHT_IDLE_PENALTY,
+            "idlePenaltyMaxMin": IDLE_PENALTY_MAX_MIN,
+            "scorePerDuty": SCORE_PER_DUTY,
+        },
         "carPool": {
             "totalTrips": len(car_movements),
             "deliveries": sum(1 for t in car_movements if t.trip_type == "deliver"),
@@ -2641,6 +2855,8 @@ def main() -> None:
 
     # Permetti override delle SHIFT_RULES da config.bds.shiftRules
     apply_shift_rules_override(config)
+    # Override iperparametri ottimizzatore (saturazione, vetture, pesi)
+    apply_optimizer_overrides(config)
 
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
