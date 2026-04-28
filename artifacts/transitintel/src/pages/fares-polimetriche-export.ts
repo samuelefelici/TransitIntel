@@ -1287,6 +1287,28 @@ const STYLES = `
  * Entry point
  * ──────────────────────────────────────────────────────── */
 
+/**
+ * Carica il logo `/faresengine.png` dall'origine corrente e lo converte
+ * in data URI base64 così l'HTML resta auto-contenuto anche quando
+ * viene servito da un'origine diversa (es. backend Render per i link
+ * condivisibili).
+ */
+async function loadLogoDataUri(): Promise<string | null> {
+  try {
+    const res = await fetch("/faresengine.png");
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
 export interface PolimetricheBuildResult {
   html: string;
   agencyName: string;
@@ -1351,6 +1373,10 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
   });
   const pages = sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
 
+  // Carica il logo come data URI in modo che l'HTML sia auto-contenuto
+  // (necessario per i link condivisibili serviti dal backend)
+  const logoDataUri = await loadLogoDataUri();
+
   const html = `<!doctype html>
 <html lang="it">
 <head>
@@ -1370,8 +1396,14 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
 </body>
 </html>`;
 
+  // Sostituisci il path relativo del logo con il data URI inline (auto-contenuto).
+  // Se non è stato possibile caricarlo, lascia il path: in dev/preview funziona.
+  const finalHtml = logoDataUri
+    ? html.split('src="/faresengine.png"').join(`src="${logoDataUri}"`)
+    : html;
+
   return {
-    html,
+    html: finalHtml,
     agencyName,
     date,
     routeCount: sheets.length,
