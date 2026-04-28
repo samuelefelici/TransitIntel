@@ -7,6 +7,7 @@ import {
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
   Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
+  BarChart3,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { exportPolimetricheToPrint } from "./fares-polimetriche-export";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -3790,6 +3792,27 @@ function GenerateTab() {
         <Button onClick={downloadFullZip} disabled={downloadingZip} variant="outline" size="sm">
           {downloadingZip ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
           Scarica GTFS Completo (ZIP)
+        </Button>
+        <Button
+          onClick={() => {
+            if (!result) {
+              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
+              return;
+            }
+            exportPolimetricheToPrint({
+              files: result.files,
+              zoningMethod,
+              date: new Date().toLocaleDateString("it-IT"),
+            });
+          }}
+          disabled={!result}
+          variant="outline"
+          size="sm"
+          className="border-emerald-500/50 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+          title="Apre in nuova scheda il report stampabile delle matrici tariffarie OD per ciascuna rete (stampabile in PDF)"
+        >
+          <BarChart3 className="w-4 h-4 mr-2" />
+          Polimetriche (PDF)
         </Button>
         <Button
           variant="outline"
