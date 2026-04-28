@@ -130,9 +130,7 @@ function DriverShiftsPageInner() {
 
   // ── Highlight target durante drag (#2) ──
   // Mappa rowId → colore CSS per evidenziare gli autisti compatibili
-  const [rowHighlights, setRowHighlights] = useState<Record<string, string> | undefined>(undefined);
-
-  const handleBarDragStart = useCallback((bar: GanttBar) => {
+  const [rowHighlights, setRowHighlights] = useState<Record<string, string> | undefined>(undefined);  const handleBarDragStart = useCallback((bar: GanttBar) => {
     if (!result) return;
     const meta: any = bar.meta || {};
     if (meta.type !== "trip" || !meta.tripId) return;
@@ -151,6 +149,11 @@ function DriverShiftsPageInner() {
   const handleBarDragEnd = useCallback(() => {
     setRowHighlights(undefined);
   }, []);
+
+  // ── Diff baseline vs current (#5) ──
+  // Snapshot bars iniziali per evidenziare cosa è stato modificato manualmente
+  const baselineBarsRef = useRef<Map<string, { rowId: string; startMin: number; endMin: number }> | null>(null);
+  const [showDiff, setShowDiff] = useState(false);
 
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
@@ -223,6 +226,9 @@ function DriverShiftsPageInner() {
         if (stored) {
           setResult(stored);
           baselineSummaryRef.current = stored?.summary ? { ...stored.summary } : null;
+          baselineBarsRef.current = stored?.driverShifts
+            ? new Map(driverShiftsToTripBars(stored.driverShifts).map(b => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+            : null;
           setSolverMetrics(stored.solverMetrics ?? null);
           setLoadedDssId(dssIdFromUrl);
           if (row?.config) setOperatorConfig(prev => ({ ...prev, ...row.config }));
@@ -287,6 +293,9 @@ function DriverShiftsPageInner() {
       baselineSummaryRef.current = (cpsat.result as any)?.summary
         ? { ...(cpsat.result as any).summary }
         : null;
+      baselineBarsRef.current = (cpsat.result as any)?.driverShifts
+        ? new Map(driverShiftsToTripBars((cpsat.result as any).driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+        : null;
       setSolverMetrics(cpsat.result.solverMetrics || null);
       setLoading(false);
       setError(null);
@@ -307,6 +316,9 @@ function DriverShiftsPageInner() {
       .then(data => {
         setResult(data);
         baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
+        baselineBarsRef.current = data?.driverShifts
+          ? new Map(driverShiftsToTripBars(data.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+          : null;
         setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
       })
       .catch(e => setError(e.message))
@@ -457,6 +469,37 @@ function DriverShiftsPageInner() {
     }
     return out;
   }, [filteredShifts, ganttMode]);
+
+  // ── Bars con styling diff vs baseline (#5) ──
+  const displayBars = useMemo<GanttBar[]>(() => {
+    if (!showDiff || !baselineBarsRef.current || ganttMode !== "exploded") {
+      return driverGanttBars;
+    }
+    const baseline = baselineBarsRef.current;
+    return driverGanttBars.map(b => {
+      // Solo bar di tipo "trip" hanno senso da confrontare
+      const meta: any = b.meta || {};
+      if (meta.type !== "trip") return b;
+      const orig = baseline.get(b.id);
+      if (!orig) {
+        // bar nuova (rara, ma possibile)
+        return { ...b, color: "#06b6d4", tooltip: [...(b.tooltip ?? []), "✨ nuova"] };
+      }
+      const reassigned = orig.rowId !== b.rowId;
+      const shifted = orig.startMin !== b.startMin || orig.endMin !== b.endMin;
+      if (reassigned && shifted) {
+        return { ...b, color: "#a855f7", tooltip: [...(b.tooltip ?? []), `↔ riassegnata + spostata (era ${orig.rowId} ${minToTime(orig.startMin)})`] };
+      }
+      if (reassigned) {
+        return { ...b, color: "#3b82f6", tooltip: [...(b.tooltip ?? []), `↔ riassegnata (era ${orig.rowId})`] };
+      }
+      if (shifted) {
+        return { ...b, color: "#fbbf24", tooltip: [...(b.tooltip ?? []), `⇄ spostata (era ${minToTime(orig.startMin)}-${minToTime(orig.endMin)})`] };
+      }
+      // invariata: opacità ridotta
+      return { ...b, color: b.color, style: "dashed" as const };
+    });
+  }, [driverGanttBars, showDiff, ganttMode]);
 
   /* ── History push/undo/redo ───────────────────────── */
   const pushHistory = useCallback((newRes: DriverShiftsResult) => {
@@ -1370,6 +1413,20 @@ function DriverShiftsPageInner() {
                 >
                   <Redo2 className="w-3 h-3" />
                 </button>
+                {/* Toggle diff baseline (#5) */}
+                {baselineBarsRef.current && ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowDiff(v => !v)}
+                    className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${
+                      showDiff
+                        ? "border-purple-500/60 bg-purple-500/20 text-purple-200"
+                        : "border-orange-500/30 bg-orange-500/8 text-orange-300 hover:bg-orange-500/15"
+                    }`}
+                    title="Evidenzia corse spostate/riassegnate vs ottimo iniziale"
+                  >
+                    🔍 Diff
+                  </button>
+                )}
                 {/* Filtro tipo */}
                 <select
                   value={typeFilter}
@@ -1393,7 +1450,7 @@ function DriverShiftsPageInner() {
             {filteredShifts.length > 0 ? (
               <InteractiveGantt
                 rows={driverGanttRows}
-                bars={driverGanttBars}
+                bars={displayBars}
                 editable={ganttMode === "exploded"}
                 onBarChange={ganttMode === "exploded" ? handleDriverGanttChange : undefined}
                 onBarClick={(bar) => {
