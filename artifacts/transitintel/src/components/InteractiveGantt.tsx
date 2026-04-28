@@ -611,9 +611,22 @@ export default function InteractiveGantt({
           <button onClick={() => setZoom(z => Math.max(0.5, z - 0.25))} className="p-0.5 hover:bg-white/10 rounded" title="Zoom out">
             <ZoomOut className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
-          <span className="text-[10px] text-muted-foreground w-10 text-center">{Math.round(zoom * 100)}%</span>
+          <input
+            type="range"
+            min={0.5}
+            max={4}
+            step={0.1}
+            value={zoom}
+            onChange={e => setZoom(parseFloat(e.target.value))}
+            className="w-20 h-1 accent-orange-500 cursor-pointer"
+            title="Slider zoom"
+          />
+          <span className="text-[10px] text-muted-foreground w-10 text-center tabular-nums">{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom(z => Math.min(4, z + 0.25))} className="p-0.5 hover:bg-white/10 rounded" title="Zoom in">
             <ZoomIn className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+          <button onClick={() => setZoom(1)} className="p-0.5 hover:bg-white/10 rounded text-[9px] text-muted-foreground/80 px-1" title="Reset zoom (100%)">
+            ⌂
           </button>
         </div>
 
