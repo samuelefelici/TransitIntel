@@ -339,57 +339,166 @@ function renderCoverPage(opts: {
   `;
 }
 
+/**
+ * Gradiente "termico" verde→giallo→arancio→rosso, leggibile su carta.
+ * Si interpola linearmente in HSL passando per 4 stop.
+ */
 function priceColor(amount: number, min: number, max: number): string {
-  if (max <= min) return "#fff7ed";
-  const t = (amount - min) / (max - min);
-  // gradiente caldo: avorio → ambra → arancio scuro
-  const r = Math.round(255 - t * 50);
-  const g = Math.round(247 - t * 130);
-  const b = Math.round(237 - t * 200);
-  return `rgb(${r}, ${g}, ${b})`;
+  if (max <= min || !isFinite(amount)) return "#ecfdf5";
+  const t = Math.max(0, Math.min(1, (amount - min) / (max - min)));
+  // 4 stops: verde acqua → giallo paglia → arancio → rosso mattone
+  const stops = [
+    { t: 0.0,  h: 152, s: 65, l: 90 }, // verde tenue
+    { t: 0.33, h: 75,  s: 75, l: 80 }, // lime/giallo
+    { t: 0.66, h: 32,  s: 90, l: 70 }, // arancio
+    { t: 1.0,  h: 0,   s: 75, l: 60 }, // rosso mattone
+  ];
+  let lo = stops[0], hi = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i].t && t <= stops[i + 1].t) { lo = stops[i]; hi = stops[i + 1]; break; }
+  }
+  const k = hi.t === lo.t ? 0 : (t - lo.t) / (hi.t - lo.t);
+  const h = Math.round(lo.h + (hi.h - lo.h) * k);
+  const s = Math.round(lo.s + (hi.s - lo.s) * k);
+  const l = Math.round(lo.l + (hi.l - lo.l) * k);
+  return `hsl(${h}, ${s}%, ${l}%)`;
 }
 
-function renderPolimetricaTable(sheet: RouteSheet, model: PriceModel): string {
-  const areas = sheet.routeAreas;
-  if (areas.length === 0) {
-    return `<div class="empty">Nessuna zona tariffaria assegnata a questa linea.</div>`;
-  }
+/**
+ * Risolve il prezzo del biglietto ordinario tra due fermate della linea
+ * passando per le rispettive zone tariffarie.
+ */
+function lookupPriceBetweenStops(
+  fromStop: RouteStop, toStop: RouteStop,
+  network: string, model: PriceModel
+): number | null {
+  const fromArea = fromStop.currentAreaId || fromStop.suggestedAreaId || model.stopToArea.get(fromStop.stopId);
+  const toArea   = toStop.currentAreaId   || toStop.suggestedAreaId   || model.stopToArea.get(toStop.stopId);
+  if (!fromArea || !toArea) return null;
+  const direct = model.prices.get(`${network}|${fromArea}|${toArea}`);
+  if (direct != null) return direct;
+  const reverse = model.prices.get(`${network}|${toArea}|${fromArea}`);
+  return reverse ?? null;
+}
+
+/**
+ * Genera abbreviazione nome fermata per intestazione di colonna ruotata.
+ * Tronca a max 28 caratteri, rimuove parentesi/dettagli.
+ */
+function shortStopLabel(name: string, max = 28): string {
+  let s = name.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
+  if (s.length > max) s = s.slice(0, max - 1) + "…";
+  return s;
+}
+
+/**
+ * Densità della matrice in funzione del numero di fermate.
+ * Restituisce dimensioni in px utilizzate sia in screen che in print.
+ */
+function densityForStops(n: number): {
+  cellSize: number;
+  cellFont: number;
+  headerHeight: number;
+  headerFont: number;
+  nameWidth: number;
+  scale: "L" | "M" | "S" | "XS" | "XXS";
+} {
+  if (n <= 20) return { cellSize: 26, cellFont: 10, headerHeight: 110, headerFont: 9,  nameWidth: 150, scale: "L"   };
+  if (n <= 30) return { cellSize: 22, cellFont: 9,  headerHeight: 105, headerFont: 8,  nameWidth: 135, scale: "M"   };
+  if (n <= 45) return { cellSize: 16, cellFont: 7,  headerHeight: 95,  headerFont: 7,  nameWidth: 115, scale: "S"   };
+  if (n <= 60) return { cellSize: 13, cellFont: 6,  headerHeight: 90,  headerFont: 6,  nameWidth: 100, scale: "XS"  };
+  return            { cellSize: 10, cellFont: 5,  headerHeight: 80,  headerFont: 5,  nameWidth: 88,  scale: "XXS" };
+}
+
+/**
+ * Tabella triangolare fermata×fermata. Le intestazioni colonna sono testo
+ * verticale (rotato 90°). La cella (i, j) con i ≤ j mostra il prezzo tra
+ * la fermata i (riga) e la fermata j (colonna). Le celle sotto la diagonale
+ * sono lasciate vuote (la matrice è simmetrica).
+ */
+function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
+  const stops = sheet.stops;
+  if (stops.length < 2) return `<div class="empty">Linea con meno di 2 fermate, polimetrica non applicabile.</div>`;
   const network = sheet.networkId || "";
+  const d = densityForStops(stops.length);
 
-  const header = `
-    <tr>
-      <th class="corner">Da \\ A</th>
-      ${areas.map(a => `<th class="zh"><div class="zcode">${escape(a.code)}</div></th>`).join("")}
-    </tr>
-  `;
+  // Pre-calcola la matrice di prezzi per estrarre min/max LOCALI di questa linea
+  // (così il gradiente è significativo anche se la rete ha range più ampio)
+  const matrix: (number | null)[][] = stops.map((from, i) =>
+    stops.map((to, j) => {
+      if (j < i) return null;
+      if (i === j) return null;
+      return lookupPriceBetweenStops(from, to, network, model);
+    })
+  );
+  let lMin = Infinity, lMax = -Infinity;
+  for (const row of matrix) for (const v of row) {
+    if (v != null && isFinite(v)) { if (v < lMin) lMin = v; if (v > lMax) lMax = v; }
+  }
+  if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
 
-  const rows = areas.map((from, i) => {
-    const cells = areas.map((to, j) => {
-      if (j < i) return `<td class="empty-cell">─</td>`;
-      const key = `${network}|${from.id}|${to.id}`;
-      const price = model.prices.get(key);
-      if (price == null) {
-        // simmetrico
-        const altKey = `${network}|${to.id}|${from.id}`;
-        const alt = model.prices.get(altKey);
-        if (alt == null) return `<td class="empty-cell">·</td>`;
-        return `<td class="price" style="background:${priceColor(alt, model.minPrice, model.maxPrice)}">${fmtMoney(alt)}</td>`;
-      }
-      return `<td class="price" style="background:${priceColor(price, model.minPrice, model.maxPrice)}">${fmtMoney(price)}</td>`;
+  const headerCells = stops.map((s, j) => {
+    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+    const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
+    return `
+      <th class="hcol">
+        <div class="hcol-wrap">
+          <div class="hcol-text">${j + 1}. ${escape(shortStopLabel(s.stopName))}${code ? ` <span class="zhint">[${escape(code)}]</span>` : ""}</div>
+        </div>
+      </th>
+    `;
+  }).join("");
+
+  const rows = stops.map((from, i) => {
+    const aid = from.currentAreaId || from.suggestedAreaId || model.stopToArea.get(from.stopId);
+    const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
+    const cells = stops.map((_to, j) => {
+      if (j < i) return `<td class="below"></td>`;
+      if (i === j) return `<td class="diag">■</td>`;
+      const price = matrix[i][j];
+      if (price == null) return `<td class="na" title="N/D">–</td>`;
+      const bg = priceColor(price, lMin, lMax);
+      return `<td class="cell" style="background:${bg}" title="${escape(from.stopName)} → ${escape(stops[j].stopName)} : € ${fmtMoney(price)}">${fmtMoney(price)}</td>`;
     }).join("");
     return `
       <tr>
-        <th class="rh"><div class="zcode">${escape(from.code)}</div></th>
+        <th class="rname">
+          <div class="rname-num">${i + 1}</div>
+          <div class="rname-text">${escape(shortStopLabel(from.stopName, 32))}</div>
+          <div class="rname-km">${from.progressiveKm.toFixed(1)} km</div>
+          ${code ? `<div class="rname-zone">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
+        </th>
         ${cells}
       </tr>
     `;
   }).join("");
 
+  // Legenda colori (5 step)
+  const steps = 5;
+  const legendCells = Array.from({ length: steps }, (_, i) => {
+    const v = lMin + (lMax - lMin) * (i / (steps - 1));
+    return `<div class="lg-cell" style="background:${priceColor(v, lMin, lMax)}">${fmtMoney(v)}</div>`;
+  }).join("");
+
   return `
-    <table class="polimetrica">
-      <thead>${header}</thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div class="matrix-wrap density-${d.scale}"
+         style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hh:${d.headerHeight}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px">
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th class="corner">Da \\ A</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+
+      <div class="matrix-legend">
+        <div class="lg-title">Scala prezzi (€)</div>
+        <div class="lg-bar">${legendCells}</div>
+        <div class="lg-hint">colore proporzionale al prezzo del biglietto ordinario tra le due fermate</div>
+      </div>
+    </div>
   `;
 }
 
@@ -398,26 +507,9 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
   const lineColor = sheet.routeColor && sheet.routeColor !== "" ? `#${sheet.routeColor}` : "#0f766e";
   const stopCount = sheet.stops.length;
   const zoneCount = sheet.routeAreas.length;
+  const tariffePossibili = stopCount > 0 ? Math.round(stopCount * (stopCount - 1) / 2) : 0;
 
-  // 2 colonne fermate
-  const half = Math.ceil(sheet.stops.length / 2);
-  const leftCol = sheet.stops.slice(0, half);
-  const rightCol = sheet.stops.slice(half);
-
-  const renderStopRow = (s: RouteStop, n: number) => {
-    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
-    const code = aid ? (model.areas.get(aid)?.code ?? "—") : "—";
-    return `
-      <tr>
-        <td class="num">${n}</td>
-        <td class="sname">${escape(s.stopName)}</td>
-        <td class="km">${s.progressiveKm.toFixed(1)}</td>
-        <td class="zn">${escape(code)}</td>
-      </tr>
-    `;
-  };
-
-  // Legenda zone (codice + range km approssimativo + nome)
+  // Legenda zone compatta
   const zoneLegend = sheet.routeAreas.map(a => {
     const stopsInZone = sheet.stops.filter(s => {
       const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
@@ -427,7 +519,7 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
     const kmEnd = stopsInZone[stopsInZone.length - 1]?.progressiveKm ?? 0;
     return `
       <div class="zone-item">
-        <div class="zbadge">${escape(a.code)}</div>
+        <div class="zbadge" style="background:${lineColor}">${escape(a.code)}</div>
         <div class="zinfo">
           <div class="zname">${escape(a.name)}</div>
           <div class="zrange">${kmStart.toFixed(1)} – ${kmEnd.toFixed(1)} km · ${stopsInZone.length} ferm.</div>
@@ -448,7 +540,7 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
         </div>
         <div class="r-head-right">
           <div class="r-network">${escape(networkLabel)}</div>
-          <div class="r-pageno">${idx} / ${total}</div>
+          <div class="r-pageno">pag. ${idx} / ${total}</div>
         </div>
       </header>
 
@@ -456,36 +548,24 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
         <div class="r-kpi"><div class="rk-num">${sheet.totalKm.toFixed(1)}</div><div class="rk-lbl">km totali</div></div>
         <div class="r-kpi"><div class="rk-num">${stopCount}</div><div class="rk-lbl">fermate</div></div>
         <div class="r-kpi"><div class="rk-num">${zoneCount}</div><div class="rk-lbl">zone tariffarie</div></div>
-        <div class="r-kpi"><div class="rk-num">${zoneCount > 0 ? Math.round(zoneCount * (zoneCount + 1) / 2) : 0}</div><div class="rk-lbl">tariffe OD</div></div>
+        <div class="r-kpi"><div class="rk-num">${tariffePossibili}</div><div class="rk-lbl">tariffe O/D</div></div>
       </div>
 
-      <div class="r-body">
-        <div class="r-col-stops">
-          <h3 class="r-section-title">Elenco fermate</h3>
-          <div class="stops-grid">
-            <table class="stops">
-              <thead><tr><th>#</th><th>Fermata</th><th>km</th><th>Zona</th></tr></thead>
-              <tbody>${leftCol.map((s, i) => renderStopRow(s, i + 1)).join("")}</tbody>
-            </table>
-            <table class="stops">
-              <thead><tr><th>#</th><th>Fermata</th><th>km</th><th>Zona</th></tr></thead>
-              <tbody>${rightCol.map((s, i) => renderStopRow(s, i + 1 + half)).join("")}</tbody>
-            </table>
-          </div>
-        </div>
+      <h3 class="r-section-title">
+        Polimetrica fermata × fermata
+        <span class="hint">prezzo del biglietto ordinario (€) all'incrocio tra fermata di partenza e di arrivo</span>
+      </h3>
 
-        <div class="r-col-poli">
-          <h3 class="r-section-title">Polimetrica tariffaria <span class="hint">prezzo biglietto ordinario · €</span></h3>
-          ${renderPolimetricaTable(sheet, model)}
+      ${renderStopMatrix(sheet, model)}
 
-          <h3 class="r-section-title legend-title">Legenda zone</h3>
-          <div class="zones-legend">${zoneLegend}</div>
-        </div>
-      </div>
+      ${zoneCount > 0 ? `
+        <h3 class="r-section-title legend-title">Zone tariffarie della linea</h3>
+        <div class="zones-legend">${zoneLegend}</div>
+      ` : ""}
 
       <footer class="r-foot">
         <div>Linea <strong>${escape(sheet.shortName)}</strong> · ${escape(sheet.routeId)}</div>
-        <div>Sorgente: GTFS Fares V2 · ${escape(networkLabel)}</div>
+        <div>GTFS Fares V2 · ${escape(networkLabel)}</div>
       </footer>
     </section>
   `;
@@ -504,7 +584,7 @@ const STYLES = `
     position: sticky; top: 0; z-index: 10;
     display: flex; justify-content: space-between; align-items: center;
     padding: 10px 20px;
-    background: #1f2937; color: white;
+    background: #0f172a; color: white;
     box-shadow: 0 2px 8px rgba(0,0,0,.2);
   }
   .toolbar h1 { margin: 0; font-size: 14px; font-weight: 600; }
@@ -515,7 +595,10 @@ const STYLES = `
   }
   .toolbar button:hover { background: #059669; }
 
-  @page { size: A4 portrait; margin: 12mm; }
+  /* La cover resta portrait, le pagine linea sono landscape */
+  @page { size: A4 landscape; margin: 8mm; }
+  @page :first { size: A4 portrait; margin: 12mm; }
+
   @media print {
     body { background: white; }
     .toolbar { display: none; }
@@ -523,16 +606,15 @@ const STYLES = `
   }
 
   .page {
-    width: 210mm;
-    min-height: 297mm;
-    margin: 16px auto;
-    padding: 14mm 12mm;
     background: white;
     box-shadow: 0 4px 20px rgba(0,0,0,.08);
     page-break-after: always;
     display: flex; flex-direction: column;
   }
   .page:last-child { page-break-after: auto; }
+
+  .page.cover { width: 210mm; min-height: 297mm; padding: 14mm 12mm; margin: 16px auto; }
+  .page.route { width: 297mm; min-height: 210mm; padding: 8mm 10mm; margin: 16px auto; }
 
   /* ─── Cover ─────────────────────── */
   .cover { justify-content: space-between; }
@@ -555,97 +637,192 @@ const STYLES = `
   .cover-stats .kpi-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-top: 4px; }
   .cover-foot { font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 14px; display: flex; justify-content: space-between; }
 
-  /* ─── Pagina linea ─────────────── */
-  .route { gap: 10px; }
+  /* ─── Pagina linea (landscape) ─── */
+  .route { gap: 6px; }
   .r-head {
     display: flex; justify-content: space-between; align-items: center;
-    border-bottom: 2px solid var(--line-color); padding-bottom: 10px;
+    border-bottom: 2px solid var(--line-color); padding-bottom: 6px;
   }
-  .r-head-left { display: flex; align-items: center; gap: 14px; }
+  .r-head-left { display: flex; align-items: center; gap: 12px; }
   .r-line-pill {
-    color: white; font-weight: 800; font-size: 22px;
-    padding: 8px 16px; border-radius: 8px; min-width: 64px; text-align: center;
+    color: white; font-weight: 800; font-size: 18px;
+    padding: 6px 14px; border-radius: 8px; min-width: 56px; text-align: center;
     letter-spacing: .5px; box-shadow: 0 2px 6px rgba(0,0,0,.15);
   }
-  .r-titles { display: flex; flex-direction: column; gap: 2px; }
-  .r-title { font-size: 18px; font-weight: 700; color: #0f172a; }
+  .r-titles { display: flex; flex-direction: column; gap: 1px; }
+  .r-title { font-size: 16px; font-weight: 700; color: #0f172a; }
   .r-title .arrow { color: var(--line-color); margin: 0 6px; font-weight: 400; }
-  .r-subtitle { font-size: 11px; color: #64748b; }
+  .r-subtitle { font-size: 10px; color: #64748b; }
   .r-head-right { text-align: right; }
   .r-network {
     background: var(--line-color); color: white;
-    padding: 4px 10px; border-radius: 4px; font-size: 11px;
+    padding: 3px 9px; border-radius: 4px; font-size: 10px;
     font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
   }
-  .r-pageno { font-size: 10px; color: #64748b; margin-top: 4px; }
+  .r-pageno { font-size: 9px; color: #64748b; margin-top: 3px; }
 
-  .r-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0 4px; }
+  .r-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 4px 0; }
   .r-kpi {
-    border: 1px solid #e5e7eb; border-radius: 8px;
-    padding: 8px 10px; text-align: center;
+    border: 1px solid #e5e7eb; border-radius: 6px;
+    padding: 4px 8px; text-align: center;
     background: linear-gradient(180deg, #f8fafc, #ffffff);
   }
-  .rk-num { font-size: 18px; font-weight: 700; color: var(--line-color); }
-  .rk-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: #64748b; margin-top: 2px; }
-
-  .r-body { display: grid; grid-template-columns: 1fr 1.1fr; gap: 12px; flex: 1; align-content: start; }
+  .rk-num { font-size: 14px; font-weight: 700; color: var(--line-color); }
+  .rk-lbl { font-size: 8px; text-transform: uppercase; letter-spacing: .5px; color: #64748b; }
 
   .r-section-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px;
     color: var(--line-color); font-weight: 700;
-    border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; margin: 6px 0;
+    border-bottom: 1px solid #e5e7eb; padding-bottom: 3px;
+    margin: 6px 0 4px;
   }
-  .r-section-title .hint { color: #94a3b8; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 9px; margin-left: 6px; }
-  .legend-title { margin-top: 14px; }
+  .r-section-title .hint {
+    color: #94a3b8; font-weight: 400; text-transform: none;
+    letter-spacing: 0; font-size: 9px; margin-left: 6px;
+  }
+  .legend-title { margin-top: 8px; }
 
-  .stops-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  table.stops { width: 100%; border-collapse: collapse; font-size: 9px; }
-  table.stops thead th {
-    background: #f1f5f9; color: #475569; font-weight: 600;
-    padding: 4px 4px; text-align: left; border-bottom: 1px solid #cbd5e1;
-    font-size: 8px; text-transform: uppercase; letter-spacing: .5px;
+  /* ─── Matrice fermata × fermata ─── */
+  .matrix-wrap { display: flex; flex-direction: column; gap: 6px; }
+  table.matrix {
+    border-collapse: separate; border-spacing: 0;
+    table-layout: fixed;
+    margin: 0 auto;
   }
-  table.stops td { padding: 2px 4px; border-bottom: 1px dotted #e5e7eb; }
-  table.stops td.num { color: #94a3b8; width: 16px; text-align: right; font-variant-numeric: tabular-nums; }
-  table.stops td.sname { color: #1f2937; }
-  table.stops td.km { text-align: right; font-variant-numeric: tabular-nums; color: #475569; width: 32px; }
-  table.stops td.zn { text-align: center; font-weight: 700; color: var(--line-color); width: 22px; }
-
-  table.polimetrica { border-collapse: collapse; font-size: 10px; width: 100%; }
-  table.polimetrica th, table.polimetrica td {
-    border: 1px solid #d1d5db; padding: 4px 2px; text-align: center;
-    min-width: 32px; height: 24px;
+  table.matrix th, table.matrix td {
+    border: 1px solid #e5e7eb;
+    width: var(--cs); height: var(--cs);
+    min-width: var(--cs); max-width: var(--cs);
+    padding: 0; text-align: center; vertical-align: middle;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--cf);
   }
-  table.polimetrica th.corner {
-    background: var(--line-color); color: white; font-weight: 700; font-size: 9px;
-  }
-  table.polimetrica th.zh, table.polimetrica th.rh {
-    background: #f8fafc; color: #0f172a; font-weight: 700;
-  }
-  table.polimetrica .zcode { font-size: 11px; }
-  table.polimetrica td.price {
-    font-variant-numeric: tabular-nums; font-weight: 600; color: #1f2937;
-  }
-  table.polimetrica td.empty-cell { color: #cbd5e1; background: #fafafa; }
-
-  .zones-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .zone-item { display: flex; gap: 8px; align-items: center; padding: 4px 6px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fafafa; }
-  .zbadge {
+  table.matrix th.corner {
+    width: var(--nw); min-width: var(--nw); max-width: var(--nw);
+    height: var(--hh); min-height: var(--hh);
     background: var(--line-color); color: white;
-    width: 28px; height: 28px; border-radius: 6px;
+    font-weight: 700; font-size: 9px;
+    border-color: var(--line-color);
+  }
+  table.matrix th.hcol {
+    height: var(--hh); min-height: var(--hh);
+    background: #f8fafc;
+    vertical-align: bottom;
+    padding: 0;
+  }
+  table.matrix th.hcol .hcol-wrap {
+    width: var(--cs); height: var(--hh);
+    display: flex; align-items: flex-end; justify-content: center;
+    overflow: hidden;
+  }
+  table.matrix th.hcol .hcol-text {
+    transform: rotate(-65deg); transform-origin: bottom center;
+    white-space: nowrap;
+    font-size: var(--hf); font-weight: 600;
+    color: #1e293b;
+    line-height: 1;
+    padding-bottom: calc(var(--cs) / 2);
+  }
+  table.matrix th.hcol .zhint { color: var(--line-color); font-weight: 700; }
+
+  table.matrix th.rname {
+    width: var(--nw); min-width: var(--nw); max-width: var(--nw);
+    background: #f8fafc;
+    text-align: left;
+    padding: 2px 6px;
+    font-size: var(--hf);
+    font-weight: 600; color: #1e293b;
+    line-height: 1.15;
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 4px; align-items: center;
+  }
+  table.matrix th.rname .rname-num {
+    color: #94a3b8; font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    min-width: 18px; text-align: right;
+  }
+  table.matrix th.rname .rname-text {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table.matrix th.rname .rname-km {
+    font-size: calc(var(--hf) - 1px); color: #64748b; font-weight: 500;
+    white-space: nowrap;
+  }
+  table.matrix th.rname .rname-zone {
+    background: var(--line-color); color: white;
+    font-weight: 700; font-size: calc(var(--hf) - 1px);
+    padding: 1px 4px; border-radius: 3px;
+    min-width: 18px; text-align: center;
+  }
+  table.matrix th.rname .rname-zone.na { background: #cbd5e1; }
+
+  table.matrix td.cell {
+    font-weight: 600; color: #0f172a;
+  }
+  table.matrix td.diag {
+    background: #1e293b; color: white;
+    font-size: calc(var(--cf) - 2px);
+  }
+  table.matrix td.below {
+    background: repeating-linear-gradient(45deg, #f8fafc 0 4px, #f1f5f9 4px 8px);
+    border-color: #f1f5f9;
+  }
+  table.matrix td.na {
+    background: #fafafa; color: #cbd5e1;
+  }
+
+  /* densità XS/XXS: nascondi km nelle intestazioni di riga per stare in pagina */
+  .density-XS table.matrix th.rname .rname-km,
+  .density-XXS table.matrix th.rname .rname-km { display: none; }
+
+  /* ─── Legenda colori ─── */
+  .matrix-legend {
     display: flex; align-items: center; justify-content: center;
-    font-weight: 700; font-size: 11px; flex-shrink: 0;
+    gap: 12px; margin-top: 8px;
+    font-size: 9px; color: #475569;
+  }
+  .lg-title { font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: #1e293b; }
+  .lg-bar { display: flex; gap: 2px; }
+  .lg-cell {
+    min-width: 48px; padding: 4px 8px;
+    text-align: center; font-weight: 700; font-size: 10px;
+    color: #0f172a; border: 1px solid #e5e7eb; border-radius: 3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lg-hint { color: #94a3b8; font-style: italic; }
+
+  /* ─── Legenda zone ─── */
+  .zones-legend {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 4px;
+  }
+  .zone-item {
+    display: flex; gap: 6px; align-items: center;
+    padding: 3px 6px; border: 1px solid #e5e7eb; border-radius: 5px;
+    background: #fafafa;
+  }
+  .zbadge {
+    color: white; width: 22px; height: 22px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 10px; flex-shrink: 0;
   }
   .zinfo { flex: 1; min-width: 0; }
-  .zname { font-size: 10px; font-weight: 600; color: #1f2937; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .zrange { font-size: 9px; color: #64748b; }
+  .zname {
+    font-size: 9px; font-weight: 600; color: #1f2937;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .zrange { font-size: 8px; color: #64748b; }
 
-  .empty { color: #94a3b8; font-style: italic; padding: 20px; text-align: center; border: 1px dashed #cbd5e1; border-radius: 6px; }
+  .empty {
+    color: #94a3b8; font-style: italic; padding: 16px;
+    text-align: center; border: 1px dashed #cbd5e1; border-radius: 6px;
+  }
 
   .r-foot {
     display: flex; justify-content: space-between;
-    border-top: 1px solid #e5e7eb; padding-top: 8px; margin-top: auto;
-    font-size: 9px; color: #94a3b8;
+    border-top: 1px solid #e5e7eb; padding-top: 4px; margin-top: auto;
+    font-size: 8px; color: #94a3b8;
   }
 `;
 
