@@ -1126,19 +1126,17 @@ const STYLES = `
   }
   table.matrix td.diag .diag-name {
     position: absolute;
-    /* Ancorato all'angolo TOP-RIGHT della cella diagonale, leggermente
-       SOTTO lo spigolo (offset positivo) per non toccarlo. Il testo parte
-       da lì e sale verso destra a 45°, dentro il triangolo bianco sopra
-       la diagonale. text-align:left garantisce che inizi dal punto di
-       ancoraggio e non sconfini sul triangolo prezzi a sinistra. */
-    bottom: calc(var(--cs) - 4px);
-    left: calc(var(--cs) - 2px);
+    /* Ancorato POCO OLTRE l'angolo top-right della cella diagonale, in modo
+       da staccarsi visibilmente dal quadratino col numero. Il testo parte da lì
+       e sale verso destra a 45° dentro il triangolo bianco sopra la diagonale. */
+    bottom: calc(var(--cs) + 2px);
+    left: calc(var(--cs) + 4px);
     height: 1em;
     line-height: 1em;
     transform: rotate(-45deg);
     transform-origin: bottom left;
     text-align: left;
-    padding-left: 4px;
+    padding-left: 0;
     font-size: calc(var(--hf) - 2px);
     font-weight: 600;
     color: #0f172a;
