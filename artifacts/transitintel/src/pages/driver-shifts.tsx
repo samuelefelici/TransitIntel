@@ -34,6 +34,7 @@ import {
 import {
   DriverShiftsErrorBoundary, SummaryCard,
 } from "./driver-shifts/components";
+import { DssCompareDialog } from "./driver-shifts/DssCompareDialog";
 import {
   driverShiftsToTripBars,
   applyDriverTripChange,
@@ -156,6 +157,8 @@ function DriverShiftsPageInner() {
   const [showDiff, setShowDiff] = useState(false);
   // ── Pannello modifiche pendenti (#4) ──
   const [showChangesPanel, setShowChangesPanel] = useState(false);
+  // ── Compare DSS dialog (#9) ──
+  const [showCompareDialog, setShowCompareDialog] = useState(false);
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
   useEffect(() => {
@@ -1021,9 +1024,20 @@ function DriverShiftsPageInner() {
         {savedDss.length > 0 && (
           <Card className="bg-muted/20 border-border/30">
             <CardContent className="p-4">
-              <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5 text-muted-foreground uppercase tracking-wider">
-                <FileCheck className="w-3.5 h-3.5" /> Turni Guida Salvati ({savedDss.length})
-              </h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold flex items-center gap-1.5 text-muted-foreground uppercase tracking-wider">
+                  <FileCheck className="w-3.5 h-3.5" /> Turni Guida Salvati ({savedDss.length})
+                </h3>
+                {savedDss.length >= 2 && (
+                  <button
+                    onClick={() => setShowCompareDialog(true)}
+                    className="text-[10px] flex items-center gap-1 px-2 py-1 rounded border border-orange-500/40 bg-orange-500/10 text-orange-300 hover:bg-orange-500/20 transition"
+                    title="Confronta due DSS salvati side-by-side"
+                  >
+                    🔀 Confronta
+                  </button>
+                )}
+              </div>
               <div className="space-y-1">
                 {savedDss.map(s => {
                   const isLoaded = loadedDssId === s.id;
@@ -1067,6 +1081,17 @@ function DriverShiftsPageInner() {
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {/* Compare DSS Dialog (#9) */}
+        {showCompareDialog && scenarioId && savedDss.length >= 2 && (
+          <DssCompareDialog
+            scenarioId={scenarioId}
+            savedDss={savedDss}
+            defaultLeftId={loadedDssId ?? savedDss[0]?.id}
+            defaultRightId={savedDss.find(s => s.id !== (loadedDssId ?? savedDss[0]?.id))?.id ?? savedDss[1]?.id}
+            onClose={() => setShowCompareDialog(false)}
+          />
         )}
 
         {/* CP-SAT Progress Panel — visible during optimization even without result */}
