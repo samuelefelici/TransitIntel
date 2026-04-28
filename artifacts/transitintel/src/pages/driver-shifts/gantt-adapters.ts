@@ -9,7 +9,7 @@
  *   - driverShiftsToTripBars    → ESPLOSA (1 bar per trip, drag-and-drop friendly)
  */
 import type { GanttRow, GanttBar } from "@/components/InteractiveGantt";
-import type { DriverShiftData, RipresaTrip } from "./types";
+import type { DriverShiftData, RipresaTrip, DriverShiftSummary, DriverShiftType } from "./types";
 import { TYPE_COLORS, TYPE_LABELS, minToTime } from "./constants";
 
 export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
@@ -611,4 +611,107 @@ export function suggestDriversForTrip(
 
   out.sort((a, b) => b.score - a.score);
   return out;
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * SUMMARY RECOMPUTE — per KPI live what-if dopo modifiche manuali
+ * ────────────────────────────────────────────────────────────── */
+
+/**
+ * Ricalcola il `summary` aggregato a partire dai turni guida correnti.
+ * Conserva i campi che non possono essere ricalcolati (costBreakdown,
+ * efficiency, totalDailyCost) ricalcolando solo conteggi/percentuali e
+ * companyCarsUsed dai vehicleId distinti.
+ *
+ * NB: Il calcolo del costo richiederebbe i `rates` del backend; per l'UI
+ * what-if viene linearizzato proporzionalmente al delta workMin.
+ */
+export function recomputeSummary(
+  shifts: DriverShiftData[],
+  baseline: DriverShiftSummary,
+): DriverShiftSummary {
+  const byType: Record<DriverShiftType, number> = {
+    intero: 0, semiunico: 0, spezzato: 0, supplemento: 0, invalido: 0,
+  };
+  let totalWorkMin = 0;
+  let totalNastroMin = 0;
+  let totalCambi = 0;
+  let totalInter = 0;
+  let totalIntra = 0;
+  const vehicleIds = new Set<string>();
+
+  for (const s of shifts) {
+    byType[s.type] = (byType[s.type] ?? 0) + 1;
+    totalWorkMin += s.workMin;
+    totalNastroMin += s.nastroMin;
+    totalCambi += s.cambiCount ?? 0;
+    for (const r of s.riprese) {
+      for (const c of (r.cambi ?? [])) {
+        if ((c as any).cutType === "intra") totalIntra++;
+        else totalInter++;
+      }
+      for (const seg of r.vehicleIds ?? []) {
+        if (seg) vehicleIds.add(seg);
+      }
+    }
+  }
+
+  const n = shifts.length || 1;
+  const semiPct = Math.round((byType.semiunico / n) * 1000) / 10;
+  const spezPct = Math.round((byType.spezzato / n) * 1000) / 10;
+
+  // Costo: scalatura lineare basata sul rapporto totalWorkMin baseline/current.
+  // È un'approssimazione what-if: il vero costo lo ricalcolerà il solver.
+  const baselineWorkH = baseline.totalWorkHours || 1;
+  const baselineCost = baseline.totalDailyCost ?? 0;
+  const newWorkH = totalWorkMin / 60;
+  const scaledCost = baselineCost > 0
+    ? Math.round((baselineCost * (newWorkH / baselineWorkH)) * 100) / 100
+    : baselineCost;
+
+  return {
+    ...baseline,
+    totalDriverShifts: shifts.length,
+    byType,
+    totalWorkHours: Math.round(newWorkH * 10) / 10,
+    avgWorkMin: Math.round(totalWorkMin / n),
+    totalNastroHours: Math.round((totalNastroMin / 60) * 10) / 10,
+    avgNastroMin: Math.round(totalNastroMin / n),
+    semiunicoPct: semiPct,
+    spezzatoPct: spezPct,
+    totalCambi,
+    totalInterCambi: totalInter || undefined,
+    totalIntraCambi: totalIntra || undefined,
+    companyCarsUsed: vehicleIds.size,
+    totalDailyCost: scaledCost || baseline.totalDailyCost,
+  };
+}
+
+/**
+ * Calcola il delta tra due summary, restituendo segno e magnitudo per i
+ * campi più rilevanti per l'utente che sta facendo what-if.
+ */
+export interface SummaryDelta {
+  driversΔ: number;          // turni in più/meno
+  workHoursΔ: number;        // ore lavoro
+  costΔ: number;             // €
+  semiPctΔ: number;          // punti percentuali
+  spezPctΔ: number;
+  cambiΔ: number;
+  carsΔ: number;
+}
+
+export function diffSummary(
+  current: DriverShiftSummary,
+  baseline: DriverShiftSummary,
+): SummaryDelta {
+  return {
+    driversΔ: current.totalDriverShifts - baseline.totalDriverShifts,
+    workHoursΔ: Math.round(((current.totalWorkHours ?? 0) - (baseline.totalWorkHours ?? 0)) * 10) / 10,
+    costΔ: Math.round(((current.totalDailyCost ?? 0) - (baseline.totalDailyCost ?? 0)) * 100) / 100,
+    semiPctΔ: Math.round(((current.semiunicoPct ?? 0) - (baseline.semiunicoPct ?? 0)) * 10) / 10,
+    spezPctΔ: Math.round(((current.spezzatoPct ?? 0) - (baseline.spezzatoPct ?? 0)) * 10) / 10,
+    cambiΔ: (current.totalCambi ?? 0) - (baseline.totalCambi ?? 0),
+    carsΔ: (current.companyCarsUsed ?? 0) - (baseline.companyCarsUsed ?? 0),
+  };
 }

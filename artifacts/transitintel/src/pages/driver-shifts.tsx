@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useParams, useSearch } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -25,7 +25,7 @@ import { ExportReportButton } from "@/components/SchedulingReportExport";
 
 import type {
   DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult,
-  OptimizationAnalysis,
+  OptimizationAnalysis, DriverShiftSummary,
 } from "./driver-shifts/types";
 import {
   TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
@@ -38,6 +38,8 @@ import {
   driverShiftsToTripBars,
   applyDriverTripChange,
   suggestDriversForTrip,
+  recomputeSummary,
+  diffSummary,
 } from "./driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
@@ -69,6 +71,11 @@ function DriverShiftsPageInner() {
   const [error, setError] = useState<string | null>(null);
   const [expandedShifts, setExpandedShifts] = useState<Set<string>>(new Set());
   const [typeFilter, setTypeFilter] = useState<DriverShiftType | "all">("all");
+
+  // ── Baseline KPI per modalità what-if ──
+  // Snapshot del summary "ottimo" iniziale (post-solver o post-load) usato
+  // per mostrare i delta live mentre l'utente modifica manualmente i turni.
+  const baselineSummaryRef = useRef<DriverShiftSummary | null>(null);
 
   // ── Area di Lavoro: vista Gantt + history undo/redo ──
   const [ganttMode, setGanttMode] = useState<"exploded" | "aggregated">("exploded");
@@ -109,6 +116,17 @@ function DriverShiftsPageInner() {
   const [dssName, setDssName] = useState("");
   const [savingDss, setSavingDss] = useState(false);
   const [confirmDelDss, setConfirmDelDss] = useState<string | null>(null);
+
+  // Calcolo live dei KPI e delta rispetto alla baseline (what-if)
+  const liveSummary = useMemo(() => {
+    if (!result || !baselineSummaryRef.current) return result?.summary;
+    return recomputeSummary(result.driverShifts, baselineSummaryRef.current);
+  }, [result]);
+
+  const summaryDelta = useMemo(() => {
+    if (!liveSummary || !baselineSummaryRef.current) return null;
+    return diffSummary(liveSummary, baselineSummaryRef.current);
+  }, [liveSummary]);
 
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
@@ -180,6 +198,7 @@ function DriverShiftsPageInner() {
         const stored = row?.result;
         if (stored) {
           setResult(stored);
+          baselineSummaryRef.current = stored?.summary ? { ...stored.summary } : null;
           setSolverMetrics(stored.solverMetrics ?? null);
           setLoadedDssId(dssIdFromUrl);
           if (row?.config) setOperatorConfig(prev => ({ ...prev, ...row.config }));
@@ -241,6 +260,9 @@ function DriverShiftsPageInner() {
   useEffect(() => {
     if (cpsat.state === "completed" && cpsat.result) {
       setResult(cpsat.result as any);
+      baselineSummaryRef.current = (cpsat.result as any)?.summary
+        ? { ...(cpsat.result as any).summary }
+        : null;
       setSolverMetrics(cpsat.result.solverMetrics || null);
       setLoading(false);
       setError(null);
@@ -258,7 +280,11 @@ function DriverShiftsPageInner() {
     const endpoint = `${getApiBase()}/api/driver-shifts/${scenarioId}`;
     fetch(endpoint)
       .then(r => { if (!r.ok) throw new Error(`Errore ${r.status}`); return r.json(); })
-      .then(data => { setResult(data); setHistory([]); setHistoryIdx(-1); setModifiedCount(0); })
+      .then(data => {
+        setResult(data);
+        baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
+        setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [scenarioId]);
@@ -1017,41 +1043,85 @@ function DriverShiftsPageInner() {
             <span className="text-[10px] text-muted-foreground">— indicatori chiave della soluzione generata</span>
           </div>
           <div className="flex flex-wrap gap-3">
-            <SummaryCard icon={<Users className="w-4 h-4" />} label="Autisti" value={result.summary.totalDriverShifts.toString()} sub={`${result.summary.byType.intero} interi · ${result.summary.byType.semiunico} semiunici · ${result.summary.byType.spezzato} spezzati`} />
-          <SummaryCard icon={<Clock className="w-4 h-4" />} label="Ore Lavoro Totali" value={`${result.summary.totalWorkHours}h`} sub={`media: ${formatDuration(result.summary.avgWorkMin)}/turno`} />
-          <SummaryCard icon={<Timer className="w-4 h-4" />} label="Ore Nastro Totali" value={`${result.summary.totalNastroHours}h`} sub={`media: ${formatDuration(result.summary.avgNastroMin)}/turno`} />
-          <SummaryCard icon={<Coffee className="w-4 h-4" />} label="Semiunici" value={`${result.summary.semiunicoPct}%`} color={result.summary.semiunicoPct <= 12 ? "#fbbf24" : "#ef4444"} sub="limite ≤ 12%" />
-          <SummaryCard icon={<Timer className="w-4 h-4" />} label="Spezzati" value={`${result.summary.spezzatoPct}%`} color={result.summary.spezzatoPct <= 13 ? "#fbbf24" : "#ef4444"} sub="limite ≤ 13%" />
-          {result.summary.byType.supplemento > 0 && (
-            <SummaryCard icon={<Zap className="w-4 h-4" />} label="Supplementi" value={result.summary.byType.supplemento.toString()} sub="straordinari (≤ 2h30)" color="#dc2626" />
-          )}
-          {result.summary.totalCambi > 0 && (() => {
-            const totalHandovers = result.driverShifts.reduce((sum, s) => sum + (s.handovers?.filter(h => h.role === "outgoing").length ?? 0), 0);
-            const interCount = result.summary.totalInterCambi ?? result.summary.totalCambi;
-            const intraCount = result.summary.totalIntraCambi ?? 0;
-            const subLabel = intraCount > 0
-              ? `${interCount} inter + ${intraCount} intra-corsa`
-              : (totalHandovers > 0 ? `${totalHandovers} cambi bus con auto aziendale` : `${result.driverShifts.filter(s => s.cambiCount > 0).length} turni con cambio`);
-            return (
-              <SummaryCard icon={<Repeat className="w-4 h-4" />} label="Cambi in Linea" value={result.summary.totalCambi.toString()} sub={subLabel} color="#fb923c" />
-            );
-          })()}
-          <SummaryCard icon={<Car className="w-4 h-4" />} label="Auto Aziendali" value={`${result.summary.companyCarsUsed}/${result.companyCars}`} sub="per trasf. deposito ↔ cluster" />
-          {result.summary.totalDailyCost != null && result.summary.totalDailyCost > 0 && (
-            <SummaryCard icon={<DollarSign className="w-4 h-4" />} label="Costo Giornaliero" value={`€${result.summary.totalDailyCost.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`} sub={result.summary.efficiency?.costPerDriver ? `€${result.summary.efficiency.costPerDriver.toFixed(0)}/autista` : "ottimizzato"} color="#f59e0b" />
-          )}
-          {result.unassignedBlocks > 0 && (
-            <SummaryCard icon={<AlertTriangle className="w-4 h-4" />} label="Non assegnati" value={result.unassignedBlocks.toString()} color="#ef4444" sub="blocchi rimasti" />
-          )}
-          {/* BDS conformity summary */}
-          {result.driverShifts.some(s => s.bdsValidation) && (() => {
-            const withBds = result.driverShifts.filter(s => s.bdsValidation);
-            const conformi = withBds.filter(s => s.bdsValidation!.valid).length;
-            const pct = Math.round((conformi / withBds.length) * 100);
-            return (
-              <SummaryCard icon={<Shield className="w-4 h-4" />} label="Conformità BDS" value={`${pct}%`} color={pct >= 90 ? "#fbbf24" : pct >= 70 ? "#f59e0b" : "#ef4444"} sub={`${conformi}/${withBds.length} turni conformi`} />
-            );
-          })()}
+            <SummaryCard
+              icon={<Users className="w-4 h-4" />}
+              label="Autisti"
+              value={liveSummary?.totalDriverShifts?.toString() ?? "—"}
+              sub={`${liveSummary?.byType?.intero ?? 0} interi · ${liveSummary?.byType?.semiunico ?? 0} semiunici · ${liveSummary?.byType?.spezzato ?? 0} spezzati`}
+              delta={summaryDelta && { value: summaryDelta.driversΔ, unit: "", lowerIsBetter: true }}
+            />
+            <SummaryCard
+              icon={<Clock className="w-4 h-4" />}
+              label="Ore Lavoro Totali"
+              value={liveSummary ? `${liveSummary.totalWorkHours}h` : "—"}
+              sub={liveSummary ? `media: ${formatDuration(liveSummary.avgWorkMin)}/turno` : undefined}
+              delta={summaryDelta && { value: summaryDelta.workHoursΔ, unit: "h", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}h` }}
+            />
+            <SummaryCard
+              icon={<Timer className="w-4 h-4" />}
+              label="Ore Nastro Totali"
+              value={liveSummary ? `${liveSummary.totalNastroHours}h` : "—"}
+              sub={liveSummary ? `media: ${formatDuration(liveSummary.avgNastroMin)}/turno` : undefined}
+            />
+            <SummaryCard
+              icon={<Coffee className="w-4 h-4" />}
+              label="Semiunici"
+              value={liveSummary ? `${liveSummary.semiunicoPct}%` : "—"}
+              color={liveSummary && liveSummary.semiunicoPct <= 12 ? "#fbbf24" : "#ef4444"}
+              sub="limite ≤ 12%"
+              delta={summaryDelta && { value: summaryDelta.semiPctΔ, unit: "%", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}%` }}
+            />
+            <SummaryCard
+              icon={<Timer className="w-4 h-4" />}
+              label="Spezzati"
+              value={liveSummary ? `${liveSummary.spezzatoPct}%` : "—"}
+              color={liveSummary && liveSummary.spezzatoPct <= 13 ? "#fbbf24" : "#ef4444"}
+              sub="limite ≤ 13%"
+              delta={summaryDelta && { value: summaryDelta.spezPctΔ, unit: "%", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}%` }}
+            />
+            {liveSummary && liveSummary.byType && liveSummary.byType.supplemento > 0 && (
+              <SummaryCard icon={<Zap className="w-4 h-4" />} label="Supplementi" value={liveSummary.byType.supplemento.toString()} sub="straordinari (≤ 2h30)" color="#dc2626" />
+            )}
+            {liveSummary && liveSummary.totalCambi > 0 && (() => {
+              const totalHandovers = result.driverShifts.reduce((sum, s) => sum + (s.handovers?.filter(h => h.role === "outgoing").length ?? 0), 0);
+              const interCount = liveSummary.totalInterCambi ?? liveSummary.totalCambi;
+              const intraCount = liveSummary.totalIntraCambi ?? 0;
+              const subLabel = intraCount > 0
+                ? `${interCount} inter + ${intraCount} intra-corsa`
+                : (totalHandovers > 0 ? `${totalHandovers} cambi bus con auto aziendale` : `${result.driverShifts.filter(s => s.cambiCount > 0).length} turni con cambio`);
+              return (
+                <SummaryCard icon={<Repeat className="w-4 h-4" />} label="Cambi in Linea" value={liveSummary.totalCambi.toString()} sub={subLabel} color="#fb923c" delta={summaryDelta && { value: summaryDelta.cambiΔ, unit: "", lowerIsBetter: true }} />
+              );
+            })()}
+            <SummaryCard
+              icon={<Car className="w-4 h-4" />}
+              label="Auto Aziendali"
+              value={liveSummary ? `${liveSummary.companyCarsUsed}/${result.companyCars}` : "—"}
+              sub="per trasf. deposito ↔ cluster"
+              delta={summaryDelta && { value: summaryDelta.carsΔ, unit: "", lowerIsBetter: true }}
+            />
+            {liveSummary && liveSummary.totalDailyCost != null && liveSummary.totalDailyCost > 0 && (
+              <SummaryCard
+                icon={<DollarSign className="w-4 h-4" />}
+                label="Costo Giornaliero"
+                value={`€${liveSummary.totalDailyCost.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
+                sub={liveSummary.efficiency?.costPerDriver ? `€${liveSummary.efficiency.costPerDriver.toFixed(0)}/autista` : "ottimizzato"}
+                color="#f59e0b"
+                delta={summaryDelta && { value: summaryDelta.costΔ, unit: "€", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v.toLocaleString("it-IT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}€` }}
+              />
+            )}
+            {result.unassignedBlocks > 0 && (
+              <SummaryCard icon={<AlertTriangle className="w-4 h-4" />} label="Non assegnati" value={result.unassignedBlocks.toString()} color="#ef4444" sub="blocchi rimasti" />
+            )}
+            {/* BDS conformity summary */}
+            {result.driverShifts.some(s => s.bdsValidation) && (() => {
+              const withBds = result.driverShifts.filter(s => s.bdsValidation);
+              const conformi = withBds.filter(s => s.bdsValidation!.valid).length;
+              const pct = Math.round((conformi / withBds.length) * 100);
+              return (
+                <SummaryCard icon={<Shield className="w-4 h-4" />} label="Conformità BDS" value={`${pct}%`} color={pct >= 90 ? "#fbbf24" : pct >= 70 ? "#f59e0b" : "#ef4444"} sub={`${conformi}/${withBds.length} turni conformi`} />
+              );
+            })()}
           </div>
         </div>
 
