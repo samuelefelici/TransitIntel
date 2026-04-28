@@ -18,7 +18,7 @@
  *   HARD: maxCompanyCars (cumulative cap), minWorkPerDuty (saturazione)
  *   SOFT: weightIdlePenalty + idlePenaltyMaxMin (penalizza idle)
  */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
@@ -39,13 +39,15 @@ import {
   driverShiftsBoundsHours,
   applyDriverTripChange,
   suggestDriversForTrip,
+  recomputeSummary,
+  diffSummary,
 } from "@/pages/driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
-import type { DriverShiftsResult } from "@/pages/driver-shifts/types";
+import type { DriverShiftsResult, DriverShiftSummary } from "@/pages/driver-shifts/types";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
@@ -99,12 +101,30 @@ export default function DriverWorkspace({
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
 
+  /* ── Baseline KPI per modalità what-if ── */
+  const baselineSummaryRef = useRef<DriverShiftSummary | null>(
+    initialResult?.summary ? { ...initialResult.summary } : null,
+  );
+
+  const liveSummary = useMemo(() => {
+    if (!result || !baselineSummaryRef.current) return result?.summary;
+    return recomputeSummary(result.driverShifts, baselineSummaryRef.current);
+  }, [result]);
+
+  const summaryDelta = useMemo(() => {
+    if (!liveSummary || !baselineSummaryRef.current) return null;
+    return diffSummary(liveSummary, baselineSummaryRef.current);
+  }, [liveSummary]);
+
   const cpsat = useCrewOptimization();
 
   // Ricezione risultati CP-SAT
   useEffect(() => {
     if (cpsat.state === "completed" && cpsat.result) {
       setResult(cpsat.result as any);
+      baselineSummaryRef.current = (cpsat.result as any)?.summary
+        ? { ...(cpsat.result as any).summary }
+        : null;
       setLoading(false);
       setError(null);
       setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
@@ -126,6 +146,7 @@ export default function DriverWorkspace({
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
         setResult(data);
+        baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
         toast.success("Turni guida (greedy) generati");
       })
       .catch(e => { setError(e.message); toast.error("Errore greedy", { description: e.message }); })
@@ -473,86 +494,93 @@ export default function DriverWorkspace({
               <h3 className="text-xs font-semibold uppercase tracking-wider text-purple-300">
                 Risultato Turni Guida
               </h3>
-              <span className="text-[10px] text-muted-foreground">— indicatori chiave</span>
+              <span className="text-[10px] text-muted-foreground">— indicatori chiave (delta vs baseline)</span>
             </div>
             <div className="flex flex-wrap gap-3">
               <SummaryCard
                 icon={<Users className="w-4 h-4" />}
                 label="Autisti"
-                value={String(result.summary.totalDriverShifts ?? "—")}
-                sub={result.summary.byType
-                  ? `${result.summary.byType.intero ?? 0} interi · ${result.summary.byType.semiunico ?? 0} semiunici · ${result.summary.byType.spezzato ?? 0} spezzati`
+                value={String(liveSummary?.totalDriverShifts ?? "—")}
+                sub={liveSummary?.byType
+                  ? `${liveSummary.byType.intero ?? 0} interi · ${liveSummary.byType.semiunico ?? 0} semiunici · ${liveSummary.byType.spezzato ?? 0} spezzati`
                   : undefined}
+                delta={summaryDelta && { value: summaryDelta.driversΔ, unit: "", lowerIsBetter: true }}
               />
-              {result.summary.totalWorkHours != null && (
+              {liveSummary?.totalWorkHours != null && (
                 <SummaryCard
                   icon={<Clock className="w-4 h-4" />}
                   label="Ore Lavoro Totali"
-                  value={`${result.summary.totalWorkHours}h`}
-                  sub={result.summary.avgWorkMin != null ? `media: ${formatDuration(result.summary.avgWorkMin)}/turno` : undefined}
+                  value={`${liveSummary.totalWorkHours}h`}
+                  sub={liveSummary.avgWorkMin != null ? `media: ${formatDuration(liveSummary.avgWorkMin)}/turno` : undefined}
+                  delta={summaryDelta && { value: summaryDelta.workHoursΔ, unit: "h", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}h` }}
                 />
               )}
-              {result.summary.totalNastroHours != null && (
+              {liveSummary?.totalNastroHours != null && (
                 <SummaryCard
                   icon={<Timer className="w-4 h-4" />}
                   label="Ore Nastro Totali"
-                  value={`${result.summary.totalNastroHours}h`}
-                  sub={result.summary.avgNastroMin != null ? `media: ${formatDuration(result.summary.avgNastroMin)}/turno` : undefined}
+                  value={`${liveSummary.totalNastroHours}h`}
+                  sub={liveSummary.avgNastroMin != null ? `media: ${formatDuration(liveSummary.avgNastroMin)}/turno` : undefined}
                 />
               )}
-              {result.summary.semiunicoPct != null && (
+              {liveSummary?.semiunicoPct != null && (
                 <SummaryCard
                   icon={<Coffee className="w-4 h-4" />}
                   label="Semiunici"
-                  value={`${result.summary.semiunicoPct}%`}
-                  color={result.summary.semiunicoPct <= 12 ? "#fbbf24" : "#ef4444"}
+                  value={`${liveSummary.semiunicoPct}%`}
+                  color={liveSummary.semiunicoPct <= 12 ? "#fbbf24" : "#ef4444"}
                   sub="limite ≤ 12%"
+                  delta={summaryDelta && { value: summaryDelta.semiPctΔ, unit: "%", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}%` }}
                 />
               )}
-              {result.summary.spezzatoPct != null && (
+              {liveSummary?.spezzatoPct != null && (
                 <SummaryCard
                   icon={<Timer className="w-4 h-4" />}
                   label="Spezzati"
-                  value={`${result.summary.spezzatoPct}%`}
-                  color={result.summary.spezzatoPct <= 13 ? "#fbbf24" : "#ef4444"}
+                  value={`${liveSummary.spezzatoPct}%`}
+                  color={liveSummary.spezzatoPct <= 13 ? "#fbbf24" : "#ef4444"}
                   sub="limite ≤ 13%"
+                  delta={summaryDelta && { value: summaryDelta.spezPctΔ, unit: "%", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v}%` }}
                 />
               )}
-              {result.summary.byType?.supplemento ? (
+              {liveSummary?.byType?.supplemento ? (
                 <SummaryCard
                   icon={<Zap className="w-4 h-4" />}
                   label="Supplementi"
-                  value={String(result.summary.byType.supplemento)}
+                  value={String(liveSummary.byType.supplemento)}
                   sub="straordinari (≤ 2h30)"
                   color="#dc2626"
                 />
               ) : null}
-              {result.summary.totalCambi ? (
+              {liveSummary?.totalCambi ? (
                 <SummaryCard
                   icon={<Repeat className="w-4 h-4" />}
                   label="Cambi in Linea"
-                  value={String(result.summary.totalCambi)}
+                  value={String(liveSummary.totalCambi)}
                   color="#fb923c"
+                  delta={summaryDelta && { value: summaryDelta.cambiΔ, unit: "", lowerIsBetter: true }}
                 />
               ) : null}
-              {result.summary.companyCarsUsed != null && (
+              {liveSummary?.companyCarsUsed != null && (
                 <SummaryCard
                   icon={<Car className="w-4 h-4" />}
                   label="Auto Aziendali"
-                  value={`${result.summary.companyCarsUsed}/${result.companyCars ?? optimizerCfg?.maxCompanyCars ?? "?"}`}
+                  value={`${liveSummary.companyCarsUsed}/${result.companyCars ?? optimizerCfg?.maxCompanyCars ?? "?"}`}
                   sub="cap HARD attivo"
-                  color={result.companyCars && result.summary.companyCarsUsed >= result.companyCars ? "#f59e0b" : undefined}
+                  color={result.companyCars && liveSummary.companyCarsUsed >= result.companyCars ? "#f59e0b" : undefined}
+                  delta={summaryDelta && { value: summaryDelta.carsΔ, unit: "", lowerIsBetter: true }}
                 />
               )}
-              {result.summary.totalDailyCost != null && result.summary.totalDailyCost > 0 && (
+              {liveSummary?.totalDailyCost != null && liveSummary.totalDailyCost > 0 && (
                 <SummaryCard
                   icon={<DollarSign className="w-4 h-4" />}
                   label="Costo Giornaliero"
-                  value={`€${result.summary.totalDailyCost.toLocaleString("it-IT", { maximumFractionDigits: 0 })}`}
-                  sub={result.summary.efficiency?.costPerDriver
-                    ? `€${result.summary.efficiency.costPerDriver.toFixed(0)}/autista`
+                  value={`€${liveSummary.totalDailyCost.toLocaleString("it-IT", { maximumFractionDigits: 0 })}`}
+                  sub={liveSummary.efficiency?.costPerDriver
+                    ? `€${liveSummary.efficiency.costPerDriver.toFixed(0)}/autista`
                     : "ottimizzato"}
                   color="#f59e0b"
+                  delta={summaryDelta && { value: summaryDelta.costΔ, unit: "€", lowerIsBetter: true, format: v => `${v > 0 ? "+" : ""}${v.toLocaleString("it-IT", { maximumFractionDigits: 0 })}€` }}
                 />
               )}
               {result.unassignedBlocks > 0 && (
