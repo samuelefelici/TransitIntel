@@ -31,7 +31,7 @@ import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
 import { SummaryCard } from "@/pages/driver-shifts/components";
-import { formatDuration } from "@/pages/driver-shifts/constants";
+import { formatDuration, minToTime } from "@/pages/driver-shifts/constants";
 import {
   driverShiftsToRows,
   driverShiftsToBars,
@@ -106,6 +106,14 @@ export default function DriverWorkspace({
     initialResult?.summary ? { ...initialResult.summary } : null,
   );
 
+  /* ── Baseline bars per diff (#5) ── */
+  const baselineBarsRef = useRef<Map<string, { rowId: string; startMin: number; endMin: number }> | null>(
+    initialResult?.driverShifts
+      ? new Map(driverShiftsToTripBars(initialResult.driverShifts).map(b => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+      : null,
+  );
+  const [showDiff, setShowDiff] = useState(false);
+
   const liveSummary = useMemo(() => {
     if (!result || !baselineSummaryRef.current) return result?.summary;
     return recomputeSummary(result.driverShifts, baselineSummaryRef.current);
@@ -146,6 +154,9 @@ export default function DriverWorkspace({
       baselineSummaryRef.current = (cpsat.result as any)?.summary
         ? { ...(cpsat.result as any).summary }
         : null;
+      baselineBarsRef.current = (cpsat.result as any)?.driverShifts
+        ? new Map(driverShiftsToTripBars((cpsat.result as any).driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+        : null;
       setLoading(false);
       setError(null);
       setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
@@ -168,6 +179,9 @@ export default function DriverWorkspace({
       .then(data => {
         setResult(data);
         baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
+        baselineBarsRef.current = data?.driverShifts
+          ? new Map(driverShiftsToTripBars(data.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+          : null;
         toast.success("Turni guida (greedy) generati");
       })
       .catch(e => { setError(e.message); toast.error("Errore greedy", { description: e.message }); })
@@ -259,6 +273,34 @@ export default function DriverWorkspace({
       : driverShiftsToBars(result.driverShifts);
   }, [result, ganttMode]);
   const ganttBounds = useMemo(() => result ? driverShiftsBoundsHours(result.driverShifts) : { min: 4, max: 25 }, [result]);
+
+  /* ── Bars con styling diff vs baseline (#5) ── */
+  const displayBars = useMemo<GanttBar[]>(() => {
+    if (!showDiff || !baselineBarsRef.current || ganttMode !== "exploded") {
+      return ganttBars;
+    }
+    const baseline = baselineBarsRef.current;
+    return ganttBars.map(b => {
+      const meta: any = b.meta || {};
+      if (meta.type !== "trip") return b;
+      const orig = baseline.get(b.id);
+      if (!orig) {
+        return { ...b, color: "#06b6d4", tooltip: [...(b.tooltip ?? []), "✨ nuova"] };
+      }
+      const reassigned = orig.rowId !== b.rowId;
+      const shifted = orig.startMin !== b.startMin || orig.endMin !== b.endMin;
+      if (reassigned && shifted) {
+        return { ...b, color: "#a855f7", tooltip: [...(b.tooltip ?? []), `↔ riassegnata + spostata (era ${orig.rowId} ${minToTime(orig.startMin)})`] };
+      }
+      if (reassigned) {
+        return { ...b, color: "#3b82f6", tooltip: [...(b.tooltip ?? []), `↔ riassegnata (era ${orig.rowId})`] };
+      }
+      if (shifted) {
+        return { ...b, color: "#fbbf24", tooltip: [...(b.tooltip ?? []), `⇄ spostata (era ${minToTime(orig.startMin)}-${minToTime(orig.endMin)})`] };
+      }
+      return { ...b, style: "dashed" as const };
+    });
+  }, [ganttBars, showDiff, ganttMode]);
 
   /* ── History + drag handler ─────────────────────────── */
   const pushHistory = useCallback((newRes: DriverShiftsResult) => {
@@ -690,6 +732,20 @@ export default function DriverWorkspace({
                 >
                   <Redo2 className="w-3 h-3" />
                 </button>
+                {/* Toggle diff baseline (#5) */}
+                {baselineBarsRef.current && ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowDiff(v => !v)}
+                    className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${
+                      showDiff
+                        ? "border-purple-500/60 bg-purple-500/30 text-white"
+                        : "border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15"
+                    }`}
+                    title="Evidenzia corse spostate/riassegnate vs ottimo iniziale"
+                  >
+                    🔍 Diff
+                  </button>
+                )}
                 <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
                   {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
                 </span>
@@ -698,7 +754,7 @@ export default function DriverWorkspace({
             <div className="p-2">
               <InteractiveGantt
                 rows={ganttRows}
-                bars={ganttBars}
+                bars={displayBars}
                 minHour={ganttBounds.min}
                 maxHour={ganttBounds.max}
                 editable={ganttMode === "exploded"}
