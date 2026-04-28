@@ -38,6 +38,7 @@ import {
   driverShiftsToTripBars,
   driverShiftsBoundsHours,
   applyDriverTripChange,
+  suggestDriversForTrip,
 } from "@/pages/driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
@@ -659,6 +660,17 @@ export default function DriverWorkspace({
                     description: bar.tooltip?.join(" · "),
                   });
                 }}
+                getSuggestions={ganttMode === "exploded" && result ? (bar) => {
+                  const meta: any = bar.meta || {};
+                  if (meta.type !== "trip" || !meta.tripId) return [];
+                  const suggs = suggestDriversForTrip(result.driverShifts, meta.tripId);
+                  return suggs.slice(0, 6).map(s => ({
+                    rowId: s.driverId,
+                    label: s.driverId,
+                    reason: s.reason,
+                    detail: s.detail,
+                  }));
+                } : undefined}
               />
             </div>
           </div>

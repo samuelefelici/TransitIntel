@@ -8,6 +8,7 @@ import {
   DollarSign, Save, FileCheck, Lock, Building2, Grip, CheckCircle2, Trash2,
   Award, Trophy, Flame, ListOrdered, Sparkles, Target, Gauge, Brain,
   Lightbulb, Activity, Wand2, Layers, Undo2, Redo2,
+  Printer, FileSpreadsheet, FileText, Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -36,7 +37,13 @@ import {
 import {
   driverShiftsToTripBars,
   applyDriverTripChange,
+  suggestDriversForTrip,
 } from "./driver-shifts/gantt-adapters";
+import {
+  exportDriverShiftsToPrint,
+  exportDriverShiftsToCsv,
+  triggerDownload,
+} from "./fucina/DriverShiftsPrintExport";
 import InteractiveGantt, { type GanttBar, type GanttRow, type GanttChange } from "@/components/InteractiveGantt";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -68,6 +75,7 @@ function DriverShiftsPageInner() {
   const [history, setHistory] = useState<DriverShiftsResult[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   // ── Solver mode ──
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("cpsat");
@@ -272,6 +280,15 @@ function DriverShiftsPageInner() {
       ...operatorConfig,
       selectedClusterIds: Array.from(selectedClusterIds),
       companyCars,
+      // HARD: l'utente ha indicato N autovetture per i cambi → propaga come
+      // cap inviolabile a bds.optimizer.maxCompanyCars (override esplicito).
+      bds: {
+        ...(operatorConfig.bds ?? {}),
+        optimizer: {
+          ...(operatorConfig.bds?.optimizer ?? {}),
+          maxCompanyCars: companyCars,
+        },
+      },
     };
     cpsat.start(scenarioId, timeLimit, configWithScope);
   }, [scenarioId, cpsat, operatorConfig, selectedClusterIds, companyCars]);
@@ -473,6 +490,36 @@ function DriverShiftsPageInner() {
     return () => window.removeEventListener("keydown", handler);
   }, [handleUndo, handleRedo]);
 
+  /* ── Export handlers (stampa A4 / CSV / JSON) ──────── */
+  const handleExportPrint = useCallback(() => {
+    if (!result) return;
+    setExportMenuOpen(false);
+    exportDriverShiftsToPrint(result, {
+      scenarioName: result.scenarioName,
+      columnsPerPage: 2,
+      orientation: "landscape",
+    });
+    toast.success("Stampa A4 generata", { description: "Si è aperta la finestra di stampa" });
+  }, [result]);
+
+  const handleExportCsv = useCallback(() => {
+    if (!result) return;
+    setExportMenuOpen(false);
+    const csv = exportDriverShiftsToCsv(result);
+    const fname = `turni-guida-${result.date || "export"}-${Date.now()}.csv`;
+    triggerDownload(csv, fname, "text/csv;charset=utf-8");
+    toast.success("CSV scaricato", { description: fname });
+  }, [result]);
+
+  const handleExportJson = useCallback(() => {
+    if (!result) return;
+    setExportMenuOpen(false);
+    const json = JSON.stringify(result, null, 2);
+    const fname = `turni-guida-${result.date || "export"}-${Date.now()}.json`;
+    triggerDownload(json, fname, "application/json");
+    toast.success("JSON scaricato", { description: fname });
+  }, [result]);
+
   const typeDistData = useMemo(() => {
     if (!result) return [];
     return (Object.entries(result.summary.byType) as [DriverShiftType, number][])
@@ -567,6 +614,54 @@ function DriverShiftsPageInner() {
                 date={result.date}
                 vehicleScenario={vehicleScenario}
               />
+            )}
+            {/* Esporta Turni Guida (Stampa A4 / CSV / JSON) */}
+            {result && (
+              <div className="relative">
+                <button
+                  onClick={() => setExportMenuOpen(v => !v)}
+                  onBlur={() => setTimeout(() => setExportMenuOpen(false), 150)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-500/40 text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 transition-colors"
+                  title="Stampa o esporta i turni guida"
+                >
+                  <Download className="w-3.5 h-3.5" /> Esporta turni
+                  <ChevronDown className={`w-3 h-3 transition-transform ${exportMenuOpen ? "rotate-180" : ""}`} />
+                </button>
+                {exportMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-30 bg-zinc-900 border border-blue-500/30 rounded-lg shadow-xl py-1 min-w-[220px]">
+                    <button
+                      onMouseDown={handleExportPrint}
+                      className="w-full text-left px-3 py-2 text-[11px] text-blue-200 hover:bg-blue-500/15 flex items-center gap-2 transition"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <div>
+                        <div className="font-medium">Stampa A4 dettagliata</div>
+                        <div className="text-[10px] text-blue-300/50">turni · corse · BDS · KPI</div>
+                      </div>
+                    </button>
+                    <button
+                      onMouseDown={handleExportCsv}
+                      className="w-full text-left px-3 py-2 text-[11px] text-blue-200 hover:bg-blue-500/15 flex items-center gap-2 transition"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <div>
+                        <div className="font-medium">CSV (1 riga = 1 corsa)</div>
+                        <div className="text-[10px] text-blue-300/50">apri in Excel/Numbers</div>
+                      </div>
+                    </button>
+                    <button
+                      onMouseDown={handleExportJson}
+                      className="w-full text-left px-3 py-2 text-[11px] text-blue-200 hover:bg-blue-500/15 flex items-center gap-2 transition"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <div>
+                        <div className="font-medium">JSON completo</div>
+                        <div className="text-[10px] text-blue-300/50">struttura dati grezza</div>
+                      </div>
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
             {/* Salva — solo se c'è risultato */}
             {result && (
@@ -1213,6 +1308,17 @@ function DriverShiftsPageInner() {
                     description: bar.tooltip?.join(" · "),
                   });
                 }}
+                getSuggestions={ganttMode === "exploded" && result ? (bar) => {
+                  const meta: any = bar.meta || {};
+                  if (meta.type !== "trip" || !meta.tripId) return [];
+                  const suggs = suggestDriversForTrip(result.driverShifts, meta.tripId);
+                  return suggs.slice(0, 6).map(s => ({
+                    rowId: s.driverId,
+                    label: s.driverId,
+                    reason: s.reason,
+                    detail: s.detail,
+                  }));
+                } : undefined}
                 minHour={driverGanttMinHour}
                 maxHour={driverGanttMaxHour}
                 rowHeight={32}

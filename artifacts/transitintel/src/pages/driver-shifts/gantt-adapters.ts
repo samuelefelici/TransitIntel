@@ -338,3 +338,166 @@ function recomputeShiftAggregates(shift: DriverShiftData) {
     shift.interruption = null;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────
+ * SUGGESTION ENGINE
+ * ────────────────────────────────────────────────────────────── */
+
+export interface DriverSuggestion {
+  driverId: string;
+  reason: string;          // one-line motivo principale (verde / giallo / rosso)
+  detail?: string;         // dettaglio secondario (gap, vehicleType match, BDS impact)
+  score: number;           // 0..100, più alto = migliore
+  warnings?: string[];     // eventuali avvertimenti BDS
+}
+
+/* Limiti normativa BDS hard-coded coerenti con backend
+ *   intero      → maxNastro 13h00 (780)
+ *   semiunico   → maxNastro 13h30 (810)
+ *   spezzato    → maxNastro 14h00 (840)
+ *   supplemento → maxNastro 2h30 (150)
+ */
+const MAX_NASTRO_BY_TYPE: Record<string, number> = {
+  intero: 780,
+  semiunico: 810,
+  spezzato: 840,
+  supplemento: 150,
+  invalido: 13 * 60,
+};
+
+const MAX_WORK_BY_TYPE: Record<string, number> = {
+  intero: 6 * 60 + 30,    // 6h30 lavoro effettivo
+  semiunico: 6 * 60 + 30,
+  spezzato: 7 * 60 + 30,
+  supplemento: 2 * 60 + 30,
+  invalido: 8 * 60,
+};
+
+/**
+ * Calcola i migliori turni guida candidati per ospitare la `trip` indicata.
+ * Considera:
+ *   - finestra libera nelle riprese del candidato (trip non sovrapposta)
+ *   - nastro/work non sforati dalla normativa (maxNastro per tipo turno)
+ *   - bonus se stesso vehicleType (nessun cambio macchina extra)
+ *   - bonus se la trip si incastra in una "finestra esistente" senza estendere il nastro
+ *
+ * @param shifts tutti i turni guida (incluso quello di provenienza, escluso da output)
+ * @param tripId id della corsa di interesse
+ * @returns lista ordinata per score discendente (i migliori prima)
+ */
+export function suggestDriversForTrip(
+  shifts: DriverShiftData[],
+  tripId: string,
+): DriverSuggestion[] {
+  // Trova trip + driver di partenza
+  let sourceTrip: RipresaTrip | null = null;
+  let sourceDriverId: string | null = null;
+  for (const s of shifts) {
+    for (const r of s.riprese) {
+      const t = r.trips.find(x => x.tripId === tripId);
+      if (t) { sourceTrip = t; sourceDriverId = s.driverId; break; }
+    }
+    if (sourceTrip) break;
+  }
+  if (!sourceTrip) return [];
+
+  const tripDur = sourceTrip.arrivalMin - sourceTrip.departureMin;
+  const out: DriverSuggestion[] = [];
+
+  for (const s of shifts) {
+    if (s.driverId === sourceDriverId) continue;
+    if (s.type === "supplemento" || s.type === "invalido") continue;
+
+    // Verifica overlap con qualunque corsa esistente
+    const overlap = s.riprese.some(r => r.trips.some(t =>
+      Math.max(t.departureMin, sourceTrip!.departureMin) <
+      Math.min(t.arrivalMin, sourceTrip!.arrivalMin),
+    ));
+    if (overlap) continue;
+
+    // Candidata ripresa: quella che contiene già la finestra (trip dentro startMin..endMin)
+    // o la più vicina temporalmente
+    let bestRipIdx = -1;
+    let bestGapInside = false;
+    for (let ri = 0; ri < s.riprese.length; ri++) {
+      const r = s.riprese[ri];
+      // Service window della ripresa = senza preTurno/transfer (effettivo nastro corse)
+      const svcStart = r.startMin + r.preTurnoMin + r.transferMin;
+      const svcEnd = r.endMin - (r.transferBackMin || 0);
+      if (sourceTrip.departureMin >= svcStart && sourceTrip.arrivalMin <= svcEnd) {
+        bestRipIdx = ri; bestGapInside = true; break;
+      }
+    }
+    // Se nessuna finestra dentro: prova a "estendere" la ripresa più vicina
+    if (bestRipIdx < 0) {
+      let minDist = Infinity;
+      for (let ri = 0; ri < s.riprese.length; ri++) {
+        const r = s.riprese[ri];
+        const dist = Math.min(
+          Math.abs(sourceTrip.departureMin - r.endMin),
+          Math.abs(r.startMin - sourceTrip.arrivalMin),
+        );
+        if (dist < minDist) { minDist = dist; bestRipIdx = ri; }
+      }
+    }
+    if (bestRipIdx < 0) continue;
+
+    // Stima impatto su nastro/work
+    const newWorkMin = s.workMin + tripDur;
+    const newNastroStart = Math.min(s.nastroStartMin, sourceTrip.departureMin);
+    const newNastroEnd = Math.max(s.nastroEndMin, sourceTrip.arrivalMin);
+    const newNastroMin = newNastroEnd - newNastroStart;
+
+    const maxNastro = MAX_NASTRO_BY_TYPE[s.type] ?? 780;
+    const maxWork   = MAX_WORK_BY_TYPE[s.type]   ?? (6 * 60 + 30);
+
+    const warnings: string[] = [];
+    if (newNastroMin > maxNastro) {
+      warnings.push(`nastro ${Math.floor(newNastroMin/60)}h${String(newNastroMin%60).padStart(2,"0")} > max ${Math.floor(maxNastro/60)}h${String(maxNastro%60).padStart(2,"0")} (${s.type})`);
+    }
+    if (newWorkMin > maxWork) {
+      warnings.push(`lavoro ${Math.floor(newWorkMin/60)}h${String(newWorkMin%60).padStart(2,"0")} > max ${Math.floor(maxWork/60)}h${String(maxWork%60).padStart(2,"0")}`);
+    }
+    if (warnings.length >= 2) continue; // troppo invasivo
+
+    // Vehicle type match
+    const targetVtype = s.riprese[bestRipIdx]?.vehicleType;
+    const sameVtype = !!sourceTrip.vehicleType
+      && !!targetVtype
+      && sourceTrip.vehicleType === targetVtype;
+
+    // Score
+    let score = 50;
+    if (bestGapInside) score += 30;          // entra in finestra esistente
+    if (sameVtype) score += 15;              // stesso veicolo → no cambio macchina
+    if (newNastroMin <= s.nastroMin) score += 10;  // nastro non aumenta
+    score -= warnings.length * 25;
+    score = Math.max(0, Math.min(100, score));
+
+    // Reason / detail human-readable
+    let reason: string;
+    if (bestGapInside && sameVtype) {
+      reason = "🟢 Si incastra perfettamente (stessa vettura)";
+    } else if (bestGapInside) {
+      reason = "🟢 Entra nella finestra esistente";
+    } else if (warnings.length === 0) {
+      reason = "🟡 Estende il nastro ma rispetta normativa";
+    } else {
+      reason = `🟠 Possibile con eccezione (${warnings.length} alert)`;
+    }
+    const detail = sameVtype
+      ? `stessa macchina ${sourceTrip.vehicleType} · nastro Δ ${newNastroMin - s.nastroMin >= 0 ? "+" : ""}${newNastroMin - s.nastroMin}'`
+      : `nastro Δ ${newNastroMin - s.nastroMin >= 0 ? "+" : ""}${newNastroMin - s.nastroMin}' · ${s.type} ${s.nastroStart}-${s.nastroEnd}`;
+
+    out.push({
+      driverId: s.driverId,
+      reason,
+      detail,
+      score,
+      warnings: warnings.length ? warnings : undefined,
+    });
+  }
+
+  out.sort((a, b) => b.score - a.score);
+  return out;
+}

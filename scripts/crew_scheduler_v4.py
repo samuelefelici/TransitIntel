@@ -2788,6 +2788,12 @@ def serialize_output(
             "totalInterCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'inter'),
             "totalIntraCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'intra'),
             "companyCarsUsed": len({seg.vehicle_id for d in duties for seg in d.segments}),
+            "companyCarsMaxSimultaneous": _max_simultaneous_cars_out(car_movements),
+            "companyCarsCap": MAX_COMPANY_CARS,
+            "companyCarsHardViolation": (
+                MAX_COMPANY_CARS > 0
+                and _max_simultaneous_cars_out(car_movements) > MAX_COMPANY_CARS
+            ),
             "totalDailyCost": round(total_cost, 2),
             "costBreakdown": {
                 "salaries": round(sum(d.work_min for d in duties) * rates.hourly_rate / 60, 2),
@@ -2920,6 +2926,18 @@ def main() -> None:
     max_sim = _max_simultaneous_cars_out(car_movements)
     log(f"Fase 6: {len(car_movements)} viaggi auto, {n_conflicts} conflitti, max {max_sim} auto fuori deposito")
     report_progress("carpool", 90, f"{len(car_movements)} viaggi auto")
+
+    # ── Validazione HARD post-solve: cap vetture aziendali ──
+    # Anche se il CP-SAT applica add_cumulative, il post-processing dei pair
+    # potrebbe (in casi limite) eccedere; lo segnaliamo esplicitamente.
+    if MAX_COMPANY_CARS > 0 and max_sim > MAX_COMPANY_CARS:
+        log(
+            f"[V4][HARD-VIOLATION] Vetture aziendali in uso simultaneo "
+            f"max={max_sim} > cap={MAX_COMPANY_CARS}. "
+            f"La soluzione viola il vincolo HARD richiesto dall'utente."
+        )
+    else:
+        log(f"[V4][HARD-OK] Vetture aziendali simultanee max={max_sim} ≤ cap={MAX_COMPANY_CARS}")
 
     # ── Fase 7: Output ──
     elapsed = time.time() - t_start
