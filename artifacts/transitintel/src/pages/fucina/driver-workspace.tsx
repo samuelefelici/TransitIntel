@@ -29,7 +29,7 @@ import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
-import InteractiveGantt, { type GanttChange } from "@/components/InteractiveGantt";
+import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
 import { SummaryCard } from "@/pages/driver-shifts/components";
 import { formatDuration } from "@/pages/driver-shifts/constants";
 import {
@@ -115,6 +115,27 @@ export default function DriverWorkspace({
     if (!liveSummary || !baselineSummaryRef.current) return null;
     return diffSummary(liveSummary, baselineSummaryRef.current);
   }, [liveSummary]);
+
+  // ── Highlight target durante drag (#2) ──
+  const [rowHighlights, setRowHighlights] = useState<Record<string, string> | undefined>(undefined);
+
+  const handleBarDragStart = useCallback((bar: GanttBar) => {
+    if (!result) return;
+    const meta: any = bar.meta || {};
+    if (meta.type !== "trip" || !meta.tripId) return;
+    const suggs = suggestDriversForTrip(result.driverShifts, meta.tripId);
+    const map: Record<string, string> = {};
+    suggs.slice(0, 3).forEach(s => { map[s.driverId] = "rgba(16, 185, 129, 0.18)"; });
+    suggs.slice(3, 8).forEach(s => { map[s.driverId] = "rgba(245, 158, 11, 0.14)"; });
+    if (meta.driverId && !map[meta.driverId]) {
+      map[meta.driverId] = "rgba(99, 102, 241, 0.12)";
+    }
+    setRowHighlights(map);
+  }, [result]);
+
+  const handleBarDragEnd = useCallback(() => {
+    setRowHighlights(undefined);
+  }, []);
 
   const cpsat = useCrewOptimization();
 
@@ -699,6 +720,9 @@ export default function DriverWorkspace({
                     detail: s.detail,
                   }));
                 } : undefined}
+                rowHighlights={ganttMode === "exploded" ? rowHighlights : undefined}
+                onBarDragStart={ganttMode === "exploded" ? handleBarDragStart : undefined}
+                onBarDragEnd={ganttMode === "exploded" ? handleBarDragEnd : undefined}
               />
             </div>
           </div>

@@ -128,6 +128,30 @@ function DriverShiftsPageInner() {
     return diffSummary(liveSummary, baselineSummaryRef.current);
   }, [liveSummary]);
 
+  // ── Highlight target durante drag (#2) ──
+  // Mappa rowId → colore CSS per evidenziare gli autisti compatibili
+  const [rowHighlights, setRowHighlights] = useState<Record<string, string> | undefined>(undefined);
+
+  const handleBarDragStart = useCallback((bar: GanttBar) => {
+    if (!result) return;
+    const meta: any = bar.meta || {};
+    if (meta.type !== "trip" || !meta.tripId) return;
+    const suggs = suggestDriversForTrip(result.driverShifts, meta.tripId);
+    const map: Record<string, string> = {};
+    // top 3 = verde brillante; 4-8 = giallo; resto già non evidenziato
+    suggs.slice(0, 3).forEach(s => { map[s.driverId] = "rgba(16, 185, 129, 0.18)"; });
+    suggs.slice(3, 8).forEach(s => { map[s.driverId] = "rgba(245, 158, 11, 0.14)"; });
+    // sorgente più tenue per riferimento
+    if (meta.driverId && !map[meta.driverId]) {
+      map[meta.driverId] = "rgba(99, 102, 241, 0.12)";
+    }
+    setRowHighlights(map);
+  }, [result]);
+
+  const handleBarDragEnd = useCallback(() => {
+    setRowHighlights(undefined);
+  }, []);
+
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
   useEffect(() => {
@@ -1389,6 +1413,9 @@ function DriverShiftsPageInner() {
                     detail: s.detail,
                   }));
                 } : undefined}
+                rowHighlights={ganttMode === "exploded" ? rowHighlights : undefined}
+                onBarDragStart={ganttMode === "exploded" ? handleBarDragStart : undefined}
+                onBarDragEnd={ganttMode === "exploded" ? handleBarDragEnd : undefined}
                 minHour={driverGanttMinHour}
                 maxHour={driverGanttMaxHour}
                 rowHeight={32}

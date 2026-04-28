@@ -88,6 +88,12 @@ export interface InteractiveGanttProps {
   getSuggestions?: (bar: GanttBar) => GanttSuggestion[];
   /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). */
   onBarClick?: (bar: GanttBar) => void;
+  /** Highlight rows during drag with a background color (e.g. green for compatible, red for incompatible). Map: rowId -> CSS color (rgba/hex). */
+  rowHighlights?: Record<string, string>;
+  /** Called when user starts dragging a bar (after the small movement threshold). Useful to compute rowHighlights via suggestions. */
+  onBarDragStart?: (bar: GanttBar) => void;
+  /** Called when drag ends (commit or cancel). */
+  onBarDragEnd?: () => void;
 }
 
 export interface GanttSuggestion {
@@ -138,6 +144,9 @@ export default function InteractiveGantt({
   onRowRename,
   getSuggestions,
   onBarClick,
+  rowHighlights,
+  onBarDragStart,
+  onBarDragEnd,
 }: InteractiveGanttProps) {
   // ── State ──
   const [bars, setBars] = useState<GanttBar[]>(initialBars);
@@ -357,7 +366,12 @@ export default function InteractiveGantt({
       const dx = e.clientX - ds.startClientX;
       const dy = e.clientY - ds.startClientY;
       if (!ds.hasMoved && Math.abs(dx) < 3 && Math.abs(dy) < 3) return;
-      ds.hasMoved = true;
+      if (!ds.hasMoved) {
+        ds.hasMoved = true;
+        // Notifica il parent che è iniziato il drag (utile per highlight target)
+        const draggedBar = bars.find(b => b.id === ds.barId);
+        if (draggedBar) onBarDragStart?.(draggedBar);
+      }
 
       const deltaMins = pxToMin(dx) - pxToMin(0);
       const duration = ds.origEndMin - ds.origStartMin;
@@ -389,7 +403,7 @@ export default function InteractiveGantt({
         collision: detectCollision(bars, ds.barId, newRowId, newStart, newEnd),
       });
     },
-    [pxToMin, minHour, maxHour, snapMin, rowIndex, rows, rowHeight, bars],
+    [pxToMin, minHour, maxHour, snapMin, rowIndex, rows, rowHeight, bars, onBarDragStart],
   );
 
   const onPointerUp = useCallback(
@@ -398,12 +412,14 @@ export default function InteractiveGantt({
       dragState.current = null;
       if (!ds || !ds.hasMoved || !dragPreview) {
         setDragPreview(null);
+        if (ds?.hasMoved) onBarDragEnd?.();
         return;
       }
 
       // ── Block drop if there's a collision ──
       if (dragPreview.collision) {
         setDragPreview(null);
+        onBarDragEnd?.();
         return; // bar snaps back to original position
       }
 
@@ -425,8 +441,9 @@ export default function InteractiveGantt({
 
       commitChange(newBars, change);
       setDragPreview(null);
+      onBarDragEnd?.();
     },
-    [bars, dragPreview, commitChange],
+    [bars, dragPreview, commitChange, onBarDragEnd],
   );
 
   // ── Hour markers ──
@@ -667,11 +684,12 @@ export default function InteractiveGantt({
           {/* Rows */}
           {rows.map((row, ri) => {
             const rowBars = rowBarsMap.get(row.id) || [];
+            const highlightBg = rowHighlights?.[row.id];
             return (
               <div
                 key={row.id}
                 className="flex group hover:bg-muted/20 transition-colors"
-                style={{ height: rowHeight }}
+                style={{ height: rowHeight, backgroundColor: highlightBg }}
               >
                 {/* Label */}
                 <div
