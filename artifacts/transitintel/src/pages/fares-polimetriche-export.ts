@@ -518,14 +518,17 @@ function densityForStops(n: number): {
   cellFont: number;
   headerFont: number;
   nameWidth: number;
+  diagNameHeight: number;
   scale: "L" | "M" | "S" | "XS" | "XXS";
 } {
-  // A3 landscape ~ 400mm utili in larghezza → ~1500px @ 96dpi
-  if (n <= 20) return { cellSize: 42, cellFont: 13, headerFont: 13, nameWidth: 320, scale: "L"   };
-  if (n <= 30) return { cellSize: 32, cellFont: 11, headerFont: 12, nameWidth: 290, scale: "M"   };
-  if (n <= 45) return { cellSize: 24, cellFont: 9,  headerFont: 11, nameWidth: 260, scale: "S"   };
-  if (n <= 60) return { cellSize: 19, cellFont: 8,  headerFont: 10, nameWidth: 230, scale: "XS"  };
-  return            { cellSize: 14, cellFont: 7,  headerFont: 9,  nameWidth: 200, scale: "XXS" };
+  // A3 landscape: ~400mm utili in larghezza → ~1500px @ 96dpi.
+  // Vincolo: 28 (rn-num) + nameWidth + N * cellSize ≤ ~1480px
+  // diagNameHeight = altezza spacer in alto + spazio in cui può sforare il nome verticale
+  if (n <= 20) return { cellSize: 38, cellFont: 13, headerFont: 13, nameWidth: 280, diagNameHeight: 200, scale: "L"   };
+  if (n <= 30) return { cellSize: 30, cellFont: 11, headerFont: 12, nameWidth: 250, diagNameHeight: 180, scale: "M"   };
+  if (n <= 45) return { cellSize: 22, cellFont: 9,  headerFont: 11, nameWidth: 220, diagNameHeight: 160, scale: "S"   };
+  if (n <= 60) return { cellSize: 17, cellFont: 8,  headerFont: 10, nameWidth: 190, diagNameHeight: 140, scale: "XS"  };
+  return            { cellSize: 12, cellFont: 7,  headerFont: 9,  nameWidth: 160, diagNameHeight: 120, scale: "XXS" };
 }
 
 /**
@@ -549,6 +552,7 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   const network = sheet.networkId || "";
   const isUrban = /^urbano_/i.test(network);
   const d = densityForStops(stops.length);
+  const lineColor = normalizeLineColor(sheet.routeColor);
 
   // Pre-calcola la matrice di prezzi (con metadati fascia/Δkm)
   // matrix[i][j] è valida solo per j < i (triangolo inferiore)
@@ -567,6 +571,20 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   }
   if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
 
+  // ─── Mapping fermata → zona → indice nella legenda zone (per colore) ──
+  // Allinea i colori della diagonale + badge numero a quelli della legenda zone in fondo.
+  const areaIndexById = new Map<string, number>();
+  sheet.routeAreas.forEach((a, idx) => areaIndexById.set(a.id, idx));
+  const stopAreaIdx: number[] = stops.map(s => {
+    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+    if (!aid) return -1;
+    return areaIndexById.get(aid) ?? -1;
+  });
+  const stopColor = (i: number): string => {
+    if (stopAreaIdx[i] < 0) return lineColor;
+    return groupColor(stopAreaIdx[i]);
+  };
+
   // ─── Raggruppamento visivo per zona tariffaria ──
   // Solo per disegnare le righe tratteggiate dove cambia la zona.
   const stopGroup: string[] = stops.map(s => {
@@ -581,6 +599,7 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
     const aid = from.currentAreaId || from.suggestedAreaId || model.stopToArea.get(from.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
     const rowBoundary = isGroupBoundary(i) ? " gboundary-t" : "";
+    const zc = stopColor(i);
 
     // Celle prezzo per j = 0 … i-1 (sotto la diagonale)
     const priceCells = stops.slice(0, i).map((to, j) => {
@@ -593,9 +612,13 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
       return `<td class="cell${colBoundary}" style="background:${bg}" title="${tip}">${fmtMoney(c.price)}</td>`;
     }).join("");
 
-    // Cella diagonale (j = i): marker
+    // Cella diagonale (j = i): tassello colorato zona con numero + nome verticale
     const diagBoundary = isGroupBoundary(i) ? " gboundary-l" : "";
-    const diagCell = `<td class="diag${diagBoundary}">■</td>`;
+    const diagCell = `
+      <td class="diag${diagBoundary}" style="background:${zc}" title="${escape(from.stopName)}">
+        <div class="diag-num">${i + 1}</div>
+        <div class="diag-name">${escape(from.stopName)}</div>
+      </td>`;
 
     // Celle vuote SOPRA la diagonale (j = i+1 … N-1) — tengono il grid stabile
     const emptyAfter = stops.slice(i + 1).map((_, k) => {
@@ -606,10 +629,10 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
 
     return `
       <tr class="${rowBoundary}">
-        <th class="rn-num">${i + 1}</th>
+        <th class="rn-num" style="background:${zc}">${i + 1}</th>
         <th class="rn-name">
           <div class="rn-text" title="${escape(from.stopName)}">${escape(from.stopName)}</div>
-          <div class="rn-meta">${from.progressiveKm.toFixed(1)} km${code ? ` · <span class="rn-zone">${escape(code)}</span>` : ""}</div>
+          <div class="rn-meta">${from.progressiveKm.toFixed(1)} km${code ? ` · <span class="rn-zone" style="background:${zc}">${escape(code)}</span>` : ""}</div>
         </th>
         ${priceCells}
         ${diagCell}
@@ -618,18 +641,6 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
     `;
   }).join("");
 
-  // Riga finale con i numeri di colonna (lettura veloce: prezzo fra riga i e colonna j)
-  const colNumberRow = `
-    <tr class="cnum-row">
-      <th class="rn-num"></th>
-      <th class="rn-name cnum-label">↓ riga = partenza · ↑ colonna = arrivo (n° fermata)</th>
-      ${stops.map((_, j) => {
-        const cb = isGroupBoundary(j) ? " gboundary-l" : "";
-        return `<th class="cn-num${cb}">${j + 1}</th>`;
-      }).join("")}
-    </tr>
-  `;
-
   // ─── Banner descrittivo del modo tariffario ──
   const modeBanner = isUrban
     ? (() => {
@@ -637,62 +648,58 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
         if (!flat) return `<div class="mode-banner urban">Rete urbana: tariffa flat (prodotto non identificato)</div>`;
         return `
           <div class="mode-banner urban">
-            <div class="mb-icon">🎫</div>
-            <div class="mb-text">
-              <strong>Tariffa urbana flat</strong> · ogni biglietto sulla rete costa
-              <span class="mb-price">€ ${fmtMoney(flat.amount)}</span>
-              <span class="mb-sub">— ${escape(flat.productName)}</span>
-            </div>
+            <span class="mb-icon">🎫</span>
+            <span class="mb-text"><strong>Tariffa urbana flat</strong> · ${escape(flat.productName)} · <span class="mb-price">€ ${fmtMoney(flat.amount)}</span></span>
           </div>`;
       })()
     : (() => {
         const bands = model.extraBands;
         if (bands.length === 0) return `<div class="mode-banner extra">Rete extraurbana ma nessuna fascia tariffaria identificata.</div>`;
-        const cells = bands.map(b => `
-          <div class="band-chip">
-            <div class="bc-fascia">F${b.fascia}</div>
-            <div class="bc-km">${b.kmFrom.toFixed(0)}–${b.kmTo.toFixed(0)} km</div>
-            <div class="bc-price">€ ${fmtMoney(b.price)}</div>
-          </div>
+        const cells = bands.map((b, k) => `
+          <span class="bl-pair"><b>F${b.fascia}</b> ${b.kmFrom.toFixed(0)}–${b.kmTo.toFixed(0)} km <em>€ ${fmtMoney(b.price)}</em></span>${k < bands.length - 1 ? `<span class="bl-sep">·</span>` : ""}
         `).join("");
         return `
           <div class="mode-banner extra">
-            <div class="mb-icon">📏</div>
-            <div class="mb-text">
-              <strong>Tariffa extraurbana a fasce chilometriche</strong>
-              <span class="mb-sub">prezzo = f(distanza tra le fermate); fasce regionali (DGR Marche n. 1036/2022)</span>
-            </div>
-            <div class="bands-strip">${cells}</div>
+            <span class="mb-icon">📏</span>
+            <span class="mb-text"><strong>Tariffe extraurbane a fasce km</strong> (DGR Marche 1036/2022)</span>
+            <span class="bands-line">${cells}</span>
           </div>`;
       })();
 
-  // ─── Legenda colori ──
+  // ─── Legenda colori prezzi ──
   const steps = 5;
   const legendCells = Array.from({ length: steps }, (_, i) => {
     const v = lMin + (lMax - lMin) * (i / Math.max(1, (steps - 1)));
     return `<div class="lg-cell" style="background:${priceColor(v, lMin, lMax)}">${fmtMoney(v)}</div>`;
   }).join("");
 
+  // Spacer thead alto = spazio verticale per il nome diagonale del primo stop.
+  // Per stop k>0 il nome può estendersi anche nei `above-diag` superiori; per k=0
+  // serve invece un margine extra in cima alla tabella.
   return `
     ${modeBanner}
     <div class="matrix-wrap density-${d.scale}"
-         style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px">
+         style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px;--dnh:${d.diagNameHeight}px">
       <table class="matrix">
         <colgroup>
           <col class="cg-num">
           <col class="cg-name">
           ${stops.map(() => `<col class="cg-cell">`).join("")}
         </colgroup>
+        <thead>
+          <tr class="diag-spacer">
+            <th colspan="${stops.length + 2}" class="ds-cell"></th>
+          </tr>
+        </thead>
         <tbody>
           ${rows}
-          ${colNumberRow}
         </tbody>
       </table>
 
       <div class="matrix-legend">
         <div class="lg-title">Scala prezzi (€)</div>
         <div class="lg-bar">${legendCells}</div>
-        <div class="lg-hint">${isUrban ? "rete urbana: tariffa flat (matrice volutamente uniforme)" : "colore proporzionale al prezzo; tratteggio = cambio di zona tariffaria"}</div>
+        <div class="lg-hint">${isUrban ? "rete urbana: tariffa flat (matrice volutamente uniforme)" : "colore proporzionale al prezzo · tratteggio = cambio di zona · diagonale colorata per zona"}</div>
       </div>
     </div>
   `;
@@ -885,6 +892,8 @@ const STYLES = `
     border-collapse: separate; border-spacing: 0;
     table-layout: fixed;
     margin: 0 auto;
+    /* lascia overflow visibile per i nomi diagonali rotati */
+    overflow: visible;
   }
   /* Larghezze colonne */
   table.matrix col.cg-num  { width: 28px; }
@@ -900,11 +909,20 @@ const STYLES = `
     font-size: var(--cf);
   }
 
-  /* Colonna numero progressivo (leftmost) */
+  /* Spacer in cima: dà spazio al nome verticale del primo stop diagonale */
+  table.matrix thead tr.diag-spacer th.ds-cell {
+    height: var(--dnh);
+    border: 0;
+    background: transparent;
+    padding: 0;
+  }
+
+  /* Colonna numero progressivo (leftmost) — colorata con la zona */
   table.matrix th.rn-num {
-    background: var(--line-color); color: white;
-    font-weight: 700; font-size: var(--hf);
-    border-color: var(--line-color);
+    background: var(--line-color); /* fallback se non c'è zona */
+    color: white;
+    font-weight: 800; font-size: var(--hf);
+    border: 1px solid rgba(0,0,0,.08);
   }
 
   /* Colonna nome fermata (sinistra, larga) */
@@ -915,6 +933,7 @@ const STYLES = `
     line-height: 1.15;
     font-weight: 600;
     color: #1e293b;
+    overflow: hidden;
   }
   table.matrix th.rn-name .rn-text {
     font-size: var(--hf);
@@ -931,7 +950,7 @@ const STYLES = `
     margin-top: 1px;
   }
   table.matrix th.rn-name .rn-zone {
-    background: var(--line-color); color: white;
+    color: white;
     padding: 0 5px; border-radius: 3px;
     font-weight: 700; font-size: calc(var(--hf) - 3px);
     margin-left: 2px;
@@ -941,38 +960,53 @@ const STYLES = `
   table.matrix td.cell {
     font-weight: 600; color: #0f172a;
   }
-  /* Diagonale */
+
+  /* DIAGONALE: tassello colorato per zona, numero in basso, nome verticale che
+     si estende verso l'alto sforando nelle celle above-diag superiori. */
   table.matrix td.diag {
-    background: #1e293b; color: white;
-    font-size: calc(var(--cf) - 2px);
+    position: relative;
+    overflow: visible;
+    vertical-align: bottom;
+    background: var(--line-color);
+    border: 1px solid rgba(0,0,0,.12);
   }
-  /* Sopra la diagonale: visivamente vuoto */
+  table.matrix td.diag .diag-num {
+    height: var(--cs);
+    line-height: var(--cs);
+    color: white;
+    font-weight: 800;
+    font-size: calc(var(--cf) + 1px);
+    text-shadow: 0 1px 1px rgba(0,0,0,.25);
+  }
+  table.matrix td.diag .diag-name {
+    position: absolute;
+    bottom: var(--cs);
+    left: 0;
+    width: var(--cs);
+    height: var(--dnh);
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+    transform-origin: center;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding-bottom: 4px;
+    font-size: var(--hf);
+    font-weight: 600;
+    color: #0f172a;
+    white-space: nowrap;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* Sopra la diagonale: visivamente vuoto (lascia spazio ai nomi rotati) */
   table.matrix td.above-diag {
     background: transparent;
     border-color: transparent;
   }
   table.matrix td.na {
     background: #fafafa; color: #cbd5e1;
-  }
-
-  /* Riga numeri colonna (in fondo) */
-  table.matrix tr.cnum-row th {
-    height: calc(var(--cs) * 0.85);
-    border-top: 2px solid #cbd5e1;
-  }
-  table.matrix tr.cnum-row th.cn-num {
-    background: var(--line-color); color: white;
-    font-weight: 700; font-size: var(--hf);
-    border-color: var(--line-color);
-  }
-  table.matrix tr.cnum-row th.cnum-label {
-    background: #f1f5f9;
-    text-align: right;
-    padding-right: 8px;
-    color: #64748b;
-    font-weight: 500;
-    font-size: calc(var(--hf) - 2px);
-    font-style: italic;
   }
 
   /* densità XS/XXS: nascondi km in metadati riga per stare in pagina */
@@ -982,7 +1016,6 @@ const STYLES = `
   /* ─── Confini di zona: righe TRATTEGGIATE leggere (no colori invadenti) ─── */
   table.matrix .gboundary-l { border-left: 1.5px dashed #94a3b8 !important; }
   table.matrix tr.gboundary-t > * { border-top: 1.5px dashed #94a3b8 !important; }
-  /* Anche sulle celle vuote sopra la diagonale, mantieni il tratteggio visibile */
   table.matrix td.above-diag.gboundary-l { border-left: 1.5px dashed #cbd5e1 !important; }
   table.matrix tr.gboundary-t > td.above-diag { border-top: 1.5px dashed #cbd5e1 !important; }
 
@@ -1035,30 +1068,33 @@ const STYLES = `
     font-size: 8px; color: #94a3b8;
   }
 
-  /* ─── Banner modo tariffario ─── */
+  /* ─── Banner modo tariffario (riga unica, lineare) ─── */
   .mode-banner {
-    display: flex; align-items: center; gap: 12px;
-    padding: 8px 12px; border-radius: 8px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 10px; border-radius: 6px;
     margin-bottom: 6px;
     border: 1px solid;
+    font-size: 10px;
+    line-height: 1.3;
   }
-  .mode-banner.urban  { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
-  .mode-banner.extra  { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
-  .mb-icon { font-size: 22px; flex-shrink: 0; }
-  .mb-text { flex: 1; font-size: 11px; line-height: 1.4; }
-  .mb-text strong { font-size: 12px; }
-  .mb-text .mb-price { font-weight: 800; font-size: 14px; margin: 0 4px; }
-  .mb-text .mb-sub { color: inherit; opacity: .75; font-size: 10px; }
-  .bands-strip { display: flex; gap: 4px; flex-wrap: wrap; max-width: 60%; }
-  .band-chip {
-    background: white; border: 1px solid #fcd34d; border-radius: 5px;
-    padding: 3px 6px; text-align: center;
-    display: flex; flex-direction: column; gap: 1px;
-    min-width: 48px;
+  .mode-banner.urban { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+  .mode-banner.extra { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+  .mb-icon { font-size: 13px; flex-shrink: 0; }
+  .mb-text { flex-shrink: 0; }
+  .mb-text strong { font-size: 11px; }
+  .mb-text .mb-price { font-weight: 800; font-size: 12px; margin-left: 2px; }
+  .mode-banner .bands-line {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    flex: 1; justify-content: flex-end;
+    font-size: 10px;
   }
-  .bc-fascia { font-size: 9px; font-weight: 700; color: #92400e; }
-  .bc-km { font-size: 8px; color: #78716c; }
-  .bc-price { font-size: 10px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; }
+  .bands-line .bl-pair {
+    white-space: nowrap;
+    color: #78350f;
+  }
+  .bands-line .bl-pair b { color: #92400e; font-weight: 700; }
+  .bands-line .bl-pair em { font-style: normal; font-weight: 700; color: #b45309; margin-left: 2px; font-variant-numeric: tabular-nums; }
+  .bands-line .bl-sep { color: #d97706; opacity: .6; }
 `;
 
 /* ──────────────────────────────────────────────────────────
