@@ -654,15 +654,21 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
       })()
     : (() => {
         const bands = model.extraBands;
-        if (bands.length === 0) return `<div class="mode-banner extra">Rete extraurbana ma nessuna fascia tariffaria identificata.</div>`;
-        const cells = bands.map((b, k) => `
-          <span class="bl-pair"><b>F${b.fascia}</b> ${b.kmFrom.toFixed(0)}–${b.kmTo.toFixed(0)} km <em>€ ${fmtMoney(b.price)}</em></span>${k < bands.length - 1 ? `<span class="bl-sep">·</span>` : ""}
+        if (bands.length === 0) return `<div class="bands-block empty-block">Rete extraurbana: nessuna fascia tariffaria identificata.</div>`;
+        const cards = bands.map(b => `
+          <div class="band-card" title="Fascia ${b.fascia}: da ${b.kmFrom.toFixed(0)} a ${b.kmTo.toFixed(0)} km">
+            <div class="bc-fascia">F${b.fascia}</div>
+            <div class="bc-km">${b.kmFrom.toFixed(0)}–${b.kmTo.toFixed(0)}</div>
+            <div class="bc-price">€${fmtMoney(b.price)}</div>
+          </div>
         `).join("");
         return `
-          <div class="mode-banner extra">
-            <span class="mb-icon">📏</span>
-            <span class="mb-text"><strong>Tariffe extraurbane a fasce km</strong> (DGR Marche 1036/2022)</span>
-            <span class="bands-line">${cells}</span>
+          <div class="bands-block">
+            <div class="bb-head">
+              <span class="bb-title">Tariffe extraurbane a fasce km</span>
+              <span class="bb-sub">DGR Marche 1036/2022 · prezzo = f(distanza tra le fermate)</span>
+            </div>
+            <div class="bb-cards">${cards}</div>
           </div>`;
       })();
 
@@ -980,22 +986,23 @@ const STYLES = `
   }
   table.matrix td.diag .diag-name {
     position: absolute;
+    /* Ancorato all'angolo in alto-sinistra della cella diagonale: il testo
+       parte da lì e sale verso destra a 45°, dentro il triangolo bianco
+       sopra la diagonale (zero rischio di sovrapposizione col triangolo
+       prezzi a sinistra). */
     bottom: var(--cs);
-    left: 0;
-    width: var(--cs);
-    height: var(--dnh);
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    transform-origin: center;
-    display: flex;
-    align-items: flex-start;
-    justify-content: flex-end;
-    padding-bottom: 4px;
+    left: 2px;
+    height: 1.1em;
+    line-height: 1.1em;
+    transform: rotate(-45deg);
+    transform-origin: bottom left;
+    text-align: left;
+    padding-left: 4px;
     font-size: var(--hf);
     font-weight: 600;
     color: #0f172a;
     white-space: nowrap;
-    overflow: hidden;
+    overflow: visible;
     pointer-events: none;
     z-index: 2;
   }
@@ -1068,7 +1075,7 @@ const STYLES = `
     font-size: 8px; color: #94a3b8;
   }
 
-  /* ─── Banner modo tariffario (riga unica, lineare) ─── */
+  /* ─── Banner modo tariffario URBANO (riga unica, lineare) ─── */
   .mode-banner {
     display: flex; align-items: center; gap: 10px;
     padding: 5px 10px; border-radius: 6px;
@@ -1078,23 +1085,63 @@ const STYLES = `
     line-height: 1.3;
   }
   .mode-banner.urban { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
-  .mode-banner.extra { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
   .mb-icon { font-size: 13px; flex-shrink: 0; }
   .mb-text { flex-shrink: 0; }
   .mb-text strong { font-size: 11px; }
   .mb-text .mb-price { font-weight: 800; font-size: 12px; margin-left: 2px; }
-  .mode-banner .bands-line {
-    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    flex: 1; justify-content: flex-end;
-    font-size: 10px;
+
+  /* ─── Blocco fasce extraurbane (titolo + griglia di mini-card) ─── */
+  .bands-block {
+    margin-bottom: 6px;
+    padding: 4px 6px 6px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #fafbfc;
   }
-  .bands-line .bl-pair {
-    white-space: nowrap;
-    color: #78350f;
+  .bands-block.empty-block {
+    color: #94a3b8; font-style: italic; font-size: 10px; padding: 8px;
   }
-  .bands-line .bl-pair b { color: #92400e; font-weight: 700; }
-  .bands-line .bl-pair em { font-style: normal; font-weight: 700; color: #b45309; margin-left: 2px; font-variant-numeric: tabular-nums; }
-  .bands-line .bl-sep { color: #d97706; opacity: .6; }
+  .bands-block .bb-head {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 0 2px 4px;
+    border-bottom: 1px solid #eef2f6;
+    margin-bottom: 4px;
+  }
+  .bands-block .bb-title {
+    font-size: 10px; font-weight: 700; color: #1e293b;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .bands-block .bb-sub {
+    font-size: 9px; color: #94a3b8; font-style: italic;
+  }
+  .bands-block .bb-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
+    gap: 3px;
+  }
+  .bands-block .band-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-left: 3px solid #f59e0b;
+    border-radius: 4px;
+    padding: 3px 4px;
+    text-align: center;
+    display: flex; flex-direction: column; gap: 0;
+    line-height: 1.1;
+  }
+  .bands-block .band-card .bc-fascia {
+    font-size: 9px; font-weight: 800; color: #92400e;
+    letter-spacing: .3px;
+  }
+  .bands-block .band-card .bc-km {
+    font-size: 8px; color: #64748b;
+    font-variant-numeric: tabular-nums;
+  }
+  .bands-block .band-card .bc-price {
+    font-size: 10px; font-weight: 800; color: #0f172a;
+    font-variant-numeric: tabular-nums;
+    margin-top: 1px;
+  }
 `;
 
 /* ──────────────────────────────────────────────────────────
