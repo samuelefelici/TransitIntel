@@ -446,10 +446,61 @@ function lookupPriceBetweenStops(
 }
 
 /**
- * Genera abbreviazione nome fermata per intestazione di colonna ruotata.
- * Tronca a max 28 caratteri, rimuove parentesi/dettagli.
+ * Normalizza il colore della linea proveniente da GTFS (`route_color`).
+ * Rifiuta valori vuoti, malformati e bianchi/quasi-bianchi (luminanza > .85)
+ * che renderebbero invisibile la pill su sfondo bianco.
  */
-function shortStopLabel(name: string, max = 28): string {
+function normalizeLineColor(c: string | null | undefined): string {
+  const FALLBACK = "#0f766e";
+  if (!c) return FALLBACK;
+  const hex = c.replace("#", "").trim();
+  if (hex.length !== 3 && hex.length !== 6) return FALLBACK;
+  if (!/^[0-9a-fA-F]+$/.test(hex)) return FALLBACK;
+  const full = hex.length === 3 ? hex.split("").map(ch => ch + ch).join("") : hex;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  if (lum > 0.85) return FALLBACK;
+  return "#" + full.toLowerCase();
+}
+
+/**
+ * Palette di colori distinguibili per le zone tariffarie di una linea.
+ * Restituisce un colore stabile per indice di gruppo (rotazione HSL ~goldena).
+ * Tinte pastello a media saturazione, leggibili come fascia di sfondo tenue
+ * e come bordo pieno di separazione.
+ */
+const ZONE_PALETTE = [
+  "#0ea5e9", // sky
+  "#a855f7", // purple
+  "#ec4899", // pink
+  "#f59e0b", // amber
+  "#10b981", // emerald
+  "#ef4444", // red
+  "#6366f1", // indigo
+  "#14b8a6", // teal
+  "#eab308", // yellow
+  "#8b5cf6", // violet
+];
+function groupColor(idx: number): string {
+  return ZONE_PALETTE[idx % ZONE_PALETTE.length];
+}
+/** Versione tenue (pastello chiaro) del colore zona, per background di intestazioni. */
+function groupColorSoft(idx: number): string {
+  // hex → rgba(.., .18) per fascia di sfondo molto leggera
+  const hex = groupColor(idx).replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, 0.16)`;
+}
+
+/**
+ * Genera abbreviazione nome fermata per intestazione di colonna ruotata.
+ * Rimuove parentesi/dettagli e applica un troncamento solo se serve.
+ */
+function shortStopLabel(name: string, max = 60): string {
   let s = name.replace(/\s*\([^)]*\)\s*/g, " ").replace(/\s+/g, " ").trim();
   if (s.length > max) s = s.slice(0, max - 1) + "…";
   return s;
@@ -467,11 +518,12 @@ function densityForStops(n: number): {
   nameWidth: number;
   scale: "L" | "M" | "S" | "XS" | "XXS";
 } {
-  if (n <= 20) return { cellSize: 26, cellFont: 10, headerHeight: 110, headerFont: 9,  nameWidth: 150, scale: "L"   };
-  if (n <= 30) return { cellSize: 22, cellFont: 9,  headerHeight: 105, headerFont: 8,  nameWidth: 135, scale: "M"   };
-  if (n <= 45) return { cellSize: 16, cellFont: 7,  headerHeight: 95,  headerFont: 7,  nameWidth: 115, scale: "S"   };
-  if (n <= 60) return { cellSize: 13, cellFont: 6,  headerHeight: 90,  headerFont: 6,  nameWidth: 100, scale: "XS"  };
-  return            { cellSize: 10, cellFont: 5,  headerHeight: 80,  headerFont: 5,  nameWidth: 88,  scale: "XXS" };
+  // A3 landscape ~ 400mm utili in larghezza → ~1500px @ 96dpi
+  if (n <= 20) return { cellSize: 36, cellFont: 12, headerHeight: 170, headerFont: 12, nameWidth: 230, scale: "L"   };
+  if (n <= 30) return { cellSize: 30, cellFont: 11, headerHeight: 160, headerFont: 11, nameWidth: 210, scale: "M"   };
+  if (n <= 45) return { cellSize: 23, cellFont: 9,  headerHeight: 145, headerFont: 9,  nameWidth: 185, scale: "S"   };
+  if (n <= 60) return { cellSize: 18, cellFont: 8,  headerHeight: 130, headerFont: 8,  nameWidth: 165, scale: "XS"  };
+  return            { cellSize: 14, cellFont: 7,  headerHeight: 115, headerFont: 7,  nameWidth: 145, scale: "XXS" };
 }
 
 /**
@@ -530,9 +582,11 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   const headerCells = stops.map((s, j) => {
     const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
-    const klass = `hcol band-${stopGroupIdx[j] % 2}` + (isGroupBoundary(j) ? " gboundary-l" : "");
+    const zc = groupColor(stopGroupIdx[j]);
+    const zcSoft = groupColorSoft(stopGroupIdx[j]);
+    const klass = `hcol zone-cell` + (isGroupBoundary(j) ? " gboundary-l" : "");
     return `
-      <th class="${klass}">
+      <th class="${klass}" style="--zc:${zc};--zc-soft:${zcSoft}">
         <div class="hcol-wrap">
           <div class="hcol-text">${j + 1}. ${escape(shortStopLabel(s.stopName))}${code && !isUrban ? ` <span class="zhint">[${escape(code)}]</span>` : ""}</div>
         </div>
@@ -545,25 +599,27 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
     const aid = from.currentAreaId || from.suggestedAreaId || model.stopToArea.get(from.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
     const rowBoundary = isGroupBoundary(i) ? " gboundary-t" : "";
+    const zcRow = groupColor(stopGroupIdx[i]);
+    const zcRowSoft = groupColorSoft(stopGroupIdx[i]);
     const cells = stops.map((to, j) => {
       const colBoundary = isGroupBoundary(j) ? " gboundary-l" : "";
-      const bandClass = `band-${(stopGroupIdx[i] + stopGroupIdx[j]) % 2}`;
-      if (j < i) return `<td class="below ${bandClass}${colBoundary}"></td>`;
-      if (i === j) return `<td class="diag${colBoundary}">■</td>`;
+      const zcCol = groupColor(stopGroupIdx[j]);
+      if (j < i) return `<td class="below${colBoundary}" style="--zc:${zcCol}"></td>`;
+      if (i === j) return `<td class="diag${colBoundary}" style="--zc:${zcCol}">■</td>`;
       const c = matrix[i][j];
-      if (c == null) return `<td class="na ${bandClass}${colBoundary}" title="N/D">–</td>`;
+      if (c == null) return `<td class="na${colBoundary}" style="--zc:${zcCol}" title="N/D">–</td>`;
       const bg = priceColor(c.price, lMin, lMax);
       const tip = `${escape(from.stopName)} → ${escape(to.stopName)} : € ${fmtMoney(c.price)}` +
                   (c.fascia ? ` · F${c.fascia} (${c.deltaKm.toFixed(1)} km)` : "");
-      return `<td class="cell${colBoundary}" style="background:${bg}" title="${tip}">${fmtMoney(c.price)}</td>`;
+      return `<td class="cell${colBoundary}" style="background:${bg};--zc:${zcCol}" title="${tip}">${fmtMoney(c.price)}</td>`;
     }).join("");
     return `
-      <tr class="${rowBoundary} band-${stopGroupIdx[i] % 2}">
-        <th class="rname band-${stopGroupIdx[i] % 2}${rowBoundary}">
+      <tr class="${rowBoundary}" style="--zc:${zcRow};--zc-soft:${zcRowSoft}">
+        <th class="rname zone-cell${rowBoundary}" style="--zc:${zcRow};--zc-soft:${zcRowSoft}">
           <div class="rname-num">${i + 1}</div>
-          <div class="rname-text">${escape(shortStopLabel(from.stopName, 32))}</div>
+          <div class="rname-text">${escape(shortStopLabel(from.stopName))}</div>
           <div class="rname-km">${from.progressiveKm.toFixed(1)} km</div>
-          ${code ? `<div class="rname-zone" style="background:${isUrban ? "#64748b" : "var(--line-color)"}">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
+          ${code ? `<div class="rname-zone" style="background:${zcRow}">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
         </th>
         ${cells}
       </tr>
@@ -638,22 +694,23 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
 
 function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, total: number): string {
   const networkLabel = sheet.networkId ? (NETWORK_LABEL[sheet.networkId] || sheet.networkId) : "—";
-  const lineColor = sheet.routeColor && sheet.routeColor !== "" ? `#${sheet.routeColor}` : "#0f766e";
+  const lineColor = normalizeLineColor(sheet.routeColor);
   const stopCount = sheet.stops.length;
   const zoneCount = sheet.routeAreas.length;
   const tariffePossibili = stopCount > 0 ? Math.round(stopCount * (stopCount - 1) / 2) : 0;
 
-  // Legenda zone compatta
-  const zoneLegend = sheet.routeAreas.map(a => {
+  // Legenda zone compatta — colori coerenti con la matrice (palette per indice gruppo)
+  const zoneLegend = sheet.routeAreas.map((a, idx) => {
     const stopsInZone = sheet.stops.filter(s => {
       const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
       return aid === a.id;
     });
     const kmStart = stopsInZone[0]?.progressiveKm ?? 0;
     const kmEnd = stopsInZone[stopsInZone.length - 1]?.progressiveKm ?? 0;
+    const zc = groupColor(idx);
     return `
-      <div class="zone-item">
-        <div class="zbadge" style="background:${lineColor}">${escape(a.code)}</div>
+      <div class="zone-item" style="border-left:4px solid ${zc};background:${groupColorSoft(idx)}">
+        <div class="zbadge" style="background:${zc}">${escape(a.code)}</div>
         <div class="zinfo">
           <div class="zname">${escape(a.name)}</div>
           <div class="zrange">${kmStart.toFixed(1)} – ${kmEnd.toFixed(1)} km · ${stopsInZone.length} ferm.</div>
@@ -729,8 +786,8 @@ const STYLES = `
   }
   .toolbar button:hover { background: #059669; }
 
-  /* La cover resta portrait, le pagine linea sono landscape */
-  @page { size: A4 landscape; margin: 8mm; }
+  /* La cover resta A4 portrait, le pagine linea sono A3 landscape */
+  @page { size: A3 landscape; margin: 10mm; }
   @page :first { size: A4 portrait; margin: 12mm; }
 
   @media print {
@@ -748,7 +805,7 @@ const STYLES = `
   .page:last-child { page-break-after: auto; }
 
   .page.cover { width: 210mm; min-height: 297mm; padding: 14mm 12mm; margin: 16px auto; }
-  .page.route { width: 297mm; min-height: 210mm; padding: 8mm 10mm; margin: 16px auto; }
+  .page.route { width: 420mm; min-height: 297mm; padding: 10mm 12mm; margin: 16px auto; }
 
   /* ─── Cover ─────────────────────── */
   .cover { justify-content: space-between; }
@@ -984,14 +1041,21 @@ const STYLES = `
   .bc-km { font-size: 8px; color: #78716c; }
   .bc-price { font-size: 10px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; }
 
-  /* ─── Raggruppamento visivo: bande alternate + bordi spessi ─── */
-  table.matrix th.band-0, table.matrix td.band-0 { background-color: rgba(241, 245, 249, .55); }
-  table.matrix th.band-1, table.matrix td.band-1 { background-color: rgba(255, 255, 255, 1); }
-  /* le celle colorate (price/diag) override il background */
-  table.matrix td.cell { background-color: var(--cell-bg, #fff); }
-  table.matrix td.gboundary-l { border-left: 2px solid #1e293b !important; }
-  table.matrix tr.gboundary-t > * { border-top: 2px solid #1e293b !important; }
-  table.matrix th.hcol.gboundary-l { border-left: 2px solid #1e293b !important; }
+  /* ─── Raggruppamento visivo per zona tariffaria ─── */
+  /* Le intestazioni di riga e colonna prendono una tinta tenue del colore zona */
+  table.matrix th.rname.zone-cell  { background-color: var(--zc-soft, #f8fafc); }
+  table.matrix th.hcol.zone-cell   { background-color: var(--zc-soft, #f8fafc); }
+  /* La cella di matrice di default resta bianca; le celle "cell" hanno bg inline (heatmap) */
+  table.matrix td.below {
+    background: repeating-linear-gradient(45deg, #f8fafc 0 4px, #f1f5f9 4px 8px);
+    border-color: #f1f5f9;
+  }
+  /* Boundary tra zone: fascia colorata sottile invece dei bordi neri spessi */
+  table.matrix td.gboundary-l,
+  table.matrix th.gboundary-l { box-shadow: inset 3px 0 0 0 var(--zc, #1e293b); }
+  table.matrix tr > .gboundary-t { box-shadow: inset 0 3px 0 0 var(--zc, #1e293b); }
+  /* Quando una cella è sia gboundary-l che gboundary-t */
+  table.matrix tr > .gboundary-l.gboundary-t { box-shadow: inset 3px 0 0 0 var(--zc, #1e293b), inset 0 3px 0 0 var(--zc, #1e293b); }
 `;
 
 /* ──────────────────────────────────────────────────────────
