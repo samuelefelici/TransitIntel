@@ -214,6 +214,57 @@ export interface DriverTripChange {
   newEndMin: number;
 }
 
+/* ── Vincolo deadhead (fuorilinea) tra corse consecutive ───────
+ * Quando una corsa arriva a STOP_A e la successiva (stesso driver+veicolo)
+ * parte da STOP_B, serve tempo materiale per spostare il bus da A a B.
+ *
+ * Senza accesso a una matrice tempi reale lato browser, applichiamo:
+ *   - stessi stop          → 0 min richiesti
+ *   - stop diversi         → MIN_DEADHEAD_DIFFERENT_STOP_MIN
+ *   - cambio vehicleId     → almeno MIN_VEHICLE_HANDOVER_MIN (cambio in linea)
+ *   - cambio vehicleType   → ulteriore MIN_VEHICLE_HANDOVER_EXTRA per pull-out/pull-in
+ *
+ * I valori sono allineati a quanto usato dal backend in transfer_matrix.py
+ * (default conservativi). Sovrascrivibili in futuro caricando una matrice
+ * vera dal backend.
+ */
+const MIN_DEADHEAD_DIFFERENT_STOP_MIN = 10;
+const MIN_VEHICLE_HANDOVER_MIN = 5;          // attesa minima per cambio veicolo allo stesso capolinea
+const MIN_VEHICLE_HANDOVER_EXTRA = 15;       // ulteriore se cambia anche tipo veicolo
+
+/**
+ * Calcola il tempo minimo (minuti) richiesto fra l'arrivo di prevTrip
+ * e la partenza di nextTrip, per essere fisicamente fattibile.
+ * Restituisce 0 se uno dei due è null/undefined.
+ */
+export function requiredDeadheadMin(
+  prevTrip: RipresaTrip | undefined | null,
+  nextTrip: RipresaTrip | undefined | null,
+): number {
+  if (!prevTrip || !nextTrip) return 0;
+  const sameStop =
+    !!prevTrip.lastStopName && !!nextTrip.firstStopName &&
+    prevTrip.lastStopName.trim().toLowerCase() === nextTrip.firstStopName.trim().toLowerCase();
+  let need = sameStop ? 0 : MIN_DEADHEAD_DIFFERENT_STOP_MIN;
+  if (prevTrip.vehicleId && nextTrip.vehicleId && prevTrip.vehicleId !== nextTrip.vehicleId) {
+    need = Math.max(need, MIN_VEHICLE_HANDOVER_MIN);
+    if (prevTrip.vehicleType && nextTrip.vehicleType && prevTrip.vehicleType !== nextTrip.vehicleType) {
+      need += MIN_VEHICLE_HANDOVER_EXTRA;
+    }
+  }
+  return need;
+}
+
+/**
+ * Etichetta human-readable di un conflitto deadhead, usata nei toast/warning.
+ */
+function describeDeadhead(prev: RipresaTrip, next: RipresaTrip, gap: number, need: number): string {
+  const where = prev.lastStopName && next.firstStopName && prev.lastStopName !== next.firstStopName
+    ? ` ${prev.lastStopName} → ${next.firstStopName}`
+    : "";
+  return `Trasferimento${where} richiede ≥${need}', disponibili solo ${gap}'`;
+}
+
 const minToTimeStr = (m: number) => {
   const h = Math.floor(m / 60);
   const mm = m % 60;
@@ -279,7 +330,47 @@ export function applyDriverTripChange(
   const targetTrips = toShift.riprese[targetRipIdx].trips;
   let insertAt = targetTrips.findIndex(t => t.departureMin > newTrip.departureMin);
   if (insertAt < 0) insertAt = targetTrips.length;
+
+  // ── Vincolo deadhead: verifica vicini prev/next nella ripresa target ──
+  const prevNeighbor = insertAt > 0 ? targetTrips[insertAt - 1] : undefined;
+  const nextNeighbor = insertAt < targetTrips.length ? targetTrips[insertAt] : undefined;
+
+  if (prevNeighbor) {
+    const need = requiredDeadheadMin(prevNeighbor, newTrip);
+    const gap = newTrip.departureMin - prevNeighbor.arrivalMin;
+    if (gap < need) {
+      return { shifts, warning: describeDeadhead(prevNeighbor, newTrip, gap, need) };
+    }
+  }
+  if (nextNeighbor) {
+    const need = requiredDeadheadMin(newTrip, nextNeighbor);
+    const gap = nextNeighbor.departureMin - newTrip.arrivalMin;
+    if (gap < need) {
+      return { shifts, warning: describeDeadhead(newTrip, nextNeighbor, gap, need) };
+    }
+  }
+
   targetTrips.splice(insertAt, 0, newTrip);
+
+  // ── Vincolo deadhead lato sorgente: dopo aver tolto la trip, le due
+  //    corse "ricucite" (prima/dopo del buco) devono comunque rispettare il transfer
+  const sourceTrips = newShifts[fromIdx].riprese[foundRipIdx].trips;
+  if (foundTripIdx > 0 && foundTripIdx < sourceTrips.length + 1) {
+    // sourceTrips è già senza la trip rimossa: i vicini sono indici (foundTripIdx-1) e foundTripIdx
+    const sPrev = sourceTrips[foundTripIdx - 1];
+    const sNext = sourceTrips[foundTripIdx];
+    if (sPrev && sNext) {
+      const need = requiredDeadheadMin(sPrev, sNext);
+      const gap = sNext.departureMin - sPrev.arrivalMin;
+      if (gap < need) {
+        // Ripristino dello stato (rimettiamo la trip rimossa) prima di tornare
+        sourceTrips.splice(foundTripIdx, 0, oldTrip);
+        // E rimuoviamo dal target quella appena inserita
+        targetTrips.splice(targetTrips.indexOf(newTrip), 1);
+        return { shifts, warning: describeDeadhead(sPrev, sNext, gap, need) + " (sul turno di origine)" };
+      }
+    }
+  }
 
   // Ricalcola startMin/endMin/workMin di entrambe le riprese coinvolte
   recomputeRipresa(newShifts[fromIdx], foundRipIdx);
@@ -441,6 +532,26 @@ export function suggestDriversForTrip(
       }
     }
     if (bestRipIdx < 0) continue;
+
+    // ── Vincolo deadhead: trova prev/next nella ripresa candidata ──
+    const candTrips = s.riprese[bestRipIdx].trips;
+    let insertAt = candTrips.findIndex(t => t.departureMin > sourceTrip!.departureMin);
+    if (insertAt < 0) insertAt = candTrips.length;
+    const prevNeighbor = insertAt > 0 ? candTrips[insertAt - 1] : undefined;
+    const nextNeighbor = insertAt < candTrips.length ? candTrips[insertAt] : undefined;
+
+    let deadheadFatal = false;
+    if (prevNeighbor) {
+      const need = requiredDeadheadMin(prevNeighbor, sourceTrip);
+      const gap = sourceTrip.departureMin - prevNeighbor.arrivalMin;
+      if (gap < need) deadheadFatal = true;
+    }
+    if (!deadheadFatal && nextNeighbor) {
+      const need = requiredDeadheadMin(sourceTrip, nextNeighbor);
+      const gap = nextNeighbor.departureMin - sourceTrip.arrivalMin;
+      if (gap < need) deadheadFatal = true;
+    }
+    if (deadheadFatal) continue;  // non proponiamo soluzioni infattibili
 
     // Stima impatto su nastro/work
     const newWorkMin = s.workMin + tripDur;
