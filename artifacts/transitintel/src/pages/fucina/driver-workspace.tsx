@@ -97,7 +97,7 @@ export default function DriverWorkspace({
    *  exploded = 1 bar per corsa (drag-and-drop); aggregated = 1 bar per ripresa (read-only) */
   const [ganttMode, setGanttMode] = useState<"exploded" | "aggregated">("exploded");
   /* ── History undo/redo per modifiche al risultato ── */
-  const [history, setHistory] = useState<DriverShiftsResult[]>([]);
+  const [history, setHistory] = useState<Array<{ result: DriverShiftsResult; description: string; ts: number }>>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
 
@@ -113,6 +113,8 @@ export default function DriverWorkspace({
       : null,
   );
   const [showDiff, setShowDiff] = useState(false);
+  // ── Pannello modifiche pendenti (#4) ──
+  const [showChangesPanel, setShowChangesPanel] = useState(false);
 
   const liveSummary = useMemo(() => {
     if (!result || !baselineSummaryRef.current) return result?.summary;
@@ -303,12 +305,12 @@ export default function DriverWorkspace({
   }, [ganttBars, showDiff, ganttMode]);
 
   /* ── History + drag handler ─────────────────────────── */
-  const pushHistory = useCallback((newRes: DriverShiftsResult) => {
+  const pushHistory = useCallback((newRes: DriverShiftsResult, description: string) => {
     setHistory(prev => {
       // Tronca eventuali "future" se siamo in mezzo
       const truncated = historyIdx >= 0 ? prev.slice(0, historyIdx + 1) : prev;
       // Capacità: max 30
-      const next = [...truncated, newRes].slice(-30);
+      const next = [...truncated, { result: newRes, description, ts: Date.now() }].slice(-30);
       setHistoryIdx(next.length - 1);
       return next;
     });
@@ -347,7 +349,7 @@ export default function DriverWorkspace({
 
     const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts };
     setResult(newResult);
-    pushHistory(newResult);
+    pushHistory(newResult, desc);
     toast.success("Corsa spostata", { description: desc });
   }, [result, ganttBars, pushHistory]);
 
@@ -358,7 +360,7 @@ export default function DriverWorkspace({
     if (!canUndo) return;
     const newIdx = historyIdx - 1;
     setHistoryIdx(newIdx);
-    setResult(history[newIdx]);
+    setResult(history[newIdx].result);
     toast.info("Annullato");
   }, [canUndo, historyIdx, history]);
 
@@ -366,9 +368,16 @@ export default function DriverWorkspace({
     if (!canRedo) return;
     const newIdx = historyIdx + 1;
     setHistoryIdx(newIdx);
-    setResult(history[newIdx]);
+    setResult(history[newIdx].result);
     toast.info("Ripristinato");
   }, [canRedo, historyIdx, history]);
+
+  // Jump to a specific history entry (#4)
+  const jumpToHistory = useCallback((idx: number) => {
+    if (idx < 0 || idx >= history.length) return;
+    setHistoryIdx(idx);
+    setResult(history[idx].result);
+  }, [history]);
 
   // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo
   useEffect(() => {
@@ -746,12 +755,71 @@ export default function DriverWorkspace({
                     🔍 Diff
                   </button>
                 )}
+                {/* Pannello modifiche pendenti (#4) */}
+                {history.length > 0 && (
+                  <button
+                    onClick={() => setShowChangesPanel(v => !v)}
+                    className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${
+                      showChangesPanel
+                        ? "border-amber-500/60 bg-amber-500/30 text-amber-100"
+                        : "border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15"
+                    }`}
+                    title="Mostra cronologia modifiche manuali"
+                  >
+                    📜 Modifiche ({history.length})
+                  </button>
+                )}
                 <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
                   {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
                 </span>
               </div>
             </div>
             <div className="p-2">
+              {/* Pannello modifiche pendenti (#4) */}
+              {showChangesPanel && history.length > 0 && (
+                <div className="mb-2 rounded border border-amber-500/30 bg-amber-950/15 p-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+                      Cronologia modifiche manuali
+                    </span>
+                    <button
+                      onClick={() => { setHistory([]); setHistoryIdx(-1); setModifiedCount(0); setShowChangesPanel(false); }}
+                      className="text-[10px] text-red-300 hover:text-red-200 underline"
+                      title="Svuota cronologia (non annulla le modifiche già applicate)"
+                    >
+                      Svuota
+                    </button>
+                  </div>
+                  <ol className="space-y-0.5 max-h-40 overflow-y-auto text-[11px]">
+                    {history.map((h, i) => {
+                      const isCurrent = i === historyIdx;
+                      const isFuture = i > historyIdx;
+                      return (
+                        <li key={`${h.ts}-${i}`}>
+                          <button
+                            onClick={() => jumpToHistory(i)}
+                            className={`w-full text-left flex items-center gap-2 px-2 py-1 rounded transition ${
+                              isCurrent
+                                ? "bg-amber-500/25 text-amber-100 font-medium"
+                                : isFuture
+                                  ? "text-muted-foreground/50 hover:bg-white/5"
+                                  : "text-amber-200/80 hover:bg-white/5"
+                            }`}
+                            title={isCurrent ? "Stato corrente" : isFuture ? "Click per ripristinare" : "Click per tornare a questo punto"}
+                          >
+                            <span className="text-[9px] tabular-nums w-10 opacity-70">
+                              {new Date(h.ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                            </span>
+                            <span className="text-[9px] tabular-nums w-6 text-right opacity-50">#{i + 1}</span>
+                            <span className="flex-1 truncate">{h.description}</span>
+                            {isCurrent && <span className="text-[9px] text-amber-300">● ora</span>}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              )}
               <InteractiveGantt
                 rows={ganttRows}
                 bars={displayBars}

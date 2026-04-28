@@ -79,7 +79,7 @@ function DriverShiftsPageInner() {
 
   // ── Area di Lavoro: vista Gantt + history undo/redo ──
   const [ganttMode, setGanttMode] = useState<"exploded" | "aggregated">("exploded");
-  const [history, setHistory] = useState<DriverShiftsResult[]>([]);
+  const [history, setHistory] = useState<Array<{ result: DriverShiftsResult; description: string; ts: number }>>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -154,7 +154,8 @@ function DriverShiftsPageInner() {
   // Snapshot bars iniziali per evidenziare cosa è stato modificato manualmente
   const baselineBarsRef = useRef<Map<string, { rowId: string; startMin: number; endMin: number }> | null>(null);
   const [showDiff, setShowDiff] = useState(false);
-
+  // ── Pannello modifiche pendenti (#4) ──
+  const [showChangesPanel, setShowChangesPanel] = useState(false);
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
   useEffect(() => {
@@ -502,10 +503,10 @@ function DriverShiftsPageInner() {
   }, [driverGanttBars, showDiff, ganttMode]);
 
   /* ── History push/undo/redo ───────────────────────── */
-  const pushHistory = useCallback((newRes: DriverShiftsResult) => {
+  const pushHistory = useCallback((newRes: DriverShiftsResult, description: string) => {
     setHistory(prev => {
       const truncated = historyIdx >= 0 ? prev.slice(0, historyIdx + 1) : prev;
-      const next = [...truncated, newRes].slice(-30);
+      const next = [...truncated, { result: newRes, description, ts: Date.now() }].slice(-30);
       setHistoryIdx(next.length - 1);
       return next;
     });
@@ -544,7 +545,7 @@ function DriverShiftsPageInner() {
 
     const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts };
     setResult(newResult);
-    pushHistory(newResult);
+    pushHistory(newResult, desc);
     toast.success("Corsa spostata", { description: desc });
   }, [result, driverGanttBars, pushHistory]);
 
@@ -555,7 +556,7 @@ function DriverShiftsPageInner() {
     if (!canUndo) return;
     const newIdx = historyIdx - 1;
     setHistoryIdx(newIdx);
-    setResult(history[newIdx]);
+    setResult(history[newIdx].result);
     toast.info("Annullato");
   }, [canUndo, historyIdx, history]);
 
@@ -563,9 +564,16 @@ function DriverShiftsPageInner() {
     if (!canRedo) return;
     const newIdx = historyIdx + 1;
     setHistoryIdx(newIdx);
-    setResult(history[newIdx]);
+    setResult(history[newIdx].result);
     toast.info("Ripristinato");
   }, [canRedo, historyIdx, history]);
+
+  // Jump to a specific history entry (#4)
+  const jumpToHistory = useCallback((idx: number) => {
+    if (idx < 0 || idx >= history.length) return;
+    setHistoryIdx(idx);
+    setResult(history[idx].result);
+  }, [history]);
 
   // Cmd/Ctrl+Z = undo, +Shift = redo
   useEffect(() => {
@@ -1427,6 +1435,20 @@ function DriverShiftsPageInner() {
                     🔍 Diff
                   </button>
                 )}
+                {/* Pannello modifiche pendenti (#4) */}
+                {history.length > 0 && (
+                  <button
+                    onClick={() => setShowChangesPanel(v => !v)}
+                    className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${
+                      showChangesPanel
+                        ? "border-amber-500/60 bg-amber-500/20 text-amber-200"
+                        : "border-orange-500/30 bg-orange-500/8 text-orange-300 hover:bg-orange-500/15"
+                    }`}
+                    title="Mostra cronologia modifiche manuali"
+                  >
+                    📜 Modifiche ({history.length})
+                  </button>
+                )}
                 {/* Filtro tipo */}
                 <select
                   value={typeFilter}
@@ -1447,6 +1469,51 @@ function DriverShiftsPageInner() {
                 ? "Trascina le corse fra autisti o orizzontalmente per riassegnare/spostare. Le riprese vengono ricalcolate automaticamente."
                 : "Vista compatta — passa a 'Corse' per modificare con drag-and-drop."}
             </div>
+            {/* Pannello modifiche pendenti (#4) */}
+            {showChangesPanel && history.length > 0 && (
+              <div className="mb-2 rounded border border-amber-500/30 bg-amber-950/15 p-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+                    Cronologia modifiche manuali
+                  </span>
+                  <button
+                    onClick={() => { setHistory([]); setHistoryIdx(-1); setModifiedCount(0); setShowChangesPanel(false); }}
+                    className="text-[10px] text-red-300 hover:text-red-200 underline"
+                    title="Svuota cronologia (non annulla le modifiche già applicate)"
+                  >
+                    Svuota
+                  </button>
+                </div>
+                <ol className="space-y-0.5 max-h-40 overflow-y-auto text-[11px]">
+                  {history.map((h, i) => {
+                    const isCurrent = i === historyIdx;
+                    const isFuture = i > historyIdx;
+                    return (
+                      <li key={`${h.ts}-${i}`}>
+                        <button
+                          onClick={() => jumpToHistory(i)}
+                          className={`w-full text-left flex items-center gap-2 px-2 py-1 rounded transition ${
+                            isCurrent
+                              ? "bg-amber-500/25 text-amber-100 font-medium"
+                              : isFuture
+                                ? "text-muted-foreground/50 hover:bg-white/5"
+                                : "text-amber-200/80 hover:bg-white/5"
+                          }`}
+                          title={isCurrent ? "Stato corrente" : isFuture ? "Click per ripristinare" : "Click per tornare a questo punto"}
+                        >
+                          <span className="text-[9px] tabular-nums w-10 opacity-70">
+                            {new Date(h.ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                          </span>
+                          <span className="text-[9px] tabular-nums w-6 text-right opacity-50">#{i + 1}</span>
+                          <span className="flex-1 truncate">{h.description}</span>
+                          {isCurrent && <span className="text-[9px] text-amber-300">● ora</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            )}
             {filteredShifts.length > 0 ? (
               <InteractiveGantt
                 rows={driverGanttRows}
