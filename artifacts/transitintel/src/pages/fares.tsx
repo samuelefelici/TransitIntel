@@ -3794,20 +3794,24 @@ function GenerateTab() {
           Scarica GTFS Completo (ZIP)
         </Button>
         <Button
-          onClick={() => {
+          onClick={async () => {
             if (!result) {
               toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
               return;
             }
-            exportPolimetricheToPrint({
-              files: result.files,
-              zoningMethod,
-              date: new Date().toLocaleDateString("it-IT"),
-            });
+            try {
+              await exportPolimetricheToPrint({
+                files: result.files,
+                zoningMethod,
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+            } catch (e: any) {
+              toast({ title: "Errore polimetriche", description: e?.message || String(e), variant: "destructive" });
+            }
           }}
           size="sm"
           className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
-          title="Apre in nuova scheda il report stampabile delle matrici tariffarie OD per ciascuna rete (stampabile in PDF)"
+          title="Apre in nuova scheda una pagina A4 per ogni linea con elenco fermate, polimetrica triangolare e legenda zone (stampabile in PDF)"
         >
           <BarChart3 className="w-4 h-4 mr-2" />
           📊 Polimetriche (PDF)
