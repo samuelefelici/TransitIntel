@@ -507,34 +507,41 @@ function shortStopLabel(name: string, max = 60): string {
 }
 
 /**
+/**
  * Densità della matrice in funzione del numero di fermate.
- * Restituisce dimensioni in px utilizzate sia in screen che in print.
+ * Layout: triangolo rettangolo con angolo in basso-sinistra. Le intestazioni
+ * di colonna sono solo numeri (in fondo); i nomi completi delle fermate
+ * vivono sulla colonna sinistra (spazio orizzontale generoso, A3 landscape).
  */
 function densityForStops(n: number): {
   cellSize: number;
   cellFont: number;
-  headerHeight: number;
   headerFont: number;
   nameWidth: number;
   scale: "L" | "M" | "S" | "XS" | "XXS";
 } {
   // A3 landscape ~ 400mm utili in larghezza → ~1500px @ 96dpi
-  if (n <= 20) return { cellSize: 36, cellFont: 12, headerHeight: 170, headerFont: 12, nameWidth: 230, scale: "L"   };
-  if (n <= 30) return { cellSize: 30, cellFont: 11, headerHeight: 160, headerFont: 11, nameWidth: 210, scale: "M"   };
-  if (n <= 45) return { cellSize: 23, cellFont: 9,  headerHeight: 145, headerFont: 9,  nameWidth: 185, scale: "S"   };
-  if (n <= 60) return { cellSize: 18, cellFont: 8,  headerHeight: 130, headerFont: 8,  nameWidth: 165, scale: "XS"  };
-  return            { cellSize: 14, cellFont: 7,  headerHeight: 115, headerFont: 7,  nameWidth: 145, scale: "XXS" };
+  if (n <= 20) return { cellSize: 42, cellFont: 13, headerFont: 13, nameWidth: 320, scale: "L"   };
+  if (n <= 30) return { cellSize: 32, cellFont: 11, headerFont: 12, nameWidth: 290, scale: "M"   };
+  if (n <= 45) return { cellSize: 24, cellFont: 9,  headerFont: 11, nameWidth: 260, scale: "S"   };
+  if (n <= 60) return { cellSize: 19, cellFont: 8,  headerFont: 10, nameWidth: 230, scale: "XS"  };
+  return            { cellSize: 14, cellFont: 7,  headerFont: 9,  nameWidth: 200, scale: "XXS" };
 }
 
 /**
- * Tabella triangolare fermata×fermata. Le intestazioni colonna sono testo
- * verticale (rotato 65°). La cella (i, j) con i ≤ j mostra il prezzo tra
- * la fermata i (riga) e la fermata j (colonna). Le celle sotto la diagonale
- * sono lasciate vuote (la matrice è simmetrica).
+ * Polimetrica triangolare classica.
  *
- * Raggruppamento visivo: ogni volta che cambia la zona/fascia di
- * appartenenza si traccia un bordo più spesso e si alterna lo sfondo
- * delle bande per restituire un blocco visivo compatto.
+ * Layout: triangolo rettangolo con angolo di 90° in BASSO-SINISTRA.
+ *   • Colonna sinistra: numero progressivo + nome completo + km/zona
+ *     (qui c'è tutto lo spazio orizzontale che serve)
+ *   • Riga inferiore: solo numeri (1, 2, 3 …) per identificare la colonna
+ *   • Triangolo prezzi sotto la diagonale: cella (i, j) con j < i
+ *     mostra la tariffa fra la fermata di partenza i e quella di arrivo j
+ *   • La metà sopra la diagonale resta volutamente vuota (la matrice è
+ *     simmetrica)
+ *
+ * I confini di zona sono evidenziati con righe tratteggiate leggere
+ * (niente colori invadenti).
  */
 function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   const stops = sheet.stops;
@@ -544,10 +551,11 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   const d = densityForStops(stops.length);
 
   // Pre-calcola la matrice di prezzi (con metadati fascia/Δkm)
+  // matrix[i][j] è valida solo per j < i (triangolo inferiore)
   type Cell = { price: number; fascia: number | null; deltaKm: number } | null;
   const matrix: Cell[][] = stops.map((from, i) =>
     stops.map((to, j) => {
-      if (j < i || i === j) return null;
+      if (j >= i) return null; // solo triangolo inferiore stretto
       return lookupPriceBetweenStops(from, to, network, model);
     })
   );
@@ -559,72 +567,68 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   }
   if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
 
-  // ─── Raggruppamento visivo ──
-  // Per ogni fermata, calcola la "zona" di raggruppamento:
-  //   • urbano → tutte stessa zona (bande costanti)
-  //   • extraurbano → la zona è l'area assegnata (Z1, Z2, …)
-  // Usato per disegnare bordi più spessi quando cambia.
+  // ─── Raggruppamento visivo per zona tariffaria ──
+  // Solo per disegnare le righe tratteggiate dove cambia la zona.
   const stopGroup: string[] = stops.map(s => {
     if (isUrban) return network;
     const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
     return aid || "noarea";
   });
-  // Indice di gruppo (intero) per alternare sfondo banda
-  const groupIndexMap = new Map<string, number>();
-  let nextIdx = 0;
-  for (const g of stopGroup) {
-    if (!groupIndexMap.has(g)) groupIndexMap.set(g, nextIdx++);
-  }
-  const stopGroupIdx = stopGroup.map(g => groupIndexMap.get(g)!);
   const isGroupBoundary = (i: number) => i > 0 && stopGroup[i] !== stopGroup[i - 1];
 
-  // ─── Headers di colonna ──
-  const headerCells = stops.map((s, j) => {
-    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
-    const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
-    const zc = groupColor(stopGroupIdx[j]);
-    const zcSoft = groupColorSoft(stopGroupIdx[j]);
-    const klass = `hcol zone-cell` + (isGroupBoundary(j) ? " gboundary-l" : "");
-    return `
-      <th class="${klass}" style="--zc:${zc};--zc-soft:${zcSoft}">
-        <div class="hcol-wrap">
-          <div class="hcol-text">${j + 1}. ${escape(shortStopLabel(s.stopName))}${code && !isUrban ? ` <span class="zhint">[${escape(code)}]</span>` : ""}</div>
-        </div>
-      </th>
-    `;
-  }).join("");
-
-  // ─── Righe ──
+  // ─── Righe (una per fermata) ──
   const rows = stops.map((from, i) => {
     const aid = from.currentAreaId || from.suggestedAreaId || model.stopToArea.get(from.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
     const rowBoundary = isGroupBoundary(i) ? " gboundary-t" : "";
-    const zcRow = groupColor(stopGroupIdx[i]);
-    const zcRowSoft = groupColorSoft(stopGroupIdx[i]);
-    const cells = stops.map((to, j) => {
-      const colBoundary = isGroupBoundary(j) ? " gboundary-l" : "";
-      const zcCol = groupColor(stopGroupIdx[j]);
-      if (j < i) return `<td class="below${colBoundary}" style="--zc:${zcCol}"></td>`;
-      if (i === j) return `<td class="diag${colBoundary}" style="--zc:${zcCol}">■</td>`;
+
+    // Celle prezzo per j = 0 … i-1 (sotto la diagonale)
+    const priceCells = stops.slice(0, i).map((to, j) => {
       const c = matrix[i][j];
-      if (c == null) return `<td class="na${colBoundary}" style="--zc:${zcCol}" title="N/D">–</td>`;
+      const colBoundary = isGroupBoundary(j) ? " gboundary-l" : "";
+      if (c == null) return `<td class="na${colBoundary}" title="N/D">–</td>`;
       const bg = priceColor(c.price, lMin, lMax);
       const tip = `${escape(from.stopName)} → ${escape(to.stopName)} : € ${fmtMoney(c.price)}` +
                   (c.fascia ? ` · F${c.fascia} (${c.deltaKm.toFixed(1)} km)` : "");
-      return `<td class="cell${colBoundary}" style="background:${bg};--zc:${zcCol}" title="${tip}">${fmtMoney(c.price)}</td>`;
+      return `<td class="cell${colBoundary}" style="background:${bg}" title="${tip}">${fmtMoney(c.price)}</td>`;
     }).join("");
+
+    // Cella diagonale (j = i): marker
+    const diagBoundary = isGroupBoundary(i) ? " gboundary-l" : "";
+    const diagCell = `<td class="diag${diagBoundary}">■</td>`;
+
+    // Celle vuote SOPRA la diagonale (j = i+1 … N-1) — tengono il grid stabile
+    const emptyAfter = stops.slice(i + 1).map((_, k) => {
+      const colJ = i + 1 + k;
+      const cb = isGroupBoundary(colJ) ? " gboundary-l" : "";
+      return `<td class="above-diag${cb}"></td>`;
+    }).join("");
+
     return `
-      <tr class="${rowBoundary}" style="--zc:${zcRow};--zc-soft:${zcRowSoft}">
-        <th class="rname zone-cell${rowBoundary}" style="--zc:${zcRow};--zc-soft:${zcRowSoft}">
-          <div class="rname-num">${i + 1}</div>
-          <div class="rname-text">${escape(shortStopLabel(from.stopName))}</div>
-          <div class="rname-km">${from.progressiveKm.toFixed(1)} km</div>
-          ${code ? `<div class="rname-zone" style="background:${zcRow}">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
+      <tr class="${rowBoundary}">
+        <th class="rn-num">${i + 1}</th>
+        <th class="rn-name">
+          <div class="rn-text" title="${escape(from.stopName)}">${escape(from.stopName)}</div>
+          <div class="rn-meta">${from.progressiveKm.toFixed(1)} km${code ? ` · <span class="rn-zone">${escape(code)}</span>` : ""}</div>
         </th>
-        ${cells}
+        ${priceCells}
+        ${diagCell}
+        ${emptyAfter}
       </tr>
     `;
   }).join("");
+
+  // Riga finale con i numeri di colonna (lettura veloce: prezzo fra riga i e colonna j)
+  const colNumberRow = `
+    <tr class="cnum-row">
+      <th class="rn-num"></th>
+      <th class="rn-name cnum-label">↓ riga = partenza · ↑ colonna = arrivo (n° fermata)</th>
+      ${stops.map((_, j) => {
+        const cb = isGroupBoundary(j) ? " gboundary-l" : "";
+        return `<th class="cn-num${cb}">${j + 1}</th>`;
+      }).join("")}
+    </tr>
+  `;
 
   // ─── Banner descrittivo del modo tariffario ──
   const modeBanner = isUrban
@@ -672,21 +676,23 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   return `
     ${modeBanner}
     <div class="matrix-wrap density-${d.scale}"
-         style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hh:${d.headerHeight}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px">
+         style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px">
       <table class="matrix">
-        <thead>
-          <tr>
-            <th class="corner">Da \\ A</th>
-            ${headerCells}
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
+        <colgroup>
+          <col class="cg-num">
+          <col class="cg-name">
+          ${stops.map(() => `<col class="cg-cell">`).join("")}
+        </colgroup>
+        <tbody>
+          ${rows}
+          ${colNumberRow}
+        </tbody>
       </table>
 
       <div class="matrix-legend">
         <div class="lg-title">Scala prezzi (€)</div>
         <div class="lg-bar">${legendCells}</div>
-        <div class="lg-hint">${isUrban ? "rete urbana: tariffa flat (matrice volutamente uniforme)" : "colore proporzionale al prezzo; bordo spesso = cambio di zona tariffaria"}</div>
+        <div class="lg-hint">${isUrban ? "rete urbana: tariffa flat (matrice volutamente uniforme)" : "colore proporzionale al prezzo; tratteggio = cambio di zona tariffaria"}</div>
       </div>
     </div>
   `;
@@ -873,99 +879,112 @@ const STYLES = `
   }
   .legend-title { margin-top: 8px; }
 
-  /* ─── Matrice fermata × fermata ─── */
+  /* ─── Matrice fermata × fermata (triangolo basso-sx) ─── */
   .matrix-wrap { display: flex; flex-direction: column; gap: 6px; }
   table.matrix {
     border-collapse: separate; border-spacing: 0;
     table-layout: fixed;
     margin: 0 auto;
   }
+  /* Larghezze colonne */
+  table.matrix col.cg-num  { width: 28px; }
+  table.matrix col.cg-name { width: var(--nw); }
+  table.matrix col.cg-cell { width: var(--cs); }
+
+  /* Default celle */
   table.matrix th, table.matrix td {
     border: 1px solid #e5e7eb;
-    width: var(--cs); height: var(--cs);
-    min-width: var(--cs); max-width: var(--cs);
+    height: var(--cs);
     padding: 0; text-align: center; vertical-align: middle;
     font-variant-numeric: tabular-nums;
     font-size: var(--cf);
   }
-  table.matrix th.corner {
-    width: var(--nw); min-width: var(--nw); max-width: var(--nw);
-    height: var(--hh); min-height: var(--hh);
+
+  /* Colonna numero progressivo (leftmost) */
+  table.matrix th.rn-num {
     background: var(--line-color); color: white;
-    font-weight: 700; font-size: 9px;
+    font-weight: 700; font-size: var(--hf);
     border-color: var(--line-color);
   }
-  table.matrix th.hcol {
-    height: var(--hh); min-height: var(--hh);
-    background: #f8fafc;
-    vertical-align: bottom;
-    padding: 0;
-  }
-  table.matrix th.hcol .hcol-wrap {
-    width: var(--cs); height: var(--hh);
-    display: flex; align-items: flex-end; justify-content: center;
-    overflow: hidden;
-  }
-  table.matrix th.hcol .hcol-text {
-    transform: rotate(-65deg); transform-origin: bottom center;
-    white-space: nowrap;
-    font-size: var(--hf); font-weight: 600;
-    color: #1e293b;
-    line-height: 1;
-    padding-bottom: calc(var(--cs) / 2);
-  }
-  table.matrix th.hcol .zhint { color: var(--line-color); font-weight: 700; }
 
-  table.matrix th.rname {
-    width: var(--nw); min-width: var(--nw); max-width: var(--nw);
+  /* Colonna nome fermata (sinistra, larga) */
+  table.matrix th.rn-name {
     background: #f8fafc;
     text-align: left;
-    padding: 2px 6px;
-    font-size: var(--hf);
-    font-weight: 600; color: #1e293b;
+    padding: 3px 8px;
     line-height: 1.15;
-    display: grid;
-    grid-template-columns: auto 1fr auto auto;
-    gap: 4px; align-items: center;
+    font-weight: 600;
+    color: #1e293b;
   }
-  table.matrix th.rname .rname-num {
-    color: #94a3b8; font-weight: 500;
-    font-variant-numeric: tabular-nums;
-    min-width: 18px; text-align: right;
-  }
-  table.matrix th.rname .rname-text {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  table.matrix th.rname .rname-km {
-    font-size: calc(var(--hf) - 1px); color: #64748b; font-weight: 500;
+  table.matrix th.rn-name .rn-text {
+    font-size: var(--hf);
+    font-weight: 700;
+    color: #0f172a;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  table.matrix th.rname .rname-zone {
+  table.matrix th.rn-name .rn-meta {
+    font-size: calc(var(--hf) - 2px);
+    color: #64748b;
+    font-weight: 500;
+    margin-top: 1px;
+  }
+  table.matrix th.rn-name .rn-zone {
     background: var(--line-color); color: white;
-    font-weight: 700; font-size: calc(var(--hf) - 1px);
-    padding: 1px 4px; border-radius: 3px;
-    min-width: 18px; text-align: center;
+    padding: 0 5px; border-radius: 3px;
+    font-weight: 700; font-size: calc(var(--hf) - 3px);
+    margin-left: 2px;
   }
-  table.matrix th.rname .rname-zone.na { background: #cbd5e1; }
 
+  /* Celle prezzo (sotto la diagonale) */
   table.matrix td.cell {
     font-weight: 600; color: #0f172a;
   }
+  /* Diagonale */
   table.matrix td.diag {
     background: #1e293b; color: white;
     font-size: calc(var(--cf) - 2px);
   }
-  table.matrix td.below {
-    background: repeating-linear-gradient(45deg, #f8fafc 0 4px, #f1f5f9 4px 8px);
-    border-color: #f1f5f9;
+  /* Sopra la diagonale: visivamente vuoto */
+  table.matrix td.above-diag {
+    background: transparent;
+    border-color: transparent;
   }
   table.matrix td.na {
     background: #fafafa; color: #cbd5e1;
   }
 
-  /* densità XS/XXS: nascondi km nelle intestazioni di riga per stare in pagina */
-  .density-XS table.matrix th.rname .rname-km,
-  .density-XXS table.matrix th.rname .rname-km { display: none; }
+  /* Riga numeri colonna (in fondo) */
+  table.matrix tr.cnum-row th {
+    height: calc(var(--cs) * 0.85);
+    border-top: 2px solid #cbd5e1;
+  }
+  table.matrix tr.cnum-row th.cn-num {
+    background: var(--line-color); color: white;
+    font-weight: 700; font-size: var(--hf);
+    border-color: var(--line-color);
+  }
+  table.matrix tr.cnum-row th.cnum-label {
+    background: #f1f5f9;
+    text-align: right;
+    padding-right: 8px;
+    color: #64748b;
+    font-weight: 500;
+    font-size: calc(var(--hf) - 2px);
+    font-style: italic;
+  }
+
+  /* densità XS/XXS: nascondi km in metadati riga per stare in pagina */
+  .density-XS table.matrix th.rn-name .rn-meta,
+  .density-XXS table.matrix th.rn-name .rn-meta { display: none; }
+
+  /* ─── Confini di zona: righe TRATTEGGIATE leggere (no colori invadenti) ─── */
+  table.matrix .gboundary-l { border-left: 1.5px dashed #94a3b8 !important; }
+  table.matrix tr.gboundary-t > * { border-top: 1.5px dashed #94a3b8 !important; }
+  /* Anche sulle celle vuote sopra la diagonale, mantieni il tratteggio visibile */
+  table.matrix td.above-diag.gboundary-l { border-left: 1.5px dashed #cbd5e1 !important; }
+  table.matrix tr.gboundary-t > td.above-diag { border-top: 1.5px dashed #cbd5e1 !important; }
 
   /* ─── Legenda colori ─── */
   .matrix-legend {
@@ -1040,22 +1059,6 @@ const STYLES = `
   .bc-fascia { font-size: 9px; font-weight: 700; color: #92400e; }
   .bc-km { font-size: 8px; color: #78716c; }
   .bc-price { font-size: 10px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; }
-
-  /* ─── Raggruppamento visivo per zona tariffaria ─── */
-  /* Le intestazioni di riga e colonna prendono una tinta tenue del colore zona */
-  table.matrix th.rname.zone-cell  { background-color: var(--zc-soft, #f8fafc); }
-  table.matrix th.hcol.zone-cell   { background-color: var(--zc-soft, #f8fafc); }
-  /* La cella di matrice di default resta bianca; le celle "cell" hanno bg inline (heatmap) */
-  table.matrix td.below {
-    background: repeating-linear-gradient(45deg, #f8fafc 0 4px, #f1f5f9 4px 8px);
-    border-color: #f1f5f9;
-  }
-  /* Boundary tra zone: fascia colorata sottile invece dei bordi neri spessi */
-  table.matrix td.gboundary-l,
-  table.matrix th.gboundary-l { box-shadow: inset 3px 0 0 0 var(--zc, #1e293b); }
-  table.matrix tr > .gboundary-t { box-shadow: inset 0 3px 0 0 var(--zc, #1e293b); }
-  /* Quando una cella è sia gboundary-l che gboundary-t */
-  table.matrix tr > .gboundary-l.gboundary-t { box-shadow: inset 3px 0 0 0 var(--zc, #1e293b), inset 0 3px 0 0 var(--zc, #1e293b); }
 `;
 
 /* ──────────────────────────────────────────────────────────
