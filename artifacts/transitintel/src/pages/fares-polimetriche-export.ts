@@ -1374,15 +1374,22 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
   const pages = sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
 
   // Carica il logo come data URI in modo che l'HTML sia auto-contenuto
-  // (necessario per i link condivisibili serviti dal backend)
+  // (necessario per i link condivisibili serviti dal backend).
+  // IMPORTANTE: lo iniettiamo UNA SOLA VOLTA dentro <style> via `content: url(...)`,
+  // altrimenti — se lo duplicassimo in ogni <img src="..."> — il payload
+  // crescerebbe linearmente col numero di linee (cover + N pagine) e potrebbe
+  // superare i limiti del backend (request entity too large).
   const logoDataUri = await loadLogoDataUri();
+  const logoCss = logoDataUri
+    ? `\nimg.cover-logo, img.r-brand-logo { content: url("${logoDataUri}"); }\n`
+    : "";
 
   const html = `<!doctype html>
 <html lang="it">
 <head>
   <meta charset="utf-8" />
   <title>Polimetriche tariffarie — ${escape(agencyName)} — ${escape(date)}</title>
-  <style>${STYLES}</style>
+  <style>${STYLES}${logoCss}</style>
 </head>
 <body>
   <div class="toolbar">
@@ -1396,14 +1403,8 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
 </body>
 </html>`;
 
-  // Sostituisci il path relativo del logo con il data URI inline (auto-contenuto).
-  // Se non è stato possibile caricarlo, lascia il path: in dev/preview funziona.
-  const finalHtml = logoDataUri
-    ? html.split('src="/faresengine.png"').join(`src="${logoDataUri}"`)
-    : html;
-
   return {
-    html: finalHtml,
+    html,
     agencyName,
     date,
     routeCount: sheets.length,
