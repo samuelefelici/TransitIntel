@@ -1129,8 +1129,8 @@ const STYLES = `
     /* Ancorato POCO OLTRE l'angolo top-right della cella diagonale, in modo
        da staccarsi visibilmente dal quadratino col numero. Il testo parte da lì
        e sale verso destra a 45° dentro il triangolo bianco sopra la diagonale. */
-    bottom: calc(var(--cs) + 6px);
-    left: calc(var(--cs) + 8px);
+    bottom: calc(var(--cs) + 12px);
+    left: calc(var(--cs) + 16px);
     height: 1em;
     line-height: 1em;
     transform: rotate(-45deg);
