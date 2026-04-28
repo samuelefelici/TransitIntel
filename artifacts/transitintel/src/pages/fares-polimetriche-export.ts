@@ -364,26 +364,66 @@ function renderCoverPage(opts: {
   minPrice: number;
   maxPrice: number;
 }): string {
+  const zoningLabel = opts.zoningMethod ? (ZONING_LABEL[opts.zoningMethod] || opts.zoningMethod) : "—";
   return `
     <section class="page cover">
-      <div class="cover-top">
-        <div class="brand">${escape(opts.agencyName)}</div>
-        <div class="cover-date">${escape(opts.date)}</div>
+      <div class="cover-hero">
+        <div class="cover-hero-bg"></div>
+        <div class="cover-hero-content">
+          <img class="cover-logo" src="/faresengine.png" alt="Fares Engine" />
+          <div class="cover-product">Fares Engine</div>
+          <div class="cover-kicker">Tariffario TPL · Documento ufficiale</div>
+          <h1 class="cover-title">Polimetriche tariffarie</h1>
+          <div class="cover-subtitle">Matrice origine → destinazione del biglietto ordinario, una pagina per linea</div>
+        </div>
       </div>
-      <div class="cover-center">
-        <div class="cover-eyebrow">Tariffario TPL · Documento ufficiale</div>
-        <h1 class="cover-title">Polimetriche tariffarie</h1>
-        <div class="cover-subtitle">Matrice tariffaria origine→destinazione per linea</div>
+
+      <div class="cover-meta">
+        <div class="cm-row">
+          <span class="cm-label">Agenzia</span>
+          <span class="cm-value">${escape(opts.agencyName)}</span>
+        </div>
+        <div class="cm-row">
+          <span class="cm-label">Data emissione</span>
+          <span class="cm-value">${escape(opts.date)}</span>
+        </div>
+        <div class="cm-row">
+          <span class="cm-label">Metodo zonizzazione</span>
+          <span class="cm-value">${escape(zoningLabel)}</span>
+        </div>
+        <div class="cm-row">
+          <span class="cm-label">Standard</span>
+          <span class="cm-value">GTFS Fares V2 · DGR Marche n. 1036/2022</span>
+        </div>
       </div>
-      <div class="cover-stats">
-        <div class="kpi"><div class="kpi-num">${opts.routeCount}</div><div class="kpi-lbl">linee</div></div>
-        <div class="kpi"><div class="kpi-num">${opts.areaCount}</div><div class="kpi-lbl">zone</div></div>
-        <div class="kpi"><div class="kpi-num">${opts.productCount}</div><div class="kpi-lbl">prodotti</div></div>
-        <div class="kpi"><div class="kpi-num">${fmtMoney(opts.minPrice)}–${fmtMoney(opts.maxPrice)}€</div><div class="kpi-lbl">range prezzi</div></div>
+
+      <div class="cover-kpis">
+        <div class="ck-card">
+          <div class="ck-num">${opts.routeCount}</div>
+          <div class="ck-lbl">Linee</div>
+        </div>
+        <div class="ck-card">
+          <div class="ck-num">${opts.areaCount}</div>
+          <div class="ck-lbl">Zone tariffarie</div>
+        </div>
+        <div class="ck-card">
+          <div class="ck-num">${opts.productCount}</div>
+          <div class="ck-lbl">Prodotti tariffari</div>
+        </div>
+        <div class="ck-card ck-card-range">
+          <div class="ck-num">€&thinsp;${fmtMoney(opts.minPrice)} – ${fmtMoney(opts.maxPrice)}</div>
+          <div class="ck-lbl">Range prezzi</div>
+        </div>
       </div>
+
+      <div class="cover-toc-hint">
+        Le pagine successive contengono una polimetrica per linea, in formato A3 orizzontale,
+        con colore proporzionale al prezzo del biglietto e nomi delle fermate lungo l'ipotenusa.
+      </div>
+
       <div class="cover-foot">
-        <div><strong>Metodo zonizzazione:</strong> ${escape(opts.zoningMethod ? (ZONING_LABEL[opts.zoningMethod] || opts.zoningMethod) : "—")}</div>
-        <div><strong>Standard:</strong> GTFS Fares V2 · DGR Marche n. 1036/2022</div>
+        <div class="cf-left">© ${new Date().getFullYear()} ${escape(opts.agencyName)} · Generato con Fares Engine</div>
+        <div class="cf-right">${escape(opts.date)}</div>
       </div>
     </section>
   `;
@@ -749,8 +789,11 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
           </div>
         </div>
         <div class="r-head-right">
-          <div class="r-network">${escape(networkLabel)}</div>
-          <div class="r-pageno">pag. ${idx} / ${total}</div>
+          <div class="r-head-meta">
+            <div class="r-network">${escape(networkLabel)}</div>
+            <div class="r-pageno">pag. ${idx} / ${total}</div>
+          </div>
+          <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
         </div>
       </header>
 
@@ -827,25 +870,112 @@ const STYLES = `
   .page.route { width: 420mm; min-height: 297mm; padding: 10mm 12mm; margin: 16px auto; }
 
   /* ─── Cover ─────────────────────── */
-  .cover { justify-content: space-between; }
-  .cover-top {
+  .page.cover { padding: 0; overflow: hidden; }
+  .cover { display: flex; flex-direction: column; }
+
+  /* Hero a tutta larghezza */
+  .cover-hero {
+    position: relative;
+    background: linear-gradient(135deg, #0f766e 0%, #134e4a 50%, #0f172a 100%);
+    color: white;
+    padding: 22mm 18mm 18mm;
+    overflow: hidden;
+  }
+  .cover-hero-bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(circle at 80% 20%, rgba(16, 185, 129, .25), transparent 50%),
+      radial-gradient(circle at 10% 90%, rgba(14, 165, 233, .18), transparent 55%);
+    pointer-events: none;
+  }
+  .cover-hero-content { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 4px; }
+  .cover-logo {
+    height: 56px; width: auto;
+    margin-bottom: 14px;
+    filter: brightness(0) invert(1);
+    object-fit: contain;
+  }
+  .cover-product {
+    font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 4px;
+    color: #5eead4;
+    margin-bottom: 18px;
+  }
+  .cover-kicker {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: rgba(255,255,255,.6);
+    margin-bottom: 8px;
+  }
+  .cover-title {
+    font-size: 52px; font-weight: 800; margin: 0 0 10px;
+    letter-spacing: -1.5px; line-height: 1.05;
+    color: white;
+  }
+  .cover-subtitle {
+    font-size: 15px; color: rgba(255,255,255,.85);
+    max-width: 130mm; line-height: 1.4;
+  }
+
+  /* Sezione meta (definition list) */
+  .cover-meta {
+    padding: 12mm 18mm 6mm;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px;
+  }
+  .cover-meta .cm-row {
+    display: flex; flex-direction: column; gap: 2px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .cover-meta .cm-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 1.5px;
+    color: #94a3b8; font-weight: 600;
+  }
+  .cover-meta .cm-value {
+    font-size: 13px; color: #0f172a; font-weight: 600;
+  }
+
+  /* KPI cards */
+  .cover-kpis {
+    padding: 6mm 18mm;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  }
+  .cover-kpis .ck-card {
+    border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 12px;
+    text-align: center;
+    background: linear-gradient(180deg, #ffffff, #f8fafc);
+    box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
+  }
+  .cover-kpis .ck-card-range { grid-column: span 1; }
+  .cover-kpis .ck-num {
+    font-size: 26px; font-weight: 800; color: #0f766e;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .cover-kpis .ck-card-range .ck-num { font-size: 18px; }
+  .cover-kpis .ck-lbl {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: #64748b; margin-top: 6px; font-weight: 600;
+  }
+
+  .cover-toc-hint {
+    margin: 4mm 18mm 0;
+    padding: 10px 14px;
+    background: #f0fdfa;
+    border-left: 3px solid #14b8a6;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #134e4a;
+    line-height: 1.5;
+  }
+
+  .cover-foot {
+    margin-top: auto;
+    padding: 8mm 18mm;
+    border-top: 1px solid #e2e8f0;
     display: flex; justify-content: space-between; align-items: center;
-    border-bottom: 3px solid #0f766e; padding-bottom: 14px;
+    font-size: 10px; color: #94a3b8;
   }
-  .brand { font-size: 16px; font-weight: 700; color: #0f766e; letter-spacing: .5px; text-transform: uppercase; }
-  .cover-date { font-size: 13px; color: #64748b; }
-  .cover-center { text-align: center; padding: 40mm 0; }
-  .cover-eyebrow { font-size: 12px; letter-spacing: 3px; text-transform: uppercase; color: #64748b; margin-bottom: 16px; }
-  .cover-title { font-size: 56px; font-weight: 800; margin: 0 0 12px; color: #0f172a; letter-spacing: -1px; }
-  .cover-subtitle { font-size: 18px; color: #475569; }
-  .cover-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 30px 0; }
-  .cover-stats .kpi {
-    border: 1px solid #e2e8f0; border-radius: 12px; padding: 18px;
-    text-align: center; background: linear-gradient(180deg, #f8fafc, #ffffff);
-  }
-  .cover-stats .kpi-num { font-size: 26px; font-weight: 800; color: #0f766e; }
-  .cover-stats .kpi-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-top: 4px; }
-  .cover-foot { font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 14px; display: flex; justify-content: space-between; }
+  .cover-foot .cf-right { font-variant-numeric: tabular-nums; }
 
   /* ─── Pagina linea (landscape) ─── */
   .route { gap: 6px; }
@@ -863,7 +993,17 @@ const STYLES = `
   .r-title { font-size: 16px; font-weight: 700; color: #0f172a; }
   .r-title .arrow { color: var(--line-color); margin: 0 6px; font-weight: 400; }
   .r-subtitle { font-size: 10px; color: #64748b; }
-  .r-head-right { text-align: right; }
+  .r-head-right {
+    display: flex; align-items: center; gap: 10px;
+    text-align: right;
+  }
+  .r-head-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+  .r-brand-logo {
+    height: 36px; width: auto;
+    object-fit: contain;
+    flex-shrink: 0;
+    opacity: .95;
+  }
   .r-network {
     background: var(--line-color); color: white;
     padding: 3px 9px; border-radius: 4px; font-size: 10px;
@@ -986,19 +1126,20 @@ const STYLES = `
   }
   table.matrix td.diag .diag-name {
     position: absolute;
-    /* Ancorato all'angolo in alto-sinistra della cella diagonale: il testo
-       parte da lì e sale verso destra a 45°, dentro il triangolo bianco
-       sopra la diagonale (zero rischio di sovrapposizione col triangolo
-       prezzi a sinistra). */
-    bottom: var(--cs);
-    left: 2px;
-    height: 1.1em;
-    line-height: 1.1em;
+    /* Ancorato all'angolo TOP-RIGHT della cella diagonale, leggermente
+       SOTTO lo spigolo (offset positivo) per non toccarlo. Il testo parte
+       da lì e sale verso destra a 45°, dentro il triangolo bianco sopra
+       la diagonale. text-align:left garantisce che inizi dal punto di
+       ancoraggio e non sconfini sul triangolo prezzi a sinistra. */
+    bottom: calc(var(--cs) - 4px);
+    left: calc(var(--cs) - 2px);
+    height: 1em;
+    line-height: 1em;
     transform: rotate(-45deg);
     transform-origin: bottom left;
     text-align: left;
     padding-left: 4px;
-    font-size: var(--hf);
+    font-size: calc(var(--hf) - 2px);
     font-weight: 600;
     color: #0f172a;
     white-space: nowrap;
