@@ -41,6 +41,8 @@ import {
   suggestDriversForTrip,
   recomputeSummary,
   diffSummary,
+  computeTripCompatibilityMap,
+  compatibilityGlow,
 } from "./driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
@@ -159,6 +161,8 @@ function DriverShiftsPageInner() {
   const [showChangesPanel, setShowChangesPanel] = useState(false);
   // ── Compare DSS dialog (#9) ──
   const [showCompareDialog, setShowCompareDialog] = useState(false);
+  // ── Glow compatibilità per ogni corsa (#NEW) ──
+  const [showCompatGlow, setShowCompatGlow] = useState(false);
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
   useEffect(() => {
@@ -474,36 +478,55 @@ function DriverShiftsPageInner() {
     return out;
   }, [filteredShifts, ganttMode]);
 
-  // ── Bars con styling diff vs baseline (#5) ──
+  // ── Mappa compatibilità trip → quanti driver alternativi (#NEW) ──
+  const tripCompatMap = useMemo(() => {
+    if (!showCompatGlow || !result || ganttMode !== "exploded") return null;
+    return computeTripCompatibilityMap(result.driverShifts);
+  }, [result, showCompatGlow, ganttMode]);
+
+  // ── Bars con styling diff vs baseline (#5) + glow compatibilità (#NEW) ──
   const displayBars = useMemo<GanttBar[]>(() => {
-    if (!showDiff || !baselineBarsRef.current || ganttMode !== "exploded") {
-      return driverGanttBars;
-    }
-    const baseline = baselineBarsRef.current;
+    const baseline = (showDiff && baselineBarsRef.current && ganttMode === "exploded")
+      ? baselineBarsRef.current
+      : null;
+    if (!baseline && !tripCompatMap) return driverGanttBars;
     return driverGanttBars.map(b => {
-      // Solo bar di tipo "trip" hanno senso da confrontare
       const meta: any = b.meta || {};
       if (meta.type !== "trip") return b;
-      const orig = baseline.get(b.id);
-      if (!orig) {
-        // bar nuova (rara, ma possibile)
-        return { ...b, color: "#06b6d4", tooltip: [...(b.tooltip ?? []), "✨ nuova"] };
+      let next: GanttBar = b;
+      // Glow compatibilità
+      if (tripCompatMap && meta.tripId) {
+        const c = tripCompatMap.get(meta.tripId);
+        if (c) {
+          next = {
+            ...next,
+            glow: compatibilityGlow(c.level),
+            tooltip: [...(next.tooltip ?? []), `⚙ ${c.count} turn${c.count === 1 ? "o" : "i"} alternativ${c.count === 1 ? "o" : "i"} compatibil${c.count === 1 ? "e" : "i"}`],
+          };
+        }
       }
-      const reassigned = orig.rowId !== b.rowId;
-      const shifted = orig.startMin !== b.startMin || orig.endMin !== b.endMin;
-      if (reassigned && shifted) {
-        return { ...b, color: "#a855f7", tooltip: [...(b.tooltip ?? []), `↔ riassegnata + spostata (era ${orig.rowId} ${minToTime(orig.startMin)})`] };
+      // Diff baseline
+      if (baseline) {
+        const orig = baseline.get(b.id);
+        if (!orig) {
+          next = { ...next, color: "#06b6d4", tooltip: [...(next.tooltip ?? []), "✨ nuova"] };
+        } else {
+          const reassigned = orig.rowId !== b.rowId;
+          const shifted = orig.startMin !== b.startMin || orig.endMin !== b.endMin;
+          if (reassigned && shifted) {
+            next = { ...next, color: "#a855f7", tooltip: [...(next.tooltip ?? []), `↔ riassegnata + spostata (era ${orig.rowId} ${minToTime(orig.startMin)})`] };
+          } else if (reassigned) {
+            next = { ...next, color: "#3b82f6", tooltip: [...(next.tooltip ?? []), `↔ riassegnata (era ${orig.rowId})`] };
+          } else if (shifted) {
+            next = { ...next, color: "#fbbf24", tooltip: [...(next.tooltip ?? []), `⇄ spostata (era ${minToTime(orig.startMin)}-${minToTime(orig.endMin)})`] };
+          } else {
+            next = { ...next, style: "dashed" as const };
+          }
+        }
       }
-      if (reassigned) {
-        return { ...b, color: "#3b82f6", tooltip: [...(b.tooltip ?? []), `↔ riassegnata (era ${orig.rowId})`] };
-      }
-      if (shifted) {
-        return { ...b, color: "#fbbf24", tooltip: [...(b.tooltip ?? []), `⇄ spostata (era ${minToTime(orig.startMin)}-${minToTime(orig.endMin)})`] };
-      }
-      // invariata: opacità ridotta
-      return { ...b, color: b.color, style: "dashed" as const };
+      return next;
     });
-  }, [driverGanttBars, showDiff, ganttMode]);
+  }, [driverGanttBars, showDiff, ganttMode, tripCompatMap]);
 
   /* ── History push/undo/redo ───────────────────────── */
   const pushHistory = useCallback((newRes: DriverShiftsResult, description: string) => {
@@ -1472,6 +1495,20 @@ function DriverShiftsPageInner() {
                     title="Mostra cronologia modifiche manuali"
                   >
                     📜 Modifiche ({history.length})
+                  </button>
+                )}
+                {/* Glow compatibilità (#NEW) */}
+                {ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowCompatGlow(v => !v)}
+                    className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${
+                      showCompatGlow
+                        ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-200"
+                        : "border-orange-500/30 bg-orange-500/8 text-orange-300 hover:bg-orange-500/15"
+                    }`}
+                    title="Illumina ogni corsa secondo la sua compatibilità con altri turni: verde=≥3 alternative, giallo=1-2, rosso=nessuna"
+                  >
+                    💡 Compat
                   </button>
                 )}
                 {/* Filtro tipo */}

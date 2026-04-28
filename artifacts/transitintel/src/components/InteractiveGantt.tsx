@@ -43,6 +43,8 @@ export interface GanttBar {
   tooltip?: string[];
   /** Whether this bar can be dragged/resized */
   locked?: boolean;
+  /** Optional glow color (CSS color). If set, the bar gets a colored boxShadow halo behind it — useful to indicate compatibility/affinity (e.g. green = many compatible drivers, red = few). */
+  glow?: string;
   /** Arbitrary metadata the parent can attach */
   meta?: Record<string, any>;
 }
@@ -255,13 +257,19 @@ export default function InteractiveGantt({
   );
 
   // ── Move a bar to another row (used by suggestion buttons) ──
+  // NB: NON usiamo detectCollision qui — i suggerimenti del consumer
+  // (es. suggestDriversForTrip) hanno già la loro logica di compatibilità
+  // (overlap su trip reali + deadhead). detectCollision invece guarda
+  // TUTTE le bar (incluse pre-turno / transfer / riposo / cambio-macchina)
+  // e bloccherebbe silenziosamente molti suggerimenti validi.
+  // Eventuali conflitti non rilevati dal suggester saranno gestiti dal
+  // consumer in `onBarChange` (es. applyDriverTripChange ⇒ toast.warning),
+  // e il successivo re-render via `initialBars` riallineerà lo stato.
   const moveBarToRow = useCallback(
     (barId: string, targetRowId: string) => {
       const bar = bars.find(b => b.id === barId);
       if (!bar || bar.locked) return;
       if (bar.rowId === targetRowId) return;
-      // Keep same start/end; verify no collision on target row
-      if (detectCollision(bars, barId, targetRowId, bar.startMin, bar.endMin)) return;
       const change: GanttChange = {
         barId,
         fromRowId: bar.rowId,
@@ -508,6 +516,14 @@ export default function InteractiveGantt({
     // Collision visual feedback: red ring + reduced opacity
     if (isColliding) {
       bgStyle = { ...bgStyle, opacity: 0.5 };
+    }
+
+    // Glow di compatibilità (es. quanti driver compatibili per quella corsa)
+    if (bar.glow && !isBeingDragged) {
+      bgStyle = {
+        ...bgStyle,
+        boxShadow: `0 0 0 1.5px ${bar.glow}, 0 0 8px 1px ${bar.glow}`,
+      };
     }
 
     const top = isBeingDragged

@@ -123,8 +123,7 @@ export function driverShiftsToBars(shifts: DriverShiftData[]): GanttBar[] {
  * Le sintetiche (preTurno, transfer, transferBack, interruption) restano locked.
  * Ogni bar trip ha id = `${driverId}__r${ri}__t${tripId}` per identificare riassegnazione.
  */
-export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] {
-  const out: GanttBar[] = [];
+export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] {  const out: GanttBar[] = [];
   for (const shift of shifts) {
     const typeColor = TYPE_COLORS[shift.type];
     shift.riprese.forEach((rip, ri) => {
@@ -625,6 +624,99 @@ export function suggestDriversForTrip(
 
   out.sort((a, b) => b.score - a.score);
   return out;
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * COMPATIBILITY MAP — per ogni trip conta quanti turni guida
+ *   alternativi potrebbero ospitarla rispettando overlap+deadhead.
+ * Restituisce mappa tripId → { count, level }
+ *   level: "high" (≥3) | "medium" (1-2) | "low" (0)
+ * ────────────────────────────────────────────────────────────── */
+
+export interface TripCompatibility {
+  count: number;
+  level: "high" | "medium" | "low";
+}
+
+export function computeTripCompatibilityMap(
+  shifts: DriverShiftData[],
+): Map<string, TripCompatibility> {
+  const map = new Map<string, TripCompatibility>();
+  // Iteriamo tutte le trip esistenti
+  for (const s of shifts) {
+    for (const r of s.riprese) {
+      for (const t of r.trips) {
+        // Conta quanti driver alternativi possono ospitare la trip
+        let count = 0;
+        for (const cand of shifts) {
+          if (cand.driverId === s.driverId) continue;
+          if (cand.type === "supplemento" || cand.type === "invalido") continue;
+
+          // Overlap con qualunque trip del candidato?
+          const overlap = cand.riprese.some(rr => rr.trips.some(ct =>
+            Math.max(ct.departureMin, t.departureMin) <
+            Math.min(ct.arrivalMin, t.arrivalMin),
+          ));
+          if (overlap) continue;
+
+          // Trova ripresa target più ragionevole (quella che contiene la finestra,
+          // o la più vicina), e verifica deadhead vincolante con vicini.
+          let bestRipIdx = -1;
+          for (let ri = 0; ri < cand.riprese.length; ri++) {
+            const rr = cand.riprese[ri];
+            const svcStart = rr.startMin + rr.preTurnoMin + rr.transferMin;
+            const svcEnd = rr.endMin - (rr.transferBackMin || 0);
+            if (t.departureMin >= svcStart && t.arrivalMin <= svcEnd) {
+              bestRipIdx = ri; break;
+            }
+          }
+          if (bestRipIdx < 0) {
+            let minDist = Infinity;
+            for (let ri = 0; ri < cand.riprese.length; ri++) {
+              const rr = cand.riprese[ri];
+              const dist = Math.min(
+                Math.abs(t.departureMin - rr.endMin),
+                Math.abs(rr.startMin - t.arrivalMin),
+              );
+              if (dist < minDist) { minDist = dist; bestRipIdx = ri; }
+            }
+          }
+          if (bestRipIdx < 0) continue;
+
+          // Deadhead check con vicini nella ripresa scelta
+          const candTrips = cand.riprese[bestRipIdx].trips;
+          let insertAt = candTrips.findIndex(ct => ct.departureMin > t.departureMin);
+          if (insertAt < 0) insertAt = candTrips.length;
+          const prev = insertAt > 0 ? candTrips[insertAt - 1] : undefined;
+          const next = insertAt < candTrips.length ? candTrips[insertAt] : undefined;
+
+          let ok = true;
+          if (prev) {
+            const need = requiredDeadheadMin(prev, t);
+            if (t.departureMin - prev.arrivalMin < need) ok = false;
+          }
+          if (ok && next) {
+            const need = requiredDeadheadMin(t, next);
+            if (next.departureMin - t.arrivalMin < need) ok = false;
+          }
+          if (ok) count++;
+        }
+        const level: TripCompatibility["level"] =
+          count >= 3 ? "high" : count >= 1 ? "medium" : "low";
+        map.set(t.tripId, { count, level });
+      }
+    }
+  }
+  return map;
+}
+
+/** Colore CSS halo per livello di compatibilità. */
+export function compatibilityGlow(level: TripCompatibility["level"]): string {
+  switch (level) {
+    case "high":   return "rgba(16, 185, 129, 0.55)";  // emerald
+    case "medium": return "rgba(245, 158, 11, 0.55)";  // amber
+    case "low":    return "rgba(239, 68, 68, 0.55)";   // red
+  }
 }
 
 /* ──────────────────────────────────────────────────────────────
