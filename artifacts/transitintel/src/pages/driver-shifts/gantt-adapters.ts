@@ -13,12 +13,26 @@ import type { DriverShiftData, RipresaTrip, DriverShiftSummary, DriverShiftType 
 import { TYPE_COLORS, TYPE_LABELS, minToTime } from "./constants";
 
 export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
-  return shifts.map(s => ({
-    id: s.driverId,
-    label: s.driverId,
-    sublabel: TYPE_LABELS[s.type]?.slice(0, 3),
-    dotColor: TYPE_COLORS[s.type],
-  }));
+  return shifts.map(s => {
+    const typeShort = TYPE_LABELS[s.type]?.slice(0, 3) ?? s.type.slice(0, 3);
+    // Badge BDS: se la validazione c'è e non è valida, evidenzia il dot e
+    // arricchisce il sublabel con il numero di violazioni.
+    const bds = s.bdsValidation;
+    const bdsBad = !!bds && !bds.valid;
+    const violCount = bds?.violations?.length ?? 0;
+    const dotColor = bdsBad
+      ? (violCount >= 3 ? "#ef4444" : "#f59e0b") // rosso ≥3, ambra altrimenti
+      : TYPE_COLORS[s.type];
+    const sublabel = bdsBad
+      ? `${typeShort} · ⚠ BDS×${violCount}`
+      : typeShort;
+    return {
+      id: s.driverId,
+      label: s.driverId,
+      sublabel,
+      dotColor,
+    };
+  });
 }
 
 export function driverShiftsBoundsHours(shifts: DriverShiftData[]): { min: number; max: number } {
