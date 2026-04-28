@@ -3805,14 +3805,12 @@ function GenerateTab() {
               date: new Date().toLocaleDateString("it-IT"),
             });
           }}
-          disabled={!result}
-          variant="outline"
           size="sm"
-          className="border-emerald-500/50 text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+          className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
           title="Apre in nuova scheda il report stampabile delle matrici tariffarie OD per ciascuna rete (stampabile in PDF)"
         >
           <BarChart3 className="w-4 h-4 mr-2" />
-          Polimetriche (PDF)
+          📊 Polimetriche (PDF)
         </Button>
         <Button
           variant="outline"
