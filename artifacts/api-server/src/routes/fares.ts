@@ -5046,4 +5046,135 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// POLIMETRICHE — Snapshot condivisibili (link pubblici al PDF/HTML stampabile)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Endpoints:
+//   POST /api/fares/polimetriche/snapshots   → salva HTML, ritorna { id, url }
+//   GET  /api/fares/polimetriche/snapshots/:id → serve HTML (text/html, pubblico)
+//
+// La tabella `fares_polimetriche_snapshots` viene creata lazy alla prima
+// chiamata (CREATE TABLE IF NOT EXISTS) per non richiedere una migration.
+
+let polimetricheSnapshotsBootstrapped = false;
+async function ensurePolimetricheSnapshotsTable(): Promise<void> {
+  if (polimetricheSnapshotsBootstrapped) return;
+  try {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS fares_polimetriche_snapshots (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        title text,
+        agency_name text,
+        zoning_method text,
+        route_count int,
+        product_count int,
+        area_count int,
+        html text NOT NULL,
+        meta jsonb,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_fares_polimetriche_snapshots_created_at ON fares_polimetriche_snapshots(created_at DESC)`);
+    polimetricheSnapshotsBootstrapped = true;
+  } catch (e: any) {
+    console.error("[fares] bootstrap polimetriche snapshots table error", e?.message);
+  }
+}
+void ensurePolimetricheSnapshotsTable();
+
+/**
+ * POST /api/fares/polimetriche/snapshots
+ * Body: { html: string, title?, agencyName?, zoningMethod?, routeCount?, productCount?, areaCount?, meta? }
+ * Ritorna: { id, url }
+ *
+ * Limite payload: 50MB (vedi `app.ts` express.json limit).
+ */
+router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => {
+  try {
+    await ensurePolimetricheSnapshotsTable();
+    const {
+      html, title, agencyName, zoningMethod,
+      routeCount, productCount, areaCount, meta,
+    } = req.body || {};
+    if (typeof html !== "string" || html.length < 100) {
+      res.status(400).json({ error: "Campo 'html' mancante o troppo corto" });
+      return;
+    }
+    if (html.length > 40 * 1024 * 1024) {
+      res.status(413).json({ error: "HTML troppo grande (max 40MB)" });
+      return;
+    }
+    const inserted = await db.execute(sql`
+      INSERT INTO fares_polimetriche_snapshots (
+        title, agency_name, zoning_method, route_count, product_count, area_count, html, meta
+      ) VALUES (
+        ${title ?? null}, ${agencyName ?? null}, ${zoningMethod ?? null},
+        ${routeCount ?? null}, ${productCount ?? null}, ${areaCount ?? null},
+        ${html}, ${meta ? JSON.stringify(meta) : null}::jsonb
+      )
+      RETURNING id, created_at
+    `);
+    const row: any = (inserted as any).rows?.[0] ?? (inserted as any)[0];
+    if (!row?.id) {
+      res.status(500).json({ error: "Impossibile creare lo snapshot" });
+      return;
+    }
+    // Costruisce URL assoluto verso QUESTA stessa origin del backend.
+    // Il client può comunque fabbricarsi un URL alternativo a partire da `id`.
+    const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
+    const host = (req.headers["x-forwarded-host"] as string) || req.get("host") || "";
+    const url = `${proto}://${host}/api/fares/polimetriche/snapshots/${row.id}`;
+    res.json({ id: row.id, url, createdAt: row.created_at });
+  } catch (e: any) {
+    console.error("[fares] create snapshot", e);
+    res.status(500).json({ error: e?.message || "Errore creazione snapshot" });
+  }
+});
+
+/**
+ * GET /api/fares/polimetriche/snapshots/:id
+ * Serve l'HTML pubblicamente (per essere aperto come link).
+ * Accept JSON via `?format=json` per ottenere metadata invece dell'HTML.
+ */
+router.get("/fares/polimetriche/snapshots/:id", async (req, res): Promise<void> => {
+  try {
+    await ensurePolimetricheSnapshotsTable();
+    const id = req.params.id;
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      res.status(400).send("ID snapshot non valido");
+      return;
+    }
+    const result = await db.execute(sql`
+      SELECT id, title, agency_name, zoning_method, route_count, product_count,
+             area_count, html, meta, created_at
+        FROM fares_polimetriche_snapshots
+       WHERE id = ${id}::uuid
+       LIMIT 1
+    `);
+    const row: any = (result as any).rows?.[0] ?? (result as any)[0];
+    if (!row) {
+      res.status(404).send("Snapshot non trovato o scaduto");
+      return;
+    }
+    if (req.query.format === "json") {
+      res.json({
+        id: row.id, title: row.title, agencyName: row.agency_name,
+        zoningMethod: row.zoning_method, routeCount: row.route_count,
+        productCount: row.product_count, areaCount: row.area_count,
+        meta: row.meta, createdAt: row.created_at,
+        htmlLength: (row.html || "").length,
+      });
+      return;
+    }
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    // Cache aggressivo: lo snapshot è immutabile per design
+    res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+    res.send(row.html);
+  } catch (e: any) {
+    console.error("[fares] get snapshot", e);
+    res.status(500).send(`Errore: ${e?.message || "interno"}`);
+  }
+});
+
 export default router;

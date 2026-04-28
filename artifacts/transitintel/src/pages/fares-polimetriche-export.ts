@@ -1287,72 +1287,71 @@ const STYLES = `
  * Entry point
  * ──────────────────────────────────────────────────────── */
 
-export async function exportPolimetricheToPrint(input: PolimetricheInput): Promise<void> {
+export interface PolimetricheBuildResult {
+  html: string;
+  agencyName: string;
+  date: string;
+  routeCount: number;
+  productCount: number;
+  areaCount: number;
+  zoningMethod?: PolimetricheInput["zoningMethod"];
+}
+
+/**
+ * Costruisce l'HTML completo (auto-contenuto: CSS inline, dati embedded)
+ * delle polimetriche, SENZA aprire alcuna finestra. Riutilizzato sia
+ * dall'export verso `window.print()` sia dalla creazione di link condivisibili.
+ */
+export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<PolimetricheBuildResult> {
   const agencyName = input.agencyName || "Conerobus · Trasporto Pubblico Locale";
   const date = input.date || new Date().toLocaleDateString("it-IT");
 
-  // Apri subito una finestra di "loading" per non incorrere nel blocco popup post-await
-  const win = window.open("", "_blank", "width=1100,height=850");
-  if (!win) {
-    alert("Abilita i popup per aprire il report polimetriche.");
-    return;
+  // 1) Costruisci modello prezzi dai CSV
+  const model = buildPriceModel(input.files);
+
+  // 2) Recupera elenco linee
+  const routes = await apiFetch<RouteNetworkRow[]>("/api/fares/route-networks");
+  if (!routes || routes.length === 0) {
+    throw new Error("Nessuna linea trovata. Verifica che il feed GTFS sia caricato.");
   }
-  win.document.write(`
-    <!doctype html><html><head><title>Polimetriche — caricamento…</title>
-    <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f3f4f6;color:#475569}
-    .l{text-align:center}.s{display:inline-block;width:40px;height:40px;border:3px solid #cbd5e1;border-top-color:#0f766e;border-radius:50%;animation:r 1s linear infinite}
-    @keyframes r{to{transform:rotate(360deg)}}</style></head>
-    <body><div class="l"><div class="s"></div><p>Costruzione polimetriche tariffarie…</p></div></body></html>
-  `);
 
-  try {
-    // 1) Costruisci modello prezzi dai CSV
-    const model = buildPriceModel(input.files);
-
-    // 2) Recupera elenco linee
-    const routes = await apiFetch<RouteNetworkRow[]>("/api/fares/route-networks");
-    if (!routes || routes.length === 0) {
-      win.document.body.innerHTML = `<div style="padding:40px;font-family:system-ui;color:#dc2626">Nessuna linea trovata. Verifica che il feed GTFS sia caricato.</div>`;
-      return;
+  // 3) Per ciascuna linea recupera fermate + km in parallelo (con concurrency limit)
+  const sheets: RouteSheet[] = [];
+  const CONCURRENCY = 6;
+  let cursor = 0;
+  async function worker() {
+    while (cursor < routes.length) {
+      const idx = cursor++;
+      const r = routes[idx];
+      const sheet = await fetchRouteSheet(r, model);
+      if (sheet && sheet.stops.length >= 2) sheets.push(sheet);
     }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-    // 3) Per ciascuna linea recupera fermate + km in parallelo (con concurrency limit)
-    const sheets: RouteSheet[] = [];
-    const CONCURRENCY = 6;
-    let cursor = 0;
-    async function worker() {
-      while (cursor < routes.length) {
-        const idx = cursor++;
-        const r = routes[idx];
-        const sheet = await fetchRouteSheet(r, model);
-        if (sheet && sheet.stops.length >= 2) sheets.push(sheet);
-      }
-    }
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  // 4) Ordina: prima per network, poi per shortName naturale
+  sheets.sort((a, b) => {
+    const na = a.networkId || "zzz";
+    const nb = b.networkId || "zzz";
+    if (na !== nb) return na.localeCompare(nb);
+    return a.shortName.localeCompare(b.shortName, "it", { numeric: true });
+  });
 
-    // 4) Ordina: prima per network, poi per shortName naturale
-    sheets.sort((a, b) => {
-      const na = a.networkId || "zzz";
-      const nb = b.networkId || "zzz";
-      if (na !== nb) return na.localeCompare(nb);
-      return a.shortName.localeCompare(b.shortName, "it", { numeric: true });
-    });
+  // 5) Render
+  const productCount = model.products.size;
+  const areaCount = model.areas.size;
+  const cover = renderCoverPage({
+    agencyName, date,
+    zoningMethod: input.zoningMethod,
+    routeCount: sheets.length,
+    productCount,
+    areaCount,
+    minPrice: model.minPrice,
+    maxPrice: model.maxPrice,
+  });
+  const pages = sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
 
-    // 5) Render
-    const productCount = model.products.size;
-    const areaCount = model.areas.size;
-    const cover = renderCoverPage({
-      agencyName, date,
-      zoningMethod: input.zoningMethod,
-      routeCount: sheets.length,
-      productCount,
-      areaCount,
-      minPrice: model.minPrice,
-      maxPrice: model.maxPrice,
-    });
-    const pages = sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
-
-    const html = `<!doctype html>
+  const html = `<!doctype html>
 <html lang="it">
 <head>
   <meta charset="utf-8" />
@@ -1371,6 +1370,34 @@ export async function exportPolimetricheToPrint(input: PolimetricheInput): Promi
 </body>
 </html>`;
 
+  return {
+    html,
+    agencyName,
+    date,
+    routeCount: sheets.length,
+    productCount,
+    areaCount,
+    zoningMethod: input.zoningMethod,
+  };
+}
+
+export async function exportPolimetricheToPrint(input: PolimetricheInput): Promise<void> {
+  // Apri subito una finestra di "loading" per non incorrere nel blocco popup post-await
+  const win = window.open("", "_blank", "width=1100,height=850");
+  if (!win) {
+    alert("Abilita i popup per aprire il report polimetriche.");
+    return;
+  }
+  win.document.write(`
+    <!doctype html><html><head><title>Polimetriche — caricamento…</title>
+    <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f3f4f6;color:#475569}
+    .l{text-align:center}.s{display:inline-block;width:40px;height:40px;border:3px solid #cbd5e1;border-top-color:#0f766e;border-radius:50%;animation:r 1s linear infinite}
+    @keyframes r{to{transform:rotate(360deg)}}</style></head>
+    <body><div class="l"><div class="s"></div><p>Costruzione polimetriche tariffarie…</p></div></body></html>
+  `);
+
+  try {
+    const { html } = await buildPolimetricheHtml(input);
     win.document.open();
     win.document.write(html);
     win.document.close();
@@ -1380,4 +1407,34 @@ export async function exportPolimetricheToPrint(input: PolimetricheInput): Promi
       <pre style="white-space:pre-wrap">${escape(err?.message || String(err))}</pre>
     </div>`;
   }
+}
+
+/**
+ * Genera un link pubblico condivisibile alle polimetriche tariffarie.
+ * Costruisce l'HTML autonomo, lo salva sul backend e ritorna `{ id, url }`.
+ */
+export async function createPolimetricheShareLink(input: PolimetricheInput): Promise<{
+  id: string;
+  url: string;
+  routeCount: number;
+}> {
+  const built = await buildPolimetricheHtml(input);
+  const res = await apiFetch<{ id: string; url: string; createdAt: string }>(
+    "/api/fares/polimetriche/snapshots",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        html: built.html,
+        title: `Polimetriche · ${built.agencyName} · ${built.date}`,
+        agencyName: built.agencyName,
+        zoningMethod: built.zoningMethod,
+        routeCount: built.routeCount,
+        productCount: built.productCount,
+        areaCount: built.areaCount,
+        meta: { date: built.date },
+      }),
+    },
+  );
+  return { id: res.id, url: res.url, routeCount: built.routeCount };
 }

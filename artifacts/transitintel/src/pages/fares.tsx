@@ -7,7 +7,7 @@ import {
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
   Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
-  BarChart3,
+  BarChart3, Share2, Copy, ExternalLink, X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { exportPolimetricheToPrint } from "./fares-polimetriche-export";
+import { exportPolimetricheToPrint, createPolimetricheShareLink } from "./fares-polimetriche-export";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -3699,6 +3699,9 @@ function GenerateTab() {
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
+  const [sharingPolimetriche, setSharingPolimetriche] = useState(false);
+  const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number } | null>(null);
+  const [shareLinkCopied, setShareLinkCopied] = useState(false);
 
   /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
   const generateAll = async () => {
@@ -3817,6 +3820,36 @@ function GenerateTab() {
           📊 Polimetriche (PDF)
         </Button>
         <Button
+          onClick={async () => {
+            if (!result) {
+              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
+              return;
+            }
+            setSharingPolimetriche(true);
+            setShareLinkCopied(false);
+            try {
+              const link = await createPolimetricheShareLink({
+                files: result.files,
+                zoningMethod,
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+              setShareLink(link);
+              toast({ title: "Link condivisibile generato", description: `${link.routeCount} linee · pronto da condividere` });
+            } catch (e: any) {
+              toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
+            } finally {
+              setSharingPolimetriche(false);
+            }
+          }}
+          size="sm"
+          variant="outline"
+          className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+          title="Genera un link pubblico condivisibile all'anteprima delle polimetriche tariffarie"
+        >
+          {sharingPolimetriche ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+          🔗 Condividi link
+        </Button>
+        <Button
           variant="outline"
           size="sm"
           disabled={deduplicating}
@@ -3849,6 +3882,73 @@ function GenerateTab() {
           Valida Feed
         </Button>
       </div>
+
+      {/* Share link condivisibile (polimetriche) */}
+      {shareLink && (
+        <Card className="bg-emerald-500/5 border-emerald-500/30">
+          <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-sm flex items-center gap-2 text-emerald-700">
+              <Share2 className="w-4 h-4" />
+              Link condivisibile · Polimetriche tariffarie
+              <Badge variant="outline" className="ml-1 border-emerald-300 text-emerald-700">
+                {shareLink.routeCount} linee
+              </Badge>
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 w-7 p-0"
+              onClick={() => { setShareLink(null); setShareLinkCopied(false); }}
+              title="Chiudi"
+            >
+              <X className="w-4 h-4" />
+            </Button>
+          </CardHeader>
+          <CardContent className="pt-0 space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Chiunque abbia questo link può aprire l'anteprima HTML/PDF delle polimetriche
+              (snapshot fisso, indipendente dai dati attuali).
+            </p>
+            <div className="flex items-center gap-2 bg-white border rounded-md p-2">
+              <input
+                readOnly
+                value={shareLink.url}
+                className="flex-1 bg-transparent text-xs font-mono outline-none px-1"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(shareLink.url);
+                    setShareLinkCopied(true);
+                    toast({ title: "Link copiato", description: "Pronto da incollare." });
+                    setTimeout(() => setShareLinkCopied(false), 2500);
+                  } catch {
+                    toast({ title: "Impossibile copiare", description: "Seleziona e copia manualmente.", variant: "destructive" });
+                  }
+                }}
+              >
+                {shareLinkCopied ? <CheckCircle2 className="w-4 h-4 mr-1 text-emerald-600" /> : <Copy className="w-4 h-4 mr-1" />}
+                {shareLinkCopied ? "Copiato" : "Copia"}
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 bg-emerald-600 hover:bg-emerald-500 text-white border-0"
+                onClick={() => window.open(shareLink.url, "_blank", "noopener,noreferrer")}
+              >
+                <ExternalLink className="w-4 h-4 mr-1" />
+                Apri
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              ID snapshot: <code className="font-mono">{shareLink.id}</code>
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Validation checklist */}
       {validation && (
