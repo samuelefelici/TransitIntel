@@ -9,7 +9,7 @@
  *   - driverShiftsToTripBars    → ESPLOSA (1 bar per trip, drag-and-drop friendly)
  */
 import type { GanttRow, GanttBar } from "@/components/InteractiveGantt";
-import type { DriverShiftData, RipresaTrip, DriverShiftSummary, DriverShiftType } from "./types";
+import type { DriverShiftData, Ripresa, RipresaTrip, DriverShiftSummary, DriverShiftType } from "./types";
 import { TYPE_COLORS, TYPE_LABELS, minToTime } from "./constants";
 
 export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
@@ -717,6 +717,65 @@ export function compatibilityGlow(level: TripCompatibility["level"]): string {
     case "medium": return "rgba(245, 158, 11, 0.55)";  // amber
     case "low":    return "rgba(239, 68, 68, 0.55)";   // red
   }
+}
+
+/* ──────────────────────────────────────────────────────────────
+ * CREAZIONE NUOVI TURNI MANUALI (UI)
+ * ────────────────────────────────────────────────────────────── */
+
+/** Costruisce un turno guida vuoto pronto da inserire in DriverShiftsResult.driverShifts. */
+export function createEmptyDriverShift(opts: {
+  driverId: string;
+  type: DriverShiftType;
+  nastroStartMin: number;
+  nastroEndMin: number;
+}): DriverShiftData {
+  const { driverId, type, nastroStartMin, nastroEndMin } = opts;
+  const nastroMin = Math.max(0, nastroEndMin - nastroStartMin);
+  const fmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const dur = (m: number) => `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  const ripresa: Ripresa = {
+    startTime: fmt(nastroStartMin),
+    endTime: fmt(nastroEndMin),
+    startMin: nastroStartMin,
+    endMin: nastroEndMin,
+    preTurnoMin: 0,
+    transferMin: 0,
+    transferType: "none",
+    transferBackMin: 0,
+    transferBackType: "none",
+    workMin: nastroMin,
+    vehicleIds: [],
+    cambi: [],
+    trips: [],
+  };
+  return {
+    driverId,
+    type,
+    nastroStart: fmt(nastroStartMin),
+    nastroEnd: fmt(nastroEndMin),
+    nastroStartMin,
+    nastroEndMin,
+    nastroMin,
+    nastro: dur(nastroMin),
+    workMin: 0,
+    work: "0h00",
+    interruptionMin: 0,
+    interruption: null,
+    transferMin: 0,
+    transferBackMin: 0,
+    preTurnoMin: 0,
+    cambiCount: 0,
+    riprese: [ripresa],
+  };
+}
+
+/** Genera un nuovo driverId univoco non già presente in shifts (pattern manualN). */
+export function nextDriverId(shifts: DriverShiftData[], prefix = "manual"): string {
+  const used = new Set(shifts.map(s => s.driverId));
+  let n = 1;
+  while (used.has(`${prefix}${n}`)) n++;
+  return `${prefix}${n}`;
 }
 
 /* ──────────────────────────────────────────────────────────────

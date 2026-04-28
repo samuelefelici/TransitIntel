@@ -43,13 +43,17 @@ import {
   diffSummary,
   computeTripCompatibilityMap,
   compatibilityGlow,
+  createEmptyDriverShift,
+  nextDriverId,
 } from "@/pages/driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
-import type { DriverShiftsResult, DriverShiftSummary } from "@/pages/driver-shifts/types";
+import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType } from "@/pages/driver-shifts/types";
+import { TYPE_LABELS } from "@/pages/driver-shifts/constants";
+import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
@@ -119,6 +123,8 @@ export default function DriverWorkspace({
   const [showChangesPanel, setShowChangesPanel] = useState(false);
   // ── Glow compatibilità per ogni corsa (#NEW) ──
   const [showCompatGlow, setShowCompatGlow] = useState(false);
+  // ── Aggiungi turno guida manuale (#NEW) ──
+  const [showAddDriverDialog, setShowAddDriverDialog] = useState(false);
 
   const liveSummary = useMemo(() => {
     if (!result || !baselineSummaryRef.current) return result?.summary;
@@ -339,6 +345,27 @@ export default function DriverWorkspace({
     });
     setModifiedCount(c => c + 1);
   }, [historyIdx]);
+
+  /** Aggiunge manualmente un nuovo turno guida vuoto (#NEW). */
+  const handleAddDriverShift = useCallback((opts: {
+    driverId: string;
+    type: DriverShiftType;
+    nastroStartMin: number;
+    nastroEndMin: number;
+  }) => {
+    if (!result) return;
+    const newShift = createEmptyDriverShift(opts);
+    const newShifts = [...result.driverShifts, newShift];
+    const newResult: DriverShiftsResult = {
+      ...result,
+      driverShifts: newShifts,
+      summary: recomputeSummary(newShifts, result.summary),
+    };
+    setResult(newResult);
+    pushHistory(newResult, `➕ Nuovo turno ${opts.driverId} (${TYPE_LABELS[opts.type]})`);
+    setShowAddDriverDialog(false);
+    toast.success("Turno creato", { description: `${opts.driverId} aggiunto al piano (vuoto)` });
+  }, [result, pushHistory]);
 
   const handleBarChange = useCallback((change: GanttChange) => {
     if (!result) return;
@@ -806,6 +833,16 @@ export default function DriverWorkspace({
                     💡 Compat
                   </button>
                 )}
+                {/* Aggiungi turno guida manuale (#NEW) */}
+                {ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowAddDriverDialog(true)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition"
+                    title="Aggiungi un nuovo turno guida vuoto, poi trascina le corse per riempirlo"
+                  >
+                    ➕ Turno guida
+                  </button>
+                )}
                 <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
                   {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
                 </span>
@@ -929,6 +966,16 @@ export default function DriverWorkspace({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Aggiungi turno guida manuale (#NEW) */}
+      {showAddDriverDialog && result && (
+        <AddDriverShiftDialog
+          suggestedDriverId={nextDriverId(result.driverShifts)}
+          existingDriverIds={result.driverShifts.map(s => s.driverId)}
+          onClose={() => setShowAddDriverDialog(false)}
+          onConfirm={handleAddDriverShift}
+        />
       )}
     </div>
   );

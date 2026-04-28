@@ -35,6 +35,7 @@ import {
   DriverShiftsErrorBoundary, SummaryCard,
 } from "./driver-shifts/components";
 import { DssCompareDialog } from "./driver-shifts/DssCompareDialog";
+import { AddDriverShiftDialog } from "./driver-shifts/AddDriverShiftDialog";
 import {
   driverShiftsToTripBars,
   applyDriverTripChange,
@@ -43,6 +44,8 @@ import {
   diffSummary,
   computeTripCompatibilityMap,
   compatibilityGlow,
+  createEmptyDriverShift,
+  nextDriverId,
 } from "./driver-shifts/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
@@ -163,6 +166,8 @@ function DriverShiftsPageInner() {
   const [showCompareDialog, setShowCompareDialog] = useState(false);
   // ── Glow compatibilità per ogni corsa (#NEW) ──
   const [showCompatGlow, setShowCompatGlow] = useState(false);
+  // ── Aggiungi turno guida manuale (#NEW) ──
+  const [showAddDriverDialog, setShowAddDriverDialog] = useState(false);
   // ── Vehicle scheduling scenario (per il report intermodale) ──
   const [vehicleScenario, setVehicleScenario] = useState<any | null>(null);
   useEffect(() => {
@@ -538,6 +543,26 @@ function DriverShiftsPageInner() {
     });
     setModifiedCount(c => c + 1);
   }, [historyIdx]);
+
+  /** Aggiunge manualmente un nuovo turno guida vuoto (#NEW). */
+  const handleAddDriverShift = useCallback((opts: {
+    driverId: string;
+    type: DriverShiftType;
+    nastroStartMin: number;
+    nastroEndMin: number;
+  }) => {
+    if (!result) return;
+    const newShift = createEmptyDriverShift(opts);
+    const newResult: DriverShiftsResult = {
+      ...result,
+      driverShifts: [...result.driverShifts, newShift],
+      summary: recomputeSummary([...result.driverShifts, newShift], result.summary),
+    };
+    setResult(newResult);
+    pushHistory(newResult, `➕ Nuovo turno ${opts.driverId} (${TYPE_LABELS[opts.type]})`);
+    setShowAddDriverDialog(false);
+    toast.success("Turno creato", { description: `${opts.driverId} aggiunto al piano (vuoto)` });
+  }, [result, pushHistory]);
 
   const handleDriverGanttChange = useCallback((change: GanttChange, _allBars: GanttBar[]) => {
     if (!result) return;
@@ -1117,6 +1142,16 @@ function DriverShiftsPageInner() {
           />
         )}
 
+        {/* Aggiungi turno guida manuale (#NEW) */}
+        {showAddDriverDialog && result && (
+          <AddDriverShiftDialog
+            suggestedDriverId={nextDriverId(result.driverShifts)}
+            existingDriverIds={result.driverShifts.map(s => s.driverId)}
+            onClose={() => setShowAddDriverDialog(false)}
+            onConfirm={handleAddDriverShift}
+          />
+        )}
+
         {/* CP-SAT Progress Panel — visible during optimization even without result */}
         {solverMode === "cpsat" && (cpsat.state === "starting" || cpsat.state === "running" || cpsat.state === "stopped" || (cpsat.state === "failed" && !result)) && (
           <OptimizationProgressPanel
@@ -1509,6 +1544,16 @@ function DriverShiftsPageInner() {
                     title="Illumina ogni corsa secondo la sua compatibilità con altri turni: verde=≥3 alternative, giallo=1-2, rosso=nessuna"
                   >
                     💡 Compat
+                  </button>
+                )}
+                {/* Aggiungi turno guida manuale (#NEW) */}
+                {ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowAddDriverDialog(true)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition"
+                    title="Aggiungi un nuovo turno guida vuoto, poi trascina le corse per riempirlo"
+                  >
+                    ➕ Turno guida
                   </button>
                 )}
                 {/* Filtro tipo */}

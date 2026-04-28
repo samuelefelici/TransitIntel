@@ -32,6 +32,7 @@ import IntermodalAdvisor from "./IntermodalAdvisor";
 import { SaveScenarioDialog, LoadScenarioDialog } from "./ScenarioDialogs";
 import { exportScenarioToPrint } from "./VehicleShiftsPrintExport";
 import DeadheadEditorDialog, { type DeadheadChange } from "./DeadheadEditorDialog";
+import { AddVehicleShiftDialog, createEmptyVehicleShift, nextVehicleId } from "./AddVehicleShiftDialog";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Conversion helpers — VehicleShift[] → GanttRow[] + GanttBar[]
@@ -494,6 +495,8 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
   const [deadheadDialogOpen, setDeadheadDialogOpen] = useState(false);
+  // ── Aggiungi turno macchina manuale (#NEW) ──
+  const [showAddVehicleDialog, setShowAddVehicleDialog] = useState(false);
   // Focus iniziale del dialog (impostato da un click sul Gantt su una bar locked)
   const [deadheadDialogFocus, setDeadheadDialogFocus] = useState<{
     vehicleId: string;
@@ -562,6 +565,24 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
     setHistoryIndex(idx + 1);
     setSavedId(null);
   }, []);
+
+  /** Aggiunge manualmente un nuovo turno macchina vuoto (#NEW). */
+  const handleAddVehicleShift = useCallback((opts: {
+    vehicleId: string;
+    vehicleType: VehicleType;
+    category: ServiceCategory;
+  }) => {
+    if (!result) return;
+    const fifoOrder = (result.shifts.reduce((m, s) => Math.max(m, s.fifoOrder), 0) ?? 0) + 1;
+    const newShift = createEmptyVehicleShift({ ...opts, fifoOrder });
+    const newShifts = [...result.shifts, newShift];
+    const newResult = recomputeSummary({ ...result, shifts: newShifts });
+    setResult(newResult);
+    pushHistory(newResult, "drag", `➕ Nuovo turno ${opts.vehicleId} (${opts.vehicleType})`,
+      `Categoria: ${opts.category}`);
+    setShowAddVehicleDialog(false);
+    toast.success("Turno macchina creato", { description: `${opts.vehicleId} aggiunto al piano (vuoto)` });
+  }, [result, pushHistory]);
 
   const canUndo = historyIndex > 0 || (historyIndex === 0 && originalResult !== null);
   const canRedo = historyIndex < history.length - 1;
@@ -1442,6 +1463,18 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
               Vuoti
             </Button>
 
+            {/* Aggiungi turno macchina manuale (#NEW) */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAddVehicleDialog(true)}
+              disabled={!result}
+              className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 h-8 text-[11px]"
+              title="Aggiungi un nuovo turno macchina vuoto, poi trascina le corse per riempirlo"
+            >
+              ➕ Turno macchina
+            </Button>
+
             {/* Carica scenario salvato */}
             <Button
               size="sm"
@@ -1739,6 +1772,16 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
         onDepotMovementChange={handleDepotMovementChange}
         initialFocus={deadheadDialogFocus}
       />
+
+      {/* ── Aggiungi turno macchina manuale (#NEW) ── */}
+      {showAddVehicleDialog && result && (
+        <AddVehicleShiftDialog
+          suggestedVehicleId={nextVehicleId(result.shifts.map(s => s.vehicleId))}
+          existingVehicleIds={result.shifts.map(s => s.vehicleId)}
+          onClose={() => setShowAddVehicleDialog(false)}
+          onConfirm={handleAddVehicleShift}
+        />
+      )}
     </div>
   );
 }
