@@ -127,30 +127,45 @@ const escape = (s: string | undefined | null): string =>
 const fmtMoney = (n: number): string => isFinite(n) ? n.toFixed(2) : "—";
 
 /* ──────────────────────────────────────────────────────────
- * Costruzione modello prezzi (rete → matrice zona×zona)
+ * Modello prezzi
+ *
+ * Per riprodurre la polimetrica corretta serve distinguere il pricing
+ * delle reti URBANE (tariffa flat su tutta la rete) da quello
+ * EXTRAURBANO (prezzo = f(Δkm) con fasce chilometriche).
+ *
+ *   • Urbano:    prezzo costante = biglietto base 60 min della città.
+ *                Si individua il prodotto col `network_id` della rete e
+ *                il prezzo minimo (o nome contenente "60 min").
+ *   • Extraurbano: prodotti `extra_fascia_${N}` con name "Extraurbano X-Y km"
+ *                Si parsano i breakpoints km dal nome e si costruisce una
+ *                funzione  Δkm → prezzo. Δkm = |km_destinazione - km_origine|
+ *                lungo lo stesso percorso (km progressivi della linea).
  * ──────────────────────────────────────────────────────── */
 
 interface PriceModel {
   /** mappa areaId → nome leggibile (con codice corto Z1, Z2, …) */
   areas: Map<string, { id: string; name: string; code: string }>;
   /** prodotti tariffari */
-  products: Map<string, { id: string; name: string; amount: number; currency: string }>;
-  /** prodotto "ordinario" (biglietto base) per ogni network */
-  ordinaryProductByNetwork: Map<string, string>;
-  /** mappa stopId → areaId */
+  products: Map<string, { id: string; name: string; amount: number; currency: string; networkId?: string }>;
+  /** mappa stopId → areaId (dal CSV stop_areas.txt) */
   stopToArea: Map<string, string>;
-  /** matrice prezzi:  network|fromArea|toArea → amount (prodotto ordinario) */
-  prices: Map<string, number>;
-  /** range prezzi globale */
+  /** Tariffa flat per network urbano (network_id → prezzo €) */
+  urbanFlatByNetwork: Map<string, { amount: number; productId: string; productName: string }>;
+  /** Bands extraurbano ordinate per kmFrom crescente */
+  extraBands: { fascia: number; kmFrom: number; kmTo: number; price: number; productId: string }[];
+  /** range prezzi globale (per la scala globale; ogni linea avrà però la propria scala locale) */
   minPrice: number;
   maxPrice: number;
+}
+
+interface FareProductRowExt extends FareProductRow {
+  network_id?: string;
 }
 
 function buildPriceModel(files: Record<string, string>): PriceModel {
   const areasRows = parseCsv(files["areas.txt"]) as unknown as AreaRow[];
   const stopAreasRows = parseCsv(files["stop_areas.txt"]) as unknown as StopAreaRow[];
-  const productsRows = parseCsv(files["fare_products.txt"]) as unknown as FareProductRow[];
-  const legRulesRows = parseCsv(files["fare_leg_rules.txt"]) as unknown as FareLegRuleRow[];
+  const productsRows = parseCsv(files["fare_products.txt"]) as unknown as FareProductRowExt[];
 
   // Aree con codice corto Z1, Z2…
   const areas = new Map<string, { id: string; name: string; code: string }>();
@@ -159,13 +174,14 @@ function buildPriceModel(files: Record<string, string>): PriceModel {
   });
 
   // Prodotti
-  const products = new Map<string, { id: string; name: string; amount: number; currency: string }>();
+  const products = new Map<string, { id: string; name: string; amount: number; currency: string; networkId?: string }>();
   productsRows.forEach(p => {
     products.set(p.fare_product_id, {
       id: p.fare_product_id,
       name: p.fare_product_name || p.fare_product_id,
       amount: parseFloat(p.amount) || 0,
       currency: p.currency || "EUR",
+      networkId: (p as FareProductRowExt).network_id,
     });
   });
 
@@ -173,46 +189,80 @@ function buildPriceModel(files: Record<string, string>): PriceModel {
   const stopToArea = new Map<string, string>();
   stopAreasRows.forEach(sa => stopToArea.set(sa.stop_id, sa.area_id));
 
-  // Per ogni network, scegli il prodotto "ordinario" come quello più frequente nelle leg rules
-  // (fallback: il prodotto con id contenente "ordinario" o "B" o quello con prezzo minimo)
-  const productCountByNetwork = new Map<string, Map<string, number>>();
-  legRulesRows.forEach(r => {
-    if (!productCountByNetwork.has(r.network_id)) productCountByNetwork.set(r.network_id, new Map());
-    const m = productCountByNetwork.get(r.network_id)!;
-    m.set(r.fare_product_id, (m.get(r.fare_product_id) || 0) + 1);
+  // ─── Tariffe extraurbano: parsa "Extraurbano X-Y km" dai prodotti ──
+  const extraBands: PriceModel["extraBands"] = [];
+  for (const [pid, p] of products) {
+    if (!/^extra_fascia_/i.test(pid)) continue;
+    const m = p.name.match(/(\d+(?:[.,]\d+)?)\s*[-–]\s*(\d+(?:[.,]\d+)?)\s*km/i);
+    if (!m) continue;
+    const fasciaMatch = pid.match(/extra_fascia_(\d+)/i);
+    extraBands.push({
+      fascia: fasciaMatch ? parseInt(fasciaMatch[1], 10) : extraBands.length + 1,
+      kmFrom: parseFloat(m[1].replace(",", ".")),
+      kmTo: parseFloat(m[2].replace(",", ".")),
+      price: p.amount,
+      productId: pid,
+    });
+  }
+  extraBands.sort((a, b) => a.kmFrom - b.kmFrom);
+
+  // ─── Tariffa flat per ogni rete urbana ──
+  // Strategia: per ogni network_id che inizia con "urbano_", scegli il
+  // biglietto "base" = single 60min (id contenente _60min) altrimenti il
+  // prodotto col prezzo minimo della rete.
+  const urbanFlatByNetwork = new Map<string, { amount: number; productId: string; productName: string }>();
+  const productsByNet = new Map<string, FareProductRowExt[]>();
+  productsRows.forEach(p => {
+    const nid = (p as FareProductRowExt).network_id;
+    if (!nid || !/^urbano_/i.test(nid)) return;
+    if (!productsByNet.has(nid)) productsByNet.set(nid, []);
+    productsByNet.get(nid)!.push(p);
   });
-  const ordinaryProductByNetwork = new Map<string, string>();
-  for (const [net, counts] of productCountByNetwork) {
-    // priorità: id che contiene "ordinario" o "_B_" o termina con "_B"
-    let chosen: string | null = null;
-    for (const pid of counts.keys()) {
-      if (/ordinario|biglietto/i.test(products.get(pid)?.name || "") || /(_B$|_B_)/i.test(pid)) {
-        chosen = pid; break;
-      }
-    }
+  for (const [nid, prods] of productsByNet) {
+    // priorità: id contenente "_60min" o nome con "60 min"
+    let chosen = prods.find(p => /_60min/i.test(p.fare_product_id) || /60\s*min/i.test(p.fare_product_name));
     if (!chosen) {
-      // fallback: il più frequente
-      chosen = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+      // fallback: prezzo minimo > 0
+      chosen = prods
+        .map(p => ({ p, amt: parseFloat(p.amount) || 0 }))
+        .filter(x => x.amt > 0)
+        .sort((a, b) => a.amt - b.amt)
+        .map(x => x.p)[0];
     }
-    ordinaryProductByNetwork.set(net, chosen);
+    if (chosen) {
+      urbanFlatByNetwork.set(nid, {
+        amount: parseFloat(chosen.amount) || 0,
+        productId: chosen.fare_product_id,
+        productName: chosen.fare_product_name,
+      });
+    }
   }
 
-  // Matrice prezzi (solo per il prodotto ordinario di ciascuna rete)
-  const prices = new Map<string, number>();
-  let minPrice = Infinity;
-  let maxPrice = -Infinity;
-  legRulesRows.forEach(r => {
-    if (ordinaryProductByNetwork.get(r.network_id) !== r.fare_product_id) return;
-    const p = products.get(r.fare_product_id);
-    if (!p) return;
-    const key = `${r.network_id}|${r.from_area_id}|${r.to_area_id}`;
-    prices.set(key, p.amount);
-    if (p.amount < minPrice) minPrice = p.amount;
-    if (p.amount > maxPrice) maxPrice = p.amount;
-  });
+  // Range globale (per la legenda di copertina)
+  let minPrice = Infinity, maxPrice = -Infinity;
+  for (const v of urbanFlatByNetwork.values()) {
+    if (v.amount < minPrice) minPrice = v.amount;
+    if (v.amount > maxPrice) maxPrice = v.amount;
+  }
+  for (const b of extraBands) {
+    if (b.price < minPrice) minPrice = b.price;
+    if (b.price > maxPrice) maxPrice = b.price;
+  }
   if (!isFinite(minPrice)) { minPrice = 0; maxPrice = 0; }
 
-  return { areas, products, ordinaryProductByNetwork, stopToArea, prices, minPrice, maxPrice };
+  return { areas, products, stopToArea, urbanFlatByNetwork, extraBands, minPrice, maxPrice };
+}
+
+/** Ritorna la fascia tariffaria extraurbana per una distanza in km. */
+function bandForDeltaKm(deltaKm: number, bands: PriceModel["extraBands"]): PriceModel["extraBands"][number] | null {
+  if (bands.length === 0) return null;
+  const d = Math.max(0, deltaKm);
+  // Convenzione: kmFrom < d ≤ kmTo (la fascia 1 copre d=0 perché 0 ≤ 6)
+  for (const b of bands) {
+    if (d <= b.kmTo + 1e-9) return b;
+  }
+  // Se eccede l'ultima fascia, usa l'ultima (cap)
+  return bands[bands.length - 1];
 }
 
 /* ──────────────────────────────────────────────────────────
@@ -365,20 +415,34 @@ function priceColor(amount: number, min: number, max: number): string {
 }
 
 /**
- * Risolve il prezzo del biglietto ordinario tra due fermate della linea
- * passando per le rispettive zone tariffarie.
+ * Risolve il prezzo del biglietto ordinario tra due fermate della linea.
+ *
+ *  • Per le reti URBANE è una tariffa flat (biglietto base 60 min),
+ *    indipendente dalle due fermate.
+ *  • Per l'EXTRAURBANO il prezzo dipende dalla distanza in km tra
+ *    le due fermate sullo stesso percorso (km progressivi):
+ *        Δkm = |km_destinazione - km_origine|
+ *        prezzo = price(fascia in cui ricade Δkm)
+ *
+ * Ritorna anche la fascia (per evidenziarla nel rendering).
  */
 function lookupPriceBetweenStops(
   fromStop: RouteStop, toStop: RouteStop,
   network: string, model: PriceModel
-): number | null {
-  const fromArea = fromStop.currentAreaId || fromStop.suggestedAreaId || model.stopToArea.get(fromStop.stopId);
-  const toArea   = toStop.currentAreaId   || toStop.suggestedAreaId   || model.stopToArea.get(toStop.stopId);
-  if (!fromArea || !toArea) return null;
-  const direct = model.prices.get(`${network}|${fromArea}|${toArea}`);
-  if (direct != null) return direct;
-  const reverse = model.prices.get(`${network}|${toArea}|${fromArea}`);
-  return reverse ?? null;
+): { price: number; fascia: number | null; deltaKm: number } | null {
+  const deltaKm = Math.abs(toStop.progressiveKm - fromStop.progressiveKm);
+
+  // Urbano → flat
+  if (/^urbano_/i.test(network)) {
+    const flat = model.urbanFlatByNetwork.get(network);
+    if (!flat) return null;
+    return { price: flat.amount, fascia: null, deltaKm };
+  }
+
+  // Extraurbano (e qualsiasi altra rete a fasce km)
+  const band = bandForDeltaKm(deltaKm, model.extraBands);
+  if (!band) return null;
+  return { price: band.price, fascia: band.fascia, deltaKm };
 }
 
 /**
@@ -412,75 +476,145 @@ function densityForStops(n: number): {
 
 /**
  * Tabella triangolare fermata×fermata. Le intestazioni colonna sono testo
- * verticale (rotato 90°). La cella (i, j) con i ≤ j mostra il prezzo tra
+ * verticale (rotato 65°). La cella (i, j) con i ≤ j mostra il prezzo tra
  * la fermata i (riga) e la fermata j (colonna). Le celle sotto la diagonale
  * sono lasciate vuote (la matrice è simmetrica).
+ *
+ * Raggruppamento visivo: ogni volta che cambia la zona/fascia di
+ * appartenenza si traccia un bordo più spesso e si alterna lo sfondo
+ * delle bande per restituire un blocco visivo compatto.
  */
 function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
   const stops = sheet.stops;
   if (stops.length < 2) return `<div class="empty">Linea con meno di 2 fermate, polimetrica non applicabile.</div>`;
   const network = sheet.networkId || "";
+  const isUrban = /^urbano_/i.test(network);
   const d = densityForStops(stops.length);
 
-  // Pre-calcola la matrice di prezzi per estrarre min/max LOCALI di questa linea
-  // (così il gradiente è significativo anche se la rete ha range più ampio)
-  const matrix: (number | null)[][] = stops.map((from, i) =>
+  // Pre-calcola la matrice di prezzi (con metadati fascia/Δkm)
+  type Cell = { price: number; fascia: number | null; deltaKm: number } | null;
+  const matrix: Cell[][] = stops.map((from, i) =>
     stops.map((to, j) => {
-      if (j < i) return null;
-      if (i === j) return null;
+      if (j < i || i === j) return null;
       return lookupPriceBetweenStops(from, to, network, model);
     })
   );
+
+  // Range LOCALE alla linea (per heatmap significativa anche per linee corte)
   let lMin = Infinity, lMax = -Infinity;
-  for (const row of matrix) for (const v of row) {
-    if (v != null && isFinite(v)) { if (v < lMin) lMin = v; if (v > lMax) lMax = v; }
+  for (const row of matrix) for (const c of row) {
+    if (c && isFinite(c.price)) { if (c.price < lMin) lMin = c.price; if (c.price > lMax) lMax = c.price; }
   }
   if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
 
+  // ─── Raggruppamento visivo ──
+  // Per ogni fermata, calcola la "zona" di raggruppamento:
+  //   • urbano → tutte stessa zona (bande costanti)
+  //   • extraurbano → la zona è l'area assegnata (Z1, Z2, …)
+  // Usato per disegnare bordi più spessi quando cambia.
+  const stopGroup: string[] = stops.map(s => {
+    if (isUrban) return network;
+    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+    return aid || "noarea";
+  });
+  // Indice di gruppo (intero) per alternare sfondo banda
+  const groupIndexMap = new Map<string, number>();
+  let nextIdx = 0;
+  for (const g of stopGroup) {
+    if (!groupIndexMap.has(g)) groupIndexMap.set(g, nextIdx++);
+  }
+  const stopGroupIdx = stopGroup.map(g => groupIndexMap.get(g)!);
+  const isGroupBoundary = (i: number) => i > 0 && stopGroup[i] !== stopGroup[i - 1];
+
+  // ─── Headers di colonna ──
   const headerCells = stops.map((s, j) => {
     const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
+    const klass = `hcol band-${stopGroupIdx[j] % 2}` + (isGroupBoundary(j) ? " gboundary-l" : "");
     return `
-      <th class="hcol">
+      <th class="${klass}">
         <div class="hcol-wrap">
-          <div class="hcol-text">${j + 1}. ${escape(shortStopLabel(s.stopName))}${code ? ` <span class="zhint">[${escape(code)}]</span>` : ""}</div>
+          <div class="hcol-text">${j + 1}. ${escape(shortStopLabel(s.stopName))}${code && !isUrban ? ` <span class="zhint">[${escape(code)}]</span>` : ""}</div>
         </div>
       </th>
     `;
   }).join("");
 
+  // ─── Righe ──
   const rows = stops.map((from, i) => {
     const aid = from.currentAreaId || from.suggestedAreaId || model.stopToArea.get(from.stopId);
     const code = aid ? (model.areas.get(aid)?.code ?? "") : "";
-    const cells = stops.map((_to, j) => {
-      if (j < i) return `<td class="below"></td>`;
-      if (i === j) return `<td class="diag">■</td>`;
-      const price = matrix[i][j];
-      if (price == null) return `<td class="na" title="N/D">–</td>`;
-      const bg = priceColor(price, lMin, lMax);
-      return `<td class="cell" style="background:${bg}" title="${escape(from.stopName)} → ${escape(stops[j].stopName)} : € ${fmtMoney(price)}">${fmtMoney(price)}</td>`;
+    const rowBoundary = isGroupBoundary(i) ? " gboundary-t" : "";
+    const cells = stops.map((to, j) => {
+      const colBoundary = isGroupBoundary(j) ? " gboundary-l" : "";
+      const bandClass = `band-${(stopGroupIdx[i] + stopGroupIdx[j]) % 2}`;
+      if (j < i) return `<td class="below ${bandClass}${colBoundary}"></td>`;
+      if (i === j) return `<td class="diag${colBoundary}">■</td>`;
+      const c = matrix[i][j];
+      if (c == null) return `<td class="na ${bandClass}${colBoundary}" title="N/D">–</td>`;
+      const bg = priceColor(c.price, lMin, lMax);
+      const tip = `${escape(from.stopName)} → ${escape(to.stopName)} : € ${fmtMoney(c.price)}` +
+                  (c.fascia ? ` · F${c.fascia} (${c.deltaKm.toFixed(1)} km)` : "");
+      return `<td class="cell${colBoundary}" style="background:${bg}" title="${tip}">${fmtMoney(c.price)}</td>`;
     }).join("");
     return `
-      <tr>
-        <th class="rname">
+      <tr class="${rowBoundary} band-${stopGroupIdx[i] % 2}">
+        <th class="rname band-${stopGroupIdx[i] % 2}${rowBoundary}">
           <div class="rname-num">${i + 1}</div>
           <div class="rname-text">${escape(shortStopLabel(from.stopName, 32))}</div>
           <div class="rname-km">${from.progressiveKm.toFixed(1)} km</div>
-          ${code ? `<div class="rname-zone">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
+          ${code ? `<div class="rname-zone" style="background:${isUrban ? "#64748b" : "var(--line-color)"}">${escape(code)}</div>` : `<div class="rname-zone na">—</div>`}
         </th>
         ${cells}
       </tr>
     `;
   }).join("");
 
-  // Legenda colori (5 step)
+  // ─── Banner descrittivo del modo tariffario ──
+  const modeBanner = isUrban
+    ? (() => {
+        const flat = model.urbanFlatByNetwork.get(network);
+        if (!flat) return `<div class="mode-banner urban">Rete urbana: tariffa flat (prodotto non identificato)</div>`;
+        return `
+          <div class="mode-banner urban">
+            <div class="mb-icon">🎫</div>
+            <div class="mb-text">
+              <strong>Tariffa urbana flat</strong> · ogni biglietto sulla rete costa
+              <span class="mb-price">€ ${fmtMoney(flat.amount)}</span>
+              <span class="mb-sub">— ${escape(flat.productName)}</span>
+            </div>
+          </div>`;
+      })()
+    : (() => {
+        const bands = model.extraBands;
+        if (bands.length === 0) return `<div class="mode-banner extra">Rete extraurbana ma nessuna fascia tariffaria identificata.</div>`;
+        const cells = bands.map(b => `
+          <div class="band-chip">
+            <div class="bc-fascia">F${b.fascia}</div>
+            <div class="bc-km">${b.kmFrom.toFixed(0)}–${b.kmTo.toFixed(0)} km</div>
+            <div class="bc-price">€ ${fmtMoney(b.price)}</div>
+          </div>
+        `).join("");
+        return `
+          <div class="mode-banner extra">
+            <div class="mb-icon">📏</div>
+            <div class="mb-text">
+              <strong>Tariffa extraurbana a fasce chilometriche</strong>
+              <span class="mb-sub">prezzo = f(distanza tra le fermate); fasce regionali (DGR Marche n. 1036/2022)</span>
+            </div>
+            <div class="bands-strip">${cells}</div>
+          </div>`;
+      })();
+
+  // ─── Legenda colori ──
   const steps = 5;
   const legendCells = Array.from({ length: steps }, (_, i) => {
-    const v = lMin + (lMax - lMin) * (i / (steps - 1));
+    const v = lMin + (lMax - lMin) * (i / Math.max(1, (steps - 1)));
     return `<div class="lg-cell" style="background:${priceColor(v, lMin, lMax)}">${fmtMoney(v)}</div>`;
   }).join("");
 
   return `
+    ${modeBanner}
     <div class="matrix-wrap density-${d.scale}"
          style="--cs:${d.cellSize}px;--cf:${d.cellFont}px;--hh:${d.headerHeight}px;--hf:${d.headerFont}px;--nw:${d.nameWidth}px">
       <table class="matrix">
@@ -496,7 +630,7 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
       <div class="matrix-legend">
         <div class="lg-title">Scala prezzi (€)</div>
         <div class="lg-bar">${legendCells}</div>
-        <div class="lg-hint">colore proporzionale al prezzo del biglietto ordinario tra le due fermate</div>
+        <div class="lg-hint">${isUrban ? "rete urbana: tariffa flat (matrice volutamente uniforme)" : "colore proporzionale al prezzo; bordo spesso = cambio di zona tariffaria"}</div>
       </div>
     </div>
   `;
@@ -824,6 +958,40 @@ const STYLES = `
     border-top: 1px solid #e5e7eb; padding-top: 4px; margin-top: auto;
     font-size: 8px; color: #94a3b8;
   }
+
+  /* ─── Banner modo tariffario ─── */
+  .mode-banner {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; border-radius: 8px;
+    margin-bottom: 6px;
+    border: 1px solid;
+  }
+  .mode-banner.urban  { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+  .mode-banner.extra  { background: #fef3c7; border-color: #fcd34d; color: #92400e; }
+  .mb-icon { font-size: 22px; flex-shrink: 0; }
+  .mb-text { flex: 1; font-size: 11px; line-height: 1.4; }
+  .mb-text strong { font-size: 12px; }
+  .mb-text .mb-price { font-weight: 800; font-size: 14px; margin: 0 4px; }
+  .mb-text .mb-sub { color: inherit; opacity: .75; font-size: 10px; }
+  .bands-strip { display: flex; gap: 4px; flex-wrap: wrap; max-width: 60%; }
+  .band-chip {
+    background: white; border: 1px solid #fcd34d; border-radius: 5px;
+    padding: 3px 6px; text-align: center;
+    display: flex; flex-direction: column; gap: 1px;
+    min-width: 48px;
+  }
+  .bc-fascia { font-size: 9px; font-weight: 700; color: #92400e; }
+  .bc-km { font-size: 8px; color: #78716c; }
+  .bc-price { font-size: 10px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; }
+
+  /* ─── Raggruppamento visivo: bande alternate + bordi spessi ─── */
+  table.matrix th.band-0, table.matrix td.band-0 { background-color: rgba(241, 245, 249, .55); }
+  table.matrix th.band-1, table.matrix td.band-1 { background-color: rgba(255, 255, 255, 1); }
+  /* le celle colorate (price/diag) override il background */
+  table.matrix td.cell { background-color: var(--cell-bg, #fff); }
+  table.matrix td.gboundary-l { border-left: 2px solid #1e293b !important; }
+  table.matrix tr.gboundary-t > * { border-top: 2px solid #1e293b !important; }
+  table.matrix th.hcol.gboundary-l { border-left: 2px solid #1e293b !important; }
 `;
 
 /* ──────────────────────────────────────────────────────────
