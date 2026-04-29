@@ -864,6 +864,82 @@ function tariffLabelFor(price: number, tariffs: TariffMap): string {
   return tariffs.byCents.get(c) ?? "—";
 }
 
+/* ──────────────────────────────────────────────────────────
+ * Naming dei nodi tariffari basato sui nomi delle fermate
+ * ──────────────────────────────────────────────────────── */
+
+/** Ripulisce un nome fermata da parentesi/codici: "PIAZZA DEL POPOLO (cap.)" → "Piazza del Popolo" */
+function cleanStopName(raw: string): string {
+  let s = (raw || "").replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+  // Title case soft: prima lettera di ogni parola maiuscola se tutto upper
+  if (s && s === s.toUpperCase()) {
+    s = s.toLowerCase().replace(/\b([a-zàèéìòù])/g, (m) => m.toUpperCase());
+    // ma riporta minuscole le congiunzioni/articoli
+    s = s.replace(/\b(Di|Del|Della|Dei|Degli|Delle|Da|Al|Allo|Alla|E|Il|La|Lo|I|Gli|Le|In|Su|Sul|Sulla)\b/g, (m) => m.toLowerCase());
+    s = s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  return s;
+}
+
+/**
+ * Trova il prefisso comune (a livello di parole intere) tra una lista di nomi.
+ * Ritorna stringa vuota se troppo corto o se è solo una parola tipo "Via"/"Piazza".
+ */
+function commonPrefix(names: string[]): string {
+  if (names.length < 2) return "";
+  const tokenized = names.map(n => n.split(/\s+/));
+  const minLen = Math.min(...tokenized.map(t => t.length));
+  const out: string[] = [];
+  for (let i = 0; i < minLen; i++) {
+    const w = tokenized[0][i];
+    if (tokenized.every(t => t[i].toLowerCase() === w.toLowerCase())) {
+      out.push(w);
+    } else break;
+  }
+  if (out.length === 0) return "";
+  // Scarta prefissi banali di una parola se è un toponimo generico
+  const trivial = new Set(["via", "viale", "corso", "piazza", "largo", "strada", "stazione", "fermata"]);
+  if (out.length === 1 && trivial.has(out[0].toLowerCase())) return "";
+  // Lunghezza minima sensata
+  const joined = out.join(" ");
+  if (joined.length < 4) return "";
+  return joined;
+}
+
+interface ZoneNaming {
+  /** Nome principale della zona (derivato dalle fermate) */
+  primary: string;
+  /** Lista nomi fermate (ordinate per km), già puliti */
+  stops: string[];
+}
+
+function buildZoneNamings(sheet: RouteSheet, model: PriceModel): Map<string, ZoneNaming> {
+  const out = new Map<string, ZoneNaming>();
+  for (const z of sheet.routeAreas) {
+    const inZone = sheet.stops
+      .filter(s => {
+        const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+        return aid === z.id;
+      })
+      .sort((a, b) => a.progressiveKm - b.progressiveKm);
+    const stopNames = inZone.map(s => cleanStopName(s.stopName));
+    let primary: string;
+    if (stopNames.length === 0) {
+      primary = z.name;
+    } else if (stopNames.length === 1) {
+      primary = stopNames[0];
+    } else if (stopNames.length === 2) {
+      const cp = commonPrefix(stopNames);
+      primary = cp || `${stopNames[0]} · ${stopNames[1]}`;
+    } else {
+      const cp = commonPrefix(stopNames);
+      primary = cp || `${stopNames[0]} → ${stopNames[stopNames.length - 1]}`;
+    }
+    out.set(z.id, { primary, stops: stopNames });
+  }
+  return out;
+}
+
 /** Ritorna km medio (centro) di una zona lungo la linea */
 function zoneCenterKm(zoneId: string, sheet: RouteSheet, model: PriceModel): number {
   const inZone = sheet.stops.filter(s => {
@@ -885,6 +961,11 @@ function renderZoneMatrix(sheet: RouteSheet, model: PriceModel, tariffs: TariffM
 
   // km medio per ogni zona (per il calcolo Δkm tra zone in extraurbano)
   const zoneKm = zones.map(z => zoneCenterKm(z.id, sheet, model));
+
+  // Naming derivato dalle fermate
+  const namings = buildZoneNamings(sheet, model);
+  const labelOf = (zid: string) => namings.get(zid)?.primary ?? "";
+  const stopsOf = (zid: string) => namings.get(zid)?.stops ?? [];
 
   // Densità: zone sono molte meno delle fermate, quindi cellule più grandi
   const n = zones.length;
@@ -924,29 +1005,41 @@ function renderZoneMatrix(sheet: RouteSheet, model: PriceModel, tariffs: TariffM
 
   const rows = zones.map((from, i) => {
     const zc = groupColor(i);
+    const fromLabel = labelOf(from.id) || from.name;
+    const fromStops = stopsOf(from.id);
     const priceCells = zones.slice(0, i).map((to, j) => {
       const c = matrix[i][j];
       if (c == null) return `<td class="na" title="N/D">–</td>`;
       const bg = priceColor(c.price, lMin, lMax);
-      const tip = `${escape(from.name)} → ${escape(to.name)} : ${c.label} (€ ${fmtMoney(c.price)})` +
+      const toLabel = labelOf(to.id) || to.name;
+      const tip = `${escape(fromLabel)} → ${escape(toLabel)} : ${c.label} (€ ${fmtMoney(c.price)})` +
                   (c.fascia ? ` · F${c.fascia} (${c.deltaKm.toFixed(1)} km)` : "");
       return `<td class="cell tariff-cell" style="background:${bg}" title="${tip}">${escape(c.label)}</td>`;
     }).join("");
 
     const diagCell = `
-      <td class="diag" style="background:${zc}" title="${escape(from.name)}">
+      <td class="diag" style="background:${zc}" title="${escape(fromLabel)}${fromStops.length > 1 ? ` (${fromStops.length} fermate)` : ""}">
         <div class="diag-num">${i + 1}</div>
-        <div class="diag-name">${escape(from.name)}</div>
+        <div class="diag-name">${escape(fromLabel)}</div>
       </td>`;
 
     const emptyAfter = zones.slice(i + 1).map(() => `<td class="above-diag"></td>`).join("");
+
+    // Lista fermate in piccolo (max 4 visibili, poi "+N")
+    const stopsPreview = fromStops.length > 0 ? (() => {
+      const max = 4;
+      const shown = fromStops.slice(0, max).map(n => escape(n)).join(" · ");
+      const extra = fromStops.length > max ? ` <span class="rn-more">+${fromStops.length - max}</span>` : "";
+      return `<div class="rn-stops" title="${escape(fromStops.join(' · '))}">${shown}${extra}</div>`;
+    })() : "";
 
     return `
       <tr>
         <th class="rn-num" style="background:${zc}">${escape(from.code)}</th>
         <th class="rn-name">
-          <div class="rn-text" title="${escape(from.name)}">${escape(from.name)}</div>
-          <div class="rn-meta">~ ${zoneKm[i].toFixed(1)} km · ${escape(from.code)}</div>
+          <div class="rn-text" title="${escape(fromLabel)}">${escape(fromLabel)}</div>
+          ${stopsPreview}
+          <div class="rn-meta">~ ${zoneKm[i].toFixed(1)} km · ${fromStops.length} ferm. · ${escape(from.code)}</div>
         </th>
         ${priceCells}
         ${diagCell}
@@ -1015,6 +1108,7 @@ function renderRoutePageZones(sheet: RouteSheet, model: PriceModel, tariffs: Tar
   const stopCount = sheet.stops.length;
   const tariffePossibili = zoneCount > 1 ? Math.round(zoneCount * (zoneCount - 1) / 2) : 0;
 
+  const namings = buildZoneNamings(sheet, model);
   const zoneLegend = sheet.routeAreas.map((a, i) => {
     const stopsInZone = sheet.stops.filter(s => {
       const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
@@ -1023,11 +1117,18 @@ function renderRoutePageZones(sheet: RouteSheet, model: PriceModel, tariffs: Tar
     const kmStart = stopsInZone[0]?.progressiveKm ?? 0;
     const kmEnd = stopsInZone[stopsInZone.length - 1]?.progressiveKm ?? 0;
     const zc = groupColor(i);
+    const naming = namings.get(a.id);
+    const primary = naming?.primary ?? a.name;
+    const stopList = naming?.stops ?? [];
+    const stopsHtml = stopList.length > 0
+      ? `<div class="zstops" title="${escape(stopList.join(' · '))}">${stopList.map(n => escape(n)).join(" · ")}</div>`
+      : "";
     return `
       <div class="zone-item" style="border-left:4px solid ${zc};background:${groupColorSoft(i)}">
         <div class="zbadge" style="background:${zc}">${escape(a.code)}</div>
         <div class="zinfo">
-          <div class="zname">${escape(a.name)}</div>
+          <div class="zname">${escape(primary)}</div>
+          ${stopsHtml}
           <div class="zrange">${kmStart.toFixed(1)} – ${kmEnd.toFixed(1)} km · ${stopsInZone.length} ferm.</div>
         </div>
       </div>
@@ -1351,6 +1452,23 @@ const STYLES = `
     font-weight: 500;
     margin-top: 1px;
   }
+  /* Lista delle fermate del nodo, riga sotto il nome principale */
+  table.matrix th.rn-name .rn-stops {
+    font-size: calc(var(--hf) - 3px);
+    color: #475569;
+    font-weight: 400;
+    line-height: 1.2;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-style: italic;
+  }
+  table.matrix th.rn-name .rn-stops .rn-more {
+    color: #94a3b8;
+    font-weight: 600;
+    font-style: normal;
+  }
   table.matrix th.rn-name .rn-zone {
     color: white;
     padding: 0 5px; border-radius: 3px;
@@ -1456,6 +1574,11 @@ const STYLES = `
   .zname {
     font-size: 9px; font-weight: 600; color: #1f2937;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .zstops {
+    font-size: 7.5px; color: #64748b; font-style: italic;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-top: 1px;
   }
   .zrange { font-size: 8px; color: #64748b; }
 
