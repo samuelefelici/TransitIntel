@@ -4,7 +4,8 @@ import {
   Upload, FileArchive, Trash2, Bus, MapPin, Route,
   CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
   BarChart3, Calendar, Building2, Shapes, Star, TrendingUp,
-  TrendingDown, Users, AlertTriangle, ShieldCheck, Clock, Zap
+  TrendingDown, Users, AlertTriangle, ShieldCheck, Clock, Zap,
+  Power, PowerOff
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -21,6 +22,7 @@ interface GtfsFeed {
   feedStartDate: string | null; feedEndDate: string | null;
   stopsCount: number; routesCount: number; tripsCount: number;
   shapesCount: number; uploadedAt: string;
+  isActive?: boolean;
 }
 
 interface Analysis {
@@ -481,10 +483,11 @@ function AnalysisTab({ feedId }: { feedId: string | null }) {
 }
 
 function FeedCard({
-  feed, onDelete, isSelected, onSelect
+  feed, onDelete, isSelected, onSelect, onActivate, activating
 }: {
   feed: GtfsFeed; onDelete: (id: string) => void;
   isSelected: boolean; onSelect: (id: string) => void;
+  onActivate: (id: string) => void; activating: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [routes, setRoutes] = useState<any[]>([]);
@@ -507,16 +510,23 @@ function FeedCard({
   };
 
   return (
-    <Card className={`bg-card/60 border-border/40 overflow-hidden transition-all ${isSelected ? "ring-2 ring-primary/50" : ""}`}>
+    <Card className={`bg-card/60 border-border/40 overflow-hidden transition-all ${feed.isActive ? "ring-2 ring-emerald-500/70 shadow-lg shadow-emerald-500/10" : isSelected ? "ring-2 ring-primary/50" : ""}`}>
       <CardContent className="p-0">
         <div className="p-4 flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0 mt-0.5">
-            <FileArchive className="w-5 h-5 text-blue-400" />
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 mt-0.5 ${feed.isActive ? "bg-emerald-500/15" : "bg-blue-500/10"}`}>
+            <FileArchive className={`w-5 h-5 ${feed.isActive ? "text-emerald-500" : "text-blue-400"}`} />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-2">
               <div>
-                <h3 className="font-semibold text-foreground truncate">{feed.filename}</h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-semibold text-foreground truncate">{feed.filename}</h3>
+                  {feed.isActive && (
+                    <Badge className="bg-emerald-500 text-white border-0 gap-1 text-[10px] uppercase tracking-wider">
+                      <Power className="w-3 h-3" /> Attivo
+                    </Badge>
+                  )}
+                </div>
                 {feed.agencyName && (
                   <p className="text-sm text-muted-foreground flex items-center gap-1 mt-0.5">
                     <Building2 className="w-3 h-3" /> {feed.agencyName}
@@ -524,6 +534,24 @@ function FeedCard({
                 )}
               </div>
               <div className="flex items-center gap-1 shrink-0">
+                {feed.isActive ? (
+                  <Badge variant="outline" className="h-8 text-xs gap-1 border-emerald-500/50 text-emerald-600 px-2">
+                    <CheckCircle2 className="w-3 h-3" />
+                    In uso ovunque
+                  </Badge>
+                ) : (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="h-8 text-xs gap-1 bg-emerald-600 hover:bg-emerald-500 text-white"
+                    onClick={() => onActivate(feed.id)}
+                    disabled={activating}
+                    title="Attiva questo feed: tutte le funzionalità (analisi, tariffe, scheduling) lo useranno come dataset corrente"
+                  >
+                    {activating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Power className="w-3 h-3" />}
+                    Attiva
+                  </Button>
+                )}
                 <Button
                   variant={isSelected ? "secondary" : "ghost"}
                   size="sm"
@@ -626,6 +654,7 @@ export default function GtfsPage() {
   const [selectedFeed, setSelectedFeed] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"upload" | "analysis" | "planning">("upload");
   const [dragOver, setDragOver] = useState(false);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadFeeds = useCallback(async () => {
@@ -706,6 +735,22 @@ export default function GtfsPage() {
     if (selectedFeed === feedId) setSelectedFeed(next[0]?.id || null);
   };
 
+  const handleActivate = async (feedId: string) => {
+    setActivatingId(feedId);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/gtfs/feeds/${feedId}/activate`, { method: "POST" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // Aggiorna localmente: setta isActive=true a quel feed e false agli altri
+      setFeeds(prev => prev.map(f => ({ ...f, isActive: f.id === feedId })));
+    } catch (err) {
+      console.error("[GTFS] activate failed:", err);
+      alert("Impossibile attivare il feed. Riprova.");
+    } finally {
+      setActivatingId(null);
+    }
+  };
+
+  const activeFeed = feeds.find(f => f.isActive) ?? null;
   const totalStops = feeds.reduce((s, f) => s + f.stopsCount, 0);
   const totalRoutes = feeds.reduce((s, f) => s + f.routesCount, 0);
   const totalTrips = feeds.reduce((s, f) => s + f.tripsCount, 0);
@@ -719,6 +764,43 @@ export default function GtfsPage() {
           Importa i dati GTFS e analizza la qualità del servizio offerto rispetto a traffico, domanda e punti di interesse.
         </p>
       </div>
+
+      {/* Banner feed attivo / nessun attivo */}
+      {feeds.length > 0 && (
+        activeFeed ? (
+          <Card className="bg-emerald-500/5 border-emerald-500/30">
+            <CardContent className="p-3 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <Power className="w-4 h-4 text-emerald-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs uppercase tracking-wider font-semibold text-emerald-700">Feed attivo</p>
+                <p className="text-sm font-semibold text-foreground truncate">
+                  {activeFeed.filename}
+                  {activeFeed.agencyName && <span className="text-muted-foreground font-normal"> · {activeFeed.agencyName}</span>}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Tutte le funzionalità del sito (analisi, tariffe, scheduling, polimetriche…) usano questo dataset.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card className="bg-amber-500/5 border-amber-500/30">
+            <CardContent className="p-3 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-amber-500/15 flex items-center justify-center shrink-0">
+                <PowerOff className="w-4 h-4 text-amber-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs uppercase tracking-wider font-semibold text-amber-700">Nessun feed attivo</p>
+                <p className="text-sm text-foreground">
+                  Le altre pagine usano l'ultimo feed importato come fallback. Clicca <strong>Attiva</strong> sul feed che vuoi analizzare per renderlo dataset di riferimento.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )
+      )}
 
       {/* Summary stats when feeds exist */}
       {feeds.length > 0 && (
@@ -829,6 +911,8 @@ export default function GtfsPage() {
                     key={feed.id} feed={feed} onDelete={handleDelete}
                     isSelected={selectedFeed === feed.id}
                     onSelect={id => { setSelectedFeed(id); setActiveTab("analysis"); }}
+                    onActivate={handleActivate}
+                    activating={activatingId === feed.id}
                   />
                 ))}
               </div>

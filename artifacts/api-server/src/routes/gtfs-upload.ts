@@ -313,8 +313,19 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
 // GET /api/gtfs/feeds
 router.get("/gtfs/feeds", async (req, res) => {
   try {
-    const feeds = await db.select().from(gtfsFeeds).orderBy(sql`uploaded_at DESC`);
-    res.json({ data: feeds });
+    await ensureFeedActiveColumn();
+    const feeds = await db.execute(sql`
+      SELECT id, filename, agency_name AS "agencyName",
+             feed_start_date AS "feedStartDate", feed_end_date AS "feedEndDate",
+             stops_count AS "stopsCount", routes_count AS "routesCount",
+             trips_count AS "tripsCount", shapes_count AS "shapesCount",
+             uploaded_at AS "uploadedAt",
+             COALESCE(is_active, false) AS "isActive"
+        FROM gtfs_feeds
+       ORDER BY uploaded_at DESC
+    `);
+    const rows: any = (feeds as any).rows ?? feeds;
+    res.json({ data: rows });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS feeds");
     res.status(500).json({ error: "Internal server error" });
@@ -330,6 +341,73 @@ router.delete("/gtfs/feeds/:id", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     req.log.error(err, "Error deleting GTFS feed");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─── Feed attivo (lazy column bootstrap) ───────────────────────
+let feedActiveColumnEnsured = false;
+async function ensureFeedActiveColumn(): Promise<void> {
+  if (feedActiveColumnEnsured) return;
+  try {
+    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_active ON gtfs_feeds(is_active) WHERE is_active = true`);
+    feedActiveColumnEnsured = true;
+  } catch (e: any) {
+    console.error("[gtfs] bootstrap is_active column failed:", e?.message);
+  }
+}
+void ensureFeedActiveColumn();
+
+/**
+ * POST /api/gtfs/feeds/:id/activate
+ * Imposta il feed come unico attivo. Tutti gli altri vengono disattivati.
+ * Tutte le altre route che usano `getLatestFeedId()` vedranno questo feed
+ * come "il" feed corrente (analisi tariffe, scheduling, ecc.).
+ */
+router.post("/gtfs/feeds/:id/activate", async (req, res) => {
+  try {
+    await ensureFeedActiveColumn();
+    const id = req.params.id;
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      res.status(400).json({ error: "ID feed non valido" });
+      return;
+    }
+    // Verifica esistenza
+    const exists = await db.execute(sql`SELECT id, filename, agency_name FROM gtfs_feeds WHERE id = ${id}::uuid LIMIT 1`);
+    const row: any = (exists as any).rows?.[0] ?? (exists as any)[0];
+    if (!row?.id) {
+      res.status(404).json({ error: "Feed non trovato" });
+      return;
+    }
+    // Disattiva tutti, attiva quello selezionato (atomico)
+    await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
+    await db.execute(sql`UPDATE gtfs_feeds SET is_active = true WHERE id = ${id}::uuid`);
+    // Invalida cache che dipende dal feed corrente
+    clearCache("/api/gtfs/");
+    clearCache("/api/analysis/");
+    clearCache("/api/fares/");
+    res.json({ success: true, id, filename: row.filename, agencyName: row.agency_name });
+  } catch (err) {
+    req.log.error(err, "Error activating GTFS feed");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * POST /api/gtfs/feeds/deactivate-all
+ * Rimuove la selezione esplicita: getLatestFeedId() tornerà a usare il feed
+ * più recente come fallback.
+ */
+router.post("/gtfs/feeds/deactivate-all", async (_req, res) => {
+  try {
+    await ensureFeedActiveColumn();
+    await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
+    clearCache("/api/gtfs/");
+    clearCache("/api/analysis/");
+    clearCache("/api/fares/");
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: "Internal server error" });
   }
 });

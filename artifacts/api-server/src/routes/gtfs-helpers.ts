@@ -41,7 +41,24 @@ export function buildShapeGeojson(shapePoints: Record<string, string>[]): { shap
 }
 
 // ── Feed helpers ──────────────────────────────────────────────
+/**
+ * Ritorna l'ID del feed GTFS "attivo".
+ * Preferenza: feed con `is_active = true`. Se nessuno è esplicitamente
+ * attivato, fallback al feed più recente (uploaded_at DESC).
+ *
+ * NOTA: la colonna `is_active` viene creata lazy dal bootstrap di
+ * `gtfs-upload.ts` (CREATE COLUMN IF NOT EXISTS) la prima volta.
+ */
 export async function getLatestFeedId(): Promise<string | null> {
+  try {
+    const active = await db.execute(sql`
+      SELECT id FROM gtfs_feeds WHERE is_active = true ORDER BY uploaded_at DESC LIMIT 1
+    `);
+    const aRow: any = (active as any).rows?.[0] ?? (active as any)[0];
+    if (aRow?.id) return aRow.id as string;
+  } catch {
+    // colonna is_active può non esistere ancora (DB pre-bootstrap): ignoriamo
+  }
   const rows = await db.select({ id: gtfsFeeds.id }).from(gtfsFeeds).orderBy(sql`uploaded_at DESC`).limit(1);
   return rows[0]?.id ?? null;
 }
