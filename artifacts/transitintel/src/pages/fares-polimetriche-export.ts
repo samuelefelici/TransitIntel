@@ -824,6 +824,262 @@ function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, tota
   `;
 }
 
+/* ──────────────────────────────────────────────────────────
+ * VERSIONE SEMPLIFICATA — Polimetrica per nodi tariffari
+ *
+ * Invece della matrice fermata × fermata, costruisce una matrice
+ * (più piccola e leggibile) zona × zona, con etichette tariffarie
+ * T1, T2, … al posto del prezzo in €. La legenda T1 → € appare in
+ * fondo alla pagina.
+ * ──────────────────────────────────────────────────────── */
+
+interface TariffMap {
+  /** Mappa "prezzo arrotondato (cents)" → label T<n> */
+  byCents: Map<number, string>;
+  /** Lista ordinata per costruire la legenda */
+  list: { label: string; price: number }[];
+}
+
+function buildTariffMap(model: PriceModel): TariffMap {
+  const cents = new Set<number>();
+  for (const v of model.urbanFlatByNetwork.values()) {
+    if (v.amount > 0) cents.add(Math.round(v.amount * 100));
+  }
+  for (const b of model.extraBands) {
+    if (b.price > 0) cents.add(Math.round(b.price * 100));
+  }
+  const sorted = [...cents].sort((a, b) => a - b);
+  const byCents = new Map<number, string>();
+  const list: { label: string; price: number }[] = [];
+  sorted.forEach((c, i) => {
+    const label = `T${i + 1}`;
+    byCents.set(c, label);
+    list.push({ label, price: c / 100 });
+  });
+  return { byCents, list };
+}
+
+function tariffLabelFor(price: number, tariffs: TariffMap): string {
+  const c = Math.round(price * 100);
+  return tariffs.byCents.get(c) ?? "—";
+}
+
+/** Ritorna km medio (centro) di una zona lungo la linea */
+function zoneCenterKm(zoneId: string, sheet: RouteSheet, model: PriceModel): number {
+  const inZone = sheet.stops.filter(s => {
+    const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+    return aid === zoneId;
+  });
+  if (inZone.length === 0) return 0;
+  return inZone.reduce((a, s) => a + s.progressiveKm, 0) / inZone.length;
+}
+
+function renderZoneMatrix(sheet: RouteSheet, model: PriceModel, tariffs: TariffMap): string {
+  const zones = sheet.routeAreas;
+  if (zones.length < 2) {
+    return `<div class="empty">Linea con una sola zona tariffaria (${zones.length}): polimetrica per zone non significativa.</div>`;
+  }
+  const network = sheet.networkId || "";
+  const isUrban = /^urbano_/i.test(network);
+  const lineColor = normalizeLineColor(sheet.routeColor);
+
+  // km medio per ogni zona (per il calcolo Δkm tra zone in extraurbano)
+  const zoneKm = zones.map(z => zoneCenterKm(z.id, sheet, model));
+
+  // Densità: zone sono molte meno delle fermate, quindi cellule più grandi
+  const n = zones.length;
+  const cellSize = n <= 6 ? 56 : n <= 10 ? 48 : n <= 16 ? 40 : 34;
+  const cellFont = n <= 6 ? 16 : n <= 10 ? 14 : n <= 16 ? 12 : 11;
+  const headerFont = cellFont + 1;
+  const nameWidth = 240;
+  const diagNameHeight = 110;
+
+  // Matrice: lookup prezzo zona-zona
+  type ZCell = { price: number; label: string; fascia: number | null; deltaKm: number } | null;
+  const matrix: ZCell[][] = zones.map((from, i) =>
+    zones.map((to, j) => {
+      if (j >= i) return null;
+      let price: number, fascia: number | null = null, deltaKm = 0;
+      if (isUrban) {
+        const flat = model.urbanFlatByNetwork.get(network);
+        if (!flat) return null;
+        price = flat.amount;
+      } else {
+        deltaKm = Math.abs(zoneKm[i] - zoneKm[j]);
+        const band = bandForDeltaKm(deltaKm, model.extraBands);
+        if (!band) return null;
+        price = band.price;
+        fascia = band.fascia;
+      }
+      return { price, label: tariffLabelFor(price, tariffs), fascia, deltaKm };
+    })
+  );
+
+  // Range tariffe per heatmap colore (sul prezzo, ma mostriamo Tn)
+  let lMin = Infinity, lMax = -Infinity;
+  for (const row of matrix) for (const c of row) {
+    if (c) { if (c.price < lMin) lMin = c.price; if (c.price > lMax) lMax = c.price; }
+  }
+  if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
+
+  const rows = zones.map((from, i) => {
+    const zc = groupColor(i);
+    const priceCells = zones.slice(0, i).map((to, j) => {
+      const c = matrix[i][j];
+      if (c == null) return `<td class="na" title="N/D">–</td>`;
+      const bg = priceColor(c.price, lMin, lMax);
+      const tip = `${escape(from.name)} → ${escape(to.name)} : ${c.label} (€ ${fmtMoney(c.price)})` +
+                  (c.fascia ? ` · F${c.fascia} (${c.deltaKm.toFixed(1)} km)` : "");
+      return `<td class="cell tariff-cell" style="background:${bg}" title="${tip}">${escape(c.label)}</td>`;
+    }).join("");
+
+    const diagCell = `
+      <td class="diag" style="background:${zc}" title="${escape(from.name)}">
+        <div class="diag-num">${i + 1}</div>
+        <div class="diag-name">${escape(from.name)}</div>
+      </td>`;
+
+    const emptyAfter = zones.slice(i + 1).map(() => `<td class="above-diag"></td>`).join("");
+
+    return `
+      <tr>
+        <th class="rn-num" style="background:${zc}">${escape(from.code)}</th>
+        <th class="rn-name">
+          <div class="rn-text" title="${escape(from.name)}">${escape(from.name)}</div>
+          <div class="rn-meta">~ ${zoneKm[i].toFixed(1)} km · ${escape(from.code)}</div>
+        </th>
+        ${priceCells}
+        ${diagCell}
+        ${emptyAfter}
+      </tr>
+    `;
+  }).join("");
+
+  // Legenda tariffe T1 → €
+  const tariffLegend = tariffs.list.map(t => {
+    const bg = priceColor(t.price, lMin, lMax);
+    return `
+      <div class="tariff-item">
+        <div class="tariff-pill" style="background:${bg}">${escape(t.label)}</div>
+        <div class="tariff-price">€ ${fmtMoney(t.price)}</div>
+      </div>`;
+  }).join("");
+
+  const modeBanner = isUrban
+    ? (() => {
+        const flat = model.urbanFlatByNetwork.get(network);
+        const lbl = flat ? tariffLabelFor(flat.amount, tariffs) : "—";
+        return `<div class="mode-banner urban">
+          <span class="mb-icon">🎫</span>
+          <span class="mb-text"><strong>Tariffa urbana flat</strong> · una sola tariffa <strong>${escape(lbl)}</strong>${flat ? ` · € ${fmtMoney(flat.amount)}` : ""}</span>
+        </div>`;
+      })()
+    : `<div class="mode-banner extra">
+        <span class="mb-icon">🗺️</span>
+        <span class="mb-text"><strong>Rete extraurbana a fasce</strong> · prezzo determinato dalla distanza tra i nodi tariffari (centri zona)</span>
+      </div>`;
+
+  return `
+    ${modeBanner}
+    <div class="matrix-wrap density-L"
+         style="--cs:${cellSize}px;--cf:${cellFont}px;--hf:${headerFont}px;--nw:${nameWidth}px;--dnh:${diagNameHeight}px">
+      <table class="matrix">
+        <colgroup>
+          <col class="cg-num">
+          <col class="cg-name">
+          ${zones.map(() => `<col class="cg-cell">`).join("")}
+        </colgroup>
+        <thead>
+          <tr class="diag-spacer">
+            <th colspan="${zones.length + 2}" class="ds-cell"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+
+      <div class="tariff-legend">
+        <div class="tl-title">Legenda tariffe</div>
+        <div class="tl-grid">${tariffLegend}</div>
+        <div class="tl-hint">T1 = tariffa più bassa · Tn = più alta · colore proporzionale al prezzo</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderRoutePageZones(sheet: RouteSheet, model: PriceModel, tariffs: TariffMap, idx: number, total: number): string {
+  const networkLabel = sheet.networkId ? (NETWORK_LABEL[sheet.networkId] || sheet.networkId) : "—";
+  const lineColor = normalizeLineColor(sheet.routeColor);
+  const zoneCount = sheet.routeAreas.length;
+  const stopCount = sheet.stops.length;
+  const tariffePossibili = zoneCount > 1 ? Math.round(zoneCount * (zoneCount - 1) / 2) : 0;
+
+  const zoneLegend = sheet.routeAreas.map((a, i) => {
+    const stopsInZone = sheet.stops.filter(s => {
+      const aid = s.currentAreaId || s.suggestedAreaId || model.stopToArea.get(s.stopId);
+      return aid === a.id;
+    });
+    const kmStart = stopsInZone[0]?.progressiveKm ?? 0;
+    const kmEnd = stopsInZone[stopsInZone.length - 1]?.progressiveKm ?? 0;
+    const zc = groupColor(i);
+    return `
+      <div class="zone-item" style="border-left:4px solid ${zc};background:${groupColorSoft(i)}">
+        <div class="zbadge" style="background:${zc}">${escape(a.code)}</div>
+        <div class="zinfo">
+          <div class="zname">${escape(a.name)}</div>
+          <div class="zrange">${kmStart.toFixed(1)} – ${kmEnd.toFixed(1)} km · ${stopsInZone.length} ferm.</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <section class="page route" style="--line-color:${lineColor}">
+      <header class="r-head">
+        <div class="r-head-left">
+          <div class="r-line-pill" style="background:${lineColor}">${escape(sheet.shortName)}</div>
+          <div class="r-titles">
+            <div class="r-title">${escape(sheet.capolineaA)} <span class="arrow">↔</span> ${escape(sheet.capolineaB)}</div>
+            ${sheet.longName ? `<div class="r-subtitle">${escape(sheet.longName)} · <em>vista semplificata per nodi</em></div>` : `<div class="r-subtitle"><em>vista semplificata per nodi tariffari</em></div>`}
+          </div>
+        </div>
+        <div class="r-head-right">
+          <div class="r-head-meta">
+            <div class="r-network">${escape(networkLabel)}</div>
+            <div class="r-pageno">pag. ${idx} / ${total}</div>
+          </div>
+          <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
+        </div>
+      </header>
+
+      <div class="r-kpis">
+        <div class="r-kpi"><div class="rk-num">${sheet.totalKm.toFixed(1)}</div><div class="rk-lbl">km totali</div></div>
+        <div class="r-kpi"><div class="rk-num">${zoneCount}</div><div class="rk-lbl">nodi tariffari</div></div>
+        <div class="r-kpi"><div class="rk-num">${stopCount}</div><div class="rk-lbl">fermate raggruppate</div></div>
+        <div class="r-kpi"><div class="rk-num">${tariffePossibili}</div><div class="rk-lbl">coppie O/D zone</div></div>
+      </div>
+
+      <h3 class="r-section-title">
+        Polimetrica zona × zona
+        <span class="hint">tariffa applicata tra nodi tariffari · etichetta T<sub>n</sub> = livello tariffa (legenda in fondo)</span>
+      </h3>
+
+      ${renderZoneMatrix(sheet, model, tariffs)}
+
+      ${zoneCount > 0 ? `
+        <h3 class="r-section-title legend-title">Nodi tariffari (raggruppano le fermate)</h3>
+        <div class="zones-legend">${zoneLegend}</div>
+      ` : ""}
+
+      <footer class="r-foot">
+        <div>Linea <strong>${escape(sheet.shortName)}</strong> · ${escape(sheet.routeId)}</div>
+        <div>GTFS Fares V2 · ${escape(networkLabel)} · vista per nodi</div>
+      </footer>
+    </section>
+  `;
+}
+
 const STYLES = `
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -1281,6 +1537,54 @@ const STYLES = `
     font-variant-numeric: tabular-nums;
     margin-top: 1px;
   }
+
+  /* ─── Vista semplificata: tariffa label nelle celle + legenda T1..Tn ─── */
+  td.cell.tariff-cell {
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    color: #0f172a;
+  }
+  .tariff-legend {
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+  }
+  .tariff-legend .tl-title {
+    font-size: 11px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 0.6px; color: #475569; margin-bottom: 8px;
+  }
+  .tariff-legend .tl-grid {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .tariff-legend .tariff-item {
+    display: flex; align-items: center; gap: 6px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 4px 8px 4px 4px;
+  }
+  .tariff-legend .tariff-pill {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 32px; height: 24px;
+    padding: 0 6px;
+    border-radius: 6px;
+    font-size: 11px; font-weight: 800;
+    color: #0f172a;
+  }
+  .tariff-legend .tariff-price {
+    font-size: 12px; font-weight: 700; color: #0f172a;
+    font-variant-numeric: tabular-nums;
+  }
+  .tariff-legend .tl-hint {
+    font-size: 9px; color: #64748b; margin-top: 6px;
+  }
+  .mode-banner.extra {
+    background: linear-gradient(90deg, #ecfdf5, #d1fae5);
+    border-color: #6ee7b7;
+    color: #065f46;
+  }
 `;
 
 /* ──────────────────────────────────────────────────────────
@@ -1323,13 +1627,20 @@ export interface PolimetricheBuildResult {
  * Costruisce l'HTML completo (auto-contenuto: CSS inline, dati embedded)
  * delle polimetriche, SENZA aprire alcuna finestra. Riutilizzato sia
  * dall'export verso `window.print()` sia dalla creazione di link condivisibili.
+ *
+ * @param mode "stops" (default) → matrice fermata×fermata col prezzo in €
+ *             "zones" → matrice nodo×nodo con etichette T1, T2, …
  */
-export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<PolimetricheBuildResult> {
+export async function buildPolimetricheHtml(
+  input: PolimetricheInput,
+  mode: "stops" | "zones" = "stops",
+): Promise<PolimetricheBuildResult> {
   const agencyName = input.agencyName || "Conerobus · Trasporto Pubblico Locale";
   const date = input.date || new Date().toLocaleDateString("it-IT");
 
   // 1) Costruisci modello prezzi dai CSV
   const model = buildPriceModel(input.files);
+  const tariffs = buildTariffMap(model);
 
   // 2) Recupera elenco linee
   const routes = await apiFetch<RouteNetworkRow[]>("/api/fares/route-networks");
@@ -1371,7 +1682,12 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
     minPrice: model.minPrice,
     maxPrice: model.maxPrice,
   });
-  const pages = sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
+  const pages = mode === "zones"
+    ? sheets.map((s, i) => renderRoutePageZones(s, model, tariffs, i + 1, sheets.length)).join("")
+    : sheets.map((s, i) => renderRoutePage(s, model, i + 1, sheets.length)).join("");
+
+  const titleSuffix = mode === "zones" ? " — vista per nodi tariffari" : "";
+  const headerSuffix = mode === "zones" ? " · per nodi" : "";
 
   // Carica il logo come data URI in modo che l'HTML sia auto-contenuto
   // (necessario per i link condivisibili serviti dal backend).
@@ -1388,12 +1704,12 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
 <html lang="it">
 <head>
   <meta charset="utf-8" />
-  <title>Polimetriche tariffarie — ${escape(agencyName)} — ${escape(date)}</title>
+  <title>Polimetriche tariffarie${titleSuffix} — ${escape(agencyName)} — ${escape(date)}</title>
   <style>${STYLES}${logoCss}</style>
 </head>
 <body>
   <div class="toolbar">
-    <h1>📊 Polimetriche tariffarie · ${escape(agencyName)} · ${sheets.length} linee</h1>
+    <h1>📊 Polimetriche tariffarie${headerSuffix} · ${escape(agencyName)} · ${sheets.length} linee</h1>
     <div>
       <button onclick="window.print()">🖨️ Stampa / Salva PDF</button>
     </div>
@@ -1415,6 +1731,17 @@ export async function buildPolimetricheHtml(input: PolimetricheInput): Promise<P
 }
 
 export async function exportPolimetricheToPrint(input: PolimetricheInput): Promise<void> {
+  return openPolimetricheWindow(input, "stops");
+}
+
+/**
+ * Variante semplificata: matrice nodo × nodo con etichette T1, T2, …
+ */
+export async function exportPolimetricheZonesToPrint(input: PolimetricheInput): Promise<void> {
+  return openPolimetricheWindow(input, "zones");
+}
+
+async function openPolimetricheWindow(input: PolimetricheInput, mode: "stops" | "zones"): Promise<void> {
   // Apri subito una finestra di "loading" per non incorrere nel blocco popup post-await
   const win = window.open("", "_blank", "width=1100,height=850");
   if (!win) {
@@ -1426,11 +1753,11 @@ export async function exportPolimetricheToPrint(input: PolimetricheInput): Promi
     <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f3f4f6;color:#475569}
     .l{text-align:center}.s{display:inline-block;width:40px;height:40px;border:3px solid #cbd5e1;border-top-color:#0f766e;border-radius:50%;animation:r 1s linear infinite}
     @keyframes r{to{transform:rotate(360deg)}}</style></head>
-    <body><div class="l"><div class="s"></div><p>Costruzione polimetriche tariffarie…</p></div></body></html>
+    <body><div class="l"><div class="s"></div><p>Costruzione polimetriche tariffarie${mode === "zones" ? " (per nodi)" : ""}…</p></div></body></html>
   `);
 
   try {
-    const { html } = await buildPolimetricheHtml(input);
+    const { html } = await buildPolimetricheHtml(input, mode);
     win.document.open();
     win.document.write(html);
     win.document.close();
@@ -1451,7 +1778,26 @@ export async function createPolimetricheShareLink(input: PolimetricheInput): Pro
   url: string;
   routeCount: number;
 }> {
-  const built = await buildPolimetricheHtml(input);
+  return createShareLinkInternal(input, "stops", "Polimetriche");
+}
+
+/**
+ * Variante semplificata: link condivisibile alla vista per nodi tariffari.
+ */
+export async function createPolimetricheZonesShareLink(input: PolimetricheInput): Promise<{
+  id: string;
+  url: string;
+  routeCount: number;
+}> {
+  return createShareLinkInternal(input, "zones", "Polimetriche per nodi");
+}
+
+async function createShareLinkInternal(
+  input: PolimetricheInput,
+  mode: "stops" | "zones",
+  titlePrefix: string,
+): Promise<{ id: string; url: string; routeCount: number }> {
+  const built = await buildPolimetricheHtml(input, mode);
   const res = await apiFetch<{ id: string; url: string; createdAt: string }>(
     "/api/fares/polimetriche/snapshots",
     {
@@ -1459,13 +1805,13 @@ export async function createPolimetricheShareLink(input: PolimetricheInput): Pro
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         html: built.html,
-        title: `Polimetriche · ${built.agencyName} · ${built.date}`,
+        title: `${titlePrefix} · ${built.agencyName} · ${built.date}`,
         agencyName: built.agencyName,
         zoningMethod: built.zoningMethod,
         routeCount: built.routeCount,
         productCount: built.productCount,
         areaCount: built.areaCount,
-        meta: { date: built.date },
+        meta: { date: built.date, mode },
       }),
     },
   );

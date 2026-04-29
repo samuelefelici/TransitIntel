@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { exportPolimetricheToPrint, createPolimetricheShareLink } from "./fares-polimetriche-export";
+import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink } from "./fares-polimetriche-export";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -3699,8 +3699,8 @@ function GenerateTab() {
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
-  const [sharingPolimetriche, setSharingPolimetriche] = useState(false);
-  const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number } | null>(null);
+  const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones">(null);
+  const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number; mode: "stops" | "zones" } | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
 
   /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
@@ -3814,10 +3814,10 @@ function GenerateTab() {
           }}
           size="sm"
           className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
-          title="Apre in nuova scheda una pagina A4 per ogni linea con elenco fermate, polimetrica triangolare e legenda zone (stampabile in PDF)"
+          title="Una pagina A3 per ogni linea con matrice fermata × fermata e prezzo in € (stampabile in PDF)"
         >
           <BarChart3 className="w-4 h-4 mr-2" />
-          📊 Polimetriche (PDF)
+          📊 Polimetriche fermate (PDF)
         </Button>
         <Button
           onClick={async () => {
@@ -3825,7 +3825,30 @@ function GenerateTab() {
               toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
               return;
             }
-            setSharingPolimetriche(true);
+            try {
+              await exportPolimetricheZonesToPrint({
+                files: result.files,
+                zoningMethod,
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+            } catch (e: any) {
+              toast({ title: "Errore polimetriche zone", description: e?.message || String(e), variant: "destructive" });
+            }
+          }}
+          size="sm"
+          className="bg-teal-600 hover:bg-teal-500 text-white border-0"
+          title="Versione semplificata: una pagina per linea con matrice nodo × nodo e tariffe T1, T2, … (stampabile in PDF)"
+        >
+          <BarChart3 className="w-4 h-4 mr-2" />
+          � Polimetriche per nodi (PDF)
+        </Button>
+        <Button
+          onClick={async () => {
+            if (!result) {
+              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
+              return;
+            }
+            setSharingPolimetriche("stops");
             setShareLinkCopied(false);
             try {
               const link = await createPolimetricheShareLink({
@@ -3833,21 +3856,51 @@ function GenerateTab() {
                 zoningMethod,
                 date: new Date().toLocaleDateString("it-IT"),
               });
-              setShareLink(link);
-              toast({ title: "Link condivisibile generato", description: `${link.routeCount} linee · pronto da condividere` });
+              setShareLink({ ...link, mode: "stops" });
+              toast({ title: "Link condivisibile (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
             } catch (e: any) {
               toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
             } finally {
-              setSharingPolimetriche(false);
+              setSharingPolimetriche(null);
             }
           }}
           size="sm"
           variant="outline"
           className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-          title="Genera un link pubblico condivisibile all'anteprima delle polimetriche tariffarie"
+          title="Genera un link pubblico condivisibile alla vista per fermate"
         >
-          {sharingPolimetriche ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
-          🔗 Condividi link
+          {sharingPolimetriche === "stops" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+          🔗 Condividi fermate
+        </Button>
+        <Button
+          onClick={async () => {
+            if (!result) {
+              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
+              return;
+            }
+            setSharingPolimetriche("zones");
+            setShareLinkCopied(false);
+            try {
+              const link = await createPolimetricheZonesShareLink({
+                files: result.files,
+                zoningMethod,
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+              setShareLink({ ...link, mode: "zones" });
+              toast({ title: "Link condivisibile (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
+            } catch (e: any) {
+              toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
+            } finally {
+              setSharingPolimetriche(null);
+            }
+          }}
+          size="sm"
+          variant="outline"
+          className="border-teal-300 text-teal-700 hover:bg-teal-50"
+          title="Genera un link pubblico condivisibile alla vista semplificata per nodi tariffari"
+        >
+          {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+          🔗 Condividi nodi
         </Button>
         <Button
           variant="outline"
@@ -3885,12 +3938,12 @@ function GenerateTab() {
 
       {/* Share link condivisibile (polimetriche) */}
       {shareLink && (
-        <Card className="bg-emerald-500/5 border-emerald-500/30">
+        <Card className={shareLink.mode === "zones" ? "bg-teal-500/5 border-teal-500/30" : "bg-emerald-500/5 border-emerald-500/30"}>
           <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
-            <CardTitle className="text-sm flex items-center gap-2 text-emerald-700">
+            <CardTitle className={`text-sm flex items-center gap-2 ${shareLink.mode === "zones" ? "text-teal-700" : "text-emerald-700"}`}>
               <Share2 className="w-4 h-4" />
-              Link condivisibile · Polimetriche tariffarie
-              <Badge variant="outline" className="ml-1 border-emerald-300 text-emerald-700">
+              Link condivisibile · {shareLink.mode === "zones" ? "Polimetriche per nodi tariffari" : "Polimetriche fermate"}
+              <Badge variant="outline" className={`ml-1 ${shareLink.mode === "zones" ? "border-teal-300 text-teal-700" : "border-emerald-300 text-emerald-700"}`}>
                 {shareLink.routeCount} linee
               </Badge>
             </CardTitle>
