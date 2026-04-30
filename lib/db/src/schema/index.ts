@@ -893,3 +893,79 @@ export const planningPois = pgTable("planning_pois", {
 
 export type PlanningRouteClassification = typeof planningRouteClassifications.$inferSelect;
 export type PlanningPoi = typeof planningPois.$inferSelect;
+
+// ════════════════════════════════════════════════════════════
+// MIN-OD GRAPH — Tariffa minima sistema-wide via Dijkstra
+// Modalità ADDITIVA, non sostituisce nessun metodo esistente
+// (shape/direct/dominant/cluster). Tutto è opt-in.
+// ════════════════════════════════════════════════════════════
+
+/**
+ * Archi del grafo della rete tariffaria.
+ * Nodi  : cluster_id (riferiscono gtfs_fare_zone_clusters.cluster_id)
+ * Archi : un arco per ogni coppia di cluster consecutivi serviti
+ *         dal percorso dominante di una linea extraurbana.
+ * source: 'dominant' (auto-generati), 'manual' (override operatore).
+ */
+export const gtfsFareNetworkEdges = pgTable("gtfs_fare_network_edges", {
+  id:              uuid("id").primaryKey().defaultRandom(),
+  feedId:          uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fromClusterId:   text("from_cluster_id").notNull(),
+  toClusterId:     text("to_cluster_id").notNull(),
+  km:              doublePrecision("km").notNull(),
+  routeId:         text("route_id"),
+  routeShortName:  text("route_short_name"),
+  shapeId:         text("shape_id"),
+  source:          text("source").notNull().default("dominant"),     // 'dominant' | 'shape' | 'manual'
+  bidirectional:   boolean("bidirectional").notNull().default(true),
+  createdAt:       timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("gtfs_fare_network_edges_from_to_idx").on(t.feedId, t.fromClusterId, t.toClusterId),
+  index("gtfs_fare_network_edges_feed_idx").on(t.feedId),
+]);
+
+/**
+ * Matrice OD precalcolata via Dijkstra all-pairs sul grafo.
+ * Una entry per ogni coppia ordinata (from_cluster, to_cluster) raggiungibile.
+ * Le coppie irraggiungibili NON hanno entry (vedere gtfs_fare_od_matrix_runs.pairs_skipped).
+ */
+export const gtfsFareOdMatrix = pgTable("gtfs_fare_od_matrix", {
+  id:              uuid("id").primaryKey().defaultRandom(),
+  feedId:          uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  fromClusterId:   text("from_cluster_id").notNull(),
+  toClusterId:     text("to_cluster_id").notNull(),
+  kmTariffario:    doublePrecision("km_tariffario").notNull(),     // somma km lungo il cammino minimo
+  fascia:          integer("fascia"),                              // banda EXTRA_BANDS, null per urbano
+  prezzo:          doublePrecision("prezzo").notNull(),
+  fareProductId:   text("fare_product_id"),
+  pathClusters:    jsonb("path_clusters").notNull().$type<string[]>(),
+  pathRoutes:      jsonb("path_routes").notNull().$type<string[]>(),
+  hopCount:        integer("hop_count").notNull(),
+  isUrban:         boolean("is_urban").notNull().default(false),
+  computedAt:      timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("gtfs_fare_od_matrix_from_to_idx").on(t.feedId, t.fromClusterId, t.toClusterId),
+  uniqueIndex("gtfs_fare_od_matrix_unique_idx").on(t.feedId, t.fromClusterId, t.toClusterId),
+]);
+
+/**
+ * Storico esecuzioni del calcolo all-pairs.
+ * Ogni POST /api/fares/min-od/compute-matrix crea un run.
+ */
+export const gtfsFareOdMatrixRuns = pgTable("gtfs_fare_od_matrix_runs", {
+  id:              uuid("id").primaryKey().defaultRandom(),
+  feedId:          uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  status:          text("status").notNull(),                        // 'pending' | 'running' | 'success' | 'error'
+  edgeCount:       integer("edge_count"),
+  pairsComputed:   integer("pairs_computed"),
+  pairsSkipped:    integer("pairs_skipped"),
+  durationMs:      integer("duration_ms"),
+  errorMessage:    text("error_message"),
+  params:          jsonb("params"),
+  startedAt:       timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt:      timestamp("finished_at", { withTimezone: true }),
+});
+
+export type GtfsFareNetworkEdge = typeof gtfsFareNetworkEdges.$inferSelect;
+export type GtfsFareOdMatrixEntry = typeof gtfsFareOdMatrix.$inferSelect;
+export type GtfsFareOdMatrixRun = typeof gtfsFareOdMatrixRuns.$inferSelect;
