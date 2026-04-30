@@ -7,7 +7,7 @@ import {
   FileText, Shield, Zap, Search, Filter, Navigation, Circle, Clock, Trash2, Plus,
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
   Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
-  BarChart3, Share2, Copy, ExternalLink, X,
+  BarChart3, Share2, Copy, ExternalLink, X, ShieldCheck,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink } from "./fares-polimetriche-export";
+import FaresTelemacoTab from "./fares-telemaco-tab";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -2227,7 +2228,7 @@ function ZonesDominantTab() {
 // ═══════════════════════════════════════════════════════════
 
 function ZonesContainerTab() {
-  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od">("cluster");
+  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od" | "telemaco">("cluster");
   return (
     <div className="space-y-4">
       {/* Sub-tab switcher */}
@@ -2265,6 +2266,15 @@ function ZonesContainerTab() {
           <Share2 className="w-3.5 h-3.5" /> Min OD (Grafo)
           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-emerald-500/40 text-emerald-300">NEW</Badge>
         </button>
+        <button
+          onClick={() => setSubTab("telemaco")}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === "telemaco" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <ShieldCheck className="w-3.5 h-3.5" /> Telemaco
+          <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-fuchsia-500/40 text-fuchsia-300">NEW</Badge>
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
@@ -2272,7 +2282,8 @@ function ZonesContainerTab() {
           {subTab === "cluster" ? <ClustersTab />
             : subTab === "shape" ? <ZonesTab />
             : subTab === "dominant" ? <ZonesDominantTab />
-            : <ZonesMinOdTab />}
+            : subTab === "min-od" ? <ZonesMinOdTab />
+            : <FaresTelemacoTab />}
         </motion.div>
       </AnimatePresence>
     </div>
