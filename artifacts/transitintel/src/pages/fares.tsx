@@ -9,7 +9,7 @@ import {
   Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
   BarChart3, Share2, Copy, ExternalLink, X,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, createPolimetricheMinOdShareLink } from "./fares-polimetriche-export";
+import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink } from "./fares-polimetriche-export";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -4065,7 +4065,7 @@ function GenerateTab() {
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
-  const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones">(null);
+  const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones" | "min-od-stops" | "min-od-zones">(null);
   const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number; mode: "stops" | "zones" } | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
 
@@ -4152,197 +4152,241 @@ function GenerateTab() {
         </CardContent>
       </Card>
 
-      {/* Actions row */}
-      <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={generateAll} disabled={generating} size="sm">
-          {generating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
-          Genera Anteprima Tariffe
-        </Button>
-        <Button onClick={downloadFullZip} disabled={downloadingZip} variant="outline" size="sm">
-          {downloadingZip ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
-          Scarica GTFS Completo (ZIP)
-        </Button>
-        <Button
-          onClick={async () => {
-            if (!result) {
-              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
-              return;
-            }
-            try {
-              await exportPolimetricheToPrint({
-                files: result.files,
-                zoningMethod,
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-            } catch (e: any) {
-              toast({ title: "Errore polimetriche", description: e?.message || String(e), variant: "destructive" });
-            }
-          }}
-          size="sm"
-          className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
-          title="Una pagina A3 per ogni linea con matrice fermata × fermata e prezzo in € (stampabile in PDF)"
-        >
-          <BarChart3 className="w-4 h-4 mr-2" />
-          📊 Polimetriche fermate (PDF)
-        </Button>
-        <Button
-          onClick={async () => {
-            if (!result) {
-              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
-              return;
-            }
-            try {
-              await exportPolimetricheZonesToPrint({
-                files: result.files,
-                zoningMethod,
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-            } catch (e: any) {
-              toast({ title: "Errore polimetriche zone", description: e?.message || String(e), variant: "destructive" });
-            }
-          }}
-          size="sm"
-          className="bg-teal-600 hover:bg-teal-500 text-white border-0"
-          title="Versione semplificata: una pagina per linea con matrice nodo × nodo e tariffe T1, T2, … (stampabile in PDF)"
-        >
-          <BarChart3 className="w-4 h-4 mr-2" />
-          � Polimetriche per nodi (PDF)
-        </Button>
-        <Button
-          onClick={async () => {
-            if (!result) {
-              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
-              return;
-            }
-            setSharingPolimetriche("stops");
-            setShareLinkCopied(false);
-            try {
-              const link = await createPolimetricheShareLink({
-                files: result.files,
-                zoningMethod,
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-              setShareLink({ ...link, mode: "stops" });
-              toast({ title: "Link condivisibile (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
-            } catch (e: any) {
-              toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
-            } finally {
-              setSharingPolimetriche(null);
-            }
-          }}
-          size="sm"
-          variant="outline"
-          className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-          title="Genera un link pubblico condivisibile alla vista per fermate"
-        >
-          {sharingPolimetriche === "stops" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
-          🔗 Condividi fermate
-        </Button>
-        <Button
-          onClick={async () => {
-            if (!result) {
-              toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" });
-              return;
-            }
-            setSharingPolimetriche("zones");
-            setShareLinkCopied(false);
-            try {
-              const link = await createPolimetricheZonesShareLink({
-                files: result.files,
-                zoningMethod,
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-              setShareLink({ ...link, mode: "zones" });
-              toast({ title: "Link condivisibile (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
-            } catch (e: any) {
-              toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
-            } finally {
-              setSharingPolimetriche(null);
-            }
-          }}
-          size="sm"
-          variant="outline"
-          className="border-teal-300 text-teal-700 hover:bg-teal-50"
-          title="Genera un link pubblico condivisibile alla vista semplificata per nodi tariffari"
-        >
-          {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
-          🔗 Condividi nodi
-        </Button>
-        {/* ───── Min-OD (grafo di rete) ───── */}
-        <Button
-          onClick={async () => {
-            try {
-              await exportPolimetricheMinOdToPrint({
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-            } catch (e: any) {
-              toast({ title: "Errore polimetriche Min-OD", description: e?.message || String(e), variant: "destructive" });
-            }
-          }}
-          size="sm"
-          className="bg-indigo-600 hover:bg-indigo-500 text-white border-0"
-          title="Polimetriche con tariffa minima dal grafo di rete (Dijkstra all-pairs sui cluster). NON richiede generazione CSV — usa la matrice OD del backend. Lanciare prima 'Costruisci grafo' e 'Calcola matrice OD' nel tab Zone Extraurbane."
-        >
-          <Share2 className="w-4 h-4 mr-2" />
-          🔗 Polimetriche Min-OD (PDF)
-        </Button>
-        <Button
-          onClick={async () => {
-            setSharingPolimetriche("zones");
-            setShareLinkCopied(false);
-            try {
-              const link = await createPolimetricheMinOdShareLink({
-                date: new Date().toLocaleDateString("it-IT"),
-              });
-              setShareLink({ ...link, mode: "zones" });
-              toast({ title: "Link Min-OD generato", description: `${link.routeCount} linee · pronto da condividere` });
-            } catch (e: any) {
-              toast({ title: "Errore generazione link Min-OD", description: e?.message || String(e), variant: "destructive" });
-            } finally {
-              setSharingPolimetriche(null);
-            }
-          }}
-          size="sm"
-          variant="outline"
-          className="border-indigo-300 text-indigo-700 hover:bg-indigo-50"
-          title="Link condivisibile delle polimetriche Min-OD"
-        >
-          {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
-          🔗 Condividi Min-OD
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={deduplicating}
-          onClick={async () => {
-            setDeduplicating(true);
-            try {
-              const res = await apiFetch<{ deleted: number; remaining: number }>("/api/fares/stop-areas/deduplicate", { method: "POST" });
-              toast({ title: "Deduplicazione completata", description: `${res.deleted} duplicati rimossi, ${res.remaining} assegnamenti rimasti` });
-            } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
-            setDeduplicating(false);
-          }}
-        >
-          {deduplicating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-          Deduplica Stop-Areas
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={validating}
-          onClick={async () => {
-            setValidating(true);
-            try {
-              const res = await apiFetch<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] }>("/api/fares/validate");
-              setValidation(res);
-            } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
-            setValidating(false);
-          }}
-        >
-          {validating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-          Valida Feed
-        </Button>
-      </div>
+      {/* ═══════════════════════════════════════════════════════════
+          AZIONI — raggruppate in 3 sezioni tematiche
+          ═══════════════════════════════════════════════════════════ */}
+
+      {/* ── Sezione 1: Generazione GTFS & Validazione ── */}
+      <Card className="border-primary/30">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Zap className="w-4 h-4 text-primary" />
+            Generazione GTFS &amp; Validazione
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Costruisci l'anteprima delle tariffe e scarica il feed GTFS completo.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          <Button onClick={generateAll} disabled={generating} size="sm">
+            {generating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Zap className="w-4 h-4 mr-2" />}
+            Genera Anteprima Tariffe
+          </Button>
+          <Button onClick={downloadFullZip} disabled={downloadingZip} variant="outline" size="sm">
+            {downloadingZip ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Archive className="w-4 h-4 mr-2" />}
+            Scarica GTFS Completo (ZIP)
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={validating}
+            onClick={async () => {
+              setValidating(true);
+              try {
+                const res = await apiFetch<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] }>("/api/fares/validate");
+                setValidation(res);
+              } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+              setValidating(false);
+            }}
+          >
+            {validating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+            Valida Feed
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={deduplicating}
+            onClick={async () => {
+              setDeduplicating(true);
+              try {
+                const res = await apiFetch<{ deleted: number; remaining: number }>("/api/fares/stop-areas/deduplicate", { method: "POST" });
+                toast({ title: "Deduplicazione completata", description: `${res.deleted} duplicati rimossi, ${res.remaining} assegnamenti rimasti` });
+              } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+              setDeduplicating(false);
+            }}
+          >
+            {deduplicating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            Deduplica Stop-Areas
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* ── Sezione 2: Polimetriche tradizionali (CSV-based) ── */}
+      <Card className="border-emerald-500/30">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2 text-emerald-700">
+            <BarChart3 className="w-4 h-4" />
+            Polimetriche Tradizionali
+            <Badge variant="outline" className="ml-1 border-emerald-300 text-emerald-700 text-[10px]">CSV anteprima</Badge>
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Calcolate sui CSV generati con il metodo di zonizzazione selezionato sopra. Richiedono <strong>"Genera Anteprima Tariffe"</strong>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold text-emerald-700 w-20">Per fermate</span>
+            <Button
+              onClick={async () => {
+                if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
+                try {
+                  await exportPolimetricheToPrint({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                } catch (e: any) { toast({ title: "Errore polimetriche", description: e?.message || String(e), variant: "destructive" }); }
+              }}
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-500 text-white border-0"
+              title="Una pagina A3 per ogni linea con matrice fermata × fermata e prezzo in € (stampabile in PDF)"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              📊 PDF fermate
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
+                setSharingPolimetriche("stops");
+                setShareLinkCopied(false);
+                try {
+                  const link = await createPolimetricheShareLink({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  setShareLink({ ...link, mode: "stops" });
+                  toast({ title: "Link condivisibile (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
+                } catch (e: any) { toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
+                } finally { setSharingPolimetriche(null); }
+              }}
+              size="sm"
+              variant="outline"
+              className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+              title="Genera un link pubblico condivisibile alla vista per fermate"
+            >
+              {sharingPolimetriche === "stops" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+              🔗 Condividi fermate
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold text-teal-700 w-20">Per nodi</span>
+            <Button
+              onClick={async () => {
+                if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
+                try {
+                  await exportPolimetricheZonesToPrint({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                } catch (e: any) { toast({ title: "Errore polimetriche zone", description: e?.message || String(e), variant: "destructive" }); }
+              }}
+              size="sm"
+              className="bg-teal-600 hover:bg-teal-500 text-white border-0"
+              title="Versione semplificata: una pagina per linea con matrice nodo × nodo e tariffe T1, T2, … (stampabile in PDF)"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              📊 PDF nodi
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
+                setSharingPolimetriche("zones");
+                setShareLinkCopied(false);
+                try {
+                  const link = await createPolimetricheZonesShareLink({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  setShareLink({ ...link, mode: "zones" });
+                  toast({ title: "Link condivisibile (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
+                } catch (e: any) { toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
+                } finally { setSharingPolimetriche(null); }
+              }}
+              size="sm"
+              variant="outline"
+              className="border-teal-300 text-teal-700 hover:bg-teal-50"
+              title="Genera un link pubblico condivisibile alla vista semplificata per nodi tariffari"
+            >
+              {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+              🔗 Condividi nodi
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Sezione 3: Polimetriche Min-OD (grafo di rete) ── */}
+      <Card className="border-indigo-500/30">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2 text-indigo-700">
+            <Share2 className="w-4 h-4" />
+            Polimetriche Min-OD
+            <Badge variant="outline" className="ml-1 border-indigo-300 text-indigo-700 text-[10px]">grafo di rete</Badge>
+            <Badge className="ml-1 bg-indigo-600 text-white text-[10px]">NEW</Badge>
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Tariffa minima via Dijkstra all-pairs sui cluster (replica logica ATMA/Conerobus 2013). Richiedono
+            <strong> "Costruisci grafo"</strong> + <strong>"Calcola matrice OD"</strong> nel tab <em>Zone Extraurbane</em>.
+            Non dipende dai CSV di anteprima.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold text-indigo-700 w-20">Per fermate</span>
+            <Button
+              onClick={async () => {
+                try { await exportPolimetricheMinOdToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                catch (e: any) { toast({ title: "Errore polimetriche Min-OD", description: e?.message || String(e), variant: "destructive" }); }
+              }}
+              size="sm"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white border-0"
+              title="Pagina A3 per linea: elenco fermate + matrice tariffaria nodo × nodo derivata dal cammino minimo"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              📊 PDF fermate Min-OD
+            </Button>
+            <Button
+              onClick={async () => {
+                setSharingPolimetriche("min-od-stops");
+                setShareLinkCopied(false);
+                try {
+                  const link = await createPolimetricheMinOdShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  setShareLink({ ...link, mode: "stops" });
+                  toast({ title: "Link Min-OD (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
+                } catch (e: any) { toast({ title: "Errore generazione link Min-OD", description: e?.message || String(e), variant: "destructive" });
+                } finally { setSharingPolimetriche(null); }
+              }}
+              size="sm"
+              variant="outline"
+              className="border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+              title="Link condivisibile vista per fermate Min-OD"
+            >
+              {sharingPolimetriche === "min-od-stops" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+              🔗 Condividi fermate Min-OD
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold text-violet-700 w-20">Per nodi</span>
+            <Button
+              onClick={async () => {
+                try { await exportPolimetricheMinOdNodesToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                catch (e: any) { toast({ title: "Errore polimetriche Min-OD nodi", description: e?.message || String(e), variant: "destructive" }); }
+              }}
+              size="sm"
+              className="bg-violet-600 hover:bg-violet-500 text-white border-0"
+              title="Vista compatta: solo matrice nodo × nodo, una pagina per linea (no elenco fermate)"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              📊 PDF nodi Min-OD
+            </Button>
+            <Button
+              onClick={async () => {
+                setSharingPolimetriche("min-od-zones");
+                setShareLinkCopied(false);
+                try {
+                  const link = await createPolimetricheMinOdNodesShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  setShareLink({ ...link, mode: "zones" });
+                  toast({ title: "Link Min-OD (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
+                } catch (e: any) { toast({ title: "Errore generazione link Min-OD nodi", description: e?.message || String(e), variant: "destructive" });
+                } finally { setSharingPolimetriche(null); }
+              }}
+              size="sm"
+              variant="outline"
+              className="border-violet-300 text-violet-700 hover:bg-violet-50"
+              title="Link condivisibile vista compatta per nodi Min-OD"
+            >
+              {sharingPolimetriche === "min-od-zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+              🔗 Condividi nodi Min-OD
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Share link condivisibile (polimetriche) */}
       {shareLink && (

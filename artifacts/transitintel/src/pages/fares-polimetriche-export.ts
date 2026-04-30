@@ -1963,13 +1963,13 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
-function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date: string): string {
+function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date: string, mode: "stops" | "zones" = "stops"): string {
   const N = p.zones.length;
   if (N === 0) {
     return `<section class="page"><h2>${escapeHtml(p.routeShortName ?? p.routeId)}</h2><p class="empty">Nessun cluster sul percorso dominante.</p></section>`;
   }
 
-  const headerCols = p.zones.map(z => `<th>${escapeHtml(z.label)}</th>`).join("");
+  const headerCols = p.zones.map(z => `<th>${escapeHtml(z.label)}<span class="zname-h">${escapeHtml(z.clusterName)}</span></th>`).join("");
   const rows = p.zones.map((z, i) => {
     const cells = p.zones.map((_, j) => {
       if (j < i) return `<td class="empty">—</td>`;
@@ -1983,6 +1983,41 @@ function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date
     return `<tr><th class="row-h">${escapeHtml(z.label)} <span class="zname">${escapeHtml(z.clusterName)}</span></th>${cells}</tr>`;
   }).join("");
 
+  const title = p.routeShortName ? `Linea ${escapeHtml(p.routeShortName)}` : escapeHtml(p.routeId);
+  const subtitle = p.routeLongName ? escapeHtml(p.routeLongName) : "";
+  const legend = `<p class="legend">
+    <strong>Metodo Min-OD:</strong> per ogni coppia di nodi della linea, il prezzo è il <em>cammino minimo in km</em>
+    nella rete tariffaria intera (Dijkstra sui cluster). Se un'altra linea collega gli stessi nodi con percorso più
+    corto, viene applicata la sua fascia DGR Marche. Replica logica polimetriche storiche ATMA/Conerobus 2013.
+  </p>`;
+
+  // ── Modalità "zones" (NODI) — solo polimetrica grande, no elenco fermate ──
+  if (mode === "zones") {
+    return `
+<section class="page page-zones">
+  <header class="page-h">
+    <div>
+      <h2>${title}</h2>
+      ${subtitle ? `<p class="sub">${subtitle}</p>` : ""}
+    </div>
+    <div class="meta">
+      <span><strong>${p.totalKm.toFixed(1)}</strong> km</span>
+      <span><strong>${N}</strong> nodi tariffari</span>
+    </div>
+  </header>
+
+  <h3>Polimetrica nodo × nodo (€) — tariffa minima via grafo</h3>
+  <table class="poli poli-big">
+    <thead><tr><th></th>${headerCols}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  ${legend}
+
+  <footer class="foot">${escapeHtml(agencyName)} · ${escapeHtml(date)} · ${escapeHtml(p.routeId)} · ${N}×${N} nodi</footer>
+</section>`;
+  }
+
+  // ── Modalità "stops" (default) — elenco fermate + matrice ──
   const stopRows = p.stops.map((s, i) => {
     const zone = p.zones.find(z => z.clusterId === s.clusterId);
     return `<tr>
@@ -1992,9 +2027,6 @@ function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date
       <td class="zone">${zone ? `<span class="badge">${zone.label}</span>` : `<span class="muted">—</span>`}</td>
     </tr>`;
   }).join("");
-
-  const title = p.routeShortName ? `Linea ${escapeHtml(p.routeShortName)}` : escapeHtml(p.routeId);
-  const subtitle = p.routeLongName ? escapeHtml(p.routeLongName) : "";
 
   return `
 <section class="page">
@@ -2024,11 +2056,7 @@ function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date
         <thead><tr><th></th>${headerCols}</tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="legend">
-        <strong>Metodo Min-OD:</strong> per ogni coppia di zone della linea, il prezzo è il <em>cammino minimo in km</em>
-        nella rete tariffaria intera (Dijkstra sui cluster). Se un'altra linea collega le stesse zone con percorso più
-        corto, viene applicata la sua fascia DGR Marche. Replica la logica polimetriche storiche ATMA/Conerobus 2013.
-      </p>
+      ${legend}
     </div>
   </div>
 
@@ -2036,8 +2064,9 @@ function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date
 </section>`;
 }
 
-function renderMinOdHtml(routes: MinOdRoutePolimetrica[], agencyName: string, date: string): string {
-  const pages = routes.map(r => renderMinOdRoutePage(r, agencyName, date)).join("\n");
+function renderMinOdHtml(routes: MinOdRoutePolimetrica[], agencyName: string, date: string, mode: "stops" | "zones" = "stops"): string {
+  const pages = routes.map(r => renderMinOdRoutePage(r, agencyName, date, mode)).join("\n");
+  const subtitle = mode === "zones" ? "Vista per nodi tariffari" : "Vista per fermate";
   return `<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -2049,30 +2078,34 @@ function renderMinOdHtml(routes: MinOdRoutePolimetrica[], agencyName: string, da
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; color: #111; margin: 0; background: #f4f4f5; }
   .page { background: #fff; padding: 14mm; margin: 8mm auto; max-width: 410mm; min-height: 270mm; page-break-after: always; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
   .page:last-child { page-break-after: auto; }
-  .page-h { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #10b981; padding-bottom: 6px; margin-bottom: 12px; }
-  .page-h h2 { margin: 0; font-size: 20pt; color: #064e3b; }
+  .page-h { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #6366f1; padding-bottom: 6px; margin-bottom: 12px; }
+  .page-h h2 { margin: 0; font-size: 20pt; color: #312e81; }
   .page-h .sub { margin: 2px 0 0; font-size: 10pt; color: #555; }
   .page-h .meta { display: flex; gap: 14px; font-size: 10pt; color: #444; }
-  .page-h .meta strong { color: #064e3b; font-size: 12pt; }
+  .page-h .meta strong { color: #312e81; font-size: 12pt; }
   .two-col { display: grid; grid-template-columns: 35% 65%; gap: 14px; }
-  h3 { font-size: 11pt; margin: 0 0 6px; color: #047857; }
+  h3 { font-size: 11pt; margin: 0 0 6px; color: #4338ca; }
   table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
   table.stops th, table.stops td { padding: 2px 5px; border-bottom: 1px solid #e5e5e5; text-align: left; }
-  table.stops th { background: #f0fdf4; font-weight: 600; color: #047857; }
+  table.stops th { background: #eef2ff; font-weight: 600; color: #4338ca; }
   table.stops .num { text-align: right; font-variant-numeric: tabular-nums; width: 14%; }
   table.stops .zone { width: 14%; text-align: center; }
-  .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #d1fae5; color: #065f46; font-weight: 600; font-size: 7.5pt; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #e0e7ff; color: #3730a3; font-weight: 600; font-size: 7.5pt; }
   .muted { color: #aaa; }
   table.poli th, table.poli td { border: 1px solid #e5e5e5; padding: 3px 4px; text-align: center; vertical-align: middle; font-variant-numeric: tabular-nums; }
-  table.poli thead th { background: #064e3b; color: #fff; font-weight: 600; }
-  table.poli .row-h { background: #f0fdf4; font-weight: 600; text-align: left; padding: 3px 6px; color: #064e3b; }
+  table.poli thead th { background: #312e81; color: #fff; font-weight: 600; }
+  table.poli thead .zname-h { display: block; font-weight: 400; font-size: 6.5pt; color: #c7d2fe; margin-top: 1px; }
+  table.poli .row-h { background: #eef2ff; font-weight: 600; text-align: left; padding: 3px 6px; color: #312e81; }
   table.poli .row-h .zname { font-weight: 400; color: #555; font-size: 7.5pt; display: block; }
   table.poli td { background: #fff; font-size: 8pt; }
-  table.poli td strong { color: #064e3b; }
+  table.poli td strong { color: #312e81; }
   table.poli td .km { display: block; font-size: 6.5pt; color: #888; }
   table.poli td.empty { color: #ccc; background: #fafafa; }
-  .legend { font-size: 8pt; color: #666; margin-top: 8px; padding: 6px 8px; background: #f0fdf4; border-left: 3px solid #10b981; border-radius: 0 4px 4px 0; }
-  .legend strong { color: #047857; }
+  table.poli-big { font-size: 10pt; }
+  table.poli-big th, table.poli-big td { padding: 6px 8px; }
+  table.poli-big td strong { font-size: 11pt; }
+  .legend { font-size: 8pt; color: #666; margin-top: 8px; padding: 6px 8px; background: #eef2ff; border-left: 3px solid #6366f1; border-radius: 0 4px 4px 0; }
+  .legend strong { color: #4338ca; }
   .foot { margin-top: 14px; padding-top: 6px; border-top: 1px solid #e5e5e5; font-size: 7.5pt; color: #999; text-align: center; }
   .empty { color: #999; font-style: italic; }
   @media print { body { background: #fff; } .page { box-shadow: none; margin: 0; } }
@@ -2080,8 +2113,8 @@ function renderMinOdHtml(routes: MinOdRoutePolimetrica[], agencyName: string, da
 </head>
 <body>
 <header style="text-align:center; padding: 12mm 8mm 4mm; font-family: -apple-system, sans-serif;">
-  <h1 style="margin:0; color:#064e3b; font-size:18pt;">Polimetriche Tariffarie · Metodo Min-OD (Grafo di Rete)</h1>
-  <p style="margin:4px 0 0; color:#555;">${escapeHtml(agencyName)} · ${escapeHtml(date)} · ${routes.length} linee</p>
+  <h1 style="margin:0; color:#312e81; font-size:18pt;">Polimetriche Tariffarie · Metodo Min-OD (Grafo di Rete)</h1>
+  <p style="margin:4px 0 0; color:#555;">${escapeHtml(subtitle)} · ${escapeHtml(agencyName)} · ${escapeHtml(date)} · ${routes.length} linee</p>
 </header>
 ${pages}
 </body>
@@ -2108,14 +2141,15 @@ async function loadMinOdRoutes(): Promise<MinOdRoutePolimetrica[]> {
  * extraurbane usando i prezzi Min-OD (cammino minimo nella rete).
  * NON richiede CSV generati — interroga direttamente la matrice OD del backend.
  */
-export async function exportPolimetricheMinOdToPrint(opts?: { agencyName?: string; date?: string }): Promise<void> {
+export async function exportPolimetricheMinOdToPrint(opts?: { agencyName?: string; date?: string; mode?: "stops" | "zones" }): Promise<void> {
   const agencyName = opts?.agencyName ?? "Conerobus";
   const date = opts?.date ?? new Date().toLocaleDateString("it-IT");
+  const mode = opts?.mode ?? "stops";
   const routes = await loadMinOdRoutes();
   if (routes.length === 0) {
     throw new Error("Nessuna linea con dati Min-OD: lancia prima 'Costruisci grafo' e 'Calcola matrice OD' nel tab Zone Extraurbane.");
   }
-  const html = renderMinOdHtml(routes, agencyName, date);
+  const html = renderMinOdHtml(routes, agencyName, date, mode);
   const w = window.open("", "_blank");
   if (!w) throw new Error("Popup bloccato dal browser");
   w.document.open();
@@ -2124,21 +2158,28 @@ export async function exportPolimetricheMinOdToPrint(opts?: { agencyName?: strin
   setTimeout(() => { try { w.focus(); w.print(); } catch { /* noop */ } }, 600);
 }
 
+/** Variante "per nodi" — solo matrice nodo×nodo, senza elenco fermate. */
+export async function exportPolimetricheMinOdNodesToPrint(opts?: { agencyName?: string; date?: string }): Promise<void> {
+  return exportPolimetricheMinOdToPrint({ ...opts, mode: "zones" });
+}
+
 /**
  * Crea un link condivisibile per le polimetriche Min-OD.
  */
-export async function createPolimetricheMinOdShareLink(opts?: { agencyName?: string; date?: string }): Promise<{
+export async function createPolimetricheMinOdShareLink(opts?: { agencyName?: string; date?: string; mode?: "stops" | "zones" }): Promise<{
   id: string;
   url: string;
   routeCount: number;
 }> {
   const agencyName = opts?.agencyName ?? "Conerobus";
   const date = opts?.date ?? new Date().toLocaleDateString("it-IT");
+  const mode = opts?.mode ?? "stops";
   const routes = await loadMinOdRoutes();
   if (routes.length === 0) {
     throw new Error("Nessuna linea con dati Min-OD: lancia prima 'Costruisci grafo' e 'Calcola matrice OD'.");
   }
-  const html = renderMinOdHtml(routes, agencyName, date);
+  const html = renderMinOdHtml(routes, agencyName, date, mode);
+  const titleSuffix = mode === "zones" ? " (nodi)" : "";
   const res = await apiFetch<{ id: string; url: string; createdAt: string }>(
     "/api/fares/polimetriche/snapshots",
     {
@@ -2146,15 +2187,20 @@ export async function createPolimetricheMinOdShareLink(opts?: { agencyName?: str
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         html,
-        title: `Polimetriche Min-OD · ${agencyName} · ${date}`,
+        title: `Polimetriche Min-OD${titleSuffix} · ${agencyName} · ${date}`,
         agencyName,
-        zoningMethod: "min_od",
+        zoningMethod: mode === "zones" ? "min_od_nodes" : "min_od",
         routeCount: routes.length,
         productCount: 0,
         areaCount: routes.reduce((acc, r) => acc + r.zones.length, 0),
-        meta: { date, mode: "min_od" },
+        meta: { date, mode: mode === "zones" ? "min_od_nodes" : "min_od" },
       }),
     },
   );
   return { id: res.id, url: res.url, routeCount: routes.length };
+}
+
+/** Variante "per nodi" — share link della sola matrice nodo×nodo. */
+export async function createPolimetricheMinOdNodesShareLink(opts?: { agencyName?: string; date?: string }) {
+  return createPolimetricheMinOdShareLink({ ...opts, mode: "zones" });
 }
