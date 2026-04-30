@@ -584,6 +584,9 @@ export const gtfsFareZoneClusters = pgTable("gtfs_fare_zone_clusters", {
   centroidLat: doublePrecision("centroid_lat"),
   centroidLon: doublePrecision("centroid_lon"),
   color: text("color").notNull().default("#3b82f6"),
+  // ── Telemaco compliance (additivo) ──
+  isOfficial: boolean("is_official").notNull().default(false),
+  officialCode: text("official_code"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
@@ -599,6 +602,11 @@ export const gtfsFareZoneClusterStops = pgTable("gtfs_fare_zone_cluster_stops", 
   stopName: text("stop_name").notNull(),
   stopLat: doublePrecision("stop_lat").notNull(),
   stopLon: doublePrecision("stop_lon").notNull(),
+  // ── Telemaco compliance (additivo) ──
+  assignmentLayer: text("assignment_layer"),                          // 'official' | 'exact' | 'token' | 'geo' | 'singleton' | 'manual'
+  assignmentConfidence: integer("assignment_confidence").default(0),  // 0-100
+  assignmentSource: text("assignment_source"),                        // 'auto' | 'manual' | 'import'
+  assignedAt: timestamp("assigned_at", { withTimezone: true }).defaultNow(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_fare_zone_cs_feed_cluster").on(t.feedId, t.clusterId),
@@ -969,3 +977,73 @@ export const gtfsFareOdMatrixRuns = pgTable("gtfs_fare_od_matrix_runs", {
 export type GtfsFareNetworkEdge = typeof gtfsFareNetworkEdges.$inferSelect;
 export type GtfsFareOdMatrixEntry = typeof gtfsFareOdMatrix.$inferSelect;
 export type GtfsFareOdMatrixRun = typeof gtfsFareOdMatrixRuns.$inferSelect;
+
+// ════════════════════════════════════════════════════════════
+// TELEMACO COMPLIANCE — Auto-assegnazione fermate ai nodi tariffari
+// Modalità ADDITIVA: pipeline a 4 layer + catalogo ufficiale + audit
+// override manuali. Le tabelle gtfs_fare_zone_clusters e
+// gtfs_fare_zone_cluster_stops hanno colonne aggiuntive (vedi sopra).
+// ════════════════════════════════════════════════════════════
+
+/**
+ * Catalogo dei nodi tariffari ufficiali (es. indice ATMA 2013, Regione Marche).
+ * Importabile via CSV o via lista preconfigurata. Usato dal Layer 0 della
+ * pipeline di auto-assegnazione per ancorare le fermate a nodi normativi.
+ */
+export const gtfsFareOfficialNodes = pgTable("gtfs_fare_official_nodes", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  feedId:         uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  officialCode:   text("official_code").notNull(),       // es. "ANCONA", "FALCONARA_M"
+  officialName:   text("official_name").notNull(),       // es. "Ancona"
+  nameNormalized: text("name_normalized").notNull(),     // lowercase, no punct, sorted tokens
+  centroidLat:    doublePrecision("centroid_lat"),
+  centroidLon:    doublePrecision("centroid_lon"),
+  aliases:        jsonb("aliases").$type<string[]>().default([]),
+  source:         text("source").notNull().default("manual"),   // 'manual' | 'atma_2013' | 'regione_marche'
+  notes:          text("notes"),
+  createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("gtfs_fare_official_nodes_feed_code_idx").on(t.feedId, t.officialCode),
+  index("gtfs_fare_official_nodes_name_idx").on(t.feedId, t.nameNormalized),
+]);
+
+/**
+ * Storico esecuzioni del motore di auto-assegnazione fermate→nodi tariffari.
+ * Una entry per ogni POST /api/fares/node-assignment/run.
+ */
+export const gtfsFareNodeAssignmentRuns = pgTable("gtfs_fare_node_assignment_runs", {
+  id:               uuid("id").primaryKey().defaultRandom(),
+  feedId:           uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  status:           text("status").notNull(),                                          // 'pending' | 'running' | 'success' | 'error'
+  totalStops:       integer("total_stops"),
+  assignedByLayer:  jsonb("assigned_by_layer").$type<Record<string, number>>(),        // { official: 45, exact: 234, ... }
+  clustersBefore:   integer("clusters_before"),
+  clustersAfter:    integer("clusters_after"),
+  durationMs:       integer("duration_ms"),
+  errorMessage:     text("error_message"),
+  params:           jsonb("params"),
+  startedAt:        timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt:       timestamp("finished_at", { withTimezone: true }),
+});
+
+/**
+ * Audit log degli override manuali sulle assegnazioni fermata→cluster.
+ * Riempito dagli endpoint /stop-assignment/move e /bulk-move.
+ * Permette il revert tramite /stop-assignment/revert/:overrideId.
+ */
+export const gtfsFareStopAssignmentOverrides = pgTable("gtfs_fare_stop_assignment_overrides", {
+  id:             uuid("id").primaryKey().defaultRandom(),
+  feedId:         uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
+  stopId:         text("stop_id").notNull(),
+  fromClusterId:  text("from_cluster_id"),     // cluster precedente (null se fermata orfana)
+  toClusterId:    text("to_cluster_id"),        // cluster nuovo (null se fermata rimossa)
+  reason:         text("reason"),
+  actor:          text("actor"),
+  createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("gtfs_fare_stop_overrides_stop_idx").on(t.feedId, t.stopId),
+]);
+
+export type GtfsFareOfficialNode = typeof gtfsFareOfficialNodes.$inferSelect;
+export type GtfsFareNodeAssignmentRun = typeof gtfsFareNodeAssignmentRuns.$inferSelect;
+export type GtfsFareStopAssignmentOverride = typeof gtfsFareStopAssignmentOverrides.$inferSelect;
