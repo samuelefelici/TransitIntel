@@ -115,6 +115,8 @@ export default function ClusterManagement() {
   const [clusterTransferMin, setClusterTransferMin] = useState(10);
   const [clusterColor, setClusterColor] = useState(CLUSTER_COLORS[0]);
   const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
+  const [renamingClusterId, setRenamingClusterId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const [saving, setSaving] = useState(false);
   const [carsInput, setCarsInput] = useState("5");
 
@@ -364,6 +366,32 @@ export default function ClusterManagement() {
       setClusters(prev => prev.filter(c => c.id !== id));
     } catch (err) {
       console.error("Failed to delete cluster:", err);
+    }
+  }, []);
+
+  // ── Rename inline (rapido, senza entrare in modalità edit completa) ──
+  const renameCluster = useCallback(async (cluster: ClusterData, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === cluster.name) return;
+    try {
+      const body = {
+        name: trimmed,
+        transferFromDepotMin: cluster.transferFromDepotMin,
+        color: cluster.color,
+        stops: cluster.stops.map(s => ({
+          gtfsStopId: s.gtfsStopId,
+          stopName: s.stopName,
+          stopLat: s.stopLat,
+          stopLon: s.stopLon,
+        })),
+      };
+      const updated = await apiFetch<ClusterData>(`/api/clusters/${cluster.id}`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setClusters(prev => prev.map(c => c.id === cluster.id ? updated : c));
+    } catch (err) {
+      console.error("Failed to rename cluster:", err);
     }
   }, []);
 
@@ -634,20 +662,58 @@ export default function ClusterManagement() {
                     <CardContent className="p-3">
                       <div className="flex items-center gap-2">
                         <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: cluster.color }} />
-                        <button
-                          className="flex-1 text-left"
-                          onClick={() => setExpandedCluster(expandedCluster === cluster.id ? null : cluster.id)}
-                        >
-                          <span className="text-sm font-medium">{cluster.name}</span>
-                          <div className="flex items-center gap-2 mt-0.5">
-                            <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
-                              {cluster.stops.length} fermate
-                            </Badge>
-                            <span className="text-[10px] text-muted-foreground">
-                              {cluster.transferFromDepotMin} min dal deposito
-                            </span>
+                        {renamingClusterId === cluster.id ? (
+                          <div className="flex-1 flex items-center gap-1">
+                            <Input
+                              autoFocus
+                              value={renameValue}
+                              onChange={e => setRenameValue(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") {
+                                  renameCluster(cluster, renameValue);
+                                  setRenamingClusterId(null);
+                                } else if (e.key === "Escape") {
+                                  setRenamingClusterId(null);
+                                }
+                              }}
+                              onBlur={() => {
+                                renameCluster(cluster, renameValue);
+                                setRenamingClusterId(null);
+                              }}
+                              onClick={e => e.stopPropagation()}
+                              className="h-6 text-sm py-0 px-1.5"
+                            />
                           </div>
-                        </button>
+                        ) : (
+                          <button
+                            className="flex-1 text-left"
+                            onClick={() => setExpandedCluster(expandedCluster === cluster.id ? null : cluster.id)}
+                          >
+                            <span className="text-sm font-medium">{cluster.name}</span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
+                                {cluster.stops.length} fermate
+                              </Badge>
+                              <span className="text-[10px] text-muted-foreground">
+                                {cluster.transferFromDepotMin} min dal deposito
+                              </span>
+                            </div>
+                          </button>
+                        )}
+                        {renamingClusterId !== cluster.id && (
+                          <button
+                            className="p-1 rounded hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors shrink-0"
+                            onClick={e => {
+                              e.stopPropagation();
+                              setRenamingClusterId(cluster.id);
+                              setRenameValue(cluster.name);
+                            }}
+                            title="Rinomina cluster"
+                            disabled={isEditing}
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        )}
                         {expandedCluster === cluster.id
                           ? <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
                           : <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
