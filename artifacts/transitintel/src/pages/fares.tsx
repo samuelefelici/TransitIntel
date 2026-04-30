@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink } from "./fares-polimetriche-export";
+import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, createPolimetricheMinOdShareLink } from "./fares-polimetriche-export";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -4267,6 +4267,48 @@ function GenerateTab() {
         >
           {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
           🔗 Condividi nodi
+        </Button>
+        {/* ───── Min-OD (grafo di rete) ───── */}
+        <Button
+          onClick={async () => {
+            try {
+              await exportPolimetricheMinOdToPrint({
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+            } catch (e: any) {
+              toast({ title: "Errore polimetriche Min-OD", description: e?.message || String(e), variant: "destructive" });
+            }
+          }}
+          size="sm"
+          className="bg-indigo-600 hover:bg-indigo-500 text-white border-0"
+          title="Polimetriche con tariffa minima dal grafo di rete (Dijkstra all-pairs sui cluster). NON richiede generazione CSV — usa la matrice OD del backend. Lanciare prima 'Costruisci grafo' e 'Calcola matrice OD' nel tab Zone Extraurbane."
+        >
+          <Share2 className="w-4 h-4 mr-2" />
+          🔗 Polimetriche Min-OD (PDF)
+        </Button>
+        <Button
+          onClick={async () => {
+            setSharingPolimetriche("zones");
+            setShareLinkCopied(false);
+            try {
+              const link = await createPolimetricheMinOdShareLink({
+                date: new Date().toLocaleDateString("it-IT"),
+              });
+              setShareLink({ ...link, mode: "zones" });
+              toast({ title: "Link Min-OD generato", description: `${link.routeCount} linee · pronto da condividere` });
+            } catch (e: any) {
+              toast({ title: "Errore generazione link Min-OD", description: e?.message || String(e), variant: "destructive" });
+            } finally {
+              setSharingPolimetriche(null);
+            }
+          }}
+          size="sm"
+          variant="outline"
+          className="border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+          title="Link condivisibile delle polimetriche Min-OD"
+        >
+          {sharingPolimetriche === "zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+          🔗 Condividi Min-OD
         </Button>
         <Button
           variant="outline"

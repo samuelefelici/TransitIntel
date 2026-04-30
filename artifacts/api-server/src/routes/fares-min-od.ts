@@ -683,4 +683,146 @@ router.delete("/fares/min-od/matrix", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/fares/min-od/route-polimetrica/:routeId
+ *
+ * Restituisce la polimetrica della singola linea con prezzi presi
+ * dalla matrice OD globale (cammino minimo nella rete).
+ *
+ * Output:
+ *   {
+ *     routeId, routeShortName, routeLongName,
+ *     stops:  [{stopId, stopName, kmFromStart, clusterId, clusterName}],
+ *     zones:  [{clusterId, clusterName, label}],   // sequenza cluster sulla linea
+ *     matrix: number[][]                            // zones×zones, € minimi via grafo
+ *   }
+ */
+router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
+  try {
+    await ensureMinOdTables();
+    const feedId = (req.query.feedId as string) || (await getLatestFeedId());
+    const routeId = req.params.routeId;
+    if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });
+
+    // Anagrafica linea
+    const routeRow = await db.execute<any>(sql`
+      SELECT route_id, route_short_name, route_long_name
+      FROM gtfs_routes WHERE feed_id = ${feedId} AND route_id = ${routeId} LIMIT 1
+    `);
+    if (routeRow.rows.length === 0) return res.status(404).json({ error: "route non trovata" });
+    const r0 = routeRow.rows[0];
+
+    // Mappa stop→cluster e anagrafica cluster
+    const csRows = await db.select({
+      stopId: gtfsFareZoneClusterStops.stopId,
+      clusterId: gtfsFareZoneClusterStops.clusterId,
+    }).from(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+    const stopToCluster = new Map<string, string>();
+    for (const r of csRows) stopToCluster.set(r.stopId, r.clusterId);
+
+    const cRows = await db.select({
+      clusterId: gtfsFareZoneClusters.clusterId,
+      clusterName: gtfsFareZoneClusters.clusterName,
+    }).from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    const clusterName = new Map<string, string>();
+    for (const c of cRows) clusterName.set(c.clusterId, c.clusterName ?? c.clusterId);
+
+    // Percorso dominante della linea
+    const dom = await getDominantPercorsoLocal(feedId, routeId);
+    if (!dom || dom.stops.length < 2) {
+      return res.status(404).json({ error: "percorso dominante non disponibile per questa linea" });
+    }
+
+    // Costruisci elenco fermate con km cumulato e cluster
+    type StopInfo = { stopId: string; stopName: string; kmFromStart: number; clusterId: string | null; clusterName: string | null };
+    const stopIds = dom.stops.map(s => s.stop_id);
+    const stopIdParams = sql.join(stopIds.map(id => sql`${id}`), sql`, `);
+    const stopNamesRow = await db.execute<any>(sql`
+      SELECT stop_id, stop_name FROM gtfs_stops WHERE feed_id = ${feedId} AND stop_id IN (${stopIdParams})
+    `);
+    const nameMap = new Map<string, string>();
+    for (const r of stopNamesRow.rows) nameMap.set(r.stop_id, r.stop_name);
+
+    const stops: StopInfo[] = [];
+    let cumKm = 0;
+    let prevLat: number | null = null, prevLon: number | null = null;
+    for (const s of dom.stops) {
+      if (prevLat != null && prevLon != null) cumKm += haversineKm(prevLat, prevLon, s.lat, s.lon);
+      prevLat = s.lat; prevLon = s.lon;
+      const cId = stopToCluster.get(s.stop_id) ?? null;
+      stops.push({
+        stopId: s.stop_id,
+        stopName: nameMap.get(s.stop_id) ?? s.stop_id,
+        kmFromStart: Math.round(cumKm * 100) / 100,
+        clusterId: cId,
+        clusterName: cId ? (clusterName.get(cId) ?? cId) : null,
+      });
+    }
+
+    // Sequenza cluster univoci nell'ordine in cui appaiono
+    const zoneList: { clusterId: string; clusterName: string; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const s of stops) {
+      if (!s.clusterId || seen.has(s.clusterId)) continue;
+      seen.add(s.clusterId);
+      zoneList.push({
+        clusterId: s.clusterId,
+        clusterName: s.clusterName ?? s.clusterId,
+        label: `Z${zoneList.length + 1}`,
+      });
+    }
+
+    // Carica i prezzi min-od per le coppie di interesse (solo cluster della linea)
+    const N = zoneList.length;
+    const matrix: (number | null)[][] = Array.from({ length: N }, () => Array(N).fill(null));
+    const kmMatrix: (number | null)[][] = Array.from({ length: N }, () => Array(N).fill(null));
+    const fasciaMatrix: (number | null)[][] = Array.from({ length: N }, () => Array(N).fill(null));
+
+    if (N >= 2) {
+      const zoneIds = zoneList.map(z => z.clusterId);
+      const zParams = sql.join(zoneIds.map(id => sql`${id}`), sql`, `);
+      const odRows = await db.execute<any>(sql`
+        SELECT from_cluster_id, to_cluster_id, prezzo, km_tariffario, fascia
+        FROM gtfs_fare_od_matrix
+        WHERE feed_id = ${feedId}
+          AND from_cluster_id IN (${zParams})
+          AND to_cluster_id IN (${zParams})
+      `);
+      const idx = new Map<string, number>();
+      zoneIds.forEach((id, i) => idx.set(id, i));
+      for (const o of odRows.rows) {
+        const i = idx.get(o.from_cluster_id);
+        const j = idx.get(o.to_cluster_id);
+        if (i === undefined || j === undefined) continue;
+        matrix[i][j] = Number(o.prezzo);
+        kmMatrix[i][j] = Number(o.km_tariffario);
+        fasciaMatrix[i][j] = o.fascia !== null ? Number(o.fascia) : null;
+      }
+      // Diagonale: stesso cluster → 1ª fascia
+      for (let i = 0; i < N; i++) {
+        if (matrix[i][i] === null) {
+          matrix[i][i] = EXTRA_BANDS_MIN_OD[0].price;
+          kmMatrix[i][i] = 0;
+          fasciaMatrix[i][i] = 1;
+        }
+      }
+    }
+
+    return res.json({
+      routeId: r0.route_id,
+      routeShortName: r0.route_short_name,
+      routeLongName: r0.route_long_name,
+      totalKm: stops.length > 0 ? stops[stops.length - 1].kmFromStart : 0,
+      stops,
+      zones: zoneList,
+      matrix,
+      kmMatrix,
+      fasciaMatrix,
+    });
+  } catch (err: any) {
+    console.error("[min-od/route-polimetrica]", err);
+    return res.status(500).json({ error: err?.message ?? String(err) });
+  }
+});
+
 export default router;
