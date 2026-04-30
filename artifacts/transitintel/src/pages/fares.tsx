@@ -2227,7 +2227,7 @@ function ZonesDominantTab() {
 // ═══════════════════════════════════════════════════════════
 
 function ZonesContainerTab() {
-  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant">("cluster");
+  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od">("cluster");
   return (
     <div className="space-y-4">
       {/* Sub-tab switcher */}
@@ -2256,13 +2256,379 @@ function ZonesContainerTab() {
         >
           <Target className="w-3.5 h-3.5" /> Percorso Dominante
         </button>
+        <button
+          onClick={() => setSubTab("min-od")}
+          className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === "min-od" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+          }`}
+        >
+          <Share2 className="w-3.5 h-3.5" /> Min OD (Grafo)
+          <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-emerald-500/40 text-emerald-300">NEW</Badge>
+        </button>
       </div>
 
       <AnimatePresence mode="wait">
         <motion.div key={subTab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.15 }}>
-          {subTab === "cluster" ? <ClustersTab /> : subTab === "shape" ? <ZonesTab /> : <ZonesDominantTab />}
+          {subTab === "cluster" ? <ClustersTab />
+            : subTab === "shape" ? <ZonesTab />
+            : subTab === "dominant" ? <ZonesDominantTab />
+            : <ZonesMinOdTab />}
         </motion.div>
       </AnimatePresence>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// TAB 3e: MIN OD — Tariffa minima sistema-wide via grafo + Dijkstra
+// ═══════════════════════════════════════════════════════════
+
+interface MinOdRun {
+  id: string;
+  status: string;
+  edgeCount: number | null;
+  pairsComputed: number | null;
+  pairsSkipped: number | null;
+  durationMs: number | null;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+interface MinOdMatrixRow {
+  fromClusterId: string;
+  toClusterId: string;
+  kmTariffario: number;
+  fascia: number | null;
+  prezzo: number;
+  hopCount: number;
+  pathClusters: string[];
+  pathRoutes: string[];
+}
+
+function ZonesMinOdTab() {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState<null | "build" | "compute" | "clear">(null);
+  const [runs, setRuns] = useState<MinOdRun[]>([]);
+  const [edgeCount, setEdgeCount] = useState<number | null>(null);
+  const [matrixTotal, setMatrixTotal] = useState<number>(0);
+  const [matrixRows, setMatrixRows] = useState<MinOdMatrixRow[]>([]);
+  const [clusters, setClusters] = useState<{ clusterId: string; clusterName: string }[]>([]);
+  const [simFrom, setSimFrom] = useState<string>("");
+  const [simTo, setSimTo] = useState<string>("");
+  const [simResult, setSimResult] = useState<MinOdMatrixRow | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      const [r, e, m, c] = await Promise.all([
+        apiFetch<{ runs: MinOdRun[] }>("/api/fares/min-od/runs").catch(() => ({ runs: [] })),
+        apiFetch<{ count: number }>("/api/fares/min-od/edges").catch(() => ({ count: 0 })),
+        apiFetch<{ total: number; rows: MinOdMatrixRow[] }>("/api/fares/min-od/matrix?limit=200").catch(() => ({ total: 0, rows: [] })),
+        apiFetch<any[]>("/api/fares/zone-clusters").catch(() => [] as any[]),
+      ]);
+      setRuns(r.runs ?? []);
+      setEdgeCount(e.count ?? 0);
+      setMatrixTotal(m.total ?? 0);
+      setMatrixRows(m.rows ?? []);
+      const clusterList = Array.isArray(c)
+        ? c.map((x: any) => ({ clusterId: x.clusterId ?? x.cluster_id, clusterName: x.clusterName ?? x.cluster_name ?? x.clusterId ?? x.cluster_id }))
+        : [];
+      setClusters(clusterList);
+    } catch { /* noop */ }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const buildGraph = async () => {
+    setBusy("build");
+    try {
+      const res = await apiFetch<any>("/api/fares/min-od/build-graph", { method: "POST", body: JSON.stringify({ onlyExtraurban: true }) });
+      toast({
+        title: "Grafo costruito",
+        description: `${res.edgesInserted} archi · ${res.routesProcessed} linee processate · ${res.routesSkipped} saltate`,
+      });
+      await refresh();
+    } catch (e: any) {
+      toast({ title: "Errore build grafo", description: e.message, variant: "destructive" });
+    }
+    setBusy(null);
+  };
+
+  const computeMatrix = async () => {
+    setBusy("compute");
+    try {
+      const res = await apiFetch<any>("/api/fares/min-od/compute-matrix", { method: "POST", body: JSON.stringify({}) });
+      toast({
+        title: "Matrice OD calcolata",
+        description: `${res.pairsComputed} coppie OK · ${res.pairsSkipped} irraggiungibili · ${res.durationMs} ms`,
+      });
+      await refresh();
+    } catch (e: any) {
+      toast({ title: "Errore Dijkstra", description: e.message, variant: "destructive" });
+    }
+    setBusy(null);
+  };
+
+  const clearMatrix = async () => {
+    setBusy("clear");
+    try {
+      await apiFetch("/api/fares/min-od/matrix", { method: "DELETE" });
+      toast({ title: "Matrice svuotata" });
+      await refresh();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    }
+    setBusy(null);
+  };
+
+  const simulate = async () => {
+    if (!simFrom || !simTo) {
+      toast({ title: "Seleziona origine e destinazione", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await apiFetch<MinOdMatrixRow>(`/api/fares/min-od/simulate?from=${encodeURIComponent(simFrom)}&to=${encodeURIComponent(simTo)}`);
+      setSimResult(res);
+    } catch (e: any) {
+      setSimResult(null);
+      toast({ title: "Coppia non trovata", description: "Lancia prima 'Calcola matrice OD'.", variant: "destructive" });
+    }
+  };
+
+  const lastRun = runs[0];
+  const filteredRows = useMemo(() => {
+    if (!searchTerm.trim()) return matrixRows;
+    const q = searchTerm.toLowerCase();
+    return matrixRows.filter(r =>
+      r.fromClusterId.toLowerCase().includes(q) ||
+      r.toClusterId.toLowerCase().includes(q),
+    );
+  }, [matrixRows, searchTerm]);
+
+  return (
+    <div className="space-y-4">
+      {/* Header informativo */}
+      <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-transparent">
+        <CardContent className="pt-4">
+          <div className="flex items-start gap-3">
+            <Share2 className="w-5 h-5 mt-0.5 text-emerald-400 shrink-0" />
+            <div className="space-y-1.5">
+              <h3 className="text-sm font-semibold">Tariffa Minima OD via Grafo di Rete</h3>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Costruisce un grafo della rete tariffaria sui cluster già definiti (ogni linea extraurbana porta un arco
+                tra cluster consecutivi sul percorso dominante) ed esegue Dijkstra all-pairs per scegliere il cammino
+                <strong className="text-emerald-300"> minimo in km</strong> tra ogni coppia OD. Se Ancona↔Falconara è
+                servito da Linea B (19.8 km), Linea D (11.85 km) e Linea F (10.95 km), il sistema applica la tariffa di
+                Linea F (€1.85, fascia 2) — replica logica polimetriche storiche ATMA/Conerobus 2013.
+              </p>
+              <p className="text-[11px] text-muted-foreground/80 italic pt-1">
+                Modalità additiva: non altera Cluster / Shape / Dominante. Riusa i cluster del primo tab.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Stato pipeline + bottoni */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Archi grafo</p>
+            <p className="text-2xl font-bold">{edgeCount ?? "—"}</p>
+            <Button size="sm" className="mt-2 w-full" onClick={buildGraph} disabled={busy !== null}>
+              {busy === "build" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Share2 className="w-3.5 h-3.5" />}
+              <span className="ml-1.5">1. Costruisci grafo</span>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Coppie OD calcolate</p>
+            <p className="text-2xl font-bold">{matrixTotal.toLocaleString("it-IT")}</p>
+            <Button size="sm" className="mt-2 w-full" onClick={computeMatrix} disabled={busy !== null || !edgeCount}>
+              {busy === "compute" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+              <span className="ml-1.5">2. Calcola matrice OD</span>
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-xs text-muted-foreground">Ultimo run</p>
+            {lastRun ? (
+              <>
+                <div className="flex items-center gap-1.5">
+                  {lastRun.status === "success" && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                  {lastRun.status === "error" && <AlertTriangle className="w-4 h-4 text-rose-400" />}
+                  {lastRun.status === "running" && <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />}
+                  <span className="text-sm font-medium capitalize">{lastRun.status}</span>
+                  {lastRun.durationMs && <span className="text-[11px] text-muted-foreground">· {lastRun.durationMs} ms</span>}
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {new Date(lastRun.startedAt).toLocaleString("it-IT")}
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">Nessuna esecuzione</p>
+            )}
+            <Button size="sm" variant="outline" className="mt-2 w-full" onClick={clearMatrix} disabled={busy !== null || !matrixTotal}>
+              {busy === "clear" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+              <span className="ml-1.5">Svuota matrice</span>
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Simulatore singola coppia */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Play className="w-4 h-4" /> Simulatore OD
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+            <div>
+              <label className="text-[11px] text-muted-foreground">Origine (cluster)</label>
+              <select className="w-full text-xs px-2 py-1.5 rounded-md bg-background border border-border/50"
+                value={simFrom} onChange={e => setSimFrom(e.target.value)}>
+                <option value="">— seleziona —</option>
+                {clusters.map(c => <option key={c.clusterId} value={c.clusterId}>{c.clusterName}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-muted-foreground">Destinazione (cluster)</label>
+              <select className="w-full text-xs px-2 py-1.5 rounded-md bg-background border border-border/50"
+                value={simTo} onChange={e => setSimTo(e.target.value)}>
+                <option value="">— seleziona —</option>
+                {clusters.map(c => <option key={c.clusterId} value={c.clusterId}>{c.clusterName}</option>)}
+              </select>
+            </div>
+            <Button size="sm" onClick={simulate} disabled={!simFrom || !simTo || !matrixTotal}>
+              <Play className="w-3.5 h-3.5 mr-1.5" /> Calcola tariffa minima
+            </Button>
+          </div>
+
+          {simResult && (
+            <div className="mt-3 p-3 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="text-xs text-muted-foreground">Cammino minimo</p>
+                  <p className="text-sm font-medium">{simResult.pathClusters.join(" → ")}</p>
+                  {simResult.pathRoutes.length > 0 && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      via linee: {[...new Set(simResult.pathRoutes)].join(", ")}
+                    </p>
+                  )}
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">{simResult.kmTariffario} km · fascia {simResult.fascia ?? "—"}</p>
+                  <p className="text-xl font-bold text-emerald-400">€{simResult.prezzo.toFixed(2)}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Matrice — anteprima */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <BarChart3 className="w-4 h-4" /> Matrice OD (anteprima top 200)
+            </span>
+            <input
+              type="text"
+              placeholder="Filtra cluster…"
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              className="text-xs px-2 py-1 rounded bg-background border border-border/50 w-48"
+            />
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {matrixRows.length === 0 ? (
+            <p className="text-xs text-muted-foreground italic py-4 text-center">
+              Nessuna coppia: lancia <strong>Costruisci grafo</strong> e poi <strong>Calcola matrice OD</strong>.
+            </p>
+          ) : (
+            <div className="overflow-auto max-h-[420px] border border-border/30 rounded-lg">
+              <table className="w-full text-[11px]">
+                <thead className="bg-muted/30 sticky top-0">
+                  <tr className="text-left">
+                    <th className="py-1.5 px-2 font-medium">Da</th>
+                    <th className="py-1.5 px-2 font-medium">A</th>
+                    <th className="py-1.5 px-2 font-medium text-right">Km</th>
+                    <th className="py-1.5 px-2 font-medium text-right">Hop</th>
+                    <th className="py-1.5 px-2 font-medium text-right">Fascia</th>
+                    <th className="py-1.5 px-2 font-medium text-right">€</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.slice(0, 200).map((r, i) => (
+                    <tr key={i} className="border-t border-border/20 hover:bg-muted/20">
+                      <td className="py-1 px-2 font-mono">{r.fromClusterId}</td>
+                      <td className="py-1 px-2 font-mono">{r.toClusterId}</td>
+                      <td className="py-1 px-2 text-right">{r.kmTariffario.toFixed(2)}</td>
+                      <td className="py-1 px-2 text-right">{r.hopCount}</td>
+                      <td className="py-1 px-2 text-right">{r.fascia ?? "—"}</td>
+                      <td className="py-1 px-2 text-right font-semibold text-emerald-300">€{r.prezzo.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="text-[10px] text-muted-foreground p-2 text-center">
+                Mostrati {Math.min(filteredRows.length, 200)} di {matrixTotal.toLocaleString("it-IT")} totali
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Storico run */}
+      {runs.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Clock className="w-4 h-4" /> Storico esecuzioni
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-auto border border-border/30 rounded-lg">
+              <table className="w-full text-[11px]">
+                <thead className="bg-muted/30">
+                  <tr className="text-left">
+                    <th className="py-1.5 px-2 font-medium">Data</th>
+                    <th className="py-1.5 px-2 font-medium">Status</th>
+                    <th className="py-1.5 px-2 font-medium text-right">Archi</th>
+                    <th className="py-1.5 px-2 font-medium text-right">OD ok</th>
+                    <th className="py-1.5 px-2 font-medium text-right">OD skip</th>
+                    <th className="py-1.5 px-2 font-medium text-right">ms</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.slice(0, 10).map(r => (
+                    <tr key={r.id} className="border-t border-border/20">
+                      <td className="py-1 px-2">{new Date(r.startedAt).toLocaleString("it-IT")}</td>
+                      <td className="py-1 px-2">
+                        <Badge variant="outline" className={`text-[10px] ${r.status === "success" ? "border-emerald-500/40 text-emerald-300" : r.status === "error" ? "border-rose-500/40 text-rose-300" : "border-amber-500/40 text-amber-300"}`}>
+                          {r.status}
+                        </Badge>
+                      </td>
+                      <td className="py-1 px-2 text-right">{r.edgeCount ?? "—"}</td>
+                      <td className="py-1 px-2 text-right">{r.pairsComputed?.toLocaleString("it-IT") ?? "—"}</td>
+                      <td className="py-1 px-2 text-right">{r.pairsSkipped ?? "—"}</td>
+                      <td className="py-1 px-2 text-right">{r.durationMs ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
