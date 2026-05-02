@@ -5110,9 +5110,26 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
   try {
     await ensurePolimetricheSnapshotsTable();
     const {
-      html, title, agencyName, zoningMethod,
+      html: htmlRaw, htmlGzipB64,
+      title, agencyName, zoningMethod,
       routeCount, productCount, areaCount, meta,
     } = req.body || {};
+
+    // Se il client invia HTML compresso (gzip + base64) lo decomprimiamo qui.
+    // Riduce il payload in transito di ~85-90% (utile su Render free, dove
+    // body grandi possono saturare la RAM e generare 502).
+    let html: string | undefined = typeof htmlRaw === "string" ? htmlRaw : undefined;
+    if (!html && typeof htmlGzipB64 === "string" && htmlGzipB64.length > 0) {
+      try {
+        const { gunzipSync } = await import("node:zlib");
+        const buf = Buffer.from(htmlGzipB64, "base64");
+        html = gunzipSync(buf).toString("utf8");
+      } catch (gzErr: any) {
+        res.status(400).json({ error: `Decompressione gzip fallita: ${gzErr?.message || gzErr}` });
+        return;
+      }
+    }
+
     if (typeof html !== "string" || html.length < 100) {
       res.status(400).json({ error: "Campo 'html' mancante o troppo corto" });
       return;

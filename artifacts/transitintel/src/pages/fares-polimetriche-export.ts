@@ -3468,13 +3468,20 @@ export async function createPolimetricheClustersShareLink(opts?: ClustersExportO
   clusterCount: number;
 }> {
   const built = await buildClustersHtml(opts ?? {});
+
+  // L'HTML cluster include una pagina A3 per ogni variante di percorso e
+  // può raggiungere decine di MB. Lo comprimiamo lato client con gzip
+  // (CompressionStream nativo) e lo inviamo in base64. Sul backend
+  // Render free questo evita 502 da OOM nel parsing JSON gigante.
+  const htmlGzipB64 = await gzipToBase64(built.html);
+
   const res = await apiFetch<{ id: string; url: string; createdAt: string }>(
     "/api/fares/polimetriche/snapshots",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        html: built.html,
+        htmlGzipB64,
         title: `Polimetriche Cluster · ${built.agencyName} · ${built.date}`,
         agencyName: built.agencyName,
         zoningMethod: "clusters_telemaco",
@@ -3486,5 +3493,23 @@ export async function createPolimetricheClustersShareLink(opts?: ClustersExportO
     },
   );
   return { id: res.id, url: res.url, routeCount: built.routeCount, clusterCount: built.clusterCount };
+}
+
+/**
+ * Comprime una stringa con gzip via CompressionStream API (nativo browser),
+ * ritorna il risultato in base64 (sicuro per JSON).
+ */
+async function gzipToBase64(text: string): Promise<string> {
+  // CompressionStream è disponibile in tutti i browser evergreen.
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  const buf = await new Response(stream).arrayBuffer();
+  // Conversione binaria → base64 a chunk per non saturare lo stack.
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000; // 32KB
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)) as any);
+  }
+  return btoa(binary);
 }
 
