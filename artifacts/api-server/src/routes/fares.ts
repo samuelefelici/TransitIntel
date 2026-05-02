@@ -5086,11 +5086,16 @@ async function ensurePolimetricheSnapshotsTable(): Promise<void> {
         route_count int,
         product_count int,
         area_count int,
-        html text NOT NULL,
+        html text,
         meta jsonb,
         created_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    // Migrazione: aggiungi colonna html_gz (bytea) per snapshot compressi.
+    // Permette di salvare direttamente il blob gzip senza decomprimere in RAM.
+    await db.execute(sql`ALTER TABLE fares_polimetriche_snapshots ADD COLUMN IF NOT EXISTS html_gz bytea`);
+    // Rilassa NOT NULL su html (storicamente NOT NULL): ora è opzionale se html_gz è presente.
+    await db.execute(sql`ALTER TABLE fares_polimetriche_snapshots ALTER COLUMN html DROP NOT NULL`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_fares_polimetriche_snapshots_created_at ON fares_polimetriche_snapshots(created_at DESC)`);
     polimetricheSnapshotsBootstrapped = true;
   } catch (e: any) {
@@ -5101,10 +5106,16 @@ void ensurePolimetricheSnapshotsTable();
 
 /**
  * POST /api/fares/polimetriche/snapshots
- * Body: { html: string, title?, agencyName?, zoningMethod?, routeCount?, productCount?, areaCount?, meta? }
- * Ritorna: { id, url }
+ * Body può essere uno di:
+ *   • { html: string, ... }            — legacy, HTML in chiaro (max 180MB)
+ *   • { htmlGzipB64: string, ... }     — HTML compresso gzip e codificato base64
  *
- * Limite payload: 200MB (vedi `app.ts` express.json limit).
+ * Quando arriva `htmlGzipB64`, NON viene decompresso lato server: il blob
+ * viene salvato così com'è (bytea) nel DB, evitando picchi di RAM su Render
+ * free (512MB). Il GET corrispondente lo serve con `Content-Encoding: gzip`,
+ * delegando la decompressione al browser.
+ *
+ * Ritorna: { id, url, createdAt }
  */
 router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => {
   try {
@@ -5115,36 +5126,48 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
       routeCount, productCount, areaCount, meta,
     } = req.body || {};
 
-    // Se il client invia HTML compresso (gzip + base64) lo decomprimiamo qui.
-    // Riduce il payload in transito di ~85-90% (utile su Render free, dove
-    // body grandi possono saturare la RAM e generare 502).
-    let html: string | undefined = typeof htmlRaw === "string" ? htmlRaw : undefined;
-    if (!html && typeof htmlGzipB64 === "string" && htmlGzipB64.length > 0) {
+    let htmlText: string | null = null;
+    let htmlGz: Buffer | null = null;
+
+    if (typeof htmlGzipB64 === "string" && htmlGzipB64.length > 0) {
+      // Path compresso: NON decomprimiamo in RAM, salviamo i bytes diretti.
       try {
-        const { gunzipSync } = await import("node:zlib");
-        const buf = Buffer.from(htmlGzipB64, "base64");
-        html = gunzipSync(buf).toString("utf8");
-      } catch (gzErr: any) {
-        res.status(400).json({ error: `Decompressione gzip fallita: ${gzErr?.message || gzErr}` });
+        htmlGz = Buffer.from(htmlGzipB64, "base64");
+      } catch (e: any) {
+        res.status(400).json({ error: `Base64 non valido: ${e?.message || e}` });
         return;
       }
+      if (htmlGz.length < 50) {
+        res.status(400).json({ error: "Campo 'htmlGzipB64' troppo corto" });
+        return;
+      }
+      if (htmlGz.length > 80 * 1024 * 1024) {
+        res.status(413).json({ error: "Blob gzip troppo grande (max 80MB compressi)" });
+        return;
+      }
+    } else if (typeof htmlRaw === "string") {
+      // Path legacy: HTML in chiaro.
+      if (htmlRaw.length < 100) {
+        res.status(400).json({ error: "Campo 'html' mancante o troppo corto" });
+        return;
+      }
+      if (htmlRaw.length > 40 * 1024 * 1024) {
+        res.status(413).json({ error: "HTML troppo grande in chiaro (max 40MB). Usa htmlGzipB64." });
+        return;
+      }
+      htmlText = htmlRaw;
+    } else {
+      res.status(400).json({ error: "Devi passare 'html' (string) oppure 'htmlGzipB64' (base64 gzip)" });
+      return;
     }
 
-    if (typeof html !== "string" || html.length < 100) {
-      res.status(400).json({ error: "Campo 'html' mancante o troppo corto" });
-      return;
-    }
-    if (html.length > 180 * 1024 * 1024) {
-      res.status(413).json({ error: "HTML troppo grande (max 180MB)" });
-      return;
-    }
     const inserted = await db.execute(sql`
       INSERT INTO fares_polimetriche_snapshots (
-        title, agency_name, zoning_method, route_count, product_count, area_count, html, meta
+        title, agency_name, zoning_method, route_count, product_count, area_count, html, html_gz, meta
       ) VALUES (
         ${title ?? null}, ${agencyName ?? null}, ${zoningMethod ?? null},
         ${routeCount ?? null}, ${productCount ?? null}, ${areaCount ?? null},
-        ${html}, ${meta ? JSON.stringify(meta) : null}::jsonb
+        ${htmlText}, ${htmlGz}, ${meta ? JSON.stringify(meta) : null}::jsonb
       )
       RETURNING id, created_at
     `);
@@ -5153,8 +5176,6 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
       res.status(500).json({ error: "Impossibile creare lo snapshot" });
       return;
     }
-    // Costruisce URL assoluto verso QUESTA stessa origin del backend.
-    // Il client può comunque fabbricarsi un URL alternativo a partire da `id`.
     const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
     const host = (req.headers["x-forwarded-host"] as string) || req.get("host") || "";
     const url = `${proto}://${host}/api/fares/polimetriche/snapshots/${row.id}`;
@@ -5167,8 +5188,9 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
 
 /**
  * GET /api/fares/polimetriche/snapshots/:id
- * Serve l'HTML pubblicamente (per essere aperto come link).
- * Accept JSON via `?format=json` per ottenere metadata invece dell'HTML.
+ * Serve l'HTML pubblicamente. Se lo snapshot è memorizzato gzippato
+ * (colonna html_gz) viene servito direttamente con Content-Encoding: gzip,
+ * delegando la decompressione al browser (zero RAM extra sul server).
  */
 router.get("/fares/polimetriche/snapshots/:id", async (req, res): Promise<void> => {
   try {
@@ -5180,7 +5202,7 @@ router.get("/fares/polimetriche/snapshots/:id", async (req, res): Promise<void> 
     }
     const result = await db.execute(sql`
       SELECT id, title, agency_name, zoning_method, route_count, product_count,
-             area_count, html, meta, created_at
+             area_count, html, html_gz, meta, created_at
         FROM fares_polimetriche_snapshots
        WHERE id = ${id}::uuid
        LIMIT 1
@@ -5191,18 +5213,28 @@ router.get("/fares/polimetriche/snapshots/:id", async (req, res): Promise<void> 
       return;
     }
     if (req.query.format === "json") {
+      const htmlLen = row.html ? (row.html as string).length : 0;
+      const gzLen = row.html_gz ? Buffer.byteLength(row.html_gz as Buffer) : 0;
       res.json({
         id: row.id, title: row.title, agencyName: row.agency_name,
         zoningMethod: row.zoning_method, routeCount: row.route_count,
         productCount: row.product_count, areaCount: row.area_count,
         meta: row.meta, createdAt: row.created_at,
-        htmlLength: (row.html || "").length,
+        htmlLength: htmlLen,
+        gzipLength: gzLen,
+        compressed: gzLen > 0,
       });
       return;
     }
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    // Cache aggressivo: lo snapshot è immutabile per design
     res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+    if (row.html_gz) {
+      // Servi direttamente i bytes gzippati: il browser decomprime trasparente.
+      res.setHeader("Content-Encoding", "gzip");
+      res.setHeader("Vary", "Accept-Encoding");
+      res.end(row.html_gz);
+      return;
+    }
     res.send(row.html);
   } catch (e: any) {
     console.error("[fares] get snapshot", e);
