@@ -279,6 +279,33 @@ router.get("/gtfs/routes/list", asyncHandler(async (_req, res) => {
   res.json({ data: routes.rows });
 }));
 
+// GET /api/gtfs/route-stop-ids?routeIds=a,b,c
+// Restituisce, per ciascuna routeId richiesta, l'elenco distinto di stop_id
+// effettivamente toccati dai trips di quella linea (usato dalla mappa cluster
+// per evidenziare con un alone le fermate servite dalle linee selezionate).
+router.get("/gtfs/route-stop-ids", asyncHandler(async (req, res) => {
+  const raw = String(req.query.routeIds || "").trim();
+  if (!raw) { res.json({ data: {} }); return; }
+  const ids = raw.split(",").map(s => s.trim()).filter(Boolean);
+  if (ids.length === 0) { res.json({ data: {} }); return; }
+  // Costruzione dinamica della clausola IN (drizzle non gestisce bene
+  // gli array di stringhe come ANY($1)::text[] in raw sql).
+  const placeholders = sql.join(ids.map(id => sql`${id}`), sql`, `);
+  const rows = await db.execute<any>(sql`
+    SELECT DISTINCT t.route_id AS "routeId", st.stop_id AS "stopId"
+    FROM gtfs_trips t
+    JOIN gtfs_stop_times st
+      ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
+    WHERE t.route_id IN (${placeholders})
+  `);
+  const byRoute: Record<string, string[]> = {};
+  for (const r of rows.rows as any[]) {
+    if (!byRoute[r.routeId]) byRoute[r.routeId] = [];
+    byRoute[r.routeId].push(r.stopId);
+  }
+  res.json({ data: byRoute });
+}));
+
 /* ═══════════════════════════════════════════════════════════════
  *  SETTINGS — Autovetture aziendali
  * ═══════════════════════════════════════════════════════════════ */

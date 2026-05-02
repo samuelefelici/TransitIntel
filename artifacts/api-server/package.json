@@ -27,6 +27,7 @@
     "node-cache": "^5.1.2",
     "pino": "^9",
     "pino-http": "^10",
+    "polygon-clipping": "^0.15.7",
     "zod": "^4.3.6"
   },
   "devDependencies": {

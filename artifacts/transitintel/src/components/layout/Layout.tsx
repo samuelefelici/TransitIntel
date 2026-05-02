@@ -338,7 +338,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               { href: "/fare-simulator", label: "Simulatore", icon: Gamepad2, desc: "What-if · scenari" },
               { href: "/trip-planner", label: "Trip Planner", icon: Navigation, desc: "Game maps · door-to-door" },
               { href: "/fare-docs", label: "Metodologia & Docs", icon: BookOpen, desc: "Riferimenti · note" },
-              { href: "/stops-classification", label: "Classifica Fermate", icon: MapPinCheck, desc: "Tier · accessibilità" },
+              // "Classifica Fermate" è ora accessibile come step 2 dentro Bigliettazione.
+              // Voce sidebar disattivata ma route preservata in App.tsx per accesso diretto.
+              // { href: "/stops-classification", label: "Classifica Fermate", icon: MapPinCheck, desc: "Tier · accessibilità" },
             ].map((item) => {
               const isActive = location === item.href;
               const Icon = item.icon;

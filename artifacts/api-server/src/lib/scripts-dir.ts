@@ -9,6 +9,20 @@
  */
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// __dirname shim ESM-safe (in CJS bundle è già definito → guardiamo)
+const __dirnameSafe: string = (() => {
+  try {
+    // @ts-ignore - presente in CJS
+    if (typeof __dirname !== "undefined") return __dirname as string;
+  } catch { /* noop */ }
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return process.cwd();
+  }
+})();
 
 function firstExisting(candidates: string[]): string {
   for (const c of candidates) {
@@ -25,8 +39,8 @@ const candidates = [
   path.resolve(cwd, "scripts"),                         // cwd = repo root (Render prod)
   path.resolve(cwd, "..", "..", "scripts"),             // cwd = artifacts/api-server (dev)
   path.resolve(cwd, "..", "scripts"),                   // cwd = artifacts (intermedio)
-  path.resolve(__dirname, "..", "..", "..", "..", "scripts"),       // src/lib → root/scripts
-  path.resolve(__dirname, "..", "..", "..", "..", "..", "scripts"), // dist bundle deeper
+  path.resolve(__dirnameSafe, "..", "..", "..", "..", "scripts"),       // src/lib → root/scripts
+  path.resolve(__dirnameSafe, "..", "..", "..", "..", "..", "scripts"), // dist bundle deeper
 ];
 
 export const SCRIPTS_DIR: string = firstExisting(candidates);

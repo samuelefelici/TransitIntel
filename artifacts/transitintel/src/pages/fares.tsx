@@ -8,18 +8,21 @@ import {
   Edit3, Archive, ToggleLeft, ToggleRight, CalendarDays, Users, Info, HelpCircle,
   Hexagon, Crosshair, MousePointer2, Layers, Target, TrendingUp, Route,
   BarChart3, Share2, Copy, ExternalLink, X, ShieldCheck,
+  ChevronUp, Building2,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
-import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink } from "./fares-polimetriche-export";
+import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresTelemacoTab from "./fares-telemaco-tab";
+import StopsClassificationPage from "./stops-classification";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -202,9 +205,9 @@ const NETWORK_OPTIONS = [
   { value: "extraurbano",          label: "Extraurbano",          color: "#f59e0b" },
 ];
 
-type Tab = "classify" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
+type Tab = "classify" | "stops" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
 
-// ── Step guidati (percorso obbligatorio 1→4) ───────────
+// ── Step guidati (percorso obbligatorio 1→5) ───────────
 const GUIDED_STEPS: {
   step: number;
   id: Tab;
@@ -221,24 +224,31 @@ const GUIDED_STEPS: {
   },
   {
     step: 2,
+    id: "stops",
+    label: "Classificazione Fermate",
+    icon: <MapPin className="w-3.5 h-3.5" />,
+    info: "Classifica ogni fermata fisica del feed in funzione delle linee che vi transitano: solo extraurbano, solo urbano, o misto. Base per i passi successivi (zone tariffarie e nodi Telemaco).",
+  },
+  {
+    step: 3,
     id: "products",
     label: "Prodotti & Supporti",
     icon: <Euro className="w-3.5 h-3.5" />,
     info: "Configura i supporti tariffari (biglietto cartaceo, tessera elettronica, app mobile) e definisci i prodotti con i relativi prezzi. I prodotti urbani hanno prezzo fisso, quelli extraurbani seguono le fasce chilometriche DGR Marche.",
   },
   {
-    step: 3,
+    step: 4,
     id: "riders",
     label: "Categorie Passeggero",
     icon: <Users className="w-3.5 h-3.5" />,
     info: "Definisci le categorie di viaggiatori a cui applicare tariffe differenziate: ordinario, studenti, anziani, disabili, ecc. La categoria 'ordinario' è quella predefinita.",
   },
   {
-    step: 4,
+    step: 5,
     id: "zones",
     label: "Zone Extraurbane",
     icon: <MapPin className="w-3.5 h-3.5" />,
-    info: "Genera le zone tariffarie extraurbane. Il metodo ufficiale (DGR 1036/2022) calcola i km lungo il tracciato shape proiettando le fermate e facendo la media su tutti i percorsi distinti di ciascuna linea.",
+    info: "Genera le zone tariffarie extraurbane. Tre approcci attivi: Cluster (partizione geografica), Telemaco (nodi tariffari conformi al sistema regionale), Min-OD (grafo + Dijkstra per le tariffe minime sistema-wide).",
   },
 ];
 
@@ -2224,10 +2234,28 @@ function ZonesDominantTab() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// ZONES CONTAINER — macro-tab with sub-tabs: Cluster / Proiezione su Shape / Percorso Dominante
+// ZONES CONTAINER — macro-tab with sub-tabs
+//
+// SUB-TAB ATTIVI: Cluster · Min-OD (Grafo)
+//
+// Le sotto-sezioni "Proiezione su Shape" (<ZonesTab/>) e "Percorso Dominante"
+// (<ZonesDominantTab/>) sono volutamente COMMENTATE — non rimosse — perché
+// le funzioni e i loro endpoint backend sono ancora utili per analisi/POC
+// futuri (proiezione km lungo shape GTFS, calcolo percorso dominante per
+// linea). Per riattivarle basta rimuovere i commenti qui sotto e nel
+// type del subTab.
+//
+// La sotto-sezione "Telemaco" (<FaresTelemacoTab/>) è anch'essa COMMENTATA:
+// la pipeline Telemaco (Urban Hub + addensamenti k-means) è stata SPOSTATA
+// dentro il modale "Genera Automaticamente Cluster" come terzo metodo,
+// accanto a "Addensamenti" e "Anelli Concentrici", in modo da unificare
+// tutti i punti d'ingresso per la generazione cluster. L'import di
+// FaresTelemacoTab e la branch nel render restano per riattivazione futura.
 // ═══════════════════════════════════════════════════════════
 
 function ZonesContainerTab() {
+  // NOTE: i valori "shape", "dominant" e "telemaco" restano nell'union per
+  // compatibilità futura ma non sono raggiungibili via UI (bottoni commentati).
   const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od" | "telemaco">("cluster");
   return (
     <div className="space-y-4">
@@ -2241,6 +2269,9 @@ function ZonesContainerTab() {
         >
           <Hexagon className="w-3.5 h-3.5" /> Cluster
         </button>
+        {/*
+          DISATTIVATO — Proiezione su Shape: tenuto come riferimento per
+          eventuale riattivazione (calcolo km lungo shape GTFS).
         <button
           onClick={() => setSubTab("shape")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -2249,6 +2280,10 @@ function ZonesContainerTab() {
         >
           <Layers className="w-3.5 h-3.5" /> Proiezione su Shape
         </button>
+        */}
+        {/*
+          DISATTIVATO — Percorso Dominante: tenuto come riferimento per
+          eventuale riattivazione (zone basate sul percorso più frequentato).
         <button
           onClick={() => setSubTab("dominant")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -2257,6 +2292,7 @@ function ZonesContainerTab() {
         >
           <Target className="w-3.5 h-3.5" /> Percorso Dominante
         </button>
+        */}
         <button
           onClick={() => setSubTab("min-od")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -2266,6 +2302,10 @@ function ZonesContainerTab() {
           <Share2 className="w-3.5 h-3.5" /> Min OD (Grafo)
           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-emerald-500/40 text-emerald-300">NEW</Badge>
         </button>
+        {/*
+          DISATTIVATO — Telemaco: la pipeline è stata spostata dentro il
+          modale "Genera Automaticamente Cluster" della sezione Cluster
+          come terzo metodo. Tenere commentato per riattivazione futura.
         <button
           onClick={() => setSubTab("telemaco")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -2275,13 +2315,14 @@ function ZonesContainerTab() {
           <ShieldCheck className="w-3.5 h-3.5" /> Telemaco
           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-fuchsia-500/40 text-fuchsia-300">NEW</Badge>
         </button>
+        */}
       </div>
 
       <AnimatePresence mode="wait">
         <motion.div key={subTab} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.15 }}>
           {subTab === "cluster" ? <ClustersTab />
-            : subTab === "shape" ? <ZonesTab />
-            : subTab === "dominant" ? <ZonesDominantTab />
+            : subTab === "shape" ? <ZonesTab />          /* DISATTIVATO ma renderizzabile */
+            : subTab === "dominant" ? <ZonesDominantTab /> /* DISATTIVATO ma renderizzabile */
             : subTab === "min-od" ? <ZonesMinOdTab />
             : <FaresTelemacoTab />}
         </motion.div>
@@ -2741,6 +2782,251 @@ function ClustersTab() {
   const [newName, setNewName] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
 
+  // Reset-all confirmation
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  // Inline rename state
+  const [renamingClusterId, setRenamingClusterId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  // ── Filtri mappa: linee GTFS (shape) + confini comuni ──
+  // Le linee usano l'endpoint esistente /api/gtfs/shapes/geojson; i confini
+  // comuni vengono dal nuovo endpoint /api/territory/comuni-boundaries.
+  // La categoria (urbano/extraurbano) viene da /api/fares/route-networks.
+  const [availableRoutes, setAvailableRoutes] = useState<{
+    routeId: string;
+    routeShortName?: string | null;
+    routeLongName?: string | null;
+    routeColor?: string | null;
+    category: "urbano" | "extraurbano" | "altro";   // categoria derivata da networkId
+  }[]>([]);
+  const [selectedRouteIds, setSelectedRouteIds] = useState<Set<string>>(new Set());
+  const [routeShapesData, setRouteShapesData] = useState<any | null>(null);
+  const [loadingShapes, setLoadingShapes] = useState(false);
+  const [routeSearch, setRouteSearch] = useState("");
+  const [routesPanelOpen, setRoutesPanelOpen] = useState(false);
+  const [routeCategoryFilter, setRouteCategoryFilter] = useState<"all" | "urbano" | "extraurbano">("all");
+
+  const [comuniBoundaries, setComuniBoundaries] = useState<any | null>(null);
+  const [selectedComuni, setSelectedComuni] = useState<Set<string>>(new Set());
+  const [loadingComuni, setLoadingComuni] = useState(false);
+  const [comuneSearch, setComuneSearch] = useState("");
+  const [comuniPanelOpen, setComuniPanelOpen] = useState(false);
+
+  // Carica lista linee on-mount (cache 60s lato server). Combina i dati
+  // di /api/gtfs/routes (anagrafica completa) con /api/fares/route-networks
+  // (categoria urbano/extra) per popolare il toggle del filtro.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [routesResp, netsResp] = await Promise.all([
+          apiFetch<{ data: any[] }>("/api/gtfs/routes"),
+          apiFetch<RouteNetwork[]>("/api/fares/route-networks").catch(() => [] as RouteNetwork[]),
+        ]);
+        if (cancelled) return;
+        const netByRoute: globalThis.Map<string, string | null> = new globalThis.Map();
+        for (const n of netsResp) {
+          netByRoute.set(n.routeId, n.networkId ?? n.defaultNetworkId ?? null);
+        }
+        const list = (routesResp?.data || []).map((x: any) => {
+          const rid = x.routeId ?? x.route_id;
+          const net = netByRoute.get(rid) ?? null;
+          let category: "urbano" | "extraurbano" | "altro" = "altro";
+          if (net) {
+            if (net.toLowerCase().startsWith("urban")) category = "urbano";
+            else if (net.toLowerCase().includes("extra")) category = "extraurbano";
+          }
+          return {
+            routeId: rid,
+            routeShortName: x.routeShortName ?? x.route_short_name,
+            routeLongName: x.routeLongName ?? x.route_long_name,
+            routeColor: x.routeColor ?? x.route_color,
+            category,
+          };
+        }).filter((x: any) => x.routeId);
+        setAvailableRoutes(list);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Quando cambia la selezione delle linee → fetch shapes
+  useEffect(() => {
+    let cancelled = false;
+    if (selectedRouteIds.size === 0) {
+      setRouteShapesData(null);
+      return;
+    }
+    setLoadingShapes(true);
+    (async () => {
+      try {
+        const ids = Array.from(selectedRouteIds).join(",");
+        const r = await apiFetch<any>(`/api/gtfs/shapes/geojson?routeIds=${encodeURIComponent(ids)}`);
+        if (!cancelled) setRouteShapesData(r);
+      } catch {
+        if (!cancelled) setRouteShapesData(null);
+      } finally {
+        if (!cancelled) setLoadingShapes(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedRouteIds]);
+
+  // Quando cambia la selezione delle linee → fetch elenco fermate toccate
+  // (per disegnare l'alone sulle fermate servite, senza alterare la
+  // logica di selezione/colore esistente).
+  const [routeStopIds, setRouteStopIds] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    let cancelled = false;
+    if (selectedRouteIds.size === 0) {
+      setRouteStopIds({});
+      return;
+    }
+    (async () => {
+      try {
+        const ids = Array.from(selectedRouteIds).join(",");
+        const r = await apiFetch<{ data: Record<string, string[]> }>(`/api/gtfs/route-stop-ids?routeIds=${encodeURIComponent(ids)}`);
+        if (!cancelled) setRouteStopIds(r?.data || {});
+      } catch {
+        if (!cancelled) setRouteStopIds({});
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedRouteIds]);
+
+  // Mappa stopId → primo colore di linea selezionata che la tocca: spostata
+  // sotto la dichiarazione di routeColorMap.
+
+  // Carica confini comuni on-demand alla prima apertura del pannello
+  const ensureComuniLoaded = useCallback(async () => {
+    if (comuniBoundaries || loadingComuni) return;
+    setLoadingComuni(true);
+    try {
+      const r = await apiFetch<any>("/api/territory/comuni-boundaries");
+      setComuniBoundaries(r);
+    } catch { /* ignore */ }
+    finally { setLoadingComuni(false); }
+  }, [comuniBoundaries, loadingComuni]);
+
+  // Palette colori distinti per linea (max 12 base, poi cicla)
+  const ROUTE_PALETTE = useMemo(() => [
+    "#ef4444", "#22d3ee", "#a78bfa", "#f59e0b", "#10b981",
+    "#ec4899", "#3b82f6", "#84cc16", "#f97316", "#06b6d4",
+    "#d946ef", "#eab308",
+  ], []);
+
+  // Mappa routeId → colore (priorità: route_color GTFS, altrimenti palette)
+  const routeColorMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    const ordered = Array.from(selectedRouteIds);
+    ordered.forEach((rid, i) => {
+      const r = availableRoutes.find(x => x.routeId === rid);
+      let col = r?.routeColor && /^[0-9a-fA-F]{6}$/.test(r.routeColor) ? `#${r.routeColor}` : null;
+      if (!col) col = ROUTE_PALETTE[i % ROUTE_PALETTE.length];
+      m[rid] = col;
+    });
+    return m;
+  }, [selectedRouteIds, availableRoutes, ROUTE_PALETTE]);
+
+  // Mappa stopId → primo colore di linea selezionata che la tocca (per l'alone)
+  const stopHaloColor = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const rid of Array.from(selectedRouteIds)) {
+      const col = routeColorMap[rid];
+      const stops = routeStopIds[rid];
+      if (!col || !stops) continue;
+      for (const sid of stops) {
+        if (!m[sid]) m[sid] = col;   // primo colore = prima linea selezionata
+      }
+    }
+    return m;
+  }, [selectedRouteIds, routeStopIds, routeColorMap]);
+
+  // GeoJSON shapes con `color` iniettato per ogni feature (= colore linea)
+  const routeShapesGeoJSON = useMemo(() => {
+    if (!routeShapesData?.features) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: routeShapesData.features.map((f: any) => ({
+        ...f,
+        properties: {
+          ...(f.properties || {}),
+          color: routeColorMap[f.properties?.routeId] || "#3b82f6",
+        },
+      })),
+    };
+  }, [routeShapesData, routeColorMap]);
+
+  // GeoJSON dei comuni filtrati
+  const comuniGeoJSON = useMemo(() => {
+    if (!comuniBoundaries?.features || selectedComuni.size === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: comuniBoundaries.features.filter((f: any) =>
+        selectedComuni.has(f.properties?.code)
+      ),
+    };
+  }, [comuniBoundaries, selectedComuni]);
+
+  // Liste filtrate per la search nei pannelli.
+  // normalize() rimuove accenti e collassa spazi multipli per una ricerca
+  // tollerante; la query viene splittata in token AND (tutti devono matchare).
+  const normalize = (s: string) =>
+    s.toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const routeCounts = useMemo(() => {
+    let urb = 0, ext = 0;
+    for (const r of availableRoutes) {
+      if (r.category === "urbano") urb++;
+      else if (r.category === "extraurbano") ext++;
+    }
+    return { all: availableRoutes.length, urbano: urb, extraurbano: ext };
+  }, [availableRoutes]);
+
+  const filteredRoutes = useMemo(() => {
+    let list = availableRoutes;
+    if (routeCategoryFilter !== "all") {
+      list = list.filter(r => r.category === routeCategoryFilter);
+    }
+    const tokens = normalize(routeSearch).split(" ").filter(Boolean);
+    if (tokens.length === 0) return list;
+    // Logica match per-token:
+    //  • routeShortName  → match ESATTO (digitare "H" trova solo la linea H,
+    //                       non "H1" né descrizioni che contengono H)
+    //  • routeLongName   → substring, solo se token ha ≥2 caratteri
+    //                       (evita che "1" matchi qualunque "via 1°…")
+    const matches = (r: typeof availableRoutes[number], t: string) => {
+      const sn = normalize(r.routeShortName || "");
+      if (sn === t) return true;
+      if (t.length >= 2) {
+        const ln = normalize(r.routeLongName || "");
+        if (ln.includes(t)) return true;
+      }
+      return false;
+    };
+    return list.filter(r => tokens.every(t => matches(r, t)));
+  }, [availableRoutes, routeSearch, routeCategoryFilter]);
+
+  const filteredComuni = useMemo(() => {
+    if (!comuniBoundaries?.features) return [];
+    const q = comuneSearch.trim().toLowerCase();
+    const list = comuniBoundaries.features.map((f: any) => ({
+      code: f.properties.code,
+      name: f.properties.name,
+      population: f.properties.population,
+    }));
+    if (!q) return list;
+    return list.filter((c: any) =>
+      (c.name || "").toLowerCase().includes(q) || c.code.includes(q)
+    );
+  }, [comuniBoundaries, comuneSearch]);
+
   // ── Build ownership map: stopId → clusterId (from saved data) ──
   const ownershipMap = useMemo(() => {
     const m: Record<string, string> = {};
@@ -2820,6 +3106,57 @@ function ClustersTab() {
     }
   };
 
+  // ── Reset ALL clusters (distruttivo, richiede conferma) ──
+  const resetAllClusters = async () => {
+    setResetting(true);
+    try {
+      const r = await apiFetch<{ deletedClusters: number }>("/api/fares/zone-clusters", { method: "DELETE" });
+      setActiveClusterId(null);
+      setPendingStops(new Set());
+      setDirty(false);
+      setShowResetConfirm(false);
+      await loadAll();
+      toast({
+        title: "Reset completato",
+        description: `Eliminati ${r?.deletedClusters ?? 0} cluster e tutte le assegnazioni`,
+      });
+    } catch (e: any) {
+      toast({ title: "Errore reset", description: e.message, variant: "destructive" });
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  // ── Rename cluster (PUT su record id) ──
+  const renameCluster = async (clusterRowId: string, newClusterName: string) => {
+    const trimmed = newClusterName.trim();
+    if (!trimmed) {
+      setRenamingClusterId(null);
+      return;
+    }
+    const target = clusters.find(c => c.id === clusterRowId);
+    if (!target) { setRenamingClusterId(null); return; }
+    if (trimmed === target.clusterName) { setRenamingClusterId(null); return; }
+    try {
+      await apiFetch(`/api/fares/zone-clusters/${clusterRowId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clusterName: trimmed,
+          color: target.color,
+          // polygon non viene toccato: passiamo undefined così il backend
+          // ricalcolerà i centroidi solo se polygon è presente nel body.
+        }),
+      });
+      await loadAll();
+      toast({ title: "Cluster rinominato", description: `"${target.clusterName}" → "${trimmed}"` });
+    } catch (e: any) {
+      toast({ title: "Errore rinomina", description: e.message, variant: "destructive" });
+    } finally {
+      setRenamingClusterId(null);
+    }
+  };
+
   // ── Toggle stop in pending set ──
   const toggleStop = useCallback((stopId: string) => {
     if (!activeClusterId) return;
@@ -2877,24 +3214,54 @@ function ClustersTab() {
   };
 
   // ── Auto-generate clusters ──
-  const [autoMode, setAutoMode] = useState<"concentric" | "spatial">("spatial");
+  // Tre metodi disponibili (vedi modale "Genera Automaticamente Cluster"):
+  //   - "spatial":   k-means addensamenti su tutte le fermate extraurbane
+  //   - "concentric": anelli concentrici dal baricentro (fasce km regionali)
+  //   - "telemaco":  pipeline v2 a 2 step (Urban Hub + addensamenti k-means
+  //                  sulle fermate non-urbane). Endpoint diverso:
+  //                  /api/fares/node-assignment/run
+  const [autoMode, setAutoMode] = useState<"concentric" | "spatial" | "telemaco">("spatial");
 
   const autoGenerateClusters = async () => {
     setShowAutoConfirm(false);
     setAutoGenerating(true);
     try {
-      const result = await apiFetch<any>("/api/fares/zone-clusters/auto-generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: autoMode }),
-      });
+      let result: any;
+      if (autoMode === "telemaco") {
+        // Pipeline Telemaco: Urban Hub + addensamenti k-means sulle non-urbane.
+        // Tutti i layer dormienti (catalog/exact/token/dbscan/singleton) restano
+        // OFF — vedi fares-node-assignment.ts per dettagli.
+        result = await apiFetch<any>("/api/fares/node-assignment/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            useUrbanHub: true,
+            useKmeans: true,
+            useOfficialCatalog: false,
+            useExactName: false,
+            useToken: false,
+            useDbscan: false,
+            useSingleton: false,
+            kmeansK: 0,  // auto-stima
+          }),
+        });
+      } else {
+        result = await apiFetch<any>("/api/fares/zone-clusters/auto-generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: autoMode }),
+        });
+      }
       setActiveClusterId(null);
       setPendingStops(new Set());
       setDirty(false);
       await loadAll();
+      const desc = autoMode === "telemaco"
+        ? `${result.clustersAfter ?? "?"} cluster · ${result.totalStops ?? "?"} fermate · urban ${result.assignedByLayer?.urban ?? 0} · addensamenti ${result.assignedByLayer?.geo ?? 0}`
+        : `${result.clustersCreated} cluster creati, ${result.totalStopsAssigned} fermate assegnate su ${result.totalExtraStops}`;
       toast({
         title: "✨ Cluster generati automaticamente",
-        description: `${result.clustersCreated} cluster creati, ${result.totalStopsAssigned} fermate assegnate su ${result.totalExtraStops}`,
+        description: desc,
       });
     } catch (e: any) {
       toast({ title: "Errore generazione", description: e.message, variant: "destructive" });
@@ -2973,6 +3340,7 @@ function ClustersTab() {
         } else if (ownerCluster) {
           color = ownerCluster.color; // belongs to some cluster
         }
+        const halo = stopHaloColor[s.stop_id] || null;
         return {
           type: "Feature" as const,
           geometry: { type: "Point" as const, coordinates: [s.lon, s.lat] },
@@ -2983,11 +3351,13 @@ function ClustersTab() {
             isPending: isPending ? 1 : 0,
             isOwned: owner ? 1 : 0,
             isActiveCluster: (activeClusterId && isPending) ? 1 : 0,
+            onRoute: halo ? 1 : 0,
+            haloColor: halo || "#000000",
           },
         };
       }),
     };
-  }, [extraStops, ownershipMap, pendingStops, activeClusterId, activeColor, clusters]);
+  }, [extraStops, ownershipMap, pendingStops, activeClusterId, activeColor, clusters, stopHaloColor]);
 
   // ── Map click ──
   const handleMapClick = useCallback((e: any) => {
@@ -3033,12 +3403,26 @@ function ClustersTab() {
       .filter(s => !searchTerm || s.stop_name.toLowerCase().includes(searchTerm.toLowerCase()) || s.stop_id.includes(searchTerm));
   }, [extraStops, pendingStops, searchTerm]);
 
-  // Total assigned
+  // ── Statistiche cluster ──
+  // La pipeline Telemaco assegna sia fermate URBANE (Step 1+1.5) sia
+  // EXTRAURBANE (Step 2). `extraStops` però carica solo le extraurbane.
+  // Per evitare numeri negativi (urbane assegnate > extraStops.length)
+  // separiamo nettamente le metriche per categoria.
   const totalAssigned = useMemo(() => {
     const set = new Set<string>();
     for (const c of clusters) for (const s of c.stops) set.add(s.stopId);
     return set.size;
   }, [clusters]);
+
+  const extraAssigned = useMemo(() => {
+    if (!extraStops.length) return 0;
+    return extraStops.reduce((acc, s) => acc + (ownershipMap[s.stop_id] ? 1 : 0), 0);
+  }, [extraStops, ownershipMap]);
+
+  const extraUnassigned = Math.max(0, extraStops.length - extraAssigned);
+  // Le fermate urbane assegnate sono quelle nei cluster MA non presenti
+  // nella lista extraStops (che contiene solo extraurbane).
+  const urbanAssigned = Math.max(0, totalAssigned - extraAssigned);
 
   const interactiveLayerIds = useMemo(() => activeClusterId ? ["stops-circle-layer"] : [], [activeClusterId]);
 
@@ -3059,24 +3443,64 @@ function ClustersTab() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-3">
-        <Card className="bg-card/50"><CardContent className="p-3">
-          <p className="text-xs text-muted-foreground">Cluster</p>
-          <p className="text-2xl font-bold">{clusters.length}</p>
-        </CardContent></Card>
-        <Card className="bg-card/50"><CardContent className="p-3">
-          <p className="text-xs text-muted-foreground">Fermate Totali</p>
-          <p className="text-2xl font-bold">{extraStops.length}</p>
-        </CardContent></Card>
-        <Card className="bg-card/50"><CardContent className="p-3">
-          <p className="text-xs text-muted-foreground">Assegnate</p>
-          <p className="text-2xl font-bold text-green-400">{totalAssigned}</p>
-        </CardContent></Card>
-        <Card className="bg-card/50"><CardContent className="p-3">
-          <p className="text-xs text-muted-foreground">Non Assegnate</p>
-          <p className="text-2xl font-bold text-yellow-400">{extraStops.length - totalAssigned}</p>
-        </CardContent></Card>
+      {/* Stats — 4 KPI card professional */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Card className="bg-gradient-to-br from-blue-500/5 to-blue-500/0 border-blue-500/20">
+          <CardContent className="p-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-blue-500/15 border border-blue-500/30 flex items-center justify-center">
+              <Layers className="w-5 h-5 text-blue-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Cluster</p>
+              <p className="text-2xl font-bold leading-tight tabular-nums">{clusters.length}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-gradient-to-br from-emerald-500/5 to-emerald-500/0 border-emerald-500/20">
+          <CardContent className="p-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Fermate nei cluster</p>
+              <p className="text-2xl font-bold leading-tight text-emerald-300 tabular-nums">{totalAssigned.toLocaleString("it")}</p>
+              <p className="text-[10px] text-muted-foreground leading-tight">
+                {urbanAssigned > 0 && <>urbane <strong className="text-foreground/80">{urbanAssigned.toLocaleString("it")}</strong> · </>}
+                extra <strong className="text-foreground/80">{extraAssigned.toLocaleString("it")}</strong>
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-gradient-to-br from-violet-500/5 to-violet-500/0 border-violet-500/20">
+          <CardContent className="p-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center">
+              <MapPin className="w-5 h-5 text-violet-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Extraurbane totali</p>
+              <p className="text-2xl font-bold leading-tight tabular-nums">{extraStops.length.toLocaleString("it")}</p>
+              <p className="text-[10px] text-muted-foreground leading-tight">universo del clustering</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-gradient-to-br from-amber-500/5 to-amber-500/0 border-amber-500/20">
+          <CardContent className="p-3 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
+              <AlertTriangle className="w-5 h-5 text-amber-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">Extra non assegnate</p>
+              <p className={`text-2xl font-bold leading-tight tabular-nums ${extraUnassigned === 0 ? "text-emerald-300" : "text-amber-300"}`}>
+                {extraUnassigned.toLocaleString("it")}
+              </p>
+              <p className="text-[10px] text-muted-foreground leading-tight">
+                {extraStops.length > 0
+                  ? `${((extraAssigned / extraStops.length) * 100).toFixed(1)}% coperte`
+                  : "nessuna fermata"}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Actions */}
@@ -3103,7 +3527,60 @@ function ClustersTab() {
           {generating ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Zap className="w-3.5 h-3.5 mr-1.5" />}
           Genera Zone GTFS
         </Button>
+        <div className="border-l border-border/30 h-6" />
+        <Button onClick={() => setShowResetConfirm(true)} disabled={resetting || clusters.length === 0} size="sm" variant="outline"
+          className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive">
+          {resetting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+          Reset tutti
+        </Button>
       </div>
+
+      {/* Reset-all confirmation dialog */}
+      <AnimatePresence>
+        {showResetConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => !resetting && setShowResetConfirm(false)}>
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ type: "spring", duration: 0.25 }}
+              className="bg-card border border-border/50 rounded-2xl shadow-2xl max-w-md w-full mx-4 overflow-hidden"
+              onClick={e => e.stopPropagation()}>
+              <div className="bg-gradient-to-r from-red-600/20 to-orange-600/20 border-b border-border/30 px-6 py-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center shadow-lg shadow-red-500/30">
+                    <AlertTriangle className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-base">Reset Cluster</h3>
+                    <p className="text-xs text-muted-foreground">Operazione irreversibile</p>
+                  </div>
+                </div>
+              </div>
+              <div className="px-6 py-4 space-y-3 text-sm">
+                <p>Verranno eliminati:</p>
+                <ul className="space-y-1 text-xs text-muted-foreground pl-4 list-disc">
+                  <li><strong className="text-foreground">{clusters.length}</strong> cluster</li>
+                  <li><strong className="text-foreground">{totalAssigned}</strong> assegnazioni fermata→cluster</li>
+                  <li>Le override manuali (assignment_source = 'manual') verranno cancellate insieme ai loro cluster</li>
+                </ul>
+                <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                  <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
+                  <p className="text-xs text-yellow-200/80">
+                    Per ricostruire i cluster usa <strong>Genera Automaticamente</strong> oppure la pipeline <strong>Telemaco</strong>.
+                  </p>
+                </div>
+              </div>
+              <div className="px-6 py-3 border-t border-border/30 flex items-center justify-end gap-2 bg-muted/10">
+                <Button variant="ghost" size="sm" onClick={() => setShowResetConfirm(false)} disabled={resetting}>Annulla</Button>
+                <Button size="sm" variant="destructive" onClick={resetAllClusters} disabled={resetting}>
+                  {resetting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                  Conferma reset
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Auto-generate confirmation dialog */}
       <AnimatePresence>
@@ -3130,7 +3607,7 @@ function ClustersTab() {
               {/* Body */}
               <div className="px-6 py-4 space-y-4">
                 {/* Mode selector cards */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   {/* Spatial mode */}
                   <button onClick={() => setAutoMode("spatial")}
                     className={`relative text-left rounded-xl border-2 p-3.5 transition-all ${
@@ -3180,6 +3657,31 @@ function ClustersTab() {
                       Fasce ad anello dal baricentro, allineate alle fasce km regionali (~6 km)
                     </p>
                   </button>
+
+                  {/* Telemaco mode */}
+                  <button onClick={() => setAutoMode("telemaco")}
+                    className={`relative text-left rounded-xl border-2 p-3.5 transition-all ${
+                      autoMode === "telemaco"
+                        ? "border-fuchsia-500 bg-fuchsia-500/10 shadow-lg shadow-fuchsia-500/10"
+                        : "border-border/30 bg-muted/10 hover:border-border/60 hover:bg-muted/20"
+                    }`}>
+                    {autoMode === "telemaco" && (
+                      <div className="absolute top-2 right-2">
+                        <CheckCircle2 className="w-4 h-4 text-fuchsia-400" />
+                      </div>
+                    )}
+                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${
+                      autoMode === "telemaco" ? "bg-fuchsia-500/20" : "bg-muted/30"
+                    }`}>
+                      <ShieldCheck className={`w-4 h-4 ${autoMode === "telemaco" ? "text-fuchsia-400" : "text-muted-foreground"}`} />
+                    </div>
+                    <p className={`text-sm font-semibold mb-0.5 ${autoMode === "telemaco" ? "text-fuchsia-300" : "text-foreground"}`}>
+                      Telemaco (Urban + Addensamenti)
+                    </p>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">
+                      Step 1: 1 nodo per servizio urbano (Ancona, Jesi…). Step 2: addensamenti k-means sulle extraurbane
+                    </p>
+                  </button>
                 </div>
 
                 {/* Description based on mode */}
@@ -3191,12 +3693,19 @@ function ClustersTab() {
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> Numero cluster calcolato automaticamente</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> Nomi derivati dalla fermata centrale di ogni gruppo</p>
                     </>
-                  ) : (
+                  ) : autoMode === "concentric" ? (
                     <>
                       <p>L'algoritmo crea <strong>anelli concentrici</strong> attorno al baricentro delle fermate, seguendo le fasce tariffarie regionali (~6 km per fascia).</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Distanze allineate alle fasce km regionali</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Fasce: 0-6, 6-12, 12-18 km…</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Centroide = baricentro di tutte le fermate</p>
+                    </>
+                  ) : (
+                    <>
+                      <p>Pipeline a 2 step pensata per la conformità <strong>Telemaco</strong> (sistema regionale tariffario integrato):</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 1 — Urban Hub:</strong> tutte le fermate servite da almeno una linea urbana confluiscono in un unico nodo per città (urban_ancona, urban_jesi, urban_falconara, urban_senigallia, urban_castelfidardo)</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 2 — Addensamenti:</strong> sulle fermate puramente extraurbane k-means identifica i centri abitati extra-rete urbana</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 3 — Manuale:</strong> le fermate residue isolate restano orfane per assegnazione manuale</p>
                     </>
                   )}
                   <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-400 shrink-0" /> Ogni fermata in un solo cluster (partizione)</p>
@@ -3216,9 +3725,12 @@ function ClustersTab() {
               <div className="px-6 py-3 border-t border-border/30 flex items-center justify-end gap-2 bg-muted/10">
                 <Button variant="ghost" size="sm" onClick={() => setShowAutoConfirm(false)}>Annulla</Button>
                 <Button size="sm" onClick={autoGenerateClusters}
-                  className={autoMode === "spatial"
-                    ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white"
-                    : "bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white"
+                  className={
+                    autoMode === "spatial"
+                      ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white"
+                      : autoMode === "telemaco"
+                      ? "bg-gradient-to-r from-fuchsia-600 to-pink-600 hover:from-fuchsia-700 hover:to-pink-700 text-white"
+                      : "bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white"
                   }>
                   <Sparkles className="w-3.5 h-3.5 mr-1.5" />
                   {autoMode === "spatial" ? "Genera per Addensamenti" : "Genera Anelli"}
@@ -3306,10 +3818,38 @@ function ClustersTab() {
                     <div className="flex items-center gap-2 min-w-0">
                       <div className="w-3.5 h-3.5 rounded-full shrink-0 ring-1 ring-white/20" style={{ background: c.color }} />
                       <div className="min-w-0 flex-1">
-                        <span className="font-medium text-xs block truncate">{c.clusterName}</span>
-                        <span className="text-[10px] text-muted-foreground">{c.stopCount} fermate</span>
+                        {renamingClusterId === c.id ? (
+                          <input
+                            autoFocus
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onBlur={() => renameCluster(c.id, renameValue)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") { e.preventDefault(); renameCluster(c.id, renameValue); }
+                              else if (e.key === "Escape") { e.preventDefault(); setRenamingClusterId(null); }
+                            }}
+                            className="w-full h-6 px-1.5 text-xs rounded border border-primary/40 bg-background/80 outline-none focus:border-primary"
+                          />
+                        ) : (
+                          <>
+                            <span className="font-medium text-xs block truncate">{c.clusterName}</span>
+                            <span className="text-[10px] text-muted-foreground">{c.stopCount} fermate</span>
+                          </>
+                        )}
                       </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRenameValue(c.clusterName);
+                          setRenamingClusterId(c.id);
+                        }}
+                        title="Rinomina cluster"
+                        className="text-muted-foreground hover:text-primary transition-colors shrink-0">
+                        <Edit3 className="w-3 h-3" />
+                      </button>
                       <button onClick={(e) => { e.stopPropagation(); deleteCluster(c.id); }}
+                        title="Elimina cluster"
                         className="text-muted-foreground hover:text-destructive transition-colors shrink-0">
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -3410,6 +3950,207 @@ function ClustersTab() {
           <CardContent className="p-0">
             {CLUSTER_MAPBOX_TOKEN ? (
               <div className="h-[600px] relative">
+                {/* ── Overlay filtri mappa (Linee + Comuni) — lato destro ── */}
+                <div className="absolute top-3 right-3 z-10 flex flex-col gap-2 w-[280px]">
+                  {/* LINEE */}
+                  <div className="bg-card/95 backdrop-blur-md border border-border/60 rounded-lg shadow-xl overflow-hidden">
+                    <button
+                      onClick={() => setRoutesPanelOpen(o => !o)}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium hover:bg-cyan-500/5 transition-colors group"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="w-1 h-4 rounded-full bg-cyan-400" />
+                        <Bus className="w-3.5 h-3.5 text-cyan-400" />
+                        <span className="uppercase tracking-wider text-[11px]">Linee</span>
+                        {selectedRouteIds.size > 0 && (
+                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-cyan-500/40 text-cyan-300 bg-cyan-500/10">
+                            {selectedRouteIds.size}
+                          </Badge>
+                        )}
+                        {loadingShapes && <Loader2 className="w-3 h-3 animate-spin text-cyan-400/70" />}
+                      </span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${routesPanelOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {routesPanelOpen && (
+                      <div className="border-t border-border/50 p-2 space-y-2 bg-background/40">
+                        {/* Toggle categoria urbano/extraurbano */}
+                        <div className="flex items-center gap-1 text-[10px]">
+                          {([
+                            { k: "all", label: "Tutte", count: routeCounts.all },
+                            { k: "urbano", label: "Urbane", count: routeCounts.urbano },
+                            { k: "extraurbano", label: "Extra", count: routeCounts.extraurbano },
+                          ] as const).map(opt => {
+                            const active = routeCategoryFilter === opt.k;
+                            return (
+                              <button
+                                key={opt.k}
+                                onClick={() => setRouteCategoryFilter(opt.k)}
+                                className={`flex-1 px-2 py-1 rounded border transition-colors font-medium ${
+                                  active
+                                    ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-200"
+                                    : "border-border/40 text-muted-foreground hover:bg-white/5"
+                                }`}
+                              >
+                                {opt.label}
+                                <span className={`ml-1 tabular-nums ${active ? "text-cyan-300/80" : "text-muted-foreground/60"}`}>
+                                  {opt.count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <Input
+                          value={routeSearch}
+                          onChange={e => setRouteSearch(e.target.value)}
+                          placeholder="Codice esatto (H) o testo descrizione…"
+                          className="h-7 text-[11px]"
+                        />
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
+                          <span className="tabular-nums">{filteredRoutes.length} {filteredRoutes.length === 1 ? "linea" : "linee"}</span>
+                          <div className="flex items-center gap-2">
+                            {filteredRoutes.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  setSelectedRouteIds(prev => {
+                                    const next = new Set(prev);
+                                    for (const r of filteredRoutes) next.add(r.routeId);
+                                    return next;
+                                  });
+                                }}
+                                className="text-cyan-400 hover:underline font-medium"
+                              >
+                                Sel. visibili
+                              </button>
+                            )}
+                            {selectedRouteIds.size > 0 && (
+                              <button
+                                onClick={() => setSelectedRouteIds(new Set())}
+                                className="text-rose-400 hover:underline font-medium"
+                              >
+                                Pulisci
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="max-h-[260px] overflow-y-auto -mx-1 px-1 space-y-0.5">
+                          {filteredRoutes.map(r => {
+                            const checked = selectedRouteIds.has(r.routeId);
+                            const col = checked ? routeColorMap[r.routeId] : null;
+                            const catDot =
+                              r.category === "urbano" ? "bg-blue-400" :
+                              r.category === "extraurbano" ? "bg-indigo-400" :
+                              "bg-slate-500";
+                            return (
+                              <label key={r.routeId} className={`flex items-center gap-2 px-2 py-1 rounded hover:bg-white/5 cursor-pointer text-[11px] transition-colors ${checked ? "bg-cyan-500/5" : ""}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setSelectedRouteIds(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(r.routeId)) next.delete(r.routeId);
+                                      else next.add(r.routeId);
+                                      return next;
+                                    });
+                                  }}
+                                  className="accent-cyan-500"
+                                />
+                                {col
+                                  ? <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: col, boxShadow: `0 0 6px ${col}80` }} />
+                                  : <span className={`w-2 h-2 rounded-full shrink-0 ${catDot}`} title={r.category} />
+                                }
+                                <span className="font-semibold text-foreground/90">{r.routeShortName || r.routeId}</span>
+                                <span className="text-muted-foreground truncate flex-1 text-[10px]">{r.routeLongName}</span>
+                              </label>
+                            );
+                          })}
+                          {filteredRoutes.length === 0 && (
+                            <div className="text-center text-[10px] text-muted-foreground py-3">Nessuna linea</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* COMUNI */}
+                  <div className="bg-card/95 backdrop-blur-md border border-border/60 rounded-lg shadow-xl overflow-hidden">
+                    <button
+                      onClick={() => {
+                        setComuniPanelOpen(o => !o);
+                        ensureComuniLoaded();
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium hover:bg-amber-500/5 transition-colors"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="w-1 h-4 rounded-full bg-amber-400" />
+                        <Building2 className="w-3.5 h-3.5 text-amber-400" />
+                        <span className="uppercase tracking-wider text-[11px]">Comuni</span>
+                        {selectedComuni.size > 0 && (
+                          <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-amber-500/40 text-amber-300 bg-amber-500/10">
+                            {selectedComuni.size}
+                          </Badge>
+                        )}
+                        {loadingComuni && <Loader2 className="w-3 h-3 animate-spin text-amber-400/70" />}
+                      </span>
+                      <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${comuniPanelOpen ? "rotate-180" : ""}`} />
+                    </button>
+                    {comuniPanelOpen && (
+                      <div className="border-t border-border/50 p-2 space-y-2 bg-background/40">
+                        <Input
+                          value={comuneSearch}
+                          onChange={e => setComuneSearch(e.target.value)}
+                          placeholder="Cerca comune…"
+                          className="h-7 text-[11px]"
+                        />
+                        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
+                          <span>{filteredComuni.length} comuni</span>
+                          {selectedComuni.size > 0 && (
+                            <button
+                              onClick={() => setSelectedComuni(new Set())}
+                              className="text-rose-400 hover:underline font-medium"
+                            >
+                              Pulisci
+                            </button>
+                          )}
+                        </div>
+                        <div className="max-h-[260px] overflow-y-auto -mx-1 px-1 space-y-0.5">
+                          {filteredComuni.slice(0, 300).map((c: any) => {
+                            const checked = selectedComuni.has(c.code);
+                            return (
+                              <label key={c.code} className={`flex items-center gap-2 px-2 py-1 rounded hover:bg-white/5 cursor-pointer text-[11px] transition-colors ${checked ? "bg-amber-500/5" : ""}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setSelectedComuni(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(c.code)) next.delete(c.code);
+                                      else next.add(c.code);
+                                      return next;
+                                    });
+                                  }}
+                                  className="accent-amber-500"
+                                />
+                                <span className="font-medium text-foreground/90 truncate flex-1">{c.name || c.code}</span>
+                                {c.population > 0 && (
+                                  <span className="text-muted-foreground text-[10px] tabular-nums shrink-0">
+                                    {c.population.toLocaleString("it")}
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                          {filteredComuni.length === 0 && !loadingComuni && (
+                            <div className="text-center text-[10px] text-muted-foreground py-3">
+                              {comuniBoundaries ? "Nessun comune" : "Caricamento…"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <Map
                   ref={mapRef}
                   mapboxAccessToken={CLUSTER_MAPBOX_TOKEN}
@@ -3423,6 +4164,31 @@ function ClustersTab() {
                   onMouseMove={handleMapMouseMove}
                   cursor={drawMode ? "crosshair" : activeClusterId ? "pointer" : "grab"}
                 >
+                  {/* ── Confini comuni (sotto a tutto: fill leggero + bordo sottile) ── */}
+                  {comuniGeoJSON && (
+                    <Source id="comuni-boundaries" type="geojson" data={comuniGeoJSON as any}>
+                      <Layer id="comuni-fill" type="fill" paint={{
+                        "fill-color": "#f59e0b",
+                        "fill-opacity": 0.06,
+                      }} />
+                      <Layer id="comuni-line" type="line" paint={{
+                        "line-color": "#f59e0b",
+                        "line-width": 1.2,
+                        "line-opacity": 0.55,
+                      }} />
+                      <Layer id="comuni-label" type="symbol" layout={{
+                        "text-field": ["get", "name"],
+                        "text-size": 11,
+                        "text-font": ["DIN Pro Medium", "Arial Unicode MS Regular"],
+                      }} paint={{
+                        "text-color": "#fbbf24",
+                        "text-halo-color": "#0f172a",
+                        "text-halo-width": 1.5,
+                        "text-opacity": 0.85,
+                      }} />
+                    </Source>
+                  )}
+
                   {/* ── Partition polygons (convex hull per cluster) ── */}
                   {partitionsGeoJSON.features.length > 0 && (
                     <Source id="partitions" type="geojson" data={partitionsGeoJSON as any}>
@@ -3449,9 +4215,39 @@ function ClustersTab() {
                     </Source>
                   )}
 
+                  {/* ── Percorsi linee selezionate (sopra ai cluster, sotto alle fermate) ── */}
+                  {routeShapesGeoJSON && (
+                    <Source id="route-shapes" type="geojson" data={routeShapesGeoJSON as any}>
+                      <Layer id="route-shapes-line" type="line" layout={{
+                        "line-cap": "round",
+                        "line-join": "round",
+                      }} paint={{
+                        "line-color": ["get", "color"],
+                        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 12, 3.5, 16, 5],
+                        "line-opacity": 0.85,
+                      }} />
+                    </Source>
+                  )}
+
                   {/* ── All stops (colored by ownership) ── */}
                   {stopsGeoJSON && (
                     <Source id="cluster-stops" type="geojson" data={stopsGeoJSON as any}>
+                      {/* Alone: cerchio più grande dietro la fermata, visibile
+                          solo quando la fermata è servita da una linea selezionata.
+                          NON altera in alcun modo il metodo di selezione. */}
+                      <Layer
+                        id="stops-halo-layer"
+                        type="circle"
+                        filter={["==", ["get", "onRoute"], 1]}
+                        paint={{
+                          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 8, 11, 11, 14, 16, 17, 22],
+                          "circle-color": ["get", "haloColor"],
+                          "circle-opacity": 0.18,
+                          "circle-stroke-width": 2,
+                          "circle-stroke-color": ["get", "haloColor"],
+                          "circle-stroke-opacity": 0.9,
+                        }}
+                      />
                       <Layer
                         id="stops-circle-layer"
                         type="circle"
@@ -4076,7 +4872,7 @@ function GenerateTab() {
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
-  const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones" | "min-od-stops" | "min-od-zones">(null);
+  const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones" | "min-od-stops" | "min-od-zones" | "clusters">(null);
   const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number; mode: "stops" | "zones" } | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
 
@@ -4395,6 +5191,65 @@ function GenerateTab() {
               {sharingPolimetriche === "min-od-zones" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
               🔗 Condividi nodi Min-OD
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Sezione 4: Polimetriche per Cluster (pipeline Telemaco) ── */}
+      <Card className="border-pink-500/30 bg-gradient-to-br from-pink-50/50 via-white to-indigo-50/40">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2 text-pink-700">
+            <BarChart3 className="w-4 h-4" />
+            Polimetriche per Cluster
+            <Badge variant="outline" className="ml-1 border-pink-300 text-pink-700 text-[10px]">cluster narrativi</Badge>
+            <Badge className="ml-1 bg-gradient-to-r from-pink-500 to-violet-500 text-white text-[10px] border-0">NEW</Badge>
+          </CardTitle>
+          <CardDescription className="text-xs">
+            Vista pensata per la lettura: <strong>copertina con metodologia</strong>, <strong>mappa SVG</strong> dei cluster come confini regionali,
+            poi una pagina per linea con la matrice tariffaria <strong>cluster × cluster</strong> e l'elenco
+            completo delle fermate appartenenti a ciascun nodo. Richiede cluster generati dal tab
+            <em> Cluster Tariffari</em> + matrice OD calcolata.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              onClick={async () => {
+                try { await exportPolimetricheClustersToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                catch (e: any) { toast({ title: "Errore polimetriche cluster", description: e?.message || String(e), variant: "destructive" }); }
+              }}
+              size="sm"
+              className="bg-gradient-to-r from-pink-600 to-violet-600 hover:from-pink-500 hover:to-violet-500 text-white border-0 shadow-md"
+              title="Genera PDF: copertina con metodologia, mappa SVG dei cluster, una pagina per linea con matrice e composizione cluster"
+            >
+              <BarChart3 className="w-4 h-4 mr-2" />
+              📊 Genera PDF cluster
+            </Button>
+            <Button
+              onClick={async () => {
+                setSharingPolimetriche("clusters");
+                setShareLinkCopied(false);
+                try {
+                  const link = await createPolimetricheClustersShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  setShareLink({ id: link.id, url: link.url, routeCount: link.routeCount, mode: "zones" });
+                  toast({ title: "Link Polimetriche Cluster generato", description: `${link.routeCount} linee · ${link.clusterCount} cluster` });
+                } catch (e: any) { toast({ title: "Errore generazione link cluster", description: e?.message || String(e), variant: "destructive" });
+                } finally { setSharingPolimetriche(null); }
+              }}
+              size="sm"
+              variant="outline"
+              className="border-pink-300 text-pink-700 hover:bg-pink-50"
+              title="Link condivisibile alla vista cluster (snapshot HTML)"
+            >
+              {sharingPolimetriche === "clusters" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Share2 className="w-4 h-4 mr-2" />}
+              🔗 Condividi cluster
+            </Button>
+          </div>
+          <div className="text-[10.5px] text-muted-foreground flex flex-wrap items-center gap-x-4 gap-y-1 pt-1">
+            <span>✓ Copertina con metodologia in 7 step</span>
+            <span>✓ Mappa SVG con regioni colorate (convex hull smussati)</span>
+            <span>✓ Card cluster con tutte le fermate (servite + altre)</span>
+            <span>✓ Stile arrotondato A3 landscape, alta leggibilità</span>
           </div>
         </CardContent>
       </Card>
@@ -6499,6 +7354,7 @@ export default function FaresPage() {
           transition={{ duration: 0.2 }}
         >
           {tab === "classify" && <ClassifyTab />}
+          {tab === "stops" && <StopsClassificationPage />}
           {tab === "products" && <ProductsTab />}
           {tab === "riders" && <RiderCategoriesTab />}
           {tab === "zones" && <ZonesContainerTab />}

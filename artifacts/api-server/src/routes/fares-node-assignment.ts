@@ -2,17 +2,27 @@
  * GTFS Fares — Telemaco Compliance: auto-assegnazione fermate ai nodi tariffari.
  *
  * INTERVENTO ADDITIVO: questo router NON modifica nessuna logica esistente
- * di fares.ts o fares-min-od.ts. Aggiunge una pipeline a 4 layer (+ override
- * catalogo ufficiale) per garantire che ogni fermata fisica del feed sia
- * collegata a un nodo tariffario, come richiesto dal sistema regionale
- * Telemaco (biglietti nodo→nodo, non palina→palina).
+ * di fares.ts o fares-min-od.ts. Aggiunge una pipeline a 2 step (modello v2)
+ * per garantire che ogni fermata fisica del feed sia collegata a un nodo
+ * tariffario in modo PARTIZIONATO (no cluster annidati o sovrapposti).
  *
- * Pipeline (primo match vince):
- *   Layer 0  Catalogo ufficiale (conf 95-100)
- *   Layer 1  Match esatto nome normalizzato (conf 95)
- *   Layer 2  Token + prossimità (conf 80)
- *   Layer 3  DBSCAN geografico (conf 60)
- *   Layer 4  Singleton (conf 100, da revisionare)
+ * Pipeline v2 (primo match vince, ogni cluster è una partizione):
+ *   Step 1  Urban Hub      — fermate servite da almeno 1 route urbana
+ *                            confluiscono in un unico nodo per città
+ *                            (urban_ancona, urban_jesi, urban_falconara,
+ *                             urban_senigallia, urban_castelfidardo)
+ *   Step 2  K-Means geo    — sulle fermate NON-urbane: addensamento
+ *                            geografico via k-means++ (stessa logica
+ *                            del bottone "auto-generate spatial" in
+ *                            fares.ts). Identifica i centri abitati
+ *                            serviti solo da linee extraurbane.
+ *   Step 3  Manuale        — le fermate isolate restano orfane,
+ *                            l'utente le assegna a mano via UI
+ *
+ * Layer dormienti (riattivabili via flag):
+ *   useOfficialCatalog (catalogo Telemaco), useExactName (omonimi),
+ *   useToken (token+prossimità), useDbscan (DBSCAN legacy v1),
+ *   useSingleton (1 fermata = 1 cluster)
  *
  * Endpoints:
  *   POST   /api/fares/node-assignment/run
@@ -37,6 +47,9 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   gtfsStops,
+  gtfsRoutes,
+  gtfsTrips,
+  gtfsStopTimes,
   gtfsFareZoneClusters,
   gtfsFareZoneClusterStops,
   gtfsFareOfficialNodes,
@@ -185,6 +198,212 @@ export function extractSignificantTokens(raw: string): string[] {
 }
 
 // ════════════════════════════════════════════════════════════
+// Classificazione urbana (allineata a fares-min-od.ts)
+// ════════════════════════════════════════════════════════════
+
+/**
+ * Mappa route_short_name → categoria.
+ * Identica a `classifyRouteMinOd` in fares-min-od.ts (DUPLICATA volutamente
+ * per non creare dipendenze cross-router; tenere allineate le due funzioni).
+ */
+function classifyRouteCategory(shortName: string | null | undefined): string {
+  if (!shortName) return "extraurbano";
+  const s = shortName.trim().toUpperCase();
+  if (s.startsWith("JE")) return "urbano_jesi";
+  if (s.startsWith("Y")) return "urbano_falconara";
+  if (/^BUSS?\d/.test(s)) return "urbano_senigallia";
+  if (s === "CIRCA" || s === "CIRCB") return "urbano_castelfidardo";
+  if (/^\d/.test(s)) return "urbano_ancona";
+  if (/^[A-Z]\.[A-Z]\.?$/.test(s)) return "urbano_ancona";
+  return "extraurbano";
+}
+
+/** Nome leggibile per cluster urbano (es. "urbano_ancona" → "Urbano Ancona"). */
+function urbanCategoryDisplayName(cat: string): string {
+  if (!cat.startsWith("urbano_")) return cat;
+  const city = cat.slice("urbano_".length);
+  return "Urbano " + city.charAt(0).toUpperCase() + city.slice(1);
+}
+
+/**
+ * Per ogni fermata del feed costruisce il conteggio dei passaggi (stop_times)
+ * suddiviso per categoria urbana. Una route extraurbana NON contribuisce.
+ *
+ * Ritorna: Map<stopId, Map<urbanCategory, weight>>
+ *   weight = numero di stop_times (proxy della "densità di servizio urbano")
+ *
+ * Una stop è considerata urbana se ha weight > 0 in almeno una categoria urbana.
+ * In caso di più città, vince quella col weight massimo.
+ */
+async function loadStopUrbanWeights(feedId: string): Promise<Map<string, Map<string, number>>> {
+  // Prima carico la classificazione di ogni route_id del feed
+  const routes = await db.select({
+    routeId: gtfsRoutes.routeId,
+    shortName: gtfsRoutes.routeShortName,
+  }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+
+  const routeCategory = new Map<string, string>();
+  for (const r of routes) {
+    routeCategory.set(r.routeId, classifyRouteCategory(r.shortName));
+  }
+
+  // Aggregazione SQL: count stop_times per (stop_id, route_id)
+  const rows = await db.execute<any>(sql`
+    SELECT st.stop_id AS stop_id, t.route_id AS route_id, COUNT(*)::int AS cnt
+    FROM gtfs_stop_times st
+    JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+    WHERE st.feed_id = ${feedId}
+    GROUP BY st.stop_id, t.route_id
+  `);
+  const data = (rows as any).rows ?? rows;
+
+  const result = new Map<string, Map<string, number>>();
+  for (const row of data) {
+    const cat = routeCategory.get(row.route_id);
+    if (!cat || !cat.startsWith("urbano_")) continue;  // solo categorie urbane
+    const inner = result.get(row.stop_id) ?? new Map<string, number>();
+    inner.set(cat, (inner.get(cat) ?? 0) + Number(row.cnt));
+    result.set(row.stop_id, inner);
+  }
+  return result;
+}
+
+// ════════════════════════════════════════════════════════════
+// Palette colori cluster (Telemaco)
+// Genera colori distinti e ripetibili in modo deterministico a partire
+// dal clusterId, così che lo stesso cluster mantenga sempre lo stesso colore
+// fra run diversi. Usata per visualizzare la mappa zone senza confusione.
+// I cluster ufficiali e i nodi urban_* hanno colori dedicati di alto contrasto.
+// ════════════════════════════════════════════════════════════
+const URBAN_HUB_COLORS: Record<string, string> = {
+  ancona:        "#dc2626",  // rosso
+  jesi:          "#7c3aed",  // viola
+  falconara:     "#0891b2",  // ciano
+  senigallia:    "#ea580c",  // arancio
+  castelfidardo: "#16a34a",  // verde
+};
+const CLUSTER_PALETTE = [
+  "#3b82f6", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6",
+  "#f97316", "#06b6d4", "#a855f7", "#84cc16", "#ef4444",
+  "#0ea5e9", "#d946ef", "#22c55e", "#eab308", "#6366f1",
+  "#f43f5e", "#10b981", "#fb923c", "#a78bfa", "#2dd4bf",
+];
+
+function hashString(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function colorForCluster(clusterId: string, isOfficial: boolean): string {
+  if (clusterId.startsWith("urban_")) {
+    const city = clusterId.slice("urban_".length);
+    return URBAN_HUB_COLORS[city] ?? "#dc2626";
+  }
+  if (isOfficial) return "#10b981";  // verde catalogo ufficiale
+  return CLUSTER_PALETTE[hashString(clusterId) % CLUSTER_PALETTE.length];
+}
+
+// ════════════════════════════════════════════════════════════
+// Layer 0.5: Urban Hub
+// I servizi urbani di una città formano un UNICO nodo tariffario.
+// Una fermata servita da almeno una route urbana confluisce nel
+// cluster urbano della città (mix urbano+extraurbano = vince urbano).
+// ════════════════════════════════════════════════════════════
+function applyUrbanHubLayer(
+  stops: StopRecord[],
+  stopUrbanWeights: Map<string, Map<string, number>>,
+) {
+  const assignments = new Map<string, string>();  // stopId → clusterId
+  const clusters = new Map<string, { name: string; stops: StopRecord[] }>();
+
+  for (const stop of stops) {
+    const w = stopUrbanWeights.get(stop.stopId);
+    if (!w || w.size === 0) continue;
+    // città dominante = max weight
+    let bestCat: string | null = null;
+    let bestW = -1;
+    for (const [cat, weight] of w) {
+      if (weight > bestW) { bestW = weight; bestCat = cat; }
+    }
+    if (!bestCat) continue;
+    const clusterId = `urban_${bestCat.slice("urbano_".length)}`;
+    const clusterName = urbanCategoryDisplayName(bestCat);
+    assignments.set(stop.stopId, clusterId);
+    if (!clusters.has(clusterId)) clusters.set(clusterId, { name: clusterName, stops: [] });
+    clusters.get(clusterId)!.stops.push(stop);
+  }
+  return { assignments, clusters };
+}
+
+// ════════════════════════════════════════════════════════════
+// Step 1.5: ABSORB extra-in-urban
+// ─────────────────────────────────────────────────────────────
+// Dopo lo Step 1 ogni cluster urbano contiene SOLO le fermate
+// servite da linee urbane. Però spesso, in mezzo al perimetro
+// urbano (es. dentro Falconara), ci sono fermate servite SOLO
+// da linee extraurbane: tariffariamente appartengono al nodo
+// urbano, ma se non assorbite finiscono nel k-means dello Step 2
+// formando cluster spuri.
+//
+// Questo step, per ogni fermata ancora non assegnata, calcola
+// la fermata urbana più vicina già assegnata. Se la distanza è
+// ≤ `thresholdM` (default 300 m), assorbe la fermata nel cluster
+// urbano corrispondente.
+//
+// Algoritmo: O(N_extra × N_urban) — per i numeri tipici (qualche
+// migliaio di fermate) è sufficiente; nessuna struttura spaziale
+// dedicata.
+// ════════════════════════════════════════════════════════════
+function applyAbsorbExtraInUrban(
+  unassigned: StopRecord[],
+  urbanClusters: Map<string, { name: string; stops: StopRecord[] }>,
+  thresholdM: number,
+) {
+  const assignments = new Map<string, string>();              // stopId → clusterId
+  const clusters = new Map<string, { name: string; stops: StopRecord[] }>();
+  // Snapshot per non far influenzare le assegnazioni precedenti su quelle successive
+  const urbanIndex: { clusterId: string; clusterName: string; stops: StopRecord[] }[] = [];
+  for (const [cid, c] of urbanClusters) {
+    if (c.stops.length === 0) continue;
+    urbanIndex.push({ clusterId: cid, clusterName: c.name, stops: c.stops });
+  }
+  if (urbanIndex.length === 0) return { assignments, clusters };
+
+  const thresholdKm = thresholdM / 1000;
+
+  for (const stop of unassigned) {
+    let bestClusterId: string | null = null;
+    let bestClusterName = "";
+    let bestDistKm = Infinity;
+    for (const uc of urbanIndex) {
+      // distanza alla fermata urbana più vicina del cluster
+      let minDist = Infinity;
+      for (const us of uc.stops) {
+        const d = haversineKm(stop.lat, stop.lon, us.lat, us.lon);
+        if (d < minDist) {
+          minDist = d;
+          if (minDist >= bestDistKm) break;     // pruning
+        }
+      }
+      if (minDist < bestDistKm) {
+        bestDistKm = minDist;
+        bestClusterId = uc.clusterId;
+        bestClusterName = uc.clusterName;
+      }
+    }
+    if (bestClusterId && bestDistKm <= thresholdKm) {
+      assignments.set(stop.stopId, bestClusterId);
+      if (!clusters.has(bestClusterId)) {
+        clusters.set(bestClusterId, { name: bestClusterName, stops: [] });
+      }
+      clusters.get(bestClusterId)!.stops.push(stop);
+    }
+  }
+  return { assignments, clusters };
+}
+
+// ════════════════════════════════════════════════════════════
 // Layer 0: catalogo ufficiale
 // ════════════════════════════════════════════════════════════
 type StopRecord = { stopId: string; stopName: string; lat: number; lon: number; nameNorm: string; tokens: string[] };
@@ -314,7 +533,113 @@ function applyTokenLayer(unassigned: StopRecord[], opts: { minSharedTokens: numb
 }
 
 // ════════════════════════════════════════════════════════════
-// Layer 3: DBSCAN geografico
+// Layer 3.b: K-Means geografico (addensamenti)
+// ─────────────────────────────────────────────────────────────
+// Stessa logica del bottone "auto-generate spatial" già esistente
+// in fares.ts (`kMeansSpatial`). Duplicata qui — come per
+// `classifyRouteCategory` — per non creare dipendenze cross-router.
+// Tenere allineate le due implementazioni.
+//
+// Suddivide le fermate residue in K cluster geografici tramite
+// k-means++ su coordinate (haversine). Se K non è fornito, viene
+// stimato dall'estensione geografica (~ 1 cluster ogni 8 km × 8 km).
+// ════════════════════════════════════════════════════════════
+function applyKmeansLayer(unassigned: StopRecord[], opts: { k?: number; maxIter?: number } = {}) {
+  const assignments = new Map<string, string>();
+  const clusters = new Map<string, { name: string; stops: StopRecord[] }>();
+  if (unassigned.length < 3) return { assignments, clusters };
+
+  // Stima K se non fornito
+  let k = opts.k ?? 0;
+  if (!k || k < 2) {
+    const minLat = Math.min(...unassigned.map(s => s.lat));
+    const maxLat = Math.max(...unassigned.map(s => s.lat));
+    const minLon = Math.min(...unassigned.map(s => s.lon));
+    const maxLon = Math.max(...unassigned.map(s => s.lon));
+    const spanKmLat = haversineKm(minLat, minLon, maxLat, minLon);
+    const spanKmLon = haversineKm(minLat, minLon, minLat, maxLon);
+    const area = spanKmLat * spanKmLon;
+    k = Math.max(4, Math.min(25, Math.round(area / 64))); // griglia ~8 km
+  }
+  k = Math.min(k, Math.max(1, Math.floor(unassigned.length / 3)));
+  const maxIter = opts.maxIter ?? 40;
+
+  // K-means++ init
+  const centroids: { lat: number; lon: number }[] = [];
+  centroids.push({
+    lat: unassigned[Math.floor(Math.random() * unassigned.length)].lat,
+    lon: unassigned[Math.floor(Math.random() * unassigned.length)].lon,
+  });
+  for (let c = 1; c < k; c++) {
+    const dists = unassigned.map(s => {
+      let minD = Infinity;
+      for (const ctr of centroids) {
+        const d = haversineKm(s.lat, s.lon, ctr.lat, ctr.lon);
+        if (d < minD) minD = d;
+      }
+      return minD * minD;
+    });
+    const total = dists.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    let picked = false;
+    for (let i = 0; i < dists.length; i++) {
+      r -= dists[i];
+      if (r <= 0) { centroids.push({ lat: unassigned[i].lat, lon: unassigned[i].lon }); picked = true; break; }
+    }
+    if (!picked) centroids.push({
+      lat: unassigned[Math.floor(Math.random() * unassigned.length)].lat,
+      lon: unassigned[Math.floor(Math.random() * unassigned.length)].lon,
+    });
+  }
+
+  // Iterazioni Lloyd
+  const assignIdx = new Int32Array(unassigned.length);
+  for (let iter = 0; iter < maxIter; iter++) {
+    let changed = false;
+    for (let i = 0; i < unassigned.length; i++) {
+      let bestC = 0, bestD = Infinity;
+      for (let c = 0; c < centroids.length; c++) {
+        const d = haversineKm(unassigned[i].lat, unassigned[i].lon, centroids[c].lat, centroids[c].lon);
+        if (d < bestD) { bestD = d; bestC = c; }
+      }
+      if (assignIdx[i] !== bestC) { assignIdx[i] = bestC; changed = true; }
+    }
+    if (!changed) break;
+    for (let c = 0; c < centroids.length; c++) {
+      let sumLat = 0, sumLon = 0, cnt = 0;
+      for (let i = 0; i < unassigned.length; i++) {
+        if (assignIdx[i] === c) { sumLat += unassigned[i].lat; sumLon += unassigned[i].lon; cnt++; }
+      }
+      if (cnt > 0) centroids[c] = { lat: sumLat / cnt, lon: sumLon / cnt };
+    }
+  }
+
+  // Raggruppa e ordina nord→sud per id stabile
+  const groups: { centroid: { lat: number; lon: number }; stops: StopRecord[] }[] =
+    centroids.map(c => ({ centroid: c, stops: [] }));
+  for (let i = 0; i < unassigned.length; i++) groups[assignIdx[i]].stops.push(unassigned[i]);
+  const nonEmpty = groups.filter(g => g.stops.length > 0)
+    .sort((a, b) => b.centroid.lat - a.centroid.lat);
+
+  for (let idx = 0; idx < nonEmpty.length; idx++) {
+    const g = nonEmpty[idx];
+    // Nome = fermata più centrale, ripulita
+    const central = g.stops.reduce((best, s) => {
+      const d = haversineKm(s.lat, s.lon, g.centroid.lat, g.centroid.lon);
+      return d < best.d ? { s, d } : best;
+    }, { s: g.stops[0], d: Infinity }).s;
+    const baseName = central.stopName.replace(/\s*[-–(].*/g, "").trim() || central.stopName;
+    const clusterId = `auto_geo_${idx + 1}`;
+    clusters.set(clusterId, { name: baseName, stops: g.stops });
+    for (const s of g.stops) assignments.set(s.stopId, clusterId);
+  }
+  return { assignments, clusters };
+}
+
+// ════════════════════════════════════════════════════════════
+// Layer 3 (legacy): DBSCAN geografico — NON più usato di default
+// nel modello v2 (sostituito da k-means). Mantenuto come fallback
+// attivabile via `useDbscan=true`.
 // ════════════════════════════════════════════════════════════
 function applyDbscanLayer(unassigned: StopRecord[], opts: { epsilonM: number; minPts: number }) {
   const epsilonKm = opts.epsilonM / 1000;
@@ -379,25 +704,69 @@ function applySingletonLayer(unassigned: StopRecord[]) {
 }
 
 // ════════════════════════════════════════════════════════════
-// Orchestratore pipeline
+// Orchestratore pipeline (modello a 2 step + manuale)
+// ────────────────────────────────────────────────────────────
+// Filosofia: ogni cluster è UNA PARTIZIONE. Non possono esistere
+// cluster annidati o sovrapposti. La pipeline procede per step
+// disgiunti, dove ogni fermata viene assegnata UNA SOLA volta.
+//
+// Step 1 — URBAN HUB
+//   Una fermata servita da almeno una route urbana confluisce
+//   nel cluster urbano della sua città (urban_ancona, urban_jesi,
+//   urban_falconara, urban_senigallia, urban_castelfidardo).
+//   In caso di mix urbano+extraurbano, vince la città con più
+//   passaggi urbani.
+//
+// Step 2 — DBSCAN GEOGRAFICO sulle NON-urbane
+//   Le fermate rimaste (puramente extraurbane) vengono raggruppate
+//   per addensamento geografico → identifica i centri abitati
+//   serviti solo da linee extraurbane.
+//
+// Step 3 — MANUALE
+//   Le fermate isolate restano "orfane" e l'utente le assegna a
+//   mano (o le promuove a nuovo cluster) tramite la UI cluster.
+//
+// I layer "official catalog / exact name / token / singleton" del
+// modello v1 sono stati DISATTIVATI ma NON rimossi: restano nel
+// codice come funzioni utilizzabili in futuro (`useOfficialCatalog`,
+// `useExactName`, `useToken`, `useSingleton` nei params).
 // ════════════════════════════════════════════════════════════
 async function runNodeAssignmentPipeline(feedId: string, opts: {
+  useUrbanHub?: boolean;
+  useAbsorbExtraInUrban?: boolean;
   useOfficialCatalog?: boolean;
+  useExactName?: boolean;
+  useToken?: boolean;
+  useKmeans?: boolean;
+  useDbscan?: boolean;
+  useSingleton?: boolean;
   clearExistingAuto?: boolean;
   exactRadiusM?: number;
   tokenRadiusM?: number;
   tokenMinShared?: number;
+  kmeansK?: number;
   geoEpsilonM?: number;
   geoMinPts?: number;
+  absorbThresholdM?: number;
 } = {}) {
   const params = {
-    useOfficialCatalog: opts.useOfficialCatalog ?? true,
-    clearExistingAuto:  opts.clearExistingAuto  ?? true,
-    exactRadiusM:       opts.exactRadiusM       ?? 800,
-    tokenRadiusM:       opts.tokenRadiusM       ?? 500,
-    tokenMinShared:     opts.tokenMinShared     ?? 2,
-    geoEpsilonM:        opts.geoEpsilonM        ?? 300,
-    geoMinPts:          opts.geoMinPts          ?? 2,
+    // Default v2: Urban + Absorb-extra-in-urban + K-means addensamenti, resto manuale.
+    useUrbanHub:           opts.useUrbanHub           ?? true,
+    useAbsorbExtraInUrban: opts.useAbsorbExtraInUrban ?? true,
+    useOfficialCatalog:    opts.useOfficialCatalog    ?? false,
+    useExactName:          opts.useExactName          ?? false,
+    useToken:              opts.useToken              ?? false,
+    useKmeans:             opts.useKmeans             ?? true,
+    useDbscan:             opts.useDbscan             ?? false,
+    useSingleton:          opts.useSingleton          ?? false,
+    clearExistingAuto:     opts.clearExistingAuto     ?? true,
+    exactRadiusM:          opts.exactRadiusM          ?? 800,
+    tokenRadiusM:          opts.tokenRadiusM          ?? 500,
+    tokenMinShared:        opts.tokenMinShared        ?? 2,
+    kmeansK:               opts.kmeansK               ?? 0,    // 0 = auto-stima da estensione geografica
+    geoEpsilonM:           opts.geoEpsilonM           ?? 400,
+    geoMinPts:             opts.geoMinPts             ?? 3,
+    absorbThresholdM:      opts.absorbThresholdM      ?? 300,  // soglia distanza alla fermata urbana più vicina
   };
 
   const t0 = Date.now();
@@ -427,23 +796,34 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
     const clustersBefore = Number(cBeforeRows[0]?.c ?? 0);
 
     if (params.clearExistingAuto) {
+      // Cancella TUTTI i cluster non manuali del feed (auto_*, urban_*, official_*).
+      // I cluster `is_official=true` provenienti dal catalogo restano protetti.
+      // Le righe in cluster_stops con assignment_source='manual' restano (override utente).
       const toDelete = await db.select({ clusterId: gtfsFareZoneClusters.clusterId })
         .from(gtfsFareZoneClusters)
         .where(and(
           eq(gtfsFareZoneClusters.feedId, feedId),
-          sql`cluster_id LIKE 'auto_%'`,
           eq(gtfsFareZoneClusters.isOfficial, false),
         ));
       const ids = toDelete.map(x => x.clusterId);
       if (ids.length > 0) {
+        // Cancella solo le righe auto-assegnate dei cluster da rimuovere
         await db.delete(gtfsFareZoneClusterStops).where(and(
           eq(gtfsFareZoneClusterStops.feedId, feedId),
           inArray(gtfsFareZoneClusterStops.clusterId, ids),
+          sql`(assignment_source IS NULL OR assignment_source = 'auto')`,
         ));
-        await db.delete(gtfsFareZoneClusters).where(and(
-          eq(gtfsFareZoneClusters.feedId, feedId),
-          inArray(gtfsFareZoneClusters.clusterId, ids),
-        ));
+        // Cancella i cluster solo se ora sono completamente vuoti
+        // (alcuni potrebbero contenere ancora stops manuali)
+        await db.execute(sql`
+          DELETE FROM gtfs_fare_zone_clusters c
+          WHERE c.feed_id = ${feedId}
+            AND c.is_official = false
+            AND NOT EXISTS (
+              SELECT 1 FROM gtfs_fare_zone_cluster_stops cs
+              WHERE cs.feed_id = c.feed_id AND cs.cluster_id = c.cluster_id
+            )
+        `);
       }
     }
 
@@ -451,11 +831,56 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       clusterId: string; clusterName: string; layer: string; confidence: number; isOfficial: boolean;
     }>();
     const newClusters = new Map<string, { name: string; isOfficial: boolean; officialCode: string | null }>();
-    const layerStats: Record<string, number> = { official: 0, exact: 0, token: 0, geo: 0, singleton: 0 };
+    const layerStats: Record<string, number> = { urban: 0, absorbed: 0, official: 0, exact: 0, token: 0, geo: 0, singleton: 0 };
+
+    // Layer 0.5: Urban Hub (prima del catalogo: i servizi urbani di una città
+    // formano un UNICO nodo tariffario, indipendentemente dal nome della fermata).
+    // Memorizziamo i cluster urbani separatamente perché lo Step 1.5 li usa
+    // come "calamita" per assorbire fermate extraurbane geograficamente interne.
+    const urbanClustersSnapshot = new Map<string, { name: string; stops: StopRecord[] }>();
+    if (params.useUrbanHub) {
+      const urbanWeights = await loadStopUrbanWeights(feedId);
+      const urbanRes = applyUrbanHubLayer(stops, urbanWeights);
+      for (const [stopId, clusterId] of urbanRes.assignments) {
+        const c = urbanRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, {
+          clusterId, clusterName: c.name,
+          layer: "urban", confidence: 90, isOfficial: false,
+        });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.urban++;
+      }
+      for (const [cid, c] of urbanRes.clusters) urbanClustersSnapshot.set(cid, c);
+    }
+
+    // Step 1.5 — ABSORB extra-in-urban
+    // Assorbe nel cluster urbano le fermate (servite solo da extraurbani)
+    // che cadono geograficamente dentro/vicino al perimetro urbano.
+    // Soglia: distanza alla fermata urbana più vicina del cluster ≤ absorbThresholdM.
+    if (params.useUrbanHub && params.useAbsorbExtraInUrban && urbanClustersSnapshot.size > 0) {
+      const candidatesForAbsorb = stops.filter(s => !finalAssignments.has(s.stopId));
+      const absorbRes = applyAbsorbExtraInUrban(
+        candidatesForAbsorb,
+        urbanClustersSnapshot,
+        params.absorbThresholdM,
+      );
+      for (const [stopId, clusterId] of absorbRes.assignments) {
+        const cMeta = urbanClustersSnapshot.get(clusterId);
+        const cName = cMeta?.name ?? clusterId;
+        finalAssignments.set(stopId, {
+          clusterId, clusterName: cName,
+          layer: "urban", confidence: 85, isOfficial: false,
+        });
+        // Il cluster esiste già da Step 1 in newClusters, ma per sicurezza
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: cName, isOfficial: false, officialCode: null });
+        layerStats.absorbed++;
+      }
+    }
 
     // Layer 0
     if (params.useOfficialCatalog) {
-      const officialMap = await applyOfficialCatalogLayer(feedId, stops);
+      const remainingForOfficial = stops.filter(s => !finalAssignments.has(s.stopId));
+      const officialMap = await applyOfficialCatalogLayer(feedId, remainingForOfficial);
       for (const [stopId, m] of officialMap) {
         const clusterId = `official_${m.officialCode.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
         finalAssignments.set(stopId, {
@@ -467,44 +892,73 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       }
     }
 
-    // Layer 1
+    // Layer 1 — DISATTIVATO di default (model v2: solo Urban + DBSCAN).
+    // Riattivabile passando useExactName=true. Aggrega fermate omonime
+    // entro `exactRadiusM` metri sotto un cluster "auto_exact_*".
     let remaining = stops.filter(s => !finalAssignments.has(s.stopId));
-    const exactRes = applyExactNameLayer(remaining, params.exactRadiusM);
-    for (const [stopId, clusterId] of exactRes.assignments) {
-      const c = exactRes.clusters.get(clusterId)!;
-      finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "exact", confidence: 95, isOfficial: false });
-      if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
-      layerStats.exact++;
+    if (params.useExactName) {
+      const exactRes = applyExactNameLayer(remaining, params.exactRadiusM);
+      for (const [stopId, clusterId] of exactRes.assignments) {
+        const c = exactRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "exact", confidence: 95, isOfficial: false });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.exact++;
+      }
     }
 
-    // Layer 2
+    // Layer 2 — DISATTIVATO di default. Token + prossimità (Union-Find).
     remaining = stops.filter(s => !finalAssignments.has(s.stopId));
-    const tokenRes = applyTokenLayer(remaining, { minSharedTokens: params.tokenMinShared, radiusM: params.tokenRadiusM });
-    for (const [stopId, clusterId] of tokenRes.assignments) {
-      const c = tokenRes.clusters.get(clusterId)!;
-      finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "token", confidence: 80, isOfficial: false });
-      if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
-      layerStats.token++;
+    if (params.useToken) {
+      const tokenRes = applyTokenLayer(remaining, { minSharedTokens: params.tokenMinShared, radiusM: params.tokenRadiusM });
+      for (const [stopId, clusterId] of tokenRes.assignments) {
+        const c = tokenRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "token", confidence: 80, isOfficial: false });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.token++;
+      }
     }
 
-    // Layer 3
+    // Step 2 — K-MEANS GEOGRAFICO sulle fermate NON-urbane.
+    // Stessa logica del bottone "auto-generate spatial" già usata
+    // dal team — riusato qui come Step 2 della pipeline Telemaco
+    // così l'UX è coerente fra i due punti d'ingresso.
     remaining = stops.filter(s => !finalAssignments.has(s.stopId));
-    const geoRes = applyDbscanLayer(remaining, { epsilonM: params.geoEpsilonM, minPts: params.geoMinPts });
-    for (const [stopId, clusterId] of geoRes.assignments) {
-      const c = geoRes.clusters.get(clusterId)!;
-      finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "geo", confidence: 60, isOfficial: false });
-      if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
-      layerStats.geo++;
+    if (params.useKmeans) {
+      const kRes = applyKmeansLayer(remaining, { k: params.kmeansK || undefined });
+      for (const [stopId, clusterId] of kRes.assignments) {
+        const c = kRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "geo", confidence: 70, isOfficial: false });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.geo++;
+      }
     }
 
-    // Layer 4
+    // Step 2 (legacy) — DBSCAN GEOGRAFICO sulle fermate NON-urbane.
+    // DISATTIVATO di default in v2 (sostituito da k-means). Resta
+    // attivabile via `useDbscan=true` come fallback.
     remaining = stops.filter(s => !finalAssignments.has(s.stopId));
-    const singletonRes = applySingletonLayer(remaining);
-    for (const [stopId, clusterId] of singletonRes.assignments) {
-      const c = singletonRes.clusters.get(clusterId)!;
-      finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "singleton", confidence: 100, isOfficial: false });
-      if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
-      layerStats.singleton++;
+    if (params.useDbscan) {
+      const geoRes = applyDbscanLayer(remaining, { epsilonM: params.geoEpsilonM, minPts: params.geoMinPts });
+      for (const [stopId, clusterId] of geoRes.assignments) {
+        const c = geoRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "geo", confidence: 60, isOfficial: false });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.geo++;
+      }
+    }
+
+    // Layer 4 — DISATTIVATO di default. Singleton: ogni fermata residua
+    // diventa un proprio cluster. Step 3 v2: lasciare ORFANE le residue
+    // così l'utente le assegna manualmente via UI.
+    remaining = stops.filter(s => !finalAssignments.has(s.stopId));
+    if (params.useSingleton) {
+      const singletonRes = applySingletonLayer(remaining);
+      for (const [stopId, clusterId] of singletonRes.assignments) {
+        const c = singletonRes.clusters.get(clusterId)!;
+        finalAssignments.set(stopId, { clusterId, clusterName: c.name, layer: "singleton", confidence: 100, isOfficial: false });
+        if (!newClusters.has(clusterId)) newClusters.set(clusterId, { name: c.name, isOfficial: false, officialCode: null });
+        layerStats.singleton++;
+      }
     }
 
     // Persisti cluster con centroide
@@ -516,12 +970,12 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       await db.insert(gtfsFareZoneClusters).values({
         feedId, clusterId, clusterName: meta.name,
         polygon: null, centroidLat, centroidLon,
-        color: meta.isOfficial ? "#10b981" : "#3b82f6",
+        color: colorForCluster(clusterId, meta.isOfficial),
         isOfficial: meta.isOfficial,
         officialCode: meta.officialCode,
       }).onConflictDoUpdate({
         target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
-        set: { clusterName: meta.name, centroidLat, centroidLon, updatedAt: sql`now()`, isOfficial: meta.isOfficial, officialCode: meta.officialCode },
+        set: { clusterName: meta.name, centroidLat, centroidLon, color: colorForCluster(clusterId, meta.isOfficial), updatedAt: sql`now()`, isOfficial: meta.isOfficial, officialCode: meta.officialCode },
       });
     }
 
@@ -611,7 +1065,7 @@ const ATMA_2013_NODES: ReadonlyArray<{ code: string; name: string; lat?: number;
 // Endpoints
 // ════════════════════════════════════════════════════════════
 
-router.post("/api/fares/node-assignment/run", async (req, res): Promise<void> => {
+router.post("/fares/node-assignment/run", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -621,7 +1075,7 @@ router.post("/api/fares/node-assignment/run", async (req, res): Promise<void> =>
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/node-assignment/runs", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/runs", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -633,7 +1087,7 @@ router.get("/api/fares/node-assignment/runs", async (_req, res): Promise<void> =
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/node-assignment/report", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/report", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -680,7 +1134,7 @@ router.get("/api/fares/node-assignment/report", async (_req, res): Promise<void>
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/node-assignment/low-confidence", async (req, res): Promise<void> => {
+router.get("/fares/node-assignment/low-confidence", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -700,7 +1154,7 @@ router.get("/api/fares/node-assignment/low-confidence", async (req, res): Promis
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/node-assignment/ambiguous", async (req, res): Promise<void> => {
+router.get("/fares/node-assignment/ambiguous", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -744,7 +1198,7 @@ router.get("/api/fares/node-assignment/ambiguous", async (req, res): Promise<voi
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/node-assignment/orphans", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/orphans", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -764,7 +1218,7 @@ router.get("/api/fares/node-assignment/orphans", async (_req, res): Promise<void
 
 // ── Catalogo nodi ufficiali ──
 
-router.get("/api/fares/official-nodes", async (_req, res): Promise<void> => {
+router.get("/fares/official-nodes", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -776,7 +1230,7 @@ router.get("/api/fares/official-nodes", async (_req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/api/fares/official-nodes", async (req, res): Promise<void> => {
+router.post("/fares/official-nodes", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -799,7 +1253,7 @@ router.post("/api/fares/official-nodes", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/api/fares/official-nodes/import-csv", async (req, res): Promise<void> => {
+router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -836,7 +1290,7 @@ router.post("/api/fares/official-nodes/import-csv", async (req, res): Promise<vo
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/api/fares/official-nodes/import-atma-2013", async (_req, res): Promise<void> => {
+router.post("/fares/official-nodes/import-atma-2013", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -856,7 +1310,7 @@ router.post("/api/fares/official-nodes/import-atma-2013", async (_req, res): Pro
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.delete("/api/fares/official-nodes/:id", async (req, res): Promise<void> => {
+router.delete("/fares/official-nodes/:id", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     await db.delete(gtfsFareOfficialNodes).where(eq(gtfsFareOfficialNodes.id, req.params.id));
@@ -909,7 +1363,7 @@ async function moveStop(feedId: string, stopId: string, toClusterId: string, rea
   return { fromCluster: current?.clusterId ?? null, toCluster: toClusterId };
 }
 
-router.post("/api/fares/stop-assignment/move", async (req, res): Promise<void> => {
+router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -921,7 +1375,7 @@ router.post("/api/fares/stop-assignment/move", async (req, res): Promise<void> =
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/api/fares/stop-assignment/bulk-move", async (req, res): Promise<void> => {
+router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -943,7 +1397,7 @@ router.post("/api/fares/stop-assignment/bulk-move", async (req, res): Promise<vo
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/api/fares/stop-assignment/overrides", async (_req, res): Promise<void> => {
+router.get("/fares/stop-assignment/overrides", async (_req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId();
@@ -955,7 +1409,7 @@ router.get("/api/fares/stop-assignment/overrides", async (_req, res): Promise<vo
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/api/fares/stop-assignment/revert/:overrideId", async (req, res): Promise<void> => {
+router.post("/fares/stop-assignment/revert/:overrideId", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
     const [ov] = await db.select().from(gtfsFareStopAssignmentOverrides)
@@ -986,6 +1440,13 @@ router.post("/api/fares/stop-assignment/revert/:overrideId", async (req, res): P
 
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
+});
+
+// Bootstrap eager all'import: garantisce che le colonne addittive
+// (is_official, official_code, assignment_*) esistano prima che fares.ts
+// faccia SELECT su gtfs_fare_zone_clusters / gtfs_fare_zone_cluster_stops.
+ensureNodeAssignmentTables().catch((e) => {
+  console.error("[telemaco] eager bootstrap failed:", e);
 });
 
 export default router;

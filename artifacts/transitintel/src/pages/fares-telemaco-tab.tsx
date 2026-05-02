@@ -44,11 +44,13 @@ interface RunRow {
 
 interface ReportData {
   totalStops: number;
-  assigned: number;
+  assignedStops: number;
   orphans: number;
-  clusters: number;
-  byLayer: Record<string, number>;
-  byConfidence: { min: number; max: number; count: number }[];
+  coveragePercent: number;
+  lowConfidence: number;
+  byLayer: Array<{ assignment_layer: string | null; cnt: number }>;
+  bySource: Array<{ assignment_source: string | null; cnt: number }>;
+  readyForTelemaco: boolean;
 }
 
 interface AssignmentRow {
@@ -152,11 +154,13 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [report, setReport] = useState<ReportData | null>(null);
 
-  // params pipeline
-  const [tokenRadiusKm, setTokenRadiusKm] = useState(0.4);
-  const [dbscanEpsKm, setDbscanEpsKm] = useState(0.25);
-  const [dbscanMinPts, setDbscanMinPts] = useState(2);
-  const [enableSingleton, setEnableSingleton] = useState(true);
+  // params pipeline v2 (Urban Hub + K-Means addensamenti). I controlli "token"
+  // e "singleton" sono nascosti perché disattivati di default in v2 (vedi
+  // fares-node-assignment.ts). Restano nel codice come stato per riattivazione futura.
+  // `kmeansK = 0` → auto-stima dal backend in base all'estensione geografica.
+  const [kmeansK, setKmeansK] = useState(0);
+  // const [tokenRadiusM, setTokenRadiusM] = useState(500);
+  // const [enableSingleton, setEnableSingleton] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -174,9 +178,23 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
   const runPipeline = async () => {
     setBusy(true);
     try {
+      // Pipeline v2: solo Urban Hub + K-Means addensamenti. Tutti gli altri
+      // layer (catalog, exact, token, dbscan, singleton) sono dormienti e
+      // devono restare OFF per evitare cluster sovrapposti o esplosione del
+      // numero di partizioni. Lo step k-means usa la STESSA logica del
+      // bottone "auto-generate spatial" già in fares.ts.
       const res = await apiFetch<any>("/api/fares/node-assignment/run", {
         method: "POST",
-        body: JSON.stringify({ tokenRadiusKm, dbscanEpsKm, dbscanMinPts, enableSingleton }),
+        body: JSON.stringify({
+          useUrbanHub: true,
+          useKmeans: true,
+          useOfficialCatalog: false,
+          useExactName: false,
+          useToken: false,
+          useDbscan: false,
+          useSingleton: false,
+          kmeansK: kmeansK > 0 ? kmeansK : 0,  // 0 = auto-stima
+        }),
       });
       toast({
         title: "Pipeline Telemaco completata",
@@ -190,9 +208,9 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
   };
 
   const lastRun = runs[0];
-  const coveragePct = report && report.totalStops > 0
-    ? Math.round((report.assigned / report.totalStops) * 1000) / 10
-    : 0;
+  const coveragePct = report?.coveragePercent ?? 0;
+  const assigned = report?.assignedStops ?? 0;
+  const clustersCount = lastRun?.clustersAfter ?? null;
 
   return (
     <div className="space-y-4">
@@ -204,48 +222,27 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <p className="text-[11px] text-muted-foreground">
+            Modello v2 a 2 step: <strong>Step 1</strong> Urban Hub (servizi urbani → 1 nodo per città) ·
+            <strong> Step 2</strong> Addensamenti k-means sulle fermate non-urbane
+            (stessa logica del bottone "Auto-genera cluster spaziali") ·
+            <strong> Step 3</strong> assegnazione manuale delle fermate orfane.
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <div>
-              <label className="text-[11px] text-muted-foreground">Token raggio (km)</label>
+              <label className="text-[11px] text-muted-foreground">Numero cluster (K)</label>
               <Input
-                type="number" step="0.05" min="0" max="2"
-                value={tokenRadiusKm}
-                onChange={e => setTokenRadiusKm(Number(e.target.value))}
+                type="number" step="1" min="0" max="50"
+                value={kmeansK}
+                onChange={e => setKmeansK(Number(e.target.value))}
                 className="h-8 text-xs"
               />
-            </div>
-            <div>
-              <label className="text-[11px] text-muted-foreground">DBSCAN ε (km)</label>
-              <Input
-                type="number" step="0.05" min="0.05" max="2"
-                value={dbscanEpsKm}
-                onChange={e => setDbscanEpsKm(Number(e.target.value))}
-                className="h-8 text-xs"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] text-muted-foreground">DBSCAN minPts</label>
-              <Input
-                type="number" step="1" min="1" max="10"
-                value={dbscanMinPts}
-                onChange={e => setDbscanMinPts(Number(e.target.value))}
-                className="h-8 text-xs"
-              />
-            </div>
-            <div className="flex items-end gap-2">
-              <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enableSingleton}
-                  onChange={e => setEnableSingleton(e.target.checked)}
-                />
-                Layer Singleton (fallback)
-              </label>
+              <p className="text-[10px] text-muted-foreground mt-1">0 = stima automatica (~ 1 cluster ogni 8×8 km)</p>
             </div>
           </div>
           <Button onClick={runPipeline} disabled={busy} className="w-full md:w-auto">
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-            <span className="ml-1.5">Esegui pipeline 4-layer</span>
+            <span className="ml-1.5">Esegui pipeline (Urban + Addensamenti)</span>
           </Button>
         </CardContent>
       </Card>
@@ -257,14 +254,14 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
             <p className="text-xs text-muted-foreground">Copertura</p>
             <p className="text-2xl font-bold text-emerald-400">{coveragePct}%</p>
             <p className="text-[11px] text-muted-foreground">
-              {report?.assigned ?? 0} / {report?.totalStops ?? 0} fermate
+              {assigned} / {report?.totalStops ?? 0} fermate
             </p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4">
             <p className="text-xs text-muted-foreground">Cluster generati</p>
-            <p className="text-2xl font-bold">{report?.clusters ?? "—"}</p>
+            <p className="text-2xl font-bold">{clustersCount ?? "—"}</p>
           </CardContent>
         </Card>
         <Card>
@@ -299,7 +296,7 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
       </div>
 
       {/* Breakdown layer */}
-      {report && Object.keys(report.byLayer ?? {}).length > 0 && (
+      {report && Array.isArray(report.byLayer) && report.byLayer.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center gap-2">
@@ -308,9 +305,11 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {Object.entries(report.byLayer).map(([layer, count]) => {
+              {report.byLayer.map((row) => {
+                const layer = row.assignment_layer ?? "unknown";
+                const count = Number(row.cnt ?? 0);
                 const meta = LAYER_META[layer] ?? { label: layer, color: "slate" };
-                const pct = report.assigned > 0 ? Math.round((count / report.assigned) * 100) : 0;
+                const pct = assigned > 0 ? Math.round((count / assigned) * 100) : 0;
                 return (
                   <div key={layer}>
                     <div className="flex items-center justify-between text-xs mb-1">

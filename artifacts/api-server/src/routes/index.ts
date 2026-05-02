@@ -29,6 +29,7 @@ import deadheadsRouter from "./deadheads";
 import intermodalOptimizerRouter from "./intermodal-optimizer";
 import aiRouter from "./ai";
 import planningRouter from "./planning";
+import territoryRouter from "./territory";
 
 const router: IRouter = Router();
 
@@ -62,5 +63,6 @@ router.use(depotsRouter);
 router.use(deadheadsRouter);
 router.use(aiRouter);
 router.use(planningRouter);
+router.use(territoryRouter);
 
 export default router;
