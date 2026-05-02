@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
+import authRouter from "../lib/auth";
 import trafficRouter from "./traffic";
 import poiRouter from "./poi";
 import populationRouter from "./population";
@@ -34,6 +35,7 @@ import territoryRouter from "./territory";
 const router: IRouter = Router();
 
 router.use(healthRouter);
+router.use(authRouter);
 router.use(trafficRouter);
 router.use(poiRouter);
 router.use(populationRouter);

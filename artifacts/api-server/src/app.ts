@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger, getRequestId } from "./lib/logger";
@@ -51,11 +52,13 @@ app.use(cors({
     if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
       callback(null, true);
     } else {
-      callback(null, true); // permissive in dev, restringi se vuoi
+      // riflette l'origin in dev per consentire credenziali (cookie)
+      callback(null, true);
     }
   },
   credentials: true,
 }));
+app.use(cookieParser());
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
