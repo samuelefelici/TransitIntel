@@ -43,22 +43,42 @@ export function buildShapeGeojson(shapePoints: Record<string, string>[]): { shap
 // ── Feed helpers ──────────────────────────────────────────────
 /**
  * Ritorna l'ID del feed GTFS "attivo".
- * Preferenza: feed con `is_active = true`. Se nessuno è esplicitamente
- * attivato, fallback al feed più recente (uploaded_at DESC).
+ * Preferenza: feed con `is_active = true` posseduto dall'utente. Se nessuno è
+ * esplicitamente attivato, fallback al feed più recente dell'utente.
  *
- * NOTA: la colonna `is_active` viene creata lazy dal bootstrap di
- * `gtfs-upload.ts` (CREATE COLUMN IF NOT EXISTS) la prima volta.
+ * Se `req` è omesso (legacy/cron), comportamento single-tenant globale.
  */
-export async function getLatestFeedId(): Promise<string | null> {
+export async function getLatestFeedId(req?: any): Promise<string | null> {
+  const user = req?.user;
+  const isAdmin = user?.role === "admin";
+  const userId: string | undefined = user?.id;
+
+  // Filtro tenant: per utenti normali aggiunge AND owner_user_id = uid
+  const tenantSql = (!user || isAdmin)
+    ? sql`TRUE`
+    : sql.raw(`(owner_user_id = '${userId}'::uuid)`);
+
   try {
     const active = await db.execute(sql`
-      SELECT id FROM gtfs_feeds WHERE is_active = true ORDER BY uploaded_at DESC LIMIT 1
+      SELECT id FROM gtfs_feeds
+       WHERE is_active = true AND ${tenantSql}
+       ORDER BY uploaded_at DESC LIMIT 1
     `);
     const aRow: any = (active as any).rows?.[0] ?? (active as any)[0];
     if (aRow?.id) return aRow.id as string;
   } catch {
-    // colonna is_active può non esistere ancora (DB pre-bootstrap): ignoriamo
+    // colonna is_active o owner_user_id può non esistere ancora: ignoriamo
   }
+  try {
+    const r = await db.execute(sql`
+      SELECT id FROM gtfs_feeds
+       WHERE ${tenantSql}
+       ORDER BY uploaded_at DESC LIMIT 1
+    `);
+    const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+    if (row?.id) return row.id as string;
+  } catch {}
+  // ultimo fallback: il più recente in assoluto (legacy)
   const rows = await db.select({ id: gtfsFeeds.id }).from(gtfsFeeds).orderBy(sql`uploaded_at DESC`).limit(1);
   return rows[0]?.id ?? null;
 }

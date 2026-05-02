@@ -915,9 +915,9 @@ function buildServiceProgram(
  *  ROUTES
  * ═══════════════════════════════════════════════════════════════ */
 
-router.get("/service-program/routes", async (_req, res) => {
+router.get("/service-program/routes", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const rows = await db.select({
@@ -956,9 +956,9 @@ router.get("/service-program/routes", async (_req, res) => {
   }
 });
 
-router.get("/service-program/dates", async (_req, res) => {
+router.get("/service-program/dates", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const calRows = await db.select({
@@ -998,7 +998,7 @@ router.get("/service-program/dates", async (_req, res) => {
 
 router.get("/service-program/trips", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const dateRaw = req.query.date as string | undefined;
@@ -1103,7 +1103,7 @@ router.get("/service-program/trips", async (req, res) => {
 
 router.post("/service-program", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const body = req.body as {
@@ -1473,7 +1473,7 @@ async function runCPSATVehicleScheduler(
 
 router.post("/service-program/cpsat", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const body = req.body as {
@@ -1759,7 +1759,7 @@ router.post("/service-program/scenarios", async (req, res) => {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
       return;
     }
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const [row] = await db.insert(serviceProgramScenarios).values({
       name,
       date: String(date).replace(/-/g, ""),

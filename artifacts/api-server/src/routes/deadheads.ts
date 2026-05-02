@@ -85,7 +85,7 @@ router.post("/deadheads/compute", asyncHandler(async (req, res) => {
   }
 
   // 2. Feed
-  const feedId = await getLatestFeedId();
+  const feedId = await getLatestFeedId(req);
   if (!feedId) {
     res.status(400).json({ error: "Nessun feed GTFS disponibile" });
     return;

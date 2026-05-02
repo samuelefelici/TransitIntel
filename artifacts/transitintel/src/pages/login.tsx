@@ -93,30 +93,25 @@ export default function LoginPage() {
   useMatrixRain(canvasRef);
 
   const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
+    async (e: React.FormEvent) => {
       e.preventDefault();
       setError(false);
       setLoading(true);
 
-      // Fake auth delay for cinematic feel
-      setTimeout(() => {
-        // Validate credentials without triggering auth state yet
-        if (username !== "admin" || password !== "admin123") {
-          setLoading(false);
-          setError(true);
-          setShake(true);
-          setTimeout(() => setShake(false), 600);
-        } else {
-          setLoading(false);
-          setAccessGranted(true);
-          setPhase("scanning");
-
-          // Phase 1: scanning (1.5s) → Phase 2: granted (2s) → Phase 3: entering (1.2s) → actually login
-          setTimeout(() => setPhase("granted"), 1500);
-          setTimeout(() => setPhase("entering"), 3500);
-          setTimeout(() => login(username, password), 4700);
-        }
-      }, 1200);
+      const result = await login(username, password);
+      if (!result.ok) {
+        setLoading(false);
+        setError(true);
+        setShake(true);
+        setTimeout(() => setShake(false), 600);
+        return;
+      }
+      // Login OK: AuthProvider gia' aggiornato. Animazione poi App.tsx renderizza l'app.
+      setLoading(false);
+      setAccessGranted(true);
+      setPhase("scanning");
+      setTimeout(() => setPhase("granted"), 1500);
+      setTimeout(() => setPhase("entering"), 3500);
     },
     [login, username, password],
   );
@@ -391,18 +386,18 @@ export default function LoginPage() {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Username */}
+              {/* Email */}
               <div>
                 <label className="block font-mono text-[11px] text-cyan-600 mb-1.5 tracking-wider uppercase">
-                  Nome Utente
+                  Email
                 </label>
                 <input
-                  type="text"
+                  type="email"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full bg-[hsl(224,71%,8%)] border border-cyan-500/15 rounded-lg px-4 py-2.5 font-mono text-sm text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
-                  placeholder="inserisci username"
-                  autoComplete="username"
+                  placeholder="email@dominio"
+                  autoComplete="email"
                   required
                 />
               </div>

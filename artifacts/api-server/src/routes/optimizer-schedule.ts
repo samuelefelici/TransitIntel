@@ -557,7 +557,7 @@ async function optimizeSchedule(feedId: string, dateYMD: string) {
  */
 router.post("/optimizer/schedule/optimize", strictLimiter, async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     const rawDate = (req.body as any)?.date;
@@ -693,7 +693,7 @@ router.post("/optimizer/schedule/optimize", strictLimiter, async (req, res) => {
 // POST /api/optimizer/schedule — run schedule optimization for a specific date
 router.post("/optimizer/schedule", strictLimiter, async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     // date is required — format YYYYMMDD or YYYY-MM-DD
@@ -719,7 +719,7 @@ router.post("/optimizer/schedule", strictLimiter, async (req, res) => {
 // GET /api/optimizer/schedule/dates — list available dates in feed
 router.get("/optimizer/schedule/dates", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
 
     // Check calendar table for date ranges

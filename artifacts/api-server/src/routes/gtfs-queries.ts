@@ -32,7 +32,7 @@ router.get("/gtfs/stops", cache({ ttlSeconds: 60 }), async (req, res) => {
     if (routeIdsParam) {
       const routeIds = routeIdsParam.split(",").map(s => s.trim()).filter(Boolean);
       if (routeIds.length === 0) return res.json({ data: [], total: 0 });
-      const latestFeed = feedId || await getLatestFeedId();
+      const latestFeed = feedId || await getLatestFeedId(req);
       if (!latestFeed) return res.json({ data: [], total: 0 });
 
       const inList = sql.join(routeIds.map(id => sql`${id}`), sql`, `);
@@ -98,7 +98,7 @@ router.get("/gtfs/shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
 // GET /api/gtfs/summary — real GTFS stats for the dashboard card
 router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ available: false });
 
     const [routeCount, stopCount, tripCount, calDows, hoursRow] = await Promise.all([

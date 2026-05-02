@@ -19,11 +19,16 @@ export async function apiFetch<T = unknown>(
   init?: RequestInit,
 ): Promise<T> {
   const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, init);
+  // Sempre cookie httpOnly auth (cross-site Vercel <-> Render con SameSite=None)
+  const res = await fetch(url, { credentials: "include", ...(init || {}) });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const msg = (body as any)?.error || `HTTP ${res.status}`;
     console.error(`[API] ${init?.method ?? "GET"} ${path} → ${res.status}:`, msg);
+    // Eventi globali: 401 -> redirect login; 403 -> notify
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth:unauthorized"));
+    }
     throw new Error(msg);
   }
   return res.json();

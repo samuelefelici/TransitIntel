@@ -1,6 +1,8 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import authRouter from "../lib/auth";
+import { requireAuth } from "../lib/auth";
+import { ensureTenantMiddleware } from "../lib/tenant";
 import trafficRouter from "./traffic";
 import poiRouter from "./poi";
 import populationRouter from "./population";
@@ -36,13 +38,18 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
+router.use(cronRouter); // pubblico (webhook/job esterni)
+
+// ⛔ Tutto sotto qui richiede autenticazione + colonne tenant pronte
+router.use(requireAuth);
+router.use(ensureTenantMiddleware);
+
 router.use(trafficRouter);
 router.use(poiRouter);
 router.use(populationRouter);
 router.use(stopsRouter);
 router.use(routesBusRouter);
 router.use(analysisRouter);
-router.use(cronRouter);
 router.use(gtfsUploadRouter);
 router.use(gtfsQueriesRouter);
 router.use(gtfsAnalysisRouter);

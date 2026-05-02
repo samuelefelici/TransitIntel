@@ -9,7 +9,7 @@ import {
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth, type Permission } from "@/hooks/use-auth";
 import { getApiBase } from "@/lib/api";
 import CopilotSidebar from "@/components/CopilotSidebar";
 import logoImg from "/logo.png";
@@ -20,6 +20,7 @@ interface NavSection {
   title: string;
   icon?: any;            // section-level icon (shown when collapsed & for expandable groups)
   collapsible?: boolean; // if true, items are behind a toggle
+  permission?: Permission; // se presente, sezione visibile solo con questo permesso (admin sempre)
   items: NavItem[];
 }
 
@@ -36,6 +37,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Crea Servizio",
     icon: Route,
     collapsible: true,
+    permission: "scheduling",
     items: [
       { href: "/scenarios", label: "Scenari", icon: Route },
       { href: "/planning", label: "PlannerStudio", icon: Layers },
@@ -45,18 +47,21 @@ const NAV_SECTIONS: NavSection[] = [
   },
   {
     title: "Ottimizzazione Servizio",
+    permission: "scheduling",
     items: [
       { href: "/fucina", label: "Scheduling Engine", icon: Flame },
     ],
   },
   {
     title: "Bigliettazione Elettronica",
+    permission: "fares",
     items: [
       { href: "/fares-engine", label: "Fares Engine", icon: Wallet },
     ],
   },
   {
     title: "Analisi Rete",
+    permission: "analytics",
     items: [
       { href: "/network", label: "Linee & Fermate", icon: Network },
     ],
@@ -73,7 +78,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [isMobileOpen, setIsMobileOpen] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
-  const { logout } = useAuth();
+  const { logout, user, isAdmin, hasPermission } = useAuth();
+
+  // Filtra le voci di Panoramica per i permessi (analytics)
+  // e nasconde sezioni intere se non si ha il permesso richiesto.
+  const visibleSections = React.useMemo(() => {
+    return NAV_SECTIONS
+      .filter(s => !s.permission || hasPermission(s.permission))
+      .map(s => {
+        if (s.title === "Panoramica") {
+          return {
+            ...s,
+            items: s.items.filter(i => {
+              if (i.href === "/traffic" || i.href === "/territory") return hasPermission("analytics");
+              return true;
+            }),
+          };
+        }
+        return s;
+      })
+      .filter(s => s.items.length > 0);
+  }, [hasPermission]);
 
   const isSchedulingZone = location === "/fucina" || location === "/cluster" || location === "/depots" || location.startsWith("/driver-shifts");
   const isFaresZone =
@@ -384,7 +409,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         ) : (
           /* ── Normal nav ── */
           <nav className="flex-1 px-2 py-4 space-y-3 overflow-y-auto">
-          {NAV_SECTIONS.map((section) => {
+          {visibleSections.map((section) => {
             const sectionHasActive = section.items.some(i => location === i.href);
             const isExpanded = expandedSections[section.title] ?? false;
 
@@ -553,6 +578,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {!isSchedulingZone && !isFaresZone && !collapsed && (
           <div className="p-4 mt-auto border-t border-border/30 space-y-3">
+            {isAdmin && (
+              <Link href="/admin/users">
+                <div
+                  onClick={() => setIsMobileOpen(false)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-all ${
+                    location === "/admin/users"
+                      ? "bg-amber-500/15 text-amber-300"
+                      : "text-amber-400/70 hover:text-amber-300 hover:bg-amber-500/10"
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span className="font-medium">Gestione Utenti</span>
+                </div>
+              </Link>
+            )}
+            {user && (
+              <div className="px-3 py-1 text-[10px] text-muted-foreground">
+                <div className="font-medium text-foreground/80 truncate">
+                  {user.fullName || user.email}
+                </div>
+                <div className="font-mono opacity-60 truncate">{user.email}</div>
+                {isAdmin && <div className="text-amber-400/70 mt-0.5">admin</div>}
+              </div>
+            )}
             <div className="bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl p-4 border border-primary/20">
               <h4 className="font-semibold text-xs mb-0.5 text-primary">Ancona / Marche</h4>
               <p className="text-[11px] text-muted-foreground">Sistema attivo</p>

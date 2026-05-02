@@ -189,7 +189,7 @@ router.get("/gtfs/trips/list", cache({ ttlSeconds: 60 }), async (req, res) => {
   if (!routeId) return res.status(400).json({ error: "routeId required" });
 
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ data: [], feedId: null, error: "Nessun feed GTFS caricato" });
 
     const tripCount = await db.select({ count: sql<number>`count(*)::int` }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
@@ -330,7 +330,7 @@ router.get("/gtfs/trips/visual", cache({ ttlSeconds: 30 }), async (req, res) => 
   if (dayTypes.includes("sunday")) dowInts.push(0);
 
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ error: "Nessun feed GTFS", stops: [], segments: [] });
 
     const stopsWithTimes = await db.execute<{
@@ -516,7 +516,7 @@ router.get("/gtfs/trips/schedule", cache({ ttlSeconds: 60 }), async (req, res) =
   if (!routeId) return res.status(400).json({ error: "routeId required" });
 
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ trips: [], error: "Nessun feed GTFS" });
 
     const tripCount = await db.select({ count: sql<number>`count(*)::int` }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));

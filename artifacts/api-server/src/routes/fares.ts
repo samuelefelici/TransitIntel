@@ -583,9 +583,9 @@ const DEFAULT_NETWORKS = [
 ];
 
 // GET /api/fares/networks
-router.get("/fares/networks", async (_req, res): Promise<void> => {
+router.get("/fares/networks", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
     res.json(rows);
@@ -593,9 +593,9 @@ router.get("/fares/networks", async (_req, res): Promise<void> => {
 });
 
 // POST /api/fares/networks/seed
-router.post("/fares/networks/seed", async (_req, res): Promise<void> => {
+router.post("/fares/networks/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed found" }); return; }
 
     for (const n of DEFAULT_NETWORKS) {
@@ -616,9 +616,9 @@ router.post("/fares/networks/seed", async (_req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 
 // GET /api/fares/route-networks
-router.get("/fares/route-networks", async (_req, res): Promise<void> => {
+router.get("/fares/route-networks", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
 
     // Get all routes with their current assignment (if any)
@@ -646,9 +646,9 @@ router.get("/fares/route-networks", async (_req, res): Promise<void> => {
 });
 
 // POST /api/fares/route-networks/auto-classify — apply default classification to all unassigned
-router.post("/fares/route-networks/auto-classify", async (_req, res): Promise<void> => {
+router.post("/fares/route-networks/auto-classify", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const routes = await db.select({
@@ -674,7 +674,7 @@ router.post("/fares/route-networks/auto-classify", async (_req, res): Promise<vo
 // PUT /api/fares/route-networks/:routeId — manual reassign
 router.put("/fares/route-networks/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { networkId } = req.body;
     if (!networkId) { res.status(400).json({ error: "networkId required" }); return; }
@@ -692,7 +692,7 @@ router.put("/fares/route-networks/:routeId", async (req, res): Promise<void> => 
 // POST /api/fares/route-networks/bulk — save all assignments at once
 router.post("/fares/route-networks/bulk", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { assignments } = req.body as { assignments: { routeId: string; networkId: string }[] };
     if (!Array.isArray(assignments)) { res.status(400).json({ error: "assignments array required" }); return; }
@@ -730,18 +730,18 @@ const DEFAULT_MEDIA = [
   { fareMediaId: "app_mobile",           fareMediaName: "App Mobile",                             fareMediaType: 4 },
 ];
 
-router.get("/fares/media", async (_req, res): Promise<void> => {
+router.get("/fares/media", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareMedia).where(eq(gtfsFareMedia.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/media/seed", async (_req, res): Promise<void> => {
+router.post("/fares/media/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     for (const m of DEFAULT_MEDIA) {
       await db.insert(gtfsFareMedia)
@@ -758,7 +758,7 @@ router.post("/fares/media/seed", async (_req, res): Promise<void> => {
 
 router.put("/fares/media/:fareMediaId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { isActive, fareMediaName } = req.body;
     const update: Record<string, any> = { updatedAt: sql`now()` };
@@ -776,18 +776,18 @@ router.put("/fares/media/:fareMediaId", async (req, res): Promise<void> => {
 // RIDER CATEGORIES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/rider-categories", async (_req, res): Promise<void> => {
+router.get("/fares/rider-categories", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/rider-categories/seed", async (_req, res): Promise<void> => {
+router.post("/fares/rider-categories/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // Tutte le categorie passeggero ATMA (DGR Marche + convenzioni locali)
@@ -816,7 +816,7 @@ router.post("/fares/rider-categories/seed", async (_req, res): Promise<void> => 
 
 router.post("/fares/rider-categories", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { riderCategoryId, riderCategoryName, eligibilityUrl } = req.body;
     if (!riderCategoryId || !riderCategoryName) { res.status(400).json({ error: "Missing fields" }); return; }
@@ -846,7 +846,7 @@ router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
     if (isDefault !== undefined) update.isDefault = isDefault;
     if (eligibilityUrl !== undefined) update.eligibilityUrl = eligibilityUrl;
     await db.update(gtfsRiderCategories).set(update).where(eq(gtfsRiderCategories.id, req.params.id));
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const rows = feedId
       ? await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId))
       : [];
@@ -858,9 +858,9 @@ router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
 // CALENDAR (service patterns)
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/calendar", async (_req, res): Promise<void> => {
+router.get("/fares/calendar", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
     res.json(rows);
@@ -868,9 +868,9 @@ router.get("/fares/calendar", async (_req, res): Promise<void> => {
 });
 
 // Seed default service patterns: Feriale, Sabato, Festivo
-router.post("/fares/calendar/seed", async (_req, res): Promise<void> => {
+router.post("/fares/calendar/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const now = new Date();
     const startDate = `${now.getFullYear()}0101`;
@@ -895,7 +895,7 @@ router.post("/fares/calendar/seed", async (_req, res): Promise<void> => {
 
 router.post("/fares/calendar", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { serviceId, monday, tuesday, wednesday, thursday, friday, saturday, sunday, startDate, endDate } = req.body;
     if (!serviceId || !startDate || !endDate) { res.status(400).json({ error: "Missing required fields" }); return; }
@@ -924,7 +924,7 @@ router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
     if (startDate !== undefined) update.startDate = startDate;
     if (endDate !== undefined) update.endDate = endDate;
     await db.update(gtfsCalendar).set(update).where(eq(gtfsCalendar.id, req.params.id));
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const rows = feedId
       ? await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId))
       : [];
@@ -943,9 +943,9 @@ router.delete("/fares/calendar/:id", async (req, res) => {
 // CALENDAR DATES (exceptions)
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/calendar-dates", async (_req, res): Promise<void> => {
+router.get("/fares/calendar-dates", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
     res.json(rows);
@@ -954,7 +954,7 @@ router.get("/fares/calendar-dates", async (_req, res): Promise<void> => {
 
 router.post("/fares/calendar-dates", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { serviceId, date, exceptionType } = req.body;
     if (!serviceId || !date || !exceptionType) { res.status(400).json({ error: "Missing required fields" }); return; }
@@ -975,18 +975,18 @@ router.delete("/fares/calendar-dates/:id", async (req, res) => {
 // FARE PRODUCTS
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/products", async (_req, res): Promise<void> => {
+router.get("/fares/products", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/fares/products/seed", async (_req, res): Promise<void> => {
+router.post("/fares/products/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const urbanProducts = [
@@ -1073,9 +1073,9 @@ const URBAN_TICKETS = [
 ] as const;
 
 // POST /api/fares/products/seed-abbonamenti — seed abbonamenti per tutte le reti
-router.post("/fares/products/seed-abbonamenti", async (_req, res): Promise<void> => {
+router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const abbonamenti: Array<{
@@ -1255,7 +1255,7 @@ router.post("/fares/products/seed-abbonamenti", async (_req, res): Promise<void>
 // POST /api/fares/products — crea un nuovo prodotto tariffario
 router.post("/fares/products", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { fareProductId, fareProductName, networkId, amount, durationMinutes, fareType, riderCategoryId, fareMediaId } = req.body;
     if (!fareProductId || !fareProductName || typeof amount !== "number") {
@@ -1280,7 +1280,7 @@ router.post("/fares/products", async (req, res): Promise<void> => {
 // DELETE /api/fares/products/:id — elimina prodotto
 router.delete("/fares/products/:id", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const [deleted] = await db.delete(gtfsFareProducts).where(eq(gtfsFareProducts.id, req.params.id)).returning();
     if (deleted && feedId) {
       await logAudit(feedId, "update_product", `Prodotto eliminato: ${deleted.fareProductId} — €${deleted.amount}`);
@@ -1291,7 +1291,7 @@ router.delete("/fares/products/:id", async (req, res): Promise<void> => {
 
 router.put("/fares/products/:id", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const { amount, fareProductName, durationMinutes } = req.body;
     const update: Record<string, any> = { updatedAt: sql`now()` };
     if (typeof amount === "number") update.amount = amount;
@@ -1309,18 +1309,18 @@ router.put("/fares/products/:id", async (req, res) => {
 // AREAS & STOP-AREAS (Zone extraurbane)
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/areas", async (_req, res): Promise<void> => {
+router.get("/fares/areas", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareAreas).where(eq(gtfsFareAreas.feedId, feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.get("/fares/stop-areas", async (_req, res): Promise<void> => {
+router.get("/fares/stop-areas", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
     res.json(rows);
@@ -1330,7 +1330,7 @@ router.get("/fares/stop-areas", async (_req, res): Promise<void> => {
 // POST /api/fares/zones/generate/:routeId — build zones for one extraurban route
 router.post("/fares/zones/generate/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId } = req.params;
 
@@ -1340,9 +1340,9 @@ router.post("/fares/zones/generate/:routeId", async (req, res): Promise<void> =>
 });
 
 // POST /api/fares/zones/generate-all — build zones for ALL extraurban routes + urban areas
-router.post("/fares/zones/generate-all", async (_req, res): Promise<void> => {
+router.post("/fares/zones/generate-all", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // 1) Create urban flat areas
@@ -1408,9 +1408,9 @@ router.post("/fares/zones/generate-all", async (_req, res): Promise<void> => {
 
 // POST /api/fares/zones/generate-all-direct — build zones for ALL extraurban routes using haversine (Km per Linea)
 // Same urban logic, but extraurban zone distances are computed as cumulative haversine between consecutive stops.
-router.post("/fares/zones/generate-all-direct", async (_req, res): Promise<void> => {
+router.post("/fares/zones/generate-all-direct", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // 1) Create urban flat areas (same as generate-all)
@@ -1469,9 +1469,9 @@ router.post("/fares/zones/generate-all-direct", async (_req, res): Promise<void>
 });
 
 // POST /api/fares/zones/generate-all-dominant — build zones using Percorso Dominante method
-router.post("/fares/zones/generate-all-dominant", async (_req, res): Promise<void> => {
+router.post("/fares/zones/generate-all-dominant", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // 1) Create urban flat areas (same as other generate-all methods)
@@ -1744,9 +1744,9 @@ async function generateZonesForRouteDominant(feedId: string, routeId: string) {
 // FARE LEG RULES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/leg-rules", async (_req, res): Promise<void> => {
+router.get("/fares/leg-rules", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
     res.json(rows);
@@ -1754,9 +1754,9 @@ router.get("/fares/leg-rules", async (_req, res): Promise<void> => {
 });
 
 // POST /api/fares/leg-rules/generate — generate from current areas & products
-router.post("/fares/leg-rules/generate", async (_req, res): Promise<void> => {
+router.post("/fares/leg-rules/generate", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // Delete existing leg rules
@@ -1829,9 +1829,9 @@ router.post("/fares/leg-rules/generate", async (_req, res): Promise<void> => {
 // FARE TRANSFER RULES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/transfer-rules", async (_req, res): Promise<void> => {
+router.get("/fares/transfer-rules", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareTransferRules).where(eq(gtfsFareTransferRules.feedId, feedId));
     res.json(rows);
@@ -1842,9 +1842,9 @@ router.get("/fares/transfer-rules", async (_req, res): Promise<void> => {
 // TIMEFRAMES (GTFS timeframes.txt)
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/timeframes", async (_req, res): Promise<void> => {
+router.get("/fares/timeframes", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsTimeframes).where(eq(gtfsTimeframes.feedId, feedId));
     res.json(rows);
@@ -1853,7 +1853,7 @@ router.get("/fares/timeframes", async (_req, res): Promise<void> => {
 
 router.post("/fares/timeframes", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { timeframeGroupId, startTime, endTime, serviceId } = req.body;
     if (!timeframeGroupId) { res.status(400).json({ error: "timeframeGroupId required" }); return; }
@@ -1877,7 +1877,7 @@ router.delete("/fares/timeframes/:id", async (req, res): Promise<void> => {
 
 router.post("/fares/simulate", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { networkId, routeId, fromStopId, toStopId } = req.body;
 
@@ -1977,7 +1977,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
 
 router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId, fromStopId, toStopId } = req.body;
     if (!fromStopId || !toStopId) { res.status(400).json({ error: "fromStopId + toStopId required" }); return; }
@@ -2118,7 +2118,7 @@ router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 router.post("/fares/simulate-cluster", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { fromStopId, toStopId } = req.body;
     if (!fromStopId || !toStopId) { res.status(400).json({ error: "fromStopId and toStopId required" }); return; }
@@ -2191,7 +2191,7 @@ router.post("/fares/simulate-cluster", async (req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 router.post("/fares/simulate-direct", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { fromStopId, toStopId } = req.body;
     if (!fromStopId || !toStopId) { res.status(400).json({ error: "fromStopId and toStopId required" }); return; }
@@ -2232,9 +2232,9 @@ router.post("/fares/simulate-direct", async (req, res): Promise<void> => {
 // GENERATE GTFS FILES — returns JSON with all CSV content
 // ═══════════════════════════════════════════════════════════
 
-router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
+router.post("/fares/generate-gtfs", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // --- networks.txt ---
@@ -2356,7 +2356,7 @@ router.post("/fares/generate-gtfs", async (_req, res): Promise<void> => {
 // Metodo "Proiezione su Shape": media ponderata per tripCount su tutti i percorsi
 router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const { routeId } = req.params;
 
@@ -2439,7 +2439,7 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
 // GET /api/fares/route-stops-dominant/:routeId — same but uses dominant percorso
 router.get("/fares/route-stops-dominant/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const { routeId } = req.params;
 
@@ -2511,7 +2511,7 @@ router.get("/fares/route-stops-dominant/:routeId", async (req, res): Promise<voi
 // ═══════════════════════════════════════════════════════════
 router.get("/fares/route-dominant/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId } = req.params;
 
@@ -2551,9 +2551,9 @@ router.get("/fares/route-dominant/:routeId", async (req, res): Promise<void> => 
 // FARES V1 — fare_attributes.txt & fare_rules.txt
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/fare-attributes", async (_req, res): Promise<void> => {
+router.get("/fares/fare-attributes", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
     res.json(rows);
@@ -2562,7 +2562,7 @@ router.get("/fares/fare-attributes", async (_req, res): Promise<void> => {
 
 router.post("/fares/fare-attributes", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { fareId, price, currencyType, paymentMethod, transfers, agencyId, transferDuration } = req.body;
     if (!fareId || price == null) { res.status(400).json({ error: "fareId and price required" }); return; }
@@ -2595,9 +2595,9 @@ router.delete("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
 });
 
 // Auto-seed Fares V1 from existing Fares V2 products
-router.post("/fares/fare-attributes/seed", async (_req, res): Promise<void> => {
+router.post("/fares/fare-attributes/seed", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     // Delete existing
     await db.delete(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
@@ -2624,9 +2624,9 @@ router.post("/fares/fare-attributes/seed", async (_req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.get("/fares/fare-rules", async (_req, res): Promise<void> => {
+router.get("/fares/fare-rules", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
     res.json(rows);
@@ -2635,7 +2635,7 @@ router.get("/fares/fare-rules", async (_req, res): Promise<void> => {
 
 router.post("/fares/fare-rules", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { fareId, routeId, originId, destinationId, containsId } = req.body;
     if (!fareId) { res.status(400).json({ error: "fareId required" }); return; }
@@ -2660,7 +2660,7 @@ router.delete("/fares/fare-rules/:id", async (req, res): Promise<void> => {
 // GET stop_times for a route (aggregated: one row per stop with pickup/dropoff)
 router.get("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const { routeId } = req.params;
 
@@ -2702,7 +2702,7 @@ router.get("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
 // PUT bulk update pickup_type / drop_off_type for ALL trips of a route at a given stop
 router.put("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId } = req.params;
     const { updates } = req.body as { updates: { stopId: string; pickupType: number; dropOffType: number }[] };
@@ -2732,9 +2732,9 @@ router.put("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
 // EXPORT ZIP — complete GTFS feed with all base tables + Fares V1 + Fares V2
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/export-zip", async (_req, res): Promise<void> => {
+router.get("/fares/export-zip", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // Dynamically import archiver
@@ -3072,9 +3072,9 @@ async function computeStopsClassification(feedId: string) {
 }
 
 // GET /api/fares/stops-classification — JSON dettagliato per fermata
-router.get("/fares/stops-classification", async (_req, res): Promise<void> => {
+router.get("/fares/stops-classification", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const result = await computeStopsClassification(feedId);
     res.json(result);
@@ -3082,9 +3082,9 @@ router.get("/fares/stops-classification", async (_req, res): Promise<void> => {
 });
 
 // GET /api/fares/stops-classification/summary — conteggio per ogni codice
-router.get("/fares/stops-classification/summary", async (_req, res): Promise<void> => {
+router.get("/fares/stops-classification/summary", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const classified = await computeStopsClassification(feedId);
 
@@ -3114,9 +3114,9 @@ router.get("/fares/stops-classification/summary", async (_req, res): Promise<voi
 });
 
 // GET /api/fares/stops-classification/export — stops.txt con colonne classificazione
-router.get("/fares/stops-classification/export", async (_req, res): Promise<void> => {
+router.get("/fares/stops-classification/export", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const classified = await computeStopsClassification(feedId);
 
@@ -3137,9 +3137,9 @@ router.get("/fares/stops-classification/export", async (_req, res): Promise<void
 });
 
 // GET /api/fares/stops-classification/export — stops.txt with extra stop_classification field
-router.get("/fares/stops-classification/export", async (_req, res): Promise<void> => {
+router.get("/fares/stops-classification/export", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const classified = await computeStopsClassification(feedId);
 
@@ -3160,9 +3160,9 @@ router.get("/fares/stops-classification/export", async (_req, res): Promise<void
 // ═══════════════════════════════════════════════════════════
 
 // GET /api/fares/zone-clusters — list all clusters
-router.get("/fares/zone-clusters", async (_req, res): Promise<void> => {
+router.get("/fares/zone-clusters", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     // Also fetch stop counts
@@ -3179,9 +3179,9 @@ router.get("/fares/zone-clusters", async (_req, res): Promise<void> => {
 });
 
 // GET /api/fares/zone-clusters/full — clusters with full stops array
-router.get("/fares/zone-clusters/full", async (_req, res): Promise<void> => {
+router.get("/fares/zone-clusters/full", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     const allStops = await db.select().from(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
@@ -3206,7 +3206,7 @@ router.get("/fares/zone-clusters/full", async (_req, res): Promise<void> => {
 // POST /api/fares/zone-clusters — create or update a cluster
 router.post("/fares/zone-clusters", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { clusterId, clusterName, polygon, color } = req.body;
     if (!clusterId || !clusterName) { res.status(400).json({ error: "clusterId and clusterName required" }); return; }
@@ -3255,9 +3255,9 @@ router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
 // DELETE /api/fares/zone-clusters — reset ALL clusters of latest feed (cluster + assegnazioni auto)
 //   Le override manuali (assignment_source = 'manual') vengono comunque cancellate
 //   insieme ai cluster di cui erano figlie. Endpoint distruttivo, richiede conferma UI.
-router.delete("/fares/zone-clusters", async (_req, res): Promise<void> => {
+router.delete("/fares/zone-clusters", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const beforeRows = await db.select({ c: sql<number>`count(*)::int` })
       .from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
@@ -3286,7 +3286,7 @@ router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
 // GET /api/fares/zone-clusters/:clusterId/stops — get stops for a cluster
 router.get("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareZoneClusterStops)
       .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, req.params.clusterId)));
@@ -3298,7 +3298,7 @@ router.get("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<vo
 // ENFORCES PARTITION: each stop can belong to only one cluster
 router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { clusterId } = req.params;
     const { stops } = req.body as { stops: { stopId: string; stopName: string; stopLat: number; stopLon: number }[] };
@@ -3341,9 +3341,9 @@ router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<v
 });
 
 // GET /api/fares/zone-clusters/distance-matrix — centroid distance matrix between clusters
-router.get("/fares/zone-clusters/distance-matrix", async (_req, res): Promise<void> => {
+router.get("/fares/zone-clusters/distance-matrix", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json({ clusters: [], matrix: [] }); return; }
     const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     const valid = clusters.filter(c => c.centroidLat != null && c.centroidLon != null);
@@ -3361,9 +3361,9 @@ router.get("/fares/zone-clusters/distance-matrix", async (_req, res): Promise<vo
 });
 
 // POST /api/fares/zone-clusters/generate-zones — generate areas + stop_areas + leg_rules from clusters
-router.post("/fares/zone-clusters/generate-zones", async (_req, res): Promise<void> => {
+router.post("/fares/zone-clusters/generate-zones", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
@@ -3569,7 +3569,7 @@ function kMeansSpatial(stops: AutoStop[], k: number, maxIter = 40): { centroid: 
  */
 router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const mode: string = req.body?.mode || "concentric";
@@ -3669,9 +3669,9 @@ router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void
 });
 
 // GET /api/fares/extraurban-stops — all stops served by extraurban routes (for cluster assignment)
-router.get("/fares/extraurban-stops", async (_req, res): Promise<void> => {
+router.get("/fares/extraurban-stops", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.execute<any>(sql`
       SELECT DISTINCT s.stop_id, s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
@@ -3689,9 +3689,9 @@ router.get("/fares/extraurban-stops", async (_req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 // BUG FIX: Deduplicate stop_areas
 // ═══════════════════════════════════════════════════════════
-router.post("/fares/stop-areas/deduplicate", async (_req, res): Promise<void> => {
+router.post("/fares/stop-areas/deduplicate", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const result = await db.execute<any>(sql`
       DELETE FROM gtfs_stop_areas
@@ -3711,9 +3711,9 @@ router.post("/fares/stop-areas/deduplicate", async (_req, res): Promise<void> =>
 // ═══════════════════════════════════════════════════════════
 // BUG FIX: Set fare_media_id = NULL on existing products
 // ═══════════════════════════════════════════════════════════
-router.post("/fares/products/fix-media", async (_req, res): Promise<void> => {
+router.post("/fares/products/fix-media", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const result = await db.execute<any>(sql`
       UPDATE gtfs_fare_products
@@ -3727,9 +3727,9 @@ router.post("/fares/products/fix-media", async (_req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 // FEED INFO — CRUD
 // ═══════════════════════════════════════════════════════════
-router.get("/fares/feed-info", async (_req, res): Promise<void> => {
+router.get("/fares/feed-info", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json(null); return; }
     const rows = await db.select().from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
     res.json(rows[0] ?? null);
@@ -3738,7 +3738,7 @@ router.get("/fares/feed-info", async (_req, res): Promise<void> => {
 
 router.post("/fares/feed-info", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { feedPublisherName, feedPublisherUrl, feedLang, defaultLang, feedStartDate, feedEndDate, feedVersion, feedContactEmail, feedContactUrl } = req.body;
     // Upsert: delete existing + insert
@@ -3762,9 +3762,9 @@ router.post("/fares/feed-info", async (req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 // VALIDATE — pre-export checklist
 // ═══════════════════════════════════════════════════════════
-router.get("/fares/validate", async (_req, res): Promise<void> => {
+router.get("/fares/validate", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const checks: { id: string; label: string; ok: boolean; detail?: string }[] = [];
@@ -3856,9 +3856,9 @@ async function logAudit(
 // GET  /api/fares/audit          — lista ultime 200 voci
 // POST /api/fares/audit          — aggiungi nota manuale
 // ═══════════════════════════════════════════════════════════
-router.get("/fares/audit", async (_req, res): Promise<void> => {
+router.get("/fares/audit", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     const rows = feedId
       ? await db.select().from(gtfsFareAuditLog)
           .where(eq(gtfsFareAuditLog.feedId, feedId))
@@ -3871,7 +3871,7 @@ router.get("/fares/audit", async (_req, res): Promise<void> => {
 
 router.post("/fares/audit", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { description, actor, metadata } = req.body as { description?: string; actor?: string; metadata?: Record<string, unknown> };
     if (!description?.trim()) { res.status(400).json({ error: "description obbligatoria" }); return; }
@@ -3890,9 +3890,9 @@ router.post("/fares/audit", async (req, res): Promise<void> => {
 // KPI TARIFFARIO
 // GET /api/fares/kpi
 // ═══════════════════════════════════════════════════════════
-router.get("/fares/kpi", async (_req, res): Promise<void> => {
+router.get("/fares/kpi", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // --- Copertura fermate ---
@@ -4010,9 +4010,9 @@ router.get("/fares/kpi", async (_req, res): Promise<void> => {
 // EXPORT ZIP
 // GET /api/fares/export-fares-zip — scarica tutte le CSV GTFS Fares V2 in un unico .zip
 // (endpoint separato da /export-zip che genera il feed GTFS completo)
-router.get("/fares/export-fares-zip", async (_req, res): Promise<void> => {
+router.get("/fares/export-fares-zip", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     // Recupera i dati (stessa logica di /fares/generate-gtfs)
@@ -4122,9 +4122,9 @@ Compatibile con GTFS Fares V2 spec (MobilityData).
 // ═══════════════════════════════════════════════════════════
 
 // GET /api/fares/simulator/routes — lista linee con rete
-router.get("/fares/simulator/routes", async (_req, res): Promise<void> => {
+router.get("/fares/simulator/routes", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const rows = await db.execute<any>(sql`
       SELECT r.route_id, r.route_short_name, r.route_long_name, r.route_color,
@@ -4139,9 +4139,9 @@ router.get("/fares/simulator/routes", async (_req, res): Promise<void> => {
 });
 
 // GET /api/fares/simulator/dates — date servite (con conteggio trip totale)
-router.get("/fares/simulator/dates", async (_req, res): Promise<void> => {
+router.get("/fares/simulator/dates", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     // Estrae per ogni service_id l'intervallo + esclusioni/aggiunte di calendar_dates,
     // poi enumera le date e conta i trip totali per data.
@@ -4198,7 +4198,7 @@ router.get("/fares/simulator/dates", async (_req, res): Promise<void> => {
 //   Se date è fornito, filtra i trip ai soli service_id attivi in quella data.
 router.get("/fares/simulator/trips", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId, date } = req.query as { routeId: string; date?: string };
     if (!routeId) { res.status(400).json({ error: "routeId required" }); return; }
@@ -4253,7 +4253,7 @@ router.get("/fares/simulator/trips", async (req, res): Promise<void> => {
 // GET /api/fares/simulator/trip-stops?tripId=X — fermate ordinate di un trip
 router.get("/fares/simulator/trip-stops", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { tripId } = req.query as { tripId: string };
     if (!tripId) { res.status(400).json({ error: "tripId required" }); return; }
@@ -4289,7 +4289,7 @@ const URBAN_FLAT_FARE: Record<string, { id: string; name: string; price: number;
 
 router.post("/fares/journey-plan", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const { from, to, date, time = "00:00", maxWalkM = 900, maxAlternatives = 6, allowTransfers = true } = req.body ?? {};

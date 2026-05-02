@@ -1068,17 +1068,17 @@ const ATMA_2013_NODES: ReadonlyArray<{ code: string; name: string; lat?: number;
 router.post("/fares/node-assignment/run", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const result = await runNodeAssignmentPipeline(feedId, req.body ?? {});
     res.json(result);
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/fares/node-assignment/runs", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/runs", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareNodeAssignmentRuns)
       .where(eq(gtfsFareNodeAssignmentRuns.feedId, feedId))
@@ -1087,10 +1087,10 @@ router.get("/fares/node-assignment/runs", async (_req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/fares/node-assignment/report", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/report", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
     const totalStopsRow = await db.select({ c: sql<number>`count(*)::int` })
@@ -1137,7 +1137,7 @@ router.get("/fares/node-assignment/report", async (_req, res): Promise<void> => 
 router.get("/fares/node-assignment/low-confidence", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const threshold = Number(req.query.threshold ?? 70);
     const rows = await db.execute<any>(sql`
@@ -1157,7 +1157,7 @@ router.get("/fares/node-assignment/low-confidence", async (req, res): Promise<vo
 router.get("/fares/node-assignment/ambiguous", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const radiusM = Number(req.query.radiusM ?? 200);
     const rows = await db.execute<any>(sql`
@@ -1198,10 +1198,10 @@ router.get("/fares/node-assignment/ambiguous", async (req, res): Promise<void> =
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/fares/node-assignment/orphans", async (_req, res): Promise<void> => {
+router.get("/fares/node-assignment/orphans", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.execute<any>(sql`
       SELECT s.stop_id, s.stop_name, s.stop_lat::float AS lat, s.stop_lon::float AS lon
@@ -1218,10 +1218,10 @@ router.get("/fares/node-assignment/orphans", async (_req, res): Promise<void> =>
 
 // ── Catalogo nodi ufficiali ──
 
-router.get("/fares/official-nodes", async (_req, res): Promise<void> => {
+router.get("/fares/official-nodes", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareOfficialNodes)
       .where(eq(gtfsFareOfficialNodes.feedId, feedId))
@@ -1233,7 +1233,7 @@ router.get("/fares/official-nodes", async (_req, res): Promise<void> => {
 router.post("/fares/official-nodes", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { officialCode, officialName, centroidLat, centroidLon, aliases, notes, source = "manual" } = req.body ?? {};
     if (!officialCode || !officialName) { res.status(400).json({ error: "officialCode e officialName richiesti" }); return; }
@@ -1256,7 +1256,7 @@ router.post("/fares/official-nodes", async (req, res): Promise<void> => {
 router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { csv, source = "manual" } = req.body ?? {};
     if (!csv || typeof csv !== "string") { res.status(400).json({ error: "csv string required" }); return; }
@@ -1290,10 +1290,10 @@ router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> 
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/fares/official-nodes/import-atma-2013", async (_req, res): Promise<void> => {
+router.post("/fares/official-nodes/import-atma-2013", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     let inserted = 0;
     for (const node of ATMA_2013_NODES) {
@@ -1366,7 +1366,7 @@ async function moveStop(feedId: string, stopId: string, toClusterId: string, rea
 router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { stopId, toClusterId, reason, actor = "user" } = req.body ?? {};
     if (!stopId || !toClusterId) { res.status(400).json({ error: "stopId e toClusterId richiesti" }); return; }
@@ -1378,7 +1378,7 @@ router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
 router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { stopIds, toClusterId, reason, actor = "user" } = req.body ?? {};
     if (!Array.isArray(stopIds) || stopIds.length === 0 || !toClusterId) {
@@ -1397,10 +1397,10 @@ router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> 
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.get("/fares/stop-assignment/overrides", async (_req, res): Promise<void> => {
+router.get("/fares/stop-assignment/overrides", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareStopAssignmentOverrides)
       .where(eq(gtfsFareStopAssignmentOverrides.feedId, feedId))

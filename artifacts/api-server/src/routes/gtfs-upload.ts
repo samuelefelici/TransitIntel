@@ -17,6 +17,7 @@ import { timeToMinutes } from "../lib/geo-utils";
 import { parseCsv, buildShapeGeojson } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
+import { tenantWhere, assertFeedAccess, ensureTenantColumns } from "../lib/tenant";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -159,8 +160,10 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
     }
 
     // ── ALL DB inserts inside a TRANSACTION — if anything fails, everything rolls back ──
+    await ensureTenantColumns();
+    const ownerId = req.user?.id ?? null;
     const result = await db.transaction(async (tx) => {
-      // Create feed record
+      // Create feed record (owner_user_id via raw UPDATE perché la colonna è bootstrap-runtime)
       const [feed] = await tx.insert(gtfsFeeds).values({
         filename: req.file!.originalname,
         agencyName,
@@ -171,6 +174,10 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
         tripsCount: tripsRaw.length,
         shapesCount: shapePairs.length,
       }).returning();
+
+      if (ownerId) {
+        await tx.execute(sql`UPDATE gtfs_feeds SET owner_user_id = ${ownerId}::uuid WHERE id = ${feed.id}::uuid`);
+      }
 
       req.log.info({
         feedId: feed.id,
@@ -314,14 +321,17 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
 router.get("/gtfs/feeds", async (req, res) => {
   try {
     await ensureFeedActiveColumn();
+    const where = tenantWhere(req);
     const feeds = await db.execute(sql`
       SELECT id, filename, agency_name AS "agencyName",
              feed_start_date AS "feedStartDate", feed_end_date AS "feedEndDate",
              stops_count AS "stopsCount", routes_count AS "routesCount",
              trips_count AS "tripsCount", shapes_count AS "shapesCount",
              uploaded_at AS "uploadedAt",
-             COALESCE(is_active, false) AS "isActive"
+             COALESCE(is_active, false) AS "isActive",
+             owner_user_id AS "ownerUserId"
         FROM gtfs_feeds
+       WHERE ${where}
        ORDER BY uploaded_at DESC
     `);
     const rows: any = (feeds as any).rows ?? feeds;
@@ -335,6 +345,7 @@ router.get("/gtfs/feeds", async (req, res) => {
 // DELETE /api/gtfs/feeds/:id
 router.delete("/gtfs/feeds/:id", async (req, res) => {
   try {
+    if (!(await assertFeedAccess(req.params.id, req, res))) return;
     await db.delete(gtfsFeeds).where(eq(gtfsFeeds.id, req.params.id));
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");
@@ -362,7 +373,7 @@ void ensureFeedActiveColumn();
 /**
  * POST /api/gtfs/feeds/:id/activate
  * Imposta il feed come unico attivo. Tutti gli altri vengono disattivati.
- * Tutte le altre route che usano `getLatestFeedId()` vedranno questo feed
+ * Tutte le altre route che usano `getLatestFeedId(req)` vedranno questo feed
  * come "il" feed corrente (analisi tariffe, scheduling, ecc.).
  */
 router.post("/gtfs/feeds/:id/activate", async (req, res) => {
@@ -373,6 +384,7 @@ router.post("/gtfs/feeds/:id/activate", async (req, res) => {
       res.status(400).json({ error: "ID feed non valido" });
       return;
     }
+    if (!(await assertFeedAccess(id, req, res))) return;
     // Verifica esistenza
     const exists = await db.execute(sql`SELECT id, filename, agency_name FROM gtfs_feeds WHERE id = ${id}::uuid LIMIT 1`);
     const row: any = (exists as any).rows?.[0] ?? (exists as any)[0];
@@ -396,7 +408,7 @@ router.post("/gtfs/feeds/:id/activate", async (req, res) => {
 
 /**
  * POST /api/gtfs/feeds/deactivate-all
- * Rimuove la selezione esplicita: getLatestFeedId() tornerà a usare il feed
+ * Rimuove la selezione esplicita: getLatestFeedId(req) tornerà a usare il feed
  * più recente come fallback.
  */
 router.post("/gtfs/feeds/deactivate-all", async (_req, res) => {

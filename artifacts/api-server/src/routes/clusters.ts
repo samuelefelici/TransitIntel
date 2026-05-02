@@ -169,7 +169,7 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
   const dayCol = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][dayOfWeek];
 
   // Trova il feed più recente
-  const feedId = await getLatestFeedId();
+  const feedId = await getLatestFeedId(req);
   if (!feedId) { res.json({ data: [], total: 0, touchedStopCount: 0 }); return; }
 
   // Tutte le fermate servite dalle linee selezionate nella data richiesta

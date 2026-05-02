@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
 import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -34,6 +34,7 @@ const DepotsPage = lazy(() => import("@/pages/depots"));
 const PlanningListPage = lazy(() => import("@/pages/planning"));
 const PlanningNewPage = lazy(() => import("@/pages/planning/new"));
 const PlanningWorkspacePage = lazy(() => import("@/pages/planning/workspace"));
+const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -55,6 +56,22 @@ function PageLoader() {
   );
 }
 
+/**
+ * Guardia di permesso: se l'utente non ha il permesso richiesto
+ * (e non è admin), redirige a /dashboard.
+ */
+function Gated({ perm, children }: { perm: "analytics" | "fares" | "scheduling"; children: ReactNode }) {
+  const { hasPermission } = useAuth();
+  if (!hasPermission(perm)) return <Redirect to="/dashboard" />;
+  return <>{children}</>;
+}
+
+function AdminOnly({ children }: { children: ReactNode }) {
+  const { isAdmin } = useAuth();
+  if (!isAdmin) return <Redirect to="/dashboard" />;
+  return <>{children}</>;
+}
+
 function Router() {
   return (
     <Layout>
@@ -65,9 +82,15 @@ function Router() {
               <Redirect to="/dashboard" />
             </Route>
             <Route path="/dashboard" component={Dashboard} />
-            <Route path="/traffic" component={Traffic} />
-            <Route path="/territory" component={Territory} />
-            <Route path="/network" component={NetworkPage} />
+            <Route path="/traffic">
+              <Gated perm="analytics"><Traffic /></Gated>
+            </Route>
+            <Route path="/territory">
+              <Gated perm="analytics"><Territory /></Gated>
+            </Route>
+            <Route path="/network">
+              <Gated perm="analytics"><NetworkPage /></Gated>
+            </Route>
             <Route path="/data" component={DataPage} />
 
             {/* Redirects for old paths → new unified pages */}
@@ -80,34 +103,73 @@ function Router() {
             <Route path="/gtfs"><Redirect to="/data" /></Route>
             <Route path="/sync"><Redirect to="/data" /></Route>
 
-            {/* Crea Servizio */}
-            <Route path="/scenarios" component={ScenariosPage} />
-            <Route path="/intermodal" component={IntermodalPage} />
-            <Route path="/coincidence-zones" component={CoincidenceZonesPage} />
+            {/* Crea Servizio (scheduling) */}
+            <Route path="/scenarios">
+              <Gated perm="scheduling"><ScenariosPage /></Gated>
+            </Route>
+            <Route path="/intermodal">
+              <Gated perm="scheduling"><IntermodalPage /></Gated>
+            </Route>
+            <Route path="/coincidence-zones">
+              <Gated perm="scheduling"><CoincidenceZonesPage /></Gated>
+            </Route>
 
-            {/* PlannerStudio */}
-            <Route path="/planning" component={PlanningListPage} />
-            <Route path="/planning/new" component={PlanningNewPage} />
-            <Route path="/planning/:scenarioId/workspace" component={PlanningWorkspacePage} />
+            {/* PlannerStudio (scheduling) */}
+            <Route path="/planning">
+              <Gated perm="scheduling"><PlanningListPage /></Gated>
+            </Route>
+            <Route path="/planning/new">
+              <Gated perm="scheduling"><PlanningNewPage /></Gated>
+            </Route>
+            <Route path="/planning/:scenarioId/workspace">
+              <Gated perm="scheduling"><PlanningWorkspacePage /></Gated>
+            </Route>
             <Route path="/planning/:scenarioId">
               {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} />}
             </Route>
 
-            {/* Bigliettazione */}
-            <Route path="/fares-engine" component={FaresEnginePage} />
-            <Route path="/fares" component={FaresPage} />
-            <Route path="/fare-analytics" component={FareAnalyticsPage} />
-            <Route path="/fare-docs" component={FareDocsPage} />
-            <Route path="/fare-simulator" component={FareSimulatorPage} />
-            <Route path="/stops-classification" component={StopsClassificationPage} />
-            <Route path="/trip-planner" component={TripPlannerPage} />
+            {/* Bigliettazione (fares) */}
+            <Route path="/fares-engine">
+              <Gated perm="fares"><FaresEnginePage /></Gated>
+            </Route>
+            <Route path="/fares">
+              <Gated perm="fares"><FaresPage /></Gated>
+            </Route>
+            <Route path="/fare-analytics">
+              <Gated perm="fares"><FareAnalyticsPage /></Gated>
+            </Route>
+            <Route path="/fare-docs">
+              <Gated perm="fares"><FareDocsPage /></Gated>
+            </Route>
+            <Route path="/fare-simulator">
+              <Gated perm="fares"><FareSimulatorPage /></Gated>
+            </Route>
+            <Route path="/stops-classification">
+              <Gated perm="fares"><StopsClassificationPage /></Gated>
+            </Route>
+            <Route path="/trip-planner">
+              <Gated perm="fares"><TripPlannerPage /></Gated>
+            </Route>
 
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
-            <Route path="/fucina" component={FucinaPage} />
-            <Route path="/optimization" component={OptimizationPage} />
-            <Route path="/cluster" component={ClusterPage} />
-            <Route path="/depots" component={DepotsPage} />
+            <Route path="/fucina">
+              <Gated perm="scheduling"><FucinaPage /></Gated>
+            </Route>
+            <Route path="/optimization">
+              <Gated perm="scheduling"><OptimizationPage /></Gated>
+            </Route>
+            <Route path="/cluster">
+              <Gated perm="scheduling"><ClusterPage /></Gated>
+            </Route>
+            <Route path="/depots">
+              <Gated perm="scheduling"><DepotsPage /></Gated>
+            </Route>
             <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
+
+            {/* Admin */}
+            <Route path="/admin/users">
+              <AdminOnly><AdminUsersPage /></AdminOnly>
+            </Route>
 
             {/* Redirects for old optimizer paths */}
             <Route path="/optimizer-route"><Redirect to="/fucina" /></Route>
@@ -123,17 +185,28 @@ function Router() {
 }
 
 function AuthGate() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, loading } = useAuth();
   const [, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
 
+  // Listener globale: 401 -> logout client-side (redirect a login)
   useEffect(() => {
-    // Redirect to dashboard only when transitioning from unauthenticated → authenticated
+    function onUnauth() {
+      // svuota lo stato lasciando che AuthProvider rinegozi via /me
+      sessionStorage.removeItem("transitintel_auth");
+    }
+    window.addEventListener("auth:unauthorized", onUnauth);
+    return () => window.removeEventListener("auth:unauthorized", onUnauth);
+  }, []);
+
+  useEffect(() => {
     if (!prevAuth.current && isAuthenticated) {
       navigate("/dashboard");
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);
+
+  if (loading) return <PageLoader />;
 
   return (
     <Suspense fallback={<PageLoader />}>

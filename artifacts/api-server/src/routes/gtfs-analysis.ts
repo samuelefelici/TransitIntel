@@ -27,7 +27,7 @@ router.get("/gtfs/routes/active-by-band", cache({ ttlSeconds: 30 }), async (req,
     ? parseInt(req.query.directionId as string, 10) : null;
 
   try {
-    const feedId = await getLatestFeedId();
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ routeIds: [] });
 
     const dirFilter = directionIdParam !== null && !isNaN(directionIdParam)
@@ -94,7 +94,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30 }), async (req, res) =
   const hourParam = req.query.hour !== undefined ? parseFloat(req.query.hour as string) : null;
 
   try {
-    const resolvedFeedId = feedId || await getLatestFeedId();
+    const resolvedFeedId = feedId || await getLatestFeedId(req);
 
     const whereCondition = resolvedFeedId && routeIds.length > 0
       ? sql`${gtfsShapes.feedId} = ${resolvedFeedId} AND ${gtfsShapes.routeId} IN (${sql.join(routeIds.map(r => sql`${r}`), sql`, `)})`
