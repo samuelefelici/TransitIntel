@@ -5,7 +5,7 @@
  * intestazione, elenco fermate ordinate per percorrenza progressiva,
  * polimetrica triangolare tra zone tariffarie e legenda fasce.
  *
- * Pagina tipica:
+ * Pagina tipica (vista classica per zone):
  *
  *  ┌──────────────────────────────────────────────────────────┐
  *  │  TARIFFARIO TPL · Conerobus · 10/2025                    │
@@ -33,6 +33,70 @@
  *    fare_leg_rules.txt) → matrice prezzi per zona × zona
  *  • API `/api/fares/route-networks` → elenco linee con assegnazione network
  *  • API `/api/fares/route-stops/:routeId` → fermate ordinate con km
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * MODALITÀ "POLIMETRICHE PER CLUSTER" (export usato dal tab Cluster Tariffari)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Modello dati ed evoluzione del processo:
+ *
+ *  1. PROBLEMA INIZIALE
+ *     Inizialmente per ogni linea generavamo UNA sola polimetrica cluster×cluster
+ *     "unendo" tutti i trip della linea. Funzionava finché esisteva un trip che
+ *     copriva l'intero percorso. Sulla linea B di Conerobus invece esistono
+ *     trip strutturalmente diversi che NON si fondono in un percorso unico
+ *     (51 fermate Ancona→Marina, 41 fermate Ancona→Montemarciano S.Pietro),
+ *     quindi qualsiasi "union merge" produceva una linea sbagliata che
+ *     terminava arbitrariamente a Marina o saltava Montemarciano.
+ *
+ *  2. SOLUZIONE — UNA PAGINA PER VARIANTE DI PERCORSO
+ *     Backend: nuovo endpoint `/api/fares/min-od/route-variants/:routeId`
+ *     (vedi `artifacts/api-server/src/routes/fares-min-od.ts`) che raggruppa
+ *     i trip per SIGNATURE CANONICA `min(fwd_stop_ids, rev_stop_ids)`,
+ *     unificando così automaticamente andata e ritorno (variante A↔B).
+ *     Per ogni variante ritorna stops ordinati con km cumulato, cluster di
+ *     appartenenza, capolinea, tripCount, e mappa stopsByZone.
+ *
+ *  3. RENDER — A3 PAESAGGIO, MATRICE FERMATA × FERMATA
+ *     Frontend: `renderRouteVariantPage(...)` produce per OGNI variante una
+ *     pagina A3 landscape con:
+ *       • header con codice linea, capolinea, n. corse, km, n. fermate
+ *       • legenda dei nodi tariffari attraversati (chip colorati)
+ *       • chips delle fasce tariffarie applicate
+ *       • polimetrica triangolare FERMATA × FERMATA (non più cluster×cluster):
+ *         il prezzo della cella (i,j) è `priceForHops(|c_i − c_j| + 1)` dove
+ *         c_i / c_j sono gli indici di cluster delle due fermate lungo la
+ *         variante (modello "tratte per nodo" + cap a `hopBands.length`)
+ *       • BARRA COLORE LATERALE 6px sulla colonna nome che cambia ad ogni
+ *         transizione di cluster, in modo da rendere visivamente immediato
+ *         "qui cambio nodo tariffario"
+ *       • BORDI NERI sulle celle della matrice quando la coppia (i,j)
+ *         attraversa un confine di cluster (`gboundary-t/l`, 2px #1e293b)
+ *
+ *  4. ORCHESTRAZIONE — `buildClustersHtml()`
+ *     Carica in parallelo:
+ *       • `loadClustersFull()`     — fermate per cluster + colore + mappa
+ *       • `loadRouteVariants()`    — varianti di tutte le linee
+ *       • `loadHopBands()`         — fasce tariffarie extra_fascia_*
+ *     Genera la cover (logo, mappa SVG dei cluster, totali, fasce) e poi
+ *     emette UNA pagina A3 per OGNI variante di OGNI linea, con paginazione
+ *     coerente (`pag X / Y`).
+ *
+ *  5. CONDIVISIONE — `createPolimetricheClustersShareLink()`
+ *     Costruisce l'HTML autonomo (logo embeddato come data-URI in CSS,
+ *     iniettato UNA SOLA VOLTA per evitare crescita lineare del payload),
+ *     POSTa su `/api/fares/polimetriche/snapshots` e ritorna `{ id, url }`
+ *     pubblico. Il limite di payload del backend è 200MB (express.json) con
+ *     guardia applicativa a 180MB sull'HTML grezzo.
+ *
+ *  6. PERFORMANCE / PAYLOAD
+ *     L'HTML autonomo include solo:
+ *       • CSS unico (`STYLES + CLUSTER_EXTRA_STYLES`)
+ *       • logo embedded una volta (`img.cover-logo, img.r-brand-logo
+ *         { content: url(...) }`)
+ *       • markup ripetuto per N varianti (≈ N pagine A3)
+ *     Su feed densi (≈ 200 varianti totali) il payload può raggiungere
+ *     decine di MB. Se necessario in futuro, abilitare gzip lato client
+ *     (`pako.gzip` → base64) e decompressione lato server.
  */
 
 import { apiFetch } from "@/lib/api";
@@ -1954,9 +2018,40 @@ interface MinOdRoutePolimetrica {
   totalKm: number;
   stops: { stopId: string; stopName: string; kmFromStart: number; clusterId: string | null; clusterName: string | null }[];
   zones: { clusterId: string; clusterName: string; label: string }[];
+  /** Per ogni cluster (key = clusterId), elenco fermate della linea in quel nodo, in ordine di percorrenza. */
+  stopsByZone?: Record<string, { stopId: string; stopName: string }[]>;
   matrix: (number | null)[][];
   kmMatrix: (number | null)[][];
   fasciaMatrix: (number | null)[][];
+}
+
+/* ───────────────────────────────────────────────────────────────────────
+   VARIANTI DI PERCORSO (nuovo modello)
+   Una linea può avere N varianti di percorso (es. linea B = Ancona↔Marina,
+   Ancona↔Montemarciano, ecc.). A↔B viene unificata in una sola variante.
+   Per ogni variante stampiamo una polimetrica fermata × fermata con barra
+   colore laterale = nodo tariffario.
+   ─────────────────────────────────────────────────────────────────────── */
+interface RouteVariant {
+  variantId: string;
+  order: number;
+  tripCount: number;
+  forwardCount: number;
+  reverseCount: number;
+  firstStopName: string;
+  lastStopName: string;
+  totalKm: number;
+  stops: { stopId: string; stopName: string; kmFromStart: number; clusterId: string | null; clusterName: string | null }[];
+  zones: { clusterId: string; clusterName: string; label: string }[];
+  stopsByZone: Record<string, { stopId: string; stopName: string }[]>;
+}
+interface RouteVariantsResp {
+  routeId: string;
+  routeShortName: string | null;
+  routeLongName: string | null;
+  variantCount: number;
+  tripCountTotal: number;
+  variants: RouteVariant[];
 }
 
 function escapeHtml(s: string): string {
@@ -2136,6 +2231,21 @@ async function loadMinOdRoutes(): Promise<MinOdRoutePolimetrica[]> {
   return out;
 }
 
+/** Carica TUTTE le varianti di percorso di tutte le linee extraurbane. */
+async function loadRouteVariants(): Promise<RouteVariantsResp[]> {
+  const allRoutes = await apiFetch<RouteNetworkRow[]>("/api/fares/route-networks");
+  const extra = allRoutes.filter(r => (r.networkId ?? r.defaultNetworkId) === "extraurbano");
+  const out: RouteVariantsResp[] = [];
+  for (const r of extra) {
+    try {
+      const data = await apiFetch<RouteVariantsResp>(`/api/fares/min-od/route-variants/${encodeURIComponent(r.routeId)}`);
+      if (data && data.variants && data.variants.length > 0) out.push(data);
+    } catch { /* salta */ }
+  }
+  out.sort((a, b) => (a.routeShortName ?? a.routeId).localeCompare(b.routeShortName ?? b.routeId, "it", { numeric: true }));
+  return out;
+}
+
 /**
  * Esporta in PDF (via finestra di stampa) le polimetriche di tutte le linee
  * extraurbane usando i prezzi Min-OD (cammino minimo nella rete).
@@ -2204,3 +2314,1177 @@ export async function createPolimetricheMinOdShareLink(opts?: { agencyName?: str
 export async function createPolimetricheMinOdNodesShareLink(opts?: { agencyName?: string; date?: string }) {
   return createPolimetricheMinOdShareLink({ ...opts, mode: "zones" });
 }
+
+/* ══════════════════════════════════════════════════════════════
+ * CLUSTER NARRATIVI — Polimetriche basate sui cluster generati
+ * dalla pipeline Telemaco (DBSCAN→k-means + assorbimento Step 1.5).
+ *
+ * Stesso layout "a scaletta" delle polimetriche storiche:
+ *  • cover page con logo Fares Engine + KPI + spiegazione metodologia
+ *  • per ogni linea: matrice triangolare CLUSTER × CLUSTER
+ *  • diagonale colorata = nome cluster + elenco fermate della linea
+ *    che ricadono in quel cluster (NON tutte le fermate del cluster)
+ * ════════════════════════════════════════════════════════════ */
+
+interface ClusterFullForExport {
+  clusterId: string;
+  clusterName: string;
+  centroidLat: number;
+  centroidLon: number;
+  color: string;
+  stops: { stopId: string; stopName: string; lat: number; lon: number }[];
+}
+
+/** Convex hull con monotone chain. Input: [lon, lat][]. */
+function convexHull(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points.slice();
+  const pts = points.slice().sort((a, b) => a[0] === b[0] ? a[1] - b[1] : a[0] - b[0]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: [number, number][] = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+/** Espande leggermente un poligono dal centroide (effetto buffer in unità lon/lat). */
+function expandPolygon(poly: [number, number][], factor: number): [number, number][] {
+  if (poly.length === 0) return poly;
+  const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+  const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+  return poly.map(([x, y]) => [cx + (x - cx) * factor, cy + (y - cy) * factor]);
+}
+
+/** Path SVG smussato (curve di Bezier sui midpoint). */
+function smoothPolygonPath(pts: [number, number][]): string {
+  if (pts.length < 3) {
+    return pts.map((p, i) => (i === 0 ? `M ${p[0]} ${p[1]}` : `L ${p[0]} ${p[1]}`)).join(" ") + " Z";
+  }
+  const mids: [number, number][] = pts.map((p, i) => {
+    const n = pts[(i + 1) % pts.length];
+    return [(p[0] + n[0]) / 2, (p[1] + n[1]) / 2];
+  });
+  let d = `M ${mids[0][0]} ${mids[0][1]}`;
+  for (let i = 0; i < pts.length; i++) {
+    const ctrl = pts[(i + 1) % pts.length];
+    const next = mids[(i + 1) % mids.length];
+    d += ` Q ${ctrl[0]} ${ctrl[1]}, ${next[0]} ${next[1]}`;
+  }
+  d += " Z";
+  return d;
+}
+
+/** SVG mappa con cluster come "regioni" arrotondate colorate. */
+function buildClustersMapSvg(clusters: ClusterFullForExport[]): string {
+  const all: [number, number][] = [];
+  for (const c of clusters) for (const s of c.stops) all.push([s.lon, s.lat]);
+  if (all.length < 3) {
+    return `<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg"><text x="50%" y="50%" text-anchor="middle" fill="#888" font-family="sans-serif">Mappa non disponibile</text></svg>`;
+  }
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const [x, y] of all) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+  const padX = (maxX - minX) * 0.05;
+  const padY = (maxY - minY) * 0.05;
+  minX -= padX; maxX += padX; minY -= padY; maxY += padY;
+
+  const W = 1100, H = 700;
+  const sx = (x: number) => ((x - minX) / (maxX - minX)) * W;
+  const sy = (y: number) => H - ((y - minY) / (maxY - minY)) * H;
+
+  const layers: string[] = [];
+  layers.push(`<rect width="${W}" height="${H}" fill="#fafbff"/>`);
+  for (let i = 0; i <= 10; i++) {
+    const x = (i / 10) * W;
+    layers.push(`<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="#eef2ff" stroke-width="1"/>`);
+    const y = (i / 10) * H;
+    layers.push(`<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="#eef2ff" stroke-width="1"/>`);
+  }
+
+  for (const c of clusters) {
+    if (c.stops.length === 0) continue;
+    const pts: [number, number][] = c.stops.map(s => [s.lon, s.lat]);
+    let hull = convexHull(pts);
+    if (hull.length < 3) {
+      const cx = sx(c.centroidLon), cy = sy(c.centroidLat);
+      layers.push(`<circle cx="${cx}" cy="${cy}" r="22" fill="${c.color}" fill-opacity="0.25" stroke="${c.color}" stroke-width="2"/>`);
+    } else {
+      hull = expandPolygon(hull, 1.18);
+      const screen = hull.map(([x, y]) => [sx(x), sy(y)] as [number, number]);
+      const path = smoothPolygonPath(screen);
+      layers.push(`<path d="${path}" fill="${c.color}" fill-opacity="0.22" stroke="${c.color}" stroke-width="2.2" stroke-linejoin="round"/>`);
+    }
+    const cx = sx(c.centroidLon), cy = sy(c.centroidLat);
+    const label = c.clusterName;
+    const wPx = Math.max(70, label.length * 6.6);
+    layers.push(`<g>
+      <circle cx="${cx}" cy="${cy}" r="4" fill="${c.color}" stroke="#fff" stroke-width="1.5"/>
+      <rect x="${cx - wPx / 2}" y="${cy - 26}" width="${wPx}" height="18" rx="9" ry="9" fill="${c.color}" fill-opacity="0.95"/>
+      <text x="${cx}" y="${cy - 13}" text-anchor="middle" font-size="11" font-family="-apple-system, sans-serif" font-weight="600" fill="#fff">${escape(label)}</text>
+    </g>`);
+  }
+
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" style="width:100%; height:auto; max-height:520px; border-radius:18px; background:#fafbff;">${layers.join("")}</svg>`;
+}
+
+async function loadClustersFull(): Promise<ClusterFullForExport[]> {
+  const raw = await apiFetch<any[]>("/api/fares/zone-clusters/full");
+  return (raw || [])
+    .filter(c => c && c.stops && c.stops.length > 0)
+    .map(c => ({
+      clusterId: c.clusterId,
+      clusterName: c.clusterName ?? c.clusterId,
+      centroidLat: Number(c.centroidLat ?? 0),
+      centroidLon: Number(c.centroidLon ?? 0),
+      color: c.color ?? "#6366f1",
+      stops: (c.stops || []).map((s: any) => ({
+        stopId: s.stopId,
+        stopName: s.stopName,
+        lat: Number(s.lat ?? s.stopLat ?? 0),
+        lon: Number(s.lon ?? s.stopLon ?? 0),
+      })).filter((s: any) => Number.isFinite(s.lat) && Number.isFinite(s.lon)),
+    }));
+}
+
+/** Cover page custom per cluster (riusa stile .cover di STYLES + logo). */
+function renderClusterCoverPage(opts: {
+  agencyName: string;
+  date: string;
+  routeCount: number;
+  clusterCount: number;
+  totalStops: number;
+  mapSvg: string;
+  hopBands?: { fascia: number; price: number }[];
+}): string {
+  return `
+    <section class="page cover">
+      <div class="cover-hero">
+        <div class="cover-hero-bg"></div>
+        <div class="cover-hero-content">
+          <img class="cover-logo" src="/faresengine.png" alt="Fares Engine" />
+          <div class="cover-product">Fares Engine</div>
+          <div class="cover-kicker">Tariffario TPL · Documento ufficiale</div>
+          <h1 class="cover-title">Polimetriche per Cluster</h1>
+          <div class="cover-subtitle">Matrice O/D nodo tariffario × nodo tariffario · una pagina per linea, basata sui cluster Telemaco</div>
+        </div>
+      </div>
+
+      <div class="cover-meta">
+        <div class="cm-row"><span class="cm-label">Agenzia</span><span class="cm-value">${escape(opts.agencyName)}</span></div>
+        <div class="cm-row"><span class="cm-label">Data emissione</span><span class="cm-value">${escape(opts.date)}</span></div>
+        <div class="cm-row"><span class="cm-label">Metodo zonizzazione</span><span class="cm-value">Pipeline Telemaco v2 (DBSCAN → k-means + assorbimento Hub)</span></div>
+        <div class="cm-row"><span class="cm-label">Standard</span><span class="cm-value">GTFS Fares V2 · DGR Marche n. 1036/2022 · Min-OD via Dijkstra</span></div>
+      </div>
+
+      <div class="cover-kpis">
+        <div class="ck-card"><div class="ck-num">${opts.routeCount}</div><div class="ck-lbl">Linee analizzate</div></div>
+        <div class="ck-card"><div class="ck-num">${opts.clusterCount}</div><div class="ck-lbl">Cluster generati</div></div>
+        <div class="ck-card"><div class="ck-num">${opts.totalStops.toLocaleString("it-IT")}</div><div class="ck-lbl">Fermate aggregate</div></div>
+        <div class="ck-card ck-card-range"><div class="ck-num">Telemaco v2</div><div class="ck-lbl">Pipeline attiva</div></div>
+      </div>
+
+      <h2 class="cover-h2">Come abbiamo ottenuto questi dati</h2>
+      <ol class="cover-method">
+        <li><strong>Classificazione fermate</strong> — distinzione fra urbane (Hub Ancona, Jesi, Falconara, Senigallia, Osimo) ed extraurbane in base ai network GTFS.</li>
+        <li><strong>Step 1 · DBSCAN</strong> — raggruppamento iniziale per prossimità geografica (eps configurabile, min_samples per evitare cluster troppo piccoli).</li>
+        <li><strong>Step 1.5 · Assorbimento Hub urbani</strong> — fermate extraurbane che ricadono dentro un hub urbano vengono fuse al cluster urbano (evita doppi conteggi al capolinea).</li>
+        <li><strong>Step 2 · k-means refinement</strong> — separazione di cluster troppo eterogenei mantenendo coesione spaziale.</li>
+        <li><strong>Naming</strong> — ogni cluster eredita il nome del comune dominante (o della frazione più popolosa) toccato dalle proprie fermate.</li>
+        <li><strong>Matrice OD min-cost</strong> — Dijkstra all-pairs sui centroidi dei cluster usando la rete GTFS reale; il prezzo di ogni coppia è la tariffa DGR Marche corrispondente alla fascia chilometrica più breve disponibile fra qualsiasi linea che le collega.</li>
+        <li><strong>Polimetrica per linea</strong> — viene proiettata la sequenza dei cluster toccati lungo il percorso dominante; la matrice riportata è quella effettivamente applicabile dal SBE.</li>
+      </ol>
+
+      <h2 class="cover-h2 cover-h2-map">Mappa dei cluster · regioni di nodo tariffario</h2>
+      <div class="cover-mapnote">Ogni "regione" colorata rappresenta l'inviluppo (convex hull smussato) di tutte le fermate appartenenti a un cluster. La pillola colorata indica il centroide e il nome del nodo tariffario.</div>
+      <div class="cover-map">${opts.mapSvg}</div>
+
+      ${opts.hopBands && opts.hopBands.length > 0 ? `
+        <h2 class="cover-h2">Tariffario per tratte — fonte: Prodotti &amp; Supporti</h2>
+        <div class="cover-mapnote">Una tariffa per ogni "tratta" percorsa fra nodi tariffari. <strong>Stesso nodo</strong> di partenza e arrivo = tratta 1 (F1). <strong>Nodo successivo</strong> = tratta 2 (F2). Esempio: da Z1 a Z3 = 3 tratte = F3.</div>
+        <table class="hop-bands-table">
+          <thead>
+            <tr><th>Fascia</th><th>Tratte (nodi attraversati)</th><th>Tariffa (€)</th></tr>
+          </thead>
+          <tbody>
+            ${opts.hopBands.map(b => {
+              const isLast = b.fascia === opts.hopBands!.length;
+              const desc = b.fascia === 1
+                ? "stesso nodo (1 tratta)"
+                : `${b.fascia} tratte${isLast ? " (e oltre)" : ""}`;
+              return `
+              <tr>
+                <td><span class="hb-pill">F${b.fascia}</span></td>
+                <td>${desc}</td>
+                <td class="hb-price">€ ${fmtMoney(b.price)}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      ` : ""}
+
+      <div class="cover-foot">
+        <div class="cf-left">© ${new Date().getFullYear()} ${escape(opts.agencyName)} · Generato con Fares Engine</div>
+        <div class="cf-right">${escape(opts.date)}</div>
+      </div>
+    </section>
+  `;
+}
+
+/**
+ * Pagina linea — matrice triangolare CLUSTER × CLUSTER stile scaletta.
+ * La diagonale mostra il nome cluster + elenco fermate-della-linea che vi ricadono.
+ */
+function renderClusterRoutePage(
+  p: MinOdRoutePolimetrica,
+  clustersIndex: Map<string, ClusterFullForExport>,
+  hopBands: { fascia: number; price: number }[],
+  _agencyName: string,
+  _date: string,
+  idx: number,
+  total: number,
+): string {
+  const N = p.zones.length;
+  if (N === 0) {
+    return `
+      <section class="page route" style="--line-color:#94a3b8">
+        <header class="r-head">
+          <div class="r-head-left">
+            <div class="r-line-pill" style="background:#94a3b8">${escape(p.routeShortName ?? p.routeId)}</div>
+            <div class="r-titles">
+              <div class="r-title">${escape(p.routeLongName ?? p.routeId)}</div>
+            </div>
+          </div>
+          <div class="r-head-right">
+            <div class="r-head-meta"><div class="r-pageno">pag. ${idx + 1} / ${total + 1}</div></div>
+            <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
+          </div>
+        </header>
+        <div class="empty">Nessun cluster sul percorso di questa linea.</div>
+      </section>
+    `;
+  }
+
+  const lineColor = clustersIndex.get(p.zones[0].clusterId)?.color ?? "#6366f1";
+  const capolineaA = p.stops[0]?.stopName ?? p.zones[0].clusterName;
+  const capolineaB = p.stops[p.stops.length - 1]?.stopName ?? p.zones[N - 1].clusterName;
+
+  // ─── Modello "tratte per nodo" ────────────────────────────────────
+  // Convenzione operatore:
+  //   • partenza e arrivo nello STESSO nodo = tratta 1 (F1)
+  //   • partenza nel nodo X, arrivo nel nodo successivo = tratta 2 (F2)
+  //   • in generale: tratta = |i - j| + 1
+  // La diagonale (stesso cluster) è quindi "casa" → F1, ma nella matrice
+  // triangolare visibile (j < i) parte sempre da almeno F2.
+  const trattaAt = (i: number, j: number): number => {
+    const t = Math.abs(i - j) + 1;
+    return Math.max(1, Math.min(hopBands.length, t));
+  };
+  const priceAt = (i: number, j: number): number | null => {
+    const t = trattaAt(i, j);
+    return priceForHops(t, hopBands);
+  };
+
+  // Range tariffe usate effettivamente da questa linea
+  let lMin = Infinity, lMax = -Infinity;
+  let priceCount = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < i; j++) {
+      const v = priceAt(i, j);
+      if (v != null) {
+        priceCount++;
+        if (v < lMin) lMin = v;
+        if (v > lMax) lMax = v;
+      }
+    }
+  }
+  if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
+
+  // Densità in funzione del numero di nodi (riuso scaling)
+  const d = densityForStops(N);
+
+  // ─── Righe (una per cluster) ── matrice triangolare, NIENTE km, NIENTE chip fermate
+  const rows = p.zones.map((z, i) => {
+    const cColor = clustersIndex.get(z.clusterId)?.color ?? groupColor(i);
+    // Fermate di QUESTA linea che ricadono in QUESTO nodo tariffario
+    const zoneStops: { stopId: string; stopName: string }[] =
+      p.stopsByZone?.[z.clusterId]
+      ?? p.stops.filter(s => s.clusterId === z.clusterId).map(s => ({ stopId: s.stopId, stopName: s.stopName }));
+
+    // Triangolo inferiore j < i: solo il prezzo (numero pulito)
+    const priceCells = p.zones.slice(0, i).map((zj, j) => {
+      const price = priceAt(i, j);
+      const fa = trattaAt(i, j);
+      const tratte = Math.abs(i - j) + 1;
+      if (price == null) {
+        return `<td class="cell na" title="${escape(z.clusterName)} → ${escape(zj.clusterName)}">–</td>`;
+      }
+      const bg = lMax > lMin ? priceColor(price, lMin, lMax) : "#eef2ff";
+      const tip = `${escape(z.clusterName)} → ${escape(zj.clusterName)} · ${tratte} ${tratte === 1 ? "tratta" : "tratte"} · F${fa} · € ${fmtMoney(price)}`;
+      return `<td class="cell cl-cell" style="background:${bg}" title="${tip}">${fmtMoney(price)}</td>`;
+    }).join("");
+
+    // Diagonale: prezzo F1 (Ancona→Ancona) + nome cluster obliquo verso l'alto-destra
+    const diagPrice = priceForHops(1, hopBands);
+    const diagPriceTxt = diagPrice != null ? fmtMoney(diagPrice) : "—";
+    const diagBg = lMax > lMin && diagPrice != null ? priceColor(diagPrice, lMin, lMax) : cColor;
+    const diagCell = `
+      <td class="diag cl-diag" style="background:${diagBg}; --diag-bar:${cColor}" title="${escape(z.clusterName)} → ${escape(z.clusterName)} · 1 tratta · F1${diagPrice != null ? ` · € ${fmtMoney(diagPrice)}` : ""}">
+        <div class="diag-num">${diagPriceTxt}</div>
+        <div class="diag-name">${escape(z.clusterName)}</div>
+      </td>`;
+
+    // Celle vuote sopra la diagonale (allineamento triangolo)
+    const emptyAfter = p.zones.slice(i + 1).map(() => `<td class="above-diag"></td>`).join("");
+
+    return `
+      <tr>
+        <th class="rn-num" style="background:${cColor}">${escape(z.label)}</th>
+        <th class="rn-name rn-name-cluster">
+          <div class="rn-text" title="${escape(z.clusterName)}">${escape(z.clusterName)}</div>
+          ${zoneStops.length ? `
+            <div class="rn-stops-label">${zoneStops.length} ${zoneStops.length === 1 ? "fermata" : "fermate"} su questa linea</div>
+            <ul class="rn-stops-list">
+              ${zoneStops.map(s => `<li title="${escape(s.stopName)}">${escape(s.stopName)}</li>`).join("")}
+            </ul>
+          ` : ""}
+        </th>
+        ${priceCells}
+        ${diagCell}
+        ${emptyAfter}
+      </tr>
+    `;
+  }).join("");
+
+  // Legenda colori prezzi
+  const steps = 5;
+  const legendCells = lMax > lMin
+    ? Array.from({ length: steps }, (_, k) => {
+        const v = lMin + (lMax - lMin) * (k / (steps - 1));
+        return `<div class="lg-cell" style="background:${priceColor(v, lMin, lMax)}">€ ${fmtMoney(v)}</div>`;
+      }).join("")
+    : `<div class="lg-cell" style="background:#eef2ff">€ ${fmtMoney(lMin)}</div>`;
+
+  const lineStopsTotal = p.stops.length;
+  const tariffePossibili = N > 1 ? Math.round(N * (N - 1) / 2) : 0;
+  const minPriceTxt = priceCount > 0 ? `€ ${fmtMoney(lMin)}` : "—";
+  const maxPriceTxt = priceCount > 0 ? `€ ${fmtMoney(lMax)}` : "—";
+
+  return `
+    <section class="page route" style="--line-color:${lineColor}">
+      <header class="r-head">
+        <div class="r-head-left">
+          <div class="r-line-pill" style="background:${lineColor}">${escape(p.routeShortName ?? p.routeId)}</div>
+          <div class="r-titles">
+            <div class="r-title">${escape(capolineaA)} <span class="arrow">↔</span> ${escape(capolineaB)}</div>
+            ${p.routeLongName ? `<div class="r-subtitle">${escape(p.routeLongName)}</div>` : ""}
+          </div>
+        </div>
+        <div class="r-head-right">
+          <div class="r-head-meta">
+            <div class="r-network">Polimetrica per nodi tariffari · cluster Telemaco</div>
+            <div class="r-pageno">pag. ${idx + 1} / ${total + 1}</div>
+          </div>
+          <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
+        </div>
+      </header>
+
+      <div class="r-kpis">
+        <div class="r-kpi"><div class="rk-num">${N}</div><div class="rk-lbl">nodi tariffari</div></div>
+        <div class="r-kpi"><div class="rk-num">${lineStopsTotal}</div><div class="rk-lbl">fermate servite</div></div>
+        <div class="r-kpi"><div class="rk-num">${tariffePossibili}</div><div class="rk-lbl">coppie O/D</div></div>
+        <div class="r-kpi"><div class="rk-num">${minPriceTxt} – ${maxPriceTxt}</div><div class="rk-lbl">range tariffe</div></div>
+      </div>
+
+      <div class="cl-bigliettazione">
+        <div class="clb-title">Come è divisa la linea · zone tariffarie in ordine di percorso</div>
+        <div class="clb-help">Il biglietto si calcola contando quante zone attraversi: <b>resti nella stessa zona</b> = il prezzo più basso. <b>Cambi una zona</b> = sali alla fascia successiva.</div>
+        <div class="clb-seq">
+          ${p.zones.map((z, k) => {
+            const c = clustersIndex.get(z.clusterId)?.color ?? groupColor(k);
+            return `<span class="clb-node">
+              <span class="clb-code" style="background:${c}">${escape(z.label)}</span>
+              <span class="clb-name">${escape(z.clusterName)}</span>
+            </span>${k < p.zones.length - 1 ? `<span class="clb-arrow">→</span>` : ""}`;
+          }).join("")}
+        </div>
+      </div>
+
+      <div class="cl-fares-applied">
+        <div class="clf-title">Quanto costa · ${Math.min(N, hopBands.length)} ${Math.min(N, hopBands.length) === 1 ? "fascia" : "fasce"} usate da questa linea</div>
+        <div class="clf-help">Esempio pratico: ${
+          N >= 2
+            ? `da <b>${escape(p.zones[0].clusterName)}</b> a <b>${escape(p.zones[1].clusterName)}</b> attraversi 2 zone, paghi <b>F2 = € ${fmtMoney(priceForHops(2, hopBands) ?? 0)}</b>.`
+            : `tutta la linea sta in <b>${escape(p.zones[0].clusterName)}</b>, paghi sempre <b>F1 = € ${fmtMoney(priceForHops(1, hopBands) ?? 0)}</b>.`
+        }</div>
+        <div class="clf-bar">
+          ${Array.from({ length: Math.min(N, hopBands.length) }, (_, k) => {
+            const fa = k + 1;
+            const price = priceForHops(fa, hopBands);
+            const desc =
+              fa === 1 ? "stessa zona"
+              : fa === 2 ? "2 zone (1 cambio)"
+              : `${fa} zone (${fa - 1} cambi)`;
+            return `<div class="clf-chip">
+              <div class="clf-chip-fa">F${fa}</div>
+              <div class="clf-chip-price">€ ${fmtMoney(price ?? 0)}</div>
+              <div class="clf-chip-desc">${desc}</div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+
+      <h3 class="r-section-title">
+        Tabella dei prezzi · zona di partenza × zona di arrivo
+        <span class="hint">Trova la zona da cui parti sulla riga, poi vai fino alla zona di arrivo nella colonna: il numero è il prezzo del biglietto in euro. Le caselle sulla diagonale colorata sono i viaggi <b>dentro la stessa zona</b> (prezzo minimo F1).</span>
+      </h3>
+
+      <div class="matrix-wrap density-${d.scale}"
+           style="--cs:${Math.max(d.cellSize, 56)}px;--cf:${Math.max(d.cellFont, 10)}px;--hf:${d.headerFont}px;--nw:${Math.max(d.nameWidth, 220)}px;--dnh:${d.diagNameHeight}px">
+        <table class="matrix">
+          <colgroup>
+            <col class="cg-num">
+            <col class="cg-name">
+            ${p.zones.map(() => `<col class="cg-cell">`).join("")}
+          </colgroup>
+          <thead>
+            <tr class="diag-spacer"><th colspan="${N + 2}" class="ds-cell"></th></tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+
+        <div class="matrix-legend">
+          <div class="lg-title">Tariffe per numero di tratte (nodi attraversati)</div>
+          <div class="lg-bar">${legendCells}</div>
+          <div class="lg-hint">Diagonale = nodo tariffario (F1, stesso cluster) · F2 = nodo successivo · F3 = 2 nodi più in là · … · Tariffe da Prodotti &amp; Supporti</div>
+        </div>
+      </div>
+
+      <footer class="r-foot">
+        <div>Linea <strong>${escape(p.routeShortName ?? p.routeId)}</strong> · ${escape(p.routeId)}</div>
+        <div>${N} nodi · ${lineStopsTotal} fermate · max ${N} tratte = F${Math.min(hopBands.length, N)}</div>
+      </footer>
+    </section>
+  `;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   POLIMETRICA PER VARIANTE DI PERCORSO (formato A3 paesaggio)
+   Una pagina per ogni variante della linea. Matrice triangolare
+   fermata × fermata. Prezzo cella = priceForHops(|cluster_i - cluster_j| + 1)
+   con cluster_k = indice del cluster di stop_k nella sequenza zones[].
+   Barra colore laterale a sinistra di ogni nome fermata = colore cluster.
+   ════════════════════════════════════════════════════════════════════ */
+function renderRouteVariantPage(
+  routeShortName: string | null,
+  routeId: string,
+  routeLongName: string | null,
+  variant: RouteVariant,
+  variantIdx: number,
+  variantTotal: number,
+  clustersIndex: Map<string, ClusterFullForExport>,
+  hopBands: { fascia: number; price: number }[],
+  pageNo: number,
+  pageTotal: number,
+): string {
+  const stops = variant.stops;
+  const N = stops.length;
+  const Z = variant.zones.length;
+  if (N < 2) {
+    return `<section class="page route a3" style="--line-color:#94a3b8">
+      <header class="r-head"><div class="r-head-left"><div class="r-line-pill" style="background:#94a3b8">${escape(routeShortName ?? routeId)}</div></div></header>
+      <div class="empty">Variante con meno di 2 fermate.</div></section>`;
+  }
+
+  const lineColor = clustersIndex.get(variant.zones[0]?.clusterId ?? "")?.color ?? "#6366f1";
+  const clusterColorOf = (clusterId: string | null, fallbackIdx: number): string => {
+    if (!clusterId) return "#cbd5e1";
+    const c = clustersIndex.get(clusterId);
+    return c?.color ?? groupColor(fallbackIdx);
+  };
+
+  // Indice del cluster di ogni stop nella sequenza zones[] (per calcolare il prezzo)
+  const zoneIdxOfClusterId = new Map<string, number>();
+  variant.zones.forEach((z, i) => zoneIdxOfClusterId.set(z.clusterId, i));
+  const zoneIdxOfStop: number[] = stops.map(s => {
+    if (!s.clusterId) return -1;
+    return zoneIdxOfClusterId.get(s.clusterId) ?? -1;
+  });
+  const colorOfStop: string[] = stops.map((s, i) => clusterColorOf(s.clusterId, zoneIdxOfStop[i] >= 0 ? zoneIdxOfStop[i] : i));
+
+  const trattaBetweenStops = (i: number, j: number): number => {
+    const zi = zoneIdxOfStop[i];
+    const zj = zoneIdxOfStop[j];
+    if (zi < 0 || zj < 0) return 1;
+    const t = Math.abs(zi - zj) + 1;
+    return Math.max(1, Math.min(hopBands.length, t));
+  };
+  const priceBetween = (i: number, j: number): number | null => {
+    const t = trattaBetweenStops(i, j);
+    return priceForHops(t, hopBands);
+  };
+
+  // range prezzi locali alla variante
+  let lMin = Infinity, lMax = -Infinity;
+  for (let i = 0; i < N; i++) for (let j = 0; j < i; j++) {
+    const v = priceBetween(i, j);
+    if (v != null) { if (v < lMin) lMin = v; if (v > lMax) lMax = v; }
+  }
+  if (!isFinite(lMin)) { lMin = 0; lMax = 0; }
+
+  // boundary visivo dove cambia il cluster
+  const isClusterBoundary = (i: number) => i > 0 && stops[i].clusterId !== stops[i - 1].clusterId;
+
+  // ─── righe ──
+  const rows = stops.map((from, i) => {
+    const cColor = colorOfStop[i];
+    const rowBoundary = isClusterBoundary(i) ? " gboundary-t" : "";
+    const zoneLabel = from.clusterId ? (variant.zones[zoneIdxOfStop[i]]?.label ?? "") : "";
+
+    const priceCells = stops.slice(0, i).map((to, j) => {
+      const colBoundary = isClusterBoundary(j) ? " gboundary-l" : "";
+      const price = priceBetween(i, j);
+      const fa = trattaBetweenStops(i, j);
+      if (price == null) return `<td class="cell na${colBoundary}">–</td>`;
+      const bg = lMax > lMin ? priceColor(price, lMin, lMax) : "#eef2ff";
+      const tip = `${escape(from.stopName)} → ${escape(to.stopName)} · F${fa} · € ${fmtMoney(price)}`;
+      return `<td class="cell${colBoundary}" style="background:${bg}" title="${tip}">${fmtMoney(price)}</td>`;
+    }).join("");
+
+    const diagBoundary = isClusterBoundary(i) ? " gboundary-l" : "";
+    const diagCell = `<td class="diag${diagBoundary}" style="background:${cColor}" title="${escape(from.stopName)}">
+      <div class="diag-num">${i + 1}</div>
+      <div class="diag-name">${escape(from.stopName)}</div>
+    </td>`;
+
+    const emptyAfter = stops.slice(i + 1).map((_, k) => {
+      const colJ = i + 1 + k;
+      const cb = isClusterBoundary(colJ) ? " gboundary-l" : "";
+      return `<td class="above-diag${cb}"></td>`;
+    }).join("");
+
+    return `
+      <tr class="${rowBoundary}">
+        <th class="rn-num" style="background:${cColor}">${i + 1}</th>
+        <th class="rn-name v-rn-name">
+          <span class="v-color-bar" style="background:${cColor}"></span>
+          <div class="v-name-block">
+            <div class="rn-text" title="${escape(from.stopName)}">${escape(from.stopName)}</div>
+            <div class="rn-meta">
+              ${zoneLabel ? `<span class="v-zone-pill" style="background:${cColor}">${escape(zoneLabel)}</span>` : ""}
+              <span class="v-from-name">${escape(from.clusterName ?? "—")}</span>
+              <span class="v-km">${from.kmFromStart.toFixed(1)} km</span>
+            </div>
+          </div>
+        </th>
+        ${priceCells}
+        ${diagCell}
+        ${emptyAfter}
+      </tr>
+    `;
+  }).join("");
+
+  // densità: con A3 paesaggio possiamo essere più generosi
+  const cellSize = N <= 25 ? 36 : N <= 40 ? 28 : N <= 55 ? 22 : 18;
+  const cellFont = N <= 25 ? 9 : N <= 40 ? 8 : N <= 55 ? 7 : 6;
+  const headerFont = N <= 40 ? 9 : 8;
+  const nameWidth = N <= 25 ? 240 : N <= 40 ? 200 : 170;
+  const diagNameHeight = N <= 25 ? 200 : N <= 40 ? 180 : 160;
+
+  // legenda cluster di questa variante
+  const clusterLegend = variant.zones.map((z, k) => {
+    const c = clustersIndex.get(z.clusterId)?.color ?? groupColor(k);
+    const stopsCount = variant.stopsByZone[z.clusterId]?.length ?? 0;
+    return `<div class="vc-chip"><span class="vc-dot" style="background:${c}"></span>
+      <span class="vc-code" style="background:${c}">${escape(z.label)}</span>
+      <span class="vc-name">${escape(z.clusterName)}</span>
+      <span class="vc-meta">${stopsCount} ferm.</span>
+    </div>`;
+  }).join("");
+
+  // chip fasce in uso
+  const fasceInUso = Math.min(Z, hopBands.length);
+  const fasceChips = Array.from({ length: fasceInUso }, (_, k) => {
+    const fa = k + 1;
+    const price = priceForHops(fa, hopBands);
+    const desc = fa === 1 ? "stessa zona" : fa === 2 ? "2 zone (1 cambio)" : `${fa} zone (${fa - 1} cambi)`;
+    return `<div class="clf-chip">
+      <div class="clf-chip-fa">F${fa}</div>
+      <div class="clf-chip-price">€ ${fmtMoney(price ?? 0)}</div>
+      <div class="clf-chip-desc">${desc}</div>
+    </div>`;
+  }).join("");
+
+  return `
+    <section class="page route a3" style="--line-color:${lineColor}">
+      <header class="r-head">
+        <div class="r-head-left">
+          <div class="r-line-pill" style="background:${lineColor}">${escape(routeShortName ?? routeId)}</div>
+          <div class="r-titles">
+            <div class="r-title">${escape(variant.firstStopName)} <span class="arrow">↔</span> ${escape(variant.lastStopName)}</div>
+            <div class="r-subtitle">Variante ${variantIdx + 1} di ${variantTotal} · ${variant.tripCount} corse · ${N} fermate · ${variant.totalKm.toFixed(1)} km</div>
+          </div>
+        </div>
+        <div class="r-head-right">
+          <div class="r-head-meta">
+            <div class="r-network">${escape(routeLongName ?? "")}</div>
+            <div class="r-pageno">pag. ${pageNo} / ${pageTotal}</div>
+          </div>
+          <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
+        </div>
+      </header>
+
+      <div class="v-cluster-legend">
+        <div class="v-leg-title">Zone tariffarie attraversate · ${Z} ${Z === 1 ? "zona" : "zone"}</div>
+        <div class="v-leg-bar">${clusterLegend}</div>
+        <div class="v-leg-help">La striscia colorata accanto a ogni fermata indica la zona tariffaria. <b>Quando il colore cambia, sali di una fascia.</b></div>
+      </div>
+
+      <div class="cl-fares-applied">
+        <div class="clf-title">Tariffe applicate · ${fasceInUso} ${fasceInUso === 1 ? "fascia" : "fasce"}</div>
+        <div class="clf-help">Per leggere la tabella: trova la fermata di <b>partenza</b> sulla riga (i nomi sono a sinistra) e segui fino alla colonna della fermata di <b>arrivo</b>. Il numero nella casella è il prezzo del biglietto in euro.</div>
+        <div class="clf-bar">${fasceChips}</div>
+      </div>
+
+      <div class="matrix-wrap variant-matrix" style="--cs:${cellSize}px;--cf:${cellFont}px;--hf:${headerFont}px;--nw:${nameWidth}px;--dnh:${diagNameHeight}px">
+        <table class="matrix">
+          <colgroup>
+            <col class="col-num" />
+            <col class="col-name" />
+            ${stops.map(() => `<col class="col-cell" />`).join("")}
+          </colgroup>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+
+      <footer class="r-foot">
+        <div>Linea <strong>${escape(routeShortName ?? routeId)}</strong> · variante ${variantIdx + 1}/${variantTotal} · ${variant.tripCount} corse</div>
+        <div>${N} fermate · ${Z} zone tariffarie · max F${Math.min(hopBands.length, Z)}</div>
+      </footer>
+    </section>
+  `;
+}
+
+/** Stili extra per la vista cluster (cover map, metodologia, celle prezzo leggibili). */
+const CLUSTER_EXTRA_STYLES = `
+  /* ════════ FORMATO A3 PAESAGGIO PER VARIANTI ════════ */
+  @page :first { size: A4; }
+  .page.a3 { width: 420mm; min-height: 287mm; padding: 12mm 14mm; }
+  @media print {
+    .page.a3 { page: a3land; }
+    @page a3land { size: A3 landscape; margin: 8mm; }
+  }
+
+  /* Legenda zone tariffarie attraversate dalla variante */
+  .v-cluster-legend {
+    margin: 8px 0 10px;
+    padding: 10px 14px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid var(--line-color, #475569);
+    border-radius: 4px;
+  }
+  .v-cluster-legend .v-leg-title {
+    font-size: 8pt; font-weight: 700; color: #64748b;
+    text-transform: uppercase; letter-spacing: 1.2px;
+    margin-bottom: 8px;
+  }
+  .v-cluster-legend .v-leg-bar {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-bottom: 6px;
+  }
+  .v-cluster-legend .vc-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 3px;
+    font-size: 9.5pt;
+  }
+  .v-cluster-legend .vc-dot { width: 14px; height: 14px; border-radius: 2px; }
+  .v-cluster-legend .vc-code {
+    display: inline-block; padding: 2px 6px; border-radius: 2px;
+    color: #fff; font-weight: 700; font-size: 8.5pt;
+  }
+  .v-cluster-legend .vc-name { color: #0f172a; font-weight: 600; }
+  .v-cluster-legend .vc-meta { color: #64748b; font-size: 8.5pt; }
+  .v-cluster-legend .v-leg-help {
+    font-size: 9pt; color: #334155; line-height: 1.4;
+  }
+  .v-cluster-legend .v-leg-help b { color: #0f172a; }
+
+  /* Cella nome fermata con barra colore laterale verticale */
+  .matrix .v-rn-name {
+    padding: 0 !important;
+    position: relative;
+    vertical-align: middle;
+  }
+  .matrix .v-rn-name .v-color-bar {
+    display: inline-block;
+    width: 6px;
+    align-self: stretch;
+    flex-shrink: 0;
+  }
+  .matrix .v-rn-name {
+    display: flex !important;
+    align-items: stretch;
+  }
+  .matrix .v-rn-name .v-name-block {
+    flex: 1;
+    padding: 4px 8px;
+    min-width: 0;
+  }
+  .matrix .v-rn-name .v-name-block .rn-text {
+    font-weight: 600;
+    color: #0f172a;
+    font-size: 9pt;
+    line-height: 1.2;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .matrix .v-rn-name .v-name-block .rn-meta {
+    font-size: 7pt;
+    color: #64748b;
+    margin-top: 2px;
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  }
+  .matrix .v-rn-name .v-name-block .v-zone-pill {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    color: #fff; font-weight: 700; font-size: 7pt; letter-spacing: 0.3px;
+  }
+  .matrix .v-rn-name .v-name-block .v-from-name { font-weight: 500; color: #475569; }
+  .matrix .v-rn-name .v-name-block .v-km { color: #94a3b8; font-variant-numeric: tabular-nums; }
+
+  /* Bordo netto dove cambia il cluster */
+  .matrix tr.gboundary-t > th,
+  .matrix tr.gboundary-t > td { border-top: 2px solid #1e293b !important; }
+  .matrix td.gboundary-l,
+  .matrix th.gboundary-l { border-left: 2px solid #1e293b !important; }
+
+  /* Numerazione fermata sulla prima colonna (cell numerica) */
+  .matrix .variant-matrix .rn-num,
+  .matrix.variant-matrix .rn-num { color: #fff; font-weight: 700; }
+
+  .cover-h2 { font-size: 14pt; color: #1e1b4b; margin: 16px 0 6px; padding-left: 10px; border-left: 4px solid #6366f1; border-radius: 2px; }
+  .cover-h2-map { margin-top: 14px; }
+  .cover-method { margin: 0 0 14px 22px; padding: 0; font-size: 10pt; color: #334155; line-height: 1.5; }
+  .cover-method li { margin-bottom: 3px; }
+  .cover-method strong { color: #1e1b4b; }
+  .cover-mapnote { font-size: 9.5pt; color: #64748b; margin: 0 0 6px; font-style: italic; }
+  .cover-map { border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; background: #fafbff; padding: 6px; }
+
+  /* Celle prezzo cluster — solo numero, grande e leggibile */
+  .matrix td.cl-cell {
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.65);
+    letter-spacing: -0.2px;
+    font-size: calc(var(--cf) * 1.15) !important;
+    font-variant-numeric: tabular-nums;
+  }
+  .matrix td.cell.na {
+    color: #94a3b8 !important;
+    background: #f8fafc !important;
+    font-weight: 500;
+    font-style: italic;
+  }
+
+  /* Diagonale cluster — prezzo F1 al centro (come una cella normale) +
+     barra colore cluster a sinistra come "tag" identificativo del nodo */
+  table.matrix td.diag.cl-diag {
+    background: var(--cell-bg, #fff);
+    border-left: 6px solid var(--diag-bar) !important;
+  }
+  table.matrix td.diag.cl-diag .diag-num {
+    color: #0f172a !important;
+    font-weight: 800;
+    font-size: calc(var(--cf) * 1.15) !important;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 1px 0 rgba(255,255,255,0.55);
+    height: var(--cs);
+    line-height: var(--cs);
+  }
+  /* Nome cluster obliquo: nero con halo bianco per restare leggibile su qualsiasi sfondo */
+  table.matrix td.diag .diag-name {
+    color: #0f172a !important;
+    text-shadow: 0 0 3px rgba(255,255,255,0.85), 0 1px 0 rgba(255,255,255,0.6);
+    font-weight: 700;
+  }
+  /* Colonna sinistra cluster — codice + nome cluster (no km) */
+  .rn-name-cluster .rn-text {
+    font-weight: 600;
+    color: #1e1b4b;
+    font-size: calc(var(--hf) * 1.0);
+    line-height: 1.2;
+  }
+
+  /* ════════════════════════════════════════════════════════════════════
+     ENTERPRISE STYLES — palette sobria, bordi sottili, niente decorazioni
+     ════════════════════════════════════════════════════════════════════ */
+
+  /* Sequenza nodi tariffari */
+  .cl-bigliettazione {
+    margin: 8px 0 8px;
+    padding: 10px 14px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid var(--line-color, #475569);
+    border-radius: 4px;
+  }
+  .cl-bigliettazione .clb-title {
+    font-size: 8pt;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 8px;
+  }
+  .cl-bigliettazione .clb-help {
+    font-size: 9pt;
+    color: #334155;
+    line-height: 1.45;
+    margin: 0 0 10px;
+  }
+  .cl-bigliettazione .clb-help b {
+    color: #0f172a;
+    font-weight: 700;
+  }
+  .cl-bigliettazione .clb-seq {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 2px;
+    font-size: 10pt;
+  }
+  .cl-bigliettazione .clb-node {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 4px;
+    background: #f8fafc;
+    border-radius: 3px;
+    border: 1px solid #e2e8f0;
+    font-weight: 500;
+    color: #0f172a;
+  }
+  .cl-bigliettazione .clb-code {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 2px;
+    color: #fff;
+    font-weight: 700;
+    font-size: 9pt;
+    letter-spacing: 0.3px;
+    font-variant-numeric: tabular-nums;
+  }
+  .cl-bigliettazione .clb-arrow {
+    color: #94a3b8;
+    font-weight: 600;
+    font-size: 11pt;
+    margin: 0 4px;
+  }
+
+  /* Tariffe applicate — chip sobrie */
+  .cl-fares-applied {
+    margin: 0 0 14px;
+    padding: 10px 14px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid #475569;
+    border-radius: 4px;
+  }
+  .cl-fares-applied .clf-title {
+    font-size: 8pt;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 8px;
+  }
+  .cl-fares-applied .clf-help {
+    font-size: 9pt;
+    color: #334155;
+    line-height: 1.45;
+    margin: 0 0 10px;
+  }
+  .cl-fares-applied .clf-help b {
+    color: #0f172a;
+    font-weight: 700;
+  }
+  .cl-fares-applied .clf-bar {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .cl-fares-applied .clf-chip {
+    flex: 1 1 100px;
+    min-width: 100px;
+    padding: 6px 10px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 3px;
+    text-align: left;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .cl-fares-applied .clf-chip-fa {
+    align-self: flex-start;
+    padding: 1px 6px;
+    border-radius: 2px;
+    background: #1e293b;
+    color: #fff;
+    font-weight: 700;
+    font-size: 8pt;
+    letter-spacing: 0.4px;
+    margin-bottom: 2px;
+  }
+  .cl-fares-applied .clf-chip-price {
+    font-size: 13pt;
+    font-weight: 700;
+    color: #0f172a;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .cl-fares-applied .clf-chip-desc {
+    font-size: 7.5pt;
+    color: #64748b;
+    font-weight: 400;
+  }
+
+  /* Fermate sotto il nome cluster — lista verticale, una per riga */
+  .matrix .rn-name-cluster {
+    vertical-align: top;
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+  }
+  .matrix .rn-name-cluster .rn-text {
+    font-weight: 700;
+    color: #0f172a;
+    font-size: 10pt;
+    line-height: 1.2;
+    margin-bottom: 4px;
+  }
+  .matrix .rn-name-cluster .rn-stops-label {
+    font-size: 6.5pt;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 600;
+    margin: 4px 0 2px;
+  }
+  .matrix .rn-name-cluster .rn-stops-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 7pt;
+    line-height: 1.35;
+    color: #475569;
+    font-weight: 400;
+  }
+  .matrix .rn-name-cluster .rn-stops-list li {
+    padding: 1px 0 1px 8px;
+    position: relative;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 2px;
+    white-space: normal;
+    word-break: break-word;
+  }
+  .matrix .rn-name-cluster .rn-stops-list li::before {
+    content: "";
+    position: absolute;
+    left: -3px; top: 6px;
+    width: 4px; height: 4px;
+    background: #cbd5e1;
+    border-radius: 50%;
+  }
+
+  /* Tabella tariffario fasce nella cover */
+  .hop-bands-table { width: 100%; border-collapse: collapse; margin: 6px 0 14px; font-size: 11pt; }
+  .hop-bands-table th, .hop-bands-table td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+  .hop-bands-table th { background: #eef2ff; color: #3730a3; font-weight: 700; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.5px; }
+  .hop-bands-table .hb-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #6366f1; color: #fff; font-weight: 700; font-size: 10pt; }
+  .hop-bands-table .hb-price { font-weight: 800; color: #1e1b4b; font-variant-numeric: tabular-nums; font-size: 12pt; text-align: right; }
+`;
+
+interface ClustersExportOpts {
+  agencyName?: string;
+  date?: string;
+}
+
+/**
+ * Carica i prodotti tariffari dal backend e ne estrae l'elenco delle fasciIe
+ * extraurbane (`extra_fascia_N`). Una fascia = 1 scatto = 1 passaggio fra cluster.
+ *
+ * Convenzione adottata:
+ *   • numero di salti = |i - j| sulla sequenza dei nodi tariffari della linea
+ *   • prezzo(salti) = hopBands[salti - 1].price   (cap all'ultima fascia)
+ *   • salti = 0 (stesso cluster) → fascia 1
+ */
+async function loadHopBands(): Promise<{ fascia: number; price: number; productName: string; productId: string }[]> {
+  const products = await apiFetch<any[]>("/api/fares/products");
+  const bands: { fascia: number; price: number; productName: string; productId: string }[] = [];
+  for (const p of products || []) {
+    const pid = String(p.fareProductId ?? p.fare_product_id ?? "");
+    const m = pid.match(/^extra_fascia_(\d+)$/i);
+    if (!m) continue;
+    bands.push({
+      fascia: parseInt(m[1], 10),
+      price: Number(p.amount ?? 0),
+      productName: String(p.fareProductName ?? p.fare_product_name ?? pid),
+      productId: pid,
+    });
+  }
+  bands.sort((a, b) => a.fascia - b.fascia);
+  return bands;
+}
+
+/** Prezzo per un certo numero di salti tra nodi tariffari. */
+function priceForHops(hops: number, bands: { fascia: number; price: number }[]): number | null {
+  if (bands.length === 0) return null;
+  const idx = Math.max(0, Math.min(bands.length - 1, hops - 1));
+  return bands[idx].price;
+}
+
+async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
+  html: string;
+  agencyName: string;
+  date: string;
+  routeCount: number;
+  clusterCount: number;
+}> {
+  const agencyName = opts.agencyName ?? "Conerobus · Trasporto Pubblico Locale";
+  const date = opts.date ?? new Date().toLocaleDateString("it-IT");
+
+  const [clusters, routesVariants, hopBands] = await Promise.all([
+    loadClustersFull(),
+    loadRouteVariants(),
+    loadHopBands(),
+  ]);
+  if (clusters.length === 0) {
+    throw new Error("Nessun cluster trovato. Genera prima i cluster dal tab 'Cluster Tariffari'.");
+  }
+  if (routesVariants.length === 0) {
+    throw new Error("Nessuna linea con varianti di percorso. Verifica che il GTFS sia caricato e contenga linee extraurbane.");
+  }
+  if (hopBands.length === 0) {
+    throw new Error("Nessun prodotto extra_fascia_* trovato. Vai su 'Prodotti & Supporti' e clicca 'Genera tariffe extraurbane'.");
+  }
+
+  const clustersIndex = new Map<string, ClusterFullForExport>();
+  for (const c of clusters) clustersIndex.set(c.clusterId, c);
+
+  const totalStops = clusters.reduce((s, c) => s + c.stops.length, 0);
+  const totalVariants = routesVariants.reduce((s, r) => s + r.variants.length, 0);
+  const mapSvg = buildClustersMapSvg(clusters);
+
+  const cover = renderClusterCoverPage({
+    agencyName, date,
+    routeCount: routesVariants.length,
+    clusterCount: clusters.length,
+    totalStops,
+    mapSvg,
+    hopBands,
+  });
+
+  // Pre-conta totale pagine: cover + 1 pagina per variante
+  const totalPages = 1 + totalVariants;
+  let pageCounter = 1; // cover = pag 1
+  const pages = routesVariants.map(rv =>
+    rv.variants.map((v, vi) => {
+      pageCounter++;
+      return renderRouteVariantPage(
+        rv.routeShortName, rv.routeId, rv.routeLongName,
+        v, vi, rv.variants.length,
+        clustersIndex, hopBands,
+        pageCounter, totalPages,
+      );
+    }).join("\n")
+  ).join("\n");
+
+  // Logo embedded (riusa l'helper esistente)
+  const logoDataUri = await loadLogoDataUri();
+  const logoCss = logoDataUri
+    ? `\nimg.cover-logo, img.r-brand-logo { content: url("${logoDataUri}"); }\n`
+    : "";
+
+  const html = `<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <title>Polimetriche per Cluster — ${escape(agencyName)} — ${escape(date)}</title>
+  <style>${STYLES}${CLUSTER_EXTRA_STYLES}${logoCss}</style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>📊 Polimetriche per Cluster · ${escape(agencyName)} · ${routesVariants.length} linee · ${totalVariants} varianti · ${clusters.length} cluster</h1>
+    <div><button onclick="window.print()">🖨️ Stampa / Salva PDF</button></div>
+  </div>
+  ${cover}
+  ${pages}
+</body>
+</html>`;
+
+  return { html, agencyName, date, routeCount: routesVariants.length, clusterCount: clusters.length };
+}
+
+/**
+ * Esporta in PDF (via finestra di stampa) le polimetriche basate sui cluster Telemaco.
+ * Cover con logo Fares Engine + mappa SVG, poi una pagina per linea con la matrice
+ * cluster × cluster a scaletta. La diagonale mostra solo le fermate della linea.
+ */
+export async function exportPolimetricheClustersToPrint(opts?: ClustersExportOpts): Promise<void> {
+  // Apri subito la finestra (per non incorrere nel blocco popup post-await)
+  const win = window.open("", "_blank", "width=1200,height=900");
+  if (!win) {
+    alert("Abilita i popup per aprire il report polimetriche cluster.");
+    return;
+  }
+  win.document.write(`
+    <!doctype html><html><head><title>Polimetriche Cluster — caricamento…</title>
+    <style>body{font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f3f4f6;color:#475569}
+    .l{text-align:center}.s{display:inline-block;width:40px;height:40px;border:3px solid #cbd5e1;border-top-color:#6366f1;border-radius:50%;animation:r 1s linear infinite}
+    @keyframes r{to{transform:rotate(360deg)}}</style></head>
+    <body><div class="l"><div class="s"></div><p>Costruzione polimetriche per cluster…</p></div></body></html>
+  `);
+  try {
+    const { html } = await buildClustersHtml(opts ?? {});
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+  } catch (err: any) {
+    win.document.body.innerHTML = `<div style="padding:40px;font-family:system-ui;color:#dc2626">
+      <h2>Errore generazione polimetriche cluster</h2>
+      <pre style="white-space:pre-wrap">${escape(err?.message || String(err))}</pre>
+    </div>`;
+  }
+}
+
+/** Crea un link condivisibile alle polimetriche per cluster. */
+export async function createPolimetricheClustersShareLink(opts?: ClustersExportOpts): Promise<{
+  id: string;
+  url: string;
+  routeCount: number;
+  clusterCount: number;
+}> {
+  const built = await buildClustersHtml(opts ?? {});
+  const res = await apiFetch<{ id: string; url: string; createdAt: string }>(
+    "/api/fares/polimetriche/snapshots",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        html: built.html,
+        title: `Polimetriche Cluster · ${built.agencyName} · ${built.date}`,
+        agencyName: built.agencyName,
+        zoningMethod: "clusters_telemaco",
+        routeCount: built.routeCount,
+        productCount: 0,
+        areaCount: built.clusterCount,
+        meta: { date: built.date, mode: "clusters", clusterCount: built.clusterCount },
+      }),
+    },
+  );
+  return { id: res.id, url: res.url, routeCount: built.routeCount, clusterCount: built.clusterCount };
+}
+

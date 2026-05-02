@@ -3252,6 +3252,22 @@ router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// DELETE /api/fares/zone-clusters — reset ALL clusters of latest feed (cluster + assegnazioni auto)
+//   Le override manuali (assignment_source = 'manual') vengono comunque cancellate
+//   insieme ai cluster di cui erano figlie. Endpoint distruttivo, richiede conferma UI.
+router.delete("/fares/zone-clusters", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const beforeRows = await db.select({ c: sql<number>`count(*)::int` })
+      .from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    const before = Number(beforeRows[0]?.c ?? 0);
+    await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+    await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    res.json({ ok: true, deletedClusters: before });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // DELETE /api/fares/zone-clusters/:id — delete cluster + its stops
 router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
   try {
@@ -5088,7 +5104,7 @@ void ensurePolimetricheSnapshotsTable();
  * Body: { html: string, title?, agencyName?, zoningMethod?, routeCount?, productCount?, areaCount?, meta? }
  * Ritorna: { id, url }
  *
- * Limite payload: 50MB (vedi `app.ts` express.json limit).
+ * Limite payload: 200MB (vedi `app.ts` express.json limit).
  */
 router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => {
   try {
@@ -5101,8 +5117,8 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
       res.status(400).json({ error: "Campo 'html' mancante o troppo corto" });
       return;
     }
-    if (html.length > 40 * 1024 * 1024) {
-      res.status(413).json({ error: "HTML troppo grande (max 40MB)" });
+    if (html.length > 180 * 1024 * 1024) {
+      res.status(413).json({ error: "HTML troppo grande (max 180MB)" });
       return;
     }
     const inserted = await db.execute(sql`

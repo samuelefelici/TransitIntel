@@ -727,15 +727,125 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
     const clusterName = new Map<string, string>();
     for (const c of cRows) clusterName.set(c.clusterId, c.clusterName ?? c.clusterId);
 
-    // Percorso dominante della linea
-    const dom = await getDominantPercorsoLocal(feedId, routeId);
-    if (!dom || dom.stops.length < 2) {
-      return res.status(404).json({ error: "percorso dominante non disponibile per questa linea" });
+    // ─── UNIONE TUTTE LE FERMATE DI TUTTI I TRIP ──
+    // Per ogni linea, alcuni trip si fermano prima (es. linea B: alcuni a Marina,
+    // altri proseguono fino a Montemarciano). Costruiamo la sequenza completa
+    // che è l'UNIONE di tutte le fermate vista in qualche trip, ordinate dal
+    // trip più lungo che le contiene tutte (o il "merge" topologico se nessuno
+    // singolo le copre tutte).
+    const allTripsRow = await db.execute<any>(sql`
+      SELECT st.trip_id, st.stop_id, st.stop_sequence,
+             s.stop_lat::float AS lat, s.stop_lon::float AS lon
+      FROM gtfs_stop_times st
+      JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+      JOIN gtfs_stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+      WHERE st.feed_id = ${feedId} AND t.route_id = ${routeId}
+      ORDER BY st.trip_id, st.stop_sequence
+    `);
+    if (allTripsRow.rows.length === 0) {
+      return res.status(404).json({ error: "nessun trip per questa linea" });
     }
+
+    // Raggruppa per trip
+    type StopXY = { stop_id: string; lat: number; lon: number };
+    const tripsArr = new Map<string, StopXY[]>();
+    for (const row of allTripsRow.rows) {
+      if (!tripsArr.has(row.trip_id)) tripsArr.set(row.trip_id, []);
+      tripsArr.get(row.trip_id)!.push({ stop_id: row.stop_id, lat: row.lat, lon: row.lon });
+    }
+
+    // ── STRATEGIA: trova i VERI CAPOLINEA della linea (stop più frequenti
+    // come prima o ultima fermata) e scegli come base il trip più lungo che
+    // collega due capolinea diversi.
+    //
+    // Esempio linea B: i capolinea reali sono Ancona (centro) e
+    // Montemarciano (San Pietro). Molte corse brevi terminano a Marina o
+    // partono da Falconara, ma il trip "completo" è quello che va da
+    // capolinea a capolinea.
+    const endpointFreq = new Map<string, number>();
+    for (const [, stops] of tripsArr) {
+      if (stops.length === 0) continue;
+      const a = stops[0].stop_id;
+      const b = stops[stops.length - 1].stop_id;
+      endpointFreq.set(a, (endpointFreq.get(a) ?? 0) + 1);
+      if (b !== a) endpointFreq.set(b, (endpointFreq.get(b) ?? 0) + 1);
+    }
+    // Capolinea = top 4 stop come endpoint (escludendo singoletti)
+    const topEndpoints = [...endpointFreq.entries()]
+      .filter(([, n]) => n >= 2)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([id]) => id);
+    const isEndpoint = new Set(topEndpoints);
+
+    // Score(trip): bonus grande se entrambi gli endpoint sono "veri capolinea",
+    // bonus medio se almeno uno lo è, poi tie-break sulla lunghezza.
+    const tripScore = (stops: StopXY[]): number => {
+      if (stops.length < 2) return -1;
+      const a = stops[0].stop_id;
+      const b = stops[stops.length - 1].stop_id;
+      const aIs = isEndpoint.has(a);
+      const bIs = isEndpoint.has(b);
+      const endpointBonus = (aIs && bIs) ? 100000 : (aIs || bIs) ? 10000 : 0;
+      // tra trip con stesso bonus, vince quello con più fermate (= percorso più completo)
+      return endpointBonus + stops.length;
+    };
+
+    const allTripsSorted = [...tripsArr.entries()].sort((a, b) => tripScore(b[1]) - tripScore(a[1]));
+    if (allTripsSorted.length === 0) {
+      return res.status(404).json({ error: "nessun trip valido" });
+    }
+
+    const baseTrip = allTripsSorted[0][1];
+    const baseSet = new Set(baseTrip.map(s => s.stop_id));
+    const baseIdx = new Map<string, number>();
+    baseTrip.forEach((s, i) => baseIdx.set(s.stop_id, i));
+
+    // sameDir: un trip è "stessa direzione" se la maggior parte delle fermate
+    // condivise con baseTrip rispetta lo stesso ordine (forward in baseIdx).
+    const sameDir = (stops: StopXY[]): boolean => {
+      let fwd = 0, bwd = 0;
+      for (let k = 1; k < stops.length; k++) {
+        const a = baseIdx.get(stops[k - 1].stop_id);
+        const b = baseIdx.get(stops[k].stop_id);
+        if (a == null || b == null) continue;
+        if (b > a) fwd++; else if (b < a) bwd++;
+      }
+      return fwd >= bwd;
+    };
+
+    // Trip nella direzione del base, ordinati dal più lungo al più corto.
+    // Inizia da base e fonde gli altri inserendo nuovi stop dopo l'ultimo
+    // anchor comune.
+    const dirTrips = allTripsSorted.filter(([, sts]) => sameDir(sts));
+
+    const merged: StopXY[] = baseTrip.slice();
+    const inMerged = new Set<string>(merged.map(s => s.stop_id));
+
+    // Fondi gli altri trip (skippa il base, già messo)
+    for (let t = 1; t < dirTrips.length; t++) {
+      const trip = dirTrips[t][1];
+      let lastAnchor = -1;
+      for (let k = 0; k < trip.length; k++) {
+        const s = trip[k];
+        if (inMerged.has(s.stop_id)) {
+          lastAnchor = merged.findIndex(m => m.stop_id === s.stop_id);
+        } else {
+          const insertAt = lastAnchor + 1;
+          merged.splice(insertAt, 0, s);
+          inMerged.add(s.stop_id);
+          lastAnchor = insertAt;
+        }
+      }
+    }
+    if (merged.length < 2) {
+      return res.status(404).json({ error: "percorso non ricostruibile per questa linea" });
+    }
+    void baseSet; // riservato per future estensioni
 
     // Costruisci elenco fermate con km cumulato e cluster
     type StopInfo = { stopId: string; stopName: string; kmFromStart: number; clusterId: string | null; clusterName: string | null };
-    const stopIds = dom.stops.map(s => s.stop_id);
+    const stopIds = merged.map(s => s.stop_id);
     const stopIdParams = sql.join(stopIds.map(id => sql`${id}`), sql`, `);
     const stopNamesRow = await db.execute<any>(sql`
       SELECT stop_id, stop_name FROM gtfs_stops WHERE feed_id = ${feedId} AND stop_id IN (${stopIdParams})
@@ -746,7 +856,7 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
     const stops: StopInfo[] = [];
     let cumKm = 0;
     let prevLat: number | null = null, prevLon: number | null = null;
-    for (const s of dom.stops) {
+    for (const s of merged) {
       if (prevLat != null && prevLon != null) cumKm += haversineKm(prevLat, prevLon, s.lat, s.lon);
       prevLat = s.lat; prevLon = s.lon;
       const cId = stopToCluster.get(s.stop_id) ?? null;
@@ -808,6 +918,16 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
       }
     }
 
+    // Per ogni cluster (nodo tariffario), elenco delle fermate di QUESTA linea
+    // appartenenti a quel cluster, nell'ordine in cui appaiono lungo il percorso.
+    const stopsByZone: Record<string, { stopId: string; stopName: string }[]> = {};
+    for (const z of zoneList) stopsByZone[z.clusterId] = [];
+    for (const s of stops) {
+      if (s.clusterId && stopsByZone[s.clusterId]) {
+        stopsByZone[s.clusterId].push({ stopId: s.stopId, stopName: s.stopName });
+      }
+    }
+
     return res.json({
       routeId: r0.route_id,
       routeShortName: r0.route_short_name,
@@ -815,12 +935,190 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
       totalKm: stops.length > 0 ? stops[stops.length - 1].kmFromStart : 0,
       stops,
       zones: zoneList,
+      stopsByZone,
       matrix,
       kmMatrix,
       fasciaMatrix,
     });
   } catch (err: any) {
     console.error("[min-od/route-polimetrica]", err);
+    return res.status(500).json({ error: err?.message ?? String(err) });
+  }
+});
+
+/**
+ * Restituisce TUTTE le varianti di percorso di una linea, raggruppando i
+ * trip con la stessa sequenza di stop_id e UNIFICANDO andata/ritorno
+ * (signature canonica = min(forward, reverse)).
+ *
+ * Output:
+ *   variants: [{
+ *     variantId: string,        // hash signature
+ *     direction: "AB"|"BA",     // direzione del rappresentante
+ *     tripCount: number,
+ *     firstStopName, lastStopName,
+ *     stops: [{ stopId, stopName, kmFromStart, clusterId, clusterName }],
+ *     zones: [{ clusterId, clusterName, label }],   // sequenza nodi tariffari della variante
+ *     stopsByZone: Record<clusterId, [{stopId,stopName}]>
+ *   }]
+ */
+router.get("/fares/min-od/route-variants/:routeId", async (req, res) => {
+  try {
+    await ensureMinOdTables();
+    const feedId = (req.query.feedId as string) || (await getLatestFeedId());
+    const routeId = req.params.routeId;
+    if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });
+
+    const routeRow = await db.execute<any>(sql`
+      SELECT route_id, route_short_name, route_long_name
+      FROM gtfs_routes WHERE feed_id = ${feedId} AND route_id = ${routeId} LIMIT 1
+    `);
+    if (routeRow.rows.length === 0) return res.status(404).json({ error: "route non trovata" });
+    const r0 = routeRow.rows[0];
+
+    // mapping stop→cluster
+    const csRows = await db.select({
+      stopId: gtfsFareZoneClusterStops.stopId,
+      clusterId: gtfsFareZoneClusterStops.clusterId,
+    }).from(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+    const stopToCluster = new Map<string, string>();
+    for (const r of csRows) stopToCluster.set(r.stopId, r.clusterId);
+    const cRows = await db.select({
+      clusterId: gtfsFareZoneClusters.clusterId,
+      clusterName: gtfsFareZoneClusters.clusterName,
+    }).from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    const clusterName = new Map<string, string>();
+    for (const c of cRows) clusterName.set(c.clusterId, c.clusterName ?? c.clusterId);
+
+    // Tutti gli stop_times della linea
+    const allTripsRow = await db.execute<any>(sql`
+      SELECT st.trip_id, st.stop_id, st.stop_sequence,
+             s.stop_lat::float AS lat, s.stop_lon::float AS lon, s.stop_name
+      FROM gtfs_stop_times st
+      JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+      JOIN gtfs_stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+      WHERE st.feed_id = ${feedId} AND t.route_id = ${routeId}
+      ORDER BY st.trip_id, st.stop_sequence
+    `);
+    if (allTripsRow.rows.length === 0) {
+      return res.status(404).json({ error: "nessun trip per questa linea" });
+    }
+
+    type TripStop = { stop_id: string; lat: number; lon: number; stop_name: string };
+    const tripsArr = new Map<string, TripStop[]>();
+    for (const row of allTripsRow.rows) {
+      if (!tripsArr.has(row.trip_id)) tripsArr.set(row.trip_id, []);
+      tripsArr.get(row.trip_id)!.push({
+        stop_id: row.stop_id, lat: row.lat, lon: row.lon, stop_name: row.stop_name,
+      });
+    }
+
+    // Raggruppa per signature canonica (forward o reverse → la più piccola lex.)
+    type VariantBucket = {
+      variantId: string;          // signature canonica
+      forwardSig: string;         // signature forward del rappresentante scelto
+      stops: TripStop[];          // stops in direzione forward del rappresentante
+      tripCount: number;
+      forwardCount: number;       // quanti trip vanno in direzione forward
+      reverseCount: number;       // quanti trip vanno in direzione reverse
+    };
+    const variants = new Map<string, VariantBucket>();
+    for (const [, stops] of tripsArr) {
+      if (stops.length < 2) continue;
+      const fwd = stops.map(s => s.stop_id).join("|");
+      const rev = stops.map(s => s.stop_id).reverse().join("|");
+      const canonical = fwd <= rev ? fwd : rev;
+      const isForward = fwd === canonical;
+      let v = variants.get(canonical);
+      if (!v) {
+        v = {
+          variantId: canonical,
+          forwardSig: canonical,
+          stops: isForward ? stops.slice() : stops.slice().reverse(),
+          tripCount: 0,
+          forwardCount: 0,
+          reverseCount: 0,
+        };
+        variants.set(canonical, v);
+      }
+      v.tripCount++;
+      if (isForward) v.forwardCount++; else v.reverseCount++;
+    }
+
+    if (variants.size === 0) {
+      return res.status(404).json({ error: "nessuna variante valida" });
+    }
+
+    // Ordina per #trip decrescente
+    const sortedVariants = [...variants.values()].sort((a, b) => b.tripCount - a.tripCount);
+
+    // Hashing breve per id leggibile
+    const shortHash = (s: string): string => {
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+      return Math.abs(h).toString(36).slice(0, 6);
+    };
+
+    const out = sortedVariants.map((v, idx) => {
+      // costruisci dettaglio fermate con km cumulato + cluster
+      let cumKm = 0;
+      let prevLat: number | null = null, prevLon: number | null = null;
+      const detailedStops = v.stops.map(s => {
+        if (prevLat != null && prevLon != null) cumKm += haversineKm(prevLat, prevLon, s.lat, s.lon);
+        prevLat = s.lat; prevLon = s.lon;
+        const cId = stopToCluster.get(s.stop_id) ?? null;
+        return {
+          stopId: s.stop_id,
+          stopName: s.stop_name,
+          kmFromStart: Math.round(cumKm * 100) / 100,
+          clusterId: cId,
+          clusterName: cId ? (clusterName.get(cId) ?? cId) : null,
+        };
+      });
+      // sequenza nodi tariffari (run-length)
+      const zones: { clusterId: string; clusterName: string; label: string }[] = [];
+      const seenZ = new Set<string>();
+      for (const s of detailedStops) {
+        if (!s.clusterId || seenZ.has(s.clusterId)) continue;
+        seenZ.add(s.clusterId);
+        zones.push({
+          clusterId: s.clusterId,
+          clusterName: s.clusterName ?? s.clusterId,
+          label: `Z${zones.length + 1}`,
+        });
+      }
+      const stopsByZone: Record<string, { stopId: string; stopName: string }[]> = {};
+      for (const z of zones) stopsByZone[z.clusterId] = [];
+      for (const s of detailedStops) {
+        if (s.clusterId && stopsByZone[s.clusterId]) {
+          stopsByZone[s.clusterId].push({ stopId: s.stopId, stopName: s.stopName });
+        }
+      }
+      return {
+        variantId: shortHash(v.variantId),
+        order: idx + 1,
+        tripCount: v.tripCount,
+        forwardCount: v.forwardCount,
+        reverseCount: v.reverseCount,
+        firstStopName: detailedStops[0]?.stopName ?? "",
+        lastStopName: detailedStops[detailedStops.length - 1]?.stopName ?? "",
+        totalKm: detailedStops.length > 0 ? detailedStops[detailedStops.length - 1].kmFromStart : 0,
+        stops: detailedStops,
+        zones,
+        stopsByZone,
+      };
+    });
+
+    return res.json({
+      routeId: r0.route_id,
+      routeShortName: r0.route_short_name,
+      routeLongName: r0.route_long_name,
+      variantCount: out.length,
+      tripCountTotal: out.reduce((s, v) => s + v.tripCount, 0),
+      variants: out,
+    });
+  } catch (err: any) {
+    console.error("[min-od/route-variants]", err);
     return res.status(500).json({ error: err?.message ?? String(err) });
   }
 });
