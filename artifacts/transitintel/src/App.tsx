@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -20,6 +20,10 @@ const ScenariosPage = lazy(() => import("@/pages/scenarios"));
 const IntermodalPage = lazy(() => import("@/pages/intermodal"));
 const OptimizationPage = lazy(() => import("@/pages/optimization"));
 const FucinaPage = lazy(() => import("@/pages/fucina"));
+const SchedulingProjectsHubPage = lazy(() => import("@/pages/scheduling/ProjectsHubPage"));
+const SchedulingProjectDashboardPage = lazy(() => import("@/pages/scheduling/ProjectDashboardPage"));
+const VehicleScenariosPage = lazy(() => import("@/pages/scheduling/VehicleScenariosPage"));
+const DriverScenariosPage = lazy(() => import("@/pages/scheduling/DriverScenariosPage"));
 const ClusterPage = lazy(() => import("@/pages/cluster"));
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
@@ -34,6 +38,13 @@ const DepotsPage = lazy(() => import("@/pages/depots"));
 const PlanningListPage = lazy(() => import("@/pages/planning"));
 const PlanningNewPage = lazy(() => import("@/pages/planning/new"));
 const PlanningWorkspacePage = lazy(() => import("@/pages/planning/workspace"));
+const PlanningStudioListPage = lazy(() => import("@/pages/planning-studio"));
+const PlanningStudioEditorPage = lazy(() => import("@/pages/planning-studio/EditorPage"));
+const PlanningStudioClustersPage = lazy(() => import("@/pages/planning-studio/ClustersPage"));
+const PlanningStudioServicePeriodsPage = lazy(() => import("@/pages/planning-studio/ServicePeriodsPage"));
+const PlanningStudioTripsPage = lazy(() => import("@/pages/planning-studio/TripsPage"));
+const PlanningStudioNetworkPage = lazy(() => import("@/pages/planning-studio/NetworkPage"));
+const NetworkEngineHub = lazy(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -60,7 +71,7 @@ function PageLoader() {
  * Guardia di permesso: se l'utente non ha il permesso richiesto
  * (e non è admin), redirige a /dashboard.
  */
-function Gated({ perm, children }: { perm: "analytics" | "fares" | "scheduling"; children: ReactNode }) {
+function Gated({ perm, children }: { perm: "analytics" | "fares" | "scheduling" | "network"; children: ReactNode }) {
   const { hasPermission } = useAuth();
   if (!hasPermission(perm)) return <Redirect to="/dashboard" />;
   return <>{children}</>;
@@ -104,28 +115,51 @@ function Router() {
             <Route path="/sync"><Redirect to="/data" /></Route>
 
             {/* Crea Servizio (scheduling) */}
+            <Route path="/network-engine">
+              <Gated perm="network"><NetworkEngineHub /></Gated>
+            </Route>
             <Route path="/scenarios">
-              <Gated perm="scheduling"><ScenariosPage /></Gated>
+              <Gated perm="network"><ScenariosPage /></Gated>
             </Route>
             <Route path="/intermodal">
-              <Gated perm="scheduling"><IntermodalPage /></Gated>
+              <Gated perm="network"><IntermodalPage /></Gated>
             </Route>
             <Route path="/coincidence-zones">
-              <Gated perm="scheduling"><CoincidenceZonesPage /></Gated>
+              <Gated perm="network"><CoincidenceZonesPage /></Gated>
             </Route>
 
             {/* PlannerStudio (scheduling) */}
             <Route path="/planning">
-              <Gated perm="scheduling"><PlanningListPage /></Gated>
+              <Gated perm="network"><PlanningListPage /></Gated>
             </Route>
             <Route path="/planning/new">
-              <Gated perm="scheduling"><PlanningNewPage /></Gated>
+              <Gated perm="network"><PlanningNewPage /></Gated>
             </Route>
             <Route path="/planning/:scenarioId/workspace">
-              <Gated perm="scheduling"><PlanningWorkspacePage /></Gated>
+              <Gated perm="network"><PlanningWorkspacePage /></Gated>
             </Route>
             <Route path="/planning/:scenarioId">
               {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} />}
+            </Route>
+
+            {/* PlannerStudio (DB master del servizio) */}
+            <Route path="/planning-studio">
+              <Gated perm="network"><PlanningStudioListPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id">
+              <Gated perm="network"><PlanningStudioEditorPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/clusters">
+              <Gated perm="network"><PlanningStudioClustersPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/service-periods">
+              <Gated perm="network"><PlanningStudioServicePeriodsPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/trips">
+              <Gated perm="network"><PlanningStudioTripsPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/network">
+              <Gated perm="network"><PlanningStudioNetworkPage /></Gated>
             </Route>
 
             {/* Bigliettazione (fares) */}
@@ -153,7 +187,25 @@ function Router() {
 
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
             <Route path="/fucina">
+              <Gated perm="scheduling"><SchedulingProjectsHubPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId/pipeline">
               <Gated perm="scheduling"><FucinaPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId/vehicles/:scenarioId">
+              <Gated perm="scheduling"><FucinaPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId/vehicles">
+              <Gated perm="scheduling"><VehicleScenariosPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId/drivers/:scenarioId">
+              <Gated perm="scheduling"><FucinaPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId/drivers">
+              <Gated perm="scheduling"><DriverScenariosPage /></Gated>
+            </Route>
+            <Route path="/fucina/:projectId">
+              <Gated perm="scheduling"><SchedulingProjectDashboardPage /></Gated>
             </Route>
             <Route path="/optimization">
               <Gated perm="scheduling"><OptimizationPage /></Gated>
@@ -185,9 +237,12 @@ function Router() {
 }
 
 function AuthGate() {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, user } = useAuth();
   const [, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
+  const greetedRef = useRef<string | null>(null);
+  // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
+  const [waitingSequence, setWaitingSequence] = useState(false);
 
   // Listener globale: 401 -> logout client-side (redirect a login)
   useEffect(() => {
@@ -199,18 +254,66 @@ function AuthGate() {
     return () => window.removeEventListener("auth:unauthorized", onUnauth);
   }, []);
 
+  // Quando LoginPage finisce la sequenza "Verifica Identità → Accesso Autorizzato → Inizializzazione"
+  // dispatcha auth:login-sequence-done. Solo allora smontiamo il login e montiamo l'app.
+  useEffect(() => {
+    function onSeqDone() { setWaitingSequence(false); }
+    window.addEventListener("auth:login-sequence-done", onSeqDone);
+    return () => window.removeEventListener("auth:login-sequence-done", onSeqDone);
+  }, []);
+
   useEffect(() => {
     if (!prevAuth.current && isAuthenticated) {
+      // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
+      setWaitingSequence(true);
       navigate("/dashboard");
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);
 
+  // ── Saluto stile briefing (CIA-mood) — scatta a fine sequenza, una volta per sessione ──
+  useEffect(() => {
+    if (!isAuthenticated || !user) return;
+    if (waitingSequence) return; // aspetta la fine dell'animazione
+    if (greetedRef.current === user.id) return;
+    greetedRef.current = user.id;
+
+    const hour = new Date().getHours();
+    const part =
+      hour < 6  ? "Buonanotte" :
+      hour < 12 ? "Buongiorno" :
+      hour < 18 ? "Buon pomeriggio" :
+                  "Buonasera";
+    const codename = (user.fullName || user.email.split("@")[0])
+      .split(/\s+/)[0];
+    const clearance = user.role === "admin" ? "CLEARANCE: ALPHA-1" : "CLEARANCE: BRAVO";
+    const stamp = new Date().toLocaleString("it-IT", {
+      day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+
+    // Toast leggero — il toaster del progetto è già montato in <App>
+    import("@/hooks/use-toast").then(({ toast }) => {
+      toast({
+        title: `${part}, ${codename}`,
+        description:
+          `// TRANSITINTEL · ${clearance}\n` +
+          `// SESSION OPEN · ${stamp}\n` +
+          `// status: operativo`,
+        duration: 5500,
+      });
+    }).catch(() => { /* no-op */ });
+  }, [isAuthenticated, user, waitingSequence]);
+
   if (loading) return <PageLoader />;
+
+  // Se l'utente è autenticato MA siamo nel finestra di animazione post-login,
+  // continuiamo a mostrare LoginPage (che ha gia' accessGranted=true e sta animando).
+  const showApp = isAuthenticated && !waitingSequence;
 
   return (
     <Suspense fallback={<PageLoader />}>
-      {isAuthenticated ? (
+      {showApp ? (
         <>
           <VirgilioController />
           <Router />

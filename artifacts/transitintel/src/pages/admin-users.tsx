@@ -31,6 +31,7 @@ const PERM_LABEL: Record<Permission, string> = {
   analytics: "Analytics (Traffico/Territorio/Rete)",
   fares: "Bigliettazione (Fares Engine)",
   scheduling: "Scheduling (Crea Servizio + Ottimizzazione)",
+  network: "Network Engine (PlannerStudio + Crea Servizio)",
 };
 
 export default function AdminUsersPage() {
@@ -145,6 +146,7 @@ export default function AdminUsersPage() {
                     <th className="py-2 pr-4">Analytics</th>
                     <th className="py-2 pr-4">Fares</th>
                     <th className="py-2 pr-4">Scheduling</th>
+                    <th className="py-2 pr-4">Network</th>
                     <th className="py-2 pr-4">Ultimo login</th>
                     <th className="py-2 pr-4 text-right">Azioni</th>
                   </tr>
@@ -175,7 +177,7 @@ export default function AdminUsersPage() {
                             onCheckedChange={() => handleToggleActive(u)}
                           />
                         </td>
-                        {(["analytics", "fares", "scheduling"] as Permission[]).map((p) => (
+                        {(["analytics", "fares", "scheduling", "network"] as Permission[]).map((p) => (
                           <td key={p} className="py-2 pr-4">
                             <Switch
                               checked={isAdminRow ? true : !!u.permissions?.[p]}
@@ -269,6 +271,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     analytics: true,
     fares: true,
     scheduling: true,
+    network: true,
   });
   const [busy, setBusy] = useState(false);
 

@@ -1751,9 +1751,10 @@ router.post("/service-program/cpsat", async (req, res) => {
 /** POST /api/service-program/scenarios — save a scenario */
 router.post("/service-program/scenarios", async (req, res) => {
   try {
-    const { name, date, input, result: scenarioResult } = req.body as {
+    const { name, date, input, result: scenarioResult, projectId } = req.body as {
       name?: string; date?: string;
       input?: unknown; result?: unknown;
+      projectId?: string;
     };
     if (!name || !date || !input || !scenarioResult) {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
@@ -1767,6 +1768,14 @@ router.post("/service-program/scenarios", async (req, res) => {
       input: input as any,
       result: scenarioResult as any,
     }).returning({ id: serviceProgramScenarios.id, createdAt: serviceProgramScenarios.createdAt });
+    // Aggancia al progetto se passato (colonna nullable aggiunta da scheduling-projects)
+    if (projectId && /^[0-9a-f-]{36}$/i.test(projectId)) {
+      try {
+        await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${projectId}::uuid WHERE id = ${row.id}::uuid`);
+      } catch (e: any) {
+        req.log.warn({ err: e?.message }, "attach project_id failed (non-fatal)");
+      }
+    }
     res.json({ id: row.id, createdAt: row.createdAt });
   } catch (err: any) {
     req.log.error(err, "Error saving scenario");

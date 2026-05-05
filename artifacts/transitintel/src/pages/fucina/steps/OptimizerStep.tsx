@@ -167,11 +167,13 @@ interface Props {
   gtfsSelection: GtfsSelection;
   assignment: VehicleAssignment;
   initialResult?: ServiceProgramResult;
+  /** Se valorizzato, lo scenario salvato verrà agganciato a questo progetto. */
+  projectId?: string | null;
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -318,6 +320,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
       const bodyPayload: any = {
         date: assignment.selectedDate,
+        // Pinpoint sul feed scelto nello step GTFS — evita che il backend
+        // ricada sul feed "attivo" globale del tenant.
+        ...(gtfsSelection.tempFeedId ? { feedId: gtfsSelection.tempFeedId } : {}),
         routes: Array.from(assignment.selectedRoutes.entries()).map(([routeId, vehicleType]) => ({
           routeId,
           vehicleType,
@@ -397,7 +402,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: scenarioName.trim(), date: assignment.selectedDate, input, result }),
+        body: JSON.stringify({ name: scenarioName.trim(), date: assignment.selectedDate, input, result, projectId: projectId ?? undefined }),
       });
       if (!resp.ok) throw new Error("Errore nel salvataggio");
       const data = await resp.json();
@@ -410,7 +415,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment]);
+  }, [result, scenarioName, assignment, projectId]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {
@@ -453,11 +458,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           </button>
           {result && !running && (
             <>
-              <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
-                className="flex items-center gap-1.5 text-[11px] text-green-300 font-medium px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/8 hover:bg-green-500/15 transition-all">
-                <Save className="w-3.5 h-3.5" />
-                Salva Scenario
-              </button>
+              {/* In modalità progetto il salvataggio avviene SOLO nel
+                  Workspace Turni Macchina (dopo le eventuali rifiniture
+                  manuali sul Gantt). Qui mostriamo solo l'apertura. */}
+              {!projectId && (
+                <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
+                  className="flex items-center gap-1.5 text-[11px] text-green-300 font-medium px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/8 hover:bg-green-500/15 transition-all">
+                  <Save className="w-3.5 h-3.5" />
+                  Salva Scenario
+                </button>
+              )}
               <button onClick={() => onComplete(result, savedScenarioId ?? undefined)}
                 className="flex items-center gap-1.5 text-[11px] text-black font-semibold px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_12px_rgba(251,146,60,0.3)] transition-shadow">
                 Apri Area di Lavoro <ChevronRight className="w-3.5 h-3.5" />
@@ -1130,7 +1140,11 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
               {/* ──── CTA bottom ──── */}
               <div className="flex items-center justify-between py-4 border-t border-border/20">
                 <p className="text-xs text-muted-foreground">
-                  Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per spostare le corse tra i turni.
+                  {projectId ? (
+                    <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per rifinire i turni e salvare lo scenario nel progetto.</>
+                  ) : (
+                    <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per spostare le corse tra i turni.</>
+                  )}
                 </p>
                 <button onClick={() => onComplete(result, savedScenarioId ?? undefined)}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.35)] transition-shadow shrink-0">

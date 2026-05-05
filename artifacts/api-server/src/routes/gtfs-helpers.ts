@@ -42,11 +42,17 @@ export function buildShapeGeojson(shapePoints: Record<string, string>[]): { shap
 
 // ── Feed helpers ──────────────────────────────────────────────
 /**
- * Ritorna l'ID del feed GTFS "attivo".
- * Preferenza: feed con `is_active = true` posseduto dall'utente. Se nessuno è
- * esplicitamente attivato, fallback al feed più recente dell'utente.
+ * Ritorna l'ID del feed GTFS da usare per la richiesta corrente.
  *
- * Se `req` è omesso (legacy/cron), comportamento single-tenant globale.
+ * Ordine di precedenza:
+ *   1. `req.query.feedId` o `req.body.feedId` esplicito (validato per tenant).
+ *      → permette al frontend di "fissare" il feed scelto (es. wizard Fucina
+ *        dove l'utente sceglie tra più GTFS prima dell'ottimizzazione).
+ *   2. Feed con `is_active = true` posseduto dall'utente.
+ *   3. Feed più recente dell'utente.
+ *   4. Fallback legacy: feed più recente in assoluto.
+ *
+ * Se `req` è omesso (legacy/cron), salta gli step 1-3 e va al fallback.
  */
 export async function getLatestFeedId(req?: any): Promise<string | null> {
   const user = req?.user;
@@ -57,6 +63,25 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
   const tenantSql = (!user || isAdmin)
     ? sql`TRUE`
     : sql.raw(`(owner_user_id = '${userId}'::uuid)`);
+
+  // 1) Feed esplicito da request: ?feedId=… oppure body.feedId
+  const explicitId =
+    (typeof req?.query?.feedId === "string" && req.query.feedId) ||
+    (typeof req?.body?.feedId === "string" && req.body.feedId) ||
+    null;
+  if (explicitId && /^[0-9a-f-]{36}$/i.test(explicitId)) {
+    try {
+      const r = await db.execute(sql`
+        SELECT id FROM gtfs_feeds
+         WHERE id = ${explicitId}::uuid AND ${tenantSql}
+         LIMIT 1
+      `);
+      const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+      if (row?.id) return row.id as string;
+      // se il feed esiste ma non è del tenant, ignoriamo silenziosamente
+      // e cadiamo sul comportamento "ultimo attivo dell'utente"
+    } catch {}
+  }
 
   try {
     const active = await db.execute(sql`

@@ -3,11 +3,17 @@
  *
  * Wrappa VehicleWorkspace (Gantt interattivo drag & drop)
  * passando il result dell'ottimizzazione come initialResult.
+ *
+ * In modalità progetto (projectId valorizzato) questo step è il PUNTO
+ * UNICO di salvataggio dello scenario vetture: l'utente affina i turni
+ * sul Gantt e poi clicca "Salva nel progetto" che fa POST + ritorno
+ * alla dashboard del progetto.
  */
-import React from "react";
-import { ArrowLeft, Download, Truck } from "lucide-react";
+import React, { useState } from "react";
+import { ArrowLeft, Download, Truck, FolderOpen, Save, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import VehicleWorkspace from "@/pages/fucina/vehicle-workspace";
+import { getApiBase } from "@/lib/api";
 import type { GtfsSelection } from "@/pages/fucina";
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
 
@@ -18,9 +24,27 @@ interface Props {
   onBack: () => void;
   /** Vai allo step 7 — Area di Lavoro Turni Guida (interno fucina) */
   onContinueToDriverShifts?: () => void;
+  /** Quando passato, attiva la modalità "progetto":
+   *  - il bottone diventa "Salva nel progetto" (POST scenario + return)
+   *  - il return navigation viene chiamato dopo il save riuscito.
+   *  Se savedScenarioId è già presente, salta il POST e fa solo il return. */
+  projectId?: string | null;
+  onSaveAndReturn?: (savedId?: string) => void;
 }
 
-export default function WorkspaceStep({ gtfsSelection, optimizationResult, savedScenarioId, onBack, onContinueToDriverShifts }: Props) {
+export default function WorkspaceStep({
+  gtfsSelection,
+  optimizationResult,
+  savedScenarioId,
+  onBack,
+  onContinueToDriverShifts,
+  projectId,
+  onSaveAndReturn,
+}: Props) {
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [scenarioName, setScenarioName] = useState("");
+  const [saving, setSaving] = useState(false);
+
   const handleExport = () => {
     const blob = new Blob([JSON.stringify(optimizationResult, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -31,6 +55,54 @@ export default function WorkspaceStep({ gtfsSelection, optimizationResult, saved
     URL.revokeObjectURL(url);
     toast.success("Esportazione completata");
   };
+
+  /** Salva lo scenario nel progetto e torna alla dashboard.
+   *  Se savedScenarioId è già presente (es. utente ha già salvato),
+   *  salta il POST e va direttamente al ritorno. */
+  async function saveAndReturn() {
+    if (!onSaveAndReturn) return;
+    if (savedScenarioId) {
+      onSaveAndReturn();
+      return;
+    }
+    setShowSaveDialog(true);
+    setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`);
+  }
+
+  async function confirmSave() {
+    if (!scenarioName.trim() || !projectId) return;
+    setSaving(true);
+    try {
+      const base = getApiBase();
+      // Ricostruiamo input minimale dai dati disponibili
+      const date = gtfsSelection.date || (optimizationResult as any)?.summary?.date || "";
+      const resp = await fetch(`${base}/api/service-program/scenarios`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: scenarioName.trim(),
+          date,
+          input: {},
+          result: optimizationResult,
+          projectId,
+        }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json().catch(() => ({}));
+      const newId: string | undefined = data?.id || data?.scenario?.id;
+      toast.success("Scenario vetture salvato nel progetto", { description: scenarioName.trim() });
+      setShowSaveDialog(false);
+      onSaveAndReturn?.(newId);
+    } catch (e: any) {
+      toast.error("Errore salvataggio", { description: e.message });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -55,18 +127,44 @@ export default function WorkspaceStep({ gtfsSelection, optimizationResult, saved
             className="flex items-center gap-1.5 text-[11px] text-orange-300 font-medium px-3 py-1.5 rounded-lg border border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/15 transition-all">
             <Download className="w-3.5 h-3.5" /> Esporta JSON
           </button>
-          {savedScenarioId && onContinueToDriverShifts && (
-            <button onClick={onContinueToDriverShifts}
-              className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
+          {/* Pipeline-mode in un progetto: salva inline + torna alla dashboard.
+              Da lì l'utente sceglierà "Area di Lavoro Turni Guida" e potrà selezionare
+              lo scenario vetture corrispondente. */}
+          {onSaveAndReturn ? (
+            <button
+              onClick={saveAndReturn}
+              className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-gradient-to-r from-emerald-500/15 to-teal-500/15 text-emerald-200 hover:from-emerald-500/25 hover:to-teal-500/25 transition-all"
+              title={savedScenarioId ? "Torna alla dashboard del progetto" : "Salva nel progetto e torna alla dashboard"}
+            >
+              <Save className="w-3.5 h-3.5" />
+              {savedScenarioId ? "Torna al progetto" : "Salva nel progetto"}
+            </button>
+          ) : onContinueToDriverShifts ? (
+            <button
+              onClick={() => {
+                if (!savedScenarioId) {
+                  toast.warning("Devi prima salvare lo scenario nello step Ottimizzazione", {
+                    description: "Torna allo step 6 → 'Salva scenario' per abilitare i Turni Guida.",
+                  });
+                  return;
+                }
+                onContinueToDriverShifts();
+              }}
+              className={`flex items-center gap-1.5 text-[11px] font-medium px-3 py-1.5 rounded-lg border transition-all ${
+                savedScenarioId
+                  ? "text-purple-300 border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15"
+                  : "text-purple-300/40 border-purple-500/15 bg-purple-500/5 cursor-help"
+              }`}
+              title={savedScenarioId ? "Procedi ai Turni Guida" : "Salva prima lo scenario nell'Ottimizzazione"}
+            >
               Turni Guida →
             </button>
-          )}
-          {savedScenarioId && !onContinueToDriverShifts && (
+          ) : savedScenarioId ? (
             <a href={`/driver-shifts/${savedScenarioId}`}
               className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
               Turni Guida →
             </a>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -74,6 +172,49 @@ export default function WorkspaceStep({ gtfsSelection, optimizationResult, saved
       <div className="flex-1 overflow-hidden">
         <VehicleWorkspace initialResult={optimizationResult} />
       </div>
+
+      {/* Save dialog (modalità progetto) */}
+      {showSaveDialog && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-zinc-950 to-black p-6 shadow-[0_0_40px_rgba(16,185,129,0.15)]">
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <FolderOpen className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-lg font-bold text-zinc-100">Salva scenario nel progetto</h3>
+              </div>
+              <button onClick={() => setShowSaveDialog(false)} disabled={saving}
+                className="text-zinc-500 hover:text-zinc-200 p-1">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-zinc-400 mb-3">
+              Lo scenario verrà agganciato al progetto corrente e sarà disponibile per la creazione dei turni guida.
+            </p>
+            <label className="text-[11px] text-zinc-500 font-mono uppercase tracking-widest">Nome scenario</label>
+            <input
+              autoFocus
+              type="text"
+              value={scenarioName}
+              onChange={e => setScenarioName(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") confirmSave(); if (e.key === "Escape") setShowSaveDialog(false); }}
+              disabled={saving}
+              placeholder="es. Esercizio invernale v1"
+              className="w-full mt-1 px-3 py-2 rounded-lg bg-black/60 border border-zinc-800 focus:border-emerald-500/50 outline-none text-sm text-zinc-100 placeholder:text-zinc-600"
+            />
+            <div className="flex items-center justify-end gap-2 mt-5">
+              <button onClick={() => setShowSaveDialog(false)} disabled={saving}
+                className="text-xs px-3 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-white/5">
+                Annulla
+              </button>
+              <button onClick={confirmSave} disabled={saving || !scenarioName.trim()}
+                className="flex items-center gap-1.5 text-xs font-bold px-4 py-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-black disabled:opacity-50 disabled:cursor-not-allowed hover:shadow-[0_0_12px_rgba(16,185,129,0.4)] transition-shadow">
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                {saving ? "Salvataggio…" : "Salva e torna al progetto"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

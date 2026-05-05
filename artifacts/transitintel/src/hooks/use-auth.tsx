@@ -8,7 +8,7 @@ import {
 } from "react";
 import { apiFetch } from "@/lib/api";
 
-export type Permission = "analytics" | "fares" | "scheduling";
+export type Permission = "analytics" | "fares" | "scheduling" | "network";
 
 export interface CurrentUser {
   id: string;

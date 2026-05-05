@@ -8,9 +8,9 @@
  *   3. Ottimizzazione      – run CP-SAT/Greedy, analisi risultati, salva
  *   4. Area di Lavoro      – Gantt interattivo + drag & drop + esporta
  */
-import React, { lazy, Suspense, useState } from "react";
+import React, { lazy, Suspense, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useLocation } from "wouter";
+import { useLocation, useRoute } from "wouter";
 import { toast } from "sonner";
 import {
   Flame, ArrowLeft, ChevronRight, Zap,
@@ -216,9 +216,30 @@ function TabSpinner() {
 /* ── Main page ───────────────────────────────────────────── */
 export default function FucinaPage() {
   const [, navigate] = useLocation();
-  const [showSplash, setShowSplash] = useState(true);
-  const [step, setStep] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
+  // Sub-routes:
+  //   /fucina/:projectId                          → dashboard (ProjectDashboardPage)
+  //   /fucina/:projectId/pipeline                 → pipeline da step 0
+  //   /fucina/:projectId/vehicles                 → lista scenari vetture (VehicleScenariosPage)
+  //   /fucina/:projectId/vehicles/:scenarioId     → workspace step 6 (questo file)
+  //   /fucina/:projectId/drivers                  → lista scenari turni guida (DriverScenariosPage)
+  //   /fucina/:projectId/drivers/:scenarioId      → workspace step 7 (questo file)
+  const [matchPipeline, paramsPipeline] = useRoute<{ projectId: string }>("/fucina/:projectId/pipeline");
+  const [matchVehiclesWs, paramsVehiclesWs] = useRoute<{ projectId: string; scenarioId: string }>("/fucina/:projectId/vehicles/:scenarioId");
+  const [matchDriversWs, paramsDriversWs]   = useRoute<{ projectId: string; scenarioId: string }>("/fucina/:projectId/drivers/:scenarioId");
+  const projectId =
+    paramsPipeline?.projectId ?? paramsVehiclesWs?.projectId ?? paramsDriversWs?.projectId ?? null;
+  const startMode: "pipeline" | "vehicles" | "drivers" | null =
+    matchVehiclesWs ? "vehicles" : matchDriversWs ? "drivers" : matchPipeline ? "pipeline" : null;
+  const routeScenarioId = paramsVehiclesWs?.scenarioId ?? paramsDriversWs?.scenarioId ?? null;
+
+  const initialStep = startMode === "vehicles" ? 6 : startMode === "drivers" ? 7 : 0;
+  const initialCompleted = startMode === "vehicles" ? new Set([0,1,2,3,4,5])
+                          : startMode === "drivers"  ? new Set([0,1,2,3,4,5,6])
+                          : new Set<number>();
+
+  const [showSplash, setShowSplash] = useState(!projectId);
+  const [step, setStep] = useState<number>(initialStep);
+  const [completedSteps, setCompletedSteps] = useState<Set<number>>(initialCompleted as Set<number>);
   const [gtfsSelection, setGtfsSelection] = useState<GtfsSelection | null>(null);
   const [vehicleAssignment, setVehicleAssignment] = useState<VehicleAssignment | null>(null);
   const [selectedDepotId, setSelectedDepotId] = useState<string | null>(null);
@@ -232,7 +253,32 @@ export default function FucinaPage() {
     setStep(s + 1);
   };
 
-  // ── 🐙 Virgilio Wizard listener — controlla la pagina via chat ──
+  // ── Guard per jump diretti: se entri da /vehicles o /drivers ma manca state, torna alla dashboard
+  useEffect(() => {
+    if (!projectId || !startMode) return;
+    if (startMode === "pipeline") return;
+    // Se nell'URL c'è ?scenario=ID o lo scenarioId è nel path, lascia che il deep-link faccia il suo lavoro
+    const hasScenarioParam = new URLSearchParams(window.location.search).get("scenario");
+    if (hasScenarioParam || routeScenarioId) return;
+    // Aspetta un tick per dare tempo a deep-link di popolare lo state
+    const t = setTimeout(() => {
+      if (startMode === "vehicles" && !optimizationResult) {
+        toast.warning("Nessuno scenario in memoria", {
+          description: "Apri uno scenario salvato dalla dashboard del progetto.",
+        });
+        navigate(`/fucina/${projectId}`);
+      }
+      if (startMode === "drivers" && !savedScenarioId) {
+        toast.warning("Nessuno scenario di vetture salvato", {
+          description: "Apri uno scenario di vetture per accedere ai turni guida.",
+        });
+        navigate(`/fucina/${projectId}`);
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [projectId, startMode, optimizationResult, savedScenarioId, navigate]);
+
+
   React.useEffect(() => {
     (window as any).__virgilioFucinaReady = true;
     const handler = (e: Event) => {
@@ -269,10 +315,10 @@ export default function FucinaPage() {
     };
   }, []);
 
-  // ── Deep-link: /fucina?scenario=ID → carica scenario salvato e va all'Area di Lavoro ──
+  // ── Deep-link: /fucina?scenario=ID  oppure  /fucina/:pid/vehicles/:scenarioId  oppure  /drivers/:scenarioId
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const scenarioId = params.get("scenario");
+    const scenarioId = params.get("scenario") ?? routeScenarioId;
     if (!scenarioId) return;
 
     let cancelled = false;
@@ -297,10 +343,10 @@ export default function FucinaPage() {
         });
         setOptimizationResult(detail.result as ServiceProgramResult);
         setSavedScenarioId(String(scenarioId));
-        // Salta la splash e va direttamente all'Area di Lavoro (step 6)
         setShowSplash(false);
         setCompletedSteps(new Set([0, 1, 2, 3, 4, 5]));
-        setStep(6);
+        // Se siamo in /drivers/:scenarioId vai allo step 7, altrimenti workspace vetture (6)
+        setStep(startMode === "drivers" ? 7 : 6);
         toast.success("Scenario riaperto", {
           description: detail.name || `Scenario #${scenarioId}`,
         });
@@ -311,7 +357,8 @@ export default function FucinaPage() {
     })();
 
     return () => { cancelled = true; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeScenarioId]);
 
   return (
     <>
@@ -343,6 +390,30 @@ export default function FucinaPage() {
                 className="h-full"
               >
                 <Suspense fallback={<TabSpinner />}>
+                  {/* Guard hard: se siamo agli step 6/7 ma manca lo state richiesto,
+                      mostriamo un placeholder invece di crashare nei figli. */}
+                  {(step === 6 || step === 7) && (!gtfsSelection || !optimizationResult) ? (
+                    <div className="flex flex-col items-center justify-center h-[60vh] text-center px-6 gap-3">
+                      <div className="w-12 h-12 rounded-full bg-orange-500/15 border border-orange-500/30 flex items-center justify-center">
+                        <Truck className="w-6 h-6 text-orange-400" />
+                      </div>
+                      <h3 className="text-base font-bold text-zinc-100">Nessuno scenario in memoria</h3>
+                      <p className="text-sm text-zinc-400 max-w-sm">
+                        Per aprire l'Area di Lavoro serve uno scenario di vetture caricato.
+                        Torna alla dashboard del progetto e seleziona uno degli scenari salvati,
+                        oppure esegui la pipeline.
+                      </p>
+                      {projectId && (
+                        <button
+                          onClick={() => navigate(`/fucina/${projectId}`)}
+                          className="mt-2 inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400"
+                        >
+                          ← Torna alla dashboard del progetto
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                  <>
                   {step === 0 && (
                     <GtfsSelectorStep
                       onComplete={(sel: GtfsSelection) => {
@@ -402,6 +473,7 @@ export default function FucinaPage() {
                       gtfsSelection={gtfsSelection!}
                       assignment={vehicleAssignment!}
                       initialResult={optimizationResult ?? undefined}
+                      projectId={projectId}
                       onBack={() => setStep(4)}
                       onComplete={(r, id) => {
                         setOptimizationResult(r);
@@ -416,7 +488,19 @@ export default function FucinaPage() {
                       optimizationResult={optimizationResult!}
                       savedScenarioId={savedScenarioId ?? undefined}
                       onBack={() => setStep(5)}
-                      onContinueToDriverShifts={savedScenarioId ? () => setStep(7) : undefined}
+                      // In pipeline mode con progetto: il bottone diventa
+                      // "Salva e torna al progetto" (forziamo il flusso
+                      // dashboard-driven). Negli altri casi: classico
+                      // "Turni Guida →" che salta allo step 7 in linea.
+                      {...(projectId && startMode === "pipeline"
+                        ? {
+                            projectId,
+                            onSaveAndReturn: (id?: string) => {
+                              if (id) setSavedScenarioId(id);
+                              navigate(`/fucina/${projectId}`);
+                            },
+                          }
+                        : { onContinueToDriverShifts: () => setStep(7) })}
                     />
                   )}
                   {step === 7 && (
@@ -425,6 +509,8 @@ export default function FucinaPage() {
                       vehicleScenarioId={savedScenarioId ?? ""}
                       onBack={() => setStep(6)}
                     />
+                  )}
+                  </>
                   )}
                 </Suspense>
               </motion.div>

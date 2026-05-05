@@ -79,7 +79,7 @@ function ScanLine() {
 
 /* ─── MAIN LOGIN PAGE ─── */
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, user } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -89,6 +89,33 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [accessGranted, setAccessGranted] = useState(false);
   const [phase, setPhase] = useState<"idle" | "scanning" | "granted" | "entering">("idle");
+
+  // Identità dell'agente — disponibile dopo l'auth (durante scanning/granted/entering).
+  // Fallback sull'username inserito nel form se per qualche micro-istante l'utente non è ancora pronto.
+  // Identità dell'agente — disponibile dopo l'auth (durante scanning/granted/entering).
+  // Estrae un "codename" decente sia da fullName ("Mario Rossi" -> ROSSI? no -> MARIO)
+  // sia da email ("f.beccacece@cerbero.it" -> BECCACECE) per qualsiasi utente.
+  function deriveCodename(): string {
+    if (user?.fullName) {
+      // primo token alfabetico, niente parentesi tipo "Samuele (admin)"
+      const tok = user.fullName.replace(/\([^)]*\)/g, "").trim().split(/\s+/)[0];
+      if (tok) return tok.toUpperCase();
+    }
+    const email = user?.email || username || "";
+    if (email.includes("@")) {
+      const local = email.split("@")[0];
+      // f.beccacece -> beccacece ; mario.rossi -> rossi ; samuele -> samuele
+      const parts = local.split(/[.\-_]+/).filter(Boolean);
+      const candidate = parts.sort((a, b) => b.length - a.length)[0] || local;
+      return candidate.toUpperCase();
+    }
+    return (email || "agent").toUpperCase();
+  }
+  const fullName = user?.fullName || user?.email || username || "AGENT";
+  const codename = deriveCodename();
+  const clearance = user?.role === "admin" ? "ALPHA-1" : "BRAVO";
+  const opId = (user?.id || "00000000-0000-0000-0000-000000000000")
+    .replace(/-/g, "").slice(0, 10).toUpperCase();
 
   useMatrixRain(canvasRef);
 
@@ -110,8 +137,14 @@ export default function LoginPage() {
       setLoading(false);
       setAccessGranted(true);
       setPhase("scanning");
-      setTimeout(() => setPhase("granted"), 1500);
-      setTimeout(() => setPhase("entering"), 3500);
+      // Timing: scanning 2.2s -> granted 2.6s -> entering 2.0s -> done.
+      // Totale ~6.8s, abbastanza per leggere ogni schermata e gustarsi il codename.
+      setTimeout(() => setPhase("granted"), 2200);
+      setTimeout(() => setPhase("entering"), 4800);
+      // Notifica AuthGate di smontare LoginPage SOLO a fine sequenza cinematica
+      setTimeout(() => {
+        window.dispatchEvent(new Event("auth:login-sequence-done"));
+      }, 6800);
     },
     [login, username, password],
   );
@@ -167,6 +200,22 @@ export default function LoginPage() {
                 <p className="font-mono text-[10px] text-cyan-700 mt-3 tracking-wider">
                   Analisi credenziali in corso...
                 </p>
+                <motion.p
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="font-mono text-[10px] text-cyan-500/80 mt-5 tracking-[0.25em] uppercase"
+                >
+                  Soggetto: <span className="text-cyan-300">{codename}</span>
+                </motion.p>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.7 }}
+                  className="font-mono text-[9px] text-cyan-700 mt-1 tracking-widest"
+                >
+                  ID-OP: {opId}
+                </motion.p>
               </motion.div>
             )}
 
@@ -217,12 +266,20 @@ export default function LoginPage() {
                   Accesso Autorizzato
                 </motion.p>
                 <motion.p
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="font-mono text-sm text-emerald-200/90 mt-4 tracking-[0.25em] uppercase"
+                >
+                  Operativo: <span className="text-white">{fullName}</span>
+                </motion.p>
+                <motion.p
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.6 }}
                   className="font-mono text-xs text-cyan-500/60 mt-2 tracking-wider"
                 >
-                  Livello di sicurezza: CLASSIFICATO
+                  Livello di sicurezza: CLASSIFICATO · CLEARANCE {clearance}
                 </motion.p>
               </motion.div>
             )}
@@ -250,6 +307,14 @@ export default function LoginPage() {
                   className="font-mono text-xs text-cyan-400/70 mt-4 tracking-[0.2em] uppercase"
                 >
                   Inizializzazione sistema...
+                </motion.p>
+                <motion.p
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.55 }}
+                  className="font-mono text-sm text-cyan-200 mt-3 tracking-[0.2em] uppercase"
+                >
+                  Benvenuto, <span className="text-white">{codename}</span>
                 </motion.p>
                 <motion.div
                   className="mt-3 mx-auto h-0.5 rounded-full bg-cyan-900/50 overflow-hidden"

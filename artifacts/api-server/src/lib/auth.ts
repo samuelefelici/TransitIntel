@@ -17,7 +17,7 @@ import jwt from "jsonwebtoken";
 /* ────────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────────── */
-export type Permission = "analytics" | "fares" | "scheduling";
+export type Permission = "analytics" | "fares" | "scheduling" | "network";
 export interface AuthUser {
   id: string;
   email: string;
@@ -39,7 +39,7 @@ declare global {
 /* ────────────────────────────────────────────────────────────
  * Config
  * ──────────────────────────────────────────────────────────── */
-const JWT_SECRET = process.env.JWT_SECRET || "dev-only-CHANGE-ME-in-production-please";
+const JWT_SECRET = process.env.JWT_SECRET || "dev-only-cerbero123-in-production-please";
 const JWT_COOKIE = "ti_auth";
 const JWT_TTL_DAYS = 30;
 const BCRYPT_ROUNDS = 10;
@@ -58,13 +58,21 @@ async function ensureUsersTable(): Promise<void> {
         password_hash text NOT NULL,
         full_name text,
         role text NOT NULL DEFAULT 'user',
-        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true}'::jsonb,
+        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true}'::jsonb,
         active boolean NOT NULL DEFAULT true,
         last_login_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
       )
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
+
+    // Backfill idempotente: assicura che ogni utente abbia la chiave "network"
+    // (default true, così chi aveva già accesso a "scheduling" mantiene tutto).
+    await db.execute(sql`
+      UPDATE users
+         SET permissions = permissions || '{"network":true}'::jsonb
+       WHERE NOT (permissions ? 'network')
+    `);
 
     const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
     const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
@@ -82,7 +90,7 @@ async function ensureUsersTable(): Promise<void> {
           INSERT INTO users (email, password_hash, full_name, role, permissions, active)
           VALUES (
             ${u.email}, ${hash}, ${u.full}, ${u.role},
-            '{"analytics":true,"fares":true,"scheduling":true}'::jsonb,
+            '{"analytics":true,"fares":true,"scheduling":true,"network":true}'::jsonb,
             true
           )
         `);
@@ -140,7 +148,7 @@ async function loadUserById(id: string): Promise<AuthUser | null> {
     email: row.email,
     fullName: row.full_name,
     role: row.role,
-    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true },
+    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true },
     active: row.active,
   };
 }
@@ -218,6 +226,30 @@ router.get("/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });
 
+/* ─── Lookup utenti (per picker membri progetto) ─── */
+// GET /api/users/lookup?q=stringa  — accessibile a qualunque utente autenticato.
+// Esclude l'utente corrente (non senso aggiungere se stesso). Limit 50.
+router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
+  const q = String(req.query.q || "").trim().toLowerCase();
+  const meId = req.user!.id;
+  const r = q
+    ? await db.execute(sql`
+        SELECT id, email, full_name FROM users
+         WHERE active = true AND id <> ${meId}::uuid
+           AND (lower(email) LIKE ${'%' + q + '%'} OR lower(coalesce(full_name,'')) LIKE ${'%' + q + '%'})
+         ORDER BY email ASC LIMIT 50
+      `)
+    : await db.execute(sql`
+        SELECT id, email, full_name FROM users
+         WHERE active = true AND id <> ${meId}::uuid
+         ORDER BY email ASC LIMIT 50
+      `);
+  const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  res.json({
+    users: rows.map(u => ({ id: u.id, email: u.email, fullName: u.full_name })),
+  });
+});
+
 /* ─── Admin: gestione utenti ─── */
 
 // GET /api/admin/users
@@ -227,7 +259,18 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
       FROM users ORDER BY created_at ASC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
-  res.json({ users: rows });
+  // Mappa snake_case -> camelCase per coerenza col resto della API
+  const users = rows.map(u => ({
+    id: u.id,
+    email: u.email,
+    fullName: u.full_name,
+    role: u.role,
+    permissions: u.permissions,
+    active: u.active,
+    lastLoginAt: u.last_login_at,
+    createdAt: u.created_at,
+  }));
+  res.json({ users });
 });
 
 // POST /api/admin/users { email, password, fullName, role, permissions }
@@ -241,6 +284,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     analytics: !!(permissions?.analytics ?? true),
     fares:     !!(permissions?.fares     ?? true),
     scheduling:!!(permissions?.scheduling?? true),
+    network:   !!(permissions?.network   ?? true),
   };
   try {
     const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
@@ -250,7 +294,11 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
       RETURNING id, email, full_name, role, permissions, active, created_at
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
-    res.json({ user: row });
+    res.json({ user: {
+      id: row.id, email: row.email, fullName: row.full_name,
+      role: row.role, permissions: row.permissions, active: row.active,
+      createdAt: row.created_at,
+    }});
   } catch (e: any) {
     if (String(e?.message || "").includes("duplicate")) {
       res.status(409).json({ error: "Email già registrata" }); return;
@@ -272,6 +320,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
       analytics: !!permissions.analytics,
       fares: !!permissions.fares,
       scheduling: !!permissions.scheduling,
+      network: !!permissions.network,
     };
     sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
   }
@@ -288,7 +337,10 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row) { res.status(404).json({ error: "Utente non trovato" }); return; }
-  res.json({ user: row });
+  res.json({ user: {
+    id: row.id, email: row.email, fullName: row.full_name,
+    role: row.role, permissions: row.permissions, active: row.active,
+  }});
 });
 
 // DELETE /api/admin/users/:id

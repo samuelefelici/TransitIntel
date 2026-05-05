@@ -50,9 +50,12 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, onBack, 
   /* ── Load dates + routes on mount ── */
   useEffect(() => {
     const base = getApiBase();
+    // Pinpoint sul feed scelto nello step precedente (se presente),
+    // altrimenti il backend usa il feed "attivo" del tenant.
+    const fid = gtfsSelection.tempFeedId ? `?feedId=${encodeURIComponent(gtfsSelection.tempFeedId)}` : "";
     Promise.all([
-      fetch(`${base}/api/service-program/dates`).then(r => r.json()).catch(() => null),
-      fetch(`${base}/api/service-program/routes`).then(r => r.json()).catch(() => null),
+      fetch(`${base}/api/service-program/dates${fid}`).then(r => r.json()).catch(() => null),
+      fetch(`${base}/api/service-program/routes${fid}`).then(r => r.json()).catch(() => null),
     ]).then(([datesData, routesData]) => {
       if (datesData) {
         if (datesData.mode === "calendar") {
@@ -117,7 +120,8 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, onBack, 
     if (!routeTrips.has(routeId) && selectedDate) {
       setLoadingTrips(prev => new Set(prev).add(routeId));
       try {
-        const resp = await fetch(`${getApiBase()}/api/service-program/trips?date=${selectedDate}&routeIds=${routeId}`);
+        const fid = gtfsSelection.tempFeedId ? `&feedId=${encodeURIComponent(gtfsSelection.tempFeedId)}` : "";
+        const resp = await fetch(`${getApiBase()}/api/service-program/trips?date=${selectedDate}&routeIds=${routeId}${fid}`);
         if (resp.ok) { const data = await resp.json(); setRouteTrips(prev => new Map(prev).set(routeId, data.trips || [])); }
       } catch {}
       finally { setLoadingTrips(prev => { const n = new Set(prev); n.delete(routeId); return n; }); }

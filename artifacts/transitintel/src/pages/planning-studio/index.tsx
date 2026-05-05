@@ -1,0 +1,260 @@
+/**
+ * PlannerStudio — lista progetti.
+ *
+ * Modulo di pianificazione del servizio: ogni progetto è il DB master
+ * (fermate, linee, varianti, percorsi, orari, calendari).
+ */
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
+import { motion } from "framer-motion";
+import { toast } from "sonner";
+import {
+  Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
+  Users, Clock, Trash2, FolderOpen, MapPin,
+} from "lucide-react";
+import {
+  listPsProjects, createPsProject, deletePsProject,
+  type PsProject,
+} from "@/lib/planning-studio-api";
+
+export default function PlanningStudioListPage() {
+  const [, navigate] = useLocation();
+  const [projects, setProjects] = useState<PsProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [agencyName, setAgencyName] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      setProjects(await listPsProjects());
+    } catch (e: any) {
+      toast.error("Errore caricamento progetti", { description: e?.message });
+    } finally { setLoading(false); }
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  const ownedCount = useMemo(() => projects.filter(p => p.myRole === "owner").length, [projects]);
+  const sharedCount = projects.length - ownedCount;
+
+  async function handleCreate() {
+    if (!name.trim()) { toast.error("Nome obbligatorio"); return; }
+    setCreating(true);
+    try {
+      const p = await createPsProject({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        agencyName: agencyName.trim() || undefined,
+      });
+      toast.success("Progetto creato");
+      setCreateOpen(false);
+      setName(""); setDescription(""); setAgencyName("");
+      navigate(`/planning-studio/${p.id}`);
+    } catch (e: any) {
+      toast.error("Errore creazione", { description: e?.message });
+    } finally { setCreating(false); }
+  }
+
+  async function handleDelete(p: PsProject) {
+    if (!confirm(`Eliminare il progetto "${p.name}"?\nL'azione è irreversibile.`)) return;
+    try {
+      await deletePsProject(p.id);
+      toast.success("Progetto eliminato");
+      refresh();
+    } catch (e: any) {
+      toast.error("Errore eliminazione", { description: e?.message });
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100">
+      {/* Header */}
+      <div className="border-b border-slate-800/60 bg-slate-950/80 backdrop-blur sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-6 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-600 flex items-center justify-center shadow-lg shadow-emerald-900/40">
+              <MapIcon className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight">PlannerStudio</h1>
+              <p className="text-xs text-slate-400">Database del servizio · fermate, linee, percorsi, orari</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-900/30"
+          >
+            <Plus className="w-4 h-4" /> Nuovo progetto
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Stat strip */}
+        <div className="grid grid-cols-3 gap-4 mb-8">
+          <StatCard label="Totale progetti" value={projects.length} icon={FolderOpen} accent="emerald" />
+          <StatCard label="Di cui tuoi" value={ownedCount} icon={Users} accent="cyan" />
+          <StatCard label="Condivisi con te" value={sharedCount} icon={Users} accent="indigo" />
+        </div>
+
+        {/* Lista */}
+        {loading ? (
+          <div className="flex items-center justify-center py-24 text-slate-500">
+            <Loader2 className="w-6 h-6 animate-spin mr-2" /> Caricamento…
+          </div>
+        ) : projects.length === 0 ? (
+          <EmptyState onCreate={() => setCreateOpen(true)} />
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {projects.map(p => (
+              <ProjectCard key={p.id} project={p}
+                onOpen={() => navigate(`/planning-studio/${p.id}`)}
+                onDelete={() => handleDelete(p)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Dialog crea */}
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setCreateOpen(false)}>
+          <motion.div
+            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+            onClick={e => e.stopPropagation()}
+            className="w-full max-w-md mx-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl"
+          >
+            <div className="px-6 py-4 border-b border-slate-800">
+              <h2 className="text-lg font-semibold">Nuovo progetto di pianificazione</h2>
+              <p className="text-xs text-slate-500 mt-0.5">Crea un DB master per il servizio di un'agenzia.</p>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Nome *</label>
+                <input value={name} onChange={e => setName(e.target.value)} autoFocus
+                  placeholder="Es. CTM Cagliari · 2026"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Agenzia / operatore</label>
+                <input value={agencyName} onChange={e => setAgencyName(e.target.value)}
+                  placeholder="Es. CTM SpA"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Descrizione</label>
+                <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-800 flex justify-end gap-2">
+              <button onClick={() => setCreateOpen(false)}
+                className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200">Annulla</button>
+              <button onClick={handleCreate} disabled={creating}
+                className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+              >
+                {creating && <Loader2 className="w-4 h-4 animate-spin" />} Crea
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Dialog import GTFS */}
+      {/* RIMOSSO: l'import GTFS è ora un onboarding step dentro l'editor del progetto */}
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon: Icon, accent }: { label: string; value: number; icon: any; accent: string }) {
+  const accentMap: Record<string, string> = {
+    emerald: "from-emerald-500/20 to-emerald-500/5 text-emerald-400 border-emerald-500/20",
+    cyan:    "from-cyan-500/20 to-cyan-500/5 text-cyan-400 border-cyan-500/20",
+    indigo:  "from-indigo-500/20 to-indigo-500/5 text-indigo-400 border-indigo-500/20",
+  };
+  return (
+    <div className={`rounded-xl border bg-gradient-to-br ${accentMap[accent]} p-4 backdrop-blur`}>
+      <div className="flex items-center justify-between mb-2">
+        <Icon className="w-4 h-4 opacity-70" />
+        <span className="text-2xl font-bold tabular-nums">{value}</span>
+      </div>
+      <p className="text-[11px] uppercase tracking-wider opacity-80">{label}</p>
+    </div>
+  );
+}
+
+function ProjectCard({
+  project: p, onOpen, onDelete,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void }) {
+  const isOwner = p.myRole === "owner";
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -2 }}
+      className="group relative rounded-xl bg-slate-900/80 border border-slate-800 hover:border-emerald-500/50 p-5 cursor-pointer transition shadow-sm hover:shadow-lg hover:shadow-emerald-900/20"
+      onClick={onOpen}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold text-base text-slate-100 truncate group-hover:text-emerald-300 transition-colors">
+            {p.name}
+          </h3>
+          {p.agencyName && (
+            <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1">
+              <Bus className="w-3 h-3" /> {p.agencyName}
+            </p>
+          )}
+        </div>
+        <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
+          isOwner ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700/60 text-slate-300"
+        }`}>
+          {isOwner ? "Owner" : p.myRole}
+        </span>
+      </div>
+
+      {p.description && (
+        <p className="text-xs text-slate-400 line-clamp-2 mb-4 min-h-[2rem]">{p.description}</p>
+      )}
+
+      <div className="flex items-center justify-between text-xs text-slate-500 pt-3 border-t border-slate-800">
+        <span className="flex items-center gap-1">
+          <Calendar className="w-3 h-3" />
+          {new Date(p.updatedAt).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" })}
+        </span>
+        {isOwner && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(); }}
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition"
+            title="Elimina"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function EmptyState({ onCreate }: { onCreate: () => void }) {
+  return (
+    <div className="text-center py-20">
+      <div className="w-16 h-16 mx-auto rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-4">
+        <MapPin className="w-7 h-7 text-emerald-400" />
+      </div>
+      <h2 className="text-lg font-semibold mb-1">Nessun progetto ancora</h2>
+      <p className="text-sm text-slate-500 mb-6">Crea il primo DB del servizio per la tua agenzia.</p>
+      <button onClick={onCreate}
+        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium"
+      >
+        <Plus className="w-4 h-4" /> Nuovo progetto
+      </button>
+    </div>
+  );
+}

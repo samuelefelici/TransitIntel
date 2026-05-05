@@ -33,6 +33,14 @@ import intermodalOptimizerRouter from "./intermodal-optimizer";
 import aiRouter from "./ai";
 import planningRouter from "./planning";
 import territoryRouter from "./territory";
+import schedulingProjectsRouter from "../lib/scheduling-projects";
+import scheduleSharesRouter from "../lib/schedule-shares";
+import planningStudioRouter from "../lib/planning-studio";
+import planningStudioImportRouter from "../lib/planning-studio-import";
+import planningStudioClustersRouter from "../lib/planning-studio-clusters";
+import planningStudioPeriodsRouter from "../lib/planning-studio-periods";
+import planningStudioTripsExtRouter from "../lib/planning-studio-trips-ext";
+import planningStudioNetworkRouter from "../lib/planning-studio-network";
 
 const router: IRouter = Router();
 
@@ -73,5 +81,13 @@ router.use(deadheadsRouter);
 router.use(aiRouter);
 router.use(planningRouter);
 router.use(territoryRouter);
+router.use(schedulingProjectsRouter);
+router.use(scheduleSharesRouter);
+router.use(planningStudioRouter);
+router.use(planningStudioImportRouter);
+router.use(planningStudioClustersRouter);
+router.use(planningStudioPeriodsRouter);
+router.use(planningStudioTripsExtRouter);
+router.use(planningStudioNetworkRouter);
 
 export default router;

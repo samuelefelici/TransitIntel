@@ -20,7 +20,17 @@ export async function apiFetch<T = unknown>(
 ): Promise<T> {
   const url = `${getApiBase()}${path}`;
   // Sempre cookie httpOnly auth (cross-site Vercel <-> Render con SameSite=None)
-  const res = await fetch(url, { credentials: "include", ...(init || {}) });
+  // Auto-set Content-Type: application/json se c'è un body string e nessun header esplicito
+  const hasBody = init?.body !== undefined && init?.body !== null;
+  const userHeaders = init?.headers ? new Headers(init.headers) : new Headers();
+  if (hasBody && typeof init!.body === "string" && !userHeaders.has("Content-Type")) {
+    userHeaders.set("Content-Type", "application/json");
+  }
+  const res = await fetch(url, {
+    credentials: "include",
+    ...(init || {}),
+    headers: userHeaders,
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const msg = (body as any)?.error || `HTTP ${res.status}`;

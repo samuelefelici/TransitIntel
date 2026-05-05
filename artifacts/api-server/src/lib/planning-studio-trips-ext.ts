@@ -1,0 +1,226 @@
+/**
+ * Planning Studio — Validità per corsa + eccezioni date.
+ *
+ * Endpoints:
+ *   PATCH  /projects/:id/trips/:tripId        (campi validità + base)
+ *   GET    /projects/:id/trips/:tripId/exceptions
+ *   POST   /projects/:id/trips/:tripId/exceptions
+ *   DELETE /projects/:id/trips/:tripId/exceptions/:date
+ *
+ * exception_type (semantica GTFS-like):
+ *   1 = aggiunta (corsa attiva quel giorno anche se calendar non lo prevede)
+ *   2 = soppressione (corsa NON attiva quel giorno anche se calendar lo prevede)
+ */
+import type { Request, Response } from "express";
+import { Router, type IRouter } from "express";
+import { db } from "@workspace/db";
+import { sql } from "drizzle-orm";
+
+const router: IRouter = Router();
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+async function loadProject(projectId: string, userId: string, needWrite: boolean): Promise<any | null> {
+  const r = await db.execute(sql`
+    SELECT p.*,
+           CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
+                ELSE pm.role END AS my_role
+      FROM ps_projects p
+      LEFT JOIN ps_project_members pm
+             ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
+     WHERE p.id = ${projectId}::uuid
+       AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+     LIMIT 1
+  `);
+  const row: any = (r as any).rows?.[0] ?? null;
+  if (!row) return null;
+  if (needWrite && row.my_role !== "owner" && row.my_role !== "editor") return null;
+  return row;
+}
+
+function getUserId(req: Request): string | null {
+  return (req as any).session?.userId ?? (req as any).user?.id ?? null;
+}
+
+async function logActivity(
+  projectId: string, userId: string, action: string,
+  targetType: string | null, targetId: string | null, payload: Record<string, any> = {},
+): Promise<void> {
+  try {
+    await db.execute(sql`
+      INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, target_id, payload)
+      VALUES (${projectId}::uuid, ${userId}::uuid, ${action}, ${targetType}, ${targetId}, ${JSON.stringify(payload)}::jsonb)
+    `);
+  } catch (e: any) {
+    console.warn("[ps-trips-ext] activity log error:", e?.message || e);
+  }
+}
+
+/* ─── PATCH trip (estensione: validità, attivo, label, headsign, calendar) ─── */
+
+router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  if (!UUID_RE.test(req.params.tripId)) { res.status(400).json({ error: "tripId invalid" }); return; }
+
+  const fields: string[] = [];
+  const vals: any[] = [];
+  const map: Record<string, string> = {
+    headsign: "headsign",
+    shortName: "short_name",
+    direction: "direction",
+    blockId: "block_id",
+    calendarId: "calendar_id",
+    validFrom: "valid_from",
+    validTo: "valid_to",
+    isActive: "is_active",
+    serviceLabel: "service_label",
+  };
+  for (const [k, col] of Object.entries(map)) {
+    if (k in req.body) { fields.push(col); vals.push(req.body[k]); }
+  }
+  if (fields.length === 0) { res.status(400).json({ error: "no fields to update" }); return; }
+
+  // valid_from <= valid_to (se entrambi forniti)
+  if (req.body.validFrom && req.body.validTo && new Date(req.body.validFrom) > new Date(req.body.validTo)) {
+    res.status(400).json({ error: "validFrom must be ≤ validTo" }); return;
+  }
+
+  const setSql = sql.join(
+    fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`),
+    sql`, `,
+  );
+  const r = await db.execute(sql`
+    UPDATE ps_trips
+       SET ${setSql}
+     WHERE id = ${req.params.tripId}::uuid
+       AND project_id = ${req.params.id}::uuid
+     RETURNING *
+  `);
+  const row: any = (r as any).rows?.[0];
+  if (!row) { res.status(404).json({ error: "trip not found" }); return; }
+  await logActivity(req.params.id, userId, "trip.update", "trip", row.id, { fields });
+  res.json({ trip: {
+    id: row.id, projectId: row.project_id, routeId: row.route_id, variantId: row.variant_id,
+    calendarId: row.calendar_id, headsign: row.headsign, shortName: row.short_name,
+    direction: row.direction, blockId: row.block_id, attributes: row.attributes ?? {},
+    validFrom: row.valid_from, validTo: row.valid_to,
+    isActive: row.is_active, serviceLabel: row.service_label,
+    createdAt: row.created_at,
+  }});
+});
+
+/* ─── PATCH bulk (operazioni di massa per filtro variant/calendar) ─── */
+
+router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+
+  const tripIds: string[] = Array.isArray(req.body?.tripIds) ? req.body.tripIds : [];
+  if (tripIds.length === 0) { res.status(400).json({ error: "tripIds required" }); return; }
+
+  const patch = req.body?.patch ?? {};
+  const fields: string[] = [];
+  const vals: any[] = [];
+  const map: Record<string, string> = {
+    calendarId: "calendar_id",
+    validFrom: "valid_from",
+    validTo: "valid_to",
+    isActive: "is_active",
+    serviceLabel: "service_label",
+  };
+  for (const [k, col] of Object.entries(map)) {
+    if (k in patch) { fields.push(col); vals.push(patch[k]); }
+  }
+  if (fields.length === 0) { res.status(400).json({ error: "no fields to update" }); return; }
+
+  const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
+  const setSql = sql.join(
+    fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`),
+    sql`, `,
+  );
+  const r = await db.execute(sql`
+    UPDATE ps_trips
+       SET ${setSql}
+     WHERE project_id = ${req.params.id}::uuid
+       AND id IN (${idsSql})
+     RETURNING id
+  `);
+  const count = ((r as any).rows ?? []).length;
+  await logActivity(req.params.id, userId, "trip.bulk_update", "trip", null, { count, fields });
+  res.json({ ok: true, count });
+});
+
+/* ─── Eccezioni date ─── */
+
+router.get("/planning-studio/projects/:id/trips/:tripId/exceptions", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(404).json({ error: "project not found" }); return; }
+
+  const r = await db.execute(sql`
+    SELECT trip_id, date, exception_type, reason
+      FROM ps_trip_exceptions
+     WHERE trip_id = ${req.params.tripId}::uuid
+     ORDER BY date ASC
+  `);
+  const rows: any[] = (r as any).rows ?? [];
+  res.json({
+    exceptions: rows.map(e => ({
+      tripId: e.trip_id,
+      date: e.date,
+      exceptionType: e.exception_type,
+      reason: e.reason,
+    })),
+  });
+});
+
+router.post("/planning-studio/projects/:id/trips/:tripId/exceptions", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+
+  const { date, exceptionType = 2, reason = null } = req.body ?? {};
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "date YYYY-MM-DD required" }); return;
+  }
+  if (exceptionType !== 1 && exceptionType !== 2) {
+    res.status(400).json({ error: "exceptionType must be 1 (added) or 2 (removed)" }); return;
+  }
+
+  await db.execute(sql`
+    INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+    VALUES (${req.params.tripId}::uuid, ${date}, ${exceptionType}, ${reason})
+    ON CONFLICT (trip_id, date) DO UPDATE
+      SET exception_type = EXCLUDED.exception_type,
+          reason = EXCLUDED.reason
+  `);
+  await logActivity(req.params.id, userId, "trip.exception.add", "trip", req.params.tripId, { date, exceptionType });
+  res.status(201).json({ ok: true });
+});
+
+router.delete("/planning-studio/projects/:id/trips/:tripId/exceptions/:date", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+
+  const date = req.params.date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "date YYYY-MM-DD required" }); return;
+  }
+  await db.execute(sql`
+    DELETE FROM ps_trip_exceptions
+     WHERE trip_id = ${req.params.tripId}::uuid AND date = ${date}
+  `);
+  await logActivity(req.params.id, userId, "trip.exception.remove", "trip", req.params.tripId, { date });
+  res.json({ ok: true });
+});
+
+export default router;

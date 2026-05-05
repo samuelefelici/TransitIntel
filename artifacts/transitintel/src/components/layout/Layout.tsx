@@ -34,15 +34,10 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: "Crea Servizio",
-    icon: Route,
-    collapsible: true,
-    permission: "scheduling",
+    title: "Network Engine",
+    permission: "network",
     items: [
-      { href: "/scenarios", label: "Scenari", icon: Route },
-      { href: "/planning", label: "PlannerStudio", icon: Layers },
-      { href: "/coincidence-zones", label: "Zone Coincidenza", icon: Zap },
-      { href: "/intermodal", label: "Intermodale", icon: ArrowRightLeft },
+      { href: "/network-engine", label: "Network Engine", icon: Network },
     ],
   },
   {
@@ -100,7 +95,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       .filter(s => s.items.length > 0);
   }, [hasPermission]);
 
-  const isSchedulingZone = location === "/fucina" || location === "/cluster" || location === "/depots" || location.startsWith("/driver-shifts");
+  const isSchedulingZone = location.startsWith("/fucina") || location === "/cluster" || location === "/depots" || location.startsWith("/driver-shifts");
+  const isNetworkZone =
+    location === "/network-engine" ||
+    location.startsWith("/network-engine/") ||
+    location === "/planning-studio" ||
+    location.startsWith("/planning-studio/") ||
+    location === "/scenarios" ||
+    location === "/planning" ||
+    location.startsWith("/planning/") ||
+    location === "/coincidence-zones" ||
+    location === "/intermodal";
   const isFaresZone =
     location === "/fares-engine" ||
     location === "/fares" ||
@@ -175,6 +180,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           transition-all duration-300 ease-in-out
           ${isSchedulingZone
             ? `bg-gradient-to-b from-orange-950/95 via-zinc-950/95 to-black/95 border-orange-900/40 ${collapsed ? "w-0 md:w-0 border-r-0 overflow-hidden" : "w-64"}`
+            : isNetworkZone
+              ? `bg-gradient-to-b from-purple-950/95 via-zinc-950/95 to-black/95 border-purple-900/40 ${collapsed ? "w-0 md:w-0 border-r-0 overflow-hidden" : "w-64"}`
             : isFaresZone
               ? `bg-gradient-to-b from-emerald-950/95 via-zinc-950/95 to-black/95 border-emerald-900/40 ${collapsed ? "w-0 md:w-0 border-r-0 overflow-hidden" : "w-64"}`
               : `bg-card/50 border-border/50 ${collapsed ? "w-16" : "w-64"}`
@@ -204,6 +211,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               onClick={() => setCollapsed(true)}
               title="Nascondi sidebar (più spazio al workspace)"
               className="hidden md:flex items-center justify-center w-8 h-8 rounded-lg text-orange-300/60 hover:text-orange-200 hover:bg-orange-500/10 transition-colors shrink-0"
+            >
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          </div>
+        ) : isNetworkZone ? (
+          /* ── Network Engine logo header ── */
+          <div className="px-4 pt-4 pb-3 border-b border-purple-900/40 flex items-center gap-3">
+            <div className="relative shrink-0 w-10 h-10 flex items-center justify-center rounded-lg bg-gradient-to-br from-purple-500/30 to-fuchsia-500/20 border border-purple-500/30">
+              <Network className="w-5 h-5 text-purple-300 drop-shadow-[0_0_6px_rgba(192,132,252,0.7)]" />
+              <div className="absolute inset-0 blur-xl bg-purple-500/30 rounded-full pointer-events-none" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-black tracking-widest uppercase bg-gradient-to-r from-purple-300 via-fuchsia-300 to-violet-300 bg-clip-text text-transparent leading-tight">
+                Network Engine
+              </p>
+              <p className="text-[9px] text-purple-400/40 font-mono mt-0.5">Servizio · Rete · v1</p>
+            </div>
+            <button
+              onClick={() => setCollapsed(true)}
+              title="Nascondi sidebar"
+              className="hidden md:flex items-center justify-center w-8 h-8 rounded-lg text-purple-300/60 hover:text-purple-200 hover:bg-purple-500/10 transition-colors shrink-0"
             >
               <PanelLeftClose className="w-4 h-4" />
             </button>
@@ -262,7 +290,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               Procedura Scheduling
             </p>
 
-            {/* Step 1 — Turni Macchina (fucina) */}
+            {/* Hub progetti di esercizio (la lista turni macchina è dentro al singolo progetto) */}
             <Link href="/fucina">
               <div
                 onClick={() => setIsMobileOpen(false)}
@@ -275,10 +303,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 {location === "/fucina" && (
                   <motion.div layoutId="active-sched" className="absolute left-0 w-0.5 h-5 bg-orange-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
                 )}
-                <ClipboardList className={`w-4 h-4 shrink-0 transition-colors ${location === "/fucina" ? "text-orange-400" : "text-orange-500/60 group-hover:text-orange-400"}`} />
+                <FolderOpen className={`w-4 h-4 shrink-0 transition-colors ${location === "/fucina" ? "text-orange-400" : "text-orange-500/60 group-hover:text-orange-400"}`} />
                 <div className="min-w-0">
-                  <p className="text-[12px] font-medium leading-tight">Turni Macchina</p>
-                  <p className="text-[9px] text-orange-400/30 font-mono">Gantt · CP-SAT · salva</p>
+                  <p className="text-[12px] font-medium leading-tight">Progetti di Esercizio</p>
+                  <p className="text-[9px] text-orange-400/30 font-mono">Hub · pipeline · scenari</p>
                 </div>
               </div>
             </Link>
@@ -330,11 +358,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </Link>
 
-            {/* ─ Turni Macchina Salvati ─ */}
-            <SavedScenariosSection
-              location={location}
-              onNavigate={() => setIsMobileOpen(false)}
-            />
+            {/* ─ Turni Macchina Salvati: rimosso — gli scenari ora vivono dentro al singolo progetto ─ */}
 
             {/* ─ Torna ─ */}
             <div className="mt-auto pt-4 border-t border-orange-900/30">
@@ -342,6 +366,96 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <div
                   onClick={() => setIsMobileOpen(false)}
                   className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-orange-300/40 hover:text-orange-200/80 hover:bg-orange-500/8 transition-all group"
+                >
+                  <ChevronLeft className="w-4 h-4 shrink-0 group-hover:-translate-x-0.5 transition-transform" />
+                  <span className="text-[12px]">Torna all'app</span>
+                </div>
+              </Link>
+            </div>
+          </nav>
+        ) : isNetworkZone ? (
+          /* ── Network Engine nav ── */
+          <nav className="flex-1 px-3 py-5 flex flex-col gap-1 overflow-y-auto">
+
+            {/* ─ Database del Servizio ─ */}
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/40 px-2 mb-1">
+              Database Servizio
+            </p>
+
+            {[
+              { href: "/network-engine", label: "Hub Network Engine", icon: Network, desc: "Panoramica · navigazione" },
+              { href: "/planning-studio", label: "Planner Studio", icon: Map, desc: "Fermate · linee · percorsi · orari", match: (l: string) => l === "/planning-studio" || l.startsWith("/planning-studio/") },
+            ].map((item) => {
+              const isActive = item.match ? item.match(location) : location === item.href;
+              const Icon = item.icon;
+              return (
+                <Link key={item.href} href={item.href}>
+                  <div
+                    onClick={() => setIsMobileOpen(false)}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
+                      isActive
+                        ? "bg-purple-500/15 text-purple-200"
+                        : "text-purple-300/60 hover:text-purple-200 hover:bg-purple-500/10"
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div layoutId="active-network" className="absolute left-0 w-0.5 h-5 bg-purple-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
+                    )}
+                    <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? "text-purple-300" : "text-purple-500/60 group-hover:text-purple-300"}`} />
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-medium leading-tight">{item.label}</p>
+                      <p className="text-[9px] text-purple-400/30 font-mono">{item.desc}</p>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+
+            {/* ─ Separatore ─ */}
+            <div className="my-3 border-t border-purple-900/25" />
+
+            {/* ─ Pianificazione Operativa ─ */}
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/40 px-2 mb-1">
+              Pianificazione
+            </p>
+
+            {[
+              { href: "/scenarios", label: "Scenari", icon: Route, desc: "Variazioni · ipotesi · A/B" },
+              { href: "/planning", label: "Planner Legacy", icon: Layers, desc: "Analisi GTFS · feed" },
+              { href: "/coincidence-zones", label: "Zone Coincidenza", icon: Zap, desc: "Hub · trasbordi" },
+              { href: "/intermodal", label: "Intermodale", icon: ArrowRightLeft, desc: "Treno · gomma · integraz." },
+            ].map((item) => {
+              const isActive = location === item.href;
+              const Icon = item.icon;
+              return (
+                <Link key={item.href} href={item.href}>
+                  <div
+                    onClick={() => setIsMobileOpen(false)}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
+                      isActive
+                        ? "bg-purple-500/15 text-purple-200"
+                        : "text-purple-300/60 hover:text-purple-200 hover:bg-purple-500/10"
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div layoutId="active-network" className="absolute left-0 w-0.5 h-5 bg-purple-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
+                    )}
+                    <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? "text-purple-300" : "text-purple-500/60 group-hover:text-purple-300"}`} />
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-medium leading-tight">{item.label}</p>
+                      <p className="text-[9px] text-purple-400/30 font-mono">{item.desc}</p>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+
+            {/* ─ Torna ─ */}
+            <div className="mt-auto pt-4 border-t border-purple-900/30">
+              <Link href="/network">
+                <div
+                  onClick={() => setIsMobileOpen(false)}
+                  className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg cursor-pointer text-purple-300/40 hover:text-purple-200/80 hover:bg-purple-500/8 transition-all group"
                 >
                   <ChevronLeft className="w-4 h-4 shrink-0 group-hover:-translate-x-0.5 transition-transform" />
                   <span className="text-[12px]">Torna all'app</span>
@@ -520,6 +634,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                   const isActive = location === item.href;
                   const isFucina = item.href === "/fucina";
                   const isFaresEngine = item.href === "/fares-engine";
+                  const isNetworkEngine = item.href === "/network-engine";
                   return (
                     <Link key={item.href} href={item.href}>
                       <div
@@ -535,19 +650,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                               ? "bg-orange-500/10 text-orange-400 font-medium"
                               : isFaresEngine
                                 ? "bg-emerald-500/10 text-emerald-300 font-medium"
-                                : "bg-primary/15 text-primary font-medium"
+                                : isNetworkEngine
+                                  ? "bg-purple-500/10 text-purple-300 font-medium"
+                                  : "bg-primary/15 text-primary font-medium"
                             : isFucina
                               ? "text-orange-400/60 hover:bg-orange-500/8 hover:text-orange-300"
                               : isFaresEngine
                                 ? "text-emerald-400/70 hover:bg-emerald-500/8 hover:text-emerald-200"
-                                : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
+                                : isNetworkEngine
+                                  ? "text-purple-400/70 hover:bg-purple-500/8 hover:text-purple-200"
+                                  : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
                           }
                         `}
                       >
                         {isActive && (
                           <motion.div
                             layoutId="active-nav"
-                            className={`absolute left-0 w-0.5 h-6 rounded-r-full ${isFucina ? "bg-orange-400" : isFaresEngine ? "bg-emerald-400" : "bg-primary"}`}
+                            className={`absolute left-0 w-0.5 h-6 rounded-r-full ${isFucina ? "bg-orange-400" : isFaresEngine ? "bg-emerald-400" : isNetworkEngine ? "bg-purple-400" : "bg-primary"}`}
                             initial={false}
                             transition={{ type: "spring", stiffness: 350, damping: 35 }}
                           />
@@ -557,14 +676,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                             ? isActive ? "text-orange-400" : "text-orange-500/70 group-hover:text-orange-400 transition-colors"
                             : isFaresEngine
                               ? isActive ? "text-emerald-400" : "text-emerald-500/70 group-hover:text-emerald-300 transition-colors"
-                              : isActive ? "text-primary" : "group-hover:text-foreground transition-colors"
+                              : isNetworkEngine
+                                ? isActive ? "text-purple-400" : "text-purple-500/70 group-hover:text-purple-300 transition-colors"
+                                : isActive ? "text-primary" : "group-hover:text-foreground transition-colors"
                         }`} />
                         {!collapsed && (
                           isFucina
                             ? <span className={isActive ? "text-orange-400" : "text-orange-400/70 group-hover:text-orange-300 transition-colors"}>{item.label}</span>
                             : isFaresEngine
                               ? <span className={isActive ? "text-emerald-300" : "text-emerald-400/80 group-hover:text-emerald-200 transition-colors"}>{item.label}</span>
-                              : item.label
+                              : isNetworkEngine
+                                ? <span className={isActive ? "text-purple-300" : "text-purple-400/80 group-hover:text-purple-200 transition-colors"}>{item.label}</span>
+                                : item.label
                         )}
                       </div>
                     </Link>
@@ -576,7 +699,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </nav>
         )} {/* end normal nav conditional */}
 
-        {!isSchedulingZone && !isFaresZone && !collapsed && (
+        {!isSchedulingZone && !isFaresZone && !isNetworkZone && !collapsed && (
           <div className="p-4 mt-auto border-t border-border/30 space-y-3">
             {isAdmin && (
               <Link href="/admin/users">
@@ -615,7 +738,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         )}
-        {!isSchedulingZone && !isFaresZone && collapsed && (
+        {!isSchedulingZone && !isFaresZone && !isNetworkZone && collapsed && (
           <div className="mt-auto border-t border-border/30 py-3 flex justify-center">
             <button
               onClick={logout}
@@ -650,17 +773,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         )}
+        {isNetworkZone && (
+          <div className="border-t border-purple-900/30 py-3 px-4 flex justify-center">
+            <button
+              onClick={logout}
+              title="Disconnetti"
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-purple-400/40 hover:text-red-400 hover:bg-red-500/10 transition-all"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Disconnetti</span>
+            </button>
+          </div>
+        )}
       </aside>
 
-      {/* Linguetta flottante per riaprire la sidebar quando è nascosta nelle zone scheduling/fares */}
-      {(isSchedulingZone || isFaresZone) && collapsed && (
+      {/* Linguetta flottante per riaprire la sidebar quando è nascosta nelle zone scheduling/fares/network */}
+      {(isSchedulingZone || isFaresZone || isNetworkZone) && collapsed && (
         <button
           onClick={() => setCollapsed(false)}
           title="Mostra sidebar"
           className={`hidden md:flex fixed left-0 top-1/2 -translate-y-1/2 z-40 items-center justify-center w-6 h-16 rounded-r-md shadow-lg transition-colors ${
             isSchedulingZone
               ? "bg-orange-950/95 hover:bg-orange-900 border border-l-0 border-orange-800/60 text-orange-300"
-              : "bg-emerald-950/95 hover:bg-emerald-900 border border-l-0 border-emerald-800/60 text-emerald-300"
+              : isNetworkZone
+                ? "bg-purple-950/95 hover:bg-purple-900 border border-l-0 border-purple-800/60 text-purple-300"
+                : "bg-emerald-950/95 hover:bg-emerald-900 border border-l-0 border-emerald-800/60 text-emerald-300"
           }`}
         >
           <PanelLeftOpen className="w-4 h-4" />
