@@ -69,6 +69,7 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
     : sql.raw(`(
         owner_user_id = '${userId}'::uuid
         OR is_default = true
+        OR owner_user_id IN (SELECT id FROM users WHERE role = 'admin')
         OR id IN (
           SELECT sp.feed_id FROM scheduling_projects sp
            WHERE sp.feed_id IS NOT NULL

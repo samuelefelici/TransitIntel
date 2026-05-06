@@ -111,6 +111,7 @@ export function feedAccessibleWhere(req: Request): SQL {
   return sql.raw(`(
     owner_user_id = '${uid}'::uuid
     OR is_default = true
+    OR owner_user_id IN (SELECT id FROM users WHERE role = 'admin')
     OR id IN (
       SELECT sp.feed_id FROM scheduling_projects sp
        WHERE sp.feed_id IS NOT NULL
@@ -158,6 +159,14 @@ export async function assertFeedAccess(
 
   // Feed di default globale visibile a tutti
   if (row.is_default === true) return true;
+
+  // Feed caricato da un admin → visibile a tutti gli utenti autenticati
+  try {
+    const ownerIsAdmin = await db.execute(sql`
+      SELECT 1 FROM users WHERE id = ${row.owner_user_id}::uuid AND role = 'admin' LIMIT 1
+    `);
+    if ((ownerIsAdmin as any).rows?.length || (ownerIsAdmin as any)[0]) return true;
+  } catch {}
 
   // Membro/owner di un progetto che referenzia il feed
   try {
