@@ -144,14 +144,13 @@ export default function PlanningStudioEditorPage() {
   const [globalClusters, setGlobalClusters] = useState<GlobalCluster[]>([]);
   const [depots, setDepots] = useState<GlobalDepot[]>([]);
   const [overlayLoading, setOverlayLoading] = useState<{ clusters?: boolean; depots?: boolean }>({});
+  // I layer rimangono visibili anche quando il pannello viene chiuso o se ne apre un altro
+  const [showGlobalClusters, setShowGlobalClusters] = useState(false);
+  const [showDepots, setShowDepots] = useState(false);
   const [editingDepot, setEditingDepot] = useState<GlobalDepot | null>(null);
   const [creatingDepotAt, setCreatingDepotAt] = useState<{ lat: number; lon: number } | null>(null);
   const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
   const [depotModalHidden, setDepotModalHidden] = useState(false);
-
-  // I layer sono visibili quando il pannello corrispondente è aperto
-  const showGlobalClusters = activePanel === "ne-clusters";
-  const showDepots = activePanel === "ne-depots";
 
   // Reload helpers (riusabili dai pannelli dopo CRUD)
   const reloadGlobalClusters = useCallback(async () => {
@@ -658,13 +657,30 @@ export default function PlanningStudioEditorPage() {
         />
         <DataTabBtn
           icon={Grip} label="Cluster" count={globalClusters.length || undefined} accent="cyan"
-          active={activePanel === "ne-clusters"}
-          onClick={() => setActivePanel(activePanel === "ne-clusters" ? null : "ne-clusters")}
+          active={activePanel === "ne-clusters" || showGlobalClusters}
+          onClick={() => {
+            if (activePanel === "ne-clusters") {
+              // Click sul pannello aperto: chiude pannello E spegne layer
+              setActivePanel(null);
+              setShowGlobalClusters(false);
+            } else {
+              setActivePanel("ne-clusters");
+              setShowGlobalClusters(true);
+            }
+          }}
         />
         <DataTabBtn
           icon={Building2} label="Depositi" count={depots.length || undefined} accent="orange"
-          active={activePanel === "ne-depots"}
-          onClick={() => setActivePanel(activePanel === "ne-depots" ? null : "ne-depots")}
+          active={activePanel === "ne-depots" || showDepots}
+          onClick={() => {
+            if (activePanel === "ne-depots") {
+              setActivePanel(null);
+              setShowDepots(false);
+            } else {
+              setActivePanel("ne-depots");
+              setShowDepots(true);
+            }
+          }}
         />
 
         <div className="flex-1" />
