@@ -2254,15 +2254,15 @@ function NeClustersPanel({
         <div className="flex gap-1">
           <button onClick={() => onReload()} title="Ricarica"
             className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
-          <a href={`/planning-studio/${projectId}/clusters`} target="_blank" rel="noopener noreferrer"
+          <a href={`/planning-studio/${projectId}/clusters`}
             className="text-[11px] px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center gap-1">
-            <Pencil className="w-3 h-3" /> Gestisci
+            <Pencil className="w-3 h-3" /> Inserisci
           </a>
         </div>
       </div>
       {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
       {!loading && clusters.length === 0 && (
-        <p className="text-[11px] text-slate-500">Nessun cluster definito. Aprilo con "Gestisci" per crearne uno.</p>
+        <p className="text-[11px] text-slate-500">Nessun cluster definito. Aprilo con "Inserisci" per crearne uno.</p>
       )}
       {clusters.map(c => {
         const valid = (c.stops || []).filter(s => Number.isFinite(s.stopLat) && Number.isFinite(s.stopLon));
