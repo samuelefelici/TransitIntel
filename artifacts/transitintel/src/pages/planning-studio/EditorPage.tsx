@@ -118,6 +118,17 @@ export default function PlanningStudioEditorPage() {
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [selectedCalendarId, setSelectedCalendarId] = useState<string | null>(null);
 
+  // ── Filtro visibilità fermate sulla mappa ─────────────────
+  // 'all'   = tutte le fermate del progetto (può essere lento con molte ferm.)
+  // 'none'  = nessuna (default per partire veloce)
+  // 'route' = solo le fermate appartenenti alle linee in routeFilterIds
+  type StopsFilter = "all" | "none" | "route";
+  const [stopsFilter, setStopsFilter] = useState<StopsFilter>("none");
+  const [routeFilterIds, setRouteFilterIds] = useState<Set<string>>(new Set());
+  // Cache: routeId → Set<stopId> appartenenti alle varianti di quella linea.
+  // Popolato on-demand quando l'utente seleziona la linea nel filtro.
+  const [routeStopIds, setRouteStopIds] = useState<Record<string, Set<string>>>({});
+
   // Import GTFS dialog
   const [importOpen, setImportOpen] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -238,6 +249,84 @@ export default function PlanningStudioEditorPage() {
     return { type: "FeatureCollection", features } as any;
   }, [showGlobalClusters, globalClusters]);
 
+  /* ─── Fermate visibili sulla mappa (in base al filtro stopsFilter) ─── */
+  // Ritorna solo le fermate che devono essere disegnate. Se lo stopsFilter è
+  // 'route' includiamo solo quelle appartenenti alle linee selezionate
+  // (routeFilterIds + cache routeStopIds). La fermata selezionata è SEMPRE
+  // visibile, anche con filter='none', così la "Cerca fermata" continua a
+  // funzionare.
+  const visibleStops = useMemo<PsStop[]>(() => {
+    if (showGlobalClusters) {
+      // In modalità "vista cluster" mostriamo solo le fermate dentro un cluster:
+      // i layer ne-clusters-* le disegnano già, quindi qui tagliamo a 0 (più la
+      // selezionata se serve).
+      return selectedStopId ? stops.filter(s => s.id === selectedStopId) : [];
+    }
+    if (stopsFilter === "all") return stops;
+    if (stopsFilter === "none") {
+      return selectedStopId ? stops.filter(s => s.id === selectedStopId) : [];
+    }
+    // 'route'
+    const allowed = new Set<string>();
+    for (const rid of routeFilterIds) {
+      const set = routeStopIds[rid];
+      if (set) for (const sid of set) allowed.add(sid);
+    }
+    if (selectedStopId) allowed.add(selectedStopId);
+    return stops.filter(s => allowed.has(s.id));
+  }, [stops, stopsFilter, routeFilterIds, routeStopIds, selectedStopId, showGlobalClusters]);
+
+  // GeoJSON delle fermate visibili (usato dai layer Mapbox: 1 source, N layer
+  // gestiti dalla GPU, 100x più veloce di N <Marker> React).
+  const visibleStopsGeoJSON = useMemo(() => ({
+    type: "FeatureCollection" as const,
+    features: visibleStops.map(s => {
+      const clusterColor = stopIdToClusterColor[s.id];
+      const inSeq = editor?.stops.find(vs => vs.stopId === s.id);
+      return {
+        type: "Feature" as const,
+        id: s.id, // serve per feature-state
+        properties: {
+          id: s.id,
+          name: s.name,
+          color: clusterColor || (inSeq ? "#34d399" : "#ffffff"),
+          inSeq: !!inSeq,
+        },
+        geometry: { type: "Point" as const, coordinates: [Number(s.lon), Number(s.lat)] },
+      };
+    }),
+  }), [visibleStops, stopIdToClusterColor, editor?.stops]);
+
+  // Carica e cache stopIds per una linea (somma stop di tutte le sue varianti).
+  const loadRouteStopIds = useCallback(async (routeId: string) => {
+    if (routeStopIds[routeId]) return;
+    try {
+      let vs = routeVariants[routeId];
+      if (!vs) {
+        vs = await listPsVariants(projectId, routeId);
+        setRouteVariants(prev => ({ ...prev, [routeId]: vs! }));
+      }
+      const ids = new Set<string>();
+      for (const v of vs) {
+        try {
+          const data = await getPsVariant(projectId, v.id);
+          for (const s of (data.stops || [])) ids.add(s.stopId);
+        } catch { /* ignore singola variante */ }
+      }
+      setRouteStopIds(prev => ({ ...prev, [routeId]: ids }));
+    } catch (e: any) {
+      toast.error("Errore caricamento fermate linea", { description: e?.message });
+    }
+  }, [projectId, routeStopIds, routeVariants]);
+
+  // Quando l'utente attiva una linea nel filtro, autoscarica le sue fermate.
+  useEffect(() => {
+    if (stopsFilter !== "route") return;
+    for (const rid of routeFilterIds) {
+      if (!routeStopIds[rid]) void loadRouteStopIds(rid);
+    }
+  }, [stopsFilter, routeFilterIds, routeStopIds, loadRouteStopIds]);
+
   /* ─── Load ─── */
   useEffect(() => {
     if (!projectId) return;
@@ -268,6 +357,24 @@ export default function PlanningStudioEditorPage() {
   const handleMapClick = useCallback((e: MapMouseEvent) => {
     const { lng, lat } = e.lngLat;
 
+    // Click su una fermata renderizzata via Layer (stops circle)
+    const features = (e as any).features as any[] | undefined;
+    const stopFeat = features?.find(f => f?.layer?.id === "ps-stops-circle" || f?.layer?.id === "ps-stops-circle-hit");
+    if (stopFeat) {
+      const stopId: string | undefined = stopFeat.properties?.id;
+      if (stopId) {
+        const s = stops.find(x => x.id === stopId);
+        if (s) {
+          if (tool === "editVariant" && editor) {
+            addStopToSequence(s);
+          } else {
+            setSelectedStopId(s.id);
+          }
+          return;
+        }
+      }
+    }
+
     // Modalità "scegli posizione deposito": cattura il click e ripristina il modale
     if (pickingDepotLocation && editingDepot) {
       setEditingDepot({ ...editingDepot, lat, lon: lng });
@@ -290,7 +397,7 @@ export default function PlanningStudioEditorPage() {
     }
     // select: deseleziona
     setSelectedStopId(null);
-  }, [tool, editor, pickingDepotLocation, editingDepot]);
+  }, [tool, editor, pickingDepotLocation, editingDepot, stops]);
 
   /* ─── Stops CRUD ─── */
   async function handleSaveStop(stopOrCreate: { name: string; code?: string; lat: number; lon: number }, existingId?: string) {
@@ -799,6 +906,7 @@ export default function PlanningStudioEditorPage() {
           onClick={handleMapClick}
           onLoad={() => setMapReady(true)}
           cursor={mapCursor}
+          interactiveLayerIds={["ps-stops-circle", "ps-stops-circle-hit"]}
           style={{ width: "100%", height: "100%" }}
         >
           <NavigationControl position="bottom-right" />
@@ -962,40 +1070,60 @@ export default function PlanningStudioEditorPage() {
             </Marker>
           ))}
 
-          {/* Tutte le fermate del progetto */}
-          {stops.map(s => {
-            const inSeq = editor?.stops.find(vs => vs.stopId === s.id);
-            const isSel = selectedStopId === s.id;
-            const clusterColor = stopIdToClusterColor[s.id];
-            return (
-              <Marker key={s.id} longitude={s.lon} latitude={s.lat} anchor="center"
-                onClick={(e) => {
-                  e.originalEvent.stopPropagation();
-                  if (tool === "editVariant" && editor) {
-                    addStopToSequence(s);
-                  } else {
-                    setSelectedStopId(s.id);
-                  }
+          {/* Tutte le fermate del progetto — render via GeoJSON Layer (GPU,
+              molto più veloce di N <Marker> React quando N è migliaia).
+              Filtrate da `visibleStops` in base allo stopsFilter scelto
+              dall'utente nel pannello Fermate. Click gestito in handleMapClick
+              tramite interactiveLayerIds. */}
+          {visibleStopsGeoJSON.features.length > 0 && (
+            <Source id="ps-stops-src" type="geojson" data={visibleStopsGeoJSON}>
+              {/* layer "hit" trasparente ma più grande per click facile */}
+              <Layer
+                id="ps-stops-circle-hit"
+                type="circle"
+                paint={{
+                  "circle-radius": 10,
+                  "circle-color": "#000000",
+                  "circle-opacity": 0,
                 }}
-              >
-                <div
-                  className={`w-3 h-3 rounded-full border-2 cursor-pointer transition-all ${
-                    inSeq ? "border-emerald-200 scale-125 shadow-lg shadow-emerald-500/50"
-                          : isSel ? "border-white scale-125"
-                          : clusterColor ? "border-white scale-110 shadow"
-                          : "bg-white border-slate-700 hover:scale-125"
-                  }`}
-                  style={
-                    inSeq ? { backgroundColor: "#34d399" }
-                    : isSel ? { backgroundColor: "#22d3ee" }
-                    : clusterColor ? { backgroundColor: clusterColor, boxShadow: `0 0 0 2px ${clusterColor}40` }
-                    : undefined
-                  }
-                  title={clusterColor ? `${s.name} · in cluster` : s.name}
-                />
+              />
+              <Layer
+                id="ps-stops-circle"
+                type="circle"
+                paint={{
+                  "circle-radius": [
+                    "case",
+                    ["==", ["get", "id"], selectedStopId ?? ""], 7,
+                    ["==", ["get", "inSeq"], true], 7,
+                    5,
+                  ],
+                  "circle-color": ["get", "color"],
+                  "circle-stroke-color": [
+                    "case",
+                    ["==", ["get", "id"], selectedStopId ?? ""], "#22d3ee",
+                    "#1e293b",
+                  ],
+                  "circle-stroke-width": 1.5,
+                }}
+              />
+            </Source>
+          )}
+          {/* Marker dedicato per la fermata selezionata: mostra anche il
+              nome in tooltip e mantiene il click "selettivo" */}
+          {selectedStopId && (() => {
+            const s = stops.find(x => x.id === selectedStopId);
+            if (!s) return null;
+            return (
+              <Marker key={`sel-${s.id}`} longitude={s.lon} latitude={s.lat} anchor="bottom">
+                <div className="flex flex-col items-center pointer-events-none">
+                  <div className="px-1.5 py-0.5 rounded bg-cyan-500 text-white text-[10px] font-medium shadow whitespace-nowrap">
+                    {s.name}
+                  </div>
+                  <div className="w-2 h-2 rotate-45 -mt-1 bg-cyan-500" />
+                </div>
               </Marker>
             );
-          })}
+          })()}
 
           {/* Shape della variante in editing */}
           {editor?.geometry && (
@@ -1123,6 +1251,7 @@ export default function PlanningStudioEditorPage() {
                 {activePanel === "stops" && (
                   <StopsPanel
                     stops={stops}
+                    routes={routes}
                     selectedId={selectedStopId}
                     onSelect={(s) => {
                       setSelectedStopId(s.id);
@@ -1131,6 +1260,19 @@ export default function PlanningStudioEditorPage() {
                     onEdit={(s) => setEditingStop(s)}
                     onDelete={handleDeleteStop}
                     onAddNew={() => setTool("addStop")}
+                    visibility={stopsFilter}
+                    onChangeVisibility={setStopsFilter}
+                    routeFilterIds={routeFilterIds}
+                    onToggleRouteFilter={(rid) => {
+                      setRouteFilterIds(prev => {
+                        const next = new Set(prev);
+                        if (next.has(rid)) next.delete(rid); else next.add(rid);
+                        return next;
+                      });
+                    }}
+                    onToggleAllRoutesFilter={(on) => {
+                      setRouteFilterIds(on ? new Set(routes.map(r => r.id)) : new Set());
+                    }}
                   />
                 )}
                 {activePanel === "routes" && (
@@ -1478,13 +1620,20 @@ export default function PlanningStudioEditorPage() {
  *  Sidebar — Fermate
  * ════════════════════════════════════════════════════════════ */
 function StopsPanel({
-  stops, selectedId, onSelect, onEdit, onDelete, onAddNew,
+  stops, routes, selectedId, onSelect, onEdit, onDelete, onAddNew,
+  visibility, onChangeVisibility,
+  routeFilterIds, onToggleRouteFilter, onToggleAllRoutesFilter,
 }: {
-  stops: PsStop[]; selectedId: string | null;
+  stops: PsStop[]; routes: PsRoute[]; selectedId: string | null;
   onSelect: (s: PsStop) => void;
   onEdit: (s: PsStop) => void;
   onDelete: (id: string) => void;
   onAddNew: () => void;
+  visibility: "all" | "none" | "route";
+  onChangeVisibility: (v: "all" | "none" | "route") => void;
+  routeFilterIds: Set<string>;
+  onToggleRouteFilter: (routeId: string) => void;
+  onToggleAllRoutesFilter: (on: boolean) => void;
 }) {
   const [q, setQ] = useState("");
   const filtered = useMemo(() => {
@@ -1492,12 +1641,72 @@ function StopsPanel({
     if (!qq) return stops;
     return stops.filter(s => s.name.toLowerCase().includes(qq) || (s.code || "").toLowerCase().includes(qq));
   }, [stops, q]);
+  const allRoutesSelected = routes.length > 0 && routeFilterIds.size === routes.length;
   return (
     <div className="p-3 space-y-3">
       <button onClick={onAddNew}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-white text-sm font-medium">
         <Plus className="w-4 h-4" /> Nuova fermata (clic mappa)
       </button>
+
+      {/* ── Filtro visibilità sulla mappa ──────────────── */}
+      <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-2 space-y-2">
+        <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-1">
+          Visibilità sulla mappa
+        </p>
+        <div className="grid grid-cols-3 gap-1">
+          {([
+            { v: "all" as const, label: "Tutte" },
+            { v: "none" as const, label: "Nessuna" },
+            { v: "route" as const, label: "Per linea" },
+          ]).map(opt => (
+            <button key={opt.v} onClick={() => onChangeVisibility(opt.v)}
+              className={`text-[11px] px-2 py-1.5 rounded transition ${
+                visibility === opt.v
+                  ? "bg-emerald-500 text-white font-medium"
+                  : "bg-slate-800 hover:bg-slate-700 text-slate-300"
+              }`}
+            >{opt.label}</button>
+          ))}
+        </div>
+        {visibility === "all" && stops.length > 1500 && (
+          <p className="text-[10px] text-amber-400 px-1">
+            ⚠️ {stops.length} fermate visibili: la mappa potrebbe rallentare. Usa "Per linea".
+          </p>
+        )}
+        {visibility === "route" && (
+          <div className="space-y-1 pt-1 border-t border-slate-800">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[10px] text-slate-400">
+                {routeFilterIds.size}/{routes.length} linee
+              </span>
+              <button onClick={() => onToggleAllRoutesFilter(!allRoutesSelected)}
+                className="text-[10px] text-emerald-400 hover:text-emerald-300">
+                {allRoutesSelected ? "Deseleziona tutto" : "Seleziona tutto"}
+              </button>
+            </div>
+            <div className="max-h-[180px] overflow-y-auto space-y-0.5 pr-1">
+              {routes.length === 0 && (
+                <p className="text-[11px] text-slate-500 py-2 text-center">Nessuna linea</p>
+              )}
+              {routes.map(r => (
+                <label key={r.id}
+                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-800/60 cursor-pointer">
+                  <input type="checkbox"
+                    checked={routeFilterIds.has(r.id)}
+                    onChange={() => onToggleRouteFilter(r.id)}
+                    className="w-3 h-3 accent-emerald-500" />
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ background: r.color || "#10b981" }} />
+                  <span className="text-[11px] font-bold">{r.shortName}</span>
+                  <span className="text-[10px] text-slate-400 truncate flex-1">{r.longName}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Cerca fermata…"
         className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-sm focus:outline-none focus:border-emerald-500" />
       <div className="space-y-1">
