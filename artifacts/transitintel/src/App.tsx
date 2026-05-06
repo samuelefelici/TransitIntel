@@ -240,7 +240,6 @@ function AuthGate() {
   const { isAuthenticated, loading, user } = useAuth();
   const [, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
-  const greetedRef = useRef<string | null>(null);
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
@@ -270,40 +269,6 @@ function AuthGate() {
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);
-
-  // ── Saluto stile briefing (CIA-mood) — scatta a fine sequenza, una volta per sessione ──
-  useEffect(() => {
-    if (!isAuthenticated || !user) return;
-    if (waitingSequence) return; // aspetta la fine dell'animazione
-    if (greetedRef.current === user.id) return;
-    greetedRef.current = user.id;
-
-    const hour = new Date().getHours();
-    const part =
-      hour < 6  ? "Buonanotte" :
-      hour < 12 ? "Buongiorno" :
-      hour < 18 ? "Buon pomeriggio" :
-                  "Buonasera";
-    const codename = (user.fullName || user.email.split("@")[0])
-      .split(/\s+/)[0];
-    const clearance = user.role === "admin" ? "CLEARANCE: ALPHA-1" : "CLEARANCE: BRAVO";
-    const stamp = new Date().toLocaleString("it-IT", {
-      day: "2-digit", month: "2-digit", year: "numeric",
-      hour: "2-digit", minute: "2-digit",
-    });
-
-    // Toast leggero — il toaster del progetto è già montato in <App>
-    import("@/hooks/use-toast").then(({ toast }) => {
-      toast({
-        title: `${part}, ${codename}`,
-        description:
-          `// TRANSITINTEL · ${clearance}\n` +
-          `// SESSION OPEN · ${stamp}\n` +
-          `// status: operativo`,
-        duration: 5500,
-      });
-    }).catch(() => { /* no-op */ });
-  }, [isAuthenticated, user, waitingSequence]);
 
   if (loading) return <PageLoader />;
 
