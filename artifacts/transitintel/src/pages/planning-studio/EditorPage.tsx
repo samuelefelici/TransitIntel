@@ -138,6 +138,7 @@ export default function PlanningStudioEditorPage() {
   const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<MapRef>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
 
   /* ─── Layer overlay: Cluster (Network Engine) e Depositi ─── */
   const [globalClusters, setGlobalClusters] = useState<GlobalCluster[]>([]);
@@ -397,6 +398,21 @@ export default function PlanningStudioEditorPage() {
     ];
     mapRef.current.fitBounds(bounds, { padding: 80, duration: 500 });
   }
+
+  // ── Resize della mappa quando il container cambia dimensione ──
+  // Necessario perché Mapbox non rileva i cambi del parent (es. sidebar
+  // che si apre/chiude) senza un evento window.resize.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !mapContainerRef.current) return;
+    const map = mapRef.current.getMap() as any;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => { try { map.resize(); } catch {} });
+    });
+    ro.observe(mapContainerRef.current);
+    return () => { ro.disconnect(); cancelAnimationFrame(raf); };
+  }, [mapReady]);
 
   // ── Toggle 2D / 3D ─────────────────────────────────────────
   // Anima pitch e abilita/disabilita gli oggetti 3D dello stile Standard.
@@ -720,7 +736,7 @@ export default function PlanningStudioEditorPage() {
       </div>
 
       {/* ─── Area di lavoro: mappa full + overlays ─── */}
-      <div className="flex-1 relative overflow-hidden">
+      <div ref={mapContainerRef} className="flex-1 relative overflow-hidden">
         {!MAPBOX_TOKEN && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-900/80 text-amber-300 text-sm">
             ⚠️ VITE_MAPBOX_TOKEN non configurato
