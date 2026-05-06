@@ -3,14 +3,12 @@
  * that are NOT in the generated OpenAPI hooks.
  */
 import { useQuery } from "@tanstack/react-query";
-import { getApiBase } from "@/lib/api";
+import { apiFetch as sharedApiFetch } from "@/lib/api";
 
-const BASE = () => getApiBase();
-
+// Riusa apiFetch condiviso che setta credentials:'include' per il cookie auth
+// e dispatcha l'evento globale 'auth:unauthorized' su 401.
 async function apiFetch<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${BASE()}${path}`, init);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return sharedApiFetch<T>(path, init);
 }
 
 // ── GTFS Summary ────────────────────────────────────────────────
