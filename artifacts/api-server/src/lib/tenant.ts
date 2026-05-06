@@ -51,6 +51,27 @@ export async function ensureTenantColumns(): Promise<void> {
         ));
       }
     }
+
+    // Feed di default globale: visibile a tutti gli utenti (read-only).
+    // Permette alle pagine pubbliche (Dashboard, Cartografia, ecc.) di mostrare
+    // sempre un GTFS anche se l'utente loggato non ha caricato i propri feed.
+    try {
+      await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false`);
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_default ON gtfs_feeds(is_default) WHERE is_default = true`);
+      // Auto-seed: se nessun feed è default ma ce n'è almeno uno nel DB,
+      // marca come default il più recente in assoluto (best-effort).
+      const has = await db.execute(sql`SELECT 1 FROM gtfs_feeds WHERE is_default = true LIMIT 1`);
+      const hasDefault = ((has as any).rows?.length ?? 0) > 0;
+      if (!hasDefault) {
+        await db.execute(sql`
+          UPDATE gtfs_feeds SET is_default = true
+           WHERE id = (SELECT id FROM gtfs_feeds ORDER BY uploaded_at DESC LIMIT 1)
+        `);
+      }
+    } catch (e: any) {
+      console.warn("[tenant] is_default seed skipped:", e?.message || e);
+    }
+
     bootstrapped = true;
     console.log("[tenant] owner_user_id columns ready + backfilled");
   } catch (e: any) {
@@ -89,6 +110,7 @@ export function feedAccessibleWhere(req: Request): SQL {
   const uid = u.id;
   return sql.raw(`(
     owner_user_id = '${uid}'::uuid
+    OR is_default = true
     OR id IN (
       SELECT sp.feed_id FROM scheduling_projects sp
        WHERE sp.feed_id IS NOT NULL
@@ -126,13 +148,16 @@ export async function assertFeedAccess(
 
   // Esiste il feed?
   const exists = await db.execute(sql`
-    SELECT id, owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid LIMIT 1
+    SELECT id, owner_user_id, COALESCE(is_default, false) AS is_default FROM gtfs_feeds WHERE id = ${feedId}::uuid LIMIT 1
   `);
   const row: any = (exists as any).rows?.[0] ?? (exists as any)[0];
   if (!row) { res.status(404).json({ error: "Feed non trovato" }); return false; }
 
   // Owner diretto o legacy (owner NULL)
   if (!row.owner_user_id || row.owner_user_id === u.id) return true;
+
+  // Feed di default globale visibile a tutti
+  if (row.is_default === true) return true;
 
   // Membro/owner di un progetto che referenzia il feed
   try {

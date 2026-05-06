@@ -62,10 +62,13 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
   // Filtro tenant: per utenti normali aggiunge AND owner_user_id = uid
   // Estende l'accesso anche ai feed referenziati da scheduling_projects o ps_projects
   // di cui l'utente è owner o membro (condivisione progetti).
+  // Include inoltre i feed globalmente "di default" (is_default = true), così
+  // tutte le pagine pubbliche hanno sempre un GTFS da mostrare.
   const tenantSql = (!user || isAdmin)
     ? sql`TRUE`
     : sql.raw(`(
         owner_user_id = '${userId}'::uuid
+        OR is_default = true
         OR id IN (
           SELECT sp.feed_id FROM scheduling_projects sp
            WHERE sp.feed_id IS NOT NULL

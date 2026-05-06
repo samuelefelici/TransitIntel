@@ -1200,6 +1200,7 @@ export default function PlanningStudioEditorPage() {
                     loading={overlayLoading.clusters}
                     onReload={reloadGlobalClusters}
                     onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 600 })}
+                    projectId={projectId}
                   />
                 )}
                 {activePanel === "ne-depots" && (
@@ -2238,12 +2239,13 @@ function NewStopForm({
  *  Pannello Cluster (Network Engine) — sola lettura + apertura editor
  * ════════════════════════════════════════════════════════════ */
 function NeClustersPanel({
-  clusters, loading, onReload, onFlyTo,
+  clusters, loading, onReload, onFlyTo, projectId,
 }: {
   clusters: GlobalCluster[];
   loading?: boolean;
   onReload: () => Promise<void> | void;
   onFlyTo: (lat: number, lon: number) => void;
+  projectId: string;
 }) {
   return (
     <div className="p-3 space-y-2">
@@ -2252,7 +2254,7 @@ function NeClustersPanel({
         <div className="flex gap-1">
           <button onClick={() => onReload()} title="Ricarica"
             className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
-          <a href="/cluster" target="_blank" rel="noopener noreferrer"
+          <a href={`/planning-studio/${projectId}/clusters`} target="_blank" rel="noopener noreferrer"
             className="text-[11px] px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center gap-1">
             <Pencil className="w-3 h-3" /> Gestisci
           </a>

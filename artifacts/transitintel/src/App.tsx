@@ -243,30 +243,18 @@ function AuthGate() {
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
-  // Listener globale: 401 -> logout client-side (redirect a login)
+  // Listener globale: 401 -> svuota lo stato; AuthProvider rinegozierà via /me.
+  // NON forziamo redirect duro a /login: lasciamo che lo stato di auth si auto-aggiorni
+  // (un singolo 401 su una route protetta non significa che la sessione è caduta — può essere
+  // un endpoint per cui l'utente non ha permesso, e usare navigate qui interrompe la UX).
   useEffect(() => {
-    let lastShown = 0;
     function onUnauth() {
-      // svuota lo stato lasciando che AuthProvider rinegozi via /me
-      sessionStorage.removeItem("transitintel_auth");
-      // Notifica utente (debounce 5s contro burst di 401)
-      const now = Date.now();
-      if (now - lastShown > 5000) {
-        lastShown = now;
-        try {
-          import("sonner").then(({ toast }) => {
-            toast.error("Sessione scaduta", { description: "Effettua di nuovo l'accesso." });
-          }).catch(() => {});
-        } catch {}
-      }
-      // Forza redirect a login se non già lì
-      if (typeof window !== "undefined" && !window.location.pathname.endsWith("/login")) {
-        try { navigate("/login"); } catch {}
-      }
+      // best-effort: invalida cache locale; AuthProvider farà /me al prossimo tick
+      try { sessionStorage.removeItem("transitintel_auth"); } catch {}
     }
     window.addEventListener("auth:unauthorized", onUnauth);
     return () => window.removeEventListener("auth:unauthorized", onUnauth);
-  }, [navigate]);
+  }, []);
 
   // Quando LoginPage finisce la sequenza "Verifica Identità → Accesso Autorizzato → Inizializzazione"
   // dispatcha auth:login-sequence-done. Solo allora smontiamo il login e montiamo l'app.
