@@ -17,7 +17,7 @@ import { timeToMinutes } from "../lib/geo-utils";
 import { parseCsv, buildShapeGeojson } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
-import { tenantWhere, assertFeedAccess, ensureTenantColumns } from "../lib/tenant";
+import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -321,7 +321,7 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
 router.get("/gtfs/feeds", async (req, res) => {
   try {
     await ensureFeedActiveColumn();
-    const where = tenantWhere(req);
+    const where = feedAccessibleWhere(req);
     const feeds = await db.execute(sql`
       SELECT id, filename, agency_name AS "agencyName",
              feed_start_date AS "feedStartDate", feed_end_date AS "feedEndDate",

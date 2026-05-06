@@ -76,7 +76,42 @@ export function currentUserIdOrNull(req: Request): string | null {
 }
 
 /**
+ * Fragment SQL che descrive l'accesso ai feed GTFS per l'utente corrente.
+ * Include i feed di proprietà diretta + quelli referenziati da
+ * scheduling_projects o ps_projects condivisi (owner o membro).
+ *
+ * Da usare nelle WHERE di SELECT su gtfs_feeds.
+ */
+export function feedAccessibleWhere(req: Request): SQL {
+  const u = req.user;
+  if (!u) return sql.raw("FALSE");
+  if (u.role === "admin") return sql.raw("TRUE");
+  const uid = u.id;
+  return sql.raw(`(
+    owner_user_id = '${uid}'::uuid
+    OR id IN (
+      SELECT sp.feed_id FROM scheduling_projects sp
+       WHERE sp.feed_id IS NOT NULL
+         AND (sp.owner_user_id = '${uid}'::uuid
+              OR EXISTS (SELECT 1 FROM project_members pm
+                          WHERE pm.project_id = sp.id
+                            AND pm.user_id = '${uid}'::uuid))
+    )
+    OR id IN (
+      SELECT pp.materialized_feed_id FROM ps_projects pp
+       WHERE pp.materialized_feed_id IS NOT NULL
+         AND (pp.owner_user_id = '${uid}'::uuid
+              OR EXISTS (SELECT 1 FROM ps_project_members ppm
+                          WHERE ppm.project_id = pp.id
+                            AND ppm.user_id = '${uid}'::uuid))
+    )
+  )`);
+}
+
+/**
  * Verifica che l'utente possa accedere a un feed GTFS.
+ * Accetta sia owner diretto sia membro di un progetto (PS o Scheduling)
+ * che referenzia il feed.
  * Risponde 403 e ritorna false se non autorizzato.
  */
 export async function assertFeedAccess(
@@ -88,16 +123,45 @@ export async function assertFeedAccess(
   const u = req.user;
   if (!u) { res.status(401).json({ error: "Non autenticato" }); return false; }
   if (u.role === "admin") return true;
-  const r = await db.execute(sql`
-    SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid LIMIT 1
+
+  // Esiste il feed?
+  const exists = await db.execute(sql`
+    SELECT id, owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid LIMIT 1
   `);
-  const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+  const row: any = (exists as any).rows?.[0] ?? (exists as any)[0];
   if (!row) { res.status(404).json({ error: "Feed non trovato" }); return false; }
-  if (row.owner_user_id && row.owner_user_id !== u.id) {
-    res.status(403).json({ error: "Accesso negato a questo feed" });
-    return false;
-  }
-  return true;
+
+  // Owner diretto o legacy (owner NULL)
+  if (!row.owner_user_id || row.owner_user_id === u.id) return true;
+
+  // Membro/owner di un progetto che referenzia il feed
+  try {
+    const shared = await db.execute(sql`
+      SELECT 1 FROM scheduling_projects sp
+       WHERE sp.feed_id = ${feedId}::uuid
+         AND (sp.owner_user_id = ${u.id}::uuid
+              OR EXISTS (SELECT 1 FROM project_members pm
+                          WHERE pm.project_id = sp.id
+                            AND pm.user_id = ${u.id}::uuid))
+       LIMIT 1
+    `);
+    if ((shared as any).rows?.length || (shared as any)[0]) return true;
+  } catch {}
+  try {
+    const sharedPs = await db.execute(sql`
+      SELECT 1 FROM ps_projects pp
+       WHERE pp.materialized_feed_id = ${feedId}::uuid
+         AND (pp.owner_user_id = ${u.id}::uuid
+              OR EXISTS (SELECT 1 FROM ps_project_members ppm
+                          WHERE ppm.project_id = pp.id
+                            AND ppm.user_id = ${u.id}::uuid))
+       LIMIT 1
+    `);
+    if ((sharedPs as any).rows?.length || (sharedPs as any)[0]) return true;
+  } catch {}
+
+  res.status(403).json({ error: "Accesso negato a questo feed" });
+  return false;
 }
 
 /**

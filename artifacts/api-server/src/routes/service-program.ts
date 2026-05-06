@@ -22,6 +22,11 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import {
+  vehicleScenariosAccessibleWhere,
+  requireVehicleScenarioRead,
+  requireVehicleScenarioWrite,
+} from "../lib/scenario-access";
 
 const router: IRouter = Router();
 
@@ -1760,6 +1765,8 @@ router.post("/service-program/scenarios", async (req, res) => {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
       return;
     }
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
     const feedId = await getLatestFeedId(req);
     const [row] = await db.insert(serviceProgramScenarios).values({
       name,
@@ -1768,6 +1775,12 @@ router.post("/service-program/scenarios", async (req, res) => {
       input: input as any,
       result: scenarioResult as any,
     }).returning({ id: serviceProgramScenarios.id, createdAt: serviceProgramScenarios.createdAt });
+    // Stamp owner per il nuovo modello multi-tenant (colonna additiva)
+    try {
+      await db.execute(sql`UPDATE service_program_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
+    } catch (e: any) {
+      req.log.warn({ err: e?.message }, "stamp owner_user_id failed (non-fatal)");
+    }
     // Aggancia al progetto se passato (colonna nullable aggiunta da scheduling-projects)
     if (projectId && /^[0-9a-f-]{36}$/i.test(projectId)) {
       try {
@@ -1783,23 +1796,21 @@ router.post("/service-program/scenarios", async (req, res) => {
   }
 });
 
-/** GET /api/service-program/scenarios — list saved scenarios */
-router.get("/service-program/scenarios", async (_req, res) => {
+/** GET /api/service-program/scenarios — list saved scenarios accessibili */
+router.get("/service-program/scenarios", async (req, res) => {
   try {
-    const rows = await db.select({
-      id: serviceProgramScenarios.id,
-      name: serviceProgramScenarios.name,
-      date: serviceProgramScenarios.date,
-      createdAt: serviceProgramScenarios.createdAt,
-    }).from(serviceProgramScenarios)
-      .orderBy(desc(serviceProgramScenarios.createdAt));
-
-    // Add summary info from the stored result
-    const scenarios = rows.map(r => ({
-      ...r,
-    }));
-
-    res.json(scenarios);
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+    const isAdmin = req.user?.role === "admin";
+    const where = vehicleScenariosAccessibleWhere(userId, isAdmin);
+    const r = await db.execute(sql`
+      SELECT s.id, s.name, s.date, s.created_at AS "createdAt"
+        FROM service_program_scenarios s
+       WHERE ${where}
+       ORDER BY s.created_at DESC
+    `);
+    const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+    res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1808,6 +1819,8 @@ router.get("/service-program/scenarios", async (_req, res) => {
 /** PUT /api/service-program/scenarios/:id — overwrite an existing scenario (name + result + input) */
 router.put("/service-program/scenarios/:id", async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioWrite(req, res, req.params.id);
+    if (!acc) return;
     const { name, input, result: scenarioResult } = req.body as {
       name?: string; input?: unknown; result?: unknown;
     };
@@ -1833,6 +1846,8 @@ router.put("/service-program/scenarios/:id", async (req, res) => {
 /** GET /api/service-program/scenarios/:id — load a single scenario */
 router.get("/service-program/scenarios/:id", async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, req.params.id);
+    if (!acc) return;
     const [row] = await db.select().from(serviceProgramScenarios)
       .where(eq(serviceProgramScenarios.id, req.params.id));
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
@@ -1842,9 +1857,16 @@ router.get("/service-program/scenarios/:id", async (req, res) => {
   }
 });
 
-/** DELETE /api/service-program/scenarios/:id — delete a scenario */
+/** DELETE /api/service-program/scenarios/:id — delete a scenario (solo owner/admin) */
 router.delete("/service-program/scenarios/:id", async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioWrite(req, res, req.params.id);
+    if (!acc) return;
+    // Only owner (o admin) può cancellare definitivamente
+    if (acc.level !== "owner" && acc.level !== "legacy") {
+      res.status(403).json({ error: "Solo l'owner può eliminare lo scenario" });
+      return;
+    }
     await db.delete(serviceProgramScenarios)
       .where(eq(serviceProgramScenarios.id, req.params.id));
     res.json({ ok: true });

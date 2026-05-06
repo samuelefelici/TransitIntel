@@ -100,6 +100,21 @@ export default function SharePsProjectDialog({ projectId, open, onClose, canMana
     }
   }
 
+  async function handleChangeRole(m: PsMember, newRole: "editor" | "viewer") {
+    if (m.role === "owner" || m.role === newRole) return;
+    setBusyUserId(m.userId);
+    try {
+      await addPsMember(projectId, m.userId, newRole); // UPSERT
+      setMembers(prev => prev.map(x => x.userId === m.userId ? { ...x, role: newRole } : x));
+      toast.success(`Ruolo aggiornato a ${newRole}`);
+      onChange?.();
+    } catch (e: any) {
+      toast.error(e?.message || "Impossibile aggiornare il ruolo");
+    } finally {
+      setBusyUserId(null);
+    }
+  }
+
   if (!open) return null;
 
   return (
@@ -154,15 +169,27 @@ export default function SharePsProjectDialog({ projectId, open, onClose, canMana
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                        m.role === "owner" ? "bg-amber-500/15 text-amber-300" :
-                        m.role === "editor" ? "bg-emerald-500/15 text-emerald-300" :
-                        "bg-zinc-700/50 text-zinc-400"
-                      }`}>
-                        {m.role === "owner"
-                          ? <span className="inline-flex items-center gap-1"><Shield className="w-2.5 h-2.5" /> owner</span>
-                          : m.role}
-                      </span>
+                      {canManage && m.role !== "owner" ? (
+                        <select
+                          value={m.role}
+                          disabled={busyUserId === m.userId}
+                          onChange={e => handleChangeRole(m, e.target.value as "editor" | "viewer")}
+                          className="text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-zinc-200 hover:border-cyan-500/50 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                        >
+                          <option value="editor">editor</option>
+                          <option value="viewer">viewer</option>
+                        </select>
+                      ) : (
+                        <span className={`text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                          m.role === "owner" ? "bg-amber-500/15 text-amber-300" :
+                          m.role === "editor" ? "bg-emerald-500/15 text-emerald-300" :
+                          "bg-zinc-700/50 text-zinc-400"
+                        }`}>
+                          {m.role === "owner"
+                            ? <span className="inline-flex items-center gap-1"><Shield className="w-2.5 h-2.5" /> owner</span>
+                            : m.role}
+                        </span>
+                      )}
                       {canManage && m.role !== "owner" && (
                         <button onClick={() => handleRemove(m)} disabled={busyUserId === m.userId}
                           className="p-1.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-50">

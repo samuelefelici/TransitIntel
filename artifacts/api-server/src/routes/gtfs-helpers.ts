@@ -60,9 +60,29 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
   const userId: string | undefined = user?.id;
 
   // Filtro tenant: per utenti normali aggiunge AND owner_user_id = uid
+  // Estende l'accesso anche ai feed referenziati da scheduling_projects o ps_projects
+  // di cui l'utente è owner o membro (condivisione progetti).
   const tenantSql = (!user || isAdmin)
     ? sql`TRUE`
-    : sql.raw(`(owner_user_id = '${userId}'::uuid)`);
+    : sql.raw(`(
+        owner_user_id = '${userId}'::uuid
+        OR id IN (
+          SELECT sp.feed_id FROM scheduling_projects sp
+           WHERE sp.feed_id IS NOT NULL
+             AND (sp.owner_user_id = '${userId}'::uuid
+                  OR EXISTS (SELECT 1 FROM project_members pm
+                              WHERE pm.project_id = sp.id
+                                AND pm.user_id = '${userId}'::uuid))
+        )
+        OR id IN (
+          SELECT pp.materialized_feed_id FROM ps_projects pp
+           WHERE pp.materialized_feed_id IS NOT NULL
+             AND (pp.owner_user_id = '${userId}'::uuid
+                  OR EXISTS (SELECT 1 FROM ps_project_members ppm
+                              WHERE ppm.project_id = pp.id
+                                AND ppm.user_id = '${userId}'::uuid))
+        )
+      )`);
 
   // 1) Feed esplicito da request: ?feedId=… oppure body.feedId
   const explicitId =

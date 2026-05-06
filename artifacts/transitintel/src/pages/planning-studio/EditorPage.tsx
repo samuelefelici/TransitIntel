@@ -244,18 +244,20 @@ export default function PlanningStudioEditorPage() {
     (async () => {
       setLoading(true);
       try {
-        const [p, s, r, c, cl] = await Promise.all([
+        const results = await Promise.allSettled([
           getPsProject(projectId),
           listPsStops(projectId),
           listPsRoutes(projectId),
           listPsCalendars(projectId),
           listPsClusters(projectId),
         ]);
-        setProject(p);
-        setStops(s);
-        setRoutes(r);
-        setCalendars(c);
-        setClusters(cl);
+        const [pR, sR, rR, cR, clR] = results;
+        if (pR.status === "fulfilled") setProject(pR.value);
+        else { toast.error("Errore caricamento progetto", { description: (pR.reason as any)?.message }); return; }
+        if (sR.status === "fulfilled") setStops(sR.value); else toast.warning("Fermate non caricate");
+        if (rR.status === "fulfilled") setRoutes(rR.value); else toast.warning("Linee non caricate");
+        if (cR.status === "fulfilled") setCalendars(cR.value); else toast.warning("Calendari non caricati");
+        if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Cluster non caricati");
       } catch (e: any) {
         toast.error("Errore caricamento", { description: e?.message });
       } finally { setLoading(false); }
@@ -586,10 +588,15 @@ export default function PlanningStudioEditorPage() {
         description: `${r.counts.stops} fermate · ${r.counts.routes} linee · ${r.counts.trips} corse`,
       });
       // Ricarica i dati del progetto
-      const [s, rr, c, cl] = await Promise.all([
+      const results = await Promise.allSettled([
         listPsStops(projectId), listPsRoutes(projectId), listPsCalendars(projectId), listPsClusters(projectId),
       ]);
-      setStops(s); setRoutes(rr); setCalendars(c); setClusters(cl);
+      const [sR, rrR, cR, clR] = results;
+      const s = sR.status === "fulfilled" ? sR.value : stops;
+      if (sR.status === "fulfilled") setStops(s); else toast.warning("Fermate non ricaricate");
+      if (rrR.status === "fulfilled") setRoutes(rrR.value); else toast.warning("Linee non ricaricate");
+      if (cR.status === "fulfilled") setCalendars(cR.value); else toast.warning("Calendari non ricaricati");
+      if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Cluster non ricaricati");
       // Fit map sulle fermate
       if (s.length > 0) {
         const coords = s.map(x => [x.lon, x.lat] as [number, number]);
@@ -647,6 +654,21 @@ export default function PlanningStudioEditorPage() {
           <Share2 className="w-3.5 h-3.5" />
           {project.myRole === "owner" ? "Condividi" : "Membri"}
         </button>
+
+        {/* Badge ruolo */}
+        <span
+          title={`Il tuo ruolo su questo progetto: ${project.myRole}`}
+          className={
+            "px-2 py-1 rounded text-[10px] font-semibold uppercase tracking-wide shrink-0 border " +
+            (project.myRole === "owner"
+              ? "bg-amber-500/15 text-amber-200 border-amber-500/30"
+              : project.myRole === "editor"
+                ? "bg-emerald-500/15 text-emerald-200 border-emerald-500/30"
+                : "bg-slate-500/15 text-slate-300 border-slate-500/30")
+          }
+        >
+          {project.myRole === "owner" ? "Proprietario" : project.myRole === "editor" ? "Editor" : "Sola lettura"}
+        </span>
 
         <div className="h-7 w-px bg-slate-800 mx-1" />
 

@@ -433,16 +433,24 @@ router.post(
       const projectId = String(req.params.id || "");
       if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "ID progetto non valido" }); return; }
 
-      // Carica scheduling project (solo owner ha permessi di sync)
+      // Carica scheduling project: owner OPPURE membro (editor) può sincronizzare
       const projR = await db.execute(sql`
-        SELECT p.id, p.name, p.owner_user_id, p.planning_studio_project_id
+        SELECT p.id, p.name, p.owner_user_id, p.planning_studio_project_id,
+               CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
+                    ELSE pm.role END AS my_role
           FROM scheduling_projects p
+          LEFT JOIN project_members pm
+                 ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
          WHERE p.id = ${projectId}::uuid
-           AND p.owner_user_id = ${userId}::uuid
+           AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
          LIMIT 1
       `);
       const proj: any = (projR as any).rows?.[0] ?? (projR as any)[0] ?? null;
       if (!proj) { res.status(404).json({ error: "Progetto non trovato o senza permessi" }); return; }
+      if (proj.my_role === "viewer") {
+        res.status(403).json({ error: "I viewer non possono sincronizzare il feed dal Planning Studio" });
+        return;
+      }
       if (!proj.planning_studio_project_id) {
         res.status(400).json({ error: "Questo progetto non è collegato a nessun PsProject" });
         return;

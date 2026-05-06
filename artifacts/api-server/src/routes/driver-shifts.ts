@@ -34,10 +34,16 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes, driverShiftScenarios } from "@workspace/db/schema";
-import { eq, inArray, and, desc } from "drizzle-orm";
+import { eq, inArray, and, desc, sql } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { jobManager } from "../lib/job-manager.js";
+import {
+  driverScenariosAccessibleWhere,
+  requireVehicleScenarioRead,
+  requireDriverScenarioRead,
+  requireDriverScenarioWrite,
+} from "../lib/scenario-access";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
 
@@ -878,6 +884,8 @@ async function loadAndGenerate(scenarioId: string) {
 
 router.post("/driver-shifts/:scenarioId", strictLimiter, async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
+    if (!acc) return;
     const result = await loadAndGenerate((req.params.scenarioId as string));
     if (result.error) { res.status(result.status!).json({ error: result.error }); return; }
     res.json(result.data);
@@ -889,6 +897,8 @@ router.post("/driver-shifts/:scenarioId", strictLimiter, async (req, res) => {
 
 router.get("/driver-shifts/:scenarioId", async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
+    if (!acc) return;
     const result = await loadAndGenerate((req.params.scenarioId as string));
     if (result.error) { res.status(result.status!).json({ error: result.error }); return; }
     res.json(result.data);
@@ -974,6 +984,8 @@ async function runCPSATCrewScheduler(
 /** POST /api/driver-shifts/:scenarioId/cpsat — CP-SAT crew scheduling (sync, legacy) */
 router.post("/driver-shifts/:scenarioId/cpsat", strictLimiter, async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
+    if (!acc) return;
     const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
 
     const [scenario] = await db.select().from(serviceProgramScenarios)
@@ -1015,6 +1027,8 @@ router.post("/driver-shifts/:scenarioId/cpsat", strictLimiter, async (req, res) 
 /** POST /api/driver-shifts/:scenarioId/cpsat/async — Launch async optimization, returns 202 + jobId */
 router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
+    if (!acc) return;
     const body = req.body as any || {};
     const timeLimitSec = body.timeLimit ?? 120;
     const operatorConfig = body.config ?? {};
@@ -1224,6 +1238,8 @@ router.post("/driver-shifts/jobs/:jobId/stop", (req, res) => {
 /** POST /api/driver-shifts/:scenarioId/compare — Compare greedy vs CP-SAT */
 router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
   try {
+    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
+    if (!acc) return;
     const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
 
     // Run greedy
@@ -1281,6 +1297,14 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
 router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
   try {
     const scenarioId = req.params.scenarioId as string;
+    // Per salvare un DSS l'utente deve poter SCRIVERE sullo scenario vetture parent
+    const acc = await requireVehicleScenarioRead(req, res, scenarioId);
+    if (!acc) return;
+    if (!acc.canWrite) {
+      res.status(403).json({ error: "Permesso insufficiente sullo scenario vetture: solo lettura" });
+      return;
+    }
+    const userId = req.user?.id;
     const { name, result: dssResult, config } = req.body;
     if (!name || !dssResult) { res.status(400).json({ error: "name and result required" }); return; }
     const [row] = await db.insert(driverShiftScenarios).values({
@@ -1289,6 +1313,14 @@ router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
       result: dssResult,
       config: config ?? null,
     }).returning();
+    // Stamp owner_user_id (colonna additiva)
+    if (userId) {
+      try {
+        await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
+      } catch (e: any) {
+        req.log.warn({ err: e?.message }, "stamp DSS owner_user_id failed (non-fatal)");
+      }
+    }
     res.json(row);
   } catch (err: any) {
     req.log.error(err, "Error saving driver-shift scenario");
@@ -1296,22 +1328,29 @@ router.post("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
   }
 });
 
-// GET — list saved driver-shift scenarios (lightweight summary)
+// GET — list saved driver-shift scenarios accessibili dal corrente utente
 router.get("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
   try {
     const scenarioId = req.params.scenarioId as string;
-    const rows = await db.select().from(driverShiftScenarios)
-      .where(eq(driverShiftScenarios.serviceProgramScenarioId, scenarioId))
-      .orderBy(desc(driverShiftScenarios.createdAt));
-    const list = rows.map(r => {
-      const res = r.result as any;
-      return {
-        id: r.id,
-        name: r.name,
-        createdAt: r.createdAt,
-        summary: res?.summary ?? {},
-      };
-    });
+    const acc = await requireVehicleScenarioRead(req, res, scenarioId);
+    if (!acc) return;
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === "admin";
+    const accWhere = driverScenariosAccessibleWhere(userId, isAdmin);
+    const r = await db.execute(sql`
+      SELECT d.id, d.name, d.created_at AS "createdAt", d.result
+        FROM driver_shift_scenarios d
+       WHERE d.service_program_scenario_id = ${scenarioId}::uuid
+         AND ${accWhere}
+       ORDER BY d.created_at DESC
+    `);
+    const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+    const list = rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      createdAt: r.createdAt,
+      summary: (r.result as any)?.summary ?? {},
+    }));
     res.json(list);
   } catch (err: any) {
     req.log.error(err, "Error listing driver-shift scenarios");
@@ -1322,6 +1361,8 @@ router.get("/driver-shifts/:scenarioId/scenarios", async (req, res) => {
 // GET — load full driver-shift scenario
 router.get("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
   try {
+    const acc = await requireDriverScenarioRead(req, res, (req.params.dssId as string));
+    if (!acc) return;
     const [row] = await db.select().from(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     if (!row) { res.status(404).json({ error: "Not found" }); return; }
@@ -1332,9 +1373,15 @@ router.get("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
   }
 });
 
-// DELETE — remove a driver-shift scenario
+// DELETE — remove a driver-shift scenario (solo owner DSS / owner vehicle parent / admin)
 router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) => {
   try {
+    const acc = await requireDriverScenarioWrite(req, res, (req.params.dssId as string));
+    if (!acc) return;
+    if (acc.level !== "owner" && acc.level !== "legacy") {
+      res.status(403).json({ error: "Solo l'owner può eliminare lo scenario turni" });
+      return;
+    }
     await db.delete(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
