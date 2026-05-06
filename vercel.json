@@ -5,6 +5,7 @@
   "buildCommand": "pnpm -w run typecheck:libs && pnpm --filter @workspace/transitintel run build",
   "outputDirectory": "artifacts/transitintel/dist",
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://transit-intel-api-server-dy36-samueles-projects-655c2263.vercel.app/api/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
