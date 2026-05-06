@@ -10,12 +10,13 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2,
 } from "lucide-react";
 import {
   listPsProjects, createPsProject, deletePsProject,
   type PsProject,
 } from "@/lib/planning-studio-api";
+import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 
 export default function PlanningStudioListPage() {
   const [, navigate] = useLocation();
@@ -26,6 +27,7 @@ export default function PlanningStudioListPage() {
   const [description, setDescription] = useState("");
   const [agencyName, setAgencyName] = useState("");
   const [creating, setCreating] = useState(false);
+  const [shareProject, setShareProject] = useState<PsProject | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -114,6 +116,7 @@ export default function PlanningStudioListPage() {
               <ProjectCard key={p.id} project={p}
                 onOpen={() => navigate(`/planning-studio/${p.id}`)}
                 onDelete={() => handleDelete(p)}
+                onShare={() => setShareProject(p)}
               />
             ))}
           </div>
@@ -169,6 +172,17 @@ export default function PlanningStudioListPage() {
 
       {/* Dialog import GTFS */}
       {/* RIMOSSO: l'import GTFS è ora un onboarding step dentro l'editor del progetto */}
+
+      {/* Dialog condividi */}
+      {shareProject && (
+        <SharePsProjectDialog
+          projectId={shareProject.id}
+          open
+          canManage={shareProject.myRole === "owner"}
+          onClose={() => setShareProject(null)}
+          onChange={refresh}
+        />
+      )}
     </div>
   );
 }
@@ -191,8 +205,8 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 }
 
 function ProjectCard({
-  project: p, onOpen, onDelete,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void }) {
+  project: p, onOpen, onDelete, onShare,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void }) {
   const isOwner = p.myRole === "owner";
   return (
     <motion.div
@@ -229,12 +243,30 @@ function ProjectCard({
           {new Date(p.updatedAt).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" })}
         </span>
         {isOwner && (
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+            <button
+              onClick={(e) => { e.stopPropagation(); onShare(); }}
+              className="p-1 rounded hover:bg-cyan-500/10 text-slate-500 hover:text-cyan-400 transition"
+              title="Condividi"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onDelete(); }}
+              className="p-1 rounded hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition"
+              title="Elimina"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {!isOwner && (
           <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition"
-            title="Elimina"
+            onClick={(e) => { e.stopPropagation(); onShare(); }}
+            className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-cyan-500/10 text-slate-500 hover:text-cyan-400 transition"
+            title="Vedi membri"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Share2 className="w-3.5 h-3.5" />
           </button>
         )}
       </div>

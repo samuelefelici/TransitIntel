@@ -25,8 +25,9 @@ import {
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
-  ChevronDown, Pencil, Search, Flame, Building2, Grip,
+  ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
 } from "lucide-react";
+import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
@@ -149,6 +150,7 @@ export default function PlanningStudioEditorPage() {
   const [showDepots, setShowDepots] = useState(false);
   const [editingDepot, setEditingDepot] = useState<GlobalDepot | null>(null);
   const [creatingDepotAt, setCreatingDepotAt] = useState<{ lat: number; lon: number } | null>(null);
+  const [shareOpen, setShareOpen] = useState(false);
   const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
   const [depotModalHidden, setDepotModalHidden] = useState(false);
 
@@ -637,6 +639,15 @@ export default function PlanningStudioEditorPage() {
           </p>
         </div>
 
+        <button
+          onClick={() => setShareOpen(true)}
+          title={project.myRole === "owner" ? "Condividi progetto" : "Vedi membri"}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-200 text-xs font-medium transition shrink-0"
+        >
+          <Share2 className="w-3.5 h-3.5" />
+          {project.myRole === "owner" ? "Condividi" : "Membri"}
+        </button>
+
         <div className="h-7 w-px bg-slate-800 mx-1" />
 
         {/* Data toolbar — accesso ai pannelli dati */}
@@ -1050,6 +1061,16 @@ export default function PlanningStudioEditorPage() {
               Annulla
             </button>
           </div>
+        )}
+
+        {/* ─── Dialog condivisione progetto ─── */}
+        {shareOpen && (
+          <SharePsProjectDialog
+            projectId={project.id}
+            open
+            canManage={project.myRole === "owner"}
+            onClose={() => setShareOpen(false)}
+          />
         )}
 
         {/* ─── Pannello dati floating (sx) ─── */}
