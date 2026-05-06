@@ -25,6 +25,7 @@ import {
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
@@ -89,6 +90,14 @@ export default function DriverWorkspace({
   initialResult,
   scenarioLabel,
 }: DriverWorkspaceProps) {
+  // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
+  //    dopo aver salvato lo scenario turni guida.
+  const [currentLocation, navigate] = useLocation();
+  const projectIdFromUrl = useMemo(() => {
+    const m = currentLocation.match(/\/fucina\/([^/?#]+)/);
+    return m?.[1] ?? null;
+  }, [currentLocation]);
+
   const [result, setResult] = useState<DriverShiftsResult | null>(initialResult ?? null);
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("cpsat");
   const [loading, setLoading] = useState(false);
@@ -239,6 +248,10 @@ export default function DriverWorkspace({
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       setShowSaveDialog(false); setDssName("");
       toast.success("Scenario turni guida salvato");
+      // ── Ritorno alla home del progetto dopo salvataggio turni guida ──
+      if (projectIdFromUrl) {
+        setTimeout(() => navigate(`/fucina/${projectIdFromUrl}`), 400);
+      }
     } catch (e: any) {
       toast.error("Errore salvataggio", { description: e.message });
     } finally {

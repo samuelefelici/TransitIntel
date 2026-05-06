@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 import { Printer, FolderOpen } from "lucide-react";
 import InteractiveGantt, {
   type GanttBar, type GanttRow, type GanttChange, type GanttSuggestion,
@@ -484,6 +485,17 @@ function rebuildOptimizeRequest(result: ServiceProgramResult): {
  * ═══════════════════════════════════════════════════════════════ */
 
 export default function VehicleWorkspace({ initialResult }: { initialResult?: ServiceProgramResult }) {
+  // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
+  //    dopo il salvataggio dello scenario. Pattern coperti:
+  //      /fucina/:projectId/vehicles[/...]  → home = /fucina/:projectId
+  //      /fucina/:projectId/...             → home = /fucina/:projectId
+  //    Se non siamo dentro un progetto (es. flusso senza projectId) restiamo sulla pagina.
+  const [currentLocation, navigate] = useLocation();
+  const projectIdFromUrl = useMemo(() => {
+    const m = currentLocation.match(/\/fucina\/([^/?#]+)/);
+    return m?.[1] ?? null;
+  }, [currentLocation]);
+
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
@@ -1121,6 +1133,10 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
       setSavedId(data.id);
       setScenarioName(finalName);
       toast.success("Scenario salvato!", { description: `${finalName} (id ${data.id})` });
+      // ── Ritorno alla home del progetto dopo salvataggio turni macchina ──
+      if (projectIdFromUrl) {
+        setTimeout(() => navigate(`/fucina/${projectIdFromUrl}`), 400);
+      }
       return true;
     } catch (err: any) {
       toast.error("Errore salvataggio", { description: err.message });
@@ -1169,6 +1185,10 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
           ? `${added} trasferiment${added === 1 ? "o a vuoto generato" : "i a vuoto generati"} automaticamente`
           : "Modifiche salvate sul file",
       });
+      // ── Ritorno alla home del progetto anche dopo la sovrascrittura ──
+      if (projectIdFromUrl) {
+        setTimeout(() => navigate(`/fucina/${projectIdFromUrl}`), 400);
+      }
     } catch (err: any) {
       toast.error("Errore sovrascrittura", { description: err.message });
     } finally {
