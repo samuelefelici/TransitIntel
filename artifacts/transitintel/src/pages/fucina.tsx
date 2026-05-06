@@ -19,11 +19,12 @@ import {
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 import { getApiBase } from "@/lib/api";
+import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
 
-const GtfsSelectorStep = lazy(() => import("@/pages/fucina/steps/GtfsSelectorStep"));
+// NB: GtfsSelectorStep deprecato — il feed arriva sempre dal Planning Studio
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
 const DepotStep = lazy(() => import("@/pages/fucina/steps/DepotStep"));
-const ClustersStep = lazy(() => import("@/pages/fucina/steps/ClustersStep"));
+// ClustersStep deprecato — i cluster vivono solo nel Network Engine
 const DeadheadStep = lazy(() => import("@/pages/fucina/steps/DeadheadStep"));
 const OptimizerStep = lazy(() => import("@/pages/fucina/steps/OptimizerStep"));
 const WorkspaceStep = lazy(() => import("@/pages/fucina/steps/WorkspaceStep"));
@@ -44,7 +45,12 @@ export interface VehicleAssignment {
   tripVehicleOverrides: Map<string, import("@/pages/optimizer-route/types").VehicleType>;
 }
 
-/* ── Definizione step ────────────────────────────────────── */
+/* ── Definizione step ──────────────────────────────────────
+ * NB: lo "step 0 — Dati GTFS" è stato deprecato: il feed di scheduling
+ * è sempre derivato (materializzato) dal Planning Studio collegato al
+ * progetto. Lo manteniamo come ID nel codice per non rinumerare tutti
+ * i riferimenti, ma lo escludiamo dalla stepper visibile (STEPS_VISIBLE).
+ */
 const STEPS = [
   { id: 0, label: "Dati GTFS",          icon: Database, desc: "Seleziona o importa feed" },
   { id: 1, label: "Abbinamento Vetture", icon: Bus,      desc: "Linee, date, tipo vettura" },
@@ -55,6 +61,12 @@ const STEPS = [
   { id: 6, label: "Area di Lavoro",      icon: Truck,    desc: "Gantt · drag & drop · esporta" },
   { id: 7, label: "Turni Guida",         icon: Users,    desc: "CSP · saturazione · cap vetture · idle" },
 ] as const;
+
+// Step effettivamente visibili nella stepper:
+//   - step 0 "Dati GTFS" rimosso (feed sempre dal Network Engine)
+//   - step 3 "Cluster di Cambio" rimosso (la gestione cluster vive solo nel
+//     Network Engine; qui i PsCluster interchange vengono caricati in automatico)
+const STEPS_VISIBLE = STEPS.filter((s) => s.id !== 0 && s.id !== 3);
 
 /* ── Splash Screen ───────────────────────────────────────── */
 function SplashScreen({ onEnter, onBack }: { onEnter: () => void; onBack: () => void }) {
@@ -122,13 +134,13 @@ function SplashScreen({ onEnter, onBack }: { onEnter: () => void; onBack: () => 
         </p>
 
         <div className="flex items-center justify-center gap-1.5 flex-wrap mt-5 mb-8">
-          {STEPS.map((s, i) => (
+          {STEPS_VISIBLE.map((s, i) => (
             <React.Fragment key={s.id}>
               <span className="flex items-center gap-1.5 text-[10px] px-2.5 py-1 rounded-full border border-orange-500/30 text-orange-400/80 bg-orange-500/5">
                 <s.icon className="w-3 h-3" />
                 {s.label}
               </span>
-              {i < STEPS.length - 1 && <ArrowRight className="w-2.5 h-2.5 text-orange-400/30 shrink-0" />}
+              {i < STEPS_VISIBLE.length - 1 && <ArrowRight className="w-2.5 h-2.5 text-orange-400/30 shrink-0" />}
             </React.Fragment>
           ))}
         </div>
@@ -160,7 +172,7 @@ function StepperBar({
 }) {
   return (
     <div className="flex items-center px-4 py-2.5 border-b border-orange-500/15 shrink-0 bg-gradient-to-r from-orange-950/30 via-transparent to-transparent">
-      {STEPS.map((step, i) => {
+      {STEPS_VISIBLE.map((step, i) => {
         const done = completed.has(step.id);
         const active = current === step.id;
         const clickable = done || step.id <= current;
@@ -181,7 +193,7 @@ function StepperBar({
                     ? "bg-orange-500/20 border border-orange-500/60 text-orange-400"
                     : "bg-zinc-800 border border-zinc-700 text-zinc-500"
               }`}>
-                {done ? <CheckCircle2 className="w-3 h-3" /> : <span className="text-[10px] font-bold">{step.id + 1}</span>}
+                {done ? <CheckCircle2 className="w-3 h-3" /> : <span className="text-[10px] font-bold">{i + 1}</span>}
               </div>
               <div>
                 <p className={`text-[11px] font-semibold leading-tight ${active ? "text-orange-300" : done ? "text-orange-400/80" : "text-zinc-500"}`}>
@@ -190,7 +202,7 @@ function StepperBar({
                 <p className="text-[9px] text-orange-400/30 font-mono">{step.desc}</p>
               </div>
             </button>
-            {i < STEPS.length - 1 && (
+            {i < STEPS_VISIBLE.length - 1 && (
               <ChevronRight className={`w-3.5 h-3.5 mx-0.5 shrink-0 ${done ? "text-orange-500/50" : "text-zinc-700"}`} />
             )}
           </React.Fragment>
@@ -248,6 +260,19 @@ export default function FucinaPage() {
   const [optimizationResult, setOptimizationResult] = useState<ServiceProgramResult | null>(null);
   const [savedScenarioId, setSavedScenarioId] = useState<string | null>(null);
 
+  // ── Lock GTFS al feed materializzato dal PsProject ──────────
+  // Quando il progetto ha planning_studio_project_id, il feed è "fissato" e
+  // l'utente NON può scegliere/importare un altro GTFS dallo step 0.
+  const [psLocked, setPsLocked] = useState(false);
+  const [psSyncing, setPsSyncing] = useState(false);
+  const [psNeedsSync, setPsNeedsSync] = useState(false);
+  const [psProjectId, setPsProjectId] = useState<string | null>(null);
+  // Lista completa dei cluster del Network Engine (per UI di selezione nel DeadheadStep)
+  const [availableClusters, setAvailableClusters] = useState<{ id: string; name: string; color?: string | null }[]>([]);
+  // true dopo che il useEffect di auto-bind ha completato il primo run.
+  // Serve per evitare di mostrare lo schermo "progetto legacy" durante la fetch.
+  const [psBootstrapped, setPsBootstrapped] = useState(false);
+
   const completeStep = (s: number) => {
     setCompletedSteps(prev => new Set([...prev, s]));
     setStep(s + 1);
@@ -277,6 +302,115 @@ export default function FucinaPage() {
     }, 600);
     return () => clearTimeout(t);
   }, [projectId, startMode, optimizationResult, savedScenarioId, navigate]);
+
+
+  // ── Auto-bind GTFS dal PsProject linkato (pipeline mode con projectId) ─────
+  // Se il progetto scheduling è collegato a un PsProject, il GTFS è "fissato"
+  // sul feed materializzato dal Network Engine: l'utente NON sceglie/importa.
+  useEffect(() => {
+    if (!projectId || startMode !== "pipeline") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const proj = await getSchedulingProject(projectId);
+        if (cancelled) return;
+        if (!proj.planningStudioProjectId) {
+          // Progetto legacy senza PS linkato → comportamento classico (step 0 con scelta)
+          setPsBootstrapped(true);
+          return;
+        }
+        setPsLocked(true);
+        setPsProjectId(String(proj.planningStudioProjectId));
+
+        const buildSelection = async (feedIdToUse: string, label: string): Promise<GtfsSelection | null> => {
+          // Recupera feedStartDate dal feed
+          try {
+            const base = getApiBase();
+            const r = await fetch(`${base}/api/gtfs/feeds`);
+            const data = await r.json();
+            const feeds: any[] = Array.isArray(data?.data) ? data.data : [];
+            const f = feeds.find(x => x.id === feedIdToUse);
+            const date = (f?.feedStartDate || "").replace(/-/g, "").slice(0, 8)
+              || new Date().toISOString().slice(0, 10).replace(/-/g, "");
+            return { source: "existing", date, label, tempFeedId: feedIdToUse };
+          } catch {
+            return { source: "existing", date: new Date().toISOString().slice(0, 10).replace(/-/g, ""), label, tempFeedId: feedIdToUse };
+          }
+        };
+
+        if (proj.feedId) {
+          const sel = await buildSelection(proj.feedId, proj.feedLabel || `PS · ${proj.name}`);
+          if (cancelled || !sel) return;
+          setGtfsSelection(sel);
+          setCompletedSteps(prev => new Set([...prev, 0]));
+          // Avanza allo step 1 solo se sei ancora allo step 0
+          setStep(s => (s === 0 ? 1 : s));
+        } else {
+          // Manca il feed: mostra schermata di sync
+          setPsNeedsSync(true);
+        }
+      } catch (e: any) {
+        console.warn("[fucina] auto-bind PS feed failed", e);
+      } finally {
+        if (!cancelled) setPsBootstrapped(true);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, startMode]);
+
+  // Helper: lancia sync manuale PS → feed
+  async function handleSyncFromPs() {
+    if (!projectId) return;
+    setPsSyncing(true);
+    try {
+      const r = await syncProjectFromPs(projectId);
+      const sel: GtfsSelection = {
+        source: "existing",
+        date: r.feedStartDate || new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+        label: r.label,
+        tempFeedId: r.feedId,
+      };
+      setGtfsSelection(sel);
+      setPsNeedsSync(false);
+      setCompletedSteps(prev => new Set([...prev, 0]));
+      setStep(s => (s === 0 ? 1 : s));
+      toast.success("Dati Planning Studio sincronizzati", {
+        description: `${r.counts.routes} linee · ${r.counts.trips} corse · ${r.counts.stops} fermate`,
+      });
+    } catch (e: any) {
+      toast.error("Errore sincronizzazione", { description: e?.message || "Riprova" });
+    } finally {
+      setPsSyncing(false);
+    }
+  }
+
+  // ── Auto-popola selectedClusterIds dai cluster di tipo "Di Cambio" ─────────
+  // I cluster vivono nelle tabelle legacy stop_clusters (gestione UI: pagina
+  // /cluster del Network Engine). Lo scheduling engine li riceve come prop.
+  useEffect(() => {
+    if (!gtfsSelection?.tempFeedId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${getApiBase()}/api/clusters`, { credentials: "include" });
+        if (!r.ok) return;
+        const data = await r.json();
+        const list: any[] = Array.isArray(data?.data) ? data.data : [];
+        if (cancelled) return;
+        const interchange = list.filter(c => c.isInterchange !== false); // default true
+        setAvailableClusters(interchange.map(c => ({
+          id: c.id,
+          name: c.name,
+          color: c.color || null,
+        })));
+        setSelectedClusterIds(interchange.map(c => c.id));
+      } catch (e) {
+        console.warn("[fucina] auto-load clusters failed", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [gtfsSelection?.tempFeedId]);
 
 
   React.useEffect(() => {
@@ -415,18 +549,71 @@ export default function FucinaPage() {
                   ) : (
                   <>
                   {step === 0 && (
-                    <GtfsSelectorStep
-                      onComplete={(sel: GtfsSelection) => {
-                        setGtfsSelection(sel);
-                        completeStep(0);
-                      }}
-                    />
+                    <div className="p-6 max-w-2xl mx-auto">
+                      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+                        <div className="flex items-center gap-3 mb-6">
+                          <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center">
+                            <Database className="w-5 h-5 text-purple-300" />
+                          </div>
+                          <div>
+                            <h2 className="text-base font-bold text-foreground">Dati ancorati al Network Engine</h2>
+                            <p className="text-xs text-muted-foreground">Il GTFS di questo progetto è quello del Planning Studio collegato.</p>
+                          </div>
+                        </div>
+
+                        {!psBootstrapped || psSyncing ? (
+                          <div className="bg-purple-500/5 border border-purple-500/30 rounded-xl p-5 flex items-center gap-3 text-purple-200">
+                            <div className="w-4 h-4 border-2 border-purple-300 border-t-transparent rounded-full animate-spin" />
+                            <span className="text-sm">
+                              {psSyncing ? "Sincronizzazione in corso…" : "Carico il feed dal Planning Studio…"}
+                            </span>
+                          </div>
+                        ) : !psLocked ? (
+                          <div className="bg-red-500/5 border border-red-500/30 rounded-xl p-5 space-y-3">
+                            <div className="flex items-center gap-2 text-red-300">
+                              <Database className="w-4 h-4" />
+                              <span className="text-sm font-semibold">Progetto non collegato al Network Engine</span>
+                            </div>
+                            <p className="text-sm text-zinc-300">
+                              Lo Scheduling Engine ora lavora esclusivamente su feed materializzati dal
+                              Planning Studio. Questo progetto è legacy: ricrealo dal Network Engine per
+                              continuare.
+                            </p>
+                            <button
+                              onClick={() => navigate("/planner-studio")}
+                              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm border border-purple-500/40 text-purple-300 hover:bg-purple-500/10"
+                            >
+                              Vai al Network Engine <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="bg-amber-500/5 border border-amber-500/30 rounded-xl p-5 space-y-4">
+                            <div className="flex items-center gap-2 text-amber-300">
+                              <Database className="w-4 h-4" />
+                              <span className="text-sm font-semibold">Feed non ancora sincronizzato</span>
+                            </div>
+                            <p className="text-sm text-zinc-300">
+                              Per lavorare su questo progetto serve materializzare i dati del Planning Studio
+                              in un feed di scheduling. È un'operazione idempotente: puoi rilanciarla quando vuoi.
+                            </p>
+                            <button
+                              onClick={handleSyncFromPs}
+                              disabled={psSyncing}
+                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm text-black bg-gradient-to-r from-fuchsia-400 to-purple-400 disabled:opacity-50"
+                            >
+                              {psSyncing ? "Sincronizzazione in corso…" : "Sincronizza con Planning Studio"}
+                              {!psSyncing && <ChevronRight className="w-4 h-4" />}
+                            </button>
+                          </div>
+                        )}
+                      </motion.div>
+                    </div>
                   )}
                   {step === 1 && (
                     <VehicleAssignmentStep
                       gtfsSelection={gtfsSelection!}
                       initial={vehicleAssignment ?? undefined}
-                      onBack={() => setStep(0)}
+                      onBack={() => projectId ? navigate(`/fucina/${projectId}`) : setStep(0)}
                       onComplete={(a) => {
                         setVehicleAssignment(a);
                         completeStep(1);
@@ -439,18 +626,11 @@ export default function FucinaPage() {
                       onBack={() => setStep(1)}
                       onComplete={(depotId) => {
                         setSelectedDepotId(depotId);
-                        completeStep(2);
-                      }}
-                    />
-                  )}
-                  {step === 3 && (
-                    <ClustersStep
-                      gtfsSelection={gtfsSelection!}
-                      assignment={vehicleAssignment!}
-                      onBack={() => setStep(2)}
-                      onComplete={(ids) => {
-                        setSelectedClusterIds(ids);
-                        completeStep(3);
+                        // Salta lo step 3 (Cluster di Cambio): i cluster sono
+                        // gestiti nel Network Engine e auto-caricati come
+                        // selectedClusterIds via useEffect.
+                        setCompletedSteps(prev => new Set([...prev, 2, 3]));
+                        setStep(4);
                       }}
                     />
                   )}
@@ -460,8 +640,10 @@ export default function FucinaPage() {
                       assignment={vehicleAssignment!}
                       depotId={selectedDepotId!}
                       clusterIds={selectedClusterIds}
+                      availableClusters={availableClusters}
+                      onClusterIdsChange={setSelectedClusterIds}
                       initial={deadheadMatrix}
-                      onBack={() => setStep(3)}
+                      onBack={() => setStep(2)}
                       onComplete={(matrix) => {
                         setDeadheadMatrix(matrix);
                         completeStep(4);

@@ -61,6 +61,8 @@ interface ClusterData {
   name: string;
   transferFromDepotMin: number;
   color: string;
+  isInterchange?: boolean;
+  isLogical?: boolean;
   stops: ClusterStop[];
 }
 
@@ -114,6 +116,8 @@ export default function ClusterManagement() {
   const [clusterName, setClusterName] = useState("");
   const [clusterTransferMin, setClusterTransferMin] = useState(10);
   const [clusterColor, setClusterColor] = useState(CLUSTER_COLORS[0]);
+  const [clusterIsInterchange, setClusterIsInterchange] = useState(true);
+  const [clusterIsLogical, setClusterIsLogical] = useState(false);
   const [expandedCluster, setExpandedCluster] = useState<string | null>(null);
   const [renamingClusterId, setRenamingClusterId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -281,6 +285,8 @@ export default function ClusterManagement() {
     setClusterName("");
     setClusterTransferMin(10);
     setClusterColor(CLUSTER_COLORS[clusters.length % CLUSTER_COLORS.length]);
+    setClusterIsInterchange(true);
+    setClusterIsLogical(false);
     setSelectedStops(new Set());
     setPolygonPoints([]);
     setHoveredPoint(null);
@@ -304,6 +310,8 @@ export default function ClusterManagement() {
     setClusterName(cluster.name);
     setClusterTransferMin(cluster.transferFromDepotMin);
     setClusterColor(cluster.color);
+    setClusterIsInterchange(cluster.isInterchange ?? true);
+    setClusterIsLogical(cluster.isLogical ?? false);
     setSelectedStops(new Set(cluster.stops.map(s => s.gtfsStopId)));
     setPolygonPoints([]);
     setDrawMode(false);
@@ -339,6 +347,8 @@ export default function ClusterManagement() {
         name: clusterName.trim(),
         transferFromDepotMin: clusterTransferMin,
         color: clusterColor,
+        isInterchange: clusterIsInterchange,
+        isLogical: clusterIsLogical,
         stops,
       };
       if (editingCluster) {
@@ -358,7 +368,7 @@ export default function ClusterManagement() {
     } finally {
       setSaving(false);
     }
-  }, [clusterName, clusterTransferMin, clusterColor, selectedStops, allStops, editingCluster, cancelEdit]);
+  }, [clusterName, clusterTransferMin, clusterColor, clusterIsInterchange, clusterIsLogical, selectedStops, allStops, editingCluster, cancelEdit]);
 
   const deleteCluster = useCallback(async (id: string) => {
     try {
@@ -815,6 +825,29 @@ export default function ClusterManagement() {
                         />
                       ))}
                     </div>
+                  </div>
+                </div>
+
+                {/* Tipo cluster: Di Cambio / Logico (entrambi possibili) */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Tipo cluster</Label>
+                  <div className="flex flex-wrap gap-3 p-2 rounded-lg bg-background/50 border border-border/50">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={clusterIsInterchange}
+                        onCheckedChange={(v) => setClusterIsInterchange(!!v)}
+                      />
+                      <span className="text-xs font-medium">Di cambio</span>
+                      <span className="text-[10px] text-muted-foreground">— usato per cambi vettura in linea</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <Checkbox
+                        checked={clusterIsLogical}
+                        onCheckedChange={(v) => setClusterIsLogical(!!v)}
+                      />
+                      <span className="text-xs font-medium">Logico</span>
+                      <span className="text-[10px] text-muted-foreground">— gruppo concettuale (hub, area)</span>
+                    </label>
                   </div>
                 </div>
 

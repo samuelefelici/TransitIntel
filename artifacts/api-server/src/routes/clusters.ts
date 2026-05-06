@@ -26,16 +26,43 @@ import { getLatestFeedId } from "./gtfs-helpers";
 const router: IRouter = Router();
 
 /* ═══════════════════════════════════════════════════════════════
+ *  Bootstrap colonne is_interchange / is_logical (idempotente)
+ * ═══════════════════════════════════════════════════════════════ */
+let _bootstrappedFlags = false;
+async function ensureClusterFlagColumns(): Promise<void> {
+  if (_bootstrappedFlags) return;
+  await db.execute(sql`
+    ALTER TABLE stop_clusters
+      ADD COLUMN IF NOT EXISTS is_interchange boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS is_logical boolean NOT NULL DEFAULT false
+  `);
+  _bootstrappedFlags = true;
+}
+
+/* ═══════════════════════════════════════════════════════════════
  *  CLUSTER CRUD
  * ═══════════════════════════════════════════════════════════════ */
 
 // GET /api/clusters — tutti i cluster con le fermate associate
 router.get("/clusters", asyncHandler(async (_req, res) => {
-  const clusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
+  await ensureClusterFlagColumns();
+  // Drizzle non conosce le colonne nuove → query raw per leggere i flag
+  const rowsR: any = await db.execute(sql`
+    SELECT id, name, transfer_from_depot_min, color, is_interchange, is_logical, created_at, updated_at
+      FROM stop_clusters ORDER BY name
+  `);
+  const clusters: any[] = rowsR.rows ?? rowsR ?? [];
   const allStops = await db.select().from(stopClusterStops);
 
   const result = clusters.map(c => ({
-    ...c,
+    id: c.id,
+    name: c.name,
+    transferFromDepotMin: c.transfer_from_depot_min,
+    color: c.color,
+    isInterchange: c.is_interchange ?? true,
+    isLogical: c.is_logical ?? false,
+    createdAt: c.created_at,
+    updatedAt: c.updated_at,
     stops: allStops
       .filter(s => s.clusterId === c.id)
       .map(s => ({
@@ -52,7 +79,8 @@ router.get("/clusters", asyncHandler(async (_req, res) => {
 
 // POST /api/clusters — crea un cluster con fermate
 router.post("/clusters", asyncHandler(async (req, res) => {
-  const { name, transferFromDepotMin, color, stops } = req.body;
+  await ensureClusterFlagColumns();
+  const { name, transferFromDepotMin, color, stops, isInterchange, isLogical } = req.body;
   if (!name) {
     res.status(400).json({ error: "name is required" });
     return;
@@ -63,6 +91,14 @@ router.post("/clusters", asyncHandler(async (req, res) => {
     transferFromDepotMin: transferFromDepotMin ?? 10,
     color: color ?? "#3b82f6",
   }).returning();
+
+  // Set flags via raw SQL
+  await db.execute(sql`
+    UPDATE stop_clusters
+       SET is_interchange = ${isInterchange ?? true},
+           is_logical = ${isLogical ?? false}
+     WHERE id = ${cluster.id}::uuid
+  `);
 
   // Inserisci le fermate se presenti
   if (stops && Array.isArray(stops) && stops.length > 0) {
@@ -77,10 +113,11 @@ router.post("/clusters", asyncHandler(async (req, res) => {
     );
   }
 
-  // Ritorna il cluster con le fermate
   const clusterStops = await db.select().from(stopClusterStops).where(eq(stopClusterStops.clusterId, cluster.id));
   res.status(201).json({
     ...cluster,
+    isInterchange: isInterchange ?? true,
+    isLogical: isLogical ?? false,
     stops: clusterStops.map(s => ({
       id: s.id,
       gtfsStopId: s.gtfsStopId,
@@ -93,8 +130,9 @@ router.post("/clusters", asyncHandler(async (req, res) => {
 
 // PUT /api/clusters/:id — aggiorna nome, transferMin, colore e fermate
 router.put("/clusters/:id", asyncHandler(async (req, res) => {
+  await ensureClusterFlagColumns();
   const id = req.params.id as string;
-  const { name, transferFromDepotMin, color, stops } = req.body;
+  const { name, transferFromDepotMin, color, stops, isInterchange, isLogical } = req.body;
 
   const [cluster] = await db.update(stopClusters).set({
     ...(name !== undefined && { name }),
@@ -106,6 +144,15 @@ router.put("/clusters/:id", asyncHandler(async (req, res) => {
   if (!cluster) {
     res.status(404).json({ error: "Cluster not found" });
     return;
+  }
+
+  if (isInterchange !== undefined || isLogical !== undefined) {
+    await db.execute(sql`
+      UPDATE stop_clusters
+         SET is_interchange = COALESCE(${isInterchange ?? null}, is_interchange),
+             is_logical     = COALESCE(${isLogical ?? null},     is_logical)
+       WHERE id = ${id}::uuid
+    `);
   }
 
   // Se "stops" fornito, ricalcola le fermate (elimina + re-inserisci)
@@ -124,9 +171,16 @@ router.put("/clusters/:id", asyncHandler(async (req, res) => {
     }
   }
 
+  const finalR: any = await db.execute(sql`
+    SELECT is_interchange, is_logical FROM stop_clusters WHERE id = ${id}::uuid
+  `);
+  const flags = (finalR.rows ?? finalR ?? [])[0] ?? {};
+
   const clusterStops = await db.select().from(stopClusterStops).where(eq(stopClusterStops.clusterId, id));
   res.json({
     ...cluster,
+    isInterchange: flags.is_interchange ?? true,
+    isLogical: flags.is_logical ?? false,
     stops: clusterStops.map(s => ({
       id: s.id,
       gtfsStopId: s.gtfsStopId,

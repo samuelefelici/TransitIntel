@@ -25,7 +25,7 @@ import {
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
-  ChevronDown, Pencil, Search, Flame,
+  ChevronDown, Pencil, Search, Flame, Building2, Grip,
 } from "lucide-react";
 import {
   getPsProject, type PsProject,
@@ -37,13 +37,51 @@ import {
   routeSnap,
   listPsCalendars, createPsCalendar, deletePsCalendar, type PsCalendar,
   importPsGtfs, type PsImportCounts,
+  listPsClusters, createPsCluster, updatePsCluster, deletePsCluster,
+  setPsClusterStops, suggestPsClusters,
+  type PsCluster, type PsClusterKind, type PsClusterSuggestion,
 } from "@/lib/planning-studio-api";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 }; // Roma
 
 type Tool = "select" | "addStop" | "editVariant";
-type DataPanel = "stops" | "routes" | "calendars" | null;
+type DataPanel = "stops" | "routes" | "calendars" | "clusters" | "ne-clusters" | "ne-depots" | null;
+
+/* ─── Tipi cluster/depositi globali (Network Engine) ─── */
+interface GlobalClusterStop { gtfsStopId: string; stopName: string; stopLat: number; stopLon: number; }
+interface GlobalCluster {
+  id: string; name: string; color: string;
+  isInterchange?: boolean; isLogical?: boolean;
+  stops: GlobalClusterStop[];
+}
+interface GlobalDepot {
+  id: string; name: string; color: string;
+  lat: number | null; lon: number | null;
+  address?: string | null;
+  capacity?: number | null;
+}
+
+/* Convex hull (Andrew monotone chain) — per disegnare poligono cluster */
+function convexHull(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points;
+  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: [number, number][] = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
 
 interface VariantEditorState {
   variantId: string;
@@ -68,6 +106,7 @@ export default function PlanningStudioEditorPage() {
   const [stops, setStops] = useState<PsStop[]>([]);
   const [routes, setRoutes] = useState<PsRoute[]>([]);
   const [calendars, setCalendars] = useState<PsCalendar[]>([]);
+  const [clusters, setClusters] = useState<PsCluster[]>([]);
   const [routeVariants, setRouteVariants] = useState<Record<string, PsVariant[]>>({});
   const [loading, setLoading] = useState(true);
 
@@ -92,8 +131,110 @@ export default function PlanningStudioEditorPage() {
   const [editor, setEditor] = useState<VariantEditorState | null>(null);
   const [snapBusy, setSnapBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  // ── Mappa: stile + 3D toggle ───────────────────────────────
+  // Stile "standard" Mapbox: chiaro, dettagliato, supporta nativamente edifici 3D
+  // e landmark via setConfigProperty('basemap', 'show3dObjects', …).
+  const [is3D, setIs3D] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   const mapRef = useRef<MapRef>(null);
+
+  /* ─── Layer overlay: Cluster (Network Engine) e Depositi ─── */
+  const [globalClusters, setGlobalClusters] = useState<GlobalCluster[]>([]);
+  const [depots, setDepots] = useState<GlobalDepot[]>([]);
+  const [overlayLoading, setOverlayLoading] = useState<{ clusters?: boolean; depots?: boolean }>({});
+  const [editingDepot, setEditingDepot] = useState<GlobalDepot | null>(null);
+  const [creatingDepotAt, setCreatingDepotAt] = useState<{ lat: number; lon: number } | null>(null);
+  const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
+  const [depotModalHidden, setDepotModalHidden] = useState(false);
+
+  // I layer sono visibili quando il pannello corrispondente è aperto
+  const showGlobalClusters = activePanel === "ne-clusters";
+  const showDepots = activePanel === "ne-depots";
+
+  // Reload helpers (riusabili dai pannelli dopo CRUD)
+  const reloadGlobalClusters = useCallback(async () => {
+    setOverlayLoading(s => ({ ...s, clusters: true }));
+    try {
+      const r = await fetch("/api/clusters");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const arr: GlobalCluster[] = Array.isArray(j) ? j : (j.data ?? []);
+      setGlobalClusters(arr);
+    } catch (e: any) { toast.error("Errore caricamento cluster", { description: e?.message }); }
+    finally { setOverlayLoading(s => ({ ...s, clusters: false })); }
+  }, []);
+  const reloadDepots = useCallback(async () => {
+    setOverlayLoading(s => ({ ...s, depots: true }));
+    try {
+      const r = await fetch("/api/depots");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      const arr: GlobalDepot[] = Array.isArray(j) ? j : (j.data ?? []);
+      setDepots(arr);
+    } catch (e: any) { toast.error("Errore caricamento depositi", { description: e?.message }); }
+    finally { setOverlayLoading(s => ({ ...s, depots: false })); }
+  }, []);
+
+  // Lazy fetch quando si attivano
+  useEffect(() => {
+    if (showGlobalClusters && globalClusters.length === 0 && !overlayLoading.clusters) reloadGlobalClusters();
+  }, [showGlobalClusters]);
+  useEffect(() => {
+    if (showDepots && depots.length === 0 && !overlayLoading.depots) reloadDepots();
+  }, [showDepots]);
+
+  // Mappa: psStopId → colore del cluster a cui appartiene (matching per code o coord)
+  const stopIdToClusterColor: { [k: string]: string } = useMemo(() => {
+    if (!showGlobalClusters) return {};
+    const byCode: { [k: string]: string } = {};
+    const byCoord: { [k: string]: string } = {};
+    for (const c of globalClusters) {
+      const color = c.color || "#0ea5e9";
+      for (const cs of (c.stops || [])) {
+        if (cs.gtfsStopId) byCode[String(cs.gtfsStopId)] = color;
+        if (Number.isFinite(cs.stopLat) && Number.isFinite(cs.stopLon)) {
+          byCoord[`${cs.stopLat.toFixed(5)},${cs.stopLon.toFixed(5)}`] = color;
+        }
+      }
+    }
+    const out: { [k: string]: string } = {};
+    for (const s of stops) {
+      const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
+      const col = (s.code && byCode[s.code]) || byCoord[key];
+      if (col) out[s.id] = col;
+    }
+    return out;
+  }, [showGlobalClusters, globalClusters, stops]);
+
+  // GeoJSON poligoni cluster (convex hull) — visibile solo se toggle on
+  const clustersGeoJSON = useMemo(() => {
+    if (!showGlobalClusters) return null;
+    const features: any[] = [];
+    for (const c of globalClusters) {
+      const pts = (c.stops || [])
+        .filter(s => Number.isFinite(s.stopLon) && Number.isFinite(s.stopLat))
+        .map(s => [Number(s.stopLon), Number(s.stopLat)] as [number, number]);
+      if (pts.length === 0) continue;
+      const props = { id: c.id, name: c.name, color: c.color || "#0ea5e9" };
+      if (pts.length >= 3) {
+        const hull = convexHull(pts);
+        if (hull.length >= 3) {
+          const ring = [...hull, hull[0]];
+          features.push({ type: "Feature", properties: props, geometry: { type: "Polygon", coordinates: [ring] } });
+        }
+      }
+      // Punti delle fermate del cluster (sempre)
+      for (const p of pts) {
+        features.push({ type: "Feature", properties: { ...props, isStop: true }, geometry: { type: "Point", coordinates: p } });
+      }
+      // Centroide per l'etichetta del nome
+      const cx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+      const cy = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      features.push({ type: "Feature", properties: { ...props, isLabel: true }, geometry: { type: "Point", coordinates: [cx, cy] } });
+    }
+    return { type: "FeatureCollection", features } as any;
+  }, [showGlobalClusters, globalClusters]);
 
   /* ─── Load ─── */
   useEffect(() => {
@@ -101,16 +242,18 @@ export default function PlanningStudioEditorPage() {
     (async () => {
       setLoading(true);
       try {
-        const [p, s, r, c] = await Promise.all([
+        const [p, s, r, c, cl] = await Promise.all([
           getPsProject(projectId),
           listPsStops(projectId),
           listPsRoutes(projectId),
           listPsCalendars(projectId),
+          listPsClusters(projectId),
         ]);
         setProject(p);
         setStops(s);
         setRoutes(r);
         setCalendars(c);
+        setClusters(cl);
       } catch (e: any) {
         toast.error("Errore caricamento", { description: e?.message });
       } finally { setLoading(false); }
@@ -120,6 +263,15 @@ export default function PlanningStudioEditorPage() {
   /* ─── Map handlers ─── */
   const handleMapClick = useCallback((e: MapMouseEvent) => {
     const { lng, lat } = e.lngLat;
+
+    // Modalità "scegli posizione deposito": cattura il click e ripristina il modale
+    if (pickingDepotLocation && editingDepot) {
+      setEditingDepot({ ...editingDepot, lat, lon: lng });
+      setPickingDepotLocation(false);
+      setDepotModalHidden(false);
+      toast.success("Posizione selezionata", { description: `${lat.toFixed(5)}, ${lng.toFixed(5)}` });
+      return;
+    }
 
     // Tool 'addStop': mostra form pendente
     if (tool === "addStop") {
@@ -134,7 +286,7 @@ export default function PlanningStudioEditorPage() {
     }
     // select: deseleziona
     setSelectedStopId(null);
-  }, [tool, editor]);
+  }, [tool, editor, pickingDepotLocation, editingDepot]);
 
   /* ─── Stops CRUD ─── */
   async function handleSaveStop(stopOrCreate: { name: string; code?: string; lat: number; lon: number }, existingId?: string) {
@@ -245,6 +397,43 @@ export default function PlanningStudioEditorPage() {
     ];
     mapRef.current.fitBounds(bounds, { padding: 80, duration: 500 });
   }
+
+  // ── Toggle 2D / 3D ─────────────────────────────────────────
+  // Anima pitch e abilita/disabilita gli oggetti 3D dello stile Standard.
+  // Manteniamo sempre il light preset "day" per non scurire la mappa.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current.getMap() as any;
+    try {
+      map.setConfigProperty?.("basemap", "show3dObjects", is3D);
+      map.setConfigProperty?.("basemap", "lightPreset", "day");
+    } catch { /* style non Standard: nessun problema */ }
+    map.easeTo({
+      pitch: is3D ? 60 : 0,
+      bearing: is3D ? -17 : 0,
+      duration: 800,
+    });
+  }, [is3D, mapReady]);
+
+  // Auto-fit: appena la mappa è pronta e ci sono fermate, inquadra l'estensione
+  // del progetto (GTFS importato o fermate create manualmente). Si esegue una
+  // sola volta per non disturbare il pan dell'utente.
+  const didAutoFitRef = useRef(false);
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    if (didAutoFitRef.current) return;
+    if (stops.length === 0) return;
+    const lats = stops.map(s => Number(s.lat)).filter(n => Number.isFinite(n));
+    const lons = stops.map(s => Number(s.lon)).filter(n => Number.isFinite(n));
+    if (lats.length === 0) return;
+    const bounds: [[number, number], [number, number]] = [
+      [Math.min(...lons), Math.min(...lats)],
+      [Math.max(...lons), Math.max(...lats)],
+    ];
+    mapRef.current.fitBounds(bounds, { padding: 80, duration: 800, maxZoom: 14 });
+    didAutoFitRef.current = true;
+  }, [mapReady, stops]);
+
 
   /* ─── Variant editor: snap routing ─── */
   async function recomputeShape(wpts: PsWaypoint[], mode: "driving" | "manual") {
@@ -363,7 +552,8 @@ export default function PlanningStudioEditorPage() {
   }
 
   /* ─── Cursor sulla mappa secondo tool ─── */
-  const mapCursor = tool === "addStop" ? "crosshair"
+  const mapCursor = pickingDepotLocation ? "crosshair"
+                  : tool === "addStop" ? "crosshair"
                   : tool === "editVariant" ? "crosshair"
                   : "grab";
 
@@ -379,10 +569,10 @@ export default function PlanningStudioEditorPage() {
         description: `${r.counts.stops} fermate · ${r.counts.routes} linee · ${r.counts.trips} corse`,
       });
       // Ricarica i dati del progetto
-      const [s, rr, c] = await Promise.all([
-        listPsStops(projectId), listPsRoutes(projectId), listPsCalendars(projectId),
+      const [s, rr, c, cl] = await Promise.all([
+        listPsStops(projectId), listPsRoutes(projectId), listPsCalendars(projectId), listPsClusters(projectId),
       ]);
-      setStops(s); setRoutes(rr); setCalendars(c);
+      setStops(s); setRoutes(rr); setCalendars(c); setClusters(cl);
       // Fit map sulle fermate
       if (s.length > 0) {
         const coords = s.map(x => [x.lon, x.lat] as [number, number]);
@@ -450,6 +640,16 @@ export default function PlanningStudioEditorPage() {
           active={activePanel === "calendars"}
           onClick={() => setActivePanel(activePanel === "calendars" ? null : "calendars")}
         />
+        <DataTabBtn
+          icon={Grip} label="Cluster" count={globalClusters.length || undefined} accent="cyan"
+          active={activePanel === "ne-clusters"}
+          onClick={() => setActivePanel(activePanel === "ne-clusters" ? null : "ne-clusters")}
+        />
+        <DataTabBtn
+          icon={Building2} label="Depositi" count={depots.length || undefined} accent="orange"
+          active={activePanel === "ne-depots"}
+          onClick={() => setActivePanel(activePanel === "ne-depots" ? null : "ne-depots")}
+        />
 
         <div className="flex-1" />
 
@@ -472,15 +672,6 @@ export default function PlanningStudioEditorPage() {
             <Upload className="w-3.5 h-3.5" /> GTFS
           </button>
         )}
-
-        {/* Cluster fermate */}
-        <button
-          onClick={() => navigate(`/planning-studio/${projectId}/clusters`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-slate-800 text-cyan-300"
-          title="Gestisci cluster di fermate (interscambi)"
-        >
-          <Layers className="w-3.5 h-3.5" /> Cluster
-        </button>
 
         {/* Periodi di esercizio */}
         <button
@@ -539,17 +730,178 @@ export default function PlanningStudioEditorPage() {
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
           initialViewState={DEFAULT_VIEW}
-          mapStyle="mapbox://styles/mapbox/light-v11"
+          mapStyle="mapbox://styles/mapbox/standard"
           onClick={handleMapClick}
+          onLoad={() => setMapReady(true)}
           cursor={mapCursor}
           style={{ width: "100%", height: "100%" }}
         >
           <NavigationControl position="bottom-right" />
 
+          {/* Toggle 2D / 3D ─ overlay in alto a destra */}
+          <div className="absolute top-3 right-3 z-10 flex rounded-lg overflow-hidden border border-slate-300 shadow-lg bg-white/95 backdrop-blur">
+            <button
+              onClick={() => setIs3D(false)}
+              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                !is3D ? "bg-purple-500 text-white" : "text-slate-700 hover:bg-slate-100"
+              }`}
+              title="Vista 2D"
+            >2D</button>
+            <button
+              onClick={() => setIs3D(true)}
+              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                is3D ? "bg-purple-500 text-white" : "text-slate-700 hover:bg-slate-100"
+              }`}
+              title="Vista 3D con edifici"
+            >3D</button>
+          </div>
+
+          {/* Cluster: cerchi (raggio reale convertito in pixel @ zoom corrente) */}
+          {activePanel === "clusters" && clusters.length > 0 && (
+            <Source
+              id="ps-clusters-src"
+              type="geojson"
+              data={{
+                type: "FeatureCollection",
+                features: clusters
+                  .filter(c => c.centerLat != null && c.centerLon != null)
+                  .map(c => ({
+                    type: "Feature",
+                    properties: {
+                      id: c.id,
+                      name: c.name,
+                      color: c.kind === "interchange" ? "#0ea5e9" : "#64748b",
+                      radius: c.radiusM,
+                    },
+                    geometry: { type: "Point", coordinates: [Number(c.centerLon), Number(c.centerLat)] },
+                  })),
+              }}
+            >
+              <Layer
+                id="ps-clusters-fill"
+                type="circle"
+                paint={{
+                  "circle-radius": [
+                    "interpolate", ["exponential", 2], ["zoom"],
+                    10, ["/", ["get", "radius"], 50],
+                    16, ["/", ["get", "radius"], 1.2],
+                  ],
+                  "circle-color": ["get", "color"],
+                  "circle-opacity": 0.18,
+                  "circle-stroke-color": ["get", "color"],
+                  "circle-stroke-width": 2,
+                  "circle-stroke-opacity": 0.9,
+                }}
+              />
+              <Layer
+                id="ps-clusters-label"
+                type="symbol"
+                layout={{
+                  "text-field": ["get", "name"],
+                  "text-size": 11,
+                  "text-offset": [0, 1.2],
+                  "text-anchor": "top",
+                }}
+                paint={{
+                  "text-color": "#0ea5e9",
+                  "text-halo-color": "#ffffff",
+                  "text-halo-width": 1.5,
+                }}
+              />
+            </Source>
+          )}
+
+          {/* ─── Layer Cluster globali (Network Engine) ─── */}
+          {showGlobalClusters && clustersGeoJSON && (
+            <Source id="ne-clusters-src" type="geojson" data={clustersGeoJSON}>
+              <Layer
+                id="ne-clusters-fill"
+                type="fill"
+                filter={["==", ["geometry-type"], "Polygon"]}
+                paint={{
+                  "fill-color": ["get", "color"],
+                  "fill-opacity": 0.15,
+                }}
+              />
+              <Layer
+                id="ne-clusters-outline"
+                type="line"
+                filter={["==", ["geometry-type"], "Polygon"]}
+                paint={{
+                  "line-color": ["get", "color"],
+                  "line-width": 2,
+                  "line-opacity": 0.85,
+                }}
+              />
+              <Layer
+                id="ne-clusters-stops"
+                type="circle"
+                filter={["all", ["==", ["geometry-type"], "Point"], ["!=", ["get", "isLabel"], true]]}
+                paint={{
+                  "circle-radius": 4,
+                  "circle-color": ["get", "color"],
+                  "circle-stroke-color": "#ffffff",
+                  "circle-stroke-width": 1.5,
+                  "circle-opacity": 0.9,
+                }}
+              />
+              <Layer
+                id="ne-clusters-labels"
+                type="symbol"
+                filter={["==", ["get", "isLabel"], true]}
+                layout={{
+                  "text-field": ["get", "name"],
+                  "text-size": 13,
+                  "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+                  "text-anchor": "center",
+                  "text-allow-overlap": false,
+                  "text-ignore-placement": false,
+                  "symbol-placement": "point",
+                }}
+                paint={{
+                  "text-color": ["get", "color"],
+                  "text-halo-color": "#ffffff",
+                  "text-halo-width": 2,
+                  "text-halo-blur": 0.5,
+                }}
+              />
+            </Source>
+          )}
+
+          {/* ─── Layer Depositi (Network Engine) ─── */}
+          {showDepots && depots.filter(d => d.lat != null && d.lon != null).map(d => (
+            <Marker key={`depot-${d.id}`} longitude={Number(d.lon)} latitude={Number(d.lat)} anchor="bottom"
+              onClick={(e) => { e.originalEvent.stopPropagation(); setEditingDepot(d); }}
+            >
+              <div
+                title={`Deposito · ${d.name}${d.capacity ? ` · ${d.capacity} mezzi` : ""} — clic per modificare`}
+                className="flex flex-col items-center pointer-events-auto cursor-pointer hover:scale-110 transition-transform"
+              >
+                <div
+                  className="w-7 h-7 rounded-md border-2 border-white shadow-lg flex items-center justify-center"
+                  style={{ backgroundColor: d.color || "#f97316" }}
+                >
+                  <Building2 className="w-4 h-4 text-white" />
+                </div>
+                <div
+                  className="w-2 h-2 rotate-45 -mt-1 border-r-2 border-b-2 border-white"
+                  style={{ backgroundColor: d.color || "#f97316" }}
+                />
+                <div
+                  className="mt-0.5 px-1.5 py-0.5 rounded bg-white/95 text-[11px] font-semibold whitespace-nowrap shadow"
+                  style={{ color: d.color || "#f97316" }}
+                >
+                  {d.name}
+                </div>
+              </div>
+            </Marker>
+          ))}
+
           {/* Tutte le fermate del progetto */}
           {stops.map(s => {
             const inSeq = editor?.stops.find(vs => vs.stopId === s.id);
             const isSel = selectedStopId === s.id;
+            const clusterColor = stopIdToClusterColor[s.id];
             return (
               <Marker key={s.id} longitude={s.lon} latitude={s.lat} anchor="center"
                 onClick={(e) => {
@@ -561,11 +913,21 @@ export default function PlanningStudioEditorPage() {
                   }
                 }}
               >
-                <div className={`w-3 h-3 rounded-full border-2 cursor-pointer transition-all ${
-                  inSeq ? "bg-emerald-400 border-emerald-200 scale-125 shadow-lg shadow-emerald-500/50"
-                        : isSel ? "bg-cyan-400 border-white scale-125"
-                        : "bg-white border-slate-700 hover:scale-125"
-                }`} title={s.name} />
+                <div
+                  className={`w-3 h-3 rounded-full border-2 cursor-pointer transition-all ${
+                    inSeq ? "border-emerald-200 scale-125 shadow-lg shadow-emerald-500/50"
+                          : isSel ? "border-white scale-125"
+                          : clusterColor ? "border-white scale-110 shadow"
+                          : "bg-white border-slate-700 hover:scale-125"
+                  }`}
+                  style={
+                    inSeq ? { backgroundColor: "#34d399" }
+                    : isSel ? { backgroundColor: "#22d3ee" }
+                    : clusterColor ? { backgroundColor: clusterColor, boxShadow: `0 0 0 2px ${clusterColor}40` }
+                    : undefined
+                  }
+                  title={clusterColor ? `${s.name} · in cluster` : s.name}
+                />
               </Marker>
             );
           })}
@@ -632,6 +994,32 @@ export default function PlanningStudioEditorPage() {
           )}
         </Map>
 
+        {/* ─── Modale modifica/creazione deposito ─── */}
+        {editingDepot && (
+          <DepotEditModal
+            depot={editingDepot}
+            hidden={depotModalHidden}
+            onChange={(d) => setEditingDepot(d)}
+            onPickLocation={() => { setDepotModalHidden(true); setPickingDepotLocation(true); }}
+            onClose={() => { setEditingDepot(null); setDepotModalHidden(false); setPickingDepotLocation(false); }}
+            onSaved={async () => { setEditingDepot(null); setDepotModalHidden(false); setPickingDepotLocation(false); await reloadDepots(); }}
+          />
+        )}
+
+        {/* ─── Banner overlay durante il pick della posizione del deposito ─── */}
+        {pickingDepotLocation && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-4 py-2 rounded-full bg-orange-500/95 text-white shadow-xl backdrop-blur border border-orange-300/40">
+            <MapPin className="w-4 h-4" />
+            <span className="text-sm font-medium">Clicca sulla mappa per posizionare il deposito</span>
+            <button
+              onClick={() => { setPickingDepotLocation(false); setDepotModalHidden(false); }}
+              className="ml-2 px-2 py-0.5 text-xs rounded-full bg-white/20 hover:bg-white/30"
+            >
+              Annulla
+            </button>
+          </div>
+        )}
+
         {/* ─── Pannello dati floating (sx) ─── */}
         <AnimatePresence>
           {activePanel && !editor && (
@@ -647,6 +1035,9 @@ export default function PlanningStudioEditorPage() {
                   {activePanel === "stops" && <><MapPin className="w-4 h-4 text-emerald-400" /> Fermate</>}
                   {activePanel === "routes" && <><Bus className="w-4 h-4 text-cyan-400" /> Linee</>}
                   {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Calendari</>}
+                  {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Cluster di cambio</>}
+                  {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Cluster (Network)</>}
+                  {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi (Network)</>}
                 </h2>
                 <button onClick={() => setActivePanel(null)}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400">
@@ -714,6 +1105,36 @@ export default function PlanningStudioEditorPage() {
                       try { await deletePsCalendar(projectId, id); setCalendars(cs => cs.filter(c => c.id !== id)); toast.success("Eliminato"); }
                       catch (e: any) { toast.error("Errore", { description: e?.message }); }
                     }}
+                  />
+                )}
+                {activePanel === "clusters" && (
+                  <ClustersPanel
+                    projectId={projectId}
+                    stops={stops}
+                    clusters={clusters}
+                    onChanged={async () => {
+                      try { setClusters(await listPsClusters(projectId)); }
+                      catch (e: any) { toast.error("Errore", { description: e?.message }); }
+                    }}
+                    onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 15, duration: 600 })}
+                  />
+                )}
+                {activePanel === "ne-clusters" && (
+                  <NeClustersPanel
+                    clusters={globalClusters}
+                    loading={overlayLoading.clusters}
+                    onReload={reloadGlobalClusters}
+                    onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 600 })}
+                  />
+                )}
+                {activePanel === "ne-depots" && (
+                  <NeDepotsPanel
+                    depots={depots}
+                    loading={overlayLoading.depots}
+                    onReload={reloadDepots}
+                    onEdit={(d) => setEditingDepot(d)}
+                    onCreate={() => setEditingDepot({ id: "", name: "", color: "#f97316", lat: null, lon: null } as GlobalDepot)}
+                    onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 600 })}
                   />
                 )}
               </div>
@@ -1248,6 +1669,279 @@ function CalendarsPanel({
 }
 
 /* ════════════════════════════════════════════════════════════
+ *  Sidebar — Cluster di cambio (interscambi)
+ *  Replicato qui (versione "lite") al posto di una pagina dedicata.
+ * ════════════════════════════════════════════════════════════ */
+function ClustersPanel({
+  projectId, stops, clusters, onChanged, onFlyTo,
+}: {
+  projectId: string;
+  stops: PsStop[];
+  clusters: PsCluster[];
+  onChanged: () => Promise<void>;
+  onFlyTo: (lat: number, lon: number) => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = clusters.find(c => c.id === selectedId) ?? null;
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newKind, setNewKind] = useState<PsClusterKind>("interchange");
+  const [newRadius, setNewRadius] = useState(150);
+  const [stopFilter, setStopFilter] = useState("");
+  const [pendingStopIds, setPendingStopIds] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  // Suggest dialog state
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestRadius, setSuggestRadius] = useState(150);
+  const [suggestMinSize, setSuggestMinSize] = useState(2);
+  const [suggestions, setSuggestions] = useState<PsClusterSuggestion[]>([]);
+  const [suggestSelected, setSuggestSelected] = useState<Set<number>>(new Set());
+  const [suggestLoading, setSuggestLoading] = useState(false);
+
+  const KIND_LABEL: Record<PsClusterKind, string> = {
+    interchange: "Punto di cambio",
+    none: "Nodo logico",
+  };
+  const KIND_COLOR: Record<PsClusterKind, string> = {
+    interchange: "#0ea5e9",
+    none: "#64748b",
+  };
+
+  // Quando seleziono un cluster ricavo le fermate associate
+  useEffect(() => {
+    if (!selected) { setPendingStopIds(new Set()); return; }
+    const ids = new Set<string>();
+    for (const s of stops) if (s.clusterId === selected.id) ids.add(s.id);
+    setPendingStopIds(ids);
+  }, [selected?.id, stops]);
+
+  const filteredStops = useMemo(() => {
+    const q = stopFilter.trim().toLowerCase();
+    if (!q) return stops;
+    return stops.filter(s => s.name.toLowerCase().includes(q) || (s.code ?? "").toLowerCase().includes(q));
+  }, [stops, stopFilter]);
+
+  async function handleCreate() {
+    if (!newName.trim()) { toast.error("Nome richiesto"); return; }
+    setBusy(true);
+    try {
+      const c = await createPsCluster(projectId, { name: newName.trim(), kind: newKind, radiusM: newRadius });
+      await onChanged();
+      setSelectedId(c.id);
+      setCreating(false); setNewName(""); setNewKind("interchange"); setNewRadius(150);
+      toast.success("Cluster creato");
+    } catch (e: any) { toast.error(e?.message || "Errore"); }
+    finally { setBusy(false); }
+  }
+
+  async function handleSaveStops() {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await setPsClusterStops(projectId, selected.id, Array.from(pendingStopIds));
+      await onChanged();
+      toast.success("Fermate aggiornate");
+    } catch (e: any) { toast.error(e?.message || "Errore"); }
+    finally { setBusy(false); }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm("Eliminare questo cluster?")) return;
+    try {
+      await deletePsCluster(projectId, id);
+      await onChanged();
+      if (selectedId === id) setSelectedId(null);
+      toast.success("Eliminato");
+    } catch (e: any) { toast.error(e?.message || "Errore"); }
+  }
+
+  async function handleUpdateKind(id: string, kind: PsClusterKind) {
+    try {
+      await updatePsCluster(projectId, id, { kind });
+      await onChanged();
+    } catch (e: any) { toast.error(e?.message || "Errore"); }
+  }
+
+  async function handleRunSuggest() {
+    setSuggestLoading(true);
+    try {
+      const r = await suggestPsClusters(projectId, { radius: suggestRadius, minSize: suggestMinSize });
+      setSuggestions(r.suggestions);
+      setSuggestSelected(new Set(r.suggestions.map((_, i) => i)));
+    } catch (e: any) { toast.error(e?.message || "Errore"); }
+    finally { setSuggestLoading(false); }
+  }
+
+  async function handleApplySuggestions() {
+    const picked = suggestions.filter((_, i) => suggestSelected.has(i));
+    let ok = 0, ko = 0;
+    for (const s of picked) {
+      try {
+        const c = await createPsCluster(projectId, {
+          name: s.suggestedName, kind: "interchange",
+          centerLat: s.centerLat, centerLon: s.centerLon, radiusM: suggestRadius,
+        });
+        await setPsClusterStops(projectId, c.id, s.stops.map(x => x.id));
+        ok++;
+      } catch { ko++; }
+    }
+    await onChanged();
+    toast.success(`Creati ${ok} cluster${ko ? `, ${ko} errori` : ""}`);
+    setSuggestOpen(false); setSuggestions([]);
+  }
+
+  function toggleStop(id: string) {
+    setPendingStopIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Toolbar */}
+      <div className="p-2 border-b border-slate-800 flex gap-1.5">
+        <button onClick={() => setCreating(true)} className="flex-1 px-2 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs flex items-center justify-center gap-1">
+          <Plus className="w-3.5 h-3.5" /> Nuovo
+        </button>
+        <button onClick={() => { setSuggestOpen(true); setSuggestions([]); }} className="flex-1 px-2 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-xs flex items-center justify-center gap-1">
+          ✨ Suggerisci
+        </button>
+      </div>
+
+      {/* Form creazione */}
+      {creating && (
+        <div className="p-3 border-b border-slate-800 bg-slate-900 space-y-2">
+          <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nome cluster"
+            className="w-full px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
+          <div className="flex gap-2">
+            <select value={newKind} onChange={e => setNewKind(e.target.value as PsClusterKind)}
+              className="flex-1 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700">
+              {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+            <input type="number" min={20} max={1000} step={10} value={newRadius} onChange={e => setNewRadius(parseInt(e.target.value) || 150)}
+              className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => { setCreating(false); setNewName(""); }} className="flex-1 text-xs px-2 py-1.5 rounded bg-slate-800 text-slate-300">Annulla</button>
+            <button onClick={handleCreate} disabled={busy} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500 text-white font-medium">
+              {busy ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Crea"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista cluster */}
+      <div className="flex-1 overflow-auto">
+        {clusters.length === 0 && (
+          <div className="p-6 text-center text-slate-500 text-xs">
+            Nessun cluster.<br />Crea il primo o usa <em>Suggerisci</em>.
+          </div>
+        )}
+        {clusters.map(c => (
+          <button key={c.id} onClick={() => {
+              setSelectedId(c.id);
+              if (c.centerLat != null && c.centerLon != null) onFlyTo(Number(c.centerLat), Number(c.centerLon));
+            }}
+            className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition flex items-center gap-2 ${selectedId === c.id ? "bg-slate-800" : ""}`}>
+            <div className="w-1.5 h-7 rounded" style={{ background: KIND_COLOR[c.kind] }} />
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-medium truncate">{c.name}</div>
+              <div className="text-[10px] text-slate-500">{KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m</div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Pannello dettaglio cluster */}
+      {selected && (
+        <div className="border-t border-slate-800 max-h-[55%] flex flex-col bg-slate-900">
+          <div className="p-2 border-b border-slate-800 flex items-center gap-2">
+            <input value={selected.name} onChange={(e) => updatePsCluster(projectId, selected.id, { name: e.target.value }).then(onChanged)}
+              className="flex-1 px-2 py-1 rounded bg-slate-800 text-xs border border-slate-700" />
+            <button onClick={() => handleDelete(selected.id)} className="p-1 rounded text-rose-400 hover:bg-rose-500/10">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="px-2 py-1.5 border-b border-slate-800 flex gap-1">
+            {(["interchange", "none"] as PsClusterKind[]).map(k => (
+              <button key={k} onClick={() => handleUpdateKind(selected.id, k)}
+                className={`flex-1 px-2 py-1 rounded text-[10px] font-medium border ${selected.kind === k ? "bg-cyan-500/20 border-cyan-500 text-cyan-200" : "bg-slate-800 border-slate-700 text-slate-400"}`}>
+                {KIND_LABEL[k]}
+              </button>
+            ))}
+          </div>
+          <div className="p-2 border-b border-slate-800 flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-3 h-3 absolute left-2 top-1.5 text-slate-500" />
+              <input value={stopFilter} onChange={e => setStopFilter(e.target.value)} placeholder="Cerca fermata…"
+                className="w-full pl-6 pr-2 py-1 rounded bg-slate-800 text-[11px] border border-slate-700" />
+            </div>
+            <button onClick={handleSaveStops} disabled={busy}
+              className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] flex items-center gap-1">
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {pendingStopIds.size}
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto">
+            {filteredStops.map(s => (
+              <label key={s.id} className={`flex items-center gap-2 px-3 py-1 text-[11px] hover:bg-slate-800 cursor-pointer ${pendingStopIds.has(s.id) ? "bg-cyan-500/10" : ""}`}>
+                <input type="checkbox" checked={pendingStopIds.has(s.id)} onChange={() => toggleStop(s.id)} className="accent-cyan-500" />
+                <MapPin className="w-3 h-3 text-slate-500" />
+                <span className="flex-1 truncate">{s.name}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Modal Suggerisci */}
+      {suggestOpen && (
+        <div className="absolute inset-0 z-30 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSuggestOpen(false)}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 max-w-md w-full max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-cyan-300">Suggerisci cluster</h3>
+              <button onClick={() => setSuggestOpen(false)} className="text-slate-400 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <label className="text-[10px] text-slate-400">Raggio (m)
+                <input type="number" min={20} max={1000} step={10} value={suggestRadius} onChange={e => setSuggestRadius(parseInt(e.target.value) || 150)}
+                  className="mt-0.5 w-full px-2 py-1 rounded bg-slate-800 text-xs border border-slate-700" />
+              </label>
+              <label className="text-[10px] text-slate-400">Min fermate
+                <input type="number" min={2} max={20} value={suggestMinSize} onChange={e => setSuggestMinSize(parseInt(e.target.value) || 2)}
+                  className="mt-0.5 w-full px-2 py-1 rounded bg-slate-800 text-xs border border-slate-700" />
+              </label>
+            </div>
+            <button onClick={handleRunSuggest} disabled={suggestLoading}
+              className="w-full px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-xs mb-3 flex items-center justify-center gap-2">
+              {suggestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "✨"}
+              {suggestLoading ? "Calcolo…" : "Calcola suggerimenti"}
+            </button>
+            <div className="flex-1 overflow-auto border border-slate-800 rounded">
+              {suggestions.length === 0 && !suggestLoading && <p className="text-center text-xs text-slate-500 p-4">Premi "Calcola" per vedere i suggerimenti</p>}
+              {suggestions.map((s, i) => (
+                <label key={i} className={`flex items-start gap-2 px-2 py-1.5 border-b border-slate-800 hover:bg-slate-800 cursor-pointer ${suggestSelected.has(i) ? "bg-cyan-500/10" : ""}`}>
+                  <input type="checkbox" checked={suggestSelected.has(i)}
+                    onChange={() => setSuggestSelected(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n; })}
+                    className="accent-cyan-500 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate">{s.suggestedName}</p>
+                    <p className="text-[10px] text-slate-500">{s.stops.length} fermate</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            {suggestions.length > 0 && (
+              <button onClick={handleApplySuggestions} className="mt-3 w-full px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs">
+                Crea {suggestSelected.size} cluster selezionati
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
  *  Sidebar — Editor variante (sostituisce sidebar normale)
  * ════════════════════════════════════════════════════════════ */
 function VariantEditorPanel({
@@ -1400,11 +2094,12 @@ function ToolBtn({
 
 function DataTabBtn({
   icon: Icon, label, count, accent, active, onClick,
-}: { icon: any; label: string; count: number; accent: "emerald" | "cyan" | "indigo"; active: boolean; onClick: () => void }) {
+}: { icon: any; label: string; count?: number; accent: "emerald" | "cyan" | "indigo" | "orange"; active: boolean; onClick: () => void }) {
   const accentMap = {
     emerald: "border-emerald-500 text-emerald-300 bg-emerald-500/10",
     cyan:    "border-cyan-500 text-cyan-300 bg-cyan-500/10",
     indigo:  "border-indigo-500 text-indigo-300 bg-indigo-500/10",
+    orange:  "border-orange-500 text-orange-300 bg-orange-500/10",
   } as const;
   return (
     <button onClick={onClick} title={label}
@@ -1414,7 +2109,7 @@ function DataTabBtn({
       }`}>
       <Icon className="w-3.5 h-3.5" />
       <span>{label}</span>
-      <span className="text-[10px] tabular-nums opacity-70">{count}</span>
+      {count != null && <span className="text-[10px] tabular-nums opacity-70">{count}</span>}
     </button>
   );
 }
@@ -1459,6 +2154,284 @@ function NewStopForm({
           className="flex-1 text-xs px-2 py-1.5 rounded bg-slate-200 hover:bg-slate-300 text-slate-700">Annulla</button>
         <button onClick={() => { if (!name.trim()) { toast.error("Nome obbligatorio"); return; } onSave({ name: name.trim(), code: code.trim() || undefined, lat, lon }); }}
           className="flex-1 text-xs px-2 py-1.5 rounded bg-emerald-500 hover:bg-emerald-400 text-white font-medium">Salva</button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Pannello Cluster (Network Engine) — sola lettura + apertura editor
+ * ════════════════════════════════════════════════════════════ */
+function NeClustersPanel({
+  clusters, loading, onReload, onFlyTo,
+}: {
+  clusters: GlobalCluster[];
+  loading?: boolean;
+  onReload: () => Promise<void> | void;
+  onFlyTo: (lat: number, lon: number) => void;
+}) {
+  return (
+    <div className="p-3 space-y-2">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] text-slate-500">{clusters.length} cluster · sorgente Network Engine</p>
+        <div className="flex gap-1">
+          <button onClick={() => onReload()} title="Ricarica"
+            className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
+          <a href="/cluster" target="_blank" rel="noopener noreferrer"
+            className="text-[11px] px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center gap-1">
+            <Pencil className="w-3 h-3" /> Gestisci
+          </a>
+        </div>
+      </div>
+      {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
+      {!loading && clusters.length === 0 && (
+        <p className="text-[11px] text-slate-500">Nessun cluster definito. Aprilo con "Gestisci" per crearne uno.</p>
+      )}
+      {clusters.map(c => {
+        const valid = (c.stops || []).filter(s => Number.isFinite(s.stopLat) && Number.isFinite(s.stopLon));
+        const center = valid.length
+          ? {
+              lat: valid.reduce((a, s) => a + s.stopLat, 0) / valid.length,
+              lon: valid.reduce((a, s) => a + s.stopLon, 0) / valid.length,
+            }
+          : null;
+        return (
+          <button key={c.id} onClick={() => center && onFlyTo(center.lat, center.lon)}
+            className="w-full text-left rounded-lg border border-slate-800 hover:border-cyan-700 bg-slate-900/60 hover:bg-slate-900 p-2.5 transition">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: c.color || "#0ea5e9" }} />
+              <span className="text-sm font-medium text-slate-200 truncate flex-1">{c.name}</span>
+              <div className="flex gap-1">
+                {c.isInterchange && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">CAMBIO</span>}
+                {c.isLogical && <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-300">LOGICO</span>}
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-500">{(c.stops || []).length} fermate</p>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Pannello Depositi (Network Engine) — lista + crea + edita
+ * ════════════════════════════════════════════════════════════ */
+function NeDepotsPanel({
+  depots, loading, onReload, onEdit, onCreate, onFlyTo,
+}: {
+  depots: GlobalDepot[];
+  loading?: boolean;
+  onReload: () => Promise<void> | void;
+  onEdit: (d: GlobalDepot) => void;
+  onCreate: () => void;
+  onFlyTo: (lat: number, lon: number) => void;
+}) {
+  return (
+    <div className="p-3 space-y-2">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] text-slate-500">{depots.length} depositi</p>
+        <div className="flex gap-1">
+          <button onClick={() => onReload()} title="Ricarica"
+            className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
+          <button onClick={onCreate}
+            className="text-[11px] px-2 py-1 rounded bg-orange-600 hover:bg-orange-500 text-white inline-flex items-center gap-1">
+            <Plus className="w-3 h-3" /> Nuovo
+          </button>
+        </div>
+      </div>
+      {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
+      {!loading && depots.length === 0 && (
+        <p className="text-[11px] text-slate-500">Nessun deposito. Crea il primo con "Nuovo".</p>
+      )}
+      {depots.map(d => (
+        <div key={d.id} className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-7 h-7 rounded-md shrink-0 flex items-center justify-center border border-slate-700"
+              style={{ backgroundColor: d.color || "#f97316" }}>
+              <Building2 className="w-3.5 h-3.5 text-white" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-slate-200 truncate">{d.name}</p>
+              <p className="text-[10px] text-slate-500 truncate">
+                {d.address || (d.lat != null && d.lon != null ? `${Number(d.lat).toFixed(4)}, ${Number(d.lon).toFixed(4)}` : "—")}
+                {d.capacity != null && ` · cap ${d.capacity}`}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-1 mt-1.5">
+            {d.lat != null && d.lon != null && (
+              <button onClick={() => onFlyTo(Number(d.lat), Number(d.lon))}
+                className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Centra</button>
+            )}
+            <button onClick={() => onEdit(d)}
+              className="flex-1 text-[10px] px-2 py-1 rounded bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 inline-flex items-center justify-center gap-1">
+              <Pencil className="w-3 h-3" /> Modifica
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Modale modifica/creazione deposito (overlay full-screen)
+ * ════════════════════════════════════════════════════════════ */
+function DepotEditModal({
+  depot, hidden, onChange, onPickLocation, onClose, onSaved,
+}: {
+  depot: GlobalDepot;
+  hidden?: boolean;
+  onChange?: (d: GlobalDepot) => void;
+  onPickLocation?: () => void;
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const isNew = !depot.id;
+  const [name, setName] = useState(depot.name || "");
+  const [address, setAddress] = useState(depot.address || "");
+  const [color, setColor] = useState(depot.color || "#f97316");
+  const [lat, setLat] = useState<string>(depot.lat != null ? String(depot.lat) : "");
+  const [lon, setLon] = useState<string>(depot.lon != null ? String(depot.lon) : "");
+  const [capacity, setCapacity] = useState<string>(depot.capacity != null ? String(depot.capacity) : "");
+  const [saving, setSaving] = useState(false);
+
+  // Sync lat/lon dal parent (es. dopo pick dalla mappa)
+  useEffect(() => {
+    if (depot.lat != null) setLat(String(depot.lat));
+    if (depot.lon != null) setLon(String(depot.lon));
+  }, [depot.lat, depot.lon]);
+
+  // Snapshot dei campi nel parent prima di nascondere il modale per il pick
+  function handlePickClick() {
+    onChange?.({
+      ...depot,
+      name: name.trim(),
+      address: address.trim() || null,
+      color,
+      capacity: capacity.trim() === "" ? null : Number(capacity),
+      lat: lat.trim() === "" ? null : Number(lat),
+      lon: lon.trim() === "" ? null : Number(lon),
+    });
+    onPickLocation?.();
+  }
+
+  if (hidden) return null;
+
+  async function save() {
+    if (!name.trim()) { toast.error("Nome obbligatorio"); return; }
+    const latN = lat.trim() === "" ? null : Number(lat);
+    const lonN = lon.trim() === "" ? null : Number(lon);
+    if (lat.trim() && (latN == null || !Number.isFinite(latN))) { toast.error("Latitudine non valida"); return; }
+    if (lon.trim() && (lonN == null || !Number.isFinite(lonN))) { toast.error("Longitudine non valida"); return; }
+    setSaving(true);
+    try {
+      const body = {
+        name: name.trim(),
+        address: address.trim() || null,
+        color,
+        lat: latN, lon: lonN,
+        capacity: capacity.trim() === "" ? null : Number(capacity),
+      };
+      const r = await fetch(isNew ? "/api/depots" : `/api/depots/${depot.id}`, {
+        method: isNew ? "POST" : "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast.success(isNew ? "Deposito creato" : "Deposito aggiornato");
+      await onSaved();
+    } catch (e: any) {
+      toast.error("Errore", { description: e?.message });
+    } finally { setSaving(false); }
+  }
+
+  async function remove() {
+    if (!confirm(`Eliminare il deposito "${name}"?`)) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/depots/${depot.id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast.success("Deposito eliminato");
+      await onSaved();
+    } catch (e: any) {
+      toast.error("Errore", { description: e?.message });
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="absolute inset-0 z-40 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <div className="bg-slate-950 border border-slate-800 rounded-xl shadow-2xl w-[420px] max-w-[90vw] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-slate-100 flex items-center gap-2">
+            <Building2 className="w-4 h-4 text-orange-400" />
+            {isNew ? "Nuovo deposito" : "Modifica deposito"}
+          </h3>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-800 text-slate-400"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">Nome *</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              className="w-full px-2.5 py-2 rounded bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-orange-500" />
+          </div>
+          <div>
+            <label className="block text-[11px] text-slate-400 mb-1">Indirizzo</label>
+            <input value={address} onChange={e => setAddress(e.target.value)}
+              className="w-full px-2.5 py-2 rounded bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-orange-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Latitudine</label>
+              <input value={lat} onChange={e => setLat(e.target.value)} placeholder="41.9028"
+                className="w-full px-2.5 py-2 rounded bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-orange-500" />
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Longitudine</label>
+              <input value={lon} onChange={e => setLon(e.target.value)} placeholder="12.4964"
+                className="w-full px-2.5 py-2 rounded bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-orange-500" />
+            </div>
+          </div>
+          {onPickLocation && (
+            <button
+              type="button"
+              onClick={handlePickClick}
+              className="w-full px-3 py-2 rounded bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/40 text-orange-300 text-xs font-medium inline-flex items-center justify-center gap-2"
+            >
+              <MapPin className="w-3.5 h-3.5" />
+              Scegli posizione sulla mappa
+            </button>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Capacità mezzi</label>
+              <input value={capacity} onChange={e => setCapacity(e.target.value)} type="number" min={0}
+                className="w-full px-2.5 py-2 rounded bg-slate-900 border border-slate-700 text-sm text-slate-100 focus:outline-none focus:border-orange-500" />
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Colore</label>
+              <input value={color} onChange={e => setColor(e.target.value)} type="color"
+                className="w-full h-9 rounded bg-slate-900 border border-slate-700 cursor-pointer" />
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-2 mt-5">
+          {!isNew && (
+            <button onClick={remove} disabled={saving}
+              className="px-3 py-2 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs font-medium inline-flex items-center gap-1">
+              <Trash2 className="w-3.5 h-3.5" /> Elimina
+            </button>
+          )}
+          <div className="flex-1" />
+          <button onClick={onClose} disabled={saving}
+            className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Annulla</button>
+          <button onClick={save} disabled={saving}
+            className="px-4 py-2 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-medium inline-flex items-center gap-1">
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Salva
+          </button>
+        </div>
       </div>
     </div>
   );

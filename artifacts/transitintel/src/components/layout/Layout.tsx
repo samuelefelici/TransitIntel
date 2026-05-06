@@ -95,12 +95,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       .filter(s => s.items.length > 0);
   }, [hasPermission]);
 
-  const isSchedulingZone = location.startsWith("/fucina") || location === "/cluster" || location === "/depots" || location.startsWith("/driver-shifts");
+  const isSchedulingZone = location.startsWith("/fucina") || location.startsWith("/driver-shifts");
   const isNetworkZone =
     location === "/network-engine" ||
     location.startsWith("/network-engine/") ||
     location === "/planning-studio" ||
     location.startsWith("/planning-studio/") ||
+    location === "/cluster" ||
+    location === "/depots" ||
     location === "/scenarios" ||
     location === "/planning" ||
     location.startsWith("/planning/") ||
@@ -314,50 +316,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {/* ─ Separatore ─ */}
             <div className="my-3 border-t border-orange-900/25" />
 
-            {/* Gestione Cluster — standalone */}
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-orange-400/40 px-2 mb-1">
-              Strumenti
-            </p>
-            <Link href="/cluster">
-              <div
-                onClick={() => setIsMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
-                  location === "/cluster"
-                    ? "bg-orange-500/15 text-orange-300"
-                    : "text-orange-300/60 hover:text-orange-200 hover:bg-orange-500/10"
-                }`}
-              >
-                {location === "/cluster" && (
-                  <motion.div layoutId="active-sched" className="absolute left-0 w-0.5 h-5 bg-orange-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
-                )}
-                <Grip className={`w-4 h-4 shrink-0 transition-colors ${location === "/cluster" ? "text-orange-400" : "text-orange-500/60 group-hover:text-orange-400"}`} />
-                <div className="min-w-0">
-                  <p className="text-[12px] font-medium leading-tight">Cluster di Cambio</p>
-                  <p className="text-[9px] text-orange-400/30 font-mono">Cambio in linea · poligoni</p>
-                </div>
-              </div>
-            </Link>
-
-            <Link href="/depots">
-              <div
-                onClick={() => setIsMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
-                  location === "/depots"
-                    ? "bg-orange-500/15 text-orange-300"
-                    : "text-orange-300/60 hover:text-orange-200 hover:bg-orange-500/10"
-                }`}
-              >
-                {location === "/depots" && (
-                  <motion.div layoutId="active-sched" className="absolute left-0 w-0.5 h-5 bg-orange-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
-                )}
-                <Building2 className={`w-4 h-4 shrink-0 transition-colors ${location === "/depots" ? "text-orange-400" : "text-orange-500/60 group-hover:text-orange-400"}`} />
-                <div className="min-w-0">
-                  <p className="text-[12px] font-medium leading-tight">Depositi</p>
-                  <p className="text-[9px] text-orange-400/30 font-mono">Rimessaggio · rifornimento</p>
-                </div>
-              </div>
-            </Link>
-
             {/* ─ Turni Macchina Salvati: rimosso — gli scenari ora vivono dentro al singolo progetto ─ */}
 
             {/* ─ Torna ─ */}
@@ -387,6 +345,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               { href: "/planning-studio", label: "Planner Studio", icon: Map, desc: "Fermate · linee · percorsi · orari", match: (l: string) => l === "/planning-studio" || l.startsWith("/planning-studio/") },
             ].map((item) => {
               const isActive = item.match ? item.match(location) : location === item.href;
+              const Icon = item.icon;
+              return (
+                <Link key={item.href} href={item.href}>
+                  <div
+                    onClick={() => setIsMobileOpen(false)}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
+                      isActive
+                        ? "bg-purple-500/15 text-purple-200"
+                        : "text-purple-300/60 hover:text-purple-200 hover:bg-purple-500/10"
+                    }`}
+                  >
+                    {isActive && (
+                      <motion.div layoutId="active-network" className="absolute left-0 w-0.5 h-5 bg-purple-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
+                    )}
+                    <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? "text-purple-300" : "text-purple-500/60 group-hover:text-purple-300"}`} />
+                    <div className="min-w-0">
+                      <p className="text-[12px] font-medium leading-tight">{item.label}</p>
+                      <p className="text-[9px] text-purple-400/30 font-mono">{item.desc}</p>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+
+            {/* ─ Separatore ─ */}
+            <div className="my-3 border-t border-purple-900/25" />
+
+            {/* ─ Infrastruttura ─ */}
+            <p className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/40 px-2 mb-1">
+              Infrastruttura
+            </p>
+
+            {[
+              { href: "/cluster", label: "Cluster", icon: Grip, desc: "Di cambio · logici · poligoni" },
+              { href: "/depots", label: "Depositi", icon: Building2, desc: "Rimessaggio · rifornimento" },
+            ].map((item) => {
+              const isActive = location === item.href;
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href}>
@@ -806,7 +801,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main Content */}
       <main className={`flex-1 relative flex flex-col h-full overflow-hidden pt-14 md:pt-0 ${isFaresZone ? "fares-zone" : ""}`}>
-        <div className={`flex-1 w-full h-full ${location !== "/dashboard" && location !== "/scenarios" ? "overflow-y-auto p-3 sm:p-4 md:p-8" : ""}`}>
+        <div className={`flex-1 w-full h-full ${
+          location === "/dashboard" || location === "/scenarios" ||
+          /^\/planning-studio\/[^/]+$/.test(location)
+            ? ""
+            : "overflow-y-auto p-3 sm:p-4 md:p-8"
+        }`}>
           <motion.div
             key={location}
             initial={{ opacity: 0, y: 8 }}

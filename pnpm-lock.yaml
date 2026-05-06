@@ -609,10 +609,10 @@ importers:
     dependencies:
       '@tanstack/react-query':
         specifier: 'catalog:'
-        version: 5.94.5(react@19.2.4)
+        version: 5.94.5(react@19.1.0)
       react:
-        specifier: '>=18'
-        version: 19.2.4
+        specifier: 'catalog:'
+        version: 19.1.0
 
   lib/api-spec:
     devDependencies:
@@ -4387,10 +4387,6 @@ packages:
     resolution: {integrity: sha512-FS+XFBNvn3GTAWq26joslQgWNoFu08F4kl0J4CgdNKADkdSGXQyTCnKteIAJy96Br6YbpEU1LSzV5dYtjMkMDg==}
     engines: {node: '>=0.10.0'}
 
-  react@19.2.4:
-    resolution: {integrity: sha512-9nfp2hYpCwOjAN+8TZFGhtWEwgvWHXqESH8qT89AT/lWklpLON22Lc8pEtnpsZz7VmawabSU0gCjnj8aC0euHQ==}
-    engines: {node: '>=0.10.0'}
-
   readable-stream@2.3.8:
     resolution: {integrity: sha512-8p0AUk4XODgIewSi0l8Epjs+EVnWiK7NoDIEGU0HhE7+ZyY8D1IMY7odu5lRrFXGg71L15KG8QrPmum45RTtdA==}
 
@@ -6558,11 +6554,6 @@ snapshots:
     dependencies:
       '@tanstack/query-core': 5.94.5
       react: 19.1.0
-
-  '@tanstack/react-query@5.94.5(react@19.2.4)':
-    dependencies:
-      '@tanstack/query-core': 5.94.5
-      react: 19.2.4
 
   '@types/adm-zip@0.5.8':
     dependencies:
@@ -8823,8 +8814,6 @@ snapshots:
       react-dom: 19.1.0(react@19.1.0)
 
   react@19.1.0: {}
-
-  react@19.2.4: {}
 
   readable-stream@2.3.8:
     dependencies:

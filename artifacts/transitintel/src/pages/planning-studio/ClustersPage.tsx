@@ -8,7 +8,7 @@
  *
  * Permette anche il "Suggerisci cluster" (greedy raggio configurabile).
  */
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation, useParams, Link } from "wouter";
 import Map, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -169,6 +169,37 @@ export default function PlanningStudioClustersPage() {
   const [suggestions, setSuggestions] = useState<PsClusterSuggestion[]>([]);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [suggestSelected, setSuggestSelected] = useState<Set<number>>(new Set());
+
+  /* ─── Mappa: 3D toggle ─── */
+  const mapRef = useRef<MapRef>(null);
+  const [is3D, setIs3D] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current.getMap() as any;
+    try {
+      map.setConfigProperty?.("basemap", "show3dObjects", is3D);
+      map.setConfigProperty?.("basemap", "lightPreset", "day");
+    } catch { /* style non standard */ }
+    map.easeTo({ pitch: is3D ? 60 : 0, bearing: is3D ? -17 : 0, duration: 800 });
+  }, [is3D, mapReady]);
+
+  // Auto-fit: quando arrivano le fermate (anche dopo il mount) inquadra tutto.
+  const didAutoFitRef = useRef(false);
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    if (didAutoFitRef.current) return;
+    if (stops.length === 0) return;
+    const lats = stops.map(s => Number(s.lat)).filter(n => Number.isFinite(n));
+    const lons = stops.map(s => Number(s.lon)).filter(n => Number.isFinite(n));
+    if (lats.length === 0) return;
+    const bounds: [[number, number], [number, number]] = [
+      [Math.min(...lons), Math.min(...lats)],
+      [Math.max(...lons), Math.max(...lats)],
+    ];
+    mapRef.current.fitBounds(bounds, { padding: 60, duration: 800, maxZoom: 14 });
+    didAutoFitRef.current = true;
+  }, [mapReady, stops]);
 
   async function runSuggest() {
     setSuggestLoading(true);
@@ -426,12 +457,30 @@ export default function PlanningStudioClustersPage() {
             </div>
           ) : (
             <Map
+              ref={mapRef}
               mapboxAccessToken={MAPBOX_TOKEN}
               initialViewState={initialView}
-              mapStyle="mapbox://styles/mapbox/dark-v11"
+              mapStyle="mapbox://styles/mapbox/standard"
+              onLoad={() => setMapReady(true)}
               style={{ width: "100%", height: "100%" }}
             >
               <NavigationControl position="top-right" />
+
+              {/* Toggle 2D / 3D */}
+              <div className="absolute top-3 left-3 z-10 flex rounded-lg overflow-hidden border border-slate-300 shadow-lg bg-white/95 backdrop-blur">
+                <button
+                  onClick={() => setIs3D(false)}
+                  className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    !is3D ? "bg-purple-500 text-white" : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >2D</button>
+                <button
+                  onClick={() => setIs3D(true)}
+                  className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    is3D ? "bg-purple-500 text-white" : "text-slate-700 hover:bg-slate-100"
+                  }`}
+                >3D</button>
+              </div>
 
               {/* Cluster: cerchi + label */}
               <Source

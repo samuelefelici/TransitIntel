@@ -225,6 +225,28 @@ export async function attachVehicleScenarioToProject(
   );
 }
 
+/* ───── Sincronizzazione PS → gtfs_feed ───── */
+
+export interface SyncFromPsResult {
+  ok: true;
+  feedId: string;
+  label: string;
+  feedStartDate: string;  // YYYYMMDD
+  feedEndDate: string;
+  counts: {
+    stops: number; routes: number; trips: number; stopTimes: number;
+    calendars: number; calendarDates: number; shapes: number;
+  };
+}
+
+/** Re-materializza il PsProject linkato in un gtfs_feed dedicato e aggiorna project.feedId. */
+export async function syncProjectFromPs(projectId: string): Promise<SyncFromPsResult> {
+  return await apiFetch<SyncFromPsResult>(
+    `/api/scheduling/projects/${projectId}/sync-from-ps`,
+    { method: "POST" },
+  );
+}
+
 /* ───── Membri & condivisione ───── */
 
 export interface ProjectMember {

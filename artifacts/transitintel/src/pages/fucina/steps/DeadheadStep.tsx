@@ -57,6 +57,10 @@ interface Props {
   assignment: VehicleAssignment;
   depotId: string;
   clusterIds: string[];
+  /** Lista completa dei cluster disponibili (dal Network Engine) per la UI di scelta. */
+  availableClusters?: { id: string; name: string; color?: string | null }[];
+  /** Callback quando l'utente cambia la selezione. Aggiorna lo state in fucina.tsx. */
+  onClusterIdsChange?: (ids: string[]) => void;
   initial?: DeadheadMatrix | null;
   onBack: () => void;
   onComplete: (matrix: DeadheadMatrix) => void;
@@ -132,7 +136,7 @@ function buildPairs(nodes: DeadheadNode[], deadheads: Deadhead[]): DeadheadPair[
 }
 
 export default function DeadheadStep({
-  gtfsSelection, assignment, depotId, clusterIds, initial, onBack, onComplete,
+  gtfsSelection, assignment, depotId, clusterIds, availableClusters, onClusterIdsChange, initial, onBack, onComplete,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError]   = useState<string | null>(null);
@@ -280,6 +284,14 @@ export default function DeadheadStep({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Selezione cluster di cambio (caricati dal Network Engine) */}
+          {availableClusters && availableClusters.length > 0 && (
+            <ClusterPicker
+              available={availableClusters}
+              selected={clusterIds}
+              onChange={(ids) => onClusterIdsChange?.(ids)}
+            />
+          )}
           {/* Costo/km configurabile */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted/20 border border-border/30">
             <Euro className="w-3 h-3 text-muted-foreground" />
@@ -609,6 +621,91 @@ export default function DeadheadStep({
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ── ClusterPicker — dropdown per selezionare i cluster di cambio ── */
+function ClusterPicker({
+  available, selected, onChange,
+}: {
+  available: { id: string; name: string; color?: string | null }[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const allIds = useMemo(() => available.map(c => c.id), [available]);
+  const selSet = useMemo(() => new Set(selected), [selected]);
+  const toggle = (id: string) => {
+    const next = new Set(selSet);
+    next.has(id) ? next.delete(id) : next.add(id);
+    onChange(Array.from(next));
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/20 transition-all"
+        title="Seleziona quali cluster di cambio in linea utilizzare nell'ottimizzazione"
+      >
+        <Layers className="w-3 h-3" />
+        <span className="text-xs font-mono">{selected.length}/{available.length} cluster</span>
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1 w-72 max-h-96 overflow-y-auto rounded-lg bg-zinc-900 border border-cyan-500/30 shadow-xl z-40">
+            <div className="sticky top-0 bg-zinc-900 border-b border-zinc-800 p-2 flex gap-1.5">
+              <button
+                onClick={() => onChange(allIds)}
+                className="flex-1 px-2 py-1 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 text-[10px] font-medium"
+              >
+                Tutti
+              </button>
+              <button
+                onClick={() => onChange([])}
+                className="flex-1 px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-medium"
+              >
+                Nessuno
+              </button>
+            </div>
+            {available.length === 0 ? (
+              <div className="p-3 text-[11px] text-zinc-500 text-center">
+                Nessun cluster nel Network Engine.
+              </div>
+            ) : (
+              <div className="p-1">
+                {available.map(c => {
+                  const checked = selSet.has(c.id);
+                  return (
+                    <label
+                      key={c.id}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-zinc-800 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(c.id)}
+                        className="accent-cyan-500"
+                      />
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ background: c.color || "#06b6d4" }}
+                      />
+                      <span className="text-xs text-zinc-200 truncate">{c.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+            <div className="sticky bottom-0 bg-zinc-900/95 border-t border-zinc-800 p-2 text-[10px] text-zinc-500">
+              I cluster sono gestiti nel <b className="text-cyan-400">Network Engine</b>.
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

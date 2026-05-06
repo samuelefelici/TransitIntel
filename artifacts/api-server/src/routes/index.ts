@@ -41,6 +41,7 @@ import planningStudioClustersRouter from "../lib/planning-studio-clusters";
 import planningStudioPeriodsRouter from "../lib/planning-studio-periods";
 import planningStudioTripsExtRouter from "../lib/planning-studio-trips-ext";
 import planningStudioNetworkRouter from "../lib/planning-studio-network";
+import planningStudioMaterializeRouter from "../lib/planning-studio-materialize";
 
 const router: IRouter = Router();
 
@@ -89,5 +90,6 @@ router.use(planningStudioClustersRouter);
 router.use(planningStudioPeriodsRouter);
 router.use(planningStudioTripsExtRouter);
 router.use(planningStudioNetworkRouter);
+router.use(planningStudioMaterializeRouter);
 
 export default router;

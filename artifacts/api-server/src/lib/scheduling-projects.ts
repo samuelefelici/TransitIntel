@@ -379,6 +379,28 @@ router.post("/scheduling/projects", async (req: Request, res: Response): Promise
     RETURNING *
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+
+  // ── Auto-materializzazione PS → gtfs_feed FIRE-AND-FORGET ─────────────
+  // Avviata in background: la POST risponde subito (no UI hang).
+  // Se fallisce, l'utente la rilancia dalla schermata "Sincronizza con PS"
+  // del primo step della pipeline.
+  void (async () => {
+    try {
+      const { materializePsToFeed } = await import("./planning-studio-materialize");
+      const mat = await materializePsToFeed(planningStudioProjectId, userId);
+      await db.execute(sql`
+        UPDATE scheduling_projects
+           SET feed_id = ${mat.feedId}::uuid, feed_label = ${mat.label}, updated_at = now()
+         WHERE id = ${row.id}::uuid
+      `);
+      req.log?.info?.({ projectId: row.id, feedId: mat.feedId, counts: mat.counts },
+        "Auto-materializzazione PS→feed completata in background");
+    } catch (matErr: any) {
+      req.log?.warn?.({ err: matErr, planningStudioProjectId, projectId: row.id },
+        "Auto-materializzazione PS→feed fallita (background): l'utente potrà rilanciarla dalla pipeline");
+    }
+  })();
+
   await logActivity(row.id, userId, "project.create", {
     targetType: "project", targetId: row.id,
     payload: { name: row.name, planningStudioProjectId, planningStudioProjectName: psRow.name },

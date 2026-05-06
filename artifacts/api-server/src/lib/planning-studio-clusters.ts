@@ -95,6 +95,97 @@ async function recomputeClusterCenter(clusterId: string): Promise<void> {
   `);
 }
 
+/* ─── Auto-import idempotente cluster legacy → ps_stop_clusters ───
+ * Strategia: i cluster legacy (stop_clusters) NON appartengono ad alcun
+ * progetto PS. Vengono però copiati in ogni progetto PS con dedup tramite
+ * attributes->>'importedFromLegacyId'. Le fermate vengono matchate per
+ * prossimità geografica (default 60m) sulle ps_stops del progetto.
+ */
+const AUTO_IMPORT_RADIUS_M = 60;
+
+async function autoImportLegacyClustersIfNeeded(projectId: string): Promise<void> {
+  // 1) ID cluster legacy già importati nel progetto
+  const doneR = await db.execute(sql`
+    SELECT (attributes->>'importedFromLegacyId') AS lid
+      FROM ps_stop_clusters
+     WHERE project_id = ${projectId}::uuid
+       AND attributes ? 'importedFromLegacyId'
+  `);
+  const done = new Set<string>(((doneR as any).rows ?? []).map((r: any) => String(r.lid)));
+
+  // 2) Cluster legacy non ancora importati
+  const lcR = await db.execute(sql`
+    SELECT id, name, color, transfer_from_depot_min FROM stop_clusters ORDER BY name
+  `);
+  const legacyClusters: any[] = (lcR as any).rows ?? [];
+  const todo = legacyClusters.filter(c => !done.has(String(c.id)));
+  if (todo.length === 0) return;
+
+  // 3) Carica ps_stops del progetto per match geografico
+  const psStopsR = await db.execute(sql`
+    SELECT id, lat::float8 AS lat, lon::float8 AS lon
+      FROM ps_stops WHERE project_id = ${projectId}::uuid
+  `);
+  const psStops: { id: string; lat: number; lon: number }[] = (psStopsR as any).rows ?? [];
+
+  function nearestPsStop(lat: number, lon: number): { id: string; dist: number } | null {
+    let best: { id: string; dist: number } | null = null;
+    const cosLat = Math.cos(lat * Math.PI / 180);
+    for (const s of psStops) {
+      const dy = (s.lat - lat) * 111320;
+      const dx = (s.lon - lon) * 111320 * cosLat;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (best === null || d < best.dist) best = { id: s.id, dist: d };
+    }
+    return best;
+  }
+
+  for (const lc of todo) {
+    const lsR = await db.execute(sql`
+      SELECT stop_lat::float8 AS lat, stop_lon::float8 AS lon
+        FROM stop_cluster_stops WHERE cluster_id = ${lc.id}::uuid
+    `);
+    const legacyStops: any[] = (lsR as any).rows ?? [];
+
+    let cLat: number | null = null, cLon: number | null = null;
+    if (legacyStops.length > 0) {
+      cLat = legacyStops.reduce((a, s) => a + Number(s.lat), 0) / legacyStops.length;
+      cLon = legacyStops.reduce((a, s) => a + Number(s.lon), 0) / legacyStops.length;
+    }
+
+    const matchedStopIds = new Set<string>();
+    for (const ls of legacyStops) {
+      const m = nearestPsStop(Number(ls.lat), Number(ls.lon));
+      if (m && m.dist <= AUTO_IMPORT_RADIUS_M) matchedStopIds.add(m.id);
+    }
+
+    const insR = await db.execute(sql`
+      INSERT INTO ps_stop_clusters (project_id, name, kind, center_lat, center_lon, radius_m, attributes)
+      VALUES (${projectId}::uuid, ${lc.name}, 'interchange',
+              ${cLat}, ${cLon}, 150,
+              ${JSON.stringify({
+                color: lc.color || "#3b82f6",
+                transferFromDepotMin: Number(lc.transfer_from_depot_min ?? 10),
+                importedFromLegacyId: lc.id,
+              })}::jsonb)
+      RETURNING id
+    `);
+    const psClusterId: string = (insR as any).rows?.[0]?.id;
+
+    if (matchedStopIds.size > 0 && psClusterId) {
+      const idsArr = Array.from(matchedStopIds);
+      await db.execute(sql`
+        UPDATE ps_stops
+           SET cluster_id = ${psClusterId}::uuid
+         WHERE project_id = ${projectId}::uuid
+           AND id = ANY(${idsArr}::uuid[])
+           AND cluster_id IS NULL
+      `);
+      await recomputeClusterCenter(psClusterId);
+    }
+  }
+}
+
 /* ─── GET lista cluster ───────────────────────────────────── */
 
 router.get("/planning-studio/projects/:id/clusters", async (req, res): Promise<void> => {
@@ -102,6 +193,17 @@ router.get("/planning-studio/projects/:id/clusters", async (req, res): Promise<v
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
   if (!proj) { res.status(404).json({ error: "project not found" }); return; }
+
+  // Auto-import idempotente dei cluster legacy (stop_clusters) la prima volta
+  // che si apre il pannello. Salta i cluster già importati (dedup via attributes.importedFromLegacyId).
+  // Nessun rumore: se non c'è nulla da importare o se l'utente non ha write-access, ignora.
+  if (proj.my_role === "owner" || proj.my_role === "editor") {
+    try {
+      await autoImportLegacyClustersIfNeeded(req.params.id);
+    } catch (e: any) {
+      console.warn("[ps-clusters] auto-import failed", e?.message || e);
+    }
+  }
 
   const r = await db.execute(sql`
     SELECT c.*,
