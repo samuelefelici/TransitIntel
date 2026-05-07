@@ -395,6 +395,33 @@ router.delete("/planning-studio/projects/:id/day-types/:dayTypeId", async (req, 
 const MAX_RANGE_DAYS = 540;
 const MAX_TRIPS_PER_PAGE = 2000;
 
+/* GET /validity/routes — lista linee con conteggio corse, per popolare il
+ * dropdown del filtro UI quando la matrice è troppo grande. */
+router.get("/planning-studio/projects/:id/validity/routes", async (req, res): Promise<void> => {
+  await ensureValidityTables();
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(404).json({ error: "project not found" }); return; }
+  const r = await db.execute(sql`
+    SELECT r.id, r.short_name, r.long_name, r.color,
+           COUNT(t.id)::int AS trip_count
+      FROM ps_routes r
+      LEFT JOIN ps_trips t ON t.route_id = r.id AND t.project_id = ${req.params.id}::uuid
+     WHERE r.project_id = ${req.params.id}::uuid
+     GROUP BY r.id, r.short_name, r.long_name, r.color
+     ORDER BY r.short_name ASC NULLS LAST, r.long_name ASC NULLS LAST
+  `);
+  const routes = ((r as any).rows ?? []).map((x: any) => ({
+    id: x.id,
+    shortName: x.short_name,
+    longName: x.long_name,
+    color: x.color,
+    tripCount: x.trip_count,
+  }));
+  res.json({ routes });
+});
+
 router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Promise<void> => {
   await ensureValidityTables();
   const userId = getUserId(req);
@@ -418,13 +445,23 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
   }
 
   // Trip count + cap. Se troppe, paginazione per route_id.
+  // Filtro opzionale per linea (UI deve passarlo se c'è troppo)
+  const routeIdRaw = req.query.route_id;
+  const routeId = typeof routeIdRaw === "string" && /^[0-9a-f-]{36}$/i.test(routeIdRaw)
+    ? routeIdRaw : null;
+
   const countR = await db.execute(sql`
-    SELECT COUNT(*)::int AS c FROM ps_trips WHERE project_id = ${req.params.id}::uuid
+    SELECT COUNT(*)::int AS c FROM ps_trips
+     WHERE project_id = ${req.params.id}::uuid
+       AND (${routeId}::uuid IS NULL OR route_id = ${routeId}::uuid)
   `);
   const tripCount: number = (countR as any).rows?.[0]?.c ?? 0;
   if (tripCount > MAX_TRIPS_PER_PAGE) {
     res.status(400).json({
       error: `too many trips: ${tripCount} > ${MAX_TRIPS_PER_PAGE}. Add ?route_id=... to paginate.`,
+      tripCount,
+      maxTripsPerPage: MAX_TRIPS_PER_PAGE,
+      needsRouteFilter: true,
     });
     return;
   }
@@ -443,6 +480,7 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
       JOIN ps_routes r ON r.id = t.route_id
       JOIN ps_route_variants v ON v.id = t.variant_id
      WHERE t.project_id = ${req.params.id}::uuid
+       AND (${routeId}::uuid IS NULL OR t.route_id = ${routeId}::uuid)
      ORDER BY r.short_name ASC NULLS LAST, r.long_name ASC NULLS LAST,
               v.name ASC, first_departure ASC NULLS LAST
   `);

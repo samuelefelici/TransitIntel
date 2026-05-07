@@ -45,8 +45,9 @@ import {
   listPsDayTypes, createPsDayType, updatePsDayType, deletePsDayType,
   postPsValidityBulk, autoImportPsValidityFromCalendars,
   postPsValidityGenerateUnit,
+  listPsValidityRoutes,
   type PsValidityMatrix, type PsDayType, type PsValidityTrip,
-  type AutoImportSummary,
+  type AutoImportSummary, type PsValidityRoute,
 } from "@/lib/planning-studio-validity-api";
 import {
   getPsProject, type PsProject,
@@ -159,6 +160,8 @@ export default function PlanningStudioValidityPage() {
   /* ─── Range ─── */
   const [from, setFrom] = useState<string>(() => todayISO());
   const [to, setTo] = useState<string>(() => plusDaysISO(todayISO(), 60));
+  /* ─── Filtro Linea (richiesto se trips > 2000) ─── */
+  const [routeId, setRouteId] = useState<string | null>(null);
 
   /* ─── Queries ─── */
   const projectQ = useQuery({
@@ -167,11 +170,32 @@ export default function PlanningStudioValidityPage() {
     enabled: !!projectId,
   });
 
-  const matrixQ = useQuery({
-    queryKey: ["ps", projectId, "validity", "matrix", from, to],
-    queryFn: () => getPsValidityMatrix(projectId, { from, to }),
+  const routesQ = useQuery({
+    queryKey: ["ps", projectId, "validity", "routes"],
+    queryFn: () => listPsValidityRoutes(projectId),
     enabled: !!projectId,
   });
+
+  const matrixQ = useQuery({
+    queryKey: ["ps", projectId, "validity", "matrix", from, to, routeId],
+    queryFn: () => getPsValidityMatrix(projectId, { from, to, routeId }),
+    enabled: !!projectId,
+    retry: false, // l'errore "too many trips" non va riprovato
+  });
+
+  // Diagnostica errore matrice → suggerimento "scegli una linea"
+  const matrixErrBody = (matrixQ.error as any)?.body as
+    | { error?: string; tripCount?: number; maxTripsPerPage?: number; needsRouteFilter?: boolean }
+    | undefined;
+  const needsRouteFilter = !!matrixErrBody?.needsRouteFilter;
+
+  // Auto-selezione: se la matrice è troppo grande e non c'è ancora una linea scelta,
+  // pre-seleziona la prima disponibile per sbloccare la UI
+  useEffect(() => {
+    if (needsRouteFilter && !routeId && (routesQ.data?.length ?? 0) > 0) {
+      setRouteId(routesQ.data![0].id);
+    }
+  }, [needsRouteFilter, routeId, routesQ.data]);
 
   const dayTypesQ = useQuery({
     queryKey: ["ps", projectId, "day-types"],
@@ -364,81 +388,156 @@ export default function PlanningStudioValidityPage() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-50">
-      {/* TopBar */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b bg-white shadow-sm">
-        <Link href={`/planning-studio/${projectId}`}>
-          <button className="p-2 rounded hover:bg-slate-100" title="Torna al progetto">
-            <ArrowLeft className="h-4 w-4" />
-          </button>
-        </Link>
-        <div className="flex items-center gap-2">
+      {/* TopBar — stepper visivo: 1 Filtra · 2 Configura · 3 Modifica · 4 Genera */}
+      <div className="border-b bg-white shadow-sm">
+        {/* Riga 1: titolo + back */}
+        <div className="flex items-center gap-3 px-4 pt-3">
+          <Link href={`/planning-studio/${projectId}`}>
+            <button className="p-2 rounded hover:bg-slate-100" title="Torna al progetto">
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          </Link>
           <CalendarIcon className="h-5 w-5 text-blue-600" />
           <h1 className="font-semibold text-slate-900">
             Validità · {projectQ.data?.name ?? "…"}
           </h1>
+          <span className="ml-2 text-xs text-slate-500">
+            Definisci <em>quando</em> circolano le corse, prima dello scheduling.
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={() => undoMut.mutate()}
+              disabled={undoStack.length === 0 || undoMut.isPending}
+              className="p-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-30"
+              title="Annulla"
+            ><Undo2 className="h-4 w-4" /></button>
+            <button
+              onClick={() => redoMut.mutate()}
+              disabled={redoStack.length === 0 || redoMut.isPending}
+              className="p-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-30"
+              title="Ripeti"
+            ><Redo2 className="h-4 w-4" /></button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 ml-6">
-          <label className="text-xs text-slate-500">Da</label>
-          <input
-            type="date" value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            className="border rounded px-2 py-1 text-sm"
-          />
-          <label className="text-xs text-slate-500">A</label>
-          <input
-            type="date" value={to}
-            onChange={(e) => setTo(e.target.value)}
-            className="border rounded px-2 py-1 text-sm"
-          />
-          <button
-            onClick={() => { setFrom(todayISO()); setTo(plusDaysISO(todayISO(), 60)); }}
-            className="px-2 py-1 text-xs rounded border hover:bg-slate-50"
-            title="Reset a oggi → +60gg"
-          >Reset</button>
+        {/* Riga 2: stepper con 4 sezioni */}
+        <div className="flex items-stretch gap-2 px-4 py-3 overflow-x-auto">
+          {/* STEP 1 — Filtro temporale e linea */}
+          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-sky-50 border border-sky-200 min-w-fit">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-sky-800">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-sky-600 text-white text-[10px]">1</span>
+              Filtra
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-sky-900 font-medium">Da</label>
+              <input
+                type="date" value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900"
+              />
+              <label className="text-xs text-sky-900 font-medium">A</label>
+              <input
+                type="date" value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900"
+              />
+              <button
+                onClick={() => { setFrom(todayISO()); setTo(plusDaysISO(todayISO(), 60)); }}
+                className="px-2 py-1 text-xs rounded border border-sky-300 bg-white text-sky-800 hover:bg-sky-100"
+                title="Reset a oggi → +60gg"
+              >Reset</button>
+              <span className="mx-1 text-sky-300">|</span>
+              <label className="text-xs text-sky-900 font-medium">Linea</label>
+              <select
+                value={routeId ?? ""}
+                onChange={(e) => setRouteId(e.target.value || null)}
+                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900 max-w-[220px]"
+                title="Filtra la matrice per linea (obbligatorio sopra 2000 corse)"
+              >
+                <option value="">— Tutte le linee —</option>
+                {(routesQ.data ?? []).map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {(r.shortName ?? r.longName ?? "?")} · {r.tripCount} corse
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* STEP 2 — Configura day-types */}
+          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-violet-50 border border-violet-200 min-w-fit">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-violet-800">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-violet-600 text-white text-[10px]">2</span>
+              Configura
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setDtEditorOpen(true)}
+                className="px-3 py-1.5 text-sm rounded border border-violet-400 bg-white hover:bg-violet-100 text-violet-900 font-medium flex items-center gap-1.5"
+                title="Crea/modifica i tipi-giornata (Feriale, Festivo, ecc.) e i loro colori"
+              >
+                <Palette className="h-4 w-4" /> Day-types
+              </button>
+            </div>
+          </div>
+
+          {/* STEP 3 — Modifica massiva */}
+          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 min-w-fit">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-800">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-600 text-white text-[10px]">3</span>
+              Modifica
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setBulkOpen(true)}
+                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5"
+                title="Operazioni bulk: applica un day-type a molte celle in un colpo (per linea, per data, ecc.)"
+              >
+                <Layers className="h-4 w-4" /> Bulk
+              </button>
+              <button
+                onClick={() => setAutoImportOpen(true)}
+                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5"
+                title="Auto-compila la matrice usando i calendari GTFS importati"
+              >
+                <Wand2 className="h-4 w-4" /> Auto-import
+              </button>
+            </div>
+          </div>
+
+          {/* STEP 4 — Genera unità (azione finale) */}
+          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-indigo-100 border-2 border-indigo-400 min-w-fit">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-indigo-900">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-700 text-white text-[10px]">4</span>
+              Genera
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setGenUnitOpen(true)}
+                className="px-3 py-1.5 text-sm rounded bg-indigo-700 hover:bg-indigo-800 text-white font-semibold flex items-center gap-1.5 shadow"
+                title="Crea l'Unità di Progettazione e prosegui con lo Scheduling"
+              >
+                <Rocket className="h-4 w-4" /> Genera Unità di Progettazione
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={() => undoMut.mutate()}
-            disabled={undoStack.length === 0 || undoMut.isPending}
-            className="p-2 rounded border hover:bg-slate-100 disabled:opacity-30"
-            title="Annulla"
-          ><Undo2 className="h-4 w-4" /></button>
-          <button
-            onClick={() => redoMut.mutate()}
-            disabled={redoStack.length === 0 || redoMut.isPending}
-            className="p-2 rounded border hover:bg-slate-100 disabled:opacity-30"
-            title="Ripeti"
-          ><Redo2 className="h-4 w-4" /></button>
-          <button
-            onClick={() => setDtEditorOpen(true)}
-            className="px-3 py-1.5 text-sm rounded border bg-white hover:bg-slate-50 flex items-center gap-1.5"
-          >
-            <Palette className="h-4 w-4" /> Day-types
-          </button>
-          <button
-            onClick={() => setBulkOpen(true)}
-            className="px-3 py-1.5 text-sm rounded border bg-white hover:bg-slate-50 flex items-center gap-1.5"
-            title="Operazioni bulk"
-          >
-            <Layers className="h-4 w-4" /> Bulk
-          </button>
-          <button
-            onClick={() => setAutoImportOpen(true)}
-            className="px-3 py-1.5 text-sm rounded border bg-emerald-50 hover:bg-emerald-100 text-emerald-800 flex items-center gap-1.5"
-            title="Auto-import da GTFS calendars"
-          >
-            <Wand2 className="h-4 w-4" /> Auto-import
-          </button>
-          <button
-            onClick={() => setGenUnitOpen(true)}
-            className="px-3 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-sm"
-            title="Crea Unità di Progettazione (Scheduling) dal filtro corrente"
-          >
-            <Rocket className="h-4 w-4" /> Genera Unità
-          </button>
-        </div>
+        {/* Banner errore: matrice troppo grande → invita a scegliere una linea */}
+        {needsRouteFilter && (
+          <div className="mx-4 mb-3 px-3 py-2 rounded border border-amber-400 bg-amber-50 text-amber-900 text-sm flex items-start gap-2">
+            <span className="font-bold">⚠</span>
+            <div>
+              <div className="font-semibold">
+                Troppe corse nel range selezionato ({matrixErrBody?.tripCount?.toLocaleString("it-IT")} &gt; {matrixErrBody?.maxTripsPerPage?.toLocaleString("it-IT")})
+              </div>
+              <div className="text-xs">
+                Per visualizzare la matrice, scegli una <strong>Linea</strong> nello step 1 (oppure restringi il range di date).
+                Abbiamo pre-selezionato la prima linea disponibile.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Banda Service Periods (PR3) — mostra i periodi che intersecano il range visibile */}

@@ -111,9 +111,10 @@ export async function deletePsDayType(projectId: string, dayTypeId: string): Pro
 
 export async function getPsValidityMatrix(
   projectId: string,
-  range: { from: string; to: string },
+  range: { from: string; to: string; routeId?: string | null },
 ): Promise<PsValidityMatrix> {
   const qs = new URLSearchParams({ from: range.from, to: range.to });
+  if (range.routeId) qs.set("route_id", range.routeId);
   return apiFetch(
     `/api/planning-studio/projects/${projectId}/validity/matrix?${qs.toString()}`,
   );
@@ -227,4 +228,21 @@ export async function postPsValidityGenerateUnit(
     `/api/planning-studio/projects/${projectId}/validity/generate-unit`,
     { method: "POST", body: JSON.stringify(input) },
   );
+}
+
+/* ─── Routes (per filtro UI quando i trip sono troppi) ─── */
+
+export interface PsValidityRoute {
+  id: string;
+  shortName: string | null;
+  longName: string | null;
+  color: string | null;
+  tripCount: number;
+}
+
+export async function listPsValidityRoutes(projectId: string): Promise<PsValidityRoute[]> {
+  const r = await apiFetch<{ routes: PsValidityRoute[] }>(
+    `/api/planning-studio/projects/${projectId}/validity/routes`,
+  );
+  return r.routes;
 }
