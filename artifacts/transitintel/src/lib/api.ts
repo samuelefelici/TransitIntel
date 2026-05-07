@@ -6,6 +6,51 @@ export function getApiBase(): string {
   return import.meta.env.VITE_API_BASE_URL || "";
 }
 
+/* ════════════════════════════════════════════════════════════
+ *  GLOBAL FETCH PATCH — auto-include credentials per /api/*
+ *
+ *  Storia: molte pagine (fucina, vehicle-workspace, OptimizerStep,
+ *  IntermodalAdvisor, ecc.) usano `fetch(...)` raw verso `${getApiBase()}/api/...`
+ *  senza passare `credentials: "include"`. In dev locale funziona (stessa origin
+ *  via proxy Vite), ma in prod cross-origin (Vercel → Render) il cookie
+ *  di sessione NON viene inviato → requireAuth risponde 401 → l'utente
+ *  vede "Errore: non riesce a recuperare i dati".
+ *
+ *  Patch: intercettiamo `window.fetch` UNA SOLA VOLTA al primo import di
+ *  questo modulo; per ogni richiesta diretta a /api (relativa o verso
+ *  l'API base) aggiungiamo `credentials: "include"` se non già esplicito.
+ *  Trasparente per chi usa già apiFetch (che lo include comunque) e per
+ *  fetch a domini terzi.
+ * ════════════════════════════════════════════════════════════ */
+declare global {
+  interface Window { __ttFetchPatched?: boolean }
+}
+if (typeof window !== "undefined" && !window.__ttFetchPatched) {
+  const originalFetch = window.fetch.bind(window);
+  const apiBase = getApiBase();
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    let url = "";
+    try {
+      url = typeof input === "string" ? input
+          : input instanceof URL ? input.toString()
+          : (input as Request).url;
+    } catch { /* noop */ }
+    // Considera "API call" se: relativa /api, oppure assoluta verso l'API base
+    const isApiCall = url.startsWith("/api/")
+      || url.startsWith("/api?")
+      || (apiBase && url.startsWith(`${apiBase}/api/`));
+    if (isApiCall) {
+      const merged: RequestInit = { credentials: "include", ...(init || {}) };
+      // Se l'utente ha esplicitato un altro valore di credentials (es. "omit"),
+      // lo rispettiamo. Altrimenti garantiamo "include".
+      if (!init || init.credentials === undefined) merged.credentials = "include";
+      return originalFetch(input as any, merged);
+    }
+    return originalFetch(input as any, init);
+  };
+  window.__ttFetchPatched = true;
+}
+
 /**
  * Wrapper fetch che:
  * 1. Controlla r.ok (lancia se HTTP error)

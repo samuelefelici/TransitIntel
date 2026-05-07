@@ -346,8 +346,30 @@ export default function FucinaPage() {
           // Avanza allo step 1 solo se sei ancora allo step 0
           setStep(s => (s === 0 ? 1 : s));
         } else {
-          // Manca il feed: mostra schermata di sync
-          setPsNeedsSync(true);
+          // Manca il feed: tentiamo l'auto-sync silenzioso (la materializzazione
+          // viene avviata fire-and-forget alla creazione del progetto, ma può
+          // non essere ancora completata; rilanciandola qui chiudiamo la race).
+          try {
+            const r = await syncProjectFromPs(projectId);
+            if (cancelled) return;
+            const sel: GtfsSelection = {
+              source: "existing",
+              date: r.feedStartDate || new Date().toISOString().slice(0, 10).replace(/-/g, ""),
+              label: r.label,
+              tempFeedId: r.feedId,
+            };
+            setGtfsSelection(sel);
+            setCompletedSteps(prev => new Set([...prev, 0]));
+            setStep(s => (s === 0 ? 1 : s));
+            toast.success("Dati Planning Studio sincronizzati automaticamente", {
+              description: `${r.counts.routes} linee · ${r.counts.trips} corse · ${r.counts.stops} fermate`,
+            });
+          } catch (syncErr: any) {
+            if (cancelled) return;
+            // Auto-sync fallita: mostro la schermata "Sincronizza con PS" come fallback
+            console.warn("[fucina] auto-sync PS→feed failed:", syncErr?.message);
+            setPsNeedsSync(true);
+          }
         }
       } catch (e: any) {
         console.warn("[fucina] auto-bind PS feed failed", e);
