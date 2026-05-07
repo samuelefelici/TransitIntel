@@ -169,11 +169,16 @@ interface Props {
   initialResult?: ServiceProgramResult;
   /** Se valorizzato, lo scenario salvato verrà agganciato a questo progetto. */
   projectId?: string | null;
+  /** Planning Studio project id collegato — se presente, i cluster PS
+   *  logici vengono passati al CP-SAT per trattare le fermate dello stesso
+   *  cluster come "stesso punto" (deadhead 0). I cluster di interscambio
+   *  arrivano comunque tramite mirror legacy. */
+  psProjectId?: string | null;
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -336,6 +341,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                                : solverIntensity === "deep" ? 420
                                : 180;
         bodyPayload.solverIntensity = solverIntensity;
+        // Planning Studio project (se collegato): backend leggera anche i
+        // cluster PS logici come hint di transfer 0 al CP-SAT.
+        if (psProjectId) bodyPayload.psProjectId = psProjectId;
         // REGOLA #1 + parametri costi utente
         bodyPayload.vspAdvanced = {
           minVehiclesPriority,
@@ -386,7 +394,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       costFixed12m, costFixedSnod, costFixed10m, costIdlePerMin,
       costPerDepotReturn, targetShiftDuration, maxIdleAtTerminal, maxIdleForArcMin,
       terminalClusterRadiusM, vehicleEliminationMaxPasses, vehicleEliminationTimeSec,
-      enableIterativeReduction, iterativeReductionTimeSec]);
+      enableIterativeReduction, iterativeReductionTimeSec, psProjectId, gtfsSelection.tempFeedId]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;

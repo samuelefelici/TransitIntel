@@ -336,7 +336,11 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
     return cluster_of
 
 
-def build_compatible_arcs_fast(trips: list[Trip], rates: VehicleCostRates) -> list[Arc]:
+def build_compatible_arcs_fast(
+    trips: list[Trip],
+    rates: VehicleCostRates,
+    user_clusters: dict[str, int] | None = None,
+) -> list[Arc]:
     """O(n x k) arc building with bisect temporal windowing.
 
     FIX-VSP-1: la finestra per generare archi è separata dalla soglia depot_return.
@@ -347,6 +351,12 @@ def build_compatible_arcs_fast(trips: list[Trip], rates: VehicleCostRates) -> li
 
     FIX-VSP-CLUSTER: due capolinea entro `terminal_cluster_radius_m` vengono
     trattati come stesso punto (deadhead km=0, tempo=0, nessun buffer di 5min).
+
+    USER-CLUSTERS (Planning Studio): se l'utente ha definito cluster di fermate
+    (logici o di cambio), questi VINCONO sul clustering geografico automatico:
+    due stop_id appartenenti allo stesso user-cluster sono trattati come stesso
+    punto (deadhead=0). Stop_id non in alcun user-cluster ricadono sul
+    clustering geografico standard.
     """
     n = len(trips)
     sorted_by_dep = sorted(range(n), key=lambda idx: trips[idx].departure_min)
@@ -355,6 +365,16 @@ def build_compatible_arcs_fast(trips: list[Trip], rates: VehicleCostRates) -> li
 
     # FIX-VSP-CLUSTER: pre-computa cluster geografici dei terminali
     cluster_of = build_terminal_clusters(trips, rates.terminal_cluster_radius_m)
+
+    # USER-CLUSTERS PS: namespace separato (id ≥ 1_000_000) per evitare
+    # collisioni con i cluster geografici (int crescenti da 0). I cluster
+    # utente OVERRIDE il geografico per gli stop_id coperti.
+    if user_clusters:
+        n_overridden = sum(1 for k in user_clusters if k in cluster_of)
+        cluster_of.update(user_clusters)
+        log(f"  [VSP-USER-CLUSTER] applicati {len(user_clusters)} mapping "
+            f"stop→cluster da Planning Studio "
+            f"(override del geografico per {n_overridden} stop)")
 
     arcs: list[Arc] = []
     same_cluster_count = 0
@@ -2470,9 +2490,30 @@ def main():
     log(f"  {vsp_config.summary()}")
     report_progress("VSP", 5, f"Loaded {n} trips")
 
+    # USER-CLUSTERS da Planning Studio (data.psClusters):
+    # formato atteso: [{"stopIds": ["s1","s2",...]}, ...]
+    # Costruiamo dict stop_id -> cluster_id (int >= 1_000_000 per non
+    # collidere con i cluster geografici generati internamente).
+    user_clusters: dict[str, int] = {}
+    ps_clusters_raw = data.get("psClusters") or []
+    if isinstance(ps_clusters_raw, list):
+        next_id = 1_000_000
+        for grp in ps_clusters_raw:
+            stops = grp.get("stopIds") if isinstance(grp, dict) else None
+            if not stops or not isinstance(stops, list):
+                continue
+            cid = next_id
+            next_id += 1
+            for sid in stops:
+                if isinstance(sid, str) and sid:
+                    user_clusters[sid] = cid
+        if user_clusters:
+            log(f"  [VSP-USER-CLUSTER] ricevuti {len(ps_clusters_raw)} cluster "
+                f"PS, {len(user_clusters)} fermate mappate")
+
     # Build arcs
     report_progress("VSP", 10, "Building compatibility arcs...")
-    arcs = build_compatible_arcs_fast(trips, rates)
+    arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None)
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
     log(f"  Arcs: {len(arcs)}")
     report_progress("VSP", 15, f"Built {len(arcs)} arcs")

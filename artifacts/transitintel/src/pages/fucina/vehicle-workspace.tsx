@@ -496,6 +496,25 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
     return m?.[1] ?? null;
   }, [currentLocation]);
 
+  // PS project collegato (se esiste): caricato in lazy per passarlo al CP-SAT
+  // nelle ri-ottimizzazioni, cosi i cluster PS logici diventano transfer 0.
+  const [psProjectId, setPsProjectId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!projectIdFromUrl) { setPsProjectId(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const base = getApiBase();
+        const res = await fetch(`${base}/api/scheduling-projects/${projectIdFromUrl}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const ps = data?.project?.planningStudioProjectId ?? data?.planningStudioProjectId ?? null;
+        if (!cancelled) setPsProjectId(ps ? String(ps) : null);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, [projectIdFromUrl]);
+
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
@@ -1077,6 +1096,7 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
           tripTimeOverrides: overrides,
           timeLimit: 60,
           solverIntensity: "normal",
+          ...(psProjectId ? { psProjectId } : {}),
         }),
       });
       if (!res.ok) {
@@ -1218,6 +1238,7 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
           date, routes,
           timeLimit: 60,
           solverIntensity: "normal",
+          ...(psProjectId ? { psProjectId } : {}),
         }),
       });
       if (!res.ok) {

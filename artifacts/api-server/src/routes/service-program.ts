@@ -1404,6 +1404,7 @@ async function runCPSATVehicleScheduler(
   logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
   extraConfig?: Record<string, any>,
   routeDetails?: { routeId: string; routeName: string }[],
+  psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
 ): Promise<any> {
   const scriptPath = path.resolve(SCRIPTS_DIR, "vehicle_scheduler_cpsat.py");
 
@@ -1468,6 +1469,7 @@ async function runCPSATVehicleScheduler(
         ...extraConfig,
       },
       routeDetails: routeDetails || [],
+      psClusters: psClusters || [],
     });
     py.stdin.write(inputJson);
     py.stdin.end();
@@ -1502,6 +1504,13 @@ router.post("/service-program/cpsat", async (req, res) => {
        * - intensity, scenariosOverride, enableNoGoodCuts, ...
        */
       vspAdvanced?: Record<string, any>;
+      /**
+       * Planning Studio project ID (UUID). Se presente, il solver riceve
+       * anche i cluster PS "logici" (kind!=interchange) come hint di transfer
+       * a costo zero. I cluster di interscambio sono già propagati via mirror
+       * legacy `stop_clusters` indipendentemente da questo campo.
+       */
+      psProjectId?: string;
     };
 
     const rawDate = body.date;
@@ -1649,6 +1658,74 @@ router.post("/service-program/cpsat", async (req, res) => {
       routeName: routeNameMap.get(rid) || rid,
     }));
 
+    /* ── 5b. Cluster utente (Planning Studio + legacy) per VSP ────────────
+     * I cluster definiti dall'utente sono passati al CP-SAT come hint:
+     * fermate dello stesso cluster vengono trattate come "stesso punto"
+     * (deadhead km=0, tempo=0). Sorgenti aggregate:
+     *  - cluster legacy (`stop_cluster_stops`): comprendono già il mirror
+     *    PS→legacy dei kind='interchange' (cfr planning-studio-materialize)
+     *  - cluster PS logici (kind!='interchange'): NON sono mirrorati,
+     *    quindi li leggiamo direttamente da ps_stop_clusters/ps_stops
+     *    se è specificato un psProjectId.
+     * Lavoriamo per stop_id GTFS (chiave usata dal solver).
+     */
+    const psClustersForPy: { id: string; name: string; kind: string; stopIds: string[] }[] = [];
+    try {
+      // 5b.1 — cluster legacy (qualsiasi sorgente, include mirror PS interchange)
+      const legacyRows = await db.execute<{ cluster_id: string; name: string; gtfs_stop_id: string }>(sql`
+        SELECT scs.cluster_id::text AS cluster_id,
+               COALESCE(c.name, 'Cluster') AS name,
+               scs.gtfs_stop_id
+          FROM stop_cluster_stops scs
+          JOIN stop_clusters c ON c.id = scs.cluster_id
+      `);
+      const legacyByCluster = new Map<string, { name: string; stopIds: Set<string> }>();
+      for (const r of legacyRows.rows) {
+        if (!legacyByCluster.has(r.cluster_id)) {
+          legacyByCluster.set(r.cluster_id, { name: r.name, stopIds: new Set() });
+        }
+        legacyByCluster.get(r.cluster_id)!.stopIds.add(r.gtfs_stop_id);
+      }
+      for (const [cid, v] of legacyByCluster) {
+        if (v.stopIds.size >= 2) {
+          psClustersForPy.push({ id: cid, name: v.name, kind: "interchange", stopIds: Array.from(v.stopIds) });
+        }
+      }
+      // 5b.2 — cluster PS logici (kind != interchange) per il psProjectId, se passato
+      const psProjectId = body.psProjectId;
+      if (psProjectId && typeof psProjectId === "string") {
+        const psRows = await db.execute<{ cluster_id: string; name: string; kind: string; gtfs_stop_id: string }>(sql`
+          SELECT c.id::text AS cluster_id,
+                 COALESCE(NULLIF(c.name, ''), 'Cluster') AS name,
+                 COALESCE(c.kind, 'interchange') AS kind,
+                 s.id::text AS gtfs_stop_id
+            FROM ps_stops s
+            JOIN ps_stop_clusters c ON c.id = s.cluster_id
+           WHERE s.project_id = ${psProjectId}::uuid
+             AND s.cluster_id IS NOT NULL
+             AND COALESCE(c.kind, 'interchange') != 'interchange'
+        `);
+        const psByCluster = new Map<string, { name: string; kind: string; stopIds: Set<string> }>();
+        for (const r of psRows.rows) {
+          if (!psByCluster.has(r.cluster_id)) {
+            psByCluster.set(r.cluster_id, { name: r.name, kind: r.kind, stopIds: new Set() });
+          }
+          psByCluster.get(r.cluster_id)!.stopIds.add(r.gtfs_stop_id);
+        }
+        for (const [cid, v] of psByCluster) {
+          if (v.stopIds.size >= 2) {
+            psClustersForPy.push({ id: cid, name: v.name, kind: v.kind, stopIds: Array.from(v.stopIds) });
+          }
+        }
+      }
+      if (psClustersForPy.length > 0) {
+        const totalStops = psClustersForPy.reduce((s, c) => s + c.stopIds.length, 0);
+        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver`);
+      }
+    } catch (err: any) {
+      req.log.error(`CP-SAT VSP: errore caricamento cluster utente: ${err?.message}`);
+    }
+
     // 6. Spawn Python solver
     const cpResult = await runCPSATVehicleScheduler(
       tripBlocks, timeLimitSec, req.log,
@@ -1659,6 +1736,7 @@ router.post("/service-program/cpsat", async (req, res) => {
         ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
       },
       routeDetailsForPy,
+      psClustersForPy,
     );
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
