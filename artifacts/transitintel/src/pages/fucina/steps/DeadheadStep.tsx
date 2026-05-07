@@ -180,6 +180,21 @@ export default function DeadheadStep({
     if (!initial) compute();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Ricomputa quando i clusterIds cambiano (es. /clusters/by-routes risponde
+  // DOPO il primo mount → la matrice iniziale era senza nodi cluster).
+  // Evitiamo di triggerarlo se l'utente ha già editato manualmente la matrice.
+  const clusterIdsKey = clusterIds.join(",");
+  const prevClusterIdsKey = React.useRef(clusterIdsKey);
+  useEffect(() => {
+    if (prevClusterIdsKey.current === clusterIdsKey) return;
+    prevClusterIdsKey.current = clusterIdsKey;
+    // Solo se non ci sono override utente (overridden flag).
+    const hasOverrides = deadheads.some(d => d.overridden);
+    if (hasOverrides) return;
+    compute();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clusterIdsKey]);
+
   /* ── Edit ── */
   /** Salva modifiche applicandole simmetricamente a entrambe le direzioni della coppia. */
   const savePairEdit = (pair: DeadheadPair) => {
