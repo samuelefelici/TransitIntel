@@ -169,6 +169,7 @@ export default function PlanningStudioEditorPage() {
     name: string;
     kind: PsClusterKind;
     radiusM: number;
+    color: string;
     polygon: [number, number][]; // [lon, lat]
     pendingStopIds: Set<string>;
   };
@@ -1132,7 +1133,9 @@ export default function PlanningStudioEditorPage() {
                     properties: {
                       id: c.id,
                       name: c.name,
-                      color: c.kind === "interchange" ? "#0ea5e9" : "#64748b",
+                      color: (c.attributes && typeof (c.attributes as any).color === "string"
+                              ? (c.attributes as any).color
+                              : (c.kind === "interchange" ? "#0ea5e9" : "#64748b")),
                       radius: c.radiusM,
                     },
                     geometry: { type: "Point", coordinates: [Number(c.centerLon), Number(c.centerLat)] },
@@ -2157,6 +2160,7 @@ type ClusterDrawState = {
   name: string;
   kind: PsClusterKind;
   radiusM: number;
+  color: string;
   polygon: [number, number][];
   pendingStopIds: Set<string>;
 };
@@ -2197,6 +2201,28 @@ function ClustersPanel({
     none: "#64748b",
   };
 
+  // Palette di colori predefiniti per il cluster
+  const COLOR_PALETTE = [
+    "#0ea5e9", // sky
+    "#06b6d4", // cyan
+    "#10b981", // emerald
+    "#84cc16", // lime
+    "#eab308", // yellow
+    "#f97316", // orange
+    "#ef4444", // red
+    "#ec4899", // pink
+    "#a855f7", // violet
+    "#6366f1", // indigo
+    "#64748b", // slate
+    "#0f172a", // dark
+  ];
+
+  // Helper: ricava il colore di un cluster dal suo attributes.color, fallback al kind
+  function clusterColor(c: PsCluster): string {
+    return (c.attributes && typeof c.attributes.color === "string" ? c.attributes.color : null)
+        || KIND_COLOR[c.kind];
+  }
+
   // mappa stopId → fermata (per la lista nella card del cluster in modifica)
   const stopById = useMemo(() => {
     const m: Record<string, PsStop> = {};
@@ -2226,6 +2252,7 @@ function ClustersPanel({
       name: "",
       kind: "interchange",
       radiusM: 150,
+      color: COLOR_PALETTE[0],
       polygon: [],
       pendingStopIds: new Set(),
     });
@@ -2241,6 +2268,7 @@ function ClustersPanel({
       name: c.name,
       kind: c.kind,
       radiusM: c.radiusM ?? 150,
+      color: clusterColor(c),
       polygon: [],
       pendingStopIds: ids,
     });
@@ -2298,11 +2326,16 @@ function ClustersPanel({
     setSaving(true);
     try {
       let id = clusterDraw.clusterId;
+      const attrPatch = { color: clusterDraw.color };
       if (id) {
+        // Preserva eventuali altri attributes esistenti
+        const existing = clusters.find(c => c.id === id);
+        const mergedAttrs = { ...(existing?.attributes ?? {}), ...attrPatch };
         await updatePsCluster(projectId, id, {
           name: clusterDraw.name.trim(),
           kind: clusterDraw.kind,
           radiusM: clusterDraw.radiusM,
+          attributes: mergedAttrs,
           ...(centerLat != null ? { centerLat, centerLon } : {}),
         });
       } else {
@@ -2310,6 +2343,7 @@ function ClustersPanel({
           name: clusterDraw.name.trim(),
           kind: clusterDraw.kind,
           radiusM: clusterDraw.radiusM,
+          attributes: attrPatch,
           ...(centerLat != null ? { centerLat, centerLon } : {}),
         });
         id = created.id;
@@ -2387,6 +2421,39 @@ function ClustersPanel({
                 title="Raggio (m)"
                 className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
               />
+            </div>
+            {/* Color picker */}
+            <div className="mb-2">
+              <div className="flex items-center gap-1.5 mb-1">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider">Colore</span>
+                <span
+                  className="w-3.5 h-3.5 rounded border border-slate-600"
+                  style={{ backgroundColor: clusterDraw.color }}
+                />
+                <input
+                  type="color"
+                  value={clusterDraw.color}
+                  onChange={e => setClusterDraw({ ...clusterDraw, color: e.target.value })}
+                  title="Colore personalizzato"
+                  className="ml-auto w-6 h-5 rounded border border-slate-600 bg-transparent cursor-pointer p-0"
+                />
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {COLOR_PALETTE.map(col => (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => setClusterDraw({ ...clusterDraw, color: col })}
+                    title={col}
+                    className={`w-5 h-5 rounded border-2 transition ${
+                      clusterDraw.color.toLowerCase() === col.toLowerCase()
+                        ? "border-white scale-110"
+                        : "border-slate-700 hover:border-slate-500"
+                    }`}
+                    style={{ backgroundColor: col }}
+                  />
+                ))}
+              </div>
             </div>
             <div className="flex gap-1">
               <button
@@ -2548,7 +2615,7 @@ function ClustersPanel({
                     <button onClick={() => toggleExpanded(c.id)} className="p-0.5 rounded hover:bg-slate-800 text-slate-400">
                       {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                     </button>
-                    <div className="w-1.5 h-7 rounded shrink-0" style={{ background: KIND_COLOR[c.kind] }} />
+                    <div className="w-1.5 h-7 rounded shrink-0" style={{ background: clusterColor(c) }} />
                     <button
                       onClick={() => c.centerLat != null && c.centerLon != null && onFlyTo(Number(c.centerLat), Number(c.centerLon))}
                       className="flex-1 min-w-0 text-left hover:text-cyan-300"
