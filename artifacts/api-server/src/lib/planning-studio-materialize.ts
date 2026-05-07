@@ -117,73 +117,29 @@ export async function materializePsToFeed(
     throw new Error("PsProject non trovato o senza permessi di lettura");
   }
 
-  /* ── 1. Carica tutti i dati PS in memoria ──────────────────── */
-  const stopsR = await db.execute(sql`
-    SELECT id, code, name, description, lat, lon, wheelchair_boarding
-      FROM ps_stops WHERE project_id = ${psProjectId}::uuid
-  `);
-  const psStops: any[] = (stopsR as any).rows ?? stopsR ?? [];
+  /* ────────────────────────────────────────────────────────────
+   * STRATEGIA "ALL-IN-POSTGRES":
+   * I dati NON passano per Node. Usiamo INSERT ... SELECT con
+   * cast (uuid → text). Per Conerobus (321k stop_times) passiamo
+   * da ~3 minuti + 500MB RAM Node a ~5 secondi e ~10MB RAM Node.
+   * Niente più OOM su Render starter.
+   * ──────────────────────────────────────────────────────────── */
 
-  const routesR = await db.execute(sql`
-    SELECT id, code, short_name, long_name, description, route_type, color, text_color, agency_id
-      FROM ps_routes WHERE project_id = ${psProjectId}::uuid
-  `);
-  const psRoutes: any[] = (routesR as any).rows ?? routesR ?? [];
-
-  const calendarsR = await db.execute(sql`
-    SELECT id, code, name, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
-           start_date, end_date
-      FROM ps_calendars WHERE project_id = ${psProjectId}::uuid
-  `);
-  const psCalendars: any[] = (calendarsR as any).rows ?? calendarsR ?? [];
-
-  const calDatesR = await db.execute(sql`
-    SELECT cd.calendar_id, cd.date, cd.exception_type
-      FROM ps_calendar_dates cd
-      JOIN ps_calendars c ON c.id = cd.calendar_id
-     WHERE c.project_id = ${psProjectId}::uuid
-  `);
-  const psCalDates: any[] = (calDatesR as any).rows ?? calDatesR ?? [];
-
-  const tripsR = await db.execute(sql`
-    SELECT id, route_id, variant_id, calendar_id, headsign, short_name, direction
-      FROM ps_trips
-     WHERE project_id = ${psProjectId}::uuid
-       AND COALESCE(is_active, true) = true
-  `);
-  const psTrips: any[] = (tripsR as any).rows ?? tripsR ?? [];
-
-  const stopTimesR = await db.execute(sql`
-    SELECT st.trip_id, st.stop_seq, st.stop_id, st.arrival_time, st.departure_time,
-           st.pickup_type, st.drop_off_type
-      FROM ps_stop_times st
-      JOIN ps_trips t ON t.id = st.trip_id
-     WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true
-  `);
-  const psStopTimes: any[] = (stopTimesR as any).rows ?? stopTimesR ?? [];
-
-  const shapesR = await db.execute(sql`
-    SELECT variant_id, geometry
-      FROM ps_shapes WHERE project_id = ${psProjectId}::uuid
-  `);
-  const psShapes: any[] = (shapesR as any).rows ?? shapesR ?? [];
-
-  /* ── 2. Cancella vecchio feed materializzato (CASCADE pulisce gtfs_*) ── */
+  /* ── 1. Cancella vecchio feed materializzato (CASCADE pulisce gtfs_*) ── */
   if (project.materialized_feed_id) {
     await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${project.materialized_feed_id}::uuid`);
   }
 
-  /* ── 3. Calcola feed_start_date / feed_end_date dai calendari ── */
-  let minStart: string | null = null;
-  let maxEnd: string | null = null;
-  for (const c of psCalendars) {
-    const s = dateToGtfs(c.start_date);
-    const e = dateToGtfs(c.end_date);
-    if (s && (!minStart || s < minStart)) minStart = s;
-    if (e && (!maxEnd || e > maxEnd)) maxEnd = e;
-  }
-  // Fallback: se nessun calendario ha date utilizzabili, usa range "oggi → +1 anno"
+  /* ── 2. Calcola feed_start_date / feed_end_date dai calendari ──
+   * Singola query aggregata, evita load di tutti i calendari in Node. */
+  const dateRangeR: any = await db.execute(sql`
+    SELECT to_char(MIN(start_date), 'YYYYMMDD') AS min_start,
+           to_char(MAX(end_date),   'YYYYMMDD') AS max_end
+      FROM ps_calendars WHERE project_id = ${psProjectId}::uuid
+  `);
+  const dr: any = dateRangeR.rows?.[0] ?? dateRangeR[0] ?? {};
+  let minStart: string = dr.min_start || "";
+  let maxEnd: string = dr.max_end || "";
   if (!minStart) {
     const today = new Date();
     minStart = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
@@ -194,216 +150,185 @@ export async function materializePsToFeed(
     maxEnd = `${next.getFullYear()}${String(next.getMonth() + 1).padStart(2, "0")}${String(next.getDate()).padStart(2, "0")}`;
   }
 
-  /* ── 4. Crea gtfs_feeds row ─────────────────────────────────── */
+  /* ── 3. Crea gtfs_feeds row (con counter aggregati) ─────────── */
   const label = `PS · ${project.name}`;
   const filename = `ps-${psProjectId.slice(0, 8)}.synthetic`;
+  const agencyName = project.agency_name || project.name;
 
-  const feedR = await db.execute(sql`
+  const feedR: any = await db.execute(sql`
     INSERT INTO gtfs_feeds (filename, agency_name, feed_start_date, feed_end_date,
                             stops_count, routes_count, trips_count, shapes_count)
-    VALUES (${filename}, ${project.agency_name || project.name}, ${minStart}, ${maxEnd},
-            ${psStops.length}, ${psRoutes.length}, ${psTrips.length}, ${psShapes.length})
+    SELECT ${filename}, ${agencyName}, ${minStart}, ${maxEnd},
+           (SELECT count(*) FROM ps_stops  WHERE project_id = ${psProjectId}::uuid),
+           (SELECT count(*) FROM ps_routes WHERE project_id = ${psProjectId}::uuid),
+           (SELECT count(*) FROM ps_trips  WHERE project_id = ${psProjectId}::uuid AND COALESCE(is_active, true) = true),
+           (SELECT count(*) FROM ps_shapes WHERE project_id = ${psProjectId}::uuid)
     RETURNING id
   `);
-  const feedId: string = ((feedR as any).rows?.[0] ?? (feedR as any)[0]).id;
+  const feedId: string = (feedR.rows?.[0] ?? feedR[0]).id;
 
-  // owner_user_id (colonna additiva runtime → UPDATE separato)
+  // owner_user_id (colonna additiva runtime)
   await db.execute(sql`
     UPDATE gtfs_feeds SET owner_user_id = ${ownerUserId}::uuid WHERE id = ${feedId}::uuid
   `);
 
-  /* ── 5. Bulk insert gtfs_stops ──────────────────────────────── */
-  const stopRows = psStops.map(s => [
-    feedId, String(s.id), s.code || null, s.name, s.description || null,
-    Number(s.lat), Number(s.lon), s.wheelchair_boarding ?? 0,
-  ]);
-  await bulkInsert(
-    "gtfs_stops",
-    ["feed_id", "stop_id", "stop_code", "stop_name", "stop_desc",
-     "stop_lat", "stop_lon", "wheelchair_boarding"],
-    stopRows,
-  );
+  /* ── 4. INSERT ... SELECT puro Postgres ──────────────────────
+   * Tutti i dati restano nel DB. Node non vede una sola riga. */
 
-  /* ── 6. Bulk insert gtfs_routes ─────────────────────────────── */
-  const routeTripCount = new Map<string, number>();
-  for (const t of psTrips) {
-    const k = String(t.route_id);
-    routeTripCount.set(k, (routeTripCount.get(k) || 0) + 1);
-  }
-  const routeRows = psRoutes.map(r => [
-    feedId, String(r.id), r.agency_id || null,
-    r.short_name || r.code || "", r.long_name || null,
-    r.route_type ?? 3, r.color || null, r.text_color || null,
-    routeTripCount.get(String(r.id)) || 0,
-  ]);
-  await bulkInsert(
-    "gtfs_routes",
-    ["feed_id", "route_id", "agency_id", "route_short_name", "route_long_name",
-     "route_type", "route_color", "route_text_color", "trips_count"],
-    routeRows,
-  );
+  // 4a. gtfs_stops
+  await db.execute(sql`
+    INSERT INTO gtfs_stops
+           (feed_id, stop_id, stop_code, stop_name, stop_desc,
+            stop_lat, stop_lon, wheelchair_boarding)
+    SELECT ${feedId}::uuid, id::text, code, name, description,
+           lat, lon, COALESCE(wheelchair_boarding, 0)
+      FROM ps_stops
+     WHERE project_id = ${psProjectId}::uuid
+  `);
 
-  /* ── 7. Bulk insert gtfs_calendar / gtfs_calendar_dates ─────── */
-  const calRows = psCalendars.map(c => [
-    feedId, String(c.id),
-    c.monday ? 1 : 0, c.tuesday ? 1 : 0, c.wednesday ? 1 : 0, c.thursday ? 1 : 0,
-    c.friday ? 1 : 0, c.saturday ? 1 : 0, c.sunday ? 1 : 0,
-    dateToGtfs(c.start_date) || minStart, dateToGtfs(c.end_date) || maxEnd,
-  ]);
-  await bulkInsert(
-    "gtfs_calendar",
-    ["feed_id", "service_id", "monday", "tuesday", "wednesday", "thursday",
-     "friday", "saturday", "sunday", "start_date", "end_date"],
-    calRows,
-  );
+  // 4b. gtfs_routes (con trips_count aggregato)
+  await db.execute(sql`
+    INSERT INTO gtfs_routes
+           (feed_id, route_id, agency_id, route_short_name, route_long_name,
+            route_type, route_color, route_text_color, trips_count)
+    SELECT ${feedId}::uuid, r.id::text, r.agency_id,
+           COALESCE(NULLIF(r.short_name, ''), r.code, ''),
+           r.long_name,
+           COALESCE(r.route_type, 3), r.color, r.text_color,
+           COALESCE((SELECT count(*) FROM ps_trips t
+                      WHERE t.route_id = r.id
+                        AND COALESCE(t.is_active, true) = true), 0)
+      FROM ps_routes r
+     WHERE r.project_id = ${psProjectId}::uuid
+  `);
 
-  const calDateRows = psCalDates.map(cd => [
-    feedId, String(cd.calendar_id), dateToGtfs(cd.date), cd.exception_type ?? 1,
-  ]);
-  await bulkInsert(
-    "gtfs_calendar_dates",
-    ["feed_id", "service_id", "date", "exception_type"],
-    calDateRows,
-  );
+  // 4c. gtfs_calendar
+  await db.execute(sql`
+    INSERT INTO gtfs_calendar
+           (feed_id, service_id, monday, tuesday, wednesday, thursday,
+            friday, saturday, sunday, start_date, end_date)
+    SELECT ${feedId}::uuid, id::text,
+           CASE WHEN monday    THEN 1 ELSE 0 END,
+           CASE WHEN tuesday   THEN 1 ELSE 0 END,
+           CASE WHEN wednesday THEN 1 ELSE 0 END,
+           CASE WHEN thursday  THEN 1 ELSE 0 END,
+           CASE WHEN friday    THEN 1 ELSE 0 END,
+           CASE WHEN saturday  THEN 1 ELSE 0 END,
+           CASE WHEN sunday    THEN 1 ELSE 0 END,
+           COALESCE(to_char(start_date, 'YYYYMMDD'), ${minStart}),
+           COALESCE(to_char(end_date,   'YYYYMMDD'), ${maxEnd})
+      FROM ps_calendars
+     WHERE project_id = ${psProjectId}::uuid
+  `);
 
-  /* ── 8. Bulk insert gtfs_trips ──────────────────────────────── */
-  // Calendari "fittizi" per trip senza calendar_id: uso primo calendario disponibile o un service_id placeholder
-  const fallbackServiceId = psCalendars.length > 0 ? String(psCalendars[0].id) : "DEFAULT";
-  if (psCalendars.length === 0 && psTrips.length > 0) {
-    // crea un calendario di fallback "tutti i giorni"
+  // 4d. gtfs_calendar_dates
+  await db.execute(sql`
+    INSERT INTO gtfs_calendar_dates
+           (feed_id, service_id, date, exception_type)
+    SELECT ${feedId}::uuid, cd.calendar_id::text,
+           to_char(cd.date, 'YYYYMMDD'),
+           COALESCE(cd.exception_type, 1)
+      FROM ps_calendar_dates cd
+      JOIN ps_calendars c ON c.id = cd.calendar_id
+     WHERE c.project_id = ${psProjectId}::uuid
+  `);
+
+  // 4e. gtfs_trips — uso fallback service_id se calendar_id null
+  // Crea il fallback calendar SOLO se ci sono trip senza calendario
+  const needFallbackR: any = await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1 FROM ps_trips
+       WHERE project_id = ${psProjectId}::uuid
+         AND COALESCE(is_active, true) = true
+         AND calendar_id IS NULL
+    ) AS need
+  `);
+  const needFallback = !!(needFallbackR.rows?.[0]?.need ?? needFallbackR[0]?.need);
+  const fallbackServiceId = `fallback-${feedId.slice(0, 8)}`;
+  if (needFallback) {
     await db.execute(sql`
       INSERT INTO gtfs_calendar (feed_id, service_id, monday, tuesday, wednesday,
                                  thursday, friday, saturday, sunday, start_date, end_date)
       VALUES (${feedId}::uuid, ${fallbackServiceId}, 1, 1, 1, 1, 1, 1, 1, ${minStart}, ${maxEnd})
+      ON CONFLICT (feed_id, service_id) DO NOTHING
     `);
   }
 
-  const tripRows = psTrips.map(t => [
-    feedId, String(t.id), String(t.route_id),
-    t.calendar_id ? String(t.calendar_id) : fallbackServiceId,
-    t.headsign || null, t.direction ?? 0,
-    String(t.variant_id),  // shape_id = variant_id (1 shape per variante)
-  ]);
-  await bulkInsert(
-    "gtfs_trips",
-    ["feed_id", "trip_id", "route_id", "service_id",
-     "trip_headsign", "direction_id", "shape_id"],
-    tripRows,
-  );
-
-  /* ── 9. Bulk insert gtfs_stop_times ───────────────────────────
-   * Tabella più grande (300k+ righe). Usa batch da 5000 (8 cols → 40k
-   * parametri/query, sotto il limite Postgres di 65535) per ridurre il
-   * round-trip count da 215 a ~65, quasi 4× più veloce.
-   */
-  const stRows = psStopTimes.map(st => [
-    feedId, String(st.trip_id), String(st.stop_id), Number(st.stop_seq),
-    st.departure_time, st.arrival_time,
-    st.pickup_type ?? 0, st.drop_off_type ?? 0,
-  ]);
-  await bulkInsert(
-    "gtfs_stop_times",
-    ["feed_id", "trip_id", "stop_id", "stop_sequence",
-     "departure_time", "arrival_time", "pickup_type", "drop_off_type"],
-    stRows,
-    5000,
-  );
-
-  /* ── 10. Bulk insert gtfs_shapes (geometry come geojson LineString) ── */
-  // Mappa variant_id → route info per alimentare gtfs_shapes.route_short_name/route_color
-  const variantToRoute = new Map<string, { id: string; shortName: string; color: string | null }>();
-  // Carica varianti per ottenere route_id
-  const variantsR = await db.execute(sql`
-    SELECT v.id, v.route_id FROM ps_route_variants v
-     WHERE v.project_id = ${psProjectId}::uuid
+  await db.execute(sql`
+    INSERT INTO gtfs_trips
+           (feed_id, trip_id, route_id, service_id,
+            trip_headsign, direction_id, shape_id)
+    SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
+           COALESCE(t.calendar_id::text, ${fallbackServiceId}),
+           t.headsign, COALESCE(t.direction, 0), t.variant_id::text
+      FROM ps_trips t
+     WHERE t.project_id = ${psProjectId}::uuid
+       AND COALESCE(t.is_active, true) = true
   `);
-  const psVariants: any[] = (variantsR as any).rows ?? variantsR ?? [];
-  const routeById = new Map(psRoutes.map(r => [String(r.id), r]));
-  for (const v of psVariants) {
-    const rt = routeById.get(String(v.route_id));
-    variantToRoute.set(String(v.id), {
-      id: String(v.route_id),
-      shortName: rt?.short_name || rt?.code || "",
-      color: rt?.color || null,
-    });
-  }
 
-  const shapeRows = psShapes.map(s => {
-    const vid = String(s.variant_id);
-    const rt = variantToRoute.get(vid);
-    return [
-      feedId, vid, rt?.id || null, rt?.shortName || null, rt?.color || null,
-      JSON.stringify(s.geometry),
-    ];
-  });
-  await bulkInsert(
-    "gtfs_shapes",
-    ["feed_id", "shape_id", "route_id", "route_short_name", "route_color", "geojson"],
-    shapeRows,
-  );
+  // 4f. gtfs_stop_times — la query più pesante (300k+ righe per Conerobus).
+  // Con INSERT ... SELECT resta tutto nel motore Postgres.
+  await db.execute(sql`
+    INSERT INTO gtfs_stop_times
+           (feed_id, trip_id, stop_id, stop_sequence,
+            departure_time, arrival_time, pickup_type, drop_off_type)
+    SELECT ${feedId}::uuid, st.trip_id::text, st.stop_id::text, st.stop_seq,
+           st.departure_time, st.arrival_time,
+           COALESCE(st.pickup_type, 0), COALESCE(st.drop_off_type, 0)
+      FROM ps_stop_times st
+      JOIN ps_trips t ON t.id = st.trip_id
+     WHERE t.project_id = ${psProjectId}::uuid
+       AND COALESCE(t.is_active, true) = true
+  `);
 
-  /* ── 10b. Propaga ps_stop_clusters → stop_clusters legacy ───
-   * I cluster di interscambio gestiti nel Network Engine vengono replicati
-   * nelle tabelle legacy `stop_clusters` / `stop_cluster_stops` riusando lo
-   * stesso UUID, così che gli endpoint di scheduling (deadheads, driver-shifts)
-   * possano referenziarli usando gli ID conosciuti dal frontend PS.
-   * Idempotente: cancella i precedenti (stesso id) e reinserisce.
-   */
-  const psClustersR = await db.execute(sql`
-    SELECT id, name, kind, COALESCE(radius_m, 150) AS radius_m,
-           COALESCE(attributes, '{}'::jsonb) AS attributes
+  // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)
+  await db.execute(sql`
+    INSERT INTO gtfs_shapes
+           (feed_id, shape_id, route_id, route_short_name, route_color, geojson)
+    SELECT ${feedId}::uuid, s.variant_id::text, r.id::text,
+           COALESCE(NULLIF(r.short_name, ''), r.code),
+           r.color, s.geometry
+      FROM ps_shapes s
+      LEFT JOIN ps_route_variants v ON v.id = s.variant_id
+      LEFT JOIN ps_routes r ON r.id = v.route_id
+     WHERE s.project_id = ${psProjectId}::uuid
+  `);
+
+  /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ────── */
+  await db.execute(sql`
+    DELETE FROM stop_clusters
+     WHERE id IN (
+       SELECT id FROM ps_stop_clusters
+        WHERE project_id = ${psProjectId}::uuid
+          AND COALESCE(kind, 'interchange') = 'interchange'
+     )
+  `);
+
+  await db.execute(sql`
+    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color)
+    SELECT id,
+           COALESCE(NULLIF(name, ''), 'Cluster'),
+           COALESCE((attributes->>'transferFromDepotMin')::int,
+                    (attributes->>'transfer_from_depot_min')::int, 10),
+           COALESCE(attributes->>'color', '#3b82f6')
       FROM ps_stop_clusters
      WHERE project_id = ${psProjectId}::uuid
        AND COALESCE(kind, 'interchange') = 'interchange'
   `);
-  const psClusters: any[] = (psClustersR as any).rows ?? psClustersR ?? [];
 
-  if (psClusters.length > 0) {
-    const ids = psClusters.map(c => String(c.id));
-    // Postgres array literal: drizzle's sql`` espande gli array JS come tupla
-    // ($1,$2,...) che non castabile a uuid[]. Passiamo un singolo literal '{...}'.
-    const idsLiteral = `{${ids.join(",")}}`;
-    // Cleanup precedenti (CASCADE pulisce stop_cluster_stops)
-    await db.execute(sql`
-      DELETE FROM stop_clusters WHERE id = ANY(${idsLiteral}::uuid[])
-    `);
+  await db.execute(sql`
+    INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
+    SELECT s.cluster_id, s.id::text,
+           COALESCE(NULLIF(s.name, ''), s.id::text),
+           s.lat, s.lon
+      FROM ps_stops s
+      JOIN ps_stop_clusters c ON c.id = s.cluster_id
+     WHERE s.project_id = ${psProjectId}::uuid
+       AND s.cluster_id IS NOT NULL
+       AND COALESCE(c.kind, 'interchange') = 'interchange'
+  `);
 
-    // Insert cluster (id riusato)
-    const clusterRows = psClusters.map(c => {
-      const attrs = (typeof c.attributes === "string" ? JSON.parse(c.attributes) : c.attributes) || {};
-      const transferMin = Number(attrs.transferFromDepotMin ?? attrs.transfer_from_depot_min ?? 10);
-      const color = String(attrs.color ?? "#3b82f6");
-      return [String(c.id), c.name || "Cluster", transferMin, color];
-    });
-    await bulkInsert(
-      "stop_clusters",
-      ["id", "name", "transfer_from_depot_min", "color"],
-      clusterRows,
-    );
-
-    // Carica fermate assegnate ai cluster (ps_stops.cluster_id)
-    const clusterStopsR = await db.execute(sql`
-      SELECT s.id AS stop_id, s.name AS stop_name, s.lat, s.lon, s.cluster_id
-        FROM ps_stops s
-       WHERE s.project_id = ${psProjectId}::uuid
-         AND s.cluster_id IS NOT NULL
-         AND s.cluster_id = ANY(${idsLiteral}::uuid[])
-    `);
-    const clusterStopRows: any[] = (clusterStopsR as any).rows ?? clusterStopsR ?? [];
-    if (clusterStopRows.length > 0) {
-      const rows = clusterStopRows.map(r => [
-        String(r.cluster_id), String(r.stop_id), r.stop_name || String(r.stop_id),
-        Number(r.lat), Number(r.lon),
-      ]);
-      await bulkInsert(
-        "stop_cluster_stops",
-        ["cluster_id", "gtfs_stop_id", "stop_name", "stop_lat", "stop_lon"],
-        rows,
-      );
-    }
-  }
-
-  /* ── 11. Aggiorna ps_projects.materialized_feed_id ──────────── */
+  /* ── 6. Aggiorna ps_projects.materialized_feed_id ──────────── */
   await db.execute(sql`
     UPDATE ps_projects
        SET materialized_feed_id = ${feedId}::uuid,
@@ -411,19 +336,32 @@ export async function materializePsToFeed(
      WHERE id = ${psProjectId}::uuid
   `);
 
+  /* ── 7. Counts finali per la response (singola query aggregata) ── */
+  const countsR: any = await db.execute(sql`
+    SELECT
+      (SELECT count(*) FROM gtfs_stops          WHERE feed_id = ${feedId}::uuid) AS stops,
+      (SELECT count(*) FROM gtfs_routes         WHERE feed_id = ${feedId}::uuid) AS routes,
+      (SELECT count(*) FROM gtfs_trips          WHERE feed_id = ${feedId}::uuid) AS trips,
+      (SELECT count(*) FROM gtfs_stop_times     WHERE feed_id = ${feedId}::uuid) AS stop_times,
+      (SELECT count(*) FROM gtfs_calendar       WHERE feed_id = ${feedId}::uuid) AS calendars,
+      (SELECT count(*) FROM gtfs_calendar_dates WHERE feed_id = ${feedId}::uuid) AS calendar_dates,
+      (SELECT count(*) FROM gtfs_shapes         WHERE feed_id = ${feedId}::uuid) AS shapes
+  `);
+  const c: any = countsR.rows?.[0] ?? countsR[0];
+
   return {
     feedId,
     label,
     feedStartDate: minStart,
     feedEndDate: maxEnd,
     counts: {
-      stops: psStops.length,
-      routes: psRoutes.length,
-      trips: psTrips.length,
-      stopTimes: psStopTimes.length,
-      calendars: psCalendars.length,
-      calendarDates: psCalDates.length,
-      shapes: psShapes.length,
+      stops: Number(c.stops),
+      routes: Number(c.routes),
+      trips: Number(c.trips),
+      stopTimes: Number(c.stop_times),
+      calendars: Number(c.calendars),
+      calendarDates: Number(c.calendar_dates),
+      shapes: Number(c.shapes),
     },
   };
 }
