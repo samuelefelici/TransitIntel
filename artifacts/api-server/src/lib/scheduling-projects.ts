@@ -381,23 +381,16 @@ router.post("/scheduling/projects", async (req: Request, res: Response): Promise
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
 
   // ── Auto-materializzazione PS → gtfs_feed FIRE-AND-FORGET ─────────────
-  // Avviata in background: la POST risponde subito (no UI hang).
-  // Se fallisce, l'utente la rilancia dalla schermata "Sincronizza con PS"
-  // del primo step della pipeline.
+  // Avviata in background tramite startSyncJob: la POST risponde subito
+  // (no UI hang). Lo stato è interrogabile via GET /sync-status.
+  // Se fallisce, l'utente la rilancia dalla schermata "Sincronizza con PS".
   void (async () => {
     try {
-      const { materializePsToFeed } = await import("./planning-studio-materialize");
-      const mat = await materializePsToFeed(planningStudioProjectId, userId);
-      await db.execute(sql`
-        UPDATE scheduling_projects
-           SET feed_id = ${mat.feedId}::uuid, feed_label = ${mat.label}, updated_at = now()
-         WHERE id = ${row.id}::uuid
-      `);
-      req.log?.info?.({ projectId: row.id, feedId: mat.feedId, counts: mat.counts },
-        "Auto-materializzazione PS→feed completata in background");
+      const { startSyncJob } = await import("./planning-studio-materialize");
+      startSyncJob(row.id, planningStudioProjectId, userId, req.log);
     } catch (matErr: any) {
       req.log?.warn?.({ err: matErr, planningStudioProjectId, projectId: row.id },
-        "Auto-materializzazione PS→feed fallita (background): l'utente potrà rilanciarla dalla pipeline");
+        "Auto-materializzazione PS→feed: impossibile avviare il job background");
     }
   })();
 

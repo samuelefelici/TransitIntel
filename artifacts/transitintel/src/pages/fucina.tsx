@@ -381,12 +381,18 @@ export default function FucinaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, startMode]);
 
+  // Progresso sync (in secondi) da mostrare nella UI durante materializzazione
+  const [psSyncElapsed, setPsSyncElapsed] = useState<number>(0);
+
   // Helper: lancia sync manuale PS → feed
   async function handleSyncFromPs() {
     if (!projectId) return;
     setPsSyncing(true);
+    setPsSyncElapsed(0);
     try {
-      const r = await syncProjectFromPs(projectId);
+      const r = await syncProjectFromPs(projectId, ({ elapsedMs }) => {
+        setPsSyncElapsed(Math.floor(elapsedMs / 1000));
+      });
       const sel: GtfsSelection = {
         source: "existing",
         date: r.feedStartDate || new Date().toISOString().slice(0, 10).replace(/-/g, ""),
@@ -587,7 +593,9 @@ export default function FucinaPage() {
                           <div className="bg-purple-500/5 border border-purple-500/30 rounded-xl p-5 flex items-center gap-3 text-purple-200">
                             <div className="w-4 h-4 border-2 border-purple-300 border-t-transparent rounded-full animate-spin" />
                             <span className="text-sm">
-                              {psSyncing ? "Sincronizzazione in corso…" : "Carico il feed dal Planning Studio…"}
+                              {psSyncing
+                                ? `Materializzazione PS → feed in corso… ${psSyncElapsed > 0 ? `(${psSyncElapsed}s)` : ""}`
+                                : "Carico il feed dal Planning Studio…"}
                             </span>
                           </div>
                         ) : !psLocked ? (
@@ -623,7 +631,9 @@ export default function FucinaPage() {
                               disabled={psSyncing}
                               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm text-black bg-gradient-to-r from-fuchsia-400 to-purple-400 disabled:opacity-50"
                             >
-                              {psSyncing ? "Sincronizzazione in corso…" : "Sincronizza con Planning Studio"}
+                              {psSyncing
+                                ? `Sincronizzazione in corso… ${psSyncElapsed > 0 ? `(${psSyncElapsed}s)` : ""}`
+                                : "Sincronizza con Planning Studio"}
                               {!psSyncing && <ChevronRight className="w-4 h-4" />}
                             </button>
                           </div>

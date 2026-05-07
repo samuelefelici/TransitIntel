@@ -239,12 +239,59 @@ export interface SyncFromPsResult {
   };
 }
 
-/** Re-materializza il PsProject linkato in un gtfs_feed dedicato e aggiorna project.feedId. */
-export async function syncProjectFromPs(projectId: string): Promise<SyncFromPsResult> {
-  return await apiFetch<SyncFromPsResult>(
+/** Re-materializza il PsProject linkato in un gtfs_feed dedicato e aggiorna project.feedId.
+ *
+ *  ASYNC: l'endpoint avvia il job in background e ritorna 202 subito (per
+ *  evitare il timeout 502 del proxy Render su materializzazioni > 100 s).
+ *  Questa funzione polla `/sync-status` finché il job completa o fallisce.
+ *
+ *  @param onProgress  callback opzionale chiamato a ogni poll con elapsedMs.
+ *  @param timeoutMs   timeout totale del polling (default 10 minuti).
+ */
+export async function syncProjectFromPs(
+  projectId: string,
+  onProgress?: (info: { elapsedMs: number; status: string }) => void,
+  timeoutMs = 10 * 60 * 1000,
+): Promise<SyncFromPsResult> {
+  // 1. Avvia il job (202 in modalità async, 200 in dev se completa subito)
+  const startResp = await apiFetch<any>(
     `/api/scheduling/projects/${projectId}/sync-from-ps`,
     { method: "POST" },
   );
+  // Se per qualche motivo il backend ha completato sincronicamente (small PS), usa subito
+  if (startResp && startResp.feedId && startResp.counts) {
+    return startResp as SyncFromPsResult;
+  }
+
+  // 2. Polling stato
+  const start = Date.now();
+  let delay = 1500;
+  while (Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(delay + 500, 5000); // back-off morbido fino a 5 s
+    let st: any;
+    try {
+      st = await apiFetch<any>(`/api/scheduling/projects/${projectId}/sync-status`);
+    } catch (e: any) {
+      // Network blip → ripeti
+      continue;
+    }
+    onProgress?.({ elapsedMs: Date.now() - start, status: st?.status || "running" });
+    if (st?.status === "done" && st?.feedId) {
+      return {
+        ok: true,
+        feedId: st.feedId,
+        label: st.label,
+        feedStartDate: st.feedStartDate,
+        feedEndDate: st.feedEndDate,
+        counts: st.counts,
+      } as SyncFromPsResult;
+    }
+    if (st?.status === "error") {
+      throw new Error(st.error || "Errore sincronizzazione PS→feed");
+    }
+  }
+  throw new Error("Timeout sincronizzazione PS→feed (>10 minuti)");
 }
 
 /* ───── Membri & condivisione ───── */
