@@ -287,7 +287,21 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
     })
     .filter(c => c.touched); // restituisce solo i cluster effettivamente toccati
 
-  res.json({ data: result, total: result.length, touchedStopCount: touchedStopIds.size });
+  // Dedupe per nome normalizzato: la tabella stop_clusters NON è partizionata
+  // per tenant/feed, quindi può contenere cluster con stesso nome (es. stesso
+  // hub creato da più progetti). Manteniamo quello con piu fermate toccate.
+  const byName = new Map<string, typeof result[number]>();
+  for (const c of result) {
+    const key = String(c.name || "").trim().toLowerCase();
+    if (!key) continue;
+    const prev = byName.get(key);
+    if (!prev || c.touchedStopsCount > prev.touchedStopsCount) {
+      byName.set(key, c);
+    }
+  }
+  const deduped = Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  res.json({ data: deduped, total: deduped.length, touchedStopCount: touchedStopIds.size });
 }));
 
 /* ═══════════════════════════════════════════════════════════════

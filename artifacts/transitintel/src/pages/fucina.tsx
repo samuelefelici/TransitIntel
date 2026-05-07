@@ -413,32 +413,58 @@ export default function FucinaPage() {
     }
   }
 
-  // ── Auto-popola selectedClusterIds dai cluster di tipo "Di Cambio" ─────────
-  // I cluster vivono nelle tabelle legacy stop_clusters (gestione UI: pagina
-  // /cluster del Network Engine). Lo scheduling engine li riceve come prop.
+  // ── Auto-popola availableClusters / selectedClusterIds ─────────────────────
+  // I cluster vivono nelle tabelle legacy `stop_clusters` (gestione UI: pagina
+  // /cluster del Network Engine), che NON sono partizionate per tenant/feed.
+  //
+  // Per evitare doppioni di cluster appartenenti ad altri progetti/feed,
+  // usiamo l'endpoint POST /api/clusters/by-routes che filtra i cluster
+  // realmente "toccati" dalle linee selezionate nella data scelta sul feed
+  // corrente. Niente assignment ⇒ niente lista (la selezione cluster ha
+  // senso solo dopo aver scelto le route in step 1).
   useEffect(() => {
-    if (!gtfsSelection?.tempFeedId) return;
+    const feedId = gtfsSelection?.tempFeedId;
+    const date = gtfsSelection?.date; // YYYYMMDD
+    const routeIds = vehicleAssignment
+      ? Array.from(vehicleAssignment.selectedRoutes.keys())
+      : [];
+    if (!feedId || !date || routeIds.length === 0) return;
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch(`${getApiBase()}/api/clusters`, { credentials: "include" });
+        const dateIso = date.replace(/^(\d{4})(\d{2})(\d{2})$/, "$1-$2-$3");
+        const r = await fetch(`${getApiBase()}/api/clusters/by-routes`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ routeIds, date: dateIso, feedId }),
+        });
         if (!r.ok) return;
         const data = await r.json();
         const list: any[] = Array.isArray(data?.data) ? data.data : [];
         if (cancelled) return;
-        const interchange = list.filter(c => c.isInterchange !== false); // default true
-        setAvailableClusters(interchange.map(c => ({
+        // Solo cluster effettivamente toccati dalle route selezionate sul feed corrente.
+        const touched = list.filter(c => c.touched === true);
+        // Dedupe difensiva per nome normalizzato (mantiene il primo id).
+        const seen = new Set<string>();
+        const unique = touched.filter(c => {
+          const key = String(c.name || "").trim().toLowerCase();
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        setAvailableClusters(unique.map(c => ({
           id: c.id,
           name: c.name,
           color: c.color || null,
         })));
-        setSelectedClusterIds(interchange.map(c => c.id));
+        setSelectedClusterIds(unique.map(c => c.id));
       } catch (e) {
         console.warn("[fucina] auto-load clusters failed", e);
       }
     })();
     return () => { cancelled = true; };
-  }, [gtfsSelection?.tempFeedId]);
+  }, [gtfsSelection?.tempFeedId, gtfsSelection?.date, vehicleAssignment]);
 
 
   React.useEffect(() => {
