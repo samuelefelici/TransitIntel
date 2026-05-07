@@ -157,7 +157,13 @@ export default function DeadheadStep({
       const res = await fetch(`${getApiBase()}/api/deadheads/compute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ depotId, routeIds, clusterIds, date, costPerKm }),
+        body: JSON.stringify({
+          depotId, routeIds, clusterIds, date, costPerKm,
+          // Ancora il calcolo al feed esatto del progetto (PS materializzato).
+          // Senza questo, getLatestFeedId potrebbe ritornare un altro feed
+          // dell'utente → 0 trip per le route selezionate → 0 deadhead.
+          ...(gtfsSelection.tempFeedId ? { feedId: gtfsSelection.tempFeedId } : {}),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Errore nel calcolo");
