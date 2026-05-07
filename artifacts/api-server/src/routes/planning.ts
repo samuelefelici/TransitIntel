@@ -948,12 +948,13 @@ router.get("/planning/feeds/:id/mobility-flows", async (req: Request, res: Respo
       elderly: 0.8, parking: 0.4, tourism: 2.0, industrial: 1.2,
     };
     const cats = poiCategories.length > 0 ? poiCategories : Object.keys(W);
+    const catsLiteral = `{${cats.map(String).join(",")}}`;
 
     // POI dentro bbox + categorie scelte
     const poiR = await db.execute(sql`
       SELECT id, name, category, lat, lng
       FROM points_of_interest
-      WHERE category = ANY(${cats}::text[])
+      WHERE category = ANY(${catsLiteral}::text[])
         AND lat BETWEEN ${b.min_lat - 0.05} AND ${b.max_lat + 0.05}
         AND lng BETWEEN ${b.min_lon - 0.05} AND ${b.max_lon + 0.05}
       LIMIT 800

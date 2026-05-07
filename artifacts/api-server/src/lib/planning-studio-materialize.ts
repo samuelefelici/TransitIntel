@@ -356,9 +356,12 @@ export async function materializePsToFeed(
 
   if (psClusters.length > 0) {
     const ids = psClusters.map(c => String(c.id));
+    // Postgres array literal: drizzle's sql`` espande gli array JS come tupla
+    // ($1,$2,...) che non castabile a uuid[]. Passiamo un singolo literal '{...}'.
+    const idsLiteral = `{${ids.join(",")}}`;
     // Cleanup precedenti (CASCADE pulisce stop_cluster_stops)
     await db.execute(sql`
-      DELETE FROM stop_clusters WHERE id = ANY(${ids}::uuid[])
+      DELETE FROM stop_clusters WHERE id = ANY(${idsLiteral}::uuid[])
     `);
 
     // Insert cluster (id riusato)
@@ -380,7 +383,7 @@ export async function materializePsToFeed(
         FROM ps_stops s
        WHERE s.project_id = ${psProjectId}::uuid
          AND s.cluster_id IS NOT NULL
-         AND s.cluster_id = ANY(${ids}::uuid[])
+         AND s.cluster_id = ANY(${idsLiteral}::uuid[])
     `);
     const clusterStopRows: any[] = (clusterStopsR as any).rows ?? clusterStopsR ?? [];
     if (clusterStopRows.length > 0) {

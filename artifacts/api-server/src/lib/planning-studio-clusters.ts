@@ -174,11 +174,12 @@ async function autoImportLegacyClustersIfNeeded(projectId: string): Promise<void
 
     if (matchedStopIds.size > 0 && psClusterId) {
       const idsArr = Array.from(matchedStopIds);
+      const idsLiteral = `{${idsArr.join(",")}}`;
       await db.execute(sql`
         UPDATE ps_stops
            SET cluster_id = ${psClusterId}::uuid
          WHERE project_id = ${projectId}::uuid
-           AND id = ANY(${idsArr}::uuid[])
+           AND id = ANY(${idsLiteral}::uuid[])
            AND cluster_id IS NULL
       `);
       await recomputeClusterCenter(psClusterId);

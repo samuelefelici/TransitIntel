@@ -861,14 +861,16 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       let r;
       if (Array.isArray(tripIds) && tripIds.length > 0) {
         // Validate all UUIDs are strings; SQL injection safe via parameterization.
-        // Costruiamo array per ANY().
+        // Postgres array literal: drizzle espande gli array JS come tupla
+        // ($1,$2,...) non castabile a uuid[]. Passiamo un singolo literal.
+        const tripIdsLiteral = `{${tripIds.map(String).join(",")}}`;
         r = await db.execute(sql`
           DELETE FROM ps_trip_exceptions e
            USING ps_trips t
            WHERE e.trip_id = t.id
              AND t.project_id = ${req.params.id}::uuid
              AND e.date >= ${from}::date AND e.date <= ${to}::date
-             AND e.trip_id = ANY(${tripIds}::uuid[])
+             AND e.trip_id = ANY(${tripIdsLiteral}::uuid[])
         `);
       } else {
         r = await db.execute(sql`
