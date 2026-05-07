@@ -31,7 +31,7 @@
  * spacers top/bottom). Per range tipico (60-90gg × <300 trip) il carico
  * è gestibile; per >2000 trip il server già blocca con 400.
  */
-import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -147,10 +147,29 @@ interface CellAction {
  * ════════════════════════════════════════════════════════════ */
 
 const ROW_H = 28;
-const COL_W = 24;
-const STICKY_W = 360;
+const COL_W = 28;
+const STICKY_W = 380;
+const MONTH_BAND_H = 22;
 const HEADER_H = 64;
+const SIDEBAR_W = 260;
 const VIEWPORT_BUFFER = 8;
+
+/** Calcola gruppi mese consecutivi per la banda mese sopra l'header giorni. */
+function computeMonthGroups(dates: string[]): { label: string; year: number; span: number; startIdx: number }[] {
+  const months = ["Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno","Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"];
+  const groups: { label: string; year: number; span: number; startIdx: number }[] = [];
+  for (let i = 0; i < dates.length; i++) {
+    const m = Number(dates[i].slice(5, 7));
+    const y = Number(dates[i].slice(0, 4));
+    const last = groups[groups.length - 1];
+    if (last && last.label === months[m - 1] && last.year === y) {
+      last.span += 1;
+    } else {
+      groups.push({ label: months[m - 1], year: y, span: 1, startIdx: i });
+    }
+  }
+  return groups;
+}
 
 export default function PlanningStudioValidityPage() {
   const params = useParams<{ id: string }>();
@@ -382,6 +401,70 @@ export default function PlanningStudioValidityPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  /* ─── Selezione multipla date (CTRL/SHIFT/Click su header giorno) ─── */
+  const [selectedDates, setSelectedDates] = useState<Set<string>>(() => new Set());
+  const [lastSelectedIdx, setLastSelectedIdx] = useState<number | null>(null);
+  const handleDateHeaderClick = useCallback(
+    (date: string, idx: number, e: ReactMouseEvent) => {
+      const isMulti = e.metaKey || e.ctrlKey;
+      const isRange = e.shiftKey && lastSelectedIdx !== null;
+      setSelectedDates((prev) => {
+        const next = new Set(prev);
+        if (isRange) {
+          const a = Math.min(lastSelectedIdx!, idx);
+          const b = Math.max(lastSelectedIdx!, idx);
+          for (let i = a; i <= b; i++) next.add(dates[i]);
+        } else if (isMulti) {
+          if (next.has(date)) next.delete(date); else next.add(date);
+        } else {
+          // click semplice: se è già l'unica selezionata, deseleziona; altrimenti selezione singola
+          if (next.size === 1 && next.has(date)) {
+            next.clear();
+          } else {
+            next.clear();
+            next.add(date);
+          }
+        }
+        return next;
+      });
+      setLastSelectedIdx(idx);
+    },
+    [lastSelectedIdx, dates],
+  );
+  const clearDateSelection = useCallback(() => {
+    setSelectedDates(new Set());
+    setLastSelectedIdx(null);
+  }, []);
+
+  /* ─── Riga corsa evidenziata (click sulla sticky cell della corsa) ─── */
+  const [highlightedTripId, setHighlightedTripId] = useState<string | null>(null);
+
+  /* ─── Applica day-type a tutte le date selezionate ─── */
+  const applyDayTypeToSelection = useCallback(
+    async (dayTypeId: string) => {
+      if (selectedDates.size === 0) {
+        toast.error("Seleziona almeno un giorno cliccando sull'header");
+        return;
+      }
+      if (projectQ.data?.myRole === "viewer") {
+        toast.error("Modalità sola lettura");
+        return;
+      }
+      const arr = Array.from(selectedDates);
+      try {
+        for (const d of arr) {
+          await upsertPsDayCalendar(projectId, { date: d, day_type_id: dayTypeId, scope: "project" });
+        }
+        invalidateMatrix();
+        toast.success(`Day-type applicato a ${arr.length} giorn${arr.length === 1 ? "o" : "i"}`);
+        clearDateSelection();
+      } catch (err) {
+        toast.error((err as Error).message);
+      }
+    },
+    [selectedDates, projectId, projectQ.data, clearDateSelection],
+  );
+
   /* ─── Render ─── */
 
   if (!projectId) return <div className="p-6">ID progetto mancante</div>;
@@ -570,42 +653,84 @@ export default function PlanningStudioValidityPage() {
             className="flex-1 overflow-auto relative bg-white"
             style={{ scrollBehavior: "auto" }}
           >
-            {/* HEADER sticky top */}
+            {/* HEADER sticky top: 2 righe (mesi + giorni) */}
             <div
-              className="sticky top-0 z-30 flex bg-white border-b shadow-sm"
-              style={{ height: HEADER_H }}
+              className="sticky top-0 z-30 bg-white border-b shadow-sm"
+              style={{ height: HEADER_H + MONTH_BAND_H }}
             >
-              <div
-                className="sticky left-0 z-40 bg-slate-100 border-r flex items-center justify-center text-xs font-medium text-slate-600"
-                style={{ width: STICKY_W, minWidth: STICKY_W }}
-              >
-                Linea / Corsa ({matrixQ.data.trips.length})
-              </div>
-              <div className="flex" style={{ height: HEADER_H }}>
-                {dates.map((d) => {
-                  const lbl = dayLabel(d);
-                  const dtId = ctx.dayCalendar.get(d) ?? inferDefaultDayType(d, ctx);
-                  const dt = dtId ? ctx.dayTypes.get(dtId) : undefined;
-                  return (
+              {/* Riga 1: banda MESI raggruppati */}
+              <div className="flex" style={{ height: MONTH_BAND_H }}>
+                <div
+                  className="sticky left-0 z-40 bg-slate-200 border-r border-b flex items-center justify-between px-3 text-[11px] font-bold uppercase tracking-wide text-slate-700"
+                  style={{ width: STICKY_W, minWidth: STICKY_W }}
+                >
+                  <span>Mese</span>
+                  {selectedDates.size > 0 && (
                     <button
-                      key={d}
-                      onClick={() => setDropdownDate(d === dropdownDate ? null : d)}
-                      className={`flex flex-col items-center justify-center border-r text-[10px] hover:bg-slate-50 ${
-                        lbl.isWeekend ? "bg-rose-50/40" : ""
-                      } ${dropdownDate === d ? "bg-blue-100" : ""}`}
-                      style={{ width: COL_W, minWidth: COL_W }}
-                      title={`${d} · ${dt?.name ?? "?"}`}
+                      onClick={clearDateSelection}
+                      className="text-[10px] font-medium normal-case text-slate-600 hover:text-slate-900 underline"
+                      title="Deseleziona tutti i giorni"
                     >
-                      <span className="text-slate-400">{monthLabel(d)}</span>
-                      <span className="font-semibold text-slate-700">{lbl.day}</span>
-                      <span className={lbl.isWeekend ? "text-rose-600" : "text-slate-500"}>{lbl.dow}</span>
-                      <span
-                        className="w-2 h-2 rounded-full mt-0.5"
-                        style={{ backgroundColor: dt?.color ?? "#cbd5e1" }}
-                      />
+                      ✕ deseleziona ({selectedDates.size})
                     </button>
-                  );
-                })}
+                  )}
+                </div>
+                <div className="flex">
+                  {computeMonthGroups(dates).map((g) => (
+                    <div
+                      key={`${g.year}-${g.label}-${g.startIdx}`}
+                      className="flex items-center justify-center text-[11px] font-bold uppercase tracking-wide text-slate-700 bg-slate-100 border-r border-b border-slate-300"
+                      style={{ width: g.span * COL_W, minWidth: g.span * COL_W }}
+                      title={`${g.label} ${g.year}`}
+                    >
+                      {g.span >= 3 ? `${g.label} ${g.year}` : g.label.slice(0, 3)}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Riga 2: giorni (numero + sigla DOW) */}
+              <div className="flex" style={{ height: HEADER_H }}>
+                <div
+                  className="sticky left-0 z-40 bg-slate-100 border-r flex items-center justify-center text-xs font-medium text-slate-600"
+                  style={{ width: STICKY_W, minWidth: STICKY_W }}
+                >
+                  Linea / Corsa ({matrixQ.data.trips.length})
+                </div>
+                <div className="flex" style={{ height: HEADER_H }}>
+                  {dates.map((d, idx) => {
+                    const lbl = dayLabel(d);
+                    const dtId = ctx.dayCalendar.get(d) ?? inferDefaultDayType(d, ctx);
+                    const dt = dtId ? ctx.dayTypes.get(dtId) : undefined;
+                    const isSelected = selectedDates.has(d);
+                    const isFirstOfMonth = d.slice(8, 10) === "01";
+                    return (
+                      <button
+                        key={d}
+                        onClick={(e) => handleDateHeaderClick(d, idx, e)}
+                        onDoubleClick={() => setDropdownDate(d === dropdownDate ? null : d)}
+                        className={`flex flex-col items-center justify-center text-[10px] hover:bg-slate-100 transition-colors ${
+                          lbl.isWeekend ? "bg-rose-50/40" : ""
+                        } ${isSelected ? "ring-2 ring-inset ring-blue-500 bg-blue-50" : ""} ${
+                          dropdownDate === d ? "bg-blue-100" : ""
+                        }`}
+                        style={{
+                          width: COL_W,
+                          minWidth: COL_W,
+                          borderRight: isFirstOfMonth ? "2px solid #94a3b8" : "1px solid #e2e8f0",
+                        }}
+                        title={`${d} · ${dt?.name ?? "?"}\nClick: seleziona · ⌘/Ctrl+Click: aggiungi · Shift+Click: range · Doppio-click: override singolo`}
+                      >
+                        <span className="font-semibold text-slate-800 text-[12px] leading-tight">{lbl.day}</span>
+                        <span className={`leading-tight ${lbl.isWeekend ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{lbl.dow}</span>
+                        <span
+                          className="w-2.5 h-2.5 rounded-full mt-0.5 ring-1 ring-white"
+                          style={{ backgroundColor: dt?.color ?? "#cbd5e1" }}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -641,31 +766,41 @@ export default function PlanningStudioValidityPage() {
                   }
                   // riga corsa
                   const t = row.trip;
+                  const isHighlighted = highlightedTripId === t.id;
                   return (
                     <div
                       key={`t-${t.id}`}
-                      className="flex border-b border-slate-100"
+                      className={`flex border-b border-slate-100 ${isHighlighted ? "bg-blue-50/60" : ""}`}
                       style={{ height: ROW_H }}
                     >
-                      <div
-                        className="sticky left-0 z-10 bg-white border-r flex items-center gap-2 px-3 text-xs"
+                      <button
+                        type="button"
+                        onClick={() => setHighlightedTripId(isHighlighted ? null : t.id)}
+                        className={`sticky left-0 z-10 border-r flex items-center gap-2 px-3 text-xs text-left ${
+                          isHighlighted ? "bg-blue-100 hover:bg-blue-100" : "bg-white hover:bg-slate-50"
+                        }`}
                         style={{ width: STICKY_W, minWidth: STICKY_W, height: ROW_H }}
+                        title={`Click: evidenzia riga · ${t.shortName ?? ""} · ${t.headsign ?? ""}`}
                       >
-                        <span className="text-slate-400 tabular-nums w-12">
+                        <span className="text-slate-400 tabular-nums w-12 shrink-0">
                           {t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}
                         </span>
-                        <span className="text-slate-700 truncate flex-1">
-                          {t.headsign || t.shortName || t.variantName}
+                        <span className="font-mono text-[10px] text-slate-500 bg-slate-100 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
+                          {t.shortName ?? t.id.slice(0, 6)}
                         </span>
-                        <span className="text-slate-400 truncate" style={{ maxWidth: 80 }}>
+                        <span className="text-slate-700 truncate flex-1">
+                          {t.headsign || t.variantName || "—"}
+                        </span>
+                        <span className="text-slate-400 truncate text-[10px]" style={{ maxWidth: 70 }}>
                           {t.variantName}
                         </span>
-                      </div>
+                      </button>
                       <CellsRow
                         ctx={ctx}
                         tripId={t.id}
                         dates={dates}
                         onClick={onCellClick}
+                        selectedDates={selectedDates}
                       />
                     </div>
                   );
@@ -674,7 +809,17 @@ export default function PlanningStudioValidityPage() {
             </div>
           </div>
 
-          {/* Side panel Day-Type Editor */}
+          {/* Sidebar destra: Day-Types cliccabili (applica a date selezionate) */}
+          <DayTypeSidebar
+            projectId={projectId}
+            dayTypes={dayTypesQ.data ?? []}
+            selectedCount={selectedDates.size}
+            onApply={applyDayTypeToSelection}
+            canEdit={projectQ.data?.myRole !== "viewer"}
+            openAdvanced={() => setDtEditorOpen(true)}
+          />
+
+          {/* Side panel Day-Type Editor (avanzato, modal) */}
           {dtEditorOpen && (
             <DayTypeEditor
               projectId={projectId}
@@ -760,35 +905,63 @@ interface CellsRowProps {
   tripId: string;
   dates: string[];
   onClick: (tripId: string, date: string) => void;
+  selectedDates: Set<string>;
 }
 
-function CellsRow({ ctx, tripId, dates, onClick }: CellsRowProps) {
+function CellsRow({ ctx, tripId, dates, onClick, selectedDates }: CellsRowProps) {
   return (
     <>
       {dates.map((d) => {
         const valid = getCellValidity(ctx, tripId, d);
         const exMap = ctx.tripExceptions.get(tripId);
         const ex = exMap?.get(d);
-        const style = cellStyle(valid, ex);
+        const fill = cellFillColor(valid, ex);
+        const isFirstOfMonth = d.slice(8, 10) === "01";
+        const isMonday = (() => {
+          const [y, m, dd] = d.split("-").map(Number);
+          return new Date(y, m - 1, dd).getDay() === 1;
+        })();
+        const isSelectedCol = selectedDates.has(d);
         return (
           <div
             key={d}
             onClick={() => onClick(tripId, d)}
-            className="border-r border-slate-100 cursor-pointer"
-            style={{ width: COL_W, minWidth: COL_W, height: ROW_H, ...style }}
+            className={`flex items-center justify-center cursor-pointer transition-colors ${
+              isSelectedCol ? "bg-blue-50/60" : ""
+            }`}
+            style={{
+              width: COL_W,
+              minWidth: COL_W,
+              height: ROW_H,
+              borderRight: isFirstOfMonth
+                ? "2px solid #94a3b8"
+                : isMonday
+                ? "1px solid #cbd5e1"
+                : "1px solid #f1f5f9",
+            }}
             title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}`}
-          />
+          >
+            <div
+              className="rounded-md transition-transform hover:scale-110"
+              style={{
+                width: COL_W - 8,
+                height: ROW_H - 8,
+                backgroundColor: fill,
+                boxShadow: ex ? "0 0 0 1.5px rgba(0,0,0,0.12) inset" : undefined,
+              }}
+            />
+          </div>
         );
       })}
     </>
   );
 }
 
-function cellStyle(valid: boolean, ex: 1 | 2 | undefined): CSSProperties {
-  if (ex === 1) return { backgroundColor: "#22c55e" }; // verde acceso
-  if (ex === 2) return { backgroundColor: "#ef4444" }; // rosso acceso
-  if (valid) return { backgroundColor: "#bbf7d0" };    // verde tenue
-  return { backgroundColor: "#f1f5f9" };               // grigio tenue
+function cellFillColor(valid: boolean, ex: 1 | 2 | undefined): string {
+  if (ex === 1) return "#16a34a"; // verde acceso (override attiva)
+  if (ex === 2) return "#dc2626"; // rosso acceso (override disattiva)
+  if (valid) return "#86efac";    // verde tenue (default valida)
+  return "#e2e8f0";               // grigio tenue (default invalida)
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -855,6 +1028,156 @@ function DateOverridePopover({ date, dayTypes, currentEntry, onClose, onApply, i
         </button>
       </div>
     </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  DayTypeSidebar (sempre montato a destra della matrice)
+ *  - elenco day-types come "pillole" colorate cliccabili
+ *  - applica il day-type a tutte le date selezionate (CTRL/SHIFT/Click sull'header)
+ *  - quick-add per creare un nuovo day-type al volo
+ * ════════════════════════════════════════════════════════════ */
+
+interface DayTypeSidebarProps {
+  projectId: string;
+  dayTypes: PsDayType[];
+  selectedCount: number;
+  onApply: (dayTypeId: string) => void | Promise<void>;
+  canEdit: boolean;
+  openAdvanced: () => void;
+}
+
+function DayTypeSidebar({ projectId, dayTypes, selectedCount, onApply, canEdit, openAdvanced }: DayTypeSidebarProps) {
+  const qc = useQueryClient();
+  const [showAdd, setShowAdd] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newColor, setNewColor] = useState("#10b981");
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      createPsDayType(projectId, { code: newCode.trim(), name: newName.trim(), color: newColor }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "day-types"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity", "matrix"] });
+      toast.success("Day-type creato");
+      setShowAdd(false);
+      setNewCode("");
+      setNewName("");
+      setNewColor("#10b981");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <aside
+      className="border-l bg-slate-50 flex flex-col"
+      style={{ width: SIDEBAR_W, minWidth: SIDEBAR_W }}
+    >
+      <div className="px-3 py-2 border-b bg-white">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Day-Types</div>
+        <div className="text-[11px] text-slate-500 mt-0.5">
+          {selectedCount > 0
+            ? `${selectedCount} giorn${selectedCount === 1 ? "o" : "i"} selezionat${selectedCount === 1 ? "o" : "i"} → click su un day-type per applicarlo`
+            : "Seleziona giorni cliccando sull'header (Ctrl/Shift per più giorni)"}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto p-2 space-y-1.5">
+        {dayTypes.length === 0 && (
+          <div className="text-xs text-slate-400 italic p-2">Nessun day-type</div>
+        )}
+        {dayTypes.map((dt) => {
+          const disabled = selectedCount === 0 || !canEdit;
+          return (
+            <button
+              key={dt.id}
+              type="button"
+              disabled={disabled}
+              onClick={() => onApply(dt.id)}
+              className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg border text-left text-sm transition ${
+                disabled
+                  ? "bg-white border-slate-200 text-slate-400 cursor-not-allowed"
+                  : "bg-white border-slate-300 text-slate-800 hover:border-blue-500 hover:shadow-sm cursor-pointer"
+              }`}
+              title={disabled ? "Seleziona prima dei giorni" : `Applica '${dt.name}' a ${selectedCount} giorn${selectedCount === 1 ? "o" : "i"}`}
+            >
+              <span
+                className="w-5 h-5 rounded-md ring-2 ring-white shadow-sm shrink-0"
+                style={{ backgroundColor: dt.color }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{dt.name}</div>
+                <div className="text-[10px] text-slate-500 font-mono truncate">{dt.code}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Quick-add */}
+      {canEdit && (
+        <div className="border-t bg-white p-2">
+          {!showAdd ? (
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setShowAdd(true)}
+                className="flex-1 px-2 py-1.5 text-xs rounded border border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium"
+              >
+                + Nuovo day-type
+              </button>
+              <button
+                type="button"
+                onClick={openAdvanced}
+                className="px-2 py-1.5 text-xs rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
+                title="Editor avanzato (modifica/elimina)"
+              >
+                ⚙
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <input
+                value={newCode}
+                onChange={(e) => setNewCode(e.target.value.toUpperCase().slice(0, 16))}
+                placeholder="CODICE (es. FER)"
+                className="w-full border rounded px-2 py-1 text-xs font-mono"
+              />
+              <input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Nome (es. Feriale)"
+                className="w-full border rounded px-2 py-1 text-xs"
+              />
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="color"
+                  value={newColor}
+                  onChange={(e) => setNewColor(e.target.value)}
+                  className="w-8 h-7 border rounded cursor-pointer"
+                />
+                <button
+                  type="button"
+                  disabled={!newCode.trim() || !newName.trim() || createMut.isPending}
+                  onClick={() => createMut.mutate()}
+                  className="flex-1 px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 font-medium"
+                >
+                  {createMut.isPending ? "…" : "Crea"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(false)}
+                  className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-100"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </aside>
   );
 }
 
