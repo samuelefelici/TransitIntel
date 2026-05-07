@@ -126,6 +126,38 @@ export default function PlanningStudioClustersPage() {
     onError: (e: any) => toast.error(e?.message || "Errore set fermate"),
   });
 
+  // Bulk delete: utile quando un import è andato male e il progetto è
+  // pieno di cluster spazzatura. Esegue le delete in parallelo.
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  async function deleteAllClusters() {
+    if (clusters.length === 0) return;
+    if (!confirm(
+      `Eliminare TUTTI i ${clusters.length} cluster del progetto?\n\n` +
+      `Le fermate associate verranno scollegate (ma non cancellate).\n` +
+      `Operazione NON reversibile.`
+    )) return;
+    setBulkDeleting(true);
+    let ok = 0, ko = 0;
+    // Limita il parallelismo a 8 chiamate alla volta
+    const POOL = 8;
+    const queue = [...clusters];
+    async function worker() {
+      while (queue.length) {
+        const c = queue.shift();
+        if (!c) return;
+        try { await deletePsCluster(projectId, c.id); ok++; }
+        catch { ko++; }
+      }
+    }
+    await Promise.all(Array.from({ length: POOL }, worker));
+    setBulkDeleting(false);
+    qc.invalidateQueries({ queryKey: ["ps", projectId, "clusters"] });
+    qc.invalidateQueries({ queryKey: ["ps", projectId, "stops"] });
+    setSelectedId(null);
+    if (ko === 0) toast.success(`Eliminati ${ok} cluster`);
+    else toast.warning(`Eliminati ${ok} su ${ok + ko} (${ko} errori)`);
+  }
+
   /* ─── Form nuovo cluster ─── */
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -262,6 +294,17 @@ export default function PlanningStudioClustersPage() {
           </span>
         )}
         <div className="flex-1" />
+        {clusters.length > 0 && (
+          <button
+            onClick={deleteAllClusters}
+            disabled={bulkDeleting}
+            title="Elimina tutti i cluster del progetto (utile dopo un import sbagliato)"
+            className="px-3 py-1.5 rounded bg-rose-700/80 hover:bg-rose-600 text-white text-sm flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {bulkDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+            Elimina tutti ({clusters.length})
+          </button>
+        )}
         <button
           onClick={() => { setSuggestOpen(true); setSuggestions([]); }}
           className="px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-sm flex items-center gap-1.5"
@@ -275,8 +318,6 @@ export default function PlanningStudioClustersPage() {
           <Plus className="w-4 h-4" /> Nuovo cluster
         </button>
       </div>
-
-      {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar sx */}
         <div className="w-[380px] border-r border-slate-800 bg-slate-900/60 flex flex-col">
@@ -340,21 +381,47 @@ export default function PlanningStudioClustersPage() {
               </div>
             )}
             {clusters.map(c => (
-              <button
+              <div
                 key={c.id}
-                onClick={() => setSelectedId(c.id)}
-                className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition flex items-center gap-2 ${
+                className={`group w-full border-b border-slate-800 hover:bg-slate-800 transition flex items-center gap-2 px-3 py-2 ${
                   selectedId === c.id ? "bg-slate-800" : ""
                 }`}
               >
-                <div className="w-2 h-8 rounded" style={{ background: KIND_COLOR[c.kind] }} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{c.name}</div>
-                  <div className="text-xs text-slate-500">
-                    {KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m
+                <button
+                  onClick={() => setSelectedId(c.id)}
+                  className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                >
+                  <div className="w-2 h-8 rounded shrink-0" style={{ background: KIND_COLOR[c.kind] }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">{c.name}</div>
+                    <div className="text-xs text-slate-500">
+                      {KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m
+                    </div>
                   </div>
+                </button>
+                {/* Azioni inline (sempre visibili sul cluster selezionato, on-hover sugli altri) */}
+                <div className={`flex items-center gap-0.5 shrink-0 transition ${
+                  selectedId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                }`}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setSelectedId(c.id); }}
+                    title="Modifica"
+                    className="p-1.5 rounded text-slate-400 hover:bg-slate-700 hover:text-cyan-300"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Eliminare "${c.name}"?`)) deleteMut.mutate(c.id);
+                    }}
+                    title="Elimina"
+                    className="p-1.5 rounded text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </button>
+              </div>
             ))}
           </div>
 
