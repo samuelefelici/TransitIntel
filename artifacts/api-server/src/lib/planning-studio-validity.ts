@@ -133,6 +133,14 @@ async function ensureValidityTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS agency_settings jsonb NOT NULL DEFAULT '{}'::jsonb
     `);
 
+    /* ─── scheduling_projects.validity_filter (PR4) ───
+     * Filtro snapshot al momento della generazione dell'Unità di Progettazione:
+     * { from, to, dayTypeIds[], includeOnlyValid } */
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS scheduling_projects
+        ADD COLUMN IF NOT EXISTS validity_filter jsonb
+    `);
+
     /* ─── Seed system day-types globali ─── */
     for (const dt of SYSTEM_DAY_TYPES) {
       await db.execute(sql`
@@ -983,6 +991,104 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
       exceptionInserts,
     },
     perCalendar,
+  });
+});
+
+/* ════════════════════════════════════════════════════════════
+ *  POST /validity/generate-unit (PR4)
+ *  ────────────────────────────────────────────────────────────
+ *  Genera una "Unità di Progettazione" (= scheduling_project)
+ *  partendo dalla Validity Matrix corrente:
+ *  - body: { name, description?, from, to, dayTypeIds[], includeOnlyValid? }
+ *  - crea row in scheduling_projects con planning_studio_project_id = :id
+ *  - salva il filtro snapshot in scheduling_projects.validity_filter
+ *  - la materializzazione PS→feed è triggerata dalla pipeline scheduling
+ *    (lascia feed_id NULL: il primo step della pipeline lo riempie)
+ *  - response: { schedulingProjectId, name }
+ * ════════════════════════════════════════════════════════════ */
+router.post("/planning-studio/projects/:id/validity/generate-unit", async (req, res): Promise<void> => {
+  await ensureValidityTables();
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "forbidden" }); return; }
+
+  const { name, description, from, to, dayTypeIds, includeOnlyValid } = req.body ?? {};
+  if (typeof name !== "string" || name.trim().length === 0) {
+    res.status(400).json({ error: "name è obbligatorio" }); return;
+  }
+  if (!isValidISODate(from) || !isValidISODate(to) || from > to) {
+    res.status(400).json({ error: "from/to non validi (atteso YYYY-MM-DD, from<=to)" }); return;
+  }
+  if (!Array.isArray(dayTypeIds) || dayTypeIds.length === 0
+      || !dayTypeIds.every((d: unknown) => typeof d === "string" && /^[0-9a-f-]{36}$/i.test(d))) {
+    res.status(400).json({ error: "dayTypeIds deve essere un array di UUID non vuoto" }); return;
+  }
+
+  const filter = {
+    from, to,
+    dayTypeIds: dayTypeIds as string[],
+    includeOnlyValid: includeOnlyValid !== false, // default true
+    snapshotAt: new Date().toISOString(),
+  };
+
+  let row: any;
+  try {
+    const r = await db.execute(sql`
+      INSERT INTO scheduling_projects
+        (owner_user_id, name, description, planning_studio_project_id, validity_filter)
+      VALUES (
+        ${userId}::uuid,
+        ${name.trim()},
+        ${description ?? null},
+        ${req.params.id}::uuid,
+        ${JSON.stringify(filter)}::jsonb
+      )
+      RETURNING id, name
+    `);
+    row = (r as any).rows?.[0] ?? (r as any)[0];
+  } catch (e: any) {
+    console.error("[ps-validity] generate-unit insert error:", e?.message || e);
+    res.status(500).json({ error: "Impossibile creare l'unità di progettazione" });
+    return;
+  }
+  if (!row) { res.status(500).json({ error: "Insert fallito" }); return; }
+
+  // Log activity (sul progetto PS sorgente)
+  await logActivity(req.params.id, userId, "validity.generate-unit",
+    "scheduling_project", row.id, {
+      schedulingProjectId: row.id,
+      schedulingProjectName: row.name,
+      filter,
+    });
+
+  // Log activity (sull'unità appena creata) — pattern uguale a scheduling-projects.ts
+  try {
+    await db.execute(sql`
+      INSERT INTO project_activity_log (project_id, user_id, action, target_type, target_id, payload)
+      VALUES (${row.id}::uuid, ${userId}::uuid, 'project.create',
+              'project', ${row.id}::uuid,
+              ${JSON.stringify({
+                source: "planning-studio.validity",
+                planningStudioProjectId: req.params.id,
+                planningStudioProjectName: proj.name,
+                validityFilter: filter,
+              })}::jsonb)
+    `);
+  } catch (e: any) {
+    console.warn("[ps-validity] generate-unit activity log error:", e?.message || e);
+  }
+
+  telemetry("generate-unit", req.params.id, {
+    schedulingProjectId: row.id,
+    dayTypeCount: filter.dayTypeIds.length,
+    days: Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1,
+  });
+
+  res.json({
+    ok: true,
+    schedulingProjectId: row.id,
+    name: row.name,
   });
 });
 

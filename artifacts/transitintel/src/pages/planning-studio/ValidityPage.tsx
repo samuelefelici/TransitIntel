@@ -32,18 +32,19 @@
  * è gestibile; per >2000 trip il server già blocca con 400.
  */
 import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties } from "react";
-import { Link, useParams } from "wouter";
+import { Link, useParams, useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
-  Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers,
+  Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
 } from "lucide-react";
 import {
   getPsValidityMatrix, upsertPsTripException, deletePsTripExceptionMatrix,
   upsertPsDayCalendar, upsertPsTripDayValidity,
   listPsDayTypes, createPsDayType, updatePsDayType, deletePsDayType,
   postPsValidityBulk, autoImportPsValidityFromCalendars,
+  postPsValidityGenerateUnit,
   type PsValidityMatrix, type PsDayType, type PsValidityTrip,
   type AutoImportSummary,
 } from "@/lib/planning-studio-validity-api";
@@ -341,6 +342,8 @@ export default function PlanningStudioValidityPage() {
   /* ─── Bulk + Auto-import dialogs ─── */
   const [bulkOpen, setBulkOpen] = useState(false);
   const [autoImportOpen, setAutoImportOpen] = useState(false);
+  const [genUnitOpen, setGenUnitOpen] = useState(false);
+  const [, setLocation] = useLocation();
 
   /* ─── Dropdown override day-type su data ─── */
   const [dropdownDate, setDropdownDate] = useState<string | null>(null);
@@ -427,6 +430,13 @@ export default function PlanningStudioValidityPage() {
             title="Auto-import da GTFS calendars"
           >
             <Wand2 className="h-4 w-4" /> Auto-import
+          </button>
+          <button
+            onClick={() => setGenUnitOpen(true)}
+            className="px-3 py-1.5 text-sm rounded bg-indigo-600 hover:bg-indigo-700 text-white flex items-center gap-1.5 shadow-sm"
+            title="Crea Unità di Progettazione (Scheduling) dal filtro corrente"
+          >
+            <Rocket className="h-4 w-4" /> Genera Unità
           </button>
         </div>
       </div>
@@ -613,6 +623,19 @@ export default function PlanningStudioValidityPage() {
           onDone={() => {
             invalidateMatrix();
             setAutoImportOpen(false);
+          }}
+        />
+      )}
+      {genUnitOpen && (
+        <GenerateUnitDialog
+          projectId={projectId}
+          projectName={projectQ.data?.name ?? "PS"}
+          range={{ from, to }}
+          dayTypes={dayTypesQ.data ?? []}
+          onClose={() => setGenUnitOpen(false)}
+          onCreated={(schedulingProjectId) => {
+            setGenUnitOpen(false);
+            setLocation(`/fucina/${schedulingProjectId}/pipeline`);
           }}
         />
       )}
@@ -1347,6 +1370,202 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
             {applyMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             <Wand2 className="h-3.5 w-3.5" />
             2. Applica
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  GenerateUnitDialog (PR4)
+ * ════════════════════════════════════════════════════════════
+ *
+ * Dialog finale del workflow PlannerStudio: dalla matrice di validità
+ * crea un'"Unità di Progettazione" (= scheduling_project) che eredita
+ * il filtro corrente (range date + day-types selezionati) e fa da ponte
+ * verso la pipeline Scheduling.
+ *
+ * Dopo la creazione: redirect automatico a /fucina/:id/pipeline.
+ */
+interface GenerateUnitDialogProps {
+  projectId: string;
+  projectName: string;
+  range: { from: string; to: string };
+  dayTypes: PsDayType[];
+  onClose: () => void;
+  onCreated: (schedulingProjectId: string) => void;
+}
+function GenerateUnitDialog({
+  projectId, projectName, range, dayTypes, onClose, onCreated,
+}: GenerateUnitDialogProps) {
+  // Default name suggerito
+  const defaultName = useMemo(() => {
+    const from = range.from.slice(0, 10);
+    const to = range.to.slice(0, 10);
+    return `${projectName} · ${from} → ${to}`;
+  }, [projectName, range.from, range.to]);
+
+  const [name, setName] = useState(defaultName);
+  const [description, setDescription] = useState("");
+  const [from, setFrom] = useState(range.from);
+  const [to, setTo] = useState(range.to);
+  // Default: tutti i day-types selezionati
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(dayTypes.map((dt) => dt.id)),
+  );
+  const [includeOnlyValid, setIncludeOnlyValid] = useState(true);
+
+  const toggle = (id: string) => {
+    setSelected((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  };
+
+  const mut = useMutation({
+    mutationFn: () => postPsValidityGenerateUnit(projectId, {
+      name: name.trim(),
+      description: description.trim() || undefined,
+      from, to,
+      dayTypeIds: Array.from(selected),
+      includeOnlyValid,
+    }),
+    onSuccess: (r) => {
+      toast.success(`Unità "${r.name}" creata`);
+      onCreated(r.schedulingProjectId);
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const canSubmit = name.trim().length > 0
+    && from && to && from <= to
+    && selected.size > 0
+    && !mut.isPending;
+
+  // Calcolo durata
+  const days = useMemo(() => {
+    if (!from || !to || from > to) return 0;
+    return Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+  }, [from, to]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow-2xl w-[600px] max-h-[88vh] overflow-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b px-5 py-3 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-white">
+          <div className="flex items-center gap-2">
+            <Rocket className="h-5 w-5 text-indigo-600" />
+            <h2 className="font-semibold">Genera Unità di Progettazione</h2>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <p className="text-xs text-slate-600 bg-slate-50 border rounded p-2">
+            Crea un nuovo progetto Scheduling collegato a <strong>{projectName}</strong> con
+            il filtro di validità snapshot (range + day-types). La pipeline Scheduling potrà
+            poi materializzare il GTFS filtrato e procedere con vehicle/driver scheduling.
+          </p>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600 block mb-1">Nome unità *</label>
+            <input
+              type="text" value={name} onChange={(e) => setName(e.target.value)}
+              className="w-full border rounded px-2 py-1.5 text-sm"
+              placeholder="es. Inverno 2026 · Feriali"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-600 block mb-1">Descrizione (opzionale)</label>
+            <textarea
+              value={description} onChange={(e) => setDescription(e.target.value)}
+              className="w-full border rounded px-2 py-1.5 text-sm"
+              rows={2}
+              placeholder="Note libere sull'unità di progettazione"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-slate-600 block mb-1">Da</label>
+              <input
+                type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+                className="w-full border rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-600 block mb-1">A</label>
+              <input
+                type="date" value={to} onChange={(e) => setTo(e.target.value)}
+                className="w-full border rounded px-2 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+          {days > 0 && (
+            <p className="text-[11px] text-slate-500 -mt-2">
+              Range: <strong>{days}</strong> giorni
+            </p>
+          )}
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-medium text-slate-600">
+                Day-types da includere ({selected.size}/{dayTypes.length})
+              </label>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setSelected(new Set(dayTypes.map((dt) => dt.id)))}
+                  className="text-[11px] text-blue-600 hover:underline"
+                >Tutti</button>
+                <span className="text-slate-300">·</span>
+                <button
+                  type="button"
+                  onClick={() => setSelected(new Set())}
+                  className="text-[11px] text-blue-600 hover:underline"
+                >Nessuno</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5 max-h-44 overflow-auto border rounded p-2">
+              {dayTypes.map((dt) => (
+                <label key={dt.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-1 py-0.5 rounded">
+                  <input
+                    type="checkbox" checked={selected.has(dt.id)}
+                    onChange={() => toggle(dt.id)}
+                  />
+                  <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: dt.color }} />
+                  <span className="truncate">{dt.name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox" checked={includeOnlyValid}
+              onChange={(e) => setIncludeOnlyValid(e.target.checked)}
+            />
+            <span>Includi solo le corse valide nel filtro (consigliato)</span>
+          </label>
+        </div>
+
+        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border bg-white">Annulla</button>
+          <button
+            onClick={() => mut.mutate()}
+            disabled={!canSubmit}
+            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {mut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            <Rocket className="h-3.5 w-3.5" />
+            Crea Unità & vai alla pipeline
           </button>
         </div>
       </div>

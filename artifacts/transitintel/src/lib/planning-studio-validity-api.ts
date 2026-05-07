@@ -202,3 +202,29 @@ export async function autoImportPsValidityFromCalendars(
     { method: "POST", body: JSON.stringify({ dryRun: !!opts.dryRun }) },
   );
 }
+
+/* ─── Generate Unità di Progettazione (PR4) ─── */
+
+export interface GenerateUnitInput {
+  name: string;
+  description?: string;
+  from: string;          // YYYY-MM-DD
+  to: string;            // YYYY-MM-DD
+  dayTypeIds: string[];
+  includeOnlyValid?: boolean;  // default true
+}
+
+export interface GenerateUnitResult {
+  ok: true;
+  schedulingProjectId: string;
+  name: string;
+}
+
+export async function postPsValidityGenerateUnit(
+  projectId: string, input: GenerateUnitInput,
+): Promise<GenerateUnitResult> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/validity/generate-unit`,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
