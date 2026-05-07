@@ -68,6 +68,40 @@ const STEPS = [
 //     Network Engine; qui i PsCluster interchange vengono caricati in automatico)
 const STEPS_VISIBLE = STEPS.filter((s) => s.id !== 0 && s.id !== 3);
 
+/* ── Stato mancante: render-guard per step che richiedono vehicleAssignment ── */
+function MissingStateNotice({ onRestart, onForward }: { onRestart: () => void; onForward?: () => void }) {
+  return (
+    <div className="p-6 max-w-xl mx-auto">
+      <div className="bg-amber-500/5 border border-amber-500/30 rounded-xl p-5 space-y-3">
+        <div className="flex items-center gap-2 text-amber-300">
+          <span className="text-sm font-semibold">⚠ Stato della pipeline non disponibile</span>
+        </div>
+        <p className="text-sm text-zinc-300">
+          Stai aprendo uno scenario salvato (deep-link) e non è più disponibile la
+          configurazione delle linee/vetture usata per generarlo. Per modificarla
+          devi ripartire dallo step "Abbinamento Vetture".
+        </p>
+        <div className="flex gap-2 pt-1">
+          <button
+            onClick={onRestart}
+            className="px-4 py-2 rounded-lg text-sm bg-amber-500 hover:bg-amber-400 text-black font-semibold"
+          >
+            Riparti dall'Abbinamento
+          </button>
+          {onForward && (
+            <button
+              onClick={onForward}
+              className="px-4 py-2 rounded-lg text-sm border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
+            >
+              Torna al Workspace
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Splash Screen ───────────────────────────────────────── */
 function SplashScreen({ onEnter, onBack }: { onEnter: () => void; onBack: () => void }) {
   return (
@@ -693,34 +727,48 @@ export default function FucinaPage() {
                     />
                   )}
                   {step === 4 && (
-                    <DeadheadStep
-                      gtfsSelection={gtfsSelection!}
-                      assignment={vehicleAssignment!}
-                      depotId={selectedDepotId!}
-                      clusterIds={selectedClusterIds}
-                      availableClusters={availableClusters}
-                      onClusterIdsChange={setSelectedClusterIds}
-                      initial={deadheadMatrix}
-                      onBack={() => setStep(2)}
-                      onComplete={(matrix) => {
-                        setDeadheadMatrix(matrix);
-                        completeStep(4);
-                      }}
-                    />
+                    vehicleAssignment ? (
+                      <DeadheadStep
+                        gtfsSelection={gtfsSelection!}
+                        assignment={vehicleAssignment}
+                        depotId={selectedDepotId!}
+                        clusterIds={selectedClusterIds}
+                        availableClusters={availableClusters}
+                        onClusterIdsChange={setSelectedClusterIds}
+                        initial={deadheadMatrix}
+                        onBack={() => setStep(2)}
+                        onComplete={(matrix) => {
+                          setDeadheadMatrix(matrix);
+                          completeStep(4);
+                        }}
+                      />
+                    ) : (
+                      <MissingStateNotice
+                        onRestart={() => setStep(1)}
+                        onForward={savedScenarioId ? () => setStep(6) : undefined}
+                      />
+                    )
                   )}
                   {step === 5 && (
-                    <OptimizerStep
-                      gtfsSelection={gtfsSelection!}
-                      assignment={vehicleAssignment!}
-                      initialResult={optimizationResult ?? undefined}
-                      projectId={projectId}
-                      onBack={() => setStep(4)}
-                      onComplete={(r, id) => {
-                        setOptimizationResult(r);
-                        if (id) setSavedScenarioId(id);
-                        completeStep(5);
-                      }}
-                    />
+                    vehicleAssignment ? (
+                      <OptimizerStep
+                        gtfsSelection={gtfsSelection!}
+                        assignment={vehicleAssignment}
+                        initialResult={optimizationResult ?? undefined}
+                        projectId={projectId}
+                        onBack={() => setStep(4)}
+                        onComplete={(r, id) => {
+                          setOptimizationResult(r);
+                          if (id) setSavedScenarioId(id);
+                          completeStep(5);
+                        }}
+                      />
+                    ) : (
+                      <MissingStateNotice
+                        onRestart={() => setStep(1)}
+                        onForward={savedScenarioId ? () => setStep(6) : undefined}
+                      />
+                    )
                   )}
                   {step === 6 && (
                     <WorkspaceStep
