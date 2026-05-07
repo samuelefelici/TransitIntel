@@ -195,16 +195,15 @@ router.get("/planning-studio/projects/:id/clusters", async (req, res): Promise<v
   const proj = await loadProject(req.params.id, userId, false);
   if (!proj) { res.status(404).json({ error: "project not found" }); return; }
 
-  // Auto-import idempotente dei cluster legacy (stop_clusters) la prima volta
-  // che si apre il pannello. Salta i cluster già importati (dedup via attributes.importedFromLegacyId).
-  // Nessun rumore: se non c'è nulla da importare o se l'utente non ha write-access, ignora.
-  if (proj.my_role === "owner" || proj.my_role === "editor") {
-    try {
-      await autoImportLegacyClustersIfNeeded(req.params.id);
-    } catch (e: any) {
-      console.warn("[ps-clusters] auto-import failed", e?.message || e);
-    }
-  }
+  // [DISABILITATO 2026-05-07] Auto-import idempotente cluster legacy.
+  // Causava la creazione di doppioni cross-tenant: la tabella stop_clusters
+  // NON è partizionata per progetto/utente, quindi questo import copiava i
+  // cluster di TUTTI gli utenti dentro ogni nuovo progetto PS. Ora il flusso
+  // è invertito: i cluster vivono SOLO in ps_stop_clusters e vengono mirrorati
+  // su stop_clusters in fase di materialize (planning-studio-materialize.ts).
+  // L'helper autoImportLegacyClustersIfNeeded resta nel file per riferimento
+  // ma non è più chiamato.
+  void proj; // mantiene la variabile usata anche senza il blocco rimosso
 
   const r = await db.execute(sql`
     SELECT c.*,

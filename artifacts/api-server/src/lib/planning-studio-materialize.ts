@@ -294,28 +294,54 @@ export async function materializePsToFeed(
      WHERE s.project_id = ${psProjectId}::uuid
   `);
 
-  /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ────── */
+  /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ──────
+   *
+   * Single source of truth: i cluster vivono in Planner Studio
+   * (ps_stop_clusters). Lo Scheduling Engine legge ancora dalle
+   * tabelle legacy stop_clusters / stop_cluster_stops (Fucina,
+   * /api/clusters/by-routes), quindi a ogni materializzazione
+   * facciamo un mirror idempotente.
+   *
+   * Tracciamento via colonna additiva `source_ps_project_id`:
+   * a ogni run cancelliamo TUTTI i cluster legacy provenienti
+   * da questo PS project (anche quelli con UUID vecchi, ormai
+   * spariti da ps_stop_clusters → orfani = doppioni). Poi
+   * reinseriamo lo stato corrente. CASCADE su stop_cluster_stops
+   * pulisce automaticamente le righe figlie.
+   */
   await db.execute(sql`
-    DELETE FROM stop_clusters
-     WHERE id IN (
-       SELECT id FROM ps_stop_clusters
-        WHERE project_id = ${psProjectId}::uuid
-          AND COALESCE(kind, 'interchange') = 'interchange'
-     )
+    ALTER TABLE stop_clusters
+      ADD COLUMN IF NOT EXISTS source_ps_project_id uuid
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project
+      ON stop_clusters(source_ps_project_id)
   `);
 
+  // 5a. Wipe completo dei cluster legacy provenienti da QUESTO progetto
+  // (CASCADE pulisce stop_cluster_stops grazie al FK con onDelete: cascade).
   await db.execute(sql`
-    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color)
+    DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
+  `);
+
+  // 5b. Reinserisci con stesso UUID di ps_stop_clusters (così la dedupe
+  // by name nel /by-routes risolve in modo deterministico) e marker
+  // di provenienza per cleanup futuri.
+  await db.execute(sql`
+    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color, source_ps_project_id)
     SELECT id,
            COALESCE(NULLIF(name, ''), 'Cluster'),
            COALESCE((attributes->>'transferFromDepotMin')::int,
                     (attributes->>'transfer_from_depot_min')::int, 10),
-           COALESCE(attributes->>'color', '#3b82f6')
+           COALESCE(attributes->>'color', '#3b82f6'),
+           ${psProjectId}::uuid
       FROM ps_stop_clusters
      WHERE project_id = ${psProjectId}::uuid
        AND COALESCE(kind, 'interchange') = 'interchange'
   `);
 
+  // 5c. Mappa fermate. gtfs_stop_id usa ps_stops.id::text per coerenza
+  // con quanto fatto in 4a (INSERT INTO gtfs_stops … SELECT id::text).
   await db.execute(sql`
     INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
     SELECT s.cluster_id, s.id::text,
