@@ -23,6 +23,7 @@ import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
+  MapPin, Minus, Plus,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -134,6 +135,40 @@ export default function DriverWorkspace({
   const [showCompatGlow, setShowCompatGlow] = useState(false);
   // ── Aggiungi turno guida manuale (#NEW) ──
   const [showAddDriverDialog, setShowAddDriverDialog] = useState(false);
+
+  /* ── Cluster di cambio (interchange) per il setup banner ──
+   * Sono i nodi dove gli autisti possono cambiare bus in linea senza tornare
+   * al deposito. Letti via /api/clusters (include il mirror live PS->legacy). */
+  const [interchangeClusters, setInterchangeClusters] = useState<Array<{
+    id: string; name: string; color: string; stopCount: number;
+  }> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${getApiBase()}/api/clusters`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data: any) => {
+        if (cancelled) return;
+        const list = Array.isArray(data?.data) ? data.data
+                   : Array.isArray(data) ? data
+                   : (data?.clusters ?? []);
+        // Mostriamo solo cluster effettivamente di cambio (interchange).
+        // Il backend marchia is_interchange=true di default; PS clusters
+        // logici puri non vengono mirrorati nel legacy quindi non compaiono qui.
+        const interchange = list.filter((c: any) =>
+          c.isInterchange !== false && Array.isArray(c.stops) && c.stops.length > 0
+        );
+        setInterchangeClusters(interchange.map((c: any) => ({
+          id: String(c.id),
+          name: c.name ?? "Cluster",
+          color: c.color ?? "#3b82f6",
+          stopCount: Array.isArray(c.stops) ? c.stops.length
+                   : Array.isArray(c.stopIds) ? c.stopIds.length
+                   : (c.stopCount ?? 0),
+        })));
+      })
+      .catch(() => { if (!cancelled) setInterchangeClusters([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   const liveSummary = useMemo(() => {
     if (!result || !baselineSummaryRef.current) return result?.summary;
@@ -606,18 +641,160 @@ export default function DriverWorkspace({
           </div>
         )}
 
-        {/* Idle placeholder */}
+        {/* Setup banner — appare quando non c'e ancora un risultato */}
         {!result && !loading && cpsat.state !== "running" && cpsat.state !== "starting" && (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <div className="w-16 h-16 rounded-full bg-purple-500/10 flex items-center justify-center mb-4">
-              <Users className="w-8 h-8 text-purple-300/60" />
+          <div className="rounded-2xl border border-purple-500/30 bg-gradient-to-br from-purple-950/40 via-zinc-950 to-black p-6">
+            <div className="flex items-center gap-3 mb-5">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/15 border border-purple-500/40 flex items-center justify-center">
+                <Users className="w-5 h-5 text-purple-300" />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-purple-100">Setup Turni Guida</h3>
+                <p className="text-xs text-zinc-400">
+                  Verifica i parametri principali prima di lanciare l'ottimizzazione.
+                </p>
+              </div>
             </div>
-            <h3 className="text-lg font-semibold mb-2 text-purple-200">Genera Turni Guida</h3>
-            <p className="text-sm text-muted-foreground max-w-md">
-              Clicca <strong>Genera Turni Guida</strong> per calcolare i turni autisti a partire dai turni macchina dello scenario.
-              I parametri di <em>saturazione</em>, <em>cap vetture aziendali</em> e <em>minimizzazione N turni</em> sono modificabili
-              in <strong>Config CSP</strong>.
-            </p>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {/* Cluster di cambio */}
+              <div className="rounded-xl border border-zinc-800 bg-black/40 p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-orange-400" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
+                      Cluster di cambio
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-zinc-500">
+                    {interchangeClusters == null ? "…" : `${interchangeClusters.length} cluster`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mb-3 leading-relaxed">
+                  I cluster definiscono i punti dove gli autisti possono cambiare bus in linea
+                  (cambio cross-cluster). Vengono caricati dal Planning Studio in tempo reale.
+                </p>
+                {interchangeClusters == null ? (
+                  <div className="text-xs text-zinc-500 flex items-center gap-2 py-3">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Caricamento cluster…
+                  </div>
+                ) : interchangeClusters.length === 0 ? (
+                  <div className="text-xs text-amber-300/80 bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                    Nessun cluster di cambio configurato. Gli autisti potranno cambiare solo
+                    al rientro deposito. Definisci cluster di tipo <em>Di Cambio</em> nel
+                    Planning Studio del progetto network.
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+                    {interchangeClusters.map(c => (
+                      <span key={c.id}
+                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-medium border"
+                        style={{
+                          background: `${c.color}15`,
+                          borderColor: `${c.color}55`,
+                          color: c.color,
+                        }}
+                        title={`${c.stopCount} fermate`}
+                      >
+                        <span className="w-2 h-2 rounded-full" style={{ background: c.color }} />
+                        {c.name}
+                        <span className="font-mono opacity-60">{c.stopCount}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Numero auto aziendali */}
+              <div className="rounded-xl border border-zinc-800 bg-black/40 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <Car className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-200">
+                    Auto aziendali per cambi
+                  </span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mb-4 leading-relaxed">
+                  Numero massimo di vetture aziendali disponibili per portare gli autisti
+                  ai punti di cambio. Limita quanti cambi simultanei sono possibili.
+                </p>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setOperatorConfig(cfg => ({
+                      ...cfg,
+                      bds: {
+                        ...cfg.bds,
+                        optimizer: {
+                          ...cfg.bds?.optimizer,
+                          maxCompanyCars: Math.max(0, (cfg.bds?.optimizer?.maxCompanyCars ?? 5) - 1),
+                        },
+                      },
+                    }))}
+                    className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 hover:border-emerald-500/50 hover:text-emerald-300 text-zinc-400 flex items-center justify-center transition-colors"
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    value={operatorConfig.bds?.optimizer?.maxCompanyCars ?? 5}
+                    onChange={(e) => {
+                      const n = Math.max(0, Math.min(50, parseInt(e.target.value || "0", 10) || 0));
+                      setOperatorConfig(cfg => ({
+                        ...cfg,
+                        bds: {
+                          ...cfg.bds,
+                          optimizer: { ...cfg.bds?.optimizer, maxCompanyCars: n },
+                        },
+                      }));
+                    }}
+                    className="w-20 h-9 text-center text-base font-mono font-bold rounded-lg bg-zinc-900 border border-zinc-700 text-emerald-300 focus:border-emerald-500/50 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setOperatorConfig(cfg => ({
+                      ...cfg,
+                      bds: {
+                        ...cfg.bds,
+                        optimizer: {
+                          ...cfg.bds?.optimizer,
+                          maxCompanyCars: Math.min(50, (cfg.bds?.optimizer?.maxCompanyCars ?? 5) + 1),
+                        },
+                      },
+                    }))}
+                    className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 hover:border-emerald-500/50 hover:text-emerald-300 text-zinc-400 flex items-center justify-center transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                  <span className="text-[11px] text-zinc-500 ml-2">vetture</span>
+                </div>
+              </div>
+            </div>
+
+            {/* CTA primaria */}
+            <div className="flex items-center justify-between mt-6 pt-5 border-t border-zinc-800">
+              <div className="text-[11px] text-zinc-500">
+                Ulteriori parametri (saturazione, pesi, intensità solver) in
+                <button
+                  type="button"
+                  onClick={() => setConfigOpen(true)}
+                  className="ml-1 text-zinc-300 underline decoration-dotted hover:text-purple-300"
+                >
+                  Configurazione avanzata
+                </button>
+                .
+              </div>
+              <button
+                type="button"
+                onClick={runOptimization}
+                disabled={loading || !vehicleScenarioId}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
+              >
+                <Play className="w-4 h-4" />
+                Genera Turni Guida
+              </button>
+            </div>
           </div>
         )}
 
