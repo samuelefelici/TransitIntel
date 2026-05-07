@@ -101,7 +101,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     location.startsWith("/network-engine/") ||
     location === "/planning-studio" ||
     location.startsWith("/planning-studio/") ||
-    location === "/cluster" ||
     location === "/depots" ||
     location === "/scenarios" ||
     location === "/planning" ||
@@ -378,7 +377,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </p>
 
             {[
-              { href: "/cluster", label: "Cluster", icon: Grip, desc: "Di cambio · logici · poligoni" },
+              // I cluster sono gestiti per-progetto in Planner Studio
+              // (/planning-studio/:id/clusters). La vecchia pagina globale
+              // /cluster era un duplicato e generava confusione.
               { href: "/depots", label: "Depositi", icon: Building2, desc: "Rimessaggio · rifornimento" },
             ].map((item) => {
               const isActive = location === item.href;

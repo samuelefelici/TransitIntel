@@ -941,8 +941,8 @@ function DriverShiftsPageInner() {
                             );
                           })}
                         </div>
-                        <a href="/cluster" className="block text-[9px] text-center mt-1 text-muted-foreground hover:text-orange-400 transition-colors">
-                          Gestisci cluster →
+                        <a href="/planning-studio" className="block text-[9px] text-center mt-1 text-muted-foreground hover:text-orange-400 transition-colors">
+                          Gestisci cluster (Planner Studio) →
                         </a>
                       </div>
 

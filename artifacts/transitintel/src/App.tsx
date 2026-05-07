@@ -24,7 +24,9 @@ const SchedulingProjectsHubPage = lazy(() => import("@/pages/scheduling/Projects
 const SchedulingProjectDashboardPage = lazy(() => import("@/pages/scheduling/ProjectDashboardPage"));
 const VehicleScenariosPage = lazy(() => import("@/pages/scheduling/VehicleScenariosPage"));
 const DriverScenariosPage = lazy(() => import("@/pages/scheduling/DriverScenariosPage"));
-const ClusterPage = lazy(() => import("@/pages/cluster"));
+// ClusterPage rimosso: i cluster ora vivono in Planner Studio
+// (/planning-studio/:id/clusters). Le rotte /cluster e /cluster-management
+// sono mantenute solo come Redirect per non rompere link esterni.
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
 const FaresPage = lazy(() => import("@/pages/fares"));
@@ -214,9 +216,11 @@ function Router() {
             <Route path="/optimization">
               <Gated perm="scheduling"><OptimizationPage /></Gated>
             </Route>
-            <Route path="/cluster">
-              <Gated perm="scheduling"><ClusterPage /></Gated>
-            </Route>
+            {/* I cluster sono gestiti per-progetto dentro Planner Studio.
+                Le vecchie rotte globali /cluster e /cluster-management vengono
+                rediretti alla lista progetti Planner Studio. */}
+            <Route path="/cluster"><Redirect to="/planning-studio" /></Route>
+            <Route path="/cluster-management"><Redirect to="/planning-studio" /></Route>
             <Route path="/depots">
               <Gated perm="scheduling"><DepotsPage /></Gated>
             </Route>
@@ -230,7 +234,6 @@ function Router() {
             {/* Redirects for old optimizer paths */}
             <Route path="/optimizer-route"><Redirect to="/fucina" /></Route>
             <Route path="/optimizer-schedule"><Redirect to="/fucina" /></Route>
-            <Route path="/cluster-management"><Redirect to="/cluster" /></Route>
 
             <Route component={NotFound} />
           </Switch>
