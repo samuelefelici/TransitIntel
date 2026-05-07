@@ -393,6 +393,54 @@ export async function materializePsToFeed(
 }
 
 /* ════════════════════════════════════════════════════════════
+ *  Mirror live PS → stop_clusters legacy
+ *  ────────────────────────────────────────────────────────────
+ *  Sincronizza i cluster PS verso le tabelle legacy stop_clusters /
+ *  stop_cluster_stops (lette da /api/clusters/by-routes nello
+ *  Scheduling Engine). Stessa logica del blocco "5." del materialize,
+ *  ma invocabile a ogni CRUD cluster nel PS così l'utente vede subito
+ *  i cluster nello Scheduling Engine senza dover ri-materializzare il
+ *  feed. Idempotente: wipe-by-source + reinsert.
+ *  Filtro: solo cluster di tipo "cambio" (kind='interchange').
+ * ════════════════════════════════════════════════════════════ */
+export async function mirrorPsClustersToLegacy(psProjectId: string): Promise<void> {
+  await db.execute(sql`
+    ALTER TABLE stop_clusters
+      ADD COLUMN IF NOT EXISTS source_ps_project_id uuid
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project
+      ON stop_clusters(source_ps_project_id)
+  `);
+  await db.execute(sql`
+    DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
+  `);
+  await db.execute(sql`
+    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color, source_ps_project_id)
+    SELECT id,
+           COALESCE(NULLIF(name, ''), 'Cluster'),
+           COALESCE((attributes->>'transferFromDepotMin')::int,
+                    (attributes->>'transfer_from_depot_min')::int, 10),
+           COALESCE(attributes->>'color', '#3b82f6'),
+           ${psProjectId}::uuid
+      FROM ps_stop_clusters
+     WHERE project_id = ${psProjectId}::uuid
+       AND COALESCE(kind, 'interchange') = 'interchange'
+  `);
+  await db.execute(sql`
+    INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
+    SELECT s.cluster_id, s.id::text,
+           COALESCE(NULLIF(s.name, ''), s.id::text),
+           s.lat, s.lon
+      FROM ps_stops s
+      JOIN ps_stop_clusters c ON c.id = s.cluster_id
+     WHERE s.project_id = ${psProjectId}::uuid
+       AND s.cluster_id IS NOT NULL
+       AND COALESCE(c.kind, 'interchange') = 'interchange'
+  `);
+}
+
+/* ════════════════════════════════════════════════════════════
  *  Job tracker in-memory per sync async
  *  ────────────────────────────────────────────────────────────
  *  La materializzazione di un PS grande (300k+ stop_times) impiega

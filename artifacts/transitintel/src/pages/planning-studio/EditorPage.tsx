@@ -168,6 +168,8 @@ export default function PlanningStudioEditorPage() {
     clusterId: string | null;
     name: string;
     kind: PsClusterKind;
+    isLogical: boolean;
+    isInterchange: boolean;
     radiusM: number;
     color: string;
     polygon: [number, number][]; // [lon, lat]
@@ -228,28 +230,53 @@ export default function PlanningStudioEditorPage() {
     if (showDepots && depots.length === 0 && !overlayLoading.depots) reloadDepots();
   }, [showDepots]);
 
-  // Mappa: psStopId → colore del cluster a cui appartiene (matching per code o coord)
+  // Mappa: psStopId → colore del cluster a cui appartiene.
+  // Combina due sorgenti:
+  //   (a) cluster PS del progetto (sempre, anche senza overlay): match diretto
+  //       per cluster_id sulla fermata. Colore = attributes.color o default per kind.
+  //   (b) overlay legacy "Cluster (Network)" se attivo: match per code/coord.
+  // (a) ha precedenza su (b) per coerenza con la lista nel pannello.
   const stopIdToClusterColor: { [k: string]: string } = useMemo(() => {
-    if (!showGlobalClusters) return {};
-    const byCode: { [k: string]: string } = {};
-    const byCoord: { [k: string]: string } = {};
-    for (const c of globalClusters) {
-      const color = c.color || "#0ea5e9";
-      for (const cs of (c.stops || [])) {
-        if (cs.gtfsStopId) byCode[String(cs.gtfsStopId)] = color;
-        if (Number.isFinite(cs.stopLat) && Number.isFinite(cs.stopLon)) {
-          byCoord[`${cs.stopLat.toFixed(5)},${cs.stopLon.toFixed(5)}`] = color;
+    const out: { [k: string]: string } = {};
+
+    // (a) Cluster PS — sempre attivi, basta che la fermata abbia clusterId
+    if (clusters.length > 0) {
+      const colorByClusterId: { [k: string]: string } = {};
+      for (const c of clusters) {
+        const custom = (c.attributes && typeof (c.attributes as any).color === "string")
+          ? (c.attributes as any).color : null;
+        colorByClusterId[c.id] = custom || (c.kind === "interchange" ? "#0ea5e9" : "#64748b");
+      }
+      for (const s of stops) {
+        if (s.clusterId && colorByClusterId[s.clusterId]) {
+          out[s.id] = colorByClusterId[s.clusterId];
         }
       }
     }
-    const out: { [k: string]: string } = {};
-    for (const s of stops) {
-      const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
-      const col = (s.code && byCode[s.code]) || byCoord[key];
-      if (col) out[s.id] = col;
+
+    // (b) Cluster legacy overlay (solo se toggle on) — non sovrascrive (a)
+    if (showGlobalClusters) {
+      const byCode: { [k: string]: string } = {};
+      const byCoord: { [k: string]: string } = {};
+      for (const c of globalClusters) {
+        const color = c.color || "#0ea5e9";
+        for (const cs of (c.stops || [])) {
+          if (cs.gtfsStopId) byCode[String(cs.gtfsStopId)] = color;
+          if (Number.isFinite(cs.stopLat) && Number.isFinite(cs.stopLon)) {
+            byCoord[`${cs.stopLat.toFixed(5)},${cs.stopLon.toFixed(5)}`] = color;
+          }
+        }
+      }
+      for (const s of stops) {
+        if (out[s.id]) continue;
+        const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
+        const col = (s.code && byCode[s.code]) || byCoord[key];
+        if (col) out[s.id] = col;
+      }
     }
+
     return out;
-  }, [showGlobalClusters, globalClusters, stops]);
+  }, [showGlobalClusters, globalClusters, stops, clusters]);
 
   // GeoJSON poligoni cluster (convex hull) — visibile solo se toggle on
   const clustersGeoJSON = useMemo(() => {
@@ -2159,6 +2186,8 @@ type ClusterDrawState = {
   clusterId: string | null;
   name: string;
   kind: PsClusterKind;
+  isLogical: boolean;
+  isInterchange: boolean;
   radiusM: number;
   color: string;
   polygon: [number, number][];
@@ -2223,6 +2252,33 @@ function ClustersPanel({
         || KIND_COLOR[c.kind];
   }
 
+  // ── Logico vs Cambio (un cluster può essere entrambi) ────────
+  // Storage: due flag indipendenti in attributes.isLogical /
+  // attributes.isInterchange. Backward-compat: se i flag sono assenti,
+  // si derivano dall'enum legacy `kind`. Lo Scheduling Engine usa il
+  // campo enum `kind = 'interchange'` (mirror su stop_clusters legacy
+  // filtra per quello), quindi quando isInterchange=true salviamo
+  // sempre kind='interchange', altrimenti kind='none'.
+  function isInterchangeOf(c: PsCluster | null | undefined): boolean {
+    if (!c) return false;
+    const v = (c.attributes as any)?.isInterchange;
+    if (typeof v === "boolean") return v;
+    return c.kind === "interchange";
+  }
+  function isLogicalOf(c: PsCluster | null | undefined): boolean {
+    if (!c) return false;
+    const v = (c.attributes as any)?.isLogical;
+    if (typeof v === "boolean") return v;
+    return c.kind === "none";
+  }
+  function clusterTypeLabel(c: PsCluster): string {
+    const i = isInterchangeOf(c), l = isLogicalOf(c);
+    if (i && l) return "Logico + Cambio";
+    if (i) return "Punto di cambio";
+    if (l) return "Nodo logico";
+    return "—";
+  }
+
   // mappa stopId → fermata (per la lista nella card del cluster in modifica)
   const stopById = useMemo(() => {
     const m: Record<string, PsStop> = {};
@@ -2251,6 +2307,8 @@ function ClustersPanel({
       clusterId: null,
       name: "",
       kind: "interchange",
+      isLogical: false,
+      isInterchange: true,
       radiusM: 150,
       color: COLOR_PALETTE[0],
       polygon: [],
@@ -2267,6 +2325,8 @@ function ClustersPanel({
       clusterId: c.id,
       name: c.name,
       kind: c.kind,
+      isLogical: isLogicalOf(c),
+      isInterchange: isInterchangeOf(c),
       radiusM: c.radiusM ?? 150,
       color: clusterColor(c),
       polygon: [],
@@ -2326,14 +2386,22 @@ function ClustersPanel({
     setSaving(true);
     try {
       let id = clusterDraw.clusterId;
-      const attrPatch = { color: clusterDraw.color };
+      // kind enum derivato dai flag: lo Scheduling Engine riconosce solo
+      // 'interchange' per il mirror legacy, quindi se l'utente ha selezionato
+      // "Cambio" (anche insieme a "Logico") -> kind='interchange', altrimenti 'none'.
+      const derivedKind: PsClusterKind = clusterDraw.isInterchange ? "interchange" : "none";
+      const attrPatch = {
+        color: clusterDraw.color,
+        isLogical: clusterDraw.isLogical,
+        isInterchange: clusterDraw.isInterchange,
+      };
       if (id) {
         // Preserva eventuali altri attributes esistenti
         const existing = clusters.find(c => c.id === id);
         const mergedAttrs = { ...(existing?.attributes ?? {}), ...attrPatch };
         await updatePsCluster(projectId, id, {
           name: clusterDraw.name.trim(),
-          kind: clusterDraw.kind,
+          kind: derivedKind,
           radiusM: clusterDraw.radiusM,
           attributes: mergedAttrs,
           ...(centerLat != null ? { centerLat, centerLon } : {}),
@@ -2341,7 +2409,7 @@ function ClustersPanel({
       } else {
         const created = await createPsCluster(projectId, {
           name: clusterDraw.name.trim(),
-          kind: clusterDraw.kind,
+          kind: derivedKind,
           radiusM: clusterDraw.radiusM,
           attributes: attrPatch,
           ...(centerLat != null ? { centerLat, centerLon } : {}),
@@ -2407,13 +2475,40 @@ function ClustersPanel({
               className="w-full px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700 text-slate-100 mb-2"
             />
             <div className="flex gap-2 mb-2">
-              <select
-                value={clusterDraw.kind}
-                onChange={e => setClusterDraw({ ...clusterDraw, kind: e.target.value as PsClusterKind })}
-                className="flex-1 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
-              >
-                {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-              </select>
+              <div className="flex-1 grid grid-cols-2 gap-1">
+                <label
+                  className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[11px] cursor-pointer transition ${
+                    clusterDraw.isLogical
+                      ? "bg-slate-700 border-slate-500 text-slate-100"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600"
+                  }`}
+                  title="Nodo logico: raggruppamento, intermodalità."
+                >
+                  <input
+                    type="checkbox"
+                    checked={clusterDraw.isLogical}
+                    onChange={e => setClusterDraw({ ...clusterDraw, isLogical: e.target.checked })}
+                    className="w-3 h-3 accent-slate-400"
+                  />
+                  Logico
+                </label>
+                <label
+                  className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[11px] cursor-pointer transition ${
+                    clusterDraw.isInterchange
+                      ? "bg-sky-600/30 border-sky-400 text-sky-100"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600"
+                  }`}
+                  title="Cambio: punto di cambio vettura, usato dallo Scheduling Engine."
+                >
+                  <input
+                    type="checkbox"
+                    checked={clusterDraw.isInterchange}
+                    onChange={e => setClusterDraw({ ...clusterDraw, isInterchange: e.target.checked })}
+                    className="w-3 h-3 accent-sky-500"
+                  />
+                  Di Cambio
+                </label>
+              </div>
               <input
                 type="number" min={20} max={2000} step={10}
                 value={clusterDraw.radiusM}
@@ -2422,6 +2517,11 @@ function ClustersPanel({
                 className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
               />
             </div>
+            {!clusterDraw.isLogical && !clusterDraw.isInterchange && (
+              <p className="text-[10px] text-amber-400 -mt-1 mb-2">
+                ⚠ Seleziona almeno un tipo (Logico o Cambio).
+              </p>
+            )}
             {/* Color picker */}
             <div className="mb-2">
               <div className="flex items-center gap-1.5 mb-1">
@@ -2538,7 +2638,7 @@ function ClustersPanel({
             </button>
             <button
               onClick={handleSaveDraw}
-              disabled={saving || !clusterDraw.name.trim()}
+              disabled={saving || !clusterDraw.name.trim() || (!clusterDraw.isLogical && !clusterDraw.isInterchange)}
               className="flex-1 px-2 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
             >
               {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
@@ -2623,7 +2723,7 @@ function ClustersPanel({
                     >
                       <div className="text-xs font-medium truncate text-slate-200">{c.name}</div>
                       <div className="text-[10px] text-slate-500">
-                        {KIND_LABEL[c.kind]} · {c.stopCount ?? clusterStops.length} fermate · r={c.radiusM}m
+                        {clusterTypeLabel(c)} · {c.stopCount ?? clusterStops.length} fermate · r={c.radiusM}m
                       </div>
                     </button>
                     <div className="flex gap-0.5 shrink-0">

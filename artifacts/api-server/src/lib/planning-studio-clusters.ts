@@ -16,8 +16,16 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { mirrorPsClustersToLegacy } from "./planning-studio-materialize.js";
 
 const router: IRouter = Router();
+
+/** Mirror best-effort verso stop_clusters legacy: log e ignora errori per non
+ *  far fallire la response al client se il mirror ha un problema. */
+async function safeMirror(projectId: string): Promise<void> {
+  try { await mirrorPsClustersToLegacy(projectId); }
+  catch (e: any) { console.warn("[ps-clusters] mirror legacy error:", e?.message || e); }
+}
 
 /* ─── Helpers permessi (replica leggera) ──────────────────── */
 
@@ -250,6 +258,7 @@ router.post("/planning-studio/projects/:id/clusters", async (req, res): Promise<
   `);
   const c: any = (r as any).rows?.[0];
   await logActivity(req.params.id, userId, "cluster.create", "cluster", c.id, { name, kind });
+  await safeMirror(req.params.id);
   res.status(201).json({ cluster: {
     id: c.id, projectId: c.project_id, code: c.code, name: c.name, kind: c.kind,
     centerLat: c.center_lat == null ? null : Number(c.center_lat),
@@ -294,6 +303,7 @@ router.patch("/planning-studio/projects/:id/clusters/:clusterId", async (req, re
   const c: any = (r as any).rows?.[0];
   if (!c) { res.status(404).json({ error: "cluster not found" }); return; }
   await logActivity(req.params.id, userId, "cluster.update", "cluster", c.id, { fields });
+  await safeMirror(req.params.id);
   res.json({ cluster: {
     id: c.id, projectId: c.project_id, code: c.code, name: c.name, kind: c.kind,
     centerLat: c.center_lat == null ? null : Number(c.center_lat),
@@ -321,6 +331,7 @@ router.delete("/planning-studio/projects/:id/clusters/:clusterId", async (req, r
   `);
   if (((r as any).rows ?? []).length === 0) { res.status(404).json({ error: "cluster not found" }); return; }
   await logActivity(req.params.id, userId, "cluster.delete", "cluster", req.params.clusterId, {});
+  await safeMirror(req.params.id);
   res.json({ ok: true });
 });
 
@@ -356,6 +367,7 @@ router.put("/planning-studio/projects/:id/clusters/:clusterId/stops", async (req
   }
   await recomputeClusterCenter(req.params.clusterId);
   await logActivity(req.params.id, userId, "cluster.set_stops", "cluster", req.params.clusterId, { count: stopIds.length });
+  await safeMirror(req.params.id);
   res.json({ ok: true, count: stopIds.length });
 });
 
