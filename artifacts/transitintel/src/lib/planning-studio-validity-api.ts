@@ -160,3 +160,45 @@ export async function deletePsTripExceptionMatrix(
     { method: "DELETE", body: JSON.stringify(input) },
   );
 }
+
+/* ─── Bulk operations (PR3) ─── */
+
+export type BulkOp =
+  | { op: "trip-row-set"; tripId: string; dayTypeIds: string[]; isValid: boolean }
+  | { op: "date-column-set"; date: string; isValid: boolean }
+  | { op: "period-fill"; periodId: string; dayTypeIds: string[]; isValid: boolean }
+  | { op: "clear-exceptions"; from: string; to: string; tripIds?: string[] };
+
+export async function postPsValidityBulk(
+  projectId: string, body: BulkOp,
+): Promise<{ ok: true; count: number; tripCount?: number }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/validity/bulk`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+/* ─── Auto-import da GTFS calendars (PR3) ─── */
+
+export interface AutoImportSummary {
+  ok: true;
+  dryRun: boolean;
+  summary: { calendars: number; validityUpserts: number; exceptionInserts: number };
+  perCalendar: Array<{
+    calendarId: string;
+    calendarCode: string | null;
+    tripCount: number;
+    dayTypeCount: number;
+    validityRowsToWrite: number;
+    exceptionRowsToWrite: number;
+  }>;
+}
+
+export async function autoImportPsValidityFromCalendars(
+  projectId: string, opts: { dryRun?: boolean } = {},
+): Promise<AutoImportSummary> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/validity/auto-import-from-calendars`,
+    { method: "POST", body: JSON.stringify({ dryRun: !!opts.dryRun }) },
+  );
+}

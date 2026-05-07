@@ -685,4 +685,305 @@ router.delete("/planning-studio/projects/:id/validity/exception", async (req, re
   res.json({ ok: true });
 });
 
+/* ════════════════════════════════════════════════════════════
+ *  Bulk operations (PR3)
+ * ════════════════════════════════════════════════════════════
+ *
+ * Body forme accettate (discriminato per `op`):
+ *
+ *   { op: "trip-row-set",  tripId, dayTypeIds[], isValid }
+ *     → upsert ps_trip_day_validity per (trip × ognuno dei dayTypes)
+ *
+ *   { op: "date-column-set", date, isValid }
+ *     → forza eccezione (1=add, 2=remove) su tutti i trip del progetto per quella data
+ *
+ *   { op: "period-fill", periodId, dayTypeIds[], isValid }
+ *     → upsert ps_trip_day_validity per ogni trip nel range del periodo
+ *       (filtro: trip.valid_from/to si sovrappone al periodo)
+ *
+ *   { op: "clear-exceptions", from, to, tripIds? }
+ *     → DELETE ps_trip_exceptions per tutti i trip nel range
+ *       (opzionale filtro tripIds)
+ */
+router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Promise<void> => {
+  await ensureValidityTables();
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(404).json({ error: "project not found or read-only" }); return; }
+
+  const body = req.body ?? {};
+  const op = body.op;
+
+  try {
+    if (op === "trip-row-set") {
+      const { tripId, dayTypeIds, isValid } = body;
+      if (typeof tripId !== "string" || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
+        res.status(400).json({ error: "tripId, dayTypeIds[], isValid required" }); return;
+      }
+      const ownR = await db.execute(sql`
+        SELECT 1 FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${req.params.id}::uuid
+      `);
+      if (((ownR as any).rows ?? []).length === 0) {
+        res.status(404).json({ error: "trip not in project" }); return;
+      }
+      let count = 0;
+      for (const dtId of dayTypeIds) {
+        if (typeof dtId !== "string") continue;
+        await db.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          VALUES (${tripId}::uuid, ${dtId}::uuid, ${isValid}, now())
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE
+            SET is_valid = EXCLUDED.is_valid, updated_at = now()
+        `);
+        count++;
+      }
+      await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripId, { count, isValid });
+      telemetry("bulk.trip-row", req.params.id, { tripId, count, isValid });
+      res.json({ ok: true, count });
+      return;
+    }
+
+    if (op === "date-column-set") {
+      const { date, isValid } = body;
+      if (!isValidISODate(date) || typeof isValid !== "boolean") {
+        res.status(400).json({ error: "date (YYYY-MM-DD), isValid required" }); return;
+      }
+      const exceptionType = isValid ? 1 : 2;
+      const r = await db.execute(sql`
+        INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+        SELECT id, ${date}::date, ${exceptionType}, 'bulk:date-column'
+          FROM ps_trips WHERE project_id = ${req.params.id}::uuid
+        ON CONFLICT (trip_id, date) DO UPDATE
+          SET exception_type = EXCLUDED.exception_type, reason = EXCLUDED.reason
+      `);
+      const count = (r as any).rowCount ?? 0;
+      await logActivity(req.params.id, userId, "validity.bulk.date-column", null, null, { date, isValid, count });
+      telemetry("bulk.date-column", req.params.id, { date, isValid, count });
+      res.json({ ok: true, count });
+      return;
+    }
+
+    if (op === "period-fill") {
+      const { periodId, dayTypeIds, isValid } = body;
+      if (typeof periodId !== "string" || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
+        res.status(400).json({ error: "periodId, dayTypeIds[], isValid required" }); return;
+      }
+      const periodR = await db.execute(sql`
+        SELECT start_date::text AS s, end_date::text AS e
+          FROM ps_service_periods
+         WHERE id = ${periodId}::uuid AND project_id = ${req.params.id}::uuid LIMIT 1
+      `);
+      const period: any = (periodR as any).rows?.[0];
+      if (!period) { res.status(404).json({ error: "service period not found" }); return; }
+
+      // Trip che si sovrappongono al periodo (default = tutti se trip non ha range)
+      const tripsR = await db.execute(sql`
+        SELECT id FROM ps_trips
+         WHERE project_id = ${req.params.id}::uuid
+           AND (valid_from IS NULL OR valid_from <= ${period.e}::date)
+           AND (valid_to   IS NULL OR valid_to   >= ${period.s}::date)
+      `);
+      const tripIds: string[] = ((tripsR as any).rows ?? []).map((r: any) => r.id);
+
+      let count = 0;
+      for (const tid of tripIds) {
+        for (const dtId of dayTypeIds) {
+          if (typeof dtId !== "string") continue;
+          await db.execute(sql`
+            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+            VALUES (${tid}::uuid, ${dtId}::uuid, ${isValid}, now())
+            ON CONFLICT (trip_id, day_type_id) DO UPDATE
+              SET is_valid = EXCLUDED.is_valid, updated_at = now()
+          `);
+          count++;
+        }
+      }
+      await logActivity(req.params.id, userId, "validity.bulk.period-fill", "service_period", periodId, {
+        tripCount: tripIds.length, dayTypeCount: dayTypeIds.length, count, isValid,
+      });
+      telemetry("bulk.period-fill", req.params.id, { periodId, count });
+      res.json({ ok: true, count, tripCount: tripIds.length });
+      return;
+    }
+
+    if (op === "clear-exceptions") {
+      const { from, to, tripIds } = body;
+      if (!isValidISODate(from) || !isValidISODate(to)) {
+        res.status(400).json({ error: "from, to (YYYY-MM-DD) required" }); return;
+      }
+      let r;
+      if (Array.isArray(tripIds) && tripIds.length > 0) {
+        // Validate all UUIDs are strings; SQL injection safe via parameterization.
+        // Costruiamo array per ANY().
+        r = await db.execute(sql`
+          DELETE FROM ps_trip_exceptions e
+           USING ps_trips t
+           WHERE e.trip_id = t.id
+             AND t.project_id = ${req.params.id}::uuid
+             AND e.date >= ${from}::date AND e.date <= ${to}::date
+             AND e.trip_id = ANY(${tripIds}::uuid[])
+        `);
+      } else {
+        r = await db.execute(sql`
+          DELETE FROM ps_trip_exceptions e
+           USING ps_trips t
+           WHERE e.trip_id = t.id
+             AND t.project_id = ${req.params.id}::uuid
+             AND e.date >= ${from}::date AND e.date <= ${to}::date
+        `);
+      }
+      const count = (r as any).rowCount ?? 0;
+      await logActivity(req.params.id, userId, "validity.bulk.clear-exceptions", null, null, { from, to, count });
+      telemetry("bulk.clear-exceptions", req.params.id, { from, to, count });
+      res.json({ ok: true, count });
+      return;
+    }
+
+    res.status(400).json({ error: `unknown op: ${op}` });
+  } catch (e: any) {
+    console.error("[ps-validity] bulk error:", e);
+    res.status(500).json({ error: e?.message || "internal error" });
+  }
+});
+
+/* ════════════════════════════════════════════════════════════
+ *  Auto-import da GTFS calendars (PR3)
+ * ════════════════════════════════════════════════════════════
+ *
+ * Strategia:
+ *   Per ogni ps_calendar del progetto:
+ *     - Mappa la pattern dei giorni (mon..sun) ai system day-types:
+ *         mon/tue/wed/thu/fri  → "feriale"
+ *         saturday             → "sabato"
+ *         sunday               → "festivo"
+ *       (i custom non vengono toccati, l'utente può raffinare poi)
+ *     - Per ogni trip che ha calendar_id = X, set ps_trip_day_validity
+ *       per quei day-types a true (UPSERT).
+ *     - Per ogni ps_calendar_dates con exception_type=2 (remove):
+ *         INSERT ps_trip_exceptions (trip, date, 2)
+ *       Per exception_type=1 (add):
+ *         INSERT ps_trip_exceptions (trip, date, 1)
+ *
+ *   Il preview mode (?preview=1) restituisce solo i count senza scrivere.
+ *
+ * Body opzionale: { dryRun?: boolean }
+ */
+router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars", async (req, res): Promise<void> => {
+  await ensureValidityTables();
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(404).json({ error: "project not found or read-only" }); return; }
+
+  const dryRun: boolean = !!req.body?.dryRun || req.query.preview === "1";
+
+  // Lookup id system day-types richiesti
+  const dtR = await db.execute(sql`
+    SELECT id, code FROM ps_day_types
+     WHERE project_id IS NULL AND code IN ('feriale', 'sabato', 'festivo')
+  `);
+  const dtMap = new Map<string, string>();
+  for (const r of ((dtR as any).rows ?? [])) dtMap.set(r.code, r.id);
+  if (dtMap.size < 3) {
+    res.status(500).json({ error: "system day-types missing (feriale/sabato/festivo)" });
+    return;
+  }
+
+  // Calendars del progetto + trip count
+  const calsR = await db.execute(sql`
+    SELECT c.id, c.code, c.name, c.monday, c.tuesday, c.wednesday, c.thursday, c.friday,
+           c.saturday, c.sunday, c.start_date::text AS start_date, c.end_date::text AS end_date,
+           (SELECT COUNT(*)::int FROM ps_trips t WHERE t.calendar_id = c.id) AS trip_count
+      FROM ps_calendars c WHERE c.project_id = ${req.params.id}::uuid
+  `);
+  const cals: any[] = (calsR as any).rows ?? [];
+
+  let validityUpserts = 0;
+  let exceptionInserts = 0;
+  const perCalendar: any[] = [];
+
+  for (const c of cals) {
+    const dayTypeIds: string[] = [];
+    if (c.monday || c.tuesday || c.wednesday || c.thursday || c.friday) dayTypeIds.push(dtMap.get("feriale")!);
+    if (c.saturday) dayTypeIds.push(dtMap.get("sabato")!);
+    if (c.sunday)   dayTypeIds.push(dtMap.get("festivo")!);
+
+    // trips di questo calendario
+    const tripsR = await db.execute(sql`
+      SELECT id FROM ps_trips WHERE calendar_id = ${c.id}::uuid AND project_id = ${req.params.id}::uuid
+    `);
+    const tripIds: string[] = ((tripsR as any).rows ?? []).map((r: any) => r.id);
+
+    // Calendar dates eccezioni
+    const cdR = await db.execute(sql`
+      SELECT date::text AS date, exception_type FROM ps_calendar_dates WHERE calendar_id = ${c.id}::uuid
+    `);
+    const cdates: { date: string; exception_type: number }[] = (cdR as any).rows ?? [];
+
+    const calValidityCount = tripIds.length * dayTypeIds.length;
+    const calExceptionCount = tripIds.length * cdates.length;
+    perCalendar.push({
+      calendarId: c.id,
+      calendarCode: c.code,
+      tripCount: tripIds.length,
+      dayTypeCount: dayTypeIds.length,
+      validityRowsToWrite: calValidityCount,
+      exceptionRowsToWrite: calExceptionCount,
+    });
+
+    if (!dryRun) {
+      // upsert trip_day_validity
+      for (const tid of tripIds) {
+        // imposta esplicitamente FALSE per gli altri 4 system day-type non coperti (per chiarezza)
+        for (const dtId of dayTypeIds) {
+          await db.execute(sql`
+            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+            VALUES (${tid}::uuid, ${dtId}::uuid, true, now())
+            ON CONFLICT (trip_id, day_type_id) DO UPDATE
+              SET is_valid = true, updated_at = now()
+          `);
+          validityUpserts++;
+        }
+        // imposta valid_from/valid_to del trip se non già presenti
+        await db.execute(sql`
+          UPDATE ps_trips
+             SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
+                 valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
+           WHERE id = ${tid}::uuid
+        `);
+        // eccezioni puntuali
+        for (const cd of cdates) {
+          const exType = cd.exception_type === 1 ? 1 : 2;
+          await db.execute(sql`
+            INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+            VALUES (${tid}::uuid, ${cd.date}::date, ${exType}, 'auto-import:calendar')
+            ON CONFLICT (trip_id, date) DO UPDATE
+              SET exception_type = EXCLUDED.exception_type, reason = EXCLUDED.reason
+          `);
+          exceptionInserts++;
+        }
+      }
+    }
+  }
+
+  if (!dryRun) {
+    await logActivity(req.params.id, userId, "validity.auto-import", null, null, {
+      calendars: cals.length, validityUpserts, exceptionInserts,
+    });
+  }
+  telemetry("auto-import", req.params.id, { dryRun, calendars: cals.length, validityUpserts, exceptionInserts });
+
+  res.json({
+    ok: true,
+    dryRun,
+    summary: {
+      calendars: cals.length,
+      validityUpserts,
+      exceptionInserts,
+    },
+    perCalendar,
+  });
+});
+
 export default router;
