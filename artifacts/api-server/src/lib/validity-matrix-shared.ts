@@ -118,3 +118,130 @@ export function italianHolidays(year: number): string[] {
     `${year}-12-26`,
   ];
 }
+
+/* ════════════════════════════════════════════════════════════
+ *  Auto-import GTFS calendar → system day-types (pure)
+ * ════════════════════════════════════════════════════════════ */
+
+export interface CalendarWeeklyPattern {
+  monday: boolean;
+  tuesday: boolean;
+  wednesday: boolean;
+  thursday: boolean;
+  friday: boolean;
+  saturday: boolean;
+  sunday: boolean;
+}
+
+/**
+ * Mappa il pattern settimanale di un GTFS calendar nei codici dei system day-types.
+ * Spec: pattern lun-ven (anche parziale) → "feriale"; sabato → "sabato"; domenica → "festivo".
+ * Restituisce un array deduplicato. Pattern vuoto → [].
+ */
+export function mapCalendarPatternToSystemDayTypes(p: CalendarWeeklyPattern): string[] {
+  const codes: string[] = [];
+  if (p.monday || p.tuesday || p.wednesday || p.thursday || p.friday) codes.push("feriale");
+  if (p.saturday) codes.push("sabato");
+  if (p.sunday) codes.push("festivo");
+  return codes;
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Validatori puri usati dagli endpoint REST
+ * ════════════════════════════════════════════════════════════ */
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+export function isUUID(s: unknown): s is string {
+  return typeof s === "string" && UUID_RE.test(s);
+}
+export function isISODate(s: unknown): s is string {
+  return typeof s === "string" && ISO_DATE_RE.test(s);
+}
+
+export type GenerateUnitInput = {
+  name: string;
+  description?: string;
+  from: string;
+  to: string;
+  dayTypeIds: string[];
+  includeOnlyValid?: boolean;
+};
+
+export type ValidationError = { ok: false; error: string };
+export type ValidationOk<T> = { ok: true; value: T };
+export type ValidationResult<T> = ValidationOk<T> | ValidationError;
+
+/**
+ * Valida payload POST /validity/generate-unit (PR4).
+ * Pure function: nessun I/O. Restituisce un risultato discriminato.
+ */
+export function validateGenerateUnitInput(body: unknown): ValidationResult<GenerateUnitInput> {
+  if (!body || typeof body !== "object") return { ok: false, error: "body mancante" };
+  const b = body as Record<string, unknown>;
+  if (typeof b.name !== "string" || b.name.trim().length === 0) {
+    return { ok: false, error: "name è obbligatorio" };
+  }
+  if (!isISODate(b.from) || !isISODate(b.to) || (b.from as string) > (b.to as string)) {
+    return { ok: false, error: "from/to non validi (atteso YYYY-MM-DD, from<=to)" };
+  }
+  if (!Array.isArray(b.dayTypeIds) || b.dayTypeIds.length === 0
+      || !b.dayTypeIds.every(isUUID)) {
+    return { ok: false, error: "dayTypeIds deve essere un array di UUID non vuoto" };
+  }
+  return {
+    ok: true,
+    value: {
+      name: (b.name as string).trim(),
+      description: typeof b.description === "string" ? b.description : undefined,
+      from: b.from as string,
+      to: b.to as string,
+      dayTypeIds: b.dayTypeIds as string[],
+      includeOnlyValid: b.includeOnlyValid !== false,
+    },
+  };
+}
+
+/**
+ * Valida payload POST /validity/bulk (PR3).
+ * 4 op: trip-row-set, date-column-set, period-fill, clear-exceptions.
+ * Pure function.
+ */
+export type BulkOp =
+  | { op: "trip-row-set"; tripId: string; dayTypeIds: string[]; isValid: boolean }
+  | { op: "date-column-set"; date: string; isValid: boolean }
+  | { op: "period-fill"; periodId: string; dayTypeIds: string[]; isValid: boolean }
+  | { op: "clear-exceptions"; from: string; to: string };
+
+export function validateBulkOpInput(body: unknown): ValidationResult<BulkOp> {
+  if (!body || typeof body !== "object") return { ok: false, error: "body mancante" };
+  const b = body as Record<string, unknown>;
+  switch (b.op) {
+    case "trip-row-set":
+      if (!isUUID(b.tripId)) return { ok: false, error: "tripId UUID required" };
+      if (!Array.isArray(b.dayTypeIds) || b.dayTypeIds.length === 0 || !b.dayTypeIds.every(isUUID)) {
+        return { ok: false, error: "dayTypeIds UUID[] non vuoto required" };
+      }
+      if (typeof b.isValid !== "boolean") return { ok: false, error: "isValid bool required" };
+      return { ok: true, value: { op: "trip-row-set", tripId: b.tripId as string, dayTypeIds: b.dayTypeIds as string[], isValid: b.isValid } };
+    case "date-column-set":
+      if (!isISODate(b.date)) return { ok: false, error: "date YYYY-MM-DD required" };
+      if (typeof b.isValid !== "boolean") return { ok: false, error: "isValid bool required" };
+      return { ok: true, value: { op: "date-column-set", date: b.date as string, isValid: b.isValid } };
+    case "period-fill":
+      if (!isUUID(b.periodId)) return { ok: false, error: "periodId UUID required" };
+      if (!Array.isArray(b.dayTypeIds) || b.dayTypeIds.length === 0 || !b.dayTypeIds.every(isUUID)) {
+        return { ok: false, error: "dayTypeIds UUID[] non vuoto required" };
+      }
+      if (typeof b.isValid !== "boolean") return { ok: false, error: "isValid bool required" };
+      return { ok: true, value: { op: "period-fill", periodId: b.periodId as string, dayTypeIds: b.dayTypeIds as string[], isValid: b.isValid } };
+    case "clear-exceptions":
+      if (!isISODate(b.from) || !isISODate(b.to) || (b.from as string) > (b.to as string)) {
+        return { ok: false, error: "from/to required (YYYY-MM-DD, from<=to)" };
+      }
+      return { ok: true, value: { op: "clear-exceptions", from: b.from as string, to: b.to as string } };
+    default:
+      return { ok: false, error: `op sconosciuto: ${String(b.op)}` };
+  }
+}

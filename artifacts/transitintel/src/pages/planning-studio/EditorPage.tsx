@@ -26,6 +26,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
+  CalendarCheck,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import {
@@ -870,6 +871,15 @@ export default function PlanningStudioEditorPage() {
           title="Esplora la rete: linee, percorsi, fermate e relazioni"
         >
           <Activity className="w-3.5 h-3.5" /> Rete
+        </button>
+
+        {/* Validity Matrix (Cerbero) */}
+        <button
+          onClick={() => navigate(`/planning-studio/${projectId}/validity`)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300"
+          title="Matrice di validità: corse × giorni, day-types, eccezioni e generazione Unità"
+        >
+          <CalendarCheck className="w-3.5 h-3.5" /> Validità
         </button>
 
         {/* Scheduling Engine: progetti agganciati a questo PS */}
