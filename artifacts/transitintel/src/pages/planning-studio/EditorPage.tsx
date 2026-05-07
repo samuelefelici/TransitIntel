@@ -26,7 +26,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
-  CalendarCheck,
+  CalendarCheck, Eye, EyeOff,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import {
@@ -741,7 +741,7 @@ export default function PlanningStudioEditorPage() {
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
       {/* ─── Toolbar top ─── */}
-      <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30">
+      <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30 overflow-x-auto overflow-y-hidden whitespace-nowrap [scrollbar-width:thin]">
         {/* Back + project info */}
         <button onClick={() => navigate("/planning-studio")}
           className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition shrink-0">
@@ -2466,46 +2466,241 @@ function NeClustersPanel({
   onFlyTo: (lat: number, lon: number) => void;
   projectId: string;
 }) {
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return clusters;
+    return clusters.filter(c => c.name.toLowerCase().includes(q));
+  }, [clusters, filter]);
+
+  function toggleExpanded(id: string) {
+    setExpanded(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+  function toggleHidden(id: string) {
+    setHidden(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+  function showAll() { setHidden(new Set()); }
+  function hideAll() { setHidden(new Set(clusters.map(c => c.id))); }
+
+  async function handleDelete(c: GlobalCluster) {
+    if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate associate verranno scollegate.`)) return;
+    setBusyId(c.id);
+    try {
+      const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast.success("Cluster eliminato");
+      await onReload();
+    } catch (e: any) {
+      toast.error("Errore eliminazione", { description: e?.message });
+    } finally { setBusyId(null); }
+  }
+
+  async function handleSaveName(c: GlobalCluster) {
+    if (!editName.trim()) { toast.error("Nome richiesto"); return; }
+    setBusyId(c.id);
+    try {
+      const r = await fetch(`/api/clusters/${c.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editName.trim() }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast.success("Nome aggiornato");
+      setEditingId(null);
+      await onReload();
+    } catch (e: any) {
+      toast.error("Errore aggiornamento", { description: e?.message });
+    } finally { setBusyId(null); }
+  }
+
+  async function handleBulkDelete() {
+    if (clusters.length === 0) return;
+    if (!confirm(
+      `Eliminare TUTTI i ${clusters.length} cluster?\n\n` +
+      `Le fermate associate verranno scollegate (ma non cancellate).\n` +
+      `Operazione NON reversibile.`
+    )) return;
+    setBulkDeleting(true);
+    let ok = 0, ko = 0;
+    const POOL = 8;
+    const queue = [...clusters];
+    async function worker() {
+      while (queue.length) {
+        const c = queue.shift();
+        if (!c) return;
+        try {
+          const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          ok++;
+        } catch { ko++; }
+      }
+    }
+    await Promise.all(Array.from({ length: POOL }, worker));
+    setBulkDeleting(false);
+    await onReload();
+    if (ko === 0) toast.success(`Eliminati ${ok} cluster`);
+    else toast.warning(`Eliminati ${ok} su ${ok + ko} (${ko} errori)`);
+  }
+
   return (
-    <div className="p-3 space-y-2">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[11px] text-slate-500">{clusters.length} cluster · sorgente Network Engine</p>
-        <div className="flex gap-1">
-          <button onClick={() => onReload()} title="Ricarica"
-            className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
-          <a href={`/planning-studio/${projectId}/clusters`}
-            className="text-[11px] px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center gap-1">
-            <Pencil className="w-3 h-3" /> Inserisci
-          </a>
+    <div className="flex flex-col h-full">
+      {/* Header con toolbar */}
+      <div className="p-2 border-b border-slate-800 space-y-2 shrink-0">
+        <div className="flex items-center justify-between">
+          <p className="text-[11px] text-slate-500">{clusters.length} cluster · sorgente Network Engine</p>
+          <div className="flex gap-1">
+            <button onClick={() => onReload()} title="Ricarica"
+              className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
+          </div>
         </div>
-      </div>
-      {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
-      {!loading && clusters.length === 0 && (
-        <p className="text-[11px] text-slate-500">Nessun cluster definito. Aprilo con "Inserisci" per crearne uno.</p>
-      )}
-      {clusters.map(c => {
-        const valid = (c.stops || []).filter(s => Number.isFinite(s.stopLat) && Number.isFinite(s.stopLon));
-        const center = valid.length
-          ? {
-              lat: valid.reduce((a, s) => a + s.stopLat, 0) / valid.length,
-              lon: valid.reduce((a, s) => a + s.stopLon, 0) / valid.length,
-            }
-          : null;
-        return (
-          <button key={c.id} onClick={() => center && onFlyTo(center.lat, center.lon)}
-            className="w-full text-left rounded-lg border border-slate-800 hover:border-cyan-700 bg-slate-900/60 hover:bg-slate-900 p-2.5 transition">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="w-3 h-3 rounded-sm shrink-0" style={{ backgroundColor: c.color || "#0ea5e9" }} />
-              <span className="text-sm font-medium text-slate-200 truncate flex-1">{c.name}</span>
-              <div className="flex gap-1">
-                {c.isInterchange && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">CAMBIO</span>}
-                {c.isLogical && <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-300">LOGICO</span>}
-              </div>
+        <div className="flex gap-1">
+          <a href={`/planning-studio/${projectId}/clusters`}
+            className="flex-1 text-[11px] px-2 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center justify-center gap-1">
+            <Pencil className="w-3 h-3" /> Editor avanzato
+          </a>
+          {clusters.length > 0 && (
+            <button onClick={handleBulkDelete} disabled={bulkDeleting} title="Elimina tutti"
+              className="text-[11px] px-2 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white inline-flex items-center gap-1 disabled:opacity-50">
+              {bulkDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
+        {clusters.length > 0 && (
+          <>
+            <div className="relative">
+              <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Cerca cluster…"
+                className="w-full pl-6 pr-2 py-1 rounded bg-slate-800 text-[11px] border border-slate-700" />
             </div>
-            <p className="text-[10px] text-slate-500">{(c.stops || []).length} fermate</p>
-          </button>
-        );
-      })}
+            <div className="flex gap-1">
+              <button onClick={showAll} className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center justify-center gap-1">
+                <Eye className="w-3 h-3" /> Mostra tutti
+              </button>
+              <button onClick={hideAll} className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center justify-center gap-1">
+                <EyeOff className="w-3 h-3" /> Nascondi tutti
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Lista */}
+      <div className="flex-1 overflow-auto p-2 space-y-1.5">
+        {loading && <p className="text-[11px] text-slate-500 text-center py-4">Caricamento…</p>}
+        {!loading && clusters.length === 0 && (
+          <p className="text-[11px] text-slate-500 text-center py-6">
+            Nessun cluster definito.<br />Apri "Editor avanzato" per crearne uno.
+          </p>
+        )}
+        {!loading && clusters.length > 0 && filtered.length === 0 && (
+          <p className="text-[11px] text-slate-500 text-center py-4">Nessun risultato.</p>
+        )}
+        {filtered.map(c => {
+          const valid = (c.stops || []).filter(s => Number.isFinite(s.stopLat) && Number.isFinite(s.stopLon));
+          const center = valid.length
+            ? {
+                lat: valid.reduce((a, s) => a + s.stopLat, 0) / valid.length,
+                lon: valid.reduce((a, s) => a + s.stopLon, 0) / valid.length,
+              }
+            : null;
+          const isOpen = expanded.has(c.id);
+          const isHidden = hidden.has(c.id);
+          const isEditing = editingId === c.id;
+          const isBusy = busyId === c.id;
+          return (
+            <div key={c.id}
+              className={`rounded-lg border ${isHidden ? "border-slate-800 opacity-50" : "border-slate-800 hover:border-cyan-700"} bg-slate-900/60 transition`}>
+              {/* Riga principale */}
+              <div className="flex items-center gap-1.5 p-2">
+                <button onClick={() => toggleExpanded(c.id)}
+                  className="p-0.5 rounded hover:bg-slate-800 text-slate-400">
+                  {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                </button>
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: c.color || "#0ea5e9" }} />
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") handleSaveName(c);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    onBlur={() => handleSaveName(c)}
+                    className="flex-1 px-1.5 py-0.5 rounded bg-slate-800 text-xs border border-cyan-500 text-slate-100"
+                  />
+                ) : (
+                  <button onClick={() => center && onFlyTo(center.lat, center.lon)}
+                    className="flex-1 min-w-0 text-left text-xs font-medium text-slate-200 truncate hover:text-cyan-300"
+                    title={center ? "Centra sulla mappa" : c.name}>
+                    {c.name}
+                  </button>
+                )}
+                <span className="text-[10px] text-slate-500 shrink-0">{(c.stops || []).length}</span>
+                <div className="flex gap-0.5 shrink-0">
+                  <button onClick={() => toggleHidden(c.id)} title={isHidden ? "Mostra" : "Nascondi"}
+                    className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-300">
+                    {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => { setEditingId(c.id); setEditName(c.name); }}
+                    title="Rinomina"
+                    className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-300">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => handleDelete(c)} disabled={isBusy} title="Elimina"
+                    className="p-1 rounded hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 disabled:opacity-50">
+                    {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Tags */}
+              {(c.isInterchange || c.isLogical) && (
+                <div className="flex gap-1 px-2 pb-1.5">
+                  {c.isInterchange && <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">CAMBIO</span>}
+                  {c.isLogical && <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-500/15 text-slate-300">LOGICO</span>}
+                </div>
+              )}
+
+              {/* Accordion fermate */}
+              {isOpen && (
+                <div className="border-t border-slate-800 bg-slate-950/40 max-h-48 overflow-auto">
+                  {(c.stops || []).length === 0 ? (
+                    <p className="text-[10px] text-slate-500 italic px-3 py-2">Nessuna fermata associata</p>
+                  ) : (
+                    (c.stops || []).map((s, i) => (
+                      <button
+                        key={`${c.id}-${s.gtfsStopId}-${i}`}
+                        onClick={() => Number.isFinite(s.stopLat) && Number.isFinite(s.stopLon) && onFlyTo(s.stopLat, s.stopLon)}
+                        className="w-full flex items-center gap-1.5 px-3 py-1 text-[10px] hover:bg-slate-800/60 text-left">
+                        <MapPin className="w-2.5 h-2.5 text-slate-500 shrink-0" />
+                        <span className="flex-1 truncate text-slate-300">{s.stopName}</span>
+                        {s.gtfsStopId && <span className="text-slate-600 text-[9px] shrink-0">#{s.gtfsStopId}</span>}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
