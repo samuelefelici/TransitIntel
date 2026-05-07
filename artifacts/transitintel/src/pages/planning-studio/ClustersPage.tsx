@@ -16,7 +16,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Plus, Trash2, Save, X, Sparkles, Search, Layers,
-  Loader2, Check, MapPin, Pencil,
+  Loader2, Check, MapPin, Pencil, Eye, EyeOff, ChevronRight, ChevronDown,
+  PencilRuler,
 } from "lucide-react";
 import {
   getPsProject,
@@ -206,6 +207,72 @@ export default function PlanningStudioClustersPage() {
   const mapRef = useRef<MapRef>(null);
   const [is3D, setIs3D] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+
+  /* ─── Visibilità cluster (mostra/nascondi cerchi su mappa) ─── */
+  const [hiddenClusterIds, setHiddenClusterIds] = useState<Set<string>>(new Set());
+  const allHidden = clusters.length > 0 && hiddenClusterIds.size >= clusters.length;
+  function toggleClusterVisibility(id: string) {
+    setHiddenClusterIds(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function setAllVisible(visible: boolean) {
+    setHiddenClusterIds(visible ? new Set() : new Set(clusters.map(c => c.id)));
+  }
+
+  /* ─── Accordion: cluster espansi (lista fermate inline) ─── */
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  function toggleExpanded(id: string) {
+    setExpandedIds(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  /* ─── Disegno poligono per selezione bulk fermate ─── */
+  // L'utente attiva la modalità, clicca sulla mappa per aggiungere vertici,
+  // doppio-click per chiudere il poligono. Le fermate dentro l'area
+  // vengono aggiunte al pendingStopIds del cluster selezionato.
+  const [drawing, setDrawing] = useState(false);
+  const [polyVertices, setPolyVertices] = useState<[number, number][]>([]);
+  function cancelDrawing() { setDrawing(false); setPolyVertices([]); }
+  function pointInPolygon(lon: number, lat: number, poly: [number, number][]): boolean {
+    // Ray-casting standard (lon = x, lat = y).
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i][0], yi = poly[i][1];
+      const xj = poly[j][0], yj = poly[j][1];
+      const intersect = ((yi > lat) !== (yj > lat))
+        && (lon < ((xj - xi) * (lat - yi)) / ((yj - yi) || 1e-12) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+  function applyPolygonSelection(additive: boolean) {
+    if (!selected || polyVertices.length < 3) { cancelDrawing(); return; }
+    const inside = stops
+      .filter(s => pointInPolygon(Number(s.lon), Number(s.lat), polyVertices))
+      .map(s => s.id);
+    if (inside.length === 0) {
+      toast.warning("Nessuna fermata dentro il poligono");
+      cancelDrawing();
+      return;
+    }
+    setPendingStopIds(prev => {
+      if (additive) {
+        const n = new Set(prev);
+        for (const id of inside) n.add(id);
+        return n;
+      }
+      // sostituzione completa
+      return new Set(inside);
+    });
+    toast.success(`${inside.length} fermate ${additive ? "aggiunte alla selezione" : "selezionate"}`);
+    cancelDrawing();
+  }
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     const map = mapRef.current.getMap() as any;
@@ -380,49 +447,103 @@ export default function PlanningStudioClustersPage() {
                 Crea il primo o usa <em>Suggerisci cluster</em>.
               </div>
             )}
-            {clusters.map(c => (
-              <div
-                key={c.id}
-                className={`group w-full border-b border-slate-800 hover:bg-slate-800 transition flex items-center gap-2 px-3 py-2 ${
-                  selectedId === c.id ? "bg-slate-800" : ""
-                }`}
-              >
+            {clusters.length > 0 && (
+              <div className="px-2 py-1.5 border-b border-slate-800 bg-slate-900/40 flex items-center justify-between text-[10px] text-slate-500">
+                <span>{clusters.length} cluster · {clusters.length - hiddenClusterIds.size} visibili</span>
                 <button
-                  onClick={() => setSelectedId(c.id)}
-                  className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                  onClick={() => setAllVisible(allHidden)}
+                  className="px-2 py-0.5 rounded text-slate-400 hover:bg-slate-800 hover:text-cyan-300 flex items-center gap-1"
                 >
-                  <div className="w-2 h-8 rounded shrink-0" style={{ background: KIND_COLOR[c.kind] }} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{c.name}</div>
-                    <div className="text-xs text-slate-500">
-                      {KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m
+                  {allHidden
+                    ? <><Eye className="w-3 h-3" /> Mostra tutti</>
+                    : <><EyeOff className="w-3 h-3" /> Nascondi tutti</>
+                  }
+                </button>
+              </div>
+            )}
+            {clusters.map(c => {
+              const isExpanded = expandedIds.has(c.id);
+              const isVisible = !hiddenClusterIds.has(c.id);
+              const clusterStops = stops.filter(s => s.clusterId === c.id);
+              return (
+                <div
+                  key={c.id}
+                  className={`group w-full border-b border-slate-800 transition ${
+                    selectedId === c.id ? "bg-slate-800" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-1 px-2 py-2 hover:bg-slate-800">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleExpanded(c.id); }}
+                      title={isExpanded ? "Comprimi" : "Espandi fermate"}
+                      className="p-1 rounded text-slate-500 hover:text-cyan-300 hover:bg-slate-700 shrink-0"
+                    >
+                      {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    </button>
+                    <button
+                      onClick={() => setSelectedId(c.id)}
+                      className="flex-1 min-w-0 flex items-center gap-2 text-left"
+                    >
+                      <div className="w-2 h-8 rounded shrink-0" style={{ background: KIND_COLOR[c.kind] }} />
+                      <div className="flex-1 min-w-0">
+                        <div className={`text-sm font-medium truncate ${!isVisible ? "text-slate-500 line-through" : ""}`}>
+                          {c.name}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m
+                        </div>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleClusterVisibility(c.id); }}
+                        title={isVisible ? "Nascondi sulla mappa" : "Mostra sulla mappa"}
+                        className={`p-1.5 rounded hover:bg-slate-700 ${isVisible ? "text-slate-400 hover:text-cyan-300" : "text-slate-600 hover:text-slate-300"}`}
+                      >
+                        {isVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setSelectedId(c.id); }}
+                        title="Modifica"
+                        className={`p-1.5 rounded text-slate-400 hover:bg-slate-700 hover:text-cyan-300 transition ${
+                          selectedId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                        }`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Eliminare "${c.name}"?`)) deleteMut.mutate(c.id);
+                        }}
+                        title="Elimina"
+                        className="p-1.5 rounded text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
-                </button>
-                {/* Azioni inline (sempre visibili sul cluster selezionato, on-hover sugli altri) */}
-                <div className={`flex items-center gap-0.5 shrink-0 transition ${
-                  selectedId === c.id ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-                }`}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setSelectedId(c.id); }}
-                    title="Modifica"
-                    className="p-1.5 rounded text-slate-400 hover:bg-slate-700 hover:text-cyan-300"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (confirm(`Eliminare "${c.name}"?`)) deleteMut.mutate(c.id);
-                    }}
-                    title="Elimina"
-                    className="p-1.5 rounded text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {/* Accordion: lista fermate del cluster (read-only).
+                      Per modificarle l'utente clicca 'Modifica' / il nome → pannello dettaglio sotto. */}
+                  {isExpanded && (
+                    <div className="bg-slate-950/60 border-t border-slate-800/50 max-h-48 overflow-auto">
+                      {clusterStops.length === 0 && (
+                        <div className="px-3 py-2 text-[11px] text-slate-600 italic">
+                          Nessuna fermata assegnata
+                        </div>
+                      )}
+                      {clusterStops.map(s => (
+                        <div key={s.id} className="flex items-center gap-2 px-4 py-1 text-[11px] text-slate-400 hover:bg-slate-900">
+                          <MapPin className="w-3 h-3 text-slate-600 shrink-0" />
+                          <span className="flex-1 truncate">{s.name}</span>
+                          {s.code && <span className="text-slate-600 font-mono">{s.code}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Pannello dettaglio cluster selezionato */}
@@ -480,14 +601,28 @@ export default function PlanningStudioClustersPage() {
                 </div>
                 <div className="text-xs text-slate-500 flex items-center justify-between">
                   <span>{pendingStopIds.size} fermate selezionate</span>
-                  <button
-                    onClick={() => setStopsMut.mutate({ id: selected.id, stopIds: Array.from(pendingStopIds) })}
-                    disabled={setStopsMut.isPending}
-                    className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs flex items-center gap-1"
-                  >
-                    {setStopsMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                    Salva
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => { setDrawing(true); setPolyVertices([]); }}
+                      title="Disegna un poligono sulla mappa per selezionare le fermate al suo interno"
+                      className={`px-2 py-0.5 rounded text-xs flex items-center gap-1 transition ${
+                        drawing
+                          ? "bg-violet-500/20 text-violet-200 border border-violet-500/40"
+                          : "text-slate-400 hover:bg-slate-800 hover:text-violet-300"
+                      }`}
+                    >
+                      <PencilRuler className="w-3 h-3" />
+                      {drawing ? "Disegnando…" : "Disegna"}
+                    </button>
+                    <button
+                      onClick={() => setStopsMut.mutate({ id: selected.id, stopIds: Array.from(pendingStopIds) })}
+                      disabled={setStopsMut.isPending}
+                      className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs flex items-center gap-1"
+                    >
+                      {setStopsMut.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                      Salva
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -529,6 +664,19 @@ export default function PlanningStudioClustersPage() {
               initialViewState={initialView}
               mapStyle="mapbox://styles/mapbox/standard"
               onLoad={() => setMapReady(true)}
+              cursor={drawing ? "crosshair" : undefined}
+              onClick={(e) => {
+                if (!drawing) return;
+                const lng = e.lngLat.lng, lat = e.lngLat.lat;
+                setPolyVertices(prev => [...prev, [lng, lat]]);
+              }}
+              onDblClick={(e) => {
+                if (!drawing) return;
+                e.preventDefault();
+                // additive di default; con shift premuto sostituisce
+                const additive = !(e.originalEvent as MouseEvent).shiftKey;
+                applyPolygonSelection(additive);
+              }}
               style={{ width: "100%", height: "100%" }}
             >
               <NavigationControl position="top-right" />
@@ -557,6 +705,7 @@ export default function PlanningStudioClustersPage() {
                   type: "FeatureCollection",
                   features: clusters
                     .filter(c => c.centerLat != null && c.centerLon != null)
+                    .filter(c => !hiddenClusterIds.has(c.id))
                     .map(c => ({
                       type: "Feature",
                       properties: {
@@ -624,6 +773,91 @@ export default function PlanningStudioClustersPage() {
                   />
                 </Marker>
               ))}
+
+              {/* Drawing layer: poligono in costruzione */}
+              {drawing && polyVertices.length > 0 && (
+                <Source
+                  id="ps-draw-poly"
+                  type="geojson"
+                  data={{
+                    type: "FeatureCollection",
+                    features: [
+                      // poligono chiuso (anche se non ancora committato), così l'utente vede l'area
+                      ...(polyVertices.length >= 3 ? [{
+                        type: "Feature" as const,
+                        properties: {},
+                        geometry: {
+                          type: "Polygon" as const,
+                          coordinates: [[...polyVertices, polyVertices[0]]],
+                        },
+                      }] : []),
+                      // linea tra i vertici
+                      {
+                        type: "Feature" as const,
+                        properties: {},
+                        geometry: {
+                          type: "LineString" as const,
+                          coordinates: polyVertices,
+                        },
+                      },
+                      // vertici
+                      ...polyVertices.map((v, i) => ({
+                        type: "Feature" as const,
+                        properties: { idx: i },
+                        geometry: { type: "Point" as const, coordinates: v },
+                      })),
+                    ],
+                  }}
+                >
+                  <Layer
+                    id="ps-draw-poly-fill"
+                    type="fill"
+                    filter={["==", ["geometry-type"], "Polygon"]}
+                    paint={{ "fill-color": "#a855f7", "fill-opacity": 0.18 }}
+                  />
+                  <Layer
+                    id="ps-draw-poly-line"
+                    type="line"
+                    filter={["==", ["geometry-type"], "LineString"]}
+                    paint={{ "line-color": "#a855f7", "line-width": 2, "line-dasharray": [2, 1] }}
+                  />
+                  <Layer
+                    id="ps-draw-poly-vertices"
+                    type="circle"
+                    filter={["==", ["geometry-type"], "Point"]}
+                    paint={{
+                      "circle-radius": 5,
+                      "circle-color": "#fff",
+                      "circle-stroke-color": "#a855f7",
+                      "circle-stroke-width": 2,
+                    }}
+                  />
+                </Source>
+              )}
+
+              {/* Banner istruzioni drawing */}
+              {drawing && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 px-4 py-2.5 rounded-lg bg-violet-900/90 border border-violet-500/60 backdrop-blur shadow-xl text-xs text-violet-100 flex items-center gap-3">
+                  <PencilRuler className="w-4 h-4 text-violet-300 shrink-0" />
+                  <div>
+                    <div className="font-semibold">
+                      {polyVertices.length === 0 && "Clicca sulla mappa per iniziare il poligono"}
+                      {polyVertices.length === 1 && "Aggiungi almeno altri 2 vertici"}
+                      {polyVertices.length === 2 && "Aggiungi un terzo vertice o un altro per chiudere"}
+                      {polyVertices.length >= 3 && `${polyVertices.length} vertici · doppio-click per applicare`}
+                    </div>
+                    <div className="text-[10px] text-violet-300/80">
+                      Doppio-click = aggiungi alla selezione · Shift+doppio-click = sostituisci
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => cancelDrawing()}
+                    className="ml-2 px-2 py-1 rounded bg-violet-800 hover:bg-violet-700 text-[11px]"
+                  >
+                    Annulla
+                  </button>
+                </div>
+              )}
             </Map>
           )}
         </div>
