@@ -32,20 +32,68 @@ interface AuthCtx {
 
 const AuthContext = createContext<AuthCtx | null>(null);
 
+/* ────────────────────────────────────────────────────────────
+ * Soft-cache utente in localStorage
+ *  ── Motivazione ──
+ *  Senza cache, ad ogni F5 il client parte con `user=null` e mostra
+ *  brevemente il login finché `/api/auth/me` non risponde (cold-start
+ *  Render = 5-30s, oppure rete instabile). Se quella chiamata fallisce
+ *  per qualunque motivo non-401, l'utente viene erroneamente "sloggato".
+ *
+ *  Strategia:
+ *   - alla `login()` salvi user in localStorage
+ *   - al boot lo ripristini subito → niente flash login
+ *   - in background fai /me: se 401 vero ⇒ pulisci; se errore di rete ⇒
+ *     mantieni la cache e aspetti la prossima visita.
+ *  Nessun token viene salvato (resta cookie httpOnly): la cache contiene
+ *  solo metadati identity/permessi che il backend riemetterà comunque.
+ * ──────────────────────────────────────────────────────────── */
+const AUTH_CACHE_KEY = "transitintel.auth.user.v1";
+function loadCachedUser(): CurrentUser | null {
+  try {
+    const raw = localStorage.getItem(AUTH_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CurrentUser;
+  } catch { return null; }
+}
+function saveCachedUser(u: CurrentUser | null): void {
+  try {
+    if (u) localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(u));
+    else localStorage.removeItem(AUTH_CACHE_KEY);
+  } catch { /* noop */ }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
+  // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
+  const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
+
+  const setUser = useCallback((u: CurrentUser | null) => {
+    setUserState(u);
+    saveCachedUser(u);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
       const r = await apiFetch<{ user: CurrentUser }>("/api/auth/me");
       setUser(r.user);
-    } catch {
-      setUser(null);
+    } catch (e: any) {
+      // Sloggiamo SOLO se il backend ha risposto con un 401 esplicito
+      // ("Non autenticato" / "Sessione non valida"). In tutti gli altri
+      // casi (errore di rete, 5xx, backend Render in cold-start, timeout
+      // proxy, ecc.) manteniamo lo stato utente precedente (e la cache):
+      // un singolo glitch di rete non deve buttare giù la sessione e
+      // costringere l'utente a rifare login a ogni refresh della pagina.
+      const status: number | undefined = e?.status;
+      if (status === 401) {
+        setUser(null);
+      } else {
+        console.warn("[auth] /api/auth/me failed (non-401), mantengo sessione:", e?.message || e);
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setUser]);
 
   useEffect(() => {
     void refresh();

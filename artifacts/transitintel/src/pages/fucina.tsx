@@ -471,7 +471,7 @@ export default function FucinaPage() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ routeIds, date: dateIso, feedId }),
+          body: JSON.stringify({ routeIds, date: dateIso, feedId, psProjectId }),
         });
         if (!r.ok) return;
         const data = await r.json();
@@ -498,7 +498,7 @@ export default function FucinaPage() {
       }
     })();
     return () => { cancelled = true; };
-  }, [gtfsSelection?.tempFeedId, gtfsSelection?.date, vehicleAssignment]);
+  }, [gtfsSelection?.tempFeedId, gtfsSelection?.date, vehicleAssignment, psProjectId]);
 
 
   React.useEffect(() => {

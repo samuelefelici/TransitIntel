@@ -204,9 +204,20 @@ router.delete("/clusters/:id", asyncHandler(async (req, res) => {
  * ═══════════════════════════════════════════════════════════════ */
 
 // POST /api/clusters/by-routes — cluster toccati da un insieme di linee in una data
-// Body: { routeIds: string[], date: string (YYYY-MM-DD) }
+//
+// Body:
+//   { routeIds: string[],
+//     date: "YYYY-MM-DD",
+//     feedId?: string,        // feed esplicito (vedi getLatestFeedId)
+//     psProjectId?: string }  // se passato → SOLO i cluster di quel
+//                             // PS project (qualsiasi kind), letti
+//                             // direttamente da ps_stop_clusters.
+//                             // Senza psProjectId → fallback legacy:
+//                             // tutti i cluster in stop_clusters.
 router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
-  const { routeIds, date } = req.body as { routeIds?: string[]; date?: string };
+  const { routeIds, date, psProjectId } = req.body as {
+    routeIds?: string[]; date?: string; psProjectId?: string;
+  };
 
   if (!routeIds || !Array.isArray(routeIds) || routeIds.length === 0) {
     res.status(400).json({ error: "routeIds array is required" });
@@ -259,15 +270,92 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
 
   const touchedStopIds = new Set<string>(touchedStops.rows.map((r: any) => r.stop_id as string));
 
-  // Trova i cluster che contengono almeno una di quelle fermate
-  const allClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
-  const allClusterStops = await db.select().from(stopClusterStops);
+  // ── Sorgente cluster: PS-aware se psProjectId è passato ──────────────
+  // I cluster legacy (`stop_clusters`) NON sono partizionati per tenant /
+  // feed / progetto: contengono entry create da progetti diversi e dal
+  // mirror PS→legacy (solo kind='interchange'). Se l'utente sta lavorando
+  // dentro un PS Project (caso normale del wizard Fucina), leggiamo
+  // direttamente da `ps_stop_clusters` filtrato per project_id, includendo
+  // qualsiasi `kind` (interchange / terminal / logical / ...). Così:
+  //   - vediamo tutti i cluster definiti nel PS, non solo gli interchange
+  //   - non compaiono cluster di altri progetti che condividono nomi/stop
+  let clustersWithStops: {
+    id: string;
+    name: string;
+    color: string | null;
+    transferFromDepotMin: number | null;
+    stops: { id: string; gtfsStopId: string | null; stopName: string | null;
+             stopLat: number | null; stopLon: number | null }[];
+  }[];
+
+  if (psProjectId && typeof psProjectId === "string") {
+    const psRows = await db.execute<any>(sql`
+      SELECT c.id::text AS cluster_id,
+             COALESCE(NULLIF(c.name, ''), 'Cluster') AS name,
+             COALESCE(c.attributes->>'color', '#3b82f6') AS color,
+             COALESCE((c.attributes->>'transferFromDepotMin')::int,
+                      (c.attributes->>'transfer_from_depot_min')::int, 10) AS transfer_from_depot_min,
+             s.id::text AS stop_uuid,
+             s.id::text AS gtfs_stop_id,
+             s.name AS stop_name,
+             s.lat AS stop_lat,
+             s.lon AS stop_lon
+        FROM ps_stop_clusters c
+        LEFT JOIN ps_stops s
+               ON s.cluster_id = c.id
+              AND s.project_id = ${psProjectId}::uuid
+       WHERE c.project_id = ${psProjectId}::uuid
+       ORDER BY c.name
+    `);
+    const byCluster = new Map<string, any>();
+    for (const r of psRows.rows) {
+      let cur = byCluster.get(r.cluster_id);
+      if (!cur) {
+        cur = {
+          id: r.cluster_id,
+          name: r.name,
+          color: r.color,
+          transferFromDepotMin: r.transfer_from_depot_min,
+          stops: [] as any[],
+        };
+        byCluster.set(r.cluster_id, cur);
+      }
+      if (r.stop_uuid) {
+        cur.stops.push({
+          id: r.stop_uuid,
+          gtfsStopId: r.gtfs_stop_id,
+          stopName: r.stop_name,
+          stopLat: r.stop_lat,
+          stopLon: r.stop_lon,
+        });
+      }
+    }
+    clustersWithStops = Array.from(byCluster.values());
+  } else {
+    // Fallback legacy: lista globale stop_clusters (compat).
+    const allClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
+    const allClusterStops = await db.select().from(stopClusterStops);
+    clustersWithStops = allClusters.map(c => ({
+      id: c.id,
+      name: c.name,
+      color: c.color,
+      transferFromDepotMin: c.transferFromDepotMin,
+      stops: allClusterStops
+        .filter(s => s.clusterId === c.id)
+        .map(s => ({
+          id: s.id,
+          gtfsStopId: s.gtfsStopId,
+          stopName: s.stopName,
+          stopLat: s.stopLat,
+          stopLon: s.stopLon,
+        })),
+    }));
+  }
 
   // Per ogni cluster, raccogli le fermate e verifica se tocca le linee selezionate
-  const result = allClusters
+  const result = clustersWithStops
     .map(c => {
-      const stops = allClusterStops.filter(s => s.clusterId === c.id);
-      const matchingStops = stops.filter(s => s.gtfsStopId && touchedStopIds.has(s.gtfsStopId));
+      const matchingStops = c.stops.filter(s => s.gtfsStopId && touchedStopIds.has(s.gtfsStopId));
       return {
         id: c.id,
         name: c.name,
@@ -275,21 +363,17 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
         transferFromDepotMin: c.transferFromDepotMin,
         touched: matchingStops.length > 0,
         touchedStopsCount: matchingStops.length,
-        stops: stops.map(s => ({
-          id: s.id,
-          gtfsStopId: s.gtfsStopId,
-          stopName: s.stopName,
-          stopLat: s.stopLat,
-          stopLon: s.stopLon,
+        stops: c.stops.map(s => ({
+          ...s,
           isTouched: s.gtfsStopId ? touchedStopIds.has(s.gtfsStopId) : false,
         })),
       };
     })
-    .filter(c => c.touched); // restituisce solo i cluster effettivamente toccati
+    .filter(c => c.touched);
 
-  // Dedupe per nome normalizzato: la tabella stop_clusters NON è partizionata
-  // per tenant/feed, quindi può contenere cluster con stesso nome (es. stesso
-  // hub creato da più progetti). Manteniamo quello con piu fermate toccate.
+  // Dedupe per nome normalizzato. In modalità PS non dovrebbero esserci
+  // duplicati (un solo progetto), ma manteniamo la dedupe per sicurezza
+  // (es. cluster con stesso nome creati per errore).
   const byName = new Map<string, typeof result[number]>();
   for (const c of result) {
     const key = String(c.name || "").trim().toLowerCase();
