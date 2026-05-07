@@ -85,6 +85,20 @@ function convexHull(points: [number, number][]): [number, number][] {
   return lower.concat(upper);
 }
 
+/* Ray-casting: punto dentro poligono (coordinate [lon, lat]) */
+function pointInPolygon(pt: [number, number], poly: [number, number][]): boolean {
+  if (poly.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    const intersect = ((yi > pt[1]) !== (yj > pt[1]))
+      && (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi + 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 interface VariantEditorState {
   variantId: string;
   routeId: string;
@@ -144,6 +158,21 @@ export default function PlanningStudioEditorPage() {
   const [editor, setEditor] = useState<VariantEditorState | null>(null);
   const [snapBusy, setSnapBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // ── Cluster editor (interattivo sulla mappa) ───────────────
+  // mode "draw" = utente sta cliccando per disegnare poligono area
+  // mode "stops" = utente sta cliccando le fermate per togglarle nel cluster
+  // clusterId = null → creazione nuovo cluster; altrimenti modifica esistente
+  type ClusterDraw = {
+    mode: "draw" | "stops";
+    clusterId: string | null;
+    name: string;
+    kind: PsClusterKind;
+    radiusM: number;
+    polygon: [number, number][]; // [lon, lat]
+    pendingStopIds: Set<string>;
+  };
+  const [clusterDraw, setClusterDraw] = useState<ClusterDraw | null>(null);
   // ── Mappa: stile + 3D toggle ───────────────────────────────
   // Stile "standard" Mapbox: chiaro, dettagliato, supporta nativamente edifici 3D
   // e landmark via setConfigProperty('basemap', 'show3dObjects', …).
@@ -257,6 +286,9 @@ export default function PlanningStudioEditorPage() {
   // visibile, anche con filter='none', così la "Cerca fermata" continua a
   // funzionare.
   const visibleStops = useMemo<PsStop[]>(() => {
+    // Quando il pannello cluster è aperto (creazione/edit) servono SEMPRE
+    // tutte le fermate, altrimenti l'utente non può cliccarle per assegnarle.
+    if (activePanel === "clusters" || clusterDraw) return stops;
     if (showGlobalClusters) {
       // In modalità "vista cluster" mostriamo solo le fermate dentro un cluster:
       // i layer ne-clusters-* le disegnano già, quindi qui tagliamo a 0 (più la
@@ -275,7 +307,7 @@ export default function PlanningStudioEditorPage() {
     }
     if (selectedStopId) allowed.add(selectedStopId);
     return stops.filter(s => allowed.has(s.id));
-  }, [stops, stopsFilter, routeFilterIds, routeStopIds, selectedStopId, showGlobalClusters]);
+  }, [stops, stopsFilter, routeFilterIds, routeStopIds, selectedStopId, showGlobalClusters, activePanel, clusterDraw]);
 
   // GeoJSON delle fermate visibili (usato dai layer Mapbox: 1 source, N layer
   // gestiti dalla GPU, 100x più veloce di N <Marker> React).
@@ -358,6 +390,13 @@ export default function PlanningStudioEditorPage() {
   const handleMapClick = useCallback((e: MapMouseEvent) => {
     const { lng, lat } = e.lngLat;
 
+    // Modalità "disegna area cluster": ogni clic aggiunge un vertice al poligono.
+    // Doppio click chiude il poligono (gestito da onDblClick separatamente).
+    if (clusterDraw && clusterDraw.mode === "draw") {
+      setClusterDraw(prev => prev ? { ...prev, polygon: [...prev.polygon, [lng, lat]] } : prev);
+      return;
+    }
+
     // Click su una fermata renderizzata via Layer (stops circle)
     const features = (e as any).features as any[] | undefined;
     const stopFeat = features?.find(f => f?.layer?.id === "ps-stops-circle" || f?.layer?.id === "ps-stops-circle-hit");
@@ -366,6 +405,16 @@ export default function PlanningStudioEditorPage() {
       if (stopId) {
         const s = stops.find(x => x.id === stopId);
         if (s) {
+          // Modalità "tocca fermate per cluster": toggle inclusion
+          if (clusterDraw && clusterDraw.mode === "stops") {
+            setClusterDraw(prev => {
+              if (!prev) return prev;
+              const next = new Set(prev.pendingStopIds);
+              next.has(s.id) ? next.delete(s.id) : next.add(s.id);
+              return { ...prev, pendingStopIds: next };
+            });
+            return;
+          }
           if (tool === "editVariant" && editor) {
             addStopToSequence(s);
           } else {
@@ -398,7 +447,7 @@ export default function PlanningStudioEditorPage() {
     }
     // select: deseleziona
     setSelectedStopId(null);
-  }, [tool, editor, pickingDepotLocation, editingDepot, stops]);
+  }, [tool, editor, pickingDepotLocation, editingDepot, stops, clusterDraw]);
 
   /* ─── Stops CRUD ─── */
   async function handleSaveStop(stopOrCreate: { name: string; code?: string; lat: number; lon: number }, existingId?: string) {
@@ -680,6 +729,8 @@ export default function PlanningStudioEditorPage() {
 
   /* ─── Cursor sulla mappa secondo tool ─── */
   const mapCursor = pickingDepotLocation ? "crosshair"
+                  : (clusterDraw && clusterDraw.mode === "draw") ? "crosshair"
+                  : (clusterDraw && clusterDraw.mode === "stops") ? "pointer"
                   : tool === "addStop" ? "crosshair"
                   : tool === "editVariant" ? "crosshair"
                   : "grab";
@@ -797,16 +848,15 @@ export default function PlanningStudioEditorPage() {
           onClick={() => setActivePanel(activePanel === "calendars" ? null : "calendars")}
         />
         <DataTabBtn
-          icon={Grip} label="Cluster" count={globalClusters.length || undefined} accent="cyan"
-          active={activePanel === "ne-clusters" || showGlobalClusters}
+          icon={Grip} label="Cluster" count={clusters.length || undefined} accent="cyan"
+          active={activePanel === "clusters"}
           onClick={() => {
-            if (activePanel === "ne-clusters") {
-              // Click sul pannello aperto: chiude pannello E spegne layer
+            if (activePanel === "clusters") {
               setActivePanel(null);
-              setShowGlobalClusters(false);
+              // Esci da eventuale modalità draw/stops in corso
+              setClusterDraw(null);
             } else {
-              setActivePanel("ne-clusters");
-              setShowGlobalClusters(true);
+              setActivePanel("clusters");
             }
           }}
         />
@@ -908,12 +958,57 @@ export default function PlanningStudioEditorPage() {
             ⚠️ VITE_MAPBOX_TOKEN non configurato
           </div>
         )}
+
+        {/* Banner istruzioni durante draw/stops cluster */}
+        {clusterDraw && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-violet-600/95 text-white px-4 py-2 rounded-lg shadow-xl text-xs font-medium flex items-center gap-3 backdrop-blur">
+            {clusterDraw.mode === "draw" ? (
+              <>
+                <span>🖊️ <b>Disegna l'area</b>: clicca i vertici. <b>Doppio click</b> per chiudere.</span>
+                <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">{clusterDraw.polygon.length} vertici</span>
+                {clusterDraw.polygon.length > 0 && (
+                  <button onClick={() => setClusterDraw({ ...clusterDraw, polygon: [] })}
+                    className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 text-[10px]">↩ Reset</button>
+                )}
+              </>
+            ) : (
+              <>
+                <span>👆 <b>Clicca le fermate</b> per aggiungerle/rimuoverle dal cluster.</span>
+                <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">{clusterDraw.pendingStopIds.size} fermate</span>
+                <button onClick={() => setClusterDraw({ ...clusterDraw, mode: "draw", polygon: [] })}
+                  className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 text-[10px]">🖊 Ridisegna area</button>
+              </>
+            )}
+            <button onClick={() => setClusterDraw(null)} title="Annulla"
+              className="ml-1 p-1 rounded hover:bg-white/20"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        )}
         <Map
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
           initialViewState={DEFAULT_VIEW}
           mapStyle="mapbox://styles/mapbox/standard"
           onClick={handleMapClick}
+          onDblClick={(e) => {
+            // Chiusura poligono in modalità draw cluster
+            if (clusterDraw && clusterDraw.mode === "draw") {
+              e.preventDefault();
+              const poly = clusterDraw.polygon;
+              if (poly.length < 3) {
+                toast.error("Servono almeno 3 vertici per chiudere l'area");
+                return;
+              }
+              // Auto-include tutte le fermate dentro il poligono
+              const inside = new Set<string>(clusterDraw.pendingStopIds);
+              for (const s of stops) {
+                if (pointInPolygon([Number(s.lon), Number(s.lat)], poly)) {
+                  inside.add(s.id);
+                }
+              }
+              setClusterDraw({ ...clusterDraw, mode: "stops", pendingStopIds: inside });
+              toast.success(`Area chiusa: ${inside.size} fermate selezionate. Clicca le fermate per modificare.`);
+            }
+          }}
           onLoad={() => setMapReady(true)}
           cursor={mapCursor}
           interactiveLayerIds={["ps-stops-circle", "ps-stops-circle-hit"]}
@@ -938,6 +1033,90 @@ export default function PlanningStudioEditorPage() {
               title="Vista 3D con edifici"
             >3D</button>
           </div>
+
+          {/* ─── Cluster draw: poligono in costruzione (modalità draw) ─── */}
+          {clusterDraw && clusterDraw.polygon.length > 0 && (
+            <>
+              {clusterDraw.polygon.length >= 2 && (
+                <Source
+                  id="cluster-draw-poly-src"
+                  type="geojson"
+                  data={{
+                    type: "Feature",
+                    properties: {},
+                    geometry: clusterDraw.polygon.length >= 3
+                      ? { type: "Polygon", coordinates: [[...clusterDraw.polygon, clusterDraw.polygon[0]]] }
+                      : { type: "LineString", coordinates: clusterDraw.polygon },
+                  } as any}
+                >
+                  <Layer
+                    id="cluster-draw-poly-fill"
+                    type="fill"
+                    filter={["==", ["geometry-type"], "Polygon"]}
+                    paint={{ "fill-color": "#a855f7", "fill-opacity": 0.18 }}
+                  />
+                  <Layer
+                    id="cluster-draw-poly-line"
+                    type="line"
+                    paint={{ "line-color": "#a855f7", "line-width": 2.5, "line-dasharray": [2, 2] }}
+                  />
+                </Source>
+              )}
+              {/* Vertici cliccati */}
+              <Source
+                id="cluster-draw-verts-src"
+                type="geojson"
+                data={{
+                  type: "FeatureCollection",
+                  features: clusterDraw.polygon.map((p, i) => ({
+                    type: "Feature", properties: { idx: i },
+                    geometry: { type: "Point", coordinates: p },
+                  })),
+                } as any}
+              >
+                <Layer
+                  id="cluster-draw-verts"
+                  type="circle"
+                  paint={{
+                    "circle-radius": 5,
+                    "circle-color": "#a855f7",
+                    "circle-stroke-color": "#ffffff",
+                    "circle-stroke-width": 2,
+                  }}
+                />
+              </Source>
+            </>
+          )}
+
+          {/* ─── Cluster draw: fermate pending (selezionate) evidenziate ─── */}
+          {clusterDraw && clusterDraw.pendingStopIds.size > 0 && (
+            <Source
+              id="cluster-draw-pending-src"
+              type="geojson"
+              data={{
+                type: "FeatureCollection",
+                features: stops
+                  .filter(s => clusterDraw.pendingStopIds.has(s.id))
+                  .map(s => ({
+                    type: "Feature",
+                    properties: { id: s.id, name: s.name },
+                    geometry: { type: "Point", coordinates: [Number(s.lon), Number(s.lat)] },
+                  })),
+              } as any}
+            >
+              <Layer
+                id="cluster-draw-pending-halo"
+                type="circle"
+                paint={{
+                  "circle-radius": 12,
+                  "circle-color": "#a855f7",
+                  "circle-opacity": 0.25,
+                  "circle-stroke-color": "#a855f7",
+                  "circle-stroke-width": 2,
+                }}
+              />
+            </Source>
+          )}
 
           {/* Cluster: cerchi (raggio reale convertito in pixel @ zoom corrente) */}
           {activePanel === "clusters" && clusters.length > 0 && (
@@ -1344,6 +1523,8 @@ export default function PlanningStudioEditorPage() {
                       catch (e: any) { toast.error("Errore", { description: e?.message }); }
                     }}
                     onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 15, duration: 600 })}
+                    clusterDraw={clusterDraw}
+                    setClusterDraw={setClusterDraw}
                   />
                 )}
                 {activePanel === "ne-clusters" && (
@@ -1965,26 +2146,39 @@ function CalendarsPanel({
 
 /* ════════════════════════════════════════════════════════════
  *  Sidebar — Cluster di cambio (interscambi)
- *  Replicato qui (versione "lite") al posto di una pagina dedicata.
+ *  Editing interattivo direttamente sulla mappa: il pannello
+ *  ospita la lista, il tasto "+" e il pannello di modifica.
+ *  Il disegno area + click fermate avviene nello stato `clusterDraw`
+ *  gestito dal parent EditorPage (vedi handleMapClick / onDblClick).
  * ════════════════════════════════════════════════════════════ */
+type ClusterDrawState = {
+  mode: "draw" | "stops";
+  clusterId: string | null;
+  name: string;
+  kind: PsClusterKind;
+  radiusM: number;
+  polygon: [number, number][];
+  pendingStopIds: Set<string>;
+};
+
 function ClustersPanel({
   projectId, stops, clusters, onChanged, onFlyTo,
+  clusterDraw, setClusterDraw,
 }: {
   projectId: string;
   stops: PsStop[];
   clusters: PsCluster[];
   onChanged: () => Promise<void>;
   onFlyTo: (lat: number, lon: number) => void;
+  clusterDraw: ClusterDrawState | null;
+  setClusterDraw: (s: ClusterDrawState | null) => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = clusters.find(c => c.id === selectedId) ?? null;
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [newKind, setNewKind] = useState<PsClusterKind>("interchange");
-  const [newRadius, setNewRadius] = useState(150);
-  const [stopFilter, setStopFilter] = useState("");
-  const [pendingStopIds, setPendingStopIds] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   // Suggest dialog state
   const [suggestOpen, setSuggestOpen] = useState(false);
@@ -2003,59 +2197,130 @@ function ClustersPanel({
     none: "#64748b",
   };
 
-  // Quando seleziono un cluster ricavo le fermate associate
-  useEffect(() => {
-    if (!selected) { setPendingStopIds(new Set()); return; }
+  // mappa stopId → fermata (per la lista nella card del cluster in modifica)
+  const stopById = useMemo(() => {
+    const m: Record<string, PsStop> = {};
+    for (const s of stops) m[s.id] = s;
+    return m;
+  }, [stops]);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return clusters;
+    return clusters.filter(c => c.name.toLowerCase().includes(q));
+  }, [clusters, filter]);
+
+  function toggleExpanded(id: string) {
+    setExpanded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function toggleHidden(id: string) {
+    setHidden(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+  function showAll() { setHidden(new Set()); }
+  function hideAll() { setHidden(new Set(clusters.map(c => c.id))); }
+
+  function startCreate() {
+    setClusterDraw({
+      mode: "draw",
+      clusterId: null,
+      name: "",
+      kind: "interchange",
+      radiusM: 150,
+      polygon: [],
+      pendingStopIds: new Set(),
+    });
+  }
+
+  function startEdit(c: PsCluster) {
+    // Carica le fermate attualmente associate al cluster
     const ids = new Set<string>();
-    for (const s of stops) if (s.clusterId === selected.id) ids.add(s.id);
-    setPendingStopIds(ids);
-  }, [selected?.id, stops]);
-
-  const filteredStops = useMemo(() => {
-    const q = stopFilter.trim().toLowerCase();
-    if (!q) return stops;
-    return stops.filter(s => s.name.toLowerCase().includes(q) || (s.code ?? "").toLowerCase().includes(q));
-  }, [stops, stopFilter]);
-
-  async function handleCreate() {
-    if (!newName.trim()) { toast.error("Nome richiesto"); return; }
-    setBusy(true);
-    try {
-      const c = await createPsCluster(projectId, { name: newName.trim(), kind: newKind, radiusM: newRadius });
-      await onChanged();
-      setSelectedId(c.id);
-      setCreating(false); setNewName(""); setNewKind("interchange"); setNewRadius(150);
-      toast.success("Cluster creato");
-    } catch (e: any) { toast.error(e?.message || "Errore"); }
-    finally { setBusy(false); }
+    for (const s of stops) if (s.clusterId === c.id) ids.add(s.id);
+    setClusterDraw({
+      mode: "stops",
+      clusterId: c.id,
+      name: c.name,
+      kind: c.kind,
+      radiusM: c.radiusM ?? 150,
+      polygon: [],
+      pendingStopIds: ids,
+    });
+    if (c.centerLat != null && c.centerLon != null) onFlyTo(Number(c.centerLat), Number(c.centerLon));
   }
 
-  async function handleSaveStops() {
-    if (!selected) return;
-    setBusy(true);
+  async function handleDelete(c: PsCluster) {
+    if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate verranno scollegate (non cancellate).`)) return;
+    setBusyId(c.id);
     try {
-      await setPsClusterStops(projectId, selected.id, Array.from(pendingStopIds));
+      await deletePsCluster(projectId, c.id);
       await onChanged();
-      toast.success("Fermate aggiornate");
+      if (clusterDraw?.clusterId === c.id) setClusterDraw(null);
+      toast.success("Cluster eliminato");
     } catch (e: any) { toast.error(e?.message || "Errore"); }
-    finally { setBusy(false); }
+    finally { setBusyId(null); }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("Eliminare questo cluster?")) return;
-    try {
-      await deletePsCluster(projectId, id);
-      await onChanged();
-      if (selectedId === id) setSelectedId(null);
-      toast.success("Eliminato");
-    } catch (e: any) { toast.error(e?.message || "Errore"); }
+  async function handleBulkDelete() {
+    if (clusters.length === 0) return;
+    if (!confirm(`Eliminare TUTTI i ${clusters.length} cluster del progetto?\n\nLe fermate verranno scollegate (non cancellate).\nNON reversibile.`)) return;
+    setBulkDeleting(true);
+    let ok = 0, ko = 0;
+    const POOL = 8;
+    const queue = [...clusters];
+    async function worker() {
+      while (queue.length) {
+        const c = queue.shift();
+        if (!c) return;
+        try { await deletePsCluster(projectId, c.id); ok++; } catch { ko++; }
+      }
+    }
+    await Promise.all(Array.from({ length: POOL }, worker));
+    setBulkDeleting(false);
+    await onChanged();
+    setClusterDraw(null);
+    if (ko === 0) toast.success(`Eliminati ${ok} cluster`);
+    else toast.warning(`Eliminati ${ok} su ${ok + ko} (${ko} errori)`);
   }
 
-  async function handleUpdateKind(id: string, kind: PsClusterKind) {
+  async function handleSaveDraw() {
+    if (!clusterDraw) return;
+    if (!clusterDraw.name.trim()) { toast.error("Nome richiesto"); return; }
+    if (clusterDraw.pendingStopIds.size === 0 && !confirm("Salvare un cluster senza fermate?")) return;
+
+    // Centroide: media delle coordinate delle fermate selezionate
+    let centerLat: number | undefined;
+    let centerLon: number | undefined;
+    const selectedStops = stops.filter(s => clusterDraw.pendingStopIds.has(s.id));
+    if (selectedStops.length > 0) {
+      centerLat = selectedStops.reduce((a, s) => a + Number(s.lat), 0) / selectedStops.length;
+      centerLon = selectedStops.reduce((a, s) => a + Number(s.lon), 0) / selectedStops.length;
+    }
+
+    setSaving(true);
     try {
-      await updatePsCluster(projectId, id, { kind });
+      let id = clusterDraw.clusterId;
+      if (id) {
+        await updatePsCluster(projectId, id, {
+          name: clusterDraw.name.trim(),
+          kind: clusterDraw.kind,
+          radiusM: clusterDraw.radiusM,
+          ...(centerLat != null ? { centerLat, centerLon } : {}),
+        });
+      } else {
+        const created = await createPsCluster(projectId, {
+          name: clusterDraw.name.trim(),
+          kind: clusterDraw.kind,
+          radiusM: clusterDraw.radiusM,
+          ...(centerLat != null ? { centerLat, centerLon } : {}),
+        });
+        id = created.id;
+      }
+      await setPsClusterStops(projectId, id!, Array.from(clusterDraw.pendingStopIds));
       await onChanged();
-    } catch (e: any) { toast.error(e?.message || "Errore"); }
+      toast.success(clusterDraw.clusterId ? "Cluster aggiornato" : "Cluster creato");
+      setClusterDraw(null);
+    } catch (e: any) {
+      toast.error(e?.message || "Errore salvataggio");
+    } finally { setSaving(false); }
   }
 
   async function handleRunSuggest() {
@@ -2086,105 +2351,253 @@ function ClustersPanel({
     setSuggestOpen(false); setSuggestions([]);
   }
 
-  function toggleStop(id: string) {
-    setPendingStopIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  }
-
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="p-2 border-b border-slate-800 flex gap-1.5">
-        <button onClick={() => setCreating(true)} className="flex-1 px-2 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs flex items-center justify-center gap-1">
-          <Plus className="w-3.5 h-3.5" /> Nuovo
-        </button>
-        <button onClick={() => { setSuggestOpen(true); setSuggestions([]); }} className="flex-1 px-2 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-xs flex items-center justify-center gap-1">
-          ✨ Suggerisci
-        </button>
-      </div>
-
-      {/* Form creazione */}
-      {creating && (
-        <div className="p-3 border-b border-slate-800 bg-slate-900 space-y-2">
-          <input autoFocus value={newName} onChange={e => setNewName(e.target.value)} placeholder="Nome cluster"
-            className="w-full px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
-          <div className="flex gap-2">
-            <select value={newKind} onChange={e => setNewKind(e.target.value as PsClusterKind)}
-              className="flex-1 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700">
-              {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-            <input type="number" min={20} max={1000} step={10} value={newRadius} onChange={e => setNewRadius(parseInt(e.target.value) || 150)}
-              className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
-          </div>
-          <div className="flex gap-2">
-            <button onClick={() => { setCreating(false); setNewName(""); }} className="flex-1 text-xs px-2 py-1.5 rounded bg-slate-800 text-slate-300">Annulla</button>
-            <button onClick={handleCreate} disabled={busy} className="flex-1 text-xs px-2 py-1.5 rounded bg-cyan-500 text-white font-medium">
-              {busy ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Crea"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Lista cluster */}
-      <div className="flex-1 overflow-auto">
-        {clusters.length === 0 && (
-          <div className="p-6 text-center text-slate-500 text-xs">
-            Nessun cluster.<br />Crea il primo o usa <em>Suggerisci</em>.
-          </div>
-        )}
-        {clusters.map(c => (
-          <button key={c.id} onClick={() => {
-              setSelectedId(c.id);
-              if (c.centerLat != null && c.centerLon != null) onFlyTo(Number(c.centerLat), Number(c.centerLon));
-            }}
-            className={`w-full text-left px-3 py-2 border-b border-slate-800 hover:bg-slate-800 transition flex items-center gap-2 ${selectedId === c.id ? "bg-slate-800" : ""}`}>
-            <div className="w-1.5 h-7 rounded" style={{ background: KIND_COLOR[c.kind] }} />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium truncate">{c.name}</div>
-              <div className="text-[10px] text-slate-500">{KIND_LABEL[c.kind]} · {c.stopCount ?? 0} fermate · r={c.radiusM}m</div>
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {/* Pannello dettaglio cluster */}
-      {selected && (
-        <div className="border-t border-slate-800 max-h-[55%] flex flex-col bg-slate-900">
-          <div className="p-2 border-b border-slate-800 flex items-center gap-2">
-            <input value={selected.name} onChange={(e) => updatePsCluster(projectId, selected.id, { name: e.target.value }).then(onChanged)}
-              className="flex-1 px-2 py-1 rounded bg-slate-800 text-xs border border-slate-700" />
-            <button onClick={() => handleDelete(selected.id)} className="p-1 rounded text-rose-400 hover:bg-rose-500/10">
-              <Trash2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-          <div className="px-2 py-1.5 border-b border-slate-800 flex gap-1">
-            {(["interchange", "none"] as PsClusterKind[]).map(k => (
-              <button key={k} onClick={() => handleUpdateKind(selected.id, k)}
-                className={`flex-1 px-2 py-1 rounded text-[10px] font-medium border ${selected.kind === k ? "bg-cyan-500/20 border-cyan-500 text-cyan-200" : "bg-slate-800 border-slate-700 text-slate-400"}`}>
-                {KIND_LABEL[k]}
+      {/* ─── PANNELLO EDIT (creazione o modifica) ─── */}
+      {clusterDraw ? (
+        <div className="flex-1 flex flex-col bg-slate-900 overflow-hidden">
+          <div className="p-3 border-b border-violet-500/30 bg-violet-500/5 shrink-0">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] uppercase tracking-wider text-violet-300 font-semibold">
+                {clusterDraw.clusterId ? "Modifica cluster" : "Nuovo cluster"}
+              </span>
+              <button onClick={() => setClusterDraw(null)} className="ml-auto p-1 rounded hover:bg-slate-800 text-slate-400">
+                <X className="w-3.5 h-3.5" />
               </button>
-            ))}
-          </div>
-          <div className="p-2 border-b border-slate-800 flex items-center gap-2">
-            <div className="relative flex-1">
-              <Search className="w-3 h-3 absolute left-2 top-1.5 text-slate-500" />
-              <input value={stopFilter} onChange={e => setStopFilter(e.target.value)} placeholder="Cerca fermata…"
-                className="w-full pl-6 pr-2 py-1 rounded bg-slate-800 text-[11px] border border-slate-700" />
             </div>
-            <button onClick={handleSaveStops} disabled={busy}
-              className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] flex items-center gap-1">
-              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} {pendingStopIds.size}
+            <input
+              autoFocus={!clusterDraw.clusterId}
+              value={clusterDraw.name}
+              onChange={e => setClusterDraw({ ...clusterDraw, name: e.target.value })}
+              placeholder="Nome cluster"
+              className="w-full px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700 text-slate-100 mb-2"
+            />
+            <div className="flex gap-2 mb-2">
+              <select
+                value={clusterDraw.kind}
+                onChange={e => setClusterDraw({ ...clusterDraw, kind: e.target.value as PsClusterKind })}
+                className="flex-1 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
+              >
+                {Object.entries(KIND_LABEL).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <input
+                type="number" min={20} max={2000} step={10}
+                value={clusterDraw.radiusM}
+                onChange={e => setClusterDraw({ ...clusterDraw, radiusM: parseInt(e.target.value) || 150 })}
+                title="Raggio (m)"
+                className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
+              />
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setClusterDraw({ ...clusterDraw, mode: "draw", polygon: [] })}
+                className={`flex-1 px-2 py-1 rounded text-[11px] font-medium border inline-flex items-center justify-center gap-1 ${
+                  clusterDraw.mode === "draw"
+                    ? "bg-violet-500 border-violet-400 text-white"
+                    : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+                }`}
+                title="Disegna l'area sulla mappa"
+              >
+                🖊 Disegna area
+              </button>
+              <button
+                onClick={() => setClusterDraw({ ...clusterDraw, mode: "stops" })}
+                className={`flex-1 px-2 py-1 rounded text-[11px] font-medium border inline-flex items-center justify-center gap-1 ${
+                  clusterDraw.mode === "stops"
+                    ? "bg-violet-500 border-violet-400 text-white"
+                    : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+                }`}
+                title="Clicca le fermate sulla mappa"
+              >
+                <MapPin className="w-3 h-3" /> Tocca fermate
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-1.5 italic">
+              {clusterDraw.mode === "draw"
+                ? "Clicca i vertici sulla mappa, doppio click per chiudere → le fermate dentro vengono incluse."
+                : "Clicca una fermata sulla mappa per aggiungerla/rimuoverla dal cluster."}
+            </p>
+          </div>
+
+          {/* Lista fermate selezionate */}
+          <div className="flex-1 overflow-auto">
+            <div className="px-3 py-2 sticky top-0 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-[11px]">
+              <span className="text-slate-400">Fermate nel cluster</span>
+              <span className="text-violet-300 font-semibold">{clusterDraw.pendingStopIds.size}</span>
+            </div>
+            {clusterDraw.pendingStopIds.size === 0 ? (
+              <p className="text-[11px] text-slate-500 italic px-3 py-3 text-center">
+                Nessuna fermata selezionata.<br />Disegna un'area o tocca le fermate sulla mappa.
+              </p>
+            ) : (
+              Array.from(clusterDraw.pendingStopIds).map(sid => {
+                const s = stopById[sid];
+                if (!s) return null;
+                return (
+                  <div key={sid} className="flex items-center gap-1.5 px-3 py-1 text-[11px] hover:bg-slate-800/60 group">
+                    <MapPin className="w-3 h-3 text-violet-400 shrink-0" />
+                    <button
+                      onClick={() => onFlyTo(Number(s.lat), Number(s.lon))}
+                      className="flex-1 truncate text-left text-slate-200 hover:text-violet-300"
+                      title="Centra sulla mappa"
+                    >
+                      {s.name}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const next = new Set(clusterDraw.pendingStopIds);
+                        next.delete(sid);
+                        setClusterDraw({ ...clusterDraw, pendingStopIds: next });
+                      }}
+                      title="Rimuovi"
+                      className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-rose-400 hover:bg-rose-500/10"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Footer azioni */}
+          <div className="p-2 border-t border-slate-800 flex gap-2 shrink-0">
+            <button
+              onClick={() => setClusterDraw(null)}
+              disabled={saving}
+              className="flex-1 px-2 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs"
+            >
+              Annulla
+            </button>
+            <button
+              onClick={handleSaveDraw}
+              disabled={saving || !clusterDraw.name.trim()}
+              className="flex-1 px-2 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+              Salva
             </button>
           </div>
-          <div className="flex-1 overflow-auto">
-            {filteredStops.map(s => (
-              <label key={s.id} className={`flex items-center gap-2 px-3 py-1 text-[11px] hover:bg-slate-800 cursor-pointer ${pendingStopIds.has(s.id) ? "bg-cyan-500/10" : ""}`}>
-                <input type="checkbox" checked={pendingStopIds.has(s.id)} onChange={() => toggleStop(s.id)} className="accent-cyan-500" />
-                <MapPin className="w-3 h-3 text-slate-500" />
-                <span className="flex-1 truncate">{s.name}</span>
-              </label>
-            ))}
-          </div>
         </div>
+      ) : (
+        <>
+          {/* ─── HEADER + LISTA ─── */}
+          <div className="p-2 border-b border-slate-800 space-y-2 shrink-0">
+            <div className="flex gap-1">
+              <button
+                onClick={startCreate}
+                className="flex-1 px-2 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium inline-flex items-center justify-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Nuovo cluster
+              </button>
+              <button
+                onClick={() => { setSuggestOpen(true); setSuggestions([]); }}
+                title="Suggerisci automaticamente"
+                className="px-2 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-xs inline-flex items-center justify-center gap-1"
+              >
+                ✨
+              </button>
+              {clusters.length > 0 && (
+                <button
+                  onClick={handleBulkDelete}
+                  disabled={bulkDeleting}
+                  title="Elimina tutti i cluster"
+                  className="px-2 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white text-xs inline-flex items-center justify-center disabled:opacity-50"
+                >
+                  {bulkDeleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                </button>
+              )}
+            </div>
+            {clusters.length > 0 && (
+              <>
+                <div className="relative">
+                  <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Cerca cluster…"
+                    className="w-full pl-6 pr-2 py-1 rounded bg-slate-800 text-[11px] border border-slate-700 text-slate-100" />
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={showAll} className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center justify-center gap-1">
+                    <Eye className="w-3 h-3" /> Mostra tutti
+                  </button>
+                  <button onClick={hideAll} className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center justify-center gap-1">
+                    <EyeOff className="w-3 h-3" /> Nascondi tutti
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-auto p-2 space-y-1.5">
+            {clusters.length === 0 && (
+              <div className="p-6 text-center text-slate-500 text-xs">
+                Nessun cluster.<br />Crea il primo con <em>Nuovo cluster</em> o usa <em>✨</em>.
+              </div>
+            )}
+            {clusters.length > 0 && filtered.length === 0 && (
+              <p className="text-[11px] text-slate-500 text-center py-4">Nessun risultato.</p>
+            )}
+            {filtered.map(c => {
+              const isOpen = expanded.has(c.id);
+              const isHidden = hidden.has(c.id);
+              const isBusy = busyId === c.id;
+              const clusterStops = stops.filter(s => s.clusterId === c.id);
+              return (
+                <div key={c.id}
+                  className={`rounded-lg border ${isHidden ? "border-slate-800 opacity-50" : "border-slate-800 hover:border-cyan-700"} bg-slate-900/60 transition`}>
+                  <div className="flex items-center gap-1.5 p-2">
+                    <button onClick={() => toggleExpanded(c.id)} className="p-0.5 rounded hover:bg-slate-800 text-slate-400">
+                      {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                    </button>
+                    <div className="w-1.5 h-7 rounded shrink-0" style={{ background: KIND_COLOR[c.kind] }} />
+                    <button
+                      onClick={() => c.centerLat != null && c.centerLon != null && onFlyTo(Number(c.centerLat), Number(c.centerLon))}
+                      className="flex-1 min-w-0 text-left hover:text-cyan-300"
+                      title="Centra sulla mappa"
+                    >
+                      <div className="text-xs font-medium truncate text-slate-200">{c.name}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {KIND_LABEL[c.kind]} · {c.stopCount ?? clusterStops.length} fermate · r={c.radiusM}m
+                      </div>
+                    </button>
+                    <div className="flex gap-0.5 shrink-0">
+                      <button onClick={() => toggleHidden(c.id)} title={isHidden ? "Mostra" : "Nascondi"}
+                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-300">
+                        {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                      <button onClick={() => startEdit(c)} title="Modifica completa"
+                        className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-300">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => handleDelete(c)} disabled={isBusy} title="Elimina"
+                        className="p-1 rounded hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 disabled:opacity-50">
+                        {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                  {isOpen && (
+                    <div className="border-t border-slate-800 bg-slate-950/40 max-h-48 overflow-auto">
+                      {clusterStops.length === 0 ? (
+                        <p className="text-[10px] text-slate-500 italic px-3 py-2">Nessuna fermata associata</p>
+                      ) : (
+                        clusterStops.map(s => (
+                          <button
+                            key={s.id}
+                            onClick={() => onFlyTo(Number(s.lat), Number(s.lon))}
+                            className="w-full flex items-center gap-1.5 px-3 py-1 text-[10px] hover:bg-slate-800/60 text-left"
+                          >
+                            <MapPin className="w-2.5 h-2.5 text-slate-500 shrink-0" />
+                            <span className="flex-1 truncate text-slate-300">{s.name}</span>
+                            {s.code && <span className="text-slate-600 text-[9px] shrink-0">#{s.code}</span>}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       {/* Modal Suggerisci */}
