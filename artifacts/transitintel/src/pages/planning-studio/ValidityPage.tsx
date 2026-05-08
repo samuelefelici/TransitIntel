@@ -390,8 +390,7 @@ export default function PlanningStudioValidityPage() {
   /* ─── Day-Type Editor side panel ─── */
   const [dtEditorOpen, setDtEditorOpen] = useState(false);
 
-  /* ─── Bulk + Auto-import dialogs ─── */
-  const [bulkOpen, setBulkOpen] = useState(false);
+  /* ─── Auto-import dialogs ─── */
   const [autoImportOpen, setAutoImportOpen] = useState(false);
   const [genUnitOpen, setGenUnitOpen] = useState(false);
   /* ─── Calcola Unità (validity_id-based) ─── */
@@ -567,6 +566,18 @@ export default function PlanningStudioValidityPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  /* ─── Sincronizza validità da GTFS calendars ─── */
+  const syncFromGtfsMut = useMutation({
+    mutationFn: () => autoImportPsValidityFromCalendars(projectId, { dryRun: false }),
+    onSuccess: (r) => {
+      toast.success(
+        `Sincronizzato da GTFS: ${r.summary.calendars} calendari, ${r.summary.validityUpserts} bollini, ${r.summary.exceptionInserts} eccezioni`,
+      );
+      invalidateMatrix();
+    },
+    onError: (e: Error) => toast.error(`Sincronizzazione fallita: ${e.message}`),
+  });
+
   /* ─── Applica day-type a tutte le date selezionate ─── */
   const applyDayTypeToSelection = useCallback(
     async (dayTypeId: string) => {
@@ -699,21 +710,25 @@ export default function PlanningStudioValidityPage() {
             </div>
           </div>
 
-          {/* STEP 3 — Modifica massiva */}
+          {/* STEP 3 — Sincronizza da GTFS */}
           <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 min-w-fit">
             <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-800">
               <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-600 text-white text-[10px]">3</span>
-              Modifica
+              Sincronizza
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setBulkOpen(true)}
-                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5"
-                title="Operazioni bulk: applica un day-type a molte celle in un colpo (per linea, per data, ecc.)"
+                onClick={() => syncFromGtfsMut.mutate()}
+                disabled={syncFromGtfsMut.isPending}
+                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5 disabled:opacity-50"
+                title="Accendi automaticamente i bollini di validità leggendo i calendari del file GTFS già importato (lun-ven → Feriale, sab → Sabato, dom → Festivo, + eccezioni)"
               >
-                <Layers className="h-4 w-4" /> Bulk
+                {syncFromGtfsMut.isPending
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Wand2 className="h-4 w-4" />}
+                Sincronizza GTFS
               </button>
-              <span className="text-[11px] text-slate-700 px-2 font-medium">
+              <span className="text-[11px] text-slate-700 px-2 font-medium max-w-[260px]">
                 Tip: <kbd className="px-1 bg-white border rounded text-slate-900">SHIFT</kbd>+Click sui pallini per selezionare un range
               </span>
             </div>
@@ -945,6 +960,7 @@ export default function PlanningStudioValidityPage() {
                         selectedDates={selectedDates}
                         selectedCells={selectedCells}
                         highlighted={isHighlighted}
+                        categoryByDate={categoryByDate}
                       />
                     </div>
                   );
@@ -996,20 +1012,6 @@ export default function PlanningStudioValidityPage() {
       )}
 
       {/* Dialogs (PR3) */}
-      {bulkOpen && (
-        <BulkDialog
-          projectId={projectId}
-          range={{ from, to }}
-          dayTypes={dayTypesQ.data ?? []}
-          periods={periodsQ.data ?? []}
-          trips={matrixQ.data?.trips ?? []}
-          onClose={() => setBulkOpen(false)}
-          onDone={() => {
-            invalidateMatrix();
-            setBulkOpen(false);
-          }}
-        />
-      )}
       {autoImportOpen && (
         <AutoImportDialog
           projectId={projectId}
@@ -1115,9 +1117,10 @@ interface CellsRowProps {
   selectedDates: Set<string>;
   selectedCells: Set<string>;
   highlighted?: boolean;
+  categoryByDate?: Map<string, PsValidityCategory>;
 }
 
-function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, highlighted }: CellsRowProps) {
+function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, highlighted, categoryByDate }: CellsRowProps) {
   return (
     <>
       {dates.map((d) => {
@@ -1132,6 +1135,8 @@ function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, 
         })();
         const isSelectedCol = selectedDates.has(d);
         const isCellSelected = selectedCells.has(`${tripId}::${d}`);
+        const cat = categoryByDate?.get(d);
+        const catBg = cat?.color ? `${cat.color}22` : undefined; // ~13% opacity overlay
         return (
           <div
             key={d}
@@ -1143,13 +1148,14 @@ function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, 
               width: COL_W,
               minWidth: COL_W,
               height: ROW_H,
+              backgroundColor: !isCellSelected && !isSelectedCol && !highlighted ? catBg : undefined,
               borderRight: isFirstOfMonth
                 ? "2px solid #94a3b8"
                 : isMonday
                 ? "1px solid #cbd5e1"
                 : "1px solid #f1f5f9",
             }}
-            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}\nClick: toggle · Shift+Click: range · Cmd/Ctrl+Click: aggiungi alla selezione`}
+            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}${cat ? `\nCategoria: ${cat.name}` : ""}\nClick: toggle · Shift+Click: range · Cmd/Ctrl+Click: aggiungi alla selezione`}
           >
             <div
               className="rounded-md transition-transform hover:scale-110"
@@ -2703,66 +2709,68 @@ function CategoryPeriodsDialog(props: {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  /* ─── Selezione celle del calendario (click toggle, SHIFT+Click range) ─── */
-  const [selectedDays, setSelectedDays] = useState<Set<string>>(() => new Set());
+  /* ─── Paint immediato ───
+   * - Click semplice:
+   *     · paintMode='erase' → rimuove la categoria (se presente)
+   *     · paintMode='paint' & cella ha la stessa categoria attiva → toggle off (rimuove)
+   *     · paintMode='paint' & cella vuota o diversa → set/aggiorna alla categoria attiva
+   * - SHIFT+Click su iso2 con anchor=iso1: applica la stessa azione a tutto il range
+   *   (forza set della categoria attiva o erase, senza toggle).
+   */
   const [anchorISO, setAnchorISO] = useState<string | null>(null);
 
   const handleDayClick = (iso: string, e: ReactMouseEvent) => {
-    // SHIFT+Click: range dall'ancora a iso (entrambi inclusi)
+    // SHIFT+Click → range
     if (e.shiftKey && anchorISO) {
       const a = anchorISO < iso ? anchorISO : iso;
       const b = anchorISO < iso ? iso : anchorISO;
-      // genera tutte le date YYYY-MM-DD tra a e b (inclusi)
       const out: string[] = [];
       const start = new Date(a + "T00:00:00");
       const end = new Date(b + "T00:00:00");
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
         out.push(d.toISOString().slice(0, 10));
       }
-      setSelectedDays((prev) => {
-        const next = new Set(prev);
-        for (const d of out) next.add(d);
-        return next;
-      });
+      const target =
+        paintMode === "erase" ? null : (activeCategoryId ?? null);
+      if (target === undefined) return;
+      if (paintMode === "paint" && !activeCategoryId) {
+        toast.error("Seleziona prima una categoria a sinistra");
+        return;
+      }
+      setMut.mutate(
+        { dates: out, categoryId: target },
+        {
+          onSuccess: () => {
+            const verb = target === null ? "rimossa da" : "applicata a";
+            toast.success(`Categoria ${verb} ${out.length} giorni`);
+          },
+        },
+      );
       setAnchorISO(iso);
       return;
     }
-    // Click semplice: toggle singolo
-    setSelectedDays((prev) => {
-      const next = new Set(prev);
-      if (next.has(iso)) next.delete(iso);
-      else next.add(iso);
-      return next;
-    });
+
+    // Click singolo
     setAnchorISO(iso);
-  };
+    const currentCatId = dateToCatId.get(iso);
 
-  const clearSelection = () => {
-    setSelectedDays(new Set());
-    setAnchorISO(null);
-  };
-
-  const applySelection = () => {
-    if (selectedDays.size === 0) {
-      toast.error("Seleziona prima dei giorni cliccando sul calendario");
-      return;
-    }
     if (paintMode === "erase") {
-      setMut.mutate(
-        { dates: Array.from(selectedDays), categoryId: null },
-        { onSuccess: () => { clearSelection(); toast.success(`Categoria rimossa da ${selectedDays.size} giorni`); } },
-      );
+      if (!currentCatId) return; // nulla da fare
+      setMut.mutate({ dates: [iso], categoryId: null });
       return;
     }
+    // paintMode === "paint"
     if (!activeCategoryId) {
       toast.error("Seleziona prima una categoria a sinistra");
       return;
     }
-    const n = selectedDays.size;
-    setMut.mutate(
-      { dates: Array.from(selectedDays), categoryId: activeCategoryId },
-      { onSuccess: () => { clearSelection(); toast.success(`Categoria applicata a ${n} giorni`); } },
-    );
+    if (currentCatId === activeCategoryId) {
+      // Stessa categoria → toggle off
+      setMut.mutate({ dates: [iso], categoryId: null });
+    } else {
+      // Vuota o diversa → applica/aggiorna
+      setMut.mutate({ dates: [iso], categoryId: activeCategoryId });
+    }
   };
 
   // Costruisci la griglia 7 colonne (Lun-Dom)
@@ -2770,12 +2778,16 @@ function CategoryPeriodsDialog(props: {
     const d = new Date(year, month, 1).getDay(); // 0=Dom
     return (d + 6) % 7; // 0=Lun .. 6=Dom
   }, [year, month]);
-  const cells: Array<{ iso: string; day: number; weekend: boolean } | null> = [];
+  const todayISOStr = useMemo(() => {
+    const t = new Date();
+    return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  }, []);
+  const cells: Array<{ iso: string; day: number; weekend: boolean; isToday: boolean } | null> = [];
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= lastDay; d++) {
     const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
     const dow = new Date(year, month, d).getDay();
-    cells.push({ iso, day: d, weekend: dow === 0 || dow === 6 });
+    cells.push({ iso, day: d, weekend: dow === 0 || dow === 6, isToday: iso === todayISOStr });
   }
   while (cells.length % 7 !== 0) cells.push(null);
 
@@ -2795,35 +2807,52 @@ function CategoryPeriodsDialog(props: {
     setMonth(t.getMonth());
   };
 
+  const activeCat = activeCategoryId ? catById.get(activeCategoryId) : undefined;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b">
-          <div className="flex items-center gap-2">
-            <CalendarIcon className="h-5 w-5 text-fuchsia-600" />
+        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-fuchsia-50 to-violet-50">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-fuchsia-500 to-violet-600 flex items-center justify-center shadow-md">
+              <CalendarIcon className="h-5 w-5 text-white" />
+            </div>
             <div>
-              <div className="font-semibold text-slate-900">Categorie Periodi</div>
+              <div className="font-bold text-slate-900 text-lg">Categorie Periodi</div>
               <div className="text-xs text-slate-600">
-                Dipingi i giorni del calendario con una categoria (Scuole Aperte, Festività, …). Una sola categoria per giorno.
+                Attiva una categoria a sinistra, poi clicca i giorni per dipingerli. Riclicca per togliere.
               </div>
             </div>
           </div>
-          <button onClick={props.onClose} className="p-1.5 hover:bg-slate-100 rounded">
-            <X className="h-4 w-4" />
+          <button onClick={props.onClose} className="p-2 hover:bg-white/70 rounded-lg transition-colors">
+            <X className="h-5 w-5 text-slate-700" />
           </button>
         </div>
 
         <div className="flex-1 overflow-hidden flex">
           {/* SIDEBAR sinistra: lista categorie */}
-          <div className="w-64 border-r bg-slate-50 flex flex-col">
-            <div className="px-3 py-2 border-b">
-              <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Categorie</div>
+          <div className="w-72 border-r bg-slate-50 flex flex-col">
+            <div className="px-4 py-3 border-b bg-white">
+              <div className="text-xs font-bold uppercase tracking-wide text-slate-700 mb-1">Pennello attivo</div>
+              {paintMode === "paint" && activeCat ? (
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="inline-block h-5 w-5 rounded shadow-sm" style={{ backgroundColor: activeCat.color }} />
+                  <span className="text-sm font-semibold text-slate-900 truncate">{activeCat.name}</span>
+                </div>
+              ) : paintMode === "erase" ? (
+                <div className="flex items-center gap-2 mt-1 text-rose-700">
+                  <Eraser className="h-4 w-4" />
+                  <span className="text-sm font-semibold">Gomma</span>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500 italic mt-1">Nessuna categoria selezionata</div>
+              )}
             </div>
-            <div className="flex-1 overflow-auto p-2 space-y-1">
+            <div className="flex-1 overflow-auto p-3 space-y-1.5">
               {props.categories.length === 0 && (
-                <div className="text-sm text-slate-600 px-2 py-3">
-                  Nessuna categoria. Creane una con il bottone qui sotto.
+                <div className="text-sm text-slate-600 px-2 py-3 text-center">
+                  Nessuna categoria.<br />Creane una qui sotto.
                 </div>
               )}
               {props.categories.map((c) => {
@@ -2832,35 +2861,35 @@ function CategoryPeriodsDialog(props: {
                   <button
                     key={c.id}
                     onClick={() => { setActiveCategoryId(c.id); setPaintMode("paint"); }}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded border text-sm font-medium ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-sm font-medium transition-all ${
                       isActive
-                        ? "bg-white border-fuchsia-400 ring-2 ring-fuchsia-200 text-slate-900"
-                        : "bg-white border-slate-200 hover:bg-slate-100 text-slate-800"
+                        ? "bg-white border-fuchsia-500 ring-2 ring-fuchsia-200 text-slate-900 shadow-sm"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm text-slate-800"
                     }`}
                   >
-                    <span className="inline-block h-4 w-4 rounded" style={{ backgroundColor: c.color || "#94a3b8" }} />
+                    <span className="inline-block h-5 w-5 rounded shadow-sm shrink-0" style={{ backgroundColor: c.color || "#94a3b8" }} />
                     <span className="truncate flex-1 text-left">{c.name}</span>
-                    {isActive && <span className="text-[10px] text-fuchsia-700 font-bold">PENNELLO</span>}
+                    {isActive && <Check className="h-4 w-4 text-fuchsia-600 shrink-0" />}
                   </button>
                 );
               })}
               <button
                 onClick={() => setPaintMode("erase")}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded border text-sm font-medium mt-2 ${
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-sm font-medium mt-3 transition-all ${
                   paintMode === "erase"
-                    ? "bg-rose-100 border-rose-400 ring-2 ring-rose-200 text-rose-900"
-                    : "bg-white border-slate-200 hover:bg-rose-50 text-rose-800"
+                    ? "bg-rose-50 border-rose-500 ring-2 ring-rose-200 text-rose-900 shadow-sm"
+                    : "bg-white border-slate-200 hover:border-rose-300 hover:bg-rose-50/50 text-rose-700"
                 }`}
               >
-                <Eraser className="h-4 w-4" />
-                <span className="truncate flex-1 text-left">Cancella</span>
-                {paintMode === "erase" && <span className="text-[10px] font-bold">ATTIVO</span>}
+                <Eraser className="h-4 w-4 shrink-0" />
+                <span className="truncate flex-1 text-left">Gomma (cancella)</span>
+                {paintMode === "erase" && <Check className="h-4 w-4 text-rose-600 shrink-0" />}
               </button>
             </div>
-            <div className="border-t p-2">
+            <div className="border-t p-3 bg-white">
               <button
                 onClick={props.openCategoryEditor}
-                className="w-full px-2 py-1.5 text-xs rounded border bg-white hover:bg-slate-100 text-slate-800 font-medium flex items-center gap-1.5 justify-center"
+                className="w-full px-3 py-2 text-xs rounded-lg border bg-white hover:bg-slate-50 text-slate-800 font-semibold flex items-center gap-1.5 justify-center shadow-sm"
               >
                 <Settings2 className="h-3.5 w-3.5" />
                 Gestisci categorie…
@@ -2869,83 +2898,79 @@ function CategoryPeriodsDialog(props: {
           </div>
 
           {/* CALENDARIO mensile */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-2 border-b bg-white">
+          <div className="flex-1 flex flex-col overflow-hidden bg-white">
+            <div className="flex items-center justify-between px-5 py-3 border-b bg-white">
               <div className="flex items-center gap-2">
-                <button onClick={goPrev} className="px-2 py-1 text-sm rounded border bg-white hover:bg-slate-100">‹</button>
-                <button onClick={goToday} className="px-2 py-1 text-xs rounded border bg-white hover:bg-slate-100 text-slate-700">Oggi</button>
-                <button onClick={goNext} className="px-2 py-1 text-sm rounded border bg-white hover:bg-slate-100">›</button>
-                <div className="ml-3 text-base font-semibold text-slate-900 capitalize">{monthName}</div>
+                <button onClick={goPrev} className="px-3 py-1.5 text-sm rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-medium">‹</button>
+                <button onClick={goToday} className="px-3 py-1.5 text-xs rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-semibold">Oggi</button>
+                <button onClick={goNext} className="px-3 py-1.5 text-sm rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-medium">›</button>
+                <div className="ml-3 text-lg font-bold text-slate-900 capitalize">{monthName}</div>
               </div>
-              <div className="text-xs text-slate-700 flex items-center gap-3">
+              <div className="text-xs text-slate-600 flex items-center gap-3">
                 <span>
-                  Click = seleziona/deseleziona · <kbd className="px-1 bg-slate-100 border rounded text-slate-900">SHIFT</kbd>+Click = range
+                  Click = applica/togli · <kbd className="px-1.5 py-0.5 bg-slate-100 border rounded text-slate-900 text-[10px] font-mono">SHIFT</kbd>+Click = range
                 </span>
-                {selectedDays.size > 0 && (
-                  <>
-                    <span className="font-bold text-blue-700">{selectedDays.size} sel.</span>
-                    {paintMode === "paint" && activeCategoryId && (
-                      <button
-                        onClick={applySelection}
-                        disabled={setMut.isPending}
-                        className="px-2 py-1 text-xs rounded font-semibold text-white shadow disabled:opacity-50"
-                        style={{ backgroundColor: catById.get(activeCategoryId)?.color }}
-                      >
-                        Applica "{catById.get(activeCategoryId)?.name}"
-                      </button>
-                    )}
-                    {paintMode === "erase" && (
-                      <button
-                        onClick={applySelection}
-                        disabled={setMut.isPending}
-                        className="px-2 py-1 text-xs rounded font-semibold text-white bg-rose-600 hover:bg-rose-700 shadow disabled:opacity-50"
-                      >
-                        Cancella categoria da {selectedDays.size} giorni
-                      </button>
-                    )}
-                    <button
-                      onClick={clearSelection}
-                      className="px-2 py-1 text-xs rounded border bg-white hover:bg-slate-100 text-slate-700"
-                    >
-                      Pulisci
-                    </button>
-                  </>
+                {setMut.isPending && (
+                  <span className="text-xs text-fuchsia-700 font-semibold flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" /> salvo…
+                  </span>
                 )}
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex-1 overflow-auto p-5 bg-gradient-to-b from-slate-50/50 to-white">
               {/* Intestazione giorni della settimana */}
-              <div className="grid grid-cols-7 gap-1 mb-1">
+              <div className="grid grid-cols-7 gap-2 mb-2">
                 {["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"].map((g, i) => (
-                  <div key={g} className={`text-center text-[11px] font-bold uppercase tracking-wide py-1 ${i >= 5 ? "text-rose-600" : "text-slate-700"}`}>
+                  <div key={g} className={`text-center text-[11px] font-bold uppercase tracking-wider py-1.5 ${i >= 5 ? "text-rose-600" : "text-slate-600"}`}>
                     {g}
                   </div>
                 ))}
               </div>
-              <div className="grid grid-cols-7 gap-1">
+              <div className="grid grid-cols-7 gap-2">
                 {cells.map((c, idx) => {
-                  if (!c) return <div key={`e-${idx}`} className="h-20 bg-transparent" />;
+                  if (!c) return <div key={`e-${idx}`} className="h-24 bg-transparent" />;
                   const catId = dateToCatId.get(c.iso);
                   const cat = catId ? catById.get(catId) : undefined;
-                  const bg = cat?.color ? `${cat.color}40` : undefined; // 25% opacity
+                  const bg = cat?.color ? `${cat.color}33` : undefined; // ~20% opacity
                   const ringColor = cat?.color;
-                  const isSel = selectedDays.has(c.iso);
+                  const wouldRemove =
+                    paintMode === "paint" &&
+                    cat && activeCategoryId === cat.id;
                   return (
                     <button
                       key={c.iso}
                       onClick={(e) => handleDayClick(c.iso, e)}
                       disabled={setMut.isPending}
-                      className={`h-20 rounded border text-left p-1.5 transition-all hover:shadow-md ${
-                        c.weekend ? "bg-rose-50/30" : "bg-white"
-                      } ${cat ? "border-2" : "border-slate-200"} ${isSel ? "ring-2 ring-blue-500 ring-offset-1" : ""} disabled:opacity-50`}
+                      className={`group relative h-24 rounded-xl border text-left p-2 transition-all hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 ${
+                        c.weekend && !cat ? "bg-rose-50/40" : !cat ? "bg-white" : ""
+                      } ${cat ? "border-2 shadow-sm" : "border-slate-200"} ${
+                        c.isToday ? "ring-2 ring-blue-400 ring-offset-1" : ""
+                      } disabled:opacity-50 disabled:cursor-wait`}
                       style={cat ? { backgroundColor: bg, borderColor: ringColor } : undefined}
-                      title={cat ? `${c.iso} · ${cat.name}` : `${c.iso} · nessuna categoria`}
+                      title={cat ? `${c.iso} · ${cat.name}${wouldRemove ? "\n(click per togliere)" : ""}` : `${c.iso} · nessuna categoria`}
                     >
-                      <div className={`text-sm font-bold ${c.weekend ? "text-rose-700" : "text-slate-900"}`}>{c.day}</div>
+                      <div className="flex items-start justify-between">
+                        <span className={`text-base font-bold leading-none ${
+                          c.isToday ? "text-blue-700" :
+                          c.weekend ? "text-rose-700" : "text-slate-900"
+                        }`}>{c.day}</span>
+                        {c.isToday && (
+                          <span className="text-[9px] font-bold text-blue-700 bg-blue-100 rounded px-1 py-0.5 leading-none">OGGI</span>
+                        )}
+                      </div>
                       {cat && (
-                        <div className="mt-1 text-[10px] font-semibold truncate" style={{ color: cat.color }}>
-                          {cat.name}
+                        <div className="mt-2 flex items-center gap-1">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: cat.color }}
+                          />
+                          <span
+                            className="text-[10px] font-semibold truncate"
+                            style={{ color: cat.color }}
+                          >
+                            {cat.name}
+                          </span>
                         </div>
                       )}
                     </button>
@@ -2955,22 +2980,24 @@ function CategoryPeriodsDialog(props: {
             </div>
 
             {/* Legenda */}
-            <div className="border-t px-4 py-2 bg-slate-50 flex items-center gap-3 flex-wrap">
-              <span className="text-xs font-semibold text-slate-700">Legenda:</span>
-              {props.categories.map((c) => (
-                <span key={c.id} className="inline-flex items-center gap-1.5 text-xs text-slate-800">
-                  <span className="inline-block h-3 w-3 rounded border" style={{ backgroundColor: c.color, borderColor: c.color }} />
-                  {c.name}
-                </span>
-              ))}
-            </div>
+            {props.categories.length > 0 && (
+              <div className="border-t px-5 py-2.5 bg-slate-50/80 flex items-center gap-4 flex-wrap">
+                <span className="text-xs font-bold uppercase tracking-wide text-slate-600">Legenda:</span>
+                {props.categories.map((c) => (
+                  <span key={c.id} className="inline-flex items-center gap-1.5 text-xs text-slate-800 font-medium">
+                    <span className="inline-block h-3 w-3 rounded shadow-sm" style={{ backgroundColor: c.color }} />
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
+        <div className="border-t px-6 py-3 flex justify-end gap-2 bg-slate-50">
           <button
             onClick={props.onClose}
-            className="px-3 py-1.5 text-sm rounded bg-slate-800 text-white hover:bg-slate-900 font-medium"
+            className="px-4 py-2 text-sm rounded-lg bg-slate-800 text-white hover:bg-slate-900 font-semibold shadow-sm"
           >
             Chiudi
           </button>
