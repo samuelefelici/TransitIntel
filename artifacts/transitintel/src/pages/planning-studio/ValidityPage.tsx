@@ -396,9 +396,9 @@ export default function PlanningStudioValidityPage() {
   const [genUnitOpen, setGenUnitOpen] = useState(false);
   /* ─── Calcola Unità (validity_id-based) ─── */
   const [computeUnitsOpen, setComputeUnitsOpen] = useState(false);
-  /* ─── Categorie validità (sidebar tab + editor) ─── */
-  const [sidebarTab, setSidebarTab] = useState<"day-types" | "categories">("day-types");
+  /* ─── Categorie validità: editor globale + dialog "Categorie Periodi" (calendario dipinto) ─── */
   const [catEditorOpen, setCatEditorOpen] = useState(false);
+  const [categoryPeriodsOpen, setCategoryPeriodsOpen] = useState(false);
   const [, setLocation] = useLocation();
 
   /* ─── Dropdown override day-type su data ─── */
@@ -495,11 +495,12 @@ export default function PlanningStudioValidityPage() {
 
   const handleCellSelect = useCallback(
     (tripId: string, date: string, e: ReactMouseEvent) => {
-      // SHIFT+Click: range 2D
-      if (e.shiftKey && lastCellAnchor) {
-        const tIdxA = tripIdsInOrder.indexOf(lastCellAnchor.tripId);
+      // SHIFT+Click: range 2D dal precedente anchor (se manca, usa la cella stessa)
+      if (e.shiftKey) {
+        const anchor = lastCellAnchor ?? { tripId, date };
+        const tIdxA = tripIdsInOrder.indexOf(anchor.tripId);
         const tIdxB = tripIdsInOrder.indexOf(tripId);
-        const dIdxA = dates.indexOf(lastCellAnchor.date);
+        const dIdxA = dates.indexOf(anchor.date);
         const dIdxB = dates.indexOf(date);
         if (tIdxA < 0 || tIdxB < 0 || dIdxA < 0 || dIdxB < 0) return;
         const tA = Math.min(tIdxA, tIdxB), tB = Math.max(tIdxA, tIdxB);
@@ -513,6 +514,7 @@ export default function PlanningStudioValidityPage() {
           }
           return next;
         });
+        setLastCellAnchor({ tripId, date });
         return;
       }
       // CMD/CTRL+Click: toggle singolo
@@ -527,6 +529,8 @@ export default function PlanningStudioValidityPage() {
         return;
       }
       // Click semplice: NON tocca selezione 2D, esegue il toggle eccezione classico
+      // ma aggiorna l'ancora così uno SHIFT+Click successivo crea range
+      setLastCellAnchor({ tripId, date });
       onCellClick(tripId, date);
     },
     [dates, lastCellAnchor, tripIdsInOrder, onCellClick],
@@ -587,36 +591,6 @@ export default function PlanningStudioValidityPage() {
       }
     },
     [selectedDates, projectId, projectQ.data, clearDateSelection],
-  );
-
-  /* ─── Applica categoria validità a tutte le date selezionate ─── */
-  const applyCategoryToSelection = useCallback(
-    async (categoryId: string | null) => {
-      if (selectedDates.size === 0) {
-        toast.error("Seleziona almeno un giorno cliccando sull'header");
-        return;
-      }
-      if (projectQ.data?.myRole === "viewer") {
-        toast.error("Modalità sola lettura");
-        return;
-      }
-      try {
-        await setPsValidityCategoryCalendar({
-          dates: Array.from(selectedDates),
-          categoryId,
-        });
-        qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
-        toast.success(
-          categoryId
-            ? `Categoria applicata a ${selectedDates.size} giorni`
-            : `Categoria rimossa da ${selectedDates.size} giorni`,
-        );
-        clearDateSelection();
-      } catch (err) {
-        toast.error((err as Error).message);
-      }
-    },
-    [selectedDates, projectQ.data, qc, clearDateSelection],
   );
 
   /* ─── Render ─── */
@@ -715,6 +689,13 @@ export default function PlanningStudioValidityPage() {
               >
                 <Palette className="h-4 w-4" /> Day-types
               </button>
+              <button
+                onClick={() => setCategoryPeriodsOpen(true)}
+                className="px-3 py-1.5 text-sm rounded border border-fuchsia-400 bg-white hover:bg-fuchsia-100 text-fuchsia-900 font-medium flex items-center gap-1.5"
+                title="Definisci 'Categorie Periodi' (es. Scuole Aperte/Chiuse, Festività) e dipingi i giorni del calendario"
+              >
+                <CalendarIcon className="h-4 w-4" /> Categorie Periodi
+              </button>
             </div>
           </div>
 
@@ -732,8 +713,8 @@ export default function PlanningStudioValidityPage() {
               >
                 <Layers className="h-4 w-4" /> Bulk
               </button>
-              <span className="text-[10px] text-amber-800 px-2 italic">
-                Tip: <kbd className="px-1 bg-white border rounded">SHIFT</kbd>+Click sulle celle per selezionarne molte
+              <span className="text-[11px] text-slate-700 px-2 font-medium">
+                Tip: <kbd className="px-1 bg-white border rounded text-slate-900">SHIFT</kbd>+Click sui pallini per selezionare un range
               </span>
             </div>
           </div>
@@ -930,28 +911,28 @@ export default function PlanningStudioValidityPage() {
                   return (
                     <div
                       key={`t-${t.id}`}
-                      className={`flex border-b border-slate-100 ${isHighlighted ? "bg-blue-50/60" : ""}`}
+                      className={`flex border-b ${isHighlighted ? "bg-blue-100 border-blue-300 ring-1 ring-inset ring-blue-300" : "border-slate-100"}`}
                       style={{ height: ROW_H }}
                     >
                       <button
                         type="button"
                         onClick={() => setHighlightedTripId(isHighlighted ? null : t.id)}
                         className={`sticky left-0 z-10 border-r flex items-center gap-2 px-3 text-xs text-left ${
-                          isHighlighted ? "bg-blue-100 hover:bg-blue-100" : "bg-white hover:bg-slate-50"
+                          isHighlighted ? "bg-blue-200 hover:bg-blue-200 border-blue-400 font-semibold text-slate-900" : "bg-white hover:bg-slate-50"
                         }`}
                         style={{ width: STICKY_W, minWidth: STICKY_W, height: ROW_H }}
-                        title={`Click: evidenzia riga · ${t.shortName ?? ""} · ${t.headsign ?? ""}`}
+                        title={`Click: evidenzia riga in tutto il calendario · ${t.shortName ?? ""} · ${t.headsign ?? ""}`}
                       >
-                        <span className="text-slate-400 tabular-nums w-12 shrink-0">
+                        <span className="text-slate-500 tabular-nums w-12 shrink-0">
                           {t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}
                         </span>
-                        <span className="font-mono text-[10px] text-slate-500 bg-slate-100 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
+                        <span className="font-mono text-[10px] text-slate-700 bg-slate-100 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
                           {t.shortName ?? t.id.slice(0, 6)}
                         </span>
-                        <span className="text-slate-700 truncate flex-1">
+                        <span className="text-slate-800 truncate flex-1">
                           {t.headsign || t.variantName || "—"}
                         </span>
-                        <span className="text-slate-400 truncate text-[10px]" style={{ maxWidth: 70 }}>
+                        <span className="text-slate-500 truncate text-[10px]" style={{ maxWidth: 70 }}>
                           {t.variantName}
                         </span>
                       </button>
@@ -963,6 +944,7 @@ export default function PlanningStudioValidityPage() {
                         onSelect={handleCellSelect}
                         selectedDates={selectedDates}
                         selectedCells={selectedCells}
+                        highlighted={isHighlighted}
                       />
                     </div>
                   );
@@ -971,19 +953,12 @@ export default function PlanningStudioValidityPage() {
             </div>
           </div>
 
-          {/* Sidebar destra: tab Day-Types | Categorie Validità */}
+          {/* Sidebar destra: SOLO Day-Types (le categorie sono gestite dal dialog "Categorie Periodi" in topbar) */}
           <ValiditySidebar
-            projectId={projectId}
-            tab={sidebarTab}
-            onTabChange={setSidebarTab}
             dayTypes={dayTypesQ.data ?? []}
-            categories={categoriesQ.data ?? []}
             selectedCount={selectedDates.size}
             onApplyDayType={applyDayTypeToSelection}
-            onApplyCategory={applyCategoryToSelection}
-            canEdit={projectQ.data?.myRole !== "viewer"}
             openDayTypeAdvanced={() => setDtEditorOpen(true)}
-            openCategoryEditor={() => setCatEditorOpen(true)}
           />
 
           {/* Side panel Day-Type Editor (avanzato, modal) */}
@@ -1069,6 +1044,13 @@ export default function PlanningStudioValidityPage() {
           }}
         />
       )}
+      {categoryPeriodsOpen && (
+        <CategoryPeriodsDialog
+          onClose={() => setCategoryPeriodsOpen(false)}
+          categories={categoriesQ.data ?? []}
+          openCategoryEditor={() => setCatEditorOpen(true)}
+        />
+      )}
 
       {/* Toolbar contestuale celle selezionate (SHIFT+Click) */}
       {selectedCells.size > 0 && (
@@ -1132,9 +1114,10 @@ interface CellsRowProps {
   onSelect: (tripId: string, date: string, e: ReactMouseEvent) => void;
   selectedDates: Set<string>;
   selectedCells: Set<string>;
+  highlighted?: boolean;
 }
 
-function CellsRow({ ctx, tripId, dates, onClick, onSelect, selectedDates, selectedCells }: CellsRowProps) {
+function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, highlighted }: CellsRowProps) {
   return (
     <>
       {dates.map((d) => {
@@ -1152,16 +1135,9 @@ function CellsRow({ ctx, tripId, dates, onClick, onSelect, selectedDates, select
         return (
           <div
             key={d}
-            onClick={(e) => {
-              // SHIFT o CMD/CTRL → selezione 2D; altrimenti toggle eccezione classico
-              if (e.shiftKey || e.metaKey || e.ctrlKey) {
-                onSelect(tripId, d, e);
-              } else {
-                onClick(tripId, d);
-              }
-            }}
+            onClick={(e) => onSelect(tripId, d, e)}
             className={`flex items-center justify-center cursor-pointer transition-colors ${
-              isSelectedCol ? "bg-blue-50/60" : ""
+              highlighted ? "bg-blue-100/50" : isSelectedCol ? "bg-blue-50/60" : ""
             } ${isCellSelected ? "ring-2 ring-inset ring-blue-500 bg-blue-100/40" : ""}`}
             style={{
               width: COL_W,
@@ -1173,7 +1149,7 @@ function CellsRow({ ctx, tripId, dates, onClick, onSelect, selectedDates, select
                 ? "1px solid #cbd5e1"
                 : "1px solid #f1f5f9",
             }}
-            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}\nClick: toggle · Shift+Click: seleziona range 2D`}
+            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}\nClick: toggle · Shift+Click: range · Cmd/Ctrl+Click: aggiungi alla selezione`}
           >
             <div
               className="rounded-md transition-transform hover:scale-110"
@@ -2233,50 +2209,23 @@ function GenerateUnitDialog({
    ValiditySidebar — tab Day-Types | Categorie
    ════════════════════════════════════════════════════════════════════ */
 function ValiditySidebar(props: {
-  projectId?: string;
-  tab: "day-types" | "categories";
-  onTabChange: (t: "day-types" | "categories") => void;
   dayTypes: PsDayType[];
-  categories: PsValidityCategory[];
   selectedCount: number;
   onApplyDayType: (id: string) => void;
-  onApplyCategory: (id: string | null) => void;
-  canEdit?: boolean;
   openDayTypeAdvanced: () => void;
-  openCategoryEditor: () => void;
 }) {
   return (
     <aside className="w-64 border-l bg-white flex flex-col">
-      <div className="flex border-b text-sm">
-        <button
-          onClick={() => props.onTabChange("day-types")}
-          className={`flex-1 py-2 ${props.tab === "day-types" ? "bg-slate-100 font-medium" : "text-slate-600"}`}
-        >
-          Giorni-Tipo
-        </button>
-        <button
-          onClick={() => props.onTabChange("categories")}
-          className={`flex-1 py-2 ${props.tab === "categories" ? "bg-slate-100 font-medium" : "text-slate-600"}`}
-        >
-          Categorie
-        </button>
+      <div className="px-3 py-2 border-b bg-slate-50">
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Giorni-Tipo</div>
       </div>
       <div className="flex-1 overflow-auto p-3">
-        {props.tab === "day-types" ? (
-          <DayTypesPanel
-            dayTypes={props.dayTypes}
-            selectedCount={props.selectedCount}
-            onApply={(id) => id && props.onApplyDayType(id)}
-            onManage={props.openDayTypeAdvanced}
-          />
-        ) : (
-          <CategoriesPanel
-            categories={props.categories}
-            selectedCount={props.selectedCount}
-            onApply={props.onApplyCategory}
-            onManage={props.openCategoryEditor}
-          />
-        )}
+        <DayTypesPanel
+          dayTypes={props.dayTypes}
+          selectedCount={props.selectedCount}
+          onApply={(id) => id && props.onApplyDayType(id)}
+          onManage={props.openDayTypeAdvanced}
+        />
       </div>
     </aside>
   );
@@ -2291,14 +2240,17 @@ function DayTypesPanel(props: {
   const hasSel = props.selectedCount > 0;
   return (
     <div className="space-y-2">
-      <div className="text-xs uppercase tracking-wide text-slate-500 px-1">Giorni-Tipo</div>
+      <div className="text-xs uppercase tracking-wide text-slate-700 font-semibold px-1">
+        Giorni-Tipo
+        {hasSel && <span className="ml-2 text-blue-700 font-bold">({props.selectedCount} sel.)</span>}
+      </div>
       <div className="space-y-1">
         {props.dayTypes.map((dt) => (
           <button
             key={dt.id}
             disabled={!hasSel}
             onClick={() => props.onApply(dt.id)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-100 text-sm text-slate-900 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
             title={hasSel ? `Applica "${dt.name}" alle date selezionate` : "Seleziona prima delle celle"}
           >
             <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: dt.color || "#94a3b8" }} />
@@ -2308,60 +2260,13 @@ function DayTypesPanel(props: {
       </div>
       <button
         onClick={props.onManage}
-        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-50 hover:bg-slate-100 text-slate-700"
+        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium"
       >
         Gestisci giorni-tipo…
       </button>
       {!hasSel && (
-        <div className="text-[11px] text-slate-500 px-1 pt-2 leading-snug">
-          Suggerimento: SHIFT+Click sulle celle della matrice per selezionare un range, poi clicca un giorno-tipo per applicarlo.
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CategoriesPanel(props: {
-  categories: PsValidityCategory[];
-  selectedCount: number;
-  onApply: (id: string | null) => void;
-  onManage: () => void;
-}) {
-  const hasSel = props.selectedCount > 0;
-  return (
-    <div className="space-y-2">
-      <div className="text-xs uppercase tracking-wide text-slate-500 px-1">Categorie Validità</div>
-      <div className="space-y-1">
-        {props.categories.map((c) => (
-          <button
-            key={c.id}
-            disabled={!hasSel}
-            onClick={() => props.onApply(c.id)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            title={hasSel ? `Assegna "${c.name}" alle date selezionate` : "Seleziona prima delle celle"}
-          >
-            <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: c.color || "#94a3b8" }} />
-            <span className="truncate">{c.name}</span>
-          </button>
-        ))}
-        <button
-          disabled={!hasSel}
-          onClick={() => props.onApply(null)}
-          className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-rose-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed text-rose-700"
-        >
-          <X className="h-3 w-3" />
-          Rimuovi categoria
-        </button>
-      </div>
-      <button
-        onClick={props.onManage}
-        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-50 hover:bg-slate-100 text-slate-700"
-      >
-        Gestisci categorie…
-      </button>
-      {!hasSel && (
-        <div className="text-[11px] text-slate-500 px-1 pt-2 leading-snug">
-          Le categorie sono globali e si applicano a una data del calendario (una sola categoria per giorno).
+        <div className="text-[12px] text-slate-700 px-1 pt-2 leading-snug">
+          Suggerimento: clicca sull'<strong>header data</strong> (in alto) per selezionare giorni, poi clicca un giorno-tipo per applicarlo.
         </div>
       )}
     </div>
@@ -2741,6 +2646,254 @@ function ComputeUnitsDialog(props: {
             {saveMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             <Save className="h-3.5 w-3.5" />
             Salva {selected.size} unità
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   CategoryPeriodsDialog — calendario mensile per dipingere giorni
+   con una "Categoria Periodo" (Scuole Aperte, Festività, ecc.).
+   Sostituisce la sidebar tab "Categorie" con un'esperienza più chiara.
+   ════════════════════════════════════════════════════════════════════ */
+function CategoryPeriodsDialog(props: {
+  onClose: () => void;
+  categories: PsValidityCategory[];
+  openCategoryEditor: () => void;
+}) {
+  const qc = useQueryClient();
+  const today = new Date();
+  const [year, setYear] = useState(today.getFullYear());
+  const [month, setMonth] = useState(today.getMonth()); // 0..11
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(
+    props.categories[0]?.id ?? null,
+  );
+  const [paintMode, setPaintMode] = useState<"paint" | "erase">("paint");
+
+  // Calcola first/last del mese
+  const firstISO = useMemo(() => `${year}-${String(month + 1).padStart(2, "0")}-01`, [year, month]);
+  const lastDay = useMemo(() => new Date(year, month + 1, 0).getDate(), [year, month]);
+  const lastISO = useMemo(() => `${year}-${String(month + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`, [year, month, lastDay]);
+
+  const calQ = useQuery({
+    queryKey: ["ps-validity-categories", "calendar", firstISO, lastISO],
+    queryFn: () => listPsValidityCategoryCalendar({ from: firstISO, to: lastISO }),
+  });
+
+  const dateToCatId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of calQ.data ?? []) m.set(e.date, e.categoryId);
+    return m;
+  }, [calQ.data]);
+
+  const catById = useMemo(() => {
+    const m = new Map<string, PsValidityCategory>();
+    for (const c of props.categories) m.set(c.id, c);
+    return m;
+  }, [props.categories]);
+
+  const setMut = useMutation({
+    mutationFn: (input: { dates: string[]; categoryId: string | null }) =>
+      setPsValidityCategoryCalendar(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const handleDayClick = (iso: string) => {
+    if (paintMode === "erase") {
+      setMut.mutate({ dates: [iso], categoryId: null });
+      return;
+    }
+    if (!activeCategoryId) {
+      toast.error("Seleziona prima una categoria a sinistra");
+      return;
+    }
+    setMut.mutate({ dates: [iso], categoryId: activeCategoryId });
+  };
+
+  // Costruisci la griglia 7 colonne (Lun-Dom)
+  const firstWeekday = useMemo(() => {
+    const d = new Date(year, month, 1).getDay(); // 0=Dom
+    return (d + 6) % 7; // 0=Lun .. 6=Dom
+  }, [year, month]);
+  const cells: Array<{ iso: string; day: number; weekend: boolean } | null> = [];
+  for (let i = 0; i < firstWeekday; i++) cells.push(null);
+  for (let d = 1; d <= lastDay; d++) {
+    const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const dow = new Date(year, month, d).getDay();
+    cells.push({ iso, day: d, weekend: dow === 0 || dow === 6 });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const monthName = new Date(year, month, 1).toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+
+  const goPrev = () => {
+    if (month === 0) { setYear((y) => y - 1); setMonth(11); }
+    else setMonth((m) => m - 1);
+  };
+  const goNext = () => {
+    if (month === 11) { setYear((y) => y + 1); setMonth(0); }
+    else setMonth((m) => m + 1);
+  };
+  const goToday = () => {
+    const t = new Date();
+    setYear(t.getFullYear());
+    setMonth(t.getMonth());
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-3 border-b">
+          <div className="flex items-center gap-2">
+            <CalendarIcon className="h-5 w-5 text-fuchsia-600" />
+            <div>
+              <div className="font-semibold text-slate-900">Categorie Periodi</div>
+              <div className="text-xs text-slate-600">
+                Dipingi i giorni del calendario con una categoria (Scuole Aperte, Festività, …). Una sola categoria per giorno.
+              </div>
+            </div>
+          </div>
+          <button onClick={props.onClose} className="p-1.5 hover:bg-slate-100 rounded">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-hidden flex">
+          {/* SIDEBAR sinistra: lista categorie */}
+          <div className="w-64 border-r bg-slate-50 flex flex-col">
+            <div className="px-3 py-2 border-b">
+              <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Categorie</div>
+            </div>
+            <div className="flex-1 overflow-auto p-2 space-y-1">
+              {props.categories.length === 0 && (
+                <div className="text-sm text-slate-600 px-2 py-3">
+                  Nessuna categoria. Creane una con il bottone qui sotto.
+                </div>
+              )}
+              {props.categories.map((c) => {
+                const isActive = activeCategoryId === c.id && paintMode === "paint";
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => { setActiveCategoryId(c.id); setPaintMode("paint"); }}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded border text-sm font-medium ${
+                      isActive
+                        ? "bg-white border-fuchsia-400 ring-2 ring-fuchsia-200 text-slate-900"
+                        : "bg-white border-slate-200 hover:bg-slate-100 text-slate-800"
+                    }`}
+                  >
+                    <span className="inline-block h-4 w-4 rounded" style={{ backgroundColor: c.color || "#94a3b8" }} />
+                    <span className="truncate flex-1 text-left">{c.name}</span>
+                    {isActive && <span className="text-[10px] text-fuchsia-700 font-bold">PENNELLO</span>}
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => setPaintMode("erase")}
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded border text-sm font-medium mt-2 ${
+                  paintMode === "erase"
+                    ? "bg-rose-100 border-rose-400 ring-2 ring-rose-200 text-rose-900"
+                    : "bg-white border-slate-200 hover:bg-rose-50 text-rose-800"
+                }`}
+              >
+                <Eraser className="h-4 w-4" />
+                <span className="truncate flex-1 text-left">Cancella</span>
+                {paintMode === "erase" && <span className="text-[10px] font-bold">ATTIVO</span>}
+              </button>
+            </div>
+            <div className="border-t p-2">
+              <button
+                onClick={props.openCategoryEditor}
+                className="w-full px-2 py-1.5 text-xs rounded border bg-white hover:bg-slate-100 text-slate-800 font-medium flex items-center gap-1.5 justify-center"
+              >
+                <Settings2 className="h-3.5 w-3.5" />
+                Gestisci categorie…
+              </button>
+            </div>
+          </div>
+
+          {/* CALENDARIO mensile */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-white">
+              <div className="flex items-center gap-2">
+                <button onClick={goPrev} className="px-2 py-1 text-sm rounded border bg-white hover:bg-slate-100">‹</button>
+                <button onClick={goToday} className="px-2 py-1 text-xs rounded border bg-white hover:bg-slate-100 text-slate-700">Oggi</button>
+                <button onClick={goNext} className="px-2 py-1 text-sm rounded border bg-white hover:bg-slate-100">›</button>
+                <div className="ml-3 text-base font-semibold text-slate-900 capitalize">{monthName}</div>
+              </div>
+              <div className="text-xs text-slate-600">
+                {paintMode === "paint" && activeCategoryId
+                  ? <>Click per <strong>dipingere</strong> con: <span style={{ color: catById.get(activeCategoryId)?.color }}>{catById.get(activeCategoryId)?.name}</span></>
+                  : paintMode === "erase"
+                    ? <>Click per <strong>cancellare</strong> la categoria del giorno</>
+                    : <>Seleziona prima una categoria a sinistra</>}
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              {/* Intestazione giorni della settimana */}
+              <div className="grid grid-cols-7 gap-1 mb-1">
+                {["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"].map((g, i) => (
+                  <div key={g} className={`text-center text-[11px] font-bold uppercase tracking-wide py-1 ${i >= 5 ? "text-rose-600" : "text-slate-700"}`}>
+                    {g}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-1">
+                {cells.map((c, idx) => {
+                  if (!c) return <div key={`e-${idx}`} className="h-20 bg-transparent" />;
+                  const catId = dateToCatId.get(c.iso);
+                  const cat = catId ? catById.get(catId) : undefined;
+                  const bg = cat?.color ? `${cat.color}40` : undefined; // 25% opacity
+                  const ringColor = cat?.color;
+                  return (
+                    <button
+                      key={c.iso}
+                      onClick={() => handleDayClick(c.iso)}
+                      disabled={setMut.isPending}
+                      className={`h-20 rounded border text-left p-1.5 transition-all hover:shadow-md ${
+                        c.weekend ? "bg-rose-50/30" : "bg-white"
+                      } ${cat ? "border-2" : "border-slate-200"} disabled:opacity-50`}
+                      style={cat ? { backgroundColor: bg, borderColor: ringColor } : undefined}
+                      title={cat ? `${c.iso} · ${cat.name}` : `${c.iso} · nessuna categoria`}
+                    >
+                      <div className={`text-sm font-bold ${c.weekend ? "text-rose-700" : "text-slate-900"}`}>{c.day}</div>
+                      {cat && (
+                        <div className="mt-1 text-[10px] font-semibold truncate" style={{ color: cat.color }}>
+                          {cat.name}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Legenda */}
+            <div className="border-t px-4 py-2 bg-slate-50 flex items-center gap-3 flex-wrap">
+              <span className="text-xs font-semibold text-slate-700">Legenda:</span>
+              {props.categories.map((c) => (
+                <span key={c.id} className="inline-flex items-center gap-1.5 text-xs text-slate-800">
+                  <span className="inline-block h-3 w-3 rounded border" style={{ backgroundColor: c.color, borderColor: c.color }} />
+                  {c.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
+          <button
+            onClick={props.onClose}
+            className="px-3 py-1.5 text-sm rounded bg-slate-800 text-white hover:bg-slate-900 font-medium"
+          >
+            Chiudi
           </button>
         </div>
       </div>
