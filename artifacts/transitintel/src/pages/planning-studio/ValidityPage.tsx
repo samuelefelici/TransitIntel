@@ -38,13 +38,13 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
   Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
-  Sparkles, Save,
+  Sparkles, Save, Tags,
 } from "lucide-react";
 import {
   getPsValidityMatrix, upsertPsTripException, deletePsTripExceptionMatrix,
   upsertPsDayCalendar, upsertPsTripDayValidity,
   listPsDayTypes, createPsDayType, updatePsDayType, deletePsDayType,
-  postPsValidityBulk, autoImportPsValidityFromCalendars,
+  autoImportPsValidityFromCalendars,
   postPsValidityGenerateUnit,
   listPsValidityRoutes,
   type PsValidityMatrix, type PsDayType, type PsValidityTrip,
@@ -609,173 +609,170 @@ export default function PlanningStudioValidityPage() {
   if (!projectId) return <div className="p-6">ID progetto mancante</div>;
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50">
-      {/* TopBar — stepper visivo: 1 Filtra · 2 Configura · 3 Modifica · 4 Genera */}
-      <div className="border-b bg-white shadow-sm">
-        {/* Riga 1: titolo + back */}
-        <div className="flex items-center gap-3 px-4 pt-3">
-          <Link href={`/planning-studio/${projectId}`}>
-            <button className="p-2 rounded hover:bg-slate-100" title="Torna al progetto">
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-          </Link>
-          <CalendarIcon className="h-5 w-5 text-blue-600" />
-          <h1 className="font-semibold text-slate-900">
-            Validità · {projectQ.data?.name ?? "…"}
-          </h1>
-          <span className="ml-2 text-xs text-slate-500">
-            Definisci <em>quando</em> circolano le corse, prima dello scheduling.
-          </span>
-          <div className="ml-auto flex items-center gap-1.5">
+    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+      {/* ─── TopBar (riga 1: identità + undo/redo) ───────────────────── */}
+      <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
+        <Link href={`/planning-studio/${projectId}`}>
+          <button
+            className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors"
+            title="Torna al progetto"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+        </Link>
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-sky-500/20 to-violet-500/20 border border-sky-500/30 flex items-center justify-center shrink-0">
+            <CalendarIcon className="h-4 w-4 text-sky-300" />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <h1 className="font-semibold text-sm text-slate-100 truncate leading-tight">
+              Validità · {projectQ.data?.name ?? "…"}
+            </h1>
+            <span className="text-[11px] text-slate-500 leading-tight truncate">
+              Definisci quando circolano le corse, prima dello scheduling
+            </span>
+          </div>
+        </div>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="flex items-center gap-1 bg-slate-950/60 border border-slate-800 rounded-md p-0.5">
             <button
               onClick={() => undoMut.mutate()}
               disabled={undoStack.length === 0 || undoMut.isPending}
-              className="p-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-30"
-              title="Annulla"
-            ><Undo2 className="h-4 w-4" /></button>
+              className="p-1.5 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+              title="Annulla (Cmd/Ctrl+Z)"
+            >
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
             <button
               onClick={() => redoMut.mutate()}
               disabled={redoStack.length === 0 || redoMut.isPending}
-              className="p-2 rounded border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-30"
-              title="Ripeti"
-            ><Redo2 className="h-4 w-4" /></button>
+              className="p-1.5 rounded text-slate-400 hover:bg-slate-800 hover:text-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+              title="Ripeti (Cmd/Ctrl+Shift+Z)"
+            >
+              <Redo2 className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
-
-        {/* Riga 2: stepper con 4 sezioni */}
-        <div className="flex items-stretch gap-2 px-4 py-3 overflow-x-auto">
-          {/* STEP 1 — Filtro temporale e linea */}
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-sky-50 border border-sky-200 min-w-fit">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-sky-800">
-              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-sky-600 text-white text-[10px]">1</span>
-              Filtra
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-sky-900 font-medium">Da</label>
-              <input
-                type="date" value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900"
-              />
-              <label className="text-xs text-sky-900 font-medium">A</label>
-              <input
-                type="date" value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900"
-              />
-              <button
-                onClick={() => { setFrom(todayISO()); setTo(plusDaysISO(todayISO(), 60)); }}
-                className="px-2 py-1 text-xs rounded border border-sky-300 bg-white text-sky-800 hover:bg-sky-100"
-                title="Reset a oggi → +60gg"
-              >Reset</button>
-              <span className="mx-1 text-sky-300">|</span>
-              <label className="text-xs text-sky-900 font-medium">Linea</label>
-              <select
-                value={routeId ?? ""}
-                onChange={(e) => setRouteId(e.target.value || null)}
-                className="border border-sky-300 bg-white rounded px-2 py-1 text-sm text-slate-900 max-w-[220px]"
-                title="Filtra la matrice per linea (obbligatorio sopra 2000 corse)"
-              >
-                <option value="">— Tutte le linee —</option>
-                {(routesQ.data ?? []).map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {(r.shortName ?? r.longName ?? "?")} · {r.tripCount} corse
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* STEP 2 — Configura day-types */}
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-violet-50 border border-violet-200 min-w-fit">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-violet-800">
-              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-violet-600 text-white text-[10px]">2</span>
-              Configura
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setDtEditorOpen(true)}
-                className="px-3 py-1.5 text-sm rounded border border-violet-400 bg-white hover:bg-violet-100 text-violet-900 font-medium flex items-center gap-1.5"
-                title="Crea/modifica i tipi-giornata (Feriale, Festivo, ecc.) e i loro colori"
-              >
-                <Palette className="h-4 w-4" /> Day-types
-              </button>
-              <button
-                onClick={() => setCategoryPeriodsOpen(true)}
-                className="px-3 py-1.5 text-sm rounded border border-fuchsia-400 bg-white hover:bg-fuchsia-100 text-fuchsia-900 font-medium flex items-center gap-1.5"
-                title="Definisci 'Categorie Periodi' (es. Scuole Aperte/Chiuse, Festività) e dipingi i giorni del calendario"
-              >
-                <CalendarIcon className="h-4 w-4" /> Categorie Periodi
-              </button>
-            </div>
-          </div>
-
-          {/* STEP 3 — Sincronizza da GTFS */}
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 min-w-fit">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-amber-800">
-              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-amber-600 text-white text-[10px]">3</span>
-              Sincronizza
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => syncFromGtfsMut.mutate()}
-                disabled={syncFromGtfsMut.isPending}
-                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5 disabled:opacity-50"
-                title="Accendi automaticamente i bollini di validità leggendo i calendari del file GTFS già importato (lun-ven → Feriale, sab → Sabato, dom → Festivo, + eccezioni)"
-              >
-                {syncFromGtfsMut.isPending
-                  ? <Loader2 className="h-4 w-4 animate-spin" />
-                  : <Wand2 className="h-4 w-4" />}
-                Sincronizza GTFS
-              </button>
-              <span className="text-[11px] text-slate-700 px-2 font-medium max-w-[260px]">
-                Tip: <kbd className="px-1 bg-white border rounded text-slate-900">SHIFT</kbd>+Click sui pallini per selezionare un range
-              </span>
-            </div>
-          </div>
-
-          {/* STEP 4 — Unità di Progettazione */}
-          <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-indigo-100 border-2 border-indigo-400 min-w-fit">
-            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-indigo-900">
-              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-700 text-white text-[10px]">4</span>
-              Unità di Progettazione
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setComputeUnitsOpen(true)}
-                className="px-3 py-1.5 text-sm rounded bg-indigo-700 hover:bg-indigo-800 text-white font-semibold flex items-center gap-1.5 shadow"
-                title="Calcola le Unità (gruppi di giorni con stessa categoria + day-type + corse attive) e salva"
-              >
-                <Rocket className="h-4 w-4" /> Calcola Unità
-              </button>
-              <Link href={`/planning-studio/${projectId}/validity-units`}>
-                <button
-                  className="px-3 py-1.5 text-sm rounded border border-indigo-400 bg-white hover:bg-indigo-50 text-indigo-900 font-medium flex items-center gap-1.5"
-                  title="Vai alla sezione Unità di Progettazione salvate"
-                >
-                  <Layers className="h-4 w-4" /> Vedi Unità Salvate
-                </button>
-              </Link>
-            </div>
-          </div>
-        </div>
-
-        {/* Banner errore: matrice troppo grande → invita a scegliere una linea */}
-        {needsRouteFilter && (
-          <div className="mx-4 mb-3 px-3 py-2 rounded border border-amber-400 bg-amber-50 text-amber-900 text-sm flex items-start gap-2">
-            <span className="font-bold">⚠</span>
-            <div>
-              <div className="font-semibold">
-                Troppe corse nel range selezionato ({matrixErrBody?.tripCount?.toLocaleString("it-IT")} &gt; {matrixErrBody?.maxTripsPerPage?.toLocaleString("it-IT")})
-              </div>
-              <div className="text-xs">
-                Per visualizzare la matrice, scegli una <strong>Linea</strong> nello step 1 (oppure restringi il range di date).
-                Abbiamo pre-selezionato la prima linea disponibile.
-              </div>
-            </div>
-          </div>
-        )}
       </div>
+
+      {/* ─── Action bar (riga 2: filtri + azioni raggruppate) ───────── */}
+      <div className="border-b border-slate-800 bg-slate-900/60 px-4 py-2.5 flex items-center gap-2 flex-wrap shrink-0">
+        {/* Gruppo: filtri date + linea */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">Periodo</span>
+          <input
+            type="date"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
+          />
+          <span className="text-slate-600 text-xs">→</span>
+          <input
+            type="date"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
+          />
+          <button
+            onClick={() => { setFrom(todayISO()); setTo(plusDaysISO(todayISO(), 60)); }}
+            className="px-2 py-1 text-[11px] rounded-md border border-slate-700 bg-slate-950 text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+            title="Reset a oggi → +60gg"
+          >
+            Reset
+          </button>
+        </div>
+
+        <div className="h-6 w-px bg-slate-800 mx-1" />
+
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">Linea</span>
+          <select
+            value={routeId ?? ""}
+            onChange={(e) => setRouteId(e.target.value || null)}
+            className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 max-w-[220px] focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
+            title="Filtra la matrice per linea (obbligatorio sopra 2000 corse)"
+          >
+            <option value="">— Tutte le linee —</option>
+            {(routesQ.data ?? []).map((r) => (
+              <option key={r.id} value={r.id}>
+                {(r.shortName ?? r.longName ?? "?")} · {r.tripCount} corse
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="h-6 w-px bg-slate-800 mx-1" />
+
+        {/* Gruppo: configura */}
+        <button
+          onClick={() => setDtEditorOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:text-violet-300 hover:border-violet-500/40 hover:bg-slate-900 transition-colors"
+          title="Crea/modifica i tipi-giornata (Feriale, Festivo, ecc.) e i loro colori"
+        >
+          <Palette className="h-3.5 w-3.5" />
+          Day-types
+        </button>
+        <button
+          onClick={() => setCategoryPeriodsOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:text-fuchsia-300 hover:border-fuchsia-500/40 hover:bg-slate-900 transition-colors"
+          title="Definisci 'Categorie Periodi' (es. Scuole Aperte/Chiuse) e dipingi i giorni del calendario"
+        >
+          <CalendarIcon className="h-3.5 w-3.5" />
+          Categorie Periodi
+        </button>
+
+        <div className="h-6 w-px bg-slate-800 mx-1" />
+
+        {/* Gruppo: sync GTFS */}
+        <button
+          onClick={() => syncFromGtfsMut.mutate()}
+          disabled={syncFromGtfsMut.isPending}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 hover:border-amber-500/50 disabled:opacity-50 transition-colors"
+          title="Accendi automaticamente i bollini di validità leggendo i calendari GTFS (lun-ven → Feriale, sab → Sabato, dom → Festivo, + eccezioni)"
+        >
+          {syncFromGtfsMut.isPending
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <Wand2 className="h-3.5 w-3.5" />}
+          Sincronizza GTFS
+        </button>
+
+        <div className="ml-auto flex items-center gap-1.5">
+          <Link href={`/planning-studio/${projectId}/validity-units`}>
+            <button
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:text-indigo-300 hover:border-indigo-500/40 hover:bg-slate-900 transition-colors"
+              title="Vai alle Unità di Progettazione salvate"
+            >
+              <Layers className="h-3.5 w-3.5" />
+              Unità salvate
+            </button>
+          </Link>
+          <button
+            onClick={() => setComputeUnitsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1 text-xs rounded-md bg-gradient-to-r from-indigo-600 to-violet-600 text-white font-semibold hover:from-indigo-500 hover:to-violet-500 shadow-md shadow-indigo-900/30 transition-colors"
+            title="Calcola le Unità (gruppi di giorni con stessa categoria + day-type + corse attive) e salva"
+          >
+            <Rocket className="h-3.5 w-3.5" />
+            Calcola Unità
+          </button>
+        </div>
+      </div>
+
+      {/* Banner errore: matrice troppo grande → invita a scegliere una linea */}
+      {needsRouteFilter && (
+        <div className="mx-4 mt-3 px-3 py-2 rounded-md border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs flex items-start gap-2 shrink-0">
+          <span className="font-bold">⚠</span>
+          <div>
+            <div className="font-semibold">
+              Troppe corse nel range selezionato ({matrixErrBody?.tripCount?.toLocaleString("it-IT")} &gt; {matrixErrBody?.maxTripsPerPage?.toLocaleString("it-IT")})
+            </div>
+            <div className="text-amber-300/80">
+              Per visualizzare la matrice, scegli una <strong>Linea</strong> nei filtri (oppure restringi il range di date).
+              Abbiamo pre-selezionato la prima linea disponibile.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Banda Service Periods (PR3) — mostra i periodi che intersecano il range visibile */}
       {(periodsQ.data?.length ?? 0) > 0 && (
@@ -788,11 +785,11 @@ export default function PlanningStudioValidityPage() {
       {/* Stato caricamento */}
       {(matrixQ.isLoading || dayTypesQ.isLoading) && (
         <div className="flex items-center justify-center flex-1">
-          <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+          <Loader2 className="h-6 w-6 animate-spin text-sky-400" />
         </div>
       )}
       {matrixQ.isError && (
-        <div className="p-6 text-sm text-red-600">
+        <div className="p-6 text-sm text-rose-300">
           Errore: {(matrixQ.error as Error)?.message}
         </div>
       )}
@@ -804,28 +801,28 @@ export default function PlanningStudioValidityPage() {
           <div
             ref={scrollerRef}
             onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-            className="flex-1 overflow-auto relative bg-white"
+            className="flex-1 overflow-auto relative bg-slate-950"
             style={{ scrollBehavior: "auto" }}
           >
             {/* HEADER sticky top: 2 righe (mesi + giorni) */}
             <div
-              className="sticky top-0 z-30 bg-white border-b shadow-sm"
+              className="sticky top-0 z-30 bg-slate-900 border-b border-slate-800 shadow-sm"
               style={{ height: HEADER_H + MONTH_BAND_H }}
             >
               {/* Riga 1: banda MESI raggruppati */}
               <div className="flex" style={{ height: MONTH_BAND_H }}>
                 <div
-                  className="sticky left-0 z-40 bg-slate-200 border-r border-b flex items-center justify-between px-3 text-[11px] font-bold uppercase tracking-wide text-slate-700"
+                  className="sticky left-0 z-40 bg-slate-900 border-r border-b border-slate-800 flex items-center justify-between px-3 text-[11px] font-bold uppercase tracking-wide text-slate-400"
                   style={{ width: STICKY_W, minWidth: STICKY_W }}
                 >
                   <span>Mese</span>
                   {selectedDates.size > 0 && (
                     <button
                       onClick={clearDateSelection}
-                      className="text-[10px] font-medium normal-case text-slate-600 hover:text-slate-900 underline"
+                      className="text-[10px] font-medium normal-case text-sky-400 hover:text-sky-300 underline"
                       title="Deseleziona tutti i giorni"
                     >
-                      ✕ deseleziona ({selectedDates.size})
+                      ✕ ({selectedDates.size})
                     </button>
                   )}
                 </div>
@@ -833,7 +830,7 @@ export default function PlanningStudioValidityPage() {
                   {computeMonthGroups(dates).map((g) => (
                     <div
                       key={`${g.year}-${g.label}-${g.startIdx}`}
-                      className="flex items-center justify-center text-[11px] font-bold uppercase tracking-wide text-slate-700 bg-slate-100 border-r border-b border-slate-300"
+                      className="flex items-center justify-center text-[11px] font-bold uppercase tracking-wide text-slate-400 bg-slate-900/80 border-r border-b border-slate-800"
                       style={{ width: g.span * COL_W, minWidth: g.span * COL_W }}
                       title={`${g.label} ${g.year}`}
                     >
@@ -846,7 +843,7 @@ export default function PlanningStudioValidityPage() {
               {/* Riga 2: giorni (numero + sigla DOW) */}
               <div className="flex" style={{ height: HEADER_H }}>
                 <div
-                  className="sticky left-0 z-40 bg-slate-100 border-r flex items-center justify-center text-xs font-medium text-slate-600"
+                  className="sticky left-0 z-40 bg-slate-900 border-r border-slate-800 flex items-center justify-center text-xs font-medium text-slate-400"
                   style={{ width: STICKY_W, minWidth: STICKY_W }}
                 >
                   Linea / Corsa ({matrixQ.data.trips.length})
@@ -864,24 +861,24 @@ export default function PlanningStudioValidityPage() {
                         key={d}
                         onClick={(e) => handleDateHeaderClick(d, idx, e)}
                         onDoubleClick={() => setDropdownDate(d === dropdownDate ? null : d)}
-                        className={`flex flex-col items-center justify-center text-[10px] hover:bg-slate-100 transition-colors ${
-                          lbl.isWeekend ? "bg-rose-50/40" : ""
-                        } ${isSelected ? "ring-2 ring-inset ring-blue-500 bg-blue-50" : ""} ${
-                          dropdownDate === d ? "bg-blue-100" : ""
+                        className={`flex flex-col items-center justify-center text-[10px] hover:bg-slate-800 transition-colors ${
+                          lbl.isWeekend ? "bg-rose-950/40" : ""
+                        } ${isSelected ? "ring-2 ring-inset ring-sky-500 bg-sky-500/15" : ""} ${
+                          dropdownDate === d ? "bg-sky-500/25" : ""
                         }`}
                         style={{
                           width: COL_W,
                           minWidth: COL_W,
-                          borderRight: isFirstOfMonth ? "2px solid #94a3b8" : "1px solid #e2e8f0",
+                          borderRight: isFirstOfMonth ? "2px solid #475569" : "1px solid #1e293b",
                           borderTop: cat ? `3px solid ${cat.color}` : undefined,
                         }}
                         title={`${d} · ${dt?.name ?? "?"}${cat ? `\nCategoria: ${cat.name}` : ""}\nClick: seleziona · ⌘/Ctrl+Click: aggiungi · Shift+Click: range · Doppio-click: override singolo`}
                       >
-                        <span className="font-semibold text-slate-800 text-[12px] leading-tight">{lbl.day}</span>
-                        <span className={`leading-tight ${lbl.isWeekend ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{lbl.dow}</span>
+                        <span className="font-semibold text-slate-200 text-[12px] leading-tight">{lbl.day}</span>
+                        <span className={`leading-tight ${lbl.isWeekend ? "text-rose-400 font-semibold" : "text-slate-500"}`}>{lbl.dow}</span>
                         <span
-                          className="w-2.5 h-2.5 rounded-full mt-0.5 ring-1 ring-white"
-                          style={{ backgroundColor: dt?.color ?? "#cbd5e1" }}
+                          className="w-2.5 h-2.5 rounded-full mt-0.5 ring-1 ring-slate-900"
+                          style={{ backgroundColor: dt?.color ?? "#475569" }}
                         />
                       </button>
                     );
@@ -899,22 +896,22 @@ export default function PlanningStudioValidityPage() {
                     return (
                       <div
                         key={`r-${absIdx}`}
-                        className="flex items-center sticky-route-header bg-slate-100 border-b border-slate-200"
+                        className="flex items-center sticky-route-header bg-slate-900/80 border-b border-slate-800"
                         style={{ height: ROW_H }}
                       >
                         <div
-                          className="sticky left-0 z-20 bg-slate-100 border-r flex items-center gap-2 px-3 text-xs font-semibold text-slate-700"
+                          className="sticky left-0 z-20 bg-slate-900 border-r border-slate-800 flex items-center gap-2 px-3 text-xs font-semibold text-slate-200"
                           style={{ width: STICKY_W, minWidth: STICKY_W, height: ROW_H }}
                         >
                           <span
                             className="inline-block w-3 h-3 rounded-sm"
-                            style={{ backgroundColor: row.routeColor || "#94a3b8" }}
+                            style={{ backgroundColor: row.routeColor || "#64748b" }}
                           />
                           <span>{row.routeShortName ?? "—"}</span>
-                          <span className="text-slate-400 font-normal">({row.tripCount} corse)</span>
+                          <span className="text-slate-500 font-normal">({row.tripCount} corse)</span>
                         </div>
                         <div
-                          className="bg-slate-100"
+                          className="bg-slate-900/80"
                           style={{ width: dates.length * COL_W, height: ROW_H }}
                         />
                       </div>
@@ -926,14 +923,16 @@ export default function PlanningStudioValidityPage() {
                   return (
                     <div
                       key={`t-${t.id}`}
-                      className={`flex border-b ${isHighlighted ? "bg-blue-100 border-blue-300 ring-1 ring-inset ring-blue-300" : "border-slate-100"}`}
+                      className={`flex border-b ${isHighlighted ? "bg-sky-500/15 border-sky-500/40 ring-1 ring-inset ring-sky-500/40" : "border-slate-800/60"}`}
                       style={{ height: ROW_H }}
                     >
                       <button
                         type="button"
                         onClick={() => setHighlightedTripId(isHighlighted ? null : t.id)}
                         className={`sticky left-0 z-10 border-r flex items-center gap-2 px-3 text-xs text-left ${
-                          isHighlighted ? "bg-blue-200 hover:bg-blue-200 border-blue-400 font-semibold text-slate-900" : "bg-white hover:bg-slate-50"
+                          isHighlighted
+                            ? "bg-sky-500/20 hover:bg-sky-500/25 border-sky-500/40 font-semibold text-slate-100"
+                            : "bg-slate-950 hover:bg-slate-900 border-slate-800 text-slate-300"
                         }`}
                         style={{ width: STICKY_W, minWidth: STICKY_W, height: ROW_H }}
                         title={`Click: evidenzia riga in tutto il calendario · ${t.shortName ?? ""} · ${t.headsign ?? ""}`}
@@ -941,10 +940,10 @@ export default function PlanningStudioValidityPage() {
                         <span className="text-slate-500 tabular-nums w-12 shrink-0">
                           {t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}
                         </span>
-                        <span className="font-mono text-[10px] text-slate-700 bg-slate-100 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
+                        <span className="font-mono text-[10px] text-slate-300 bg-slate-800/80 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
                           {t.shortName ?? t.id.slice(0, 6)}
                         </span>
-                        <span className="text-slate-800 truncate flex-1">
+                        <span className="text-slate-200 truncate flex-1">
                           {t.headsign || t.variantName || "—"}
                         </span>
                         <span className="text-slate-500 truncate text-[10px]" style={{ maxWidth: 70 }}>
@@ -1056,14 +1055,15 @@ export default function PlanningStudioValidityPage() {
 
       {/* Toolbar contestuale celle selezionate (SHIFT+Click) */}
       {selectedCells.size > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white rounded-lg shadow-2xl px-4 py-2 flex items-center gap-3">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 border border-slate-700 text-slate-100 rounded-xl shadow-2xl shadow-black/60 px-4 py-2 flex items-center gap-3 backdrop-blur">
           <span className="text-sm font-medium">
             {selectedCells.size} cell{selectedCells.size === 1 ? "a" : "e"} selezionat{selectedCells.size === 1 ? "a" : "e"}
           </span>
+          <div className="h-5 w-px bg-slate-700" />
           <button
             onClick={() => cellsBulkMut.mutate("valid")}
             disabled={cellsBulkMut.isPending}
-            className="px-3 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+            className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 hover:bg-emerald-500 font-semibold disabled:opacity-50 flex items-center gap-1.5 text-white shadow-sm"
           >
             {cellsBulkMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             <Check className="h-3 w-3" /> Imposta Valide
@@ -1071,20 +1071,20 @@ export default function PlanningStudioValidityPage() {
           <button
             onClick={() => cellsBulkMut.mutate("invalid")}
             disabled={cellsBulkMut.isPending}
-            className="px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+            className="px-3 py-1.5 text-xs rounded-md bg-rose-600 hover:bg-rose-500 font-semibold disabled:opacity-50 flex items-center gap-1.5 text-white shadow-sm"
           >
             <X className="h-3 w-3" /> Imposta Invalide
           </button>
           <button
             onClick={() => cellsBulkMut.mutate("clear")}
             disabled={cellsBulkMut.isPending}
-            className="px-3 py-1.5 text-xs rounded bg-slate-600 hover:bg-slate-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+            className="px-3 py-1.5 text-xs rounded-md bg-slate-700 hover:bg-slate-600 font-semibold disabled:opacity-50 flex items-center gap-1.5 text-slate-200"
           >
-            <Eraser className="h-3 w-3" /> Pulisci eccezioni
+            <Eraser className="h-3 w-3" /> Pulisci
           </button>
           <button
             onClick={clearCellSelection}
-            className="px-2 py-1.5 text-xs rounded hover:bg-slate-700"
+            className="p-1.5 rounded-md text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             title="Annulla selezione"
           >
             <X className="h-3.5 w-3.5" />
@@ -1093,12 +1093,17 @@ export default function PlanningStudioValidityPage() {
       )}
 
       {/* Footer status */}
-      <div className="border-t bg-white px-4 py-1.5 text-[11px] text-slate-500 flex gap-4">
-        <span>Range: {from} → {to} ({dates.length} giorni)</span>
-        <span>Corse: {matrixQ.data?.trips.length ?? 0}</span>
-        <span>Day-types: {dayTypesQ.data?.length ?? 0}</span>
-        {undoStack.length > 0 && <span>Undo stack: {undoStack.length}</span>}
-        {cellMut.isPending && <span className="text-blue-600">Salvataggio…</span>}
+      <div className="border-t border-slate-800 bg-slate-900/60 px-4 py-1.5 text-[11px] text-slate-500 flex gap-4 shrink-0">
+        <span>Range: <span className="text-slate-300">{from} → {to}</span> ({dates.length} giorni)</span>
+        <span>·</span>
+        <span>Corse: <span className="text-slate-300">{matrixQ.data?.trips.length ?? 0}</span></span>
+        <span>·</span>
+        <span>Day-types: <span className="text-slate-300">{dayTypesQ.data?.length ?? 0}</span></span>
+        {undoStack.length > 0 && <><span>·</span><span>Undo stack: {undoStack.length}</span></>}
+        {cellMut.isPending && <><span>·</span><span className="text-sky-400 flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" />Salvataggio…</span></>}
+        <span className="ml-auto text-slate-600">
+          Tip: <kbd className="px-1 bg-slate-800 border border-slate-700 rounded text-slate-400">SHIFT</kbd>+Click sui pallini per selezionare un range
+        </span>
       </div>
     </div>
   );
@@ -1142,18 +1147,18 @@ function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, 
             key={d}
             onClick={(e) => onSelect(tripId, d, e)}
             className={`flex items-center justify-center cursor-pointer transition-colors ${
-              highlighted ? "bg-blue-100/50" : isSelectedCol ? "bg-blue-50/60" : ""
-            } ${isCellSelected ? "ring-2 ring-inset ring-blue-500 bg-blue-100/40" : ""}`}
+              highlighted ? "bg-sky-500/15" : isSelectedCol ? "bg-sky-500/10" : ""
+            } ${isCellSelected ? "ring-2 ring-inset ring-sky-500 bg-sky-500/20" : ""}`}
             style={{
               width: COL_W,
               minWidth: COL_W,
               height: ROW_H,
               backgroundColor: !isCellSelected && !isSelectedCol && !highlighted ? catBg : undefined,
               borderRight: isFirstOfMonth
-                ? "2px solid #94a3b8"
+                ? "2px solid #475569"
                 : isMonday
-                ? "1px solid #cbd5e1"
-                : "1px solid #f1f5f9",
+                ? "1px solid #334155"
+                : "1px solid #1e293b",
             }}
             title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}${cat ? `\nCategoria: ${cat.name}` : ""}\nClick: toggle · Shift+Click: range · Cmd/Ctrl+Click: aggiungi alla selezione`}
           >
@@ -1163,7 +1168,7 @@ function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, 
                 width: COL_W - 8,
                 height: ROW_H - 8,
                 backgroundColor: fill,
-                boxShadow: ex ? "0 0 0 1.5px rgba(0,0,0,0.12) inset" : undefined,
+                boxShadow: ex ? "0 0 0 1.5px rgba(255,255,255,0.18) inset" : undefined,
               }}
             />
           </div>
@@ -1174,10 +1179,10 @@ function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, 
 }
 
 function cellFillColor(valid: boolean, ex: 1 | 2 | undefined): string {
-  if (ex === 1) return "#16a34a"; // verde acceso (override attiva)
-  if (ex === 2) return "#dc2626"; // rosso acceso (override disattiva)
-  if (valid) return "#86efac";    // verde tenue (default valida)
-  return "#e2e8f0";               // grigio tenue (default invalida)
+  if (ex === 1) return "#10b981"; // verde acceso (override attiva)
+  if (ex === 2) return "#ef4444"; // rosso acceso (override disattiva)
+  if (valid) return "#34d399";    // verde tenue (default valida)
+  return "#475569";               // grigio dark (default invalida)
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1199,20 +1204,20 @@ function DateOverridePopover({ date, dayTypes, currentEntry, onClose, onApply, i
 
   return (
     <div
-      className="absolute z-50 bg-white border shadow-xl rounded-lg p-4 w-72"
+      className="absolute z-50 bg-slate-900 border border-slate-700 shadow-2xl shadow-black/60 rounded-xl p-4 w-72 text-slate-100"
       style={{ top: HEADER_H + 4, right: 12 }}
     >
       <div className="flex items-center justify-between mb-3">
-        <div className="font-semibold text-sm">Override · {date}</div>
-        <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
+        <div className="font-semibold text-sm">Override · <span className="text-sky-300 font-mono text-xs">{date}</span></div>
+        <button onClick={onClose} className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200">
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
-      <div className="text-xs text-slate-500 mb-2">Day-type per questa data</div>
+      <div className="text-xs text-slate-400 mb-1.5">Day-type per questa data</div>
       <select
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
-        className="w-full border rounded px-2 py-1.5 text-sm mb-3"
+        className="w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-sm mb-3 text-slate-200 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
       >
         <option value="">— scegli —</option>
         {dayTypes.map((dt) => (
@@ -1221,179 +1226,29 @@ function DateOverridePopover({ date, dayTypes, currentEntry, onClose, onApply, i
           </option>
         ))}
       </select>
-      <div className="text-xs text-slate-500 mb-2">Ambito</div>
-      <div className="flex gap-3 mb-4 text-xs">
+      <div className="text-xs text-slate-400 mb-1.5">Ambito</div>
+      <div className="flex gap-3 mb-4 text-xs text-slate-300">
         <label className="flex items-center gap-1.5 cursor-pointer">
-          <input type="radio" checked={scope === "project"} onChange={() => setScope("project")} />
+          <input type="radio" checked={scope === "project"} onChange={() => setScope("project")} className="accent-sky-500" />
           Solo questo progetto
         </label>
         <label className="flex items-center gap-1.5 cursor-pointer">
-          <input type="radio" checked={scope === "tenant"} onChange={() => setScope("tenant")} />
+          <input type="radio" checked={scope === "tenant"} onChange={() => setScope("tenant")} className="accent-sky-500" />
           Globale
         </label>
       </div>
       <div className="flex gap-2 justify-end">
-        <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border">Annulla</button>
+        <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
         <button
           onClick={() => selected && onApply(selected, scope)}
           disabled={!selected || isPending}
-          className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+          className="px-3 py-1.5 text-sm rounded-md bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-50 flex items-center gap-1 font-medium"
         >
           {isPending && <Loader2 className="h-3 w-3 animate-spin" />}
           Applica
         </button>
       </div>
     </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════
- *  DayTypeSidebar (sempre montato a destra della matrice)
- *  - elenco day-types come "pillole" colorate cliccabili
- *  - applica il day-type a tutte le date selezionate (CTRL/SHIFT/Click sull'header)
- *  - quick-add per creare un nuovo day-type al volo
- * ════════════════════════════════════════════════════════════ */
-
-interface DayTypeSidebarProps {
-  projectId: string;
-  dayTypes: PsDayType[];
-  selectedCount: number;
-  onApply: (dayTypeId: string) => void | Promise<void>;
-  canEdit: boolean;
-  openAdvanced: () => void;
-}
-
-function DayTypeSidebar({ projectId, dayTypes, selectedCount, onApply, canEdit, openAdvanced }: DayTypeSidebarProps) {
-  const qc = useQueryClient();
-  const [showAdd, setShowAdd] = useState(false);
-  const [newCode, setNewCode] = useState("");
-  const [newName, setNewName] = useState("");
-  const [newColor, setNewColor] = useState("#10b981");
-
-  const createMut = useMutation({
-    mutationFn: () =>
-      createPsDayType(projectId, { code: newCode.trim(), name: newName.trim(), color: newColor }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "day-types"] });
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity", "matrix"] });
-      toast.success("Day-type creato");
-      setShowAdd(false);
-      setNewCode("");
-      setNewName("");
-      setNewColor("#10b981");
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  return (
-    <aside
-      className="border-l bg-slate-50 flex flex-col"
-      style={{ width: SIDEBAR_W, minWidth: SIDEBAR_W }}
-    >
-      <div className="px-3 py-2 border-b bg-white">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Day-Types</div>
-        <div className="text-[11px] text-slate-500 mt-0.5">
-          {selectedCount > 0
-            ? `${selectedCount} giorn${selectedCount === 1 ? "o" : "i"} selezionat${selectedCount === 1 ? "o" : "i"} → click su un day-type per applicarlo`
-            : "Seleziona giorni cliccando sull'header (Ctrl/Shift per più giorni)"}
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-auto p-2 space-y-1.5">
-        {dayTypes.length === 0 && (
-          <div className="text-xs text-slate-400 italic p-2">Nessun day-type</div>
-        )}
-        {dayTypes.map((dt) => {
-          const disabled = selectedCount === 0 || !canEdit;
-          return (
-            <button
-              key={dt.id}
-              type="button"
-              disabled={disabled}
-              onClick={() => onApply(dt.id)}
-              className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg border text-left text-sm transition ${
-                disabled
-                  ? "bg-white border-slate-200 text-slate-400 cursor-not-allowed"
-                  : "bg-white border-slate-300 text-slate-800 hover:border-blue-500 hover:shadow-sm cursor-pointer"
-              }`}
-              title={disabled ? "Seleziona prima dei giorni" : `Applica '${dt.name}' a ${selectedCount} giorn${selectedCount === 1 ? "o" : "i"}`}
-            >
-              <span
-                className="w-5 h-5 rounded-md ring-2 ring-white shadow-sm shrink-0"
-                style={{ backgroundColor: dt.color }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{dt.name}</div>
-                <div className="text-[10px] text-slate-500 font-mono truncate">{dt.code}</div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Quick-add */}
-      {canEdit && (
-        <div className="border-t bg-white p-2">
-          {!showAdd ? (
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => setShowAdd(true)}
-                className="flex-1 px-2 py-1.5 text-xs rounded border border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 font-medium"
-              >
-                + Nuovo day-type
-              </button>
-              <button
-                type="button"
-                onClick={openAdvanced}
-                className="px-2 py-1.5 text-xs rounded border border-slate-300 bg-white text-slate-700 hover:bg-slate-100"
-                title="Editor avanzato (modifica/elimina)"
-              >
-                ⚙
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-1.5">
-              <input
-                value={newCode}
-                onChange={(e) => setNewCode(e.target.value.toUpperCase().slice(0, 16))}
-                placeholder="CODICE (es. FER)"
-                className="w-full border rounded px-2 py-1 text-xs font-mono"
-              />
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="Nome (es. Feriale)"
-                className="w-full border rounded px-2 py-1 text-xs"
-              />
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="color"
-                  value={newColor}
-                  onChange={(e) => setNewColor(e.target.value)}
-                  className="w-8 h-7 border rounded cursor-pointer"
-                />
-                <button
-                  type="button"
-                  disabled={!newCode.trim() || !newName.trim() || createMut.isPending}
-                  onClick={() => createMut.mutate()}
-                  className="flex-1 px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 font-medium"
-                >
-                  {createMut.isPending ? "…" : "Crea"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAdd(false)}
-                  className="px-2 py-1 text-xs rounded border border-slate-300 hover:bg-slate-100"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </aside>
   );
 }
 
@@ -1444,84 +1299,97 @@ function DayTypeEditor({ projectId, dayTypes, onClose, canEdit }: DayTypeEditorP
   });
 
   return (
-    <div className="w-80 border-l bg-white flex flex-col h-full overflow-hidden">
-      <div className="px-4 py-3 border-b flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Settings2 className="h-4 w-4 text-slate-500" />
-          <h2 className="font-semibold text-sm">Day-types</h2>
-        </div>
-        <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-auto">
-        <div className="p-3 space-y-2">
-          {dayTypes.map((dt) => (
-            <DayTypeRow
-              key={dt.id}
-              dt={dt}
-              canEdit={canEdit}
-              onSave={(patch) => updateMut.mutate({ id: dt.id, patch })}
-              onDelete={() => {
-                if (confirm(`Eliminare "${dt.name}"? L'azione fallisce se è referenziato.`)) {
-                  deleteMut.mutate(dt.id);
-                }
-              }}
-            />
-          ))}
-        </div>
-      </div>
-
-      {canEdit && (
-        <div className="border-t p-3">
-          {!showNew ? (
-            <button
-              onClick={() => setShowNew(true)}
-              className="w-full px-3 py-2 text-sm rounded border bg-white hover:bg-slate-50 flex items-center justify-center gap-1.5"
-            >
-              <Plus className="h-4 w-4" /> Nuovo day-type custom
-            </button>
-          ) : (
-            <div className="space-y-2">
-              <input
-                placeholder="Codice (es. festa_patronale)"
-                value={newCode}
-                onChange={(e) => setNewCode(e.target.value)}
-                className="w-full border rounded px-2 py-1.5 text-sm"
-              />
-              <input
-                placeholder="Nome visibile"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                className="w-full border rounded px-2 py-1.5 text-sm"
-              />
-              <div className="flex items-center gap-2">
-                <input
-                  type="color" value={newColor}
-                  onChange={(e) => setNewColor(e.target.value)}
-                  className="w-10 h-8 border rounded"
-                />
-                <span className="text-xs font-mono">{newColor}</span>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <button
-                  onClick={() => setShowNew(false)}
-                  className="px-3 py-1.5 text-sm rounded border"
-                >Annulla</button>
-                <button
-                  onClick={() => createMut.mutate()}
-                  disabled={!newCode.trim() || !newName.trim() || createMut.isPending}
-                  className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
-                >
-                  {createMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-                  Crea
-                </button>
-              </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md max-h-[85vh] flex flex-col text-slate-100"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between bg-gradient-to-r from-violet-500/10 to-transparent">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-lg bg-violet-500/15 border border-violet-500/30 flex items-center justify-center">
+              <Settings2 className="h-4 w-4 text-violet-300" />
             </div>
-          )}
+            <div>
+              <h2 className="font-semibold text-sm">Day-types</h2>
+              <p className="text-[11px] text-slate-500">Tipi-giornata del progetto</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-100">
+            <X className="h-4 w-4" />
+          </button>
         </div>
-      )}
+
+        <div className="flex-1 overflow-auto">
+          <div className="p-3 space-y-1.5">
+            {dayTypes.map((dt) => (
+              <DayTypeRow
+                key={dt.id}
+                dt={dt}
+                canEdit={canEdit}
+                onSave={(patch) => updateMut.mutate({ id: dt.id, patch })}
+                onDelete={() => {
+                  if (confirm(`Eliminare "${dt.name}"? L'azione fallisce se è referenziato.`)) {
+                    deleteMut.mutate(dt.id);
+                  }
+                }}
+              />
+            ))}
+            {dayTypes.length === 0 && (
+              <div className="text-xs text-slate-500 italic text-center py-6">Nessun day-type</div>
+            )}
+          </div>
+        </div>
+
+        {canEdit && (
+          <div className="border-t border-slate-800 p-3 bg-slate-950/40">
+            {!showNew ? (
+              <button
+                onClick={() => setShowNew(true)}
+                className="w-full px-3 py-2 text-sm rounded-md border border-dashed border-slate-700 bg-slate-900 hover:bg-slate-800 hover:border-emerald-500/40 hover:text-emerald-300 text-slate-300 flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Plus className="h-4 w-4" /> Nuovo day-type custom
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  placeholder="Codice (es. festa_patronale)"
+                  value={newCode}
+                  onChange={(e) => setNewCode(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-200 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+                />
+                <input
+                  placeholder="Nome visibile"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-slate-200 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500/30"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color" value={newColor}
+                    onChange={(e) => setNewColor(e.target.value)}
+                    className="w-10 h-8 bg-slate-950 border border-slate-700 rounded cursor-pointer"
+                  />
+                  <span className="text-xs font-mono text-slate-400">{newColor}</span>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setShowNew(false)}
+                    className="px-3 py-1.5 text-sm rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800"
+                  >Annulla</button>
+                  <button
+                    onClick={() => createMut.mutate()}
+                    disabled={!newCode.trim() || !newName.trim() || createMut.isPending}
+                    className="px-3 py-1.5 text-sm rounded-md bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 flex items-center gap-1 font-medium"
+                  >
+                    {createMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+                    Crea
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1540,25 +1408,25 @@ function DayTypeRow({ dt, canEdit, onSave, onDelete }: DayTypeRowProps) {
 
   if (editing && canEdit && !dt.isSystem) {
     return (
-      <div className="border rounded p-2 space-y-2 bg-slate-50">
+      <div className="border border-slate-700 rounded-md p-2 space-y-2 bg-slate-950">
         <input
           value={name} onChange={(e) => setName(e.target.value)}
-          className="w-full border rounded px-2 py-1 text-sm"
+          className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200 focus:border-violet-500 focus:outline-none"
         />
         <div className="flex items-center gap-2">
           <input
             type="color" value={color}
             onChange={(e) => setColor(e.target.value)}
-            className="w-8 h-7 border rounded"
+            className="w-8 h-7 bg-slate-900 border border-slate-700 rounded"
           />
-          <span className="text-xs font-mono">{color}</span>
+          <span className="text-xs font-mono text-slate-400">{color}</span>
           <div className="ml-auto flex gap-1">
-            <button onClick={() => setEditing(false)} className="p-1 rounded hover:bg-slate-200">
+            <button onClick={() => setEditing(false)} className="p-1 rounded hover:bg-slate-800 text-slate-400">
               <X className="h-3.5 w-3.5" />
             </button>
             <button
               onClick={() => { onSave({ name, color }); setEditing(false); }}
-              className="p-1 rounded bg-blue-600 text-white hover:bg-blue-700"
+              className="p-1 rounded bg-violet-600 text-white hover:bg-violet-500"
             >
               <Check className="h-3.5 w-3.5" />
             </button>
@@ -1569,14 +1437,14 @@ function DayTypeRow({ dt, canEdit, onSave, onDelete }: DayTypeRowProps) {
   }
 
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 group">
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-slate-800/50 group border border-transparent hover:border-slate-700 transition-colors">
       <span
-        className="inline-block w-4 h-4 rounded"
+        className="inline-block w-4 h-4 rounded ring-1 ring-slate-700 shrink-0"
         style={{ backgroundColor: dt.color }}
       />
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-slate-800 truncate">{dt.name}</div>
-        <div className="text-[10px] text-slate-400 font-mono truncate">
+        <div className="text-sm text-slate-100 truncate">{dt.name}</div>
+        <div className="text-[10px] text-slate-500 font-mono truncate">
           {dt.code} {dt.isSystem ? "· system" : ""}
         </div>
       </div>
@@ -1584,15 +1452,15 @@ function DayTypeRow({ dt, canEdit, onSave, onDelete }: DayTypeRowProps) {
         <div className="opacity-0 group-hover:opacity-100 flex gap-1">
           <button
             onClick={() => setEditing(true)}
-            className="p-1 rounded hover:bg-slate-200" title="Modifica"
+            className="p-1 rounded hover:bg-slate-700 text-slate-400 hover:text-slate-200" title="Modifica"
           >
-            <Palette className="h-3.5 w-3.5 text-slate-500" />
+            <Palette className="h-3.5 w-3.5" />
           </button>
           <button
             onClick={onDelete}
-            className="p-1 rounded hover:bg-red-50" title="Elimina"
+            className="p-1 rounded hover:bg-rose-500/20 text-rose-400" title="Elimina"
           >
-            <Trash2 className="h-3.5 w-3.5 text-red-500" />
+            <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       )}
@@ -1620,17 +1488,15 @@ function ServicePeriodsBand({ periods, dates }: ServicePeriodsBandProps) {
   const visible = periods.filter((p) => p.startDate <= to && p.endDate >= from);
 
   return (
-    <div className="border-b bg-slate-50 flex" style={{ height: 28 }}>
+    <div className="border-b border-slate-800 bg-slate-900/60 flex shrink-0" style={{ height: 28 }}>
       <div
-        className="border-r bg-slate-100 flex items-center px-3 text-[11px] font-medium text-slate-600"
+        className="border-r border-slate-800 bg-slate-900 flex items-center px-3 text-[11px] font-medium text-slate-400"
         style={{ width: STICKY_W, minWidth: STICKY_W }}
       >
         Service Periods ({visible.length})
       </div>
       <div className="relative flex-1 overflow-hidden" style={{ height: 28 }}>
         {visible.map((p) => {
-          const startIdx = Math.max(0, dates.indexOf(p.startDate >= from ? p.startDate : from));
-          // se startDate < from, la barra inizia da 0
           const realStart = p.startDate >= from
             ? dates.indexOf(p.startDate)
             : 0;
@@ -1643,11 +1509,11 @@ function ServicePeriodsBand({ periods, dates }: ServicePeriodsBandProps) {
           return (
             <div
               key={p.id}
-              className="absolute top-1 bottom-1 rounded text-[10px] flex items-center justify-center px-2 text-white font-medium truncate cursor-default"
+              className="absolute top-1 bottom-1 rounded text-[10px] flex items-center justify-center px-2 text-white font-semibold truncate cursor-default shadow-sm"
               style={{
                 left, width,
                 backgroundColor: p.color || "#64748b",
-                opacity: 0.85,
+                opacity: 0.9,
               }}
               title={`${p.name} · ${p.startDate} → ${p.endDate}`}
             >
@@ -1655,246 +1521,6 @@ function ServicePeriodsBand({ periods, dates }: ServicePeriodsBandProps) {
             </div>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════
- *  BulkDialog (PR3) — 4 operazioni
- * ════════════════════════════════════════════════════════════ */
-
-interface BulkDialogProps {
-  projectId: string;
-  range: { from: string; to: string };
-  dayTypes: PsDayType[];
-  periods: PsServicePeriod[];
-  trips: PsValidityTrip[];
-  onClose: () => void;
-  onDone: () => void;
-}
-function BulkDialog({ projectId, range, dayTypes, periods, trips, onClose, onDone }: BulkDialogProps) {
-  const [op, setOp] = useState<"trip-row-set" | "date-column-set" | "period-fill" | "clear-exceptions">(
-    "period-fill",
-  );
-
-  // Stato per ogni op
-  const [tripId, setTripId] = useState("");
-  const [date, setDate] = useState(range.from);
-  const [periodId, setPeriodId] = useState(periods[0]?.id ?? "");
-  const [selectedDayTypes, setSelectedDayTypes] = useState<Set<string>>(new Set());
-  const [isValid, setIsValid] = useState(true);
-  const [confirmClear, setConfirmClear] = useState(false);
-
-  const mut = useMutation({
-    mutationFn: async () => {
-      if (op === "trip-row-set") {
-        if (!tripId || selectedDayTypes.size === 0) throw new Error("Seleziona corsa e day-types");
-        return postPsValidityBulk(projectId, {
-          op, tripId, dayTypeIds: Array.from(selectedDayTypes), isValid,
-        });
-      }
-      if (op === "date-column-set") {
-        return postPsValidityBulk(projectId, { op, date, isValid });
-      }
-      if (op === "period-fill") {
-        if (!periodId || selectedDayTypes.size === 0) throw new Error("Seleziona periodo e day-types");
-        return postPsValidityBulk(projectId, {
-          op, periodId, dayTypeIds: Array.from(selectedDayTypes), isValid,
-        });
-      }
-      if (op === "clear-exceptions") {
-        if (!confirmClear) throw new Error("Conferma richiesta");
-        return postPsValidityBulk(projectId, { op, from: range.from, to: range.to });
-      }
-      throw new Error("op?");
-    },
-    onSuccess: (r) => {
-      toast.success(`Bulk completato: ${r.count} record`);
-      onDone();
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
-  const toggleDt = (id: string) => {
-    setSelectedDayTypes((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
-      <div
-        className="bg-white rounded-lg shadow-2xl w-[560px] max-h-[80vh] overflow-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b px-5 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Layers className="h-5 w-5 text-blue-600" />
-            <h2 className="font-semibold">Operazioni Bulk</h2>
-          </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {/* Selettore op */}
-          <div>
-            <label className="text-xs font-medium text-slate-600 block mb-1.5">Operazione</label>
-            <select
-              value={op} onChange={(e) => setOp(e.target.value as any)}
-              className="w-full border rounded px-2 py-2 text-sm"
-            >
-              <option value="period-fill">Riempi periodo · imposta default per (periodo × day-types) su tutte le corse</option>
-              <option value="trip-row-set">Imposta riga corsa · default validità per (corsa × day-types)</option>
-              <option value="date-column-set">Imposta colonna data · forza eccezione per tutte le corse a quella data</option>
-              <option value="clear-exceptions">Pulisci eccezioni · rimuovi tutte le eccezioni nel range visibile</option>
-            </select>
-          </div>
-
-          {/* Form per op selezionata */}
-          {op === "trip-row-set" && (
-            <>
-              <FieldTrip trips={trips} value={tripId} onChange={setTripId} />
-              <FieldDayTypes dayTypes={dayTypes} selected={selectedDayTypes} onToggle={toggleDt} />
-              <FieldIsValid value={isValid} onChange={setIsValid} />
-            </>
-          )}
-
-          {op === "date-column-set" && (
-            <>
-              <div>
-                <label className="text-xs font-medium text-slate-600 block mb-1">Data</label>
-                <input
-                  type="date" value={date} min={range.from} max={range.to}
-                  onChange={(e) => setDate(e.target.value)}
-                  className="w-full border rounded px-2 py-1.5 text-sm"
-                />
-              </div>
-              <FieldIsValid value={isValid} onChange={setIsValid} />
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                ⚠ Sovrascrive eventuali eccezioni esistenti per questa data.
-              </p>
-            </>
-          )}
-
-          {op === "period-fill" && (
-            <>
-              <div>
-                <label className="text-xs font-medium text-slate-600 block mb-1">Service Period</label>
-                <select
-                  value={periodId} onChange={(e) => setPeriodId(e.target.value)}
-                  className="w-full border rounded px-2 py-1.5 text-sm"
-                >
-                  <option value="">— scegli —</option>
-                  {periods.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} · {p.startDate} → {p.endDate}
-                    </option>
-                  ))}
-                </select>
-                {periods.length === 0 && (
-                  <p className="text-xs text-slate-500 mt-1">
-                    Nessun service period definito. Crealo dalla pagina Service Periods.
-                  </p>
-                )}
-              </div>
-              <FieldDayTypes dayTypes={dayTypes} selected={selectedDayTypes} onToggle={toggleDt} />
-              <FieldIsValid value={isValid} onChange={setIsValid} />
-            </>
-          )}
-
-          {op === "clear-exceptions" && (
-            <div className="space-y-2">
-              <p className="text-sm">
-                Rimuove tutte le eccezioni puntuali nel range
-                <strong> {range.from} → {range.to}</strong>.
-              </p>
-              <label className="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded p-2">
-                <input
-                  type="checkbox" checked={confirmClear}
-                  onChange={(e) => setConfirmClear(e.target.checked)}
-                />
-                Confermo: l'operazione non è reversibile.
-              </label>
-            </div>
-          )}
-        </div>
-
-        <div className="border-t px-5 py-3 flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border">Annulla</button>
-          <button
-            onClick={() => mut.mutate()}
-            disabled={mut.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {mut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-            {op === "clear-exceptions" ? <Eraser className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
-            Applica
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FieldTrip({ trips, value, onChange }: { trips: PsValidityTrip[]; value: string; onChange: (v: string) => void }) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-slate-600 block mb-1">Corsa</label>
-      <select
-        value={value} onChange={(e) => onChange(e.target.value)}
-        className="w-full border rounded px-2 py-1.5 text-sm"
-      >
-        <option value="">— scegli —</option>
-        {trips.map((t) => (
-          <option key={t.id} value={t.id}>
-            {t.routeShortName ?? "?"} · {t.firstDeparture?.slice(0, 5) ?? "—"} · {t.headsign || t.shortName || t.variantName}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function FieldDayTypes({ dayTypes, selected, onToggle }: {
-  dayTypes: PsDayType[]; selected: Set<string>; onToggle: (id: string) => void;
-}) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-slate-600 block mb-1.5">Day-types</label>
-      <div className="grid grid-cols-2 gap-1.5">
-        {dayTypes.map((dt) => (
-          <label key={dt.id} className="flex items-center gap-2 text-sm border rounded px-2 py-1 cursor-pointer hover:bg-slate-50">
-            <input
-              type="checkbox" checked={selected.has(dt.id)}
-              onChange={() => onToggle(dt.id)}
-            />
-            <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: dt.color }} />
-            <span className="truncate">{dt.name}</span>
-          </label>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function FieldIsValid({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div>
-      <label className="text-xs font-medium text-slate-600 block mb-1">Imposta a</label>
-      <div className="flex gap-3">
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input type="radio" checked={value === true} onChange={() => onChange(true)} />
-          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-xs">Valido</span>
-        </label>
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input type="radio" checked={value === false} onChange={() => onChange(false)} />
-          <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-xs">Invalido</span>
-        </label>
       </div>
     </div>
   );
@@ -1928,29 +1554,34 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
   });
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center" onClick={onClose}>
       <div
-        className="bg-white rounded-lg shadow-2xl w-[640px] max-h-[80vh] overflow-auto"
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-[640px] max-h-[80vh] overflow-auto text-slate-100"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="border-b px-5 py-3 flex items-center justify-between">
+        <div className="border-b border-slate-800 px-5 py-3.5 flex items-center justify-between bg-gradient-to-r from-emerald-500/10 to-transparent">
           <div className="flex items-center gap-2">
-            <Wand2 className="h-5 w-5 text-emerald-600" />
-            <h2 className="font-semibold">Auto-import da GTFS calendars</h2>
+            <div className="h-8 w-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+              <Wand2 className="h-4 w-4 text-emerald-300" />
+            </div>
+            <div>
+              <h2 className="font-semibold text-sm">Auto-import da GTFS calendars</h2>
+              <p className="text-[11px] text-slate-500">Mappa i calendari GTFS in validità progetto</p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
+          <button onClick={onClose} className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-slate-100">
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <div className="p-5 space-y-3 text-sm">
-          <p className="text-slate-600">
-            Mappa i <strong>ps_calendars</strong> esistenti del progetto in <strong>ps_trip_day_validity</strong>:
+          <p className="text-slate-300">
+            Mappa i <code className="text-emerald-300 bg-slate-950 px-1 py-0.5 rounded text-xs">ps_calendars</code> esistenti del progetto in <code className="text-emerald-300 bg-slate-950 px-1 py-0.5 rounded text-xs">ps_trip_day_validity</code>:
           </p>
-          <ul className="text-xs text-slate-500 list-disc pl-5 space-y-1">
-            <li>Pattern lun-ven → day-type <span className="font-mono">feriale</span></li>
-            <li>Pattern sabato → day-type <span className="font-mono">sabato</span></li>
-            <li>Pattern domenica → day-type <span className="font-mono">festivo</span></li>
+          <ul className="text-xs text-slate-400 list-disc pl-5 space-y-1">
+            <li>Pattern lun-ven → day-type <span className="font-mono text-slate-300">feriale</span></li>
+            <li>Pattern sabato → day-type <span className="font-mono text-slate-300">sabato</span></li>
+            <li>Pattern domenica → day-type <span className="font-mono text-slate-300">festivo</span></li>
             <li>Date eccezione (calendar_dates) → eccezioni puntuali per ogni corsa del calendar</li>
             <li>Imposta valid_from/valid_to del trip dal range del calendar (solo se NULL)</li>
           </ul>
@@ -1959,7 +1590,7 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
             <button
               onClick={() => previewMut.mutate()}
               disabled={previewMut.isPending}
-              className="px-3 py-1.5 text-sm rounded border bg-white hover:bg-slate-50 flex items-center gap-1.5"
+              className="px-3 py-1.5 text-sm rounded-md border border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-300 flex items-center gap-1.5 disabled:opacity-50"
             >
               {previewMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
               1. Anteprima (dry-run)
@@ -1967,29 +1598,29 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
           )}
 
           {preview && (
-            <div className="border rounded">
-              <div className="px-3 py-2 bg-slate-50 border-b text-xs font-medium">
-                Preview · {preview.summary.calendars} calendari · {preview.summary.validityUpserts} righe validità
-                + {preview.summary.exceptionInserts} eccezioni
+            <div className="border border-slate-700 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-slate-950 border-b border-slate-700 text-xs font-medium text-slate-300">
+                Preview · <span className="text-emerald-300">{preview.summary.calendars}</span> calendari · <span className="text-emerald-300">{preview.summary.validityUpserts}</span> righe validità
+                + <span className="text-emerald-300">{preview.summary.exceptionInserts}</span> eccezioni
               </div>
               <table className="w-full text-xs">
-                <thead className="bg-slate-50 border-b">
+                <thead className="bg-slate-950 border-b border-slate-700 text-slate-400">
                   <tr>
-                    <th className="text-left px-3 py-1.5">Calendar</th>
-                    <th className="text-right px-3 py-1.5">Trip</th>
-                    <th className="text-right px-3 py-1.5">DayTypes</th>
-                    <th className="text-right px-3 py-1.5">Validità</th>
-                    <th className="text-right px-3 py-1.5">Eccezioni</th>
+                    <th className="text-left px-3 py-1.5 font-medium">Calendar</th>
+                    <th className="text-right px-3 py-1.5 font-medium">Trip</th>
+                    <th className="text-right px-3 py-1.5 font-medium">DayTypes</th>
+                    <th className="text-right px-3 py-1.5 font-medium">Validità</th>
+                    <th className="text-right px-3 py-1.5 font-medium">Eccezioni</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="text-slate-300">
                   {preview.perCalendar.map((c) => (
-                    <tr key={c.calendarId} className="border-b">
-                      <td className="px-3 py-1 font-mono">{c.calendarCode ?? c.calendarId.slice(0, 8)}</td>
-                      <td className="px-3 py-1 text-right">{c.tripCount}</td>
-                      <td className="px-3 py-1 text-right">{c.dayTypeCount}</td>
-                      <td className="px-3 py-1 text-right">{c.validityRowsToWrite}</td>
-                      <td className="px-3 py-1 text-right">{c.exceptionRowsToWrite}</td>
+                    <tr key={c.calendarId} className="border-b border-slate-800 hover:bg-slate-800/30">
+                      <td className="px-3 py-1 font-mono text-slate-200">{c.calendarCode ?? c.calendarId.slice(0, 8)}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{c.tripCount}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{c.dayTypeCount}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{c.validityRowsToWrite}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{c.exceptionRowsToWrite}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1998,12 +1629,12 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
           )}
         </div>
 
-        <div className="border-t px-5 py-3 flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border">Annulla</button>
+        <div className="border-t border-slate-800 px-5 py-3 flex justify-end gap-2 bg-slate-950/40">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
           <button
             onClick={() => applyMut.mutate()}
             disabled={!preview || applyMut.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
+            className="px-3 py-1.5 text-sm rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50 flex items-center gap-1.5 font-medium shadow-sm"
           >
             {applyMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             <Wand2 className="h-3.5 w-3.5" />
@@ -2089,42 +1720,47 @@ function GenerateUnitDialog({
   }, [from, to]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div
-        className="bg-white rounded-lg shadow-2xl w-[600px] max-h-[88vh] overflow-auto"
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-[620px] max-h-[88vh] overflow-auto text-slate-100"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="border-b px-5 py-3 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-white">
-          <div className="flex items-center gap-2">
-            <Rocket className="h-5 w-5 text-indigo-600" />
-            <h2 className="font-semibold">Genera Unità di Progettazione</h2>
+        <div className="border-b border-slate-800 px-5 py-3 flex items-center justify-between bg-gradient-to-r from-indigo-500/10 via-violet-500/5 to-transparent">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
+              <Rocket className="h-4 w-4 text-indigo-300" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-slate-100">Genera Unità di Progettazione</h2>
+              <p className="text-[11px] text-slate-400">Snapshot del filtro validità → nuovo progetto Scheduling</p>
+            </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-slate-100">
+          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <div className="p-5 space-y-4">
-          <p className="text-xs text-slate-600 bg-slate-50 border rounded p-2">
-            Crea un nuovo progetto Scheduling collegato a <strong>{projectName}</strong> con
+          <p className="text-xs text-slate-400 bg-slate-950 border border-slate-800 rounded-lg p-3 leading-relaxed">
+            Crea un nuovo progetto Scheduling collegato a <strong className="text-slate-200">{projectName}</strong> con
             il filtro di validità snapshot (range + day-types). La pipeline Scheduling potrà
             poi materializzare il GTFS filtrato e procedere con vehicle/driver scheduling.
           </p>
 
           <div>
-            <label className="text-xs font-medium text-slate-600 block mb-1">Nome unità *</label>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-1.5">Nome unità *</label>
             <input
               type="text" value={name} onChange={(e) => setName(e.target.value)}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30"
               placeholder="es. Inverno 2026 · Feriali"
             />
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-600 block mb-1">Descrizione (opzionale)</label>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-1.5">Descrizione (opzionale)</label>
             <textarea
               value={description} onChange={(e) => setDescription(e.target.value)}
-              className="w-full border rounded px-2 py-1.5 text-sm"
+              className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30"
               rows={2}
               placeholder="Note libere sull'unità di progettazione"
             />
@@ -2132,76 +1768,81 @@ function GenerateUnitDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-medium text-slate-600 block mb-1">Da</label>
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-1.5">Da</label>
               <input
                 type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-                className="w-full border rounded px-2 py-1.5 text-sm"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
               />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-600 block mb-1">A</label>
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 block mb-1.5">A</label>
               <input
                 type="date" value={to} onChange={(e) => setTo(e.target.value)}
-                className="w-full border rounded px-2 py-1.5 text-sm"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
               />
             </div>
           </div>
           {days > 0 && (
-            <p className="text-[11px] text-slate-500 -mt-2">
-              Range: <strong>{days}</strong> giorni
+            <p className="text-[11px] text-slate-400 -mt-2">
+              Range: <strong className="text-indigo-300">{days}</strong> giorni
             </p>
           )}
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-medium text-slate-600">
+              <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 Day-types da includere ({selected.size}/{dayTypes.length})
               </label>
-              <div className="flex gap-1">
+              <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => setSelected(new Set(dayTypes.map((dt) => dt.id)))}
-                  className="text-[11px] text-blue-600 hover:underline"
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 hover:underline"
                 >Tutti</button>
-                <span className="text-slate-300">·</span>
+                <span className="text-slate-600">·</span>
                 <button
                   type="button"
                   onClick={() => setSelected(new Set())}
-                  className="text-[11px] text-blue-600 hover:underline"
+                  className="text-[11px] text-indigo-400 hover:text-indigo-300 hover:underline"
                 >Nessuno</button>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-1.5 max-h-44 overflow-auto border rounded p-2">
+            <div className="grid grid-cols-2 gap-1 max-h-44 overflow-auto bg-slate-950 border border-slate-800 rounded-lg p-2">
               {dayTypes.map((dt) => (
-                <label key={dt.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-50 px-1 py-0.5 rounded">
+                <label key={dt.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-slate-800/60 px-2 py-1 rounded transition-colors">
                   <input
                     type="checkbox" checked={selected.has(dt.id)}
                     onChange={() => toggle(dt.id)}
+                    className="accent-indigo-500"
                   />
-                  <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: dt.color }} />
-                  <span className="truncate">{dt.name}</span>
+                  <span className="inline-block w-3 h-3 rounded-sm border border-slate-700" style={{ backgroundColor: dt.color }} />
+                  <span className="truncate text-slate-200">{dt.name}</span>
                 </label>
               ))}
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <label className="flex items-center gap-2 text-sm cursor-pointer text-slate-300">
             <input
               type="checkbox" checked={includeOnlyValid}
               onChange={(e) => setIncludeOnlyValid(e.target.checked)}
+              className="accent-indigo-500"
             />
-            <span>Includi solo le corse valide nel filtro (consigliato)</span>
+            <span>Includi solo le corse valide nel filtro <span className="text-slate-500">(consigliato)</span></span>
           </label>
         </div>
 
-        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
-          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded border bg-white">Annulla</button>
+        <div className="border-t border-slate-800 px-5 py-3 flex justify-end gap-2 bg-slate-950/50">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+          >Annulla</button>
           <button
             onClick={() => mut.mutate()}
             disabled={!canSubmit}
-            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+            className="px-4 py-1.5 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-lg shadow-indigo-900/30 transition-all"
           >
-            {mut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            {mut.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             <Rocket className="h-3.5 w-3.5" />
             Crea Unità & vai alla pipeline
           </button>
@@ -2221,9 +1862,12 @@ function ValiditySidebar(props: {
   openDayTypeAdvanced: () => void;
 }) {
   return (
-    <aside className="w-64 border-l bg-white flex flex-col">
-      <div className="px-3 py-2 border-b bg-slate-50">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-700">Giorni-Tipo</div>
+    <aside className="w-64 border-l border-slate-800 bg-slate-900/40 flex flex-col">
+      <div className="px-3 py-2.5 border-b border-slate-800 bg-slate-900/60 flex items-center gap-2">
+        <div className="h-6 w-6 rounded-md bg-violet-500/15 border border-violet-500/30 flex items-center justify-center">
+          <Tags className="h-3 w-3 text-violet-300" />
+        </div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Giorni-Tipo</div>
       </div>
       <div className="flex-1 overflow-auto p-3">
         <DayTypesPanel
@@ -2246,33 +1890,40 @@ function DayTypesPanel(props: {
   const hasSel = props.selectedCount > 0;
   return (
     <div className="space-y-2">
-      <div className="text-xs uppercase tracking-wide text-slate-700 font-semibold px-1">
-        Giorni-Tipo
-        {hasSel && <span className="ml-2 text-blue-700 font-bold">({props.selectedCount} sel.)</span>}
-      </div>
+      {hasSel && (
+        <div className="px-2 py-1.5 rounded-md bg-sky-500/10 border border-sky-500/30 text-[11px] text-sky-300 font-medium">
+          {props.selectedCount} {props.selectedCount === 1 ? "cella selezionata" : "celle selezionate"}
+        </div>
+      )}
       <div className="space-y-1">
         {props.dayTypes.map((dt) => (
           <button
             key={dt.id}
             disabled={!hasSel}
             onClick={() => props.onApply(dt.id)}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-100 text-sm text-slate-900 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-800 hover:border-slate-600 text-sm text-slate-200 font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             title={hasSel ? `Applica "${dt.name}" alle date selezionate` : "Seleziona prima delle celle"}
           >
-            <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: dt.color || "#94a3b8" }} />
+            <span className="inline-block h-3 w-3 rounded border border-slate-700" style={{ backgroundColor: dt.color || "#94a3b8" }} />
             <span className="truncate">{dt.name}</span>
           </button>
         ))}
+        {props.dayTypes.length === 0 && (
+          <div className="text-[12px] text-slate-500 px-2 py-3 text-center border border-dashed border-slate-700 rounded-lg">
+            Nessun giorno-tipo
+          </div>
+        )}
       </div>
       <button
         onClick={props.onManage}
-        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-100 hover:bg-slate-200 text-slate-800 font-medium"
+        className="w-full mt-2 px-2.5 py-1.5 text-xs rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 text-slate-200 font-medium flex items-center justify-center gap-1.5 transition-colors"
       >
-        Gestisci giorni-tipo…
+        <Settings2 className="h-3 w-3" />
+        Gestisci giorni-tipo
       </button>
       {!hasSel && (
-        <div className="text-[12px] text-slate-700 px-1 pt-2 leading-snug">
-          Suggerimento: clicca sull'<strong>header data</strong> (in alto) per selezionare giorni, poi clicca un giorno-tipo per applicarlo.
+        <div className="text-[11px] text-slate-400 px-1 pt-2 leading-relaxed">
+          💡 Clicca sull'<strong className="text-slate-300">header di una data</strong> per selezionare i giorni, poi scegli un giorno-tipo da applicare.
         </div>
       )}
     </div>
@@ -2304,11 +1955,19 @@ function CategoryEditorDialog(props: {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-3 border-b">
-          <div className="font-medium">Categorie Validità (globali)</div>
-          <button onClick={props.onClose} className="p-1 hover:bg-slate-100 rounded">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col text-slate-100">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/5 to-transparent">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-fuchsia-500/15 border border-fuchsia-500/30 flex items-center justify-center">
+              <Tags className="h-4 w-4 text-fuchsia-300" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Categorie Validità</div>
+              <div className="text-[11px] text-slate-400">Tag globali condivisi (es. Scuole, Festività)</div>
+            </div>
+          </div>
+          <button onClick={props.onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -2317,38 +1976,41 @@ function CategoryEditorDialog(props: {
             <CategoryRow key={c.id} category={c} />
           ))}
           {props.categories.length === 0 && (
-            <div className="text-sm text-slate-500">Nessuna categoria. Creane una qui sotto.</div>
+            <div className="text-sm text-slate-400 text-center py-8 border border-dashed border-slate-700 rounded-lg">
+              Nessuna categoria. Creane una qui sotto.
+            </div>
           )}
         </div>
-        <div className="border-t p-3 bg-slate-50 space-y-2">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Nuova categoria</div>
+        <div className="border-t border-slate-800 p-4 bg-slate-950/50 space-y-2">
+          <div className="text-[11px] uppercase tracking-wide text-slate-400 font-semibold">Nuova categoria</div>
           <div className="flex items-center gap-2">
             <input
               type="text"
               placeholder="Nome (es. Scuole Aperte)"
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
-              className="flex-1 px-2 py-1 text-sm border rounded"
+              className="flex-1 px-3 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-fuchsia-500 focus:ring-1 focus:ring-fuchsia-500/30"
             />
             <input
               type="text"
               placeholder="code"
               value={draftCode}
               onChange={(e) => setDraftCode(e.target.value)}
-              className="w-32 px-2 py-1 text-sm border rounded"
+              className="w-32 px-3 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-fuchsia-500 focus:ring-1 focus:ring-fuchsia-500/30"
             />
             <input
               type="color"
               value={draftColor}
               onChange={(e) => setDraftColor(e.target.value)}
-              className="h-8 w-10 border rounded"
+              className="h-8 w-10 bg-slate-950 border border-slate-700 rounded-lg cursor-pointer"
             />
             <button
               onClick={() => createMut.mutate()}
               disabled={!draftName.trim() || createMut.isPending}
-              className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-fuchsia-600 text-white hover:bg-fuchsia-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 transition-colors"
             >
-              {createMut.isPending ? "…" : "Crea"}
+              {createMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              Crea
             </button>
           </div>
         </div>
@@ -2379,39 +2041,45 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
   });
 
   return (
-    <div className="flex items-center gap-2 border rounded px-2 py-1.5 bg-white">
-      <span className="inline-block h-4 w-4 rounded" style={{ backgroundColor: color }} />
+    <div className="flex items-center gap-2 border border-slate-800 hover:border-slate-700 rounded-lg px-3 py-2 bg-slate-950/50 transition-colors">
+      <span className="inline-block h-4 w-4 rounded border border-slate-700 flex-shrink-0" style={{ backgroundColor: color }} />
       {editing ? (
         <>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="flex-1 px-2 py-0.5 text-sm border rounded"
+            className="flex-1 px-2 py-1 text-sm bg-slate-950 border border-slate-700 rounded text-slate-100 focus:outline-none focus:border-fuchsia-500"
           />
           <input
             type="color"
             value={color}
             onChange={(e) => setColor(e.target.value)}
-            className="h-6 w-8 border rounded"
+            className="h-7 w-9 bg-slate-950 border border-slate-700 rounded cursor-pointer"
           />
           <button
             onClick={() => updateMut.mutate()}
             disabled={updateMut.isPending}
-            className="px-2 py-0.5 text-xs rounded bg-indigo-600 text-white"
+            className="px-2.5 py-1 text-xs font-medium rounded-md bg-fuchsia-600 text-white hover:bg-fuchsia-500 disabled:opacity-40"
           >
             Salva
           </button>
-          <button onClick={() => setEditing(false)} className="px-2 py-0.5 text-xs rounded border">
+          <button
+            onClick={() => setEditing(false)}
+            className="px-2.5 py-1 text-xs rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+          >
             Annulla
           </button>
         </>
       ) : (
         <>
           <div className="flex-1 text-sm">
-            <span className="font-medium">{category.name}</span>{" "}
+            <span className="font-medium text-slate-100">{category.name}</span>{" "}
             <span className="text-xs text-slate-500">({category.code})</span>
           </div>
-          <button onClick={() => setEditing(true)} className="px-2 py-0.5 text-xs rounded border">
+          <button
+            onClick={() => setEditing(true)}
+            className="px-2.5 py-1 text-xs rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+          >
             Modifica
           </button>
           <button
@@ -2419,7 +2087,7 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
               if (confirm(`Eliminare la categoria "${category.name}"?`)) deleteMut.mutate();
             }}
             disabled={deleteMut.isPending}
-            className="px-2 py-0.5 text-xs rounded border text-rose-700 hover:bg-rose-50"
+            className="px-2.5 py-1 text-xs rounded-md border border-rose-500/30 bg-rose-500/5 text-rose-300 hover:bg-rose-500/15 transition-colors"
           >
             Elimina
           </button>
@@ -2502,156 +2170,176 @@ function ComputeUnitsDialog(props: {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
-        <div className="flex items-center justify-between px-5 py-3 border-b">
-          <div className="font-medium flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-indigo-600" />
-            Calcola Unità di Progettazione
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col text-slate-100">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-gradient-to-r from-indigo-500/10 via-violet-500/5 to-transparent">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center">
+              <Sparkles className="h-4 w-4 text-indigo-300" />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Calcola Unità di Progettazione</div>
+              <div className="text-[11px] text-slate-400">Raggruppa per categoria + giorno-tipo + composizione corse</div>
+            </div>
           </div>
-          <button onClick={props.onClose} className="p-1 hover:bg-slate-100 rounded">
+          <button onClick={props.onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="px-5 py-3 border-b bg-slate-50 flex items-end gap-2">
-          <label className="text-xs text-slate-600">
+        <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/50 flex items-end gap-3">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
             Dal
             <input
               type="date"
               value={from}
               onChange={(e) => setFrom(e.target.value)}
-              className="block px-2 py-1 text-sm border rounded"
+              className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
             />
           </label>
-          <label className="text-xs text-slate-600">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
             Al
             <input
               type="date"
               value={to}
               onChange={(e) => setTo(e.target.value)}
-              className="block px-2 py-1 text-sm border rounded"
+              className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
             />
           </label>
           <button
             onClick={() => computeMut.mutate()}
             disabled={!from || !to || computeMut.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+            className="px-3 py-1.5 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-lg shadow-indigo-900/30 transition-all"
           >
-            {computeMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            {computeMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
             Calcola
           </button>
           {groups && (
-            <div className="ml-auto text-xs text-slate-600">
-              {groups.length} gruppi · {selected.size} selezionati
+            <div className="ml-auto text-xs text-slate-400">
+              <span className="text-slate-200 font-semibold">{groups.length}</span> gruppi · <span className="text-indigo-300 font-semibold">{selected.size}</span> selezionati
             </div>
           )}
         </div>
         <div className="flex-1 overflow-auto p-3">
           {!groups && !computeMut.isPending && (
-            <div className="text-sm text-slate-500 px-2 py-6 text-center">
-              Imposta il range e clicca <strong>Calcola</strong>. Le corse attive di ogni giorno verranno raggruppate per
-              categoria + giorno-tipo + composizione corse.
+            <div className="text-sm text-slate-400 px-2 py-10 text-center">
+              <Sparkles className="h-8 w-8 mx-auto mb-2 text-indigo-400/50" />
+              Imposta il range e clicca <strong className="text-indigo-300">Calcola</strong>.
+              <div className="text-xs text-slate-500 mt-1">
+                Le corse attive di ogni giorno verranno raggruppate per categoria + giorno-tipo + composizione.
+              </div>
             </div>
           )}
           {computeMut.isPending && (
-            <div className="text-sm text-slate-500 px-2 py-6 text-center flex items-center justify-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
+            <div className="text-sm text-slate-400 px-2 py-10 text-center flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />
               Calcolo in corso…
             </div>
           )}
           {groups && groups.length === 0 && (
-            <div className="text-sm text-slate-500 px-2 py-6 text-center">
+            <div className="text-sm text-slate-400 px-2 py-10 text-center">
               Nessun gruppo trovato nel range selezionato.
             </div>
           )}
           {groups && groups.length > 0 && (
             <table className="w-full text-sm">
-              <thead className="text-xs text-slate-500 uppercase tracking-wide">
-                <tr>
-                  <th className="px-2 py-1 text-left">
+              <thead className="text-[11px] text-slate-400 uppercase tracking-wide">
+                <tr className="border-b border-slate-800">
+                  <th className="px-2 py-2 text-left">
                     <input
                       type="checkbox"
                       checked={selected.size === groups.length}
                       onChange={toggleAll}
+                      className="accent-indigo-500"
                     />
                   </th>
-                  <th className="px-2 py-1 text-left">Nome</th>
-                  <th className="px-2 py-1 text-left">Categoria</th>
-                  <th className="px-2 py-1 text-left">Giorno-Tipo</th>
-                  <th className="px-2 py-1 text-right">Giorni</th>
-                  <th className="px-2 py-1 text-right">Corse</th>
+                  <th className="px-2 py-2 text-left font-semibold">Nome</th>
+                  <th className="px-2 py-2 text-left font-semibold">Categoria</th>
+                  <th className="px-2 py-2 text-left font-semibold">Giorno-Tipo</th>
+                  <th className="px-2 py-2 text-right font-semibold">Giorni</th>
+                  <th className="px-2 py-2 text-right font-semibold">Corse</th>
                 </tr>
               </thead>
               <tbody>
                 {groups.map((g) => (
-                  <tr key={g.validityId} className="border-t hover:bg-slate-50">
-                    <td className="px-2 py-1.5">
+                  <tr key={g.validityId} className="border-b border-slate-800/60 hover:bg-slate-800/30 transition-colors">
+                    <td className="px-2 py-2">
                       <input
                         type="checkbox"
                         checked={selected.has(g.validityId)}
                         onChange={() => toggle(g.validityId)}
+                        className="accent-indigo-500"
                       />
                     </td>
-                    <td className="px-2 py-1.5">
+                    <td className="px-2 py-2">
                       <input
                         type="text"
                         value={names[g.validityId] ?? ""}
                         onChange={(e) => setNames({ ...names, [g.validityId]: e.target.value })}
-                        className="w-full px-2 py-0.5 text-sm border rounded"
+                        className="w-full px-2 py-1 text-sm bg-slate-950 border border-slate-700 rounded text-slate-100 focus:outline-none focus:border-indigo-500"
                       />
                     </td>
-                    <td className="px-2 py-1.5">
+                    <td className="px-2 py-2">
                       {g.categoryName ? (
                         <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
-                          style={{ backgroundColor: (g.categoryColor || "#94a3b8") + "33" }}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium border"
+                          style={{
+                            backgroundColor: (g.categoryColor || "#94a3b8") + "20",
+                            borderColor: (g.categoryColor || "#94a3b8") + "50",
+                            color: g.categoryColor || "#cbd5e1",
+                          }}
                         >
                           <span
-                            className="inline-block h-2 w-2 rounded"
+                            className="inline-block h-2 w-2 rounded-sm"
                             style={{ backgroundColor: g.categoryColor || "#94a3b8" }}
                           />
                           {g.categoryName}
                         </span>
                       ) : (
-                        <span className="text-xs text-slate-400">—</span>
+                        <span className="text-xs text-slate-500">—</span>
                       )}
                     </td>
-                    <td className="px-2 py-1.5">
+                    <td className="px-2 py-2">
                       {g.dayTypeName ? (
                         <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
-                          style={{ backgroundColor: (g.dayTypeColor || "#94a3b8") + "33" }}
+                          className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium border"
+                          style={{
+                            backgroundColor: (g.dayTypeColor || "#94a3b8") + "20",
+                            borderColor: (g.dayTypeColor || "#94a3b8") + "50",
+                            color: g.dayTypeColor || "#cbd5e1",
+                          }}
                         >
                           <span
-                            className="inline-block h-2 w-2 rounded"
+                            className="inline-block h-2 w-2 rounded-sm"
                             style={{ backgroundColor: g.dayTypeColor || "#94a3b8" }}
                           />
                           {g.dayTypeName}
                         </span>
                       ) : (
-                        <span className="text-xs text-slate-400">—</span>
+                        <span className="text-xs text-slate-500">—</span>
                       )}
                     </td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">{g.dates.length}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums">{g.tripIds.length}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-300">{g.dates.length}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-300">{g.tripIds.length}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
-        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
-          <button onClick={props.onClose} className="px-3 py-1.5 text-sm rounded border bg-white">
+        <div className="border-t border-slate-800 px-5 py-3 flex justify-end gap-2 bg-slate-950/50">
+          <button
+            onClick={props.onClose}
+            className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800 hover:text-slate-100 transition-colors"
+          >
             Annulla
           </button>
           <button
             onClick={() => saveMut.mutate()}
             disabled={!groups || selected.size === 0 || saveMut.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+            className="px-4 py-1.5 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-lg shadow-indigo-900/30 transition-all"
           >
-            {saveMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
-            <Save className="h-3.5 w-3.5" />
-            Salva {selected.size} unità
+            {saveMut.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+            Salva {selected.size} {selected.size === 1 ? "unità" : "unità"}
           </button>
         </div>
       </div>
@@ -2810,48 +2498,48 @@ function CategoryPeriodsDialog(props: {
   const activeCat = activeCategoryId ? catById.get(activeCategoryId) : undefined;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden text-slate-100">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-fuchsia-50 to-violet-50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/10 to-transparent">
           <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-fuchsia-500 to-violet-600 flex items-center justify-center shadow-md">
+            <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-fuchsia-500 to-violet-600 flex items-center justify-center shadow-lg shadow-fuchsia-900/30">
               <CalendarIcon className="h-5 w-5 text-white" />
             </div>
             <div>
-              <div className="font-bold text-slate-900 text-lg">Categorie Periodi</div>
-              <div className="text-xs text-slate-600">
+              <div className="font-semibold text-slate-100 text-base">Categorie Periodi</div>
+              <div className="text-xs text-slate-400">
                 Attiva una categoria a sinistra, poi clicca i giorni per dipingerli. Riclicca per togliere.
               </div>
             </div>
           </div>
-          <button onClick={props.onClose} className="p-2 hover:bg-white/70 rounded-lg transition-colors">
-            <X className="h-5 w-5 text-slate-700" />
+          <button onClick={props.onClose} className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-100">
+            <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="flex-1 overflow-hidden flex">
           {/* SIDEBAR sinistra: lista categorie */}
-          <div className="w-72 border-r bg-slate-50 flex flex-col">
-            <div className="px-4 py-3 border-b bg-white">
-              <div className="text-xs font-bold uppercase tracking-wide text-slate-700 mb-1">Pennello attivo</div>
+          <div className="w-72 border-r border-slate-800 bg-slate-950/40 flex flex-col">
+            <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/60">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Pennello attivo</div>
               {paintMode === "paint" && activeCat ? (
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="inline-block h-5 w-5 rounded shadow-sm" style={{ backgroundColor: activeCat.color }} />
-                  <span className="text-sm font-semibold text-slate-900 truncate">{activeCat.name}</span>
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-5 w-5 rounded border border-slate-700 shadow-sm" style={{ backgroundColor: activeCat.color }} />
+                  <span className="text-sm font-semibold text-slate-100 truncate">{activeCat.name}</span>
                 </div>
               ) : paintMode === "erase" ? (
-                <div className="flex items-center gap-2 mt-1 text-rose-700">
+                <div className="flex items-center gap-2 text-rose-300">
                   <Eraser className="h-4 w-4" />
                   <span className="text-sm font-semibold">Gomma</span>
                 </div>
               ) : (
-                <div className="text-xs text-slate-500 italic mt-1">Nessuna categoria selezionata</div>
+                <div className="text-xs text-slate-500 italic">Nessuna categoria selezionata</div>
               )}
             </div>
             <div className="flex-1 overflow-auto p-3 space-y-1.5">
               {props.categories.length === 0 && (
-                <div className="text-sm text-slate-600 px-2 py-3 text-center">
+                <div className="text-sm text-slate-400 px-2 py-3 text-center border border-dashed border-slate-700 rounded-lg">
                   Nessuna categoria.<br />Creane una qui sotto.
                 </div>
               )}
@@ -2863,13 +2551,13 @@ function CategoryPeriodsDialog(props: {
                     onClick={() => { setActiveCategoryId(c.id); setPaintMode("paint"); }}
                     className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-sm font-medium transition-all ${
                       isActive
-                        ? "bg-white border-fuchsia-500 ring-2 ring-fuchsia-200 text-slate-900 shadow-sm"
-                        : "bg-white border-slate-200 hover:border-slate-300 hover:shadow-sm text-slate-800"
+                        ? "bg-fuchsia-500/10 border-fuchsia-500/50 ring-1 ring-fuchsia-500/30 text-slate-100 shadow-sm"
+                        : "bg-slate-950 border-slate-700 hover:border-slate-600 hover:bg-slate-900 text-slate-200"
                     }`}
                   >
-                    <span className="inline-block h-5 w-5 rounded shadow-sm shrink-0" style={{ backgroundColor: c.color || "#94a3b8" }} />
+                    <span className="inline-block h-5 w-5 rounded border border-slate-700 shadow-sm shrink-0" style={{ backgroundColor: c.color || "#94a3b8" }} />
                     <span className="truncate flex-1 text-left">{c.name}</span>
-                    {isActive && <Check className="h-4 w-4 text-fuchsia-600 shrink-0" />}
+                    {isActive && <Check className="h-4 w-4 text-fuchsia-300 shrink-0" />}
                   </button>
                 );
               })}
@@ -2877,52 +2565,52 @@ function CategoryPeriodsDialog(props: {
                 onClick={() => setPaintMode("erase")}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-sm font-medium mt-3 transition-all ${
                   paintMode === "erase"
-                    ? "bg-rose-50 border-rose-500 ring-2 ring-rose-200 text-rose-900 shadow-sm"
-                    : "bg-white border-slate-200 hover:border-rose-300 hover:bg-rose-50/50 text-rose-700"
+                    ? "bg-rose-500/10 border-rose-500/50 ring-1 ring-rose-500/30 text-rose-200 shadow-sm"
+                    : "bg-slate-950 border-slate-700 hover:border-rose-500/40 hover:bg-rose-500/5 text-rose-300"
                 }`}
               >
                 <Eraser className="h-4 w-4 shrink-0" />
                 <span className="truncate flex-1 text-left">Gomma (cancella)</span>
-                {paintMode === "erase" && <Check className="h-4 w-4 text-rose-600 shrink-0" />}
+                {paintMode === "erase" && <Check className="h-4 w-4 text-rose-300 shrink-0" />}
               </button>
             </div>
-            <div className="border-t p-3 bg-white">
+            <div className="border-t border-slate-800 p-3 bg-slate-950/40">
               <button
                 onClick={props.openCategoryEditor}
-                className="w-full px-3 py-2 text-xs rounded-lg border bg-white hover:bg-slate-50 text-slate-800 font-semibold flex items-center gap-1.5 justify-center shadow-sm"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200 font-semibold flex items-center gap-1.5 justify-center transition-colors"
               >
                 <Settings2 className="h-3.5 w-3.5" />
-                Gestisci categorie…
+                Gestisci categorie
               </button>
             </div>
           </div>
 
           {/* CALENDARIO mensile */}
-          <div className="flex-1 flex flex-col overflow-hidden bg-white">
-            <div className="flex items-center justify-between px-5 py-3 border-b bg-white">
+          <div className="flex-1 flex flex-col overflow-hidden bg-slate-900">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900/60">
               <div className="flex items-center gap-2">
-                <button onClick={goPrev} className="px-3 py-1.5 text-sm rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-medium">‹</button>
-                <button onClick={goToday} className="px-3 py-1.5 text-xs rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-semibold">Oggi</button>
-                <button onClick={goNext} className="px-3 py-1.5 text-sm rounded-lg border bg-white hover:bg-slate-100 text-slate-700 font-medium">›</button>
-                <div className="ml-3 text-lg font-bold text-slate-900 capitalize">{monthName}</div>
+                <button onClick={goPrev} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-200 font-medium transition-colors">‹</button>
+                <button onClick={goToday} className="px-3 py-1.5 text-xs rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-200 font-semibold transition-colors">Oggi</button>
+                <button onClick={goNext} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 bg-slate-950 hover:bg-slate-800 text-slate-200 font-medium transition-colors">›</button>
+                <div className="ml-3 text-base font-semibold text-slate-100 capitalize">{monthName}</div>
               </div>
-              <div className="text-xs text-slate-600 flex items-center gap-3">
+              <div className="text-xs text-slate-400 flex items-center gap-3">
                 <span>
-                  Click = applica/togli · <kbd className="px-1.5 py-0.5 bg-slate-100 border rounded text-slate-900 text-[10px] font-mono">SHIFT</kbd>+Click = range
+                  Click = applica/togli · <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-slate-200 text-[10px] font-mono">SHIFT</kbd>+Click = range
                 </span>
                 {setMut.isPending && (
-                  <span className="text-xs text-fuchsia-700 font-semibold flex items-center gap-1">
+                  <span className="text-xs text-fuchsia-300 font-semibold flex items-center gap-1">
                     <Loader2 className="h-3 w-3 animate-spin" /> salvo…
                   </span>
                 )}
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-5 bg-gradient-to-b from-slate-50/50 to-white">
+            <div className="flex-1 overflow-auto p-5 bg-slate-950/30">
               {/* Intestazione giorni della settimana */}
               <div className="grid grid-cols-7 gap-2 mb-2">
                 {["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"].map((g, i) => (
-                  <div key={g} className={`text-center text-[11px] font-bold uppercase tracking-wider py-1.5 ${i >= 5 ? "text-rose-600" : "text-slate-600"}`}>
+                  <div key={g} className={`text-center text-[11px] font-bold uppercase tracking-wider py-1.5 ${i >= 5 ? "text-rose-400" : "text-slate-400"}`}>
                     {g}
                   </div>
                 ))}
@@ -2932,7 +2620,7 @@ function CategoryPeriodsDialog(props: {
                   if (!c) return <div key={`e-${idx}`} className="h-24 bg-transparent" />;
                   const catId = dateToCatId.get(c.iso);
                   const cat = catId ? catById.get(catId) : undefined;
-                  const bg = cat?.color ? `${cat.color}33` : undefined; // ~20% opacity
+                  const bg = cat?.color ? `${cat.color}40` : undefined; // ~25% opacity
                   const ringColor = cat?.color;
                   const wouldRemove =
                     paintMode === "paint" &&
@@ -2943,26 +2631,26 @@ function CategoryPeriodsDialog(props: {
                       onClick={(e) => handleDayClick(c.iso, e)}
                       disabled={setMut.isPending}
                       className={`group relative h-24 rounded-xl border text-left p-2 transition-all hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 ${
-                        c.weekend && !cat ? "bg-rose-50/40" : !cat ? "bg-white" : ""
-                      } ${cat ? "border-2 shadow-sm" : "border-slate-200"} ${
-                        c.isToday ? "ring-2 ring-blue-400 ring-offset-1" : ""
+                        c.weekend && !cat ? "bg-rose-950/30 border-slate-800" : !cat ? "bg-slate-900 border-slate-800 hover:border-slate-700" : ""
+                      } ${cat ? "border-2 shadow-sm" : ""} ${
+                        c.isToday ? "ring-2 ring-sky-400/60 ring-offset-2 ring-offset-slate-950" : ""
                       } disabled:opacity-50 disabled:cursor-wait`}
                       style={cat ? { backgroundColor: bg, borderColor: ringColor } : undefined}
                       title={cat ? `${c.iso} · ${cat.name}${wouldRemove ? "\n(click per togliere)" : ""}` : `${c.iso} · nessuna categoria`}
                     >
                       <div className="flex items-start justify-between">
                         <span className={`text-base font-bold leading-none ${
-                          c.isToday ? "text-blue-700" :
-                          c.weekend ? "text-rose-700" : "text-slate-900"
+                          c.isToday ? "text-sky-300" :
+                          c.weekend ? "text-rose-300" : "text-slate-100"
                         }`}>{c.day}</span>
                         {c.isToday && (
-                          <span className="text-[9px] font-bold text-blue-700 bg-blue-100 rounded px-1 py-0.5 leading-none">OGGI</span>
+                          <span className="text-[9px] font-bold text-sky-300 bg-sky-500/15 border border-sky-500/30 rounded px-1 py-0.5 leading-none">OGGI</span>
                         )}
                       </div>
                       {cat && (
                         <div className="mt-2 flex items-center gap-1">
                           <span
-                            className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                            className="inline-block h-2.5 w-2.5 rounded-full shrink-0 border border-slate-900/30"
                             style={{ backgroundColor: cat.color }}
                           />
                           <span
@@ -2981,11 +2669,11 @@ function CategoryPeriodsDialog(props: {
 
             {/* Legenda */}
             {props.categories.length > 0 && (
-              <div className="border-t px-5 py-2.5 bg-slate-50/80 flex items-center gap-4 flex-wrap">
-                <span className="text-xs font-bold uppercase tracking-wide text-slate-600">Legenda:</span>
+              <div className="border-t border-slate-800 px-5 py-2.5 bg-slate-950/50 flex items-center gap-4 flex-wrap">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Legenda:</span>
                 {props.categories.map((c) => (
-                  <span key={c.id} className="inline-flex items-center gap-1.5 text-xs text-slate-800 font-medium">
-                    <span className="inline-block h-3 w-3 rounded shadow-sm" style={{ backgroundColor: c.color }} />
+                  <span key={c.id} className="inline-flex items-center gap-1.5 text-xs text-slate-200 font-medium">
+                    <span className="inline-block h-3 w-3 rounded border border-slate-700 shadow-sm" style={{ backgroundColor: c.color }} />
                     {c.name}
                   </span>
                 ))}
@@ -2994,10 +2682,10 @@ function CategoryPeriodsDialog(props: {
           </div>
         </div>
 
-        <div className="border-t px-6 py-3 flex justify-end gap-2 bg-slate-50">
+        <div className="border-t border-slate-800 px-6 py-3 flex justify-end gap-2 bg-slate-950/50">
           <button
             onClick={props.onClose}
-            className="px-4 py-2 text-sm rounded-lg bg-slate-800 text-white hover:bg-slate-900 font-semibold shadow-sm"
+            className="px-4 py-2 text-sm rounded-lg bg-fuchsia-600 text-white hover:bg-fuchsia-500 font-semibold shadow-lg shadow-fuchsia-900/30 transition-colors"
           >
             Chiudi
           </button>
