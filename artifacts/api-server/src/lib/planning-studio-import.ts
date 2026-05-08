@@ -29,6 +29,7 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { parseCsv } from "../routes/gtfs-helpers";
+import { runValidityAutoImportFromCalendars } from "./planning-studio-validity";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -549,6 +550,18 @@ router.post(
         `);
       } catch (e: any) { console.warn("[ps import] activity log failed:", e?.message); }
 
+      /* ─── 17. Auto-popolamento Validity Matrix da GTFS calendars ─── */
+      let autoImport: any = null;
+      try {
+        autoImport = await runValidityAutoImportFromCalendars(projectId, { dryRun: false });
+        console.log(
+          `[ps import] auto-validity: ${autoImport.summary.validityUpserts} upserts, ` +
+          `${autoImport.summary.exceptionInserts} exceptions su ${autoImport.summary.calendars} calendars`,
+        );
+      } catch (e: any) {
+        console.warn("[ps import] auto-validity skipped:", e?.message || e);
+      }
+
       res.json({
         ok: true,
         counts: {
@@ -561,6 +574,7 @@ router.post(
           trips: tripValues.length,
           stopTimes: stValues.length,
         },
+        autoValidity: autoImport?.summary ?? null,
       });
     } catch (e: any) {
       console.error("[ps import] failed:", e);

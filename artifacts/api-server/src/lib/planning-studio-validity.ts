@@ -48,13 +48,17 @@ const SYSTEM_DAY_TYPES: ReadonlyArray<{
   color: string;
   sort_order: number;
 }> = [
-  { code: "feriale",            name: "Feriale",             color: "#3b82f6", sort_order: 10 },
-  { code: "feriale_scolastico", name: "Feriale Scolastico",  color: "#8b5cf6", sort_order: 20 },
-  { code: "feriale_estivo",     name: "Feriale Estivo",      color: "#f59e0b", sort_order: 30 },
-  { code: "sabato",             name: "Sabato",              color: "#06b6d4", sort_order: 40 },
-  { code: "sabato_pre_festivo", name: "Sabato Pre-festivo",  color: "#0ea5e9", sort_order: 50 },
-  { code: "festivo",            name: "Festivo",             color: "#ef4444", sort_order: 60 },
-  { code: "pre_festivo",        name: "Pre-festivo",         color: "#fb7185", sort_order: 70 },
+  { code: "festivo", name: "Festivo", color: "#ef4444", sort_order: 10 },
+  { code: "sabato",  name: "Sabato",  color: "#06b6d4", sort_order: 20 },
+  { code: "feriale", name: "Feriale", color: "#3b82f6", sort_order: 30 },
+];
+
+/** Codici di sistema "legacy" rimossi: cleanup non distruttivo se orfani. */
+const LEGACY_SYSTEM_DAY_TYPE_CODES = [
+  "feriale_scolastico",
+  "feriale_estivo",
+  "sabato_pre_festivo",
+  "pre_festivo",
 ];
 
 let bootstrapped = false;
@@ -150,6 +154,32 @@ async function ensureValidityTables(): Promise<void> {
           SELECT 1 FROM ps_day_types WHERE project_id IS NULL AND code = ${dt.code}
         )
       `);
+      // Aggiorna sort_order/colori se già esistenti (per allineare al nuovo schema)
+      await db.execute(sql`
+        UPDATE ps_day_types
+           SET name = ${dt.name}, color = ${dt.color}, sort_order = ${dt.sort_order}, is_system = true
+         WHERE project_id IS NULL AND code = ${dt.code}
+      `);
+    }
+
+    /* ─── Cleanup system day-types legacy (solo se orfani) ─── */
+    for (const legacyCode of LEGACY_SYSTEM_DAY_TYPE_CODES) {
+      try {
+        await db.execute(sql`
+          DELETE FROM ps_day_types
+           WHERE project_id IS NULL
+             AND code = ${legacyCode}
+             AND is_system = true
+             AND NOT EXISTS (
+               SELECT 1 FROM ps_trip_day_validity v WHERE v.day_type_id = ps_day_types.id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM ps_day_calendar c WHERE c.day_type_id = ps_day_types.id
+             )
+        `);
+      } catch (e: any) {
+        console.warn(`[ps-validity] cleanup legacy '${legacyCode}' skipped:`, e?.message || e);
+      }
     }
 
     /* ─── Seed festivi nazionali italiani 2024-2030 (project_id NULL) ─── */
@@ -926,6 +956,53 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
 
   const dryRun: boolean = !!req.body?.dryRun || req.query.preview === "1";
 
+  try {
+    const result = await runValidityAutoImportFromCalendars(req.params.id, { dryRun });
+    if (!dryRun) {
+      await logActivity(req.params.id, userId, "validity.auto-import", null, null, {
+        calendars: result.summary.calendars,
+        validityUpserts: result.summary.validityUpserts,
+        exceptionInserts: result.summary.exceptionInserts,
+      });
+    }
+    telemetry("auto-import", req.params.id, { dryRun, ...result.summary });
+    res.json({ ok: true, dryRun, ...result });
+  } catch (e: any) {
+    if (e?.code === "SYSTEM_DAY_TYPES_MISSING") {
+      res.status(500).json({ error: "system day-types missing (feriale/sabato/festivo)" });
+      return;
+    }
+    console.error("[ps-validity] auto-import error:", e);
+    res.status(500).json({ error: e?.message || "internal error" });
+  }
+});
+
+/**
+ * Logica core dell'auto-import GTFS → matrice di validità.
+ * Esportata per essere richiamata anche dalla pipeline di import GTFS
+ * subito dopo la creazione di ps_calendars/ps_trips.
+ *
+ * Ritorna { summary, perCalendar }.
+ *
+ * Throws con code='SYSTEM_DAY_TYPES_MISSING' se mancano i day-type di sistema.
+ */
+export async function runValidityAutoImportFromCalendars(
+  projectId: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<{
+  summary: { calendars: number; validityUpserts: number; exceptionInserts: number };
+  perCalendar: Array<{
+    calendarId: string;
+    calendarCode: string;
+    tripCount: number;
+    dayTypeCount: number;
+    validityRowsToWrite: number;
+    exceptionRowsToWrite: number;
+  }>;
+}> {
+  await ensureValidityTables();
+  const dryRun = !!opts.dryRun;
+
   // Lookup id system day-types richiesti
   const dtR = await db.execute(sql`
     SELECT id, code FROM ps_day_types
@@ -934,16 +1011,16 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
   const dtMap = new Map<string, string>();
   for (const r of ((dtR as any).rows ?? [])) dtMap.set(r.code, r.id);
   if (dtMap.size < 3) {
-    res.status(500).json({ error: "system day-types missing (feriale/sabato/festivo)" });
-    return;
+    const err: any = new Error("system day-types missing");
+    err.code = "SYSTEM_DAY_TYPES_MISSING";
+    throw err;
   }
 
-  // Calendars del progetto + trip count
+  // Calendars del progetto
   const calsR = await db.execute(sql`
     SELECT c.id, c.code, c.name, c.monday, c.tuesday, c.wednesday, c.thursday, c.friday,
-           c.saturday, c.sunday, c.start_date::text AS start_date, c.end_date::text AS end_date,
-           (SELECT COUNT(*)::int FROM ps_trips t WHERE t.calendar_id = c.id) AS trip_count
-      FROM ps_calendars c WHERE c.project_id = ${req.params.id}::uuid
+           c.saturday, c.sunday, c.start_date::text AS start_date, c.end_date::text AS end_date
+      FROM ps_calendars c WHERE c.project_id = ${projectId}::uuid
   `);
   const cals: any[] = (calsR as any).rows ?? [];
 
@@ -957,33 +1034,27 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
     if (c.saturday) dayTypeIds.push(dtMap.get("sabato")!);
     if (c.sunday)   dayTypeIds.push(dtMap.get("festivo")!);
 
-    // trips di questo calendario
     const tripsR = await db.execute(sql`
-      SELECT id FROM ps_trips WHERE calendar_id = ${c.id}::uuid AND project_id = ${req.params.id}::uuid
+      SELECT id FROM ps_trips WHERE calendar_id = ${c.id}::uuid AND project_id = ${projectId}::uuid
     `);
     const tripIds: string[] = ((tripsR as any).rows ?? []).map((r: any) => r.id);
 
-    // Calendar dates eccezioni
     const cdR = await db.execute(sql`
       SELECT date::text AS date, exception_type FROM ps_calendar_dates WHERE calendar_id = ${c.id}::uuid
     `);
     const cdates: { date: string; exception_type: number }[] = (cdR as any).rows ?? [];
 
-    const calValidityCount = tripIds.length * dayTypeIds.length;
-    const calExceptionCount = tripIds.length * cdates.length;
     perCalendar.push({
       calendarId: c.id,
       calendarCode: c.code,
       tripCount: tripIds.length,
       dayTypeCount: dayTypeIds.length,
-      validityRowsToWrite: calValidityCount,
-      exceptionRowsToWrite: calExceptionCount,
+      validityRowsToWrite: tripIds.length * dayTypeIds.length,
+      exceptionRowsToWrite: tripIds.length * cdates.length,
     });
 
     if (!dryRun) {
-      // upsert trip_day_validity
       for (const tid of tripIds) {
-        // imposta esplicitamente FALSE per gli altri 4 system day-type non coperti (per chiarezza)
         for (const dtId of dayTypeIds) {
           await db.execute(sql`
             INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
@@ -993,14 +1064,12 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
           `);
           validityUpserts++;
         }
-        // imposta valid_from/valid_to del trip se non già presenti
         await db.execute(sql`
           UPDATE ps_trips
              SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
                  valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
            WHERE id = ${tid}::uuid
         `);
-        // eccezioni puntuali
         for (const cd of cdates) {
           const exType = cd.exception_type === 1 ? 1 : 2;
           await db.execute(sql`
@@ -1015,24 +1084,11 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
     }
   }
 
-  if (!dryRun) {
-    await logActivity(req.params.id, userId, "validity.auto-import", null, null, {
-      calendars: cals.length, validityUpserts, exceptionInserts,
-    });
-  }
-  telemetry("auto-import", req.params.id, { dryRun, calendars: cals.length, validityUpserts, exceptionInserts });
-
-  res.json({
-    ok: true,
-    dryRun,
-    summary: {
-      calendars: cals.length,
-      validityUpserts,
-      exceptionInserts,
-    },
+  return {
+    summary: { calendars: cals.length, validityUpserts, exceptionInserts },
     perCalendar,
-  });
-});
+  };
+}
 
 /* ════════════════════════════════════════════════════════════
  *  POST /validity/generate-unit (PR4)
