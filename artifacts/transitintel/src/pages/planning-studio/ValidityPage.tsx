@@ -38,6 +38,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
   Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
+  Sparkles, Save,
 } from "lucide-react";
 import {
   getPsValidityMatrix, upsertPsTripException, deletePsTripExceptionMatrix,
@@ -49,6 +50,13 @@ import {
   type PsValidityMatrix, type PsDayType, type PsValidityTrip,
   type AutoImportSummary, type PsValidityRoute,
 } from "@/lib/planning-studio-validity-api";
+import {
+  listPsValidityCategories, createPsValidityCategory,
+  updatePsValidityCategory, deletePsValidityCategory,
+  listPsValidityCategoryCalendar, setPsValidityCategoryCalendar,
+  computePsValidityUnits, savePsValidityUnits,
+  type PsValidityCategory, type PsValidityUnitComputed,
+} from "@/lib/planning-studio-validity-units-api";
 import {
   getPsProject, type PsProject,
   listPsServicePeriods, type PsServicePeriod,
@@ -386,6 +394,11 @@ export default function PlanningStudioValidityPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [autoImportOpen, setAutoImportOpen] = useState(false);
   const [genUnitOpen, setGenUnitOpen] = useState(false);
+  /* ─── Calcola Unità (validity_id-based) ─── */
+  const [computeUnitsOpen, setComputeUnitsOpen] = useState(false);
+  /* ─── Categorie validità (sidebar tab + editor) ─── */
+  const [sidebarTab, setSidebarTab] = useState<"day-types" | "categories">("day-types");
+  const [catEditorOpen, setCatEditorOpen] = useState(false);
   const [, setLocation] = useLocation();
 
   /* ─── Dropdown override day-type su data ─── */
@@ -439,6 +452,117 @@ export default function PlanningStudioValidityPage() {
   /* ─── Riga corsa evidenziata (click sulla sticky cell della corsa) ─── */
   const [highlightedTripId, setHighlightedTripId] = useState<string | null>(null);
 
+  /* ─── Categorie di Validità (globali) ─── */
+  const categoriesQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+  });
+  const categoryCalQ = useQuery({
+    queryKey: ["ps-validity-categories", "calendar", from, to],
+    queryFn: () => listPsValidityCategoryCalendar({ from, to }),
+    enabled: !!from && !!to,
+  });
+  const categoryByDate = useMemo(() => {
+    const m = new Map<string, PsValidityCategory>();
+    const cats = categoriesQ.data ?? [];
+    const byId = new Map(cats.map((c) => [c.id, c]));
+    for (const e of (categoryCalQ.data ?? [])) {
+      const c = byId.get(e.categoryId);
+      if (c) m.set(e.date, c);
+    }
+    return m;
+  }, [categoriesQ.data, categoryCalQ.data]);
+
+  const setCategoryMut = useMutation({
+    mutationFn: (input: { dates: string[]; categoryId: string | null }) =>
+      setPsValidityCategoryCalendar(input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  /* ─── Selezione 2D celle (SHIFT+Click) ─── */
+  const [selectedCells, setSelectedCells] = useState<Set<string>>(() => new Set());
+  const [lastCellAnchor, setLastCellAnchor] = useState<{ tripId: string; date: string } | null>(null);
+  const cellKey = (tripId: string, date: string) => `${tripId}::${date}`;
+
+  /** Estrae l'elenco trip in ordine di riga (esclude header route). */
+  const tripIdsInOrder = useMemo(
+    () => flatRows.filter((r) => r.kind === "trip").map((r: any) => r.trip.id as string),
+    [flatRows],
+  );
+
+  const handleCellSelect = useCallback(
+    (tripId: string, date: string, e: ReactMouseEvent) => {
+      // SHIFT+Click: range 2D
+      if (e.shiftKey && lastCellAnchor) {
+        const tIdxA = tripIdsInOrder.indexOf(lastCellAnchor.tripId);
+        const tIdxB = tripIdsInOrder.indexOf(tripId);
+        const dIdxA = dates.indexOf(lastCellAnchor.date);
+        const dIdxB = dates.indexOf(date);
+        if (tIdxA < 0 || tIdxB < 0 || dIdxA < 0 || dIdxB < 0) return;
+        const tA = Math.min(tIdxA, tIdxB), tB = Math.max(tIdxA, tIdxB);
+        const dA = Math.min(dIdxA, dIdxB), dB = Math.max(dIdxA, dIdxB);
+        setSelectedCells((prev) => {
+          const next = new Set(prev);
+          for (let ti = tA; ti <= tB; ti++) {
+            for (let di = dA; di <= dB; di++) {
+              next.add(cellKey(tripIdsInOrder[ti], dates[di]));
+            }
+          }
+          return next;
+        });
+        return;
+      }
+      // CMD/CTRL+Click: toggle singolo
+      if (e.metaKey || e.ctrlKey) {
+        const k = cellKey(tripId, date);
+        setSelectedCells((prev) => {
+          const next = new Set(prev);
+          if (next.has(k)) next.delete(k); else next.add(k);
+          return next;
+        });
+        setLastCellAnchor({ tripId, date });
+        return;
+      }
+      // Click semplice: NON tocca selezione 2D, esegue il toggle eccezione classico
+      onCellClick(tripId, date);
+    },
+    [dates, lastCellAnchor, tripIdsInOrder, onCellClick],
+  );
+
+  const clearCellSelection = useCallback(() => {
+    setSelectedCells(new Set());
+    setLastCellAnchor(null);
+  }, []);
+
+  /* ─── Bulk apply su celle selezionate (set valid/invalid/clear) ─── */
+  const cellsBulkMut = useMutation({
+    mutationFn: async (target: "valid" | "invalid" | "clear") => {
+      const items = Array.from(selectedCells);
+      let count = 0;
+      for (const k of items) {
+        const [tripId, date] = k.split("::");
+        if (target === "clear") {
+          await deletePsTripExceptionMatrix(projectId, { trip_id: tripId, date });
+        } else {
+          await upsertPsTripException(projectId, {
+            trip_id: tripId, date, exception_type: target === "valid" ? 1 : 2,
+          });
+        }
+        count++;
+      }
+      return count;
+    },
+    onSuccess: (n) => {
+      toast.success(`${n} cell${n === 1 ? "a" : "e"} aggiornata${n === 1 ? "" : "e"}`);
+      invalidateMatrix();
+      clearCellSelection();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   /* ─── Applica day-type a tutte le date selezionate ─── */
   const applyDayTypeToSelection = useCallback(
     async (dayTypeId: string) => {
@@ -463,6 +587,36 @@ export default function PlanningStudioValidityPage() {
       }
     },
     [selectedDates, projectId, projectQ.data, clearDateSelection],
+  );
+
+  /* ─── Applica categoria validità a tutte le date selezionate ─── */
+  const applyCategoryToSelection = useCallback(
+    async (categoryId: string | null) => {
+      if (selectedDates.size === 0) {
+        toast.error("Seleziona almeno un giorno cliccando sull'header");
+        return;
+      }
+      if (projectQ.data?.myRole === "viewer") {
+        toast.error("Modalità sola lettura");
+        return;
+      }
+      try {
+        await setPsValidityCategoryCalendar({
+          dates: Array.from(selectedDates),
+          categoryId,
+        });
+        qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
+        toast.success(
+          categoryId
+            ? `Categoria applicata a ${selectedDates.size} giorni`
+            : `Categoria rimossa da ${selectedDates.size} giorni`,
+        );
+        clearDateSelection();
+      } catch (err) {
+        toast.error((err as Error).message);
+      }
+    },
+    [selectedDates, projectQ.data, qc, clearDateSelection],
   );
 
   /* ─── Render ─── */
@@ -578,30 +732,34 @@ export default function PlanningStudioValidityPage() {
               >
                 <Layers className="h-4 w-4" /> Bulk
               </button>
-              <button
-                onClick={() => setAutoImportOpen(true)}
-                className="px-3 py-1.5 text-sm rounded border border-amber-400 bg-white hover:bg-amber-100 text-amber-900 font-medium flex items-center gap-1.5"
-                title="Auto-compila la matrice usando i calendari GTFS importati"
-              >
-                <Wand2 className="h-4 w-4" /> Auto-import
-              </button>
+              <span className="text-[10px] text-amber-800 px-2 italic">
+                Tip: <kbd className="px-1 bg-white border rounded">SHIFT</kbd>+Click sulle celle per selezionarne molte
+              </span>
             </div>
           </div>
 
-          {/* STEP 4 — Genera unità (azione finale) */}
+          {/* STEP 4 — Unità di Progettazione */}
           <div className="flex flex-col gap-1 px-3 py-2 rounded-lg bg-indigo-100 border-2 border-indigo-400 min-w-fit">
             <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-indigo-900">
               <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-indigo-700 text-white text-[10px]">4</span>
-              Genera
+              Unità di Progettazione
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setGenUnitOpen(true)}
+                onClick={() => setComputeUnitsOpen(true)}
                 className="px-3 py-1.5 text-sm rounded bg-indigo-700 hover:bg-indigo-800 text-white font-semibold flex items-center gap-1.5 shadow"
-                title="Crea l'Unità di Progettazione e prosegui con lo Scheduling"
+                title="Calcola le Unità (gruppi di giorni con stessa categoria + day-type + corse attive) e salva"
               >
-                <Rocket className="h-4 w-4" /> Genera Unità di Progettazione
+                <Rocket className="h-4 w-4" /> Calcola Unità
               </button>
+              <Link href={`/planning-studio/${projectId}/validity-units`}>
+                <button
+                  className="px-3 py-1.5 text-sm rounded border border-indigo-400 bg-white hover:bg-indigo-50 text-indigo-900 font-medium flex items-center gap-1.5"
+                  title="Vai alla sezione Unità di Progettazione salvate"
+                >
+                  <Layers className="h-4 w-4" /> Vedi Unità Salvate
+                </button>
+              </Link>
             </div>
           </div>
         </div>
@@ -702,6 +860,7 @@ export default function PlanningStudioValidityPage() {
                     const lbl = dayLabel(d);
                     const dtId = ctx.dayCalendar.get(d) ?? inferDefaultDayType(d, ctx);
                     const dt = dtId ? ctx.dayTypes.get(dtId) : undefined;
+                    const cat = categoryByDate.get(d);
                     const isSelected = selectedDates.has(d);
                     const isFirstOfMonth = d.slice(8, 10) === "01";
                     return (
@@ -718,8 +877,9 @@ export default function PlanningStudioValidityPage() {
                           width: COL_W,
                           minWidth: COL_W,
                           borderRight: isFirstOfMonth ? "2px solid #94a3b8" : "1px solid #e2e8f0",
+                          borderTop: cat ? `3px solid ${cat.color}` : undefined,
                         }}
-                        title={`${d} · ${dt?.name ?? "?"}\nClick: seleziona · ⌘/Ctrl+Click: aggiungi · Shift+Click: range · Doppio-click: override singolo`}
+                        title={`${d} · ${dt?.name ?? "?"}${cat ? `\nCategoria: ${cat.name}` : ""}\nClick: seleziona · ⌘/Ctrl+Click: aggiungi · Shift+Click: range · Doppio-click: override singolo`}
                       >
                         <span className="font-semibold text-slate-800 text-[12px] leading-tight">{lbl.day}</span>
                         <span className={`leading-tight ${lbl.isWeekend ? "text-rose-600 font-semibold" : "text-slate-500"}`}>{lbl.dow}</span>
@@ -800,7 +960,9 @@ export default function PlanningStudioValidityPage() {
                         tripId={t.id}
                         dates={dates}
                         onClick={onCellClick}
+                        onSelect={handleCellSelect}
                         selectedDates={selectedDates}
+                        selectedCells={selectedCells}
                       />
                     </div>
                   );
@@ -809,14 +971,19 @@ export default function PlanningStudioValidityPage() {
             </div>
           </div>
 
-          {/* Sidebar destra: Day-Types cliccabili (applica a date selezionate) */}
-          <DayTypeSidebar
+          {/* Sidebar destra: tab Day-Types | Categorie Validità */}
+          <ValiditySidebar
             projectId={projectId}
+            tab={sidebarTab}
+            onTabChange={setSidebarTab}
             dayTypes={dayTypesQ.data ?? []}
+            categories={categoriesQ.data ?? []}
             selectedCount={selectedDates.size}
-            onApply={applyDayTypeToSelection}
+            onApplyDayType={applyDayTypeToSelection}
+            onApplyCategory={applyCategoryToSelection}
             canEdit={projectQ.data?.myRole !== "viewer"}
-            openAdvanced={() => setDtEditorOpen(true)}
+            openDayTypeAdvanced={() => setDtEditorOpen(true)}
+            openCategoryEditor={() => setCatEditorOpen(true)}
           />
 
           {/* Side panel Day-Type Editor (avanzato, modal) */}
@@ -826,6 +993,14 @@ export default function PlanningStudioValidityPage() {
               dayTypes={dayTypesQ.data ?? []}
               onClose={() => setDtEditorOpen(false)}
               canEdit={projectQ.data?.myRole !== "viewer"}
+            />
+          )}
+
+          {/* Editor categorie validità (modal) */}
+          {catEditorOpen && (
+            <CategoryEditorDialog
+              categories={categoriesQ.data ?? []}
+              onClose={() => setCatEditorOpen(false)}
             />
           )}
 
@@ -883,6 +1058,55 @@ export default function PlanningStudioValidityPage() {
           }}
         />
       )}
+      {computeUnitsOpen && (
+        <ComputeUnitsDialog
+          projectId={projectId}
+          range={{ from, to }}
+          onClose={() => setComputeUnitsOpen(false)}
+          onSaved={() => {
+            setComputeUnitsOpen(false);
+            setLocation(`/planning-studio/${projectId}/validity-units`);
+          }}
+        />
+      )}
+
+      {/* Toolbar contestuale celle selezionate (SHIFT+Click) */}
+      {selectedCells.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white rounded-lg shadow-2xl px-4 py-2 flex items-center gap-3">
+          <span className="text-sm font-medium">
+            {selectedCells.size} cell{selectedCells.size === 1 ? "a" : "e"} selezionat{selectedCells.size === 1 ? "a" : "e"}
+          </span>
+          <button
+            onClick={() => cellsBulkMut.mutate("valid")}
+            disabled={cellsBulkMut.isPending}
+            className="px-3 py-1.5 text-xs rounded bg-emerald-600 hover:bg-emerald-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+          >
+            {cellsBulkMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            <Check className="h-3 w-3" /> Imposta Valide
+          </button>
+          <button
+            onClick={() => cellsBulkMut.mutate("invalid")}
+            disabled={cellsBulkMut.isPending}
+            className="px-3 py-1.5 text-xs rounded bg-red-600 hover:bg-red-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+          >
+            <X className="h-3 w-3" /> Imposta Invalide
+          </button>
+          <button
+            onClick={() => cellsBulkMut.mutate("clear")}
+            disabled={cellsBulkMut.isPending}
+            className="px-3 py-1.5 text-xs rounded bg-slate-600 hover:bg-slate-700 font-semibold disabled:opacity-50 flex items-center gap-1"
+          >
+            <Eraser className="h-3 w-3" /> Pulisci eccezioni
+          </button>
+          <button
+            onClick={clearCellSelection}
+            className="px-2 py-1.5 text-xs rounded hover:bg-slate-700"
+            title="Annulla selezione"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Footer status */}
       <div className="border-t bg-white px-4 py-1.5 text-[11px] text-slate-500 flex gap-4">
@@ -905,10 +1129,12 @@ interface CellsRowProps {
   tripId: string;
   dates: string[];
   onClick: (tripId: string, date: string) => void;
+  onSelect: (tripId: string, date: string, e: ReactMouseEvent) => void;
   selectedDates: Set<string>;
+  selectedCells: Set<string>;
 }
 
-function CellsRow({ ctx, tripId, dates, onClick, selectedDates }: CellsRowProps) {
+function CellsRow({ ctx, tripId, dates, onClick, onSelect, selectedDates, selectedCells }: CellsRowProps) {
   return (
     <>
       {dates.map((d) => {
@@ -922,13 +1148,21 @@ function CellsRow({ ctx, tripId, dates, onClick, selectedDates }: CellsRowProps)
           return new Date(y, m - 1, dd).getDay() === 1;
         })();
         const isSelectedCol = selectedDates.has(d);
+        const isCellSelected = selectedCells.has(`${tripId}::${d}`);
         return (
           <div
             key={d}
-            onClick={() => onClick(tripId, d)}
+            onClick={(e) => {
+              // SHIFT o CMD/CTRL → selezione 2D; altrimenti toggle eccezione classico
+              if (e.shiftKey || e.metaKey || e.ctrlKey) {
+                onSelect(tripId, d, e);
+              } else {
+                onClick(tripId, d);
+              }
+            }}
             className={`flex items-center justify-center cursor-pointer transition-colors ${
               isSelectedCol ? "bg-blue-50/60" : ""
-            }`}
+            } ${isCellSelected ? "ring-2 ring-inset ring-blue-500 bg-blue-100/40" : ""}`}
             style={{
               width: COL_W,
               minWidth: COL_W,
@@ -939,7 +1173,7 @@ function CellsRow({ ctx, tripId, dates, onClick, selectedDates }: CellsRowProps)
                 ? "1px solid #cbd5e1"
                 : "1px solid #f1f5f9",
             }}
-            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}`}
+            title={`${d} · ${valid ? "valida" : "invalida"}${ex ? (ex === 1 ? " (eccezione +)" : " (eccezione −)") : ""}\nClick: toggle · Shift+Click: seleziona range 2D`}
           >
             <div
               className="rounded-md transition-transform hover:scale-110"
@@ -1988,6 +2222,525 @@ function GenerateUnitDialog({
             {mut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
             <Rocket className="h-3.5 w-3.5" />
             Crea Unità & vai alla pipeline
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ValiditySidebar — tab Day-Types | Categorie
+   ════════════════════════════════════════════════════════════════════ */
+function ValiditySidebar(props: {
+  projectId?: string;
+  tab: "day-types" | "categories";
+  onTabChange: (t: "day-types" | "categories") => void;
+  dayTypes: PsDayType[];
+  categories: PsValidityCategory[];
+  selectedCount: number;
+  onApplyDayType: (id: string) => void;
+  onApplyCategory: (id: string | null) => void;
+  canEdit?: boolean;
+  openDayTypeAdvanced: () => void;
+  openCategoryEditor: () => void;
+}) {
+  return (
+    <aside className="w-64 border-l bg-white flex flex-col">
+      <div className="flex border-b text-sm">
+        <button
+          onClick={() => props.onTabChange("day-types")}
+          className={`flex-1 py-2 ${props.tab === "day-types" ? "bg-slate-100 font-medium" : "text-slate-600"}`}
+        >
+          Giorni-Tipo
+        </button>
+        <button
+          onClick={() => props.onTabChange("categories")}
+          className={`flex-1 py-2 ${props.tab === "categories" ? "bg-slate-100 font-medium" : "text-slate-600"}`}
+        >
+          Categorie
+        </button>
+      </div>
+      <div className="flex-1 overflow-auto p-3">
+        {props.tab === "day-types" ? (
+          <DayTypesPanel
+            dayTypes={props.dayTypes}
+            selectedCount={props.selectedCount}
+            onApply={(id) => id && props.onApplyDayType(id)}
+            onManage={props.openDayTypeAdvanced}
+          />
+        ) : (
+          <CategoriesPanel
+            categories={props.categories}
+            selectedCount={props.selectedCount}
+            onApply={props.onApplyCategory}
+            onManage={props.openCategoryEditor}
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function DayTypesPanel(props: {
+  dayTypes: PsDayType[];
+  selectedCount: number;
+  onApply: (id: string | null) => void;
+  onManage: () => void;
+}) {
+  const hasSel = props.selectedCount > 0;
+  return (
+    <div className="space-y-2">
+      <div className="text-xs uppercase tracking-wide text-slate-500 px-1">Giorni-Tipo</div>
+      <div className="space-y-1">
+        {props.dayTypes.map((dt) => (
+          <button
+            key={dt.id}
+            disabled={!hasSel}
+            onClick={() => props.onApply(dt.id)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            title={hasSel ? `Applica "${dt.name}" alle date selezionate` : "Seleziona prima delle celle"}
+          >
+            <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: dt.color || "#94a3b8" }} />
+            <span className="truncate">{dt.name}</span>
+          </button>
+        ))}
+      </div>
+      <button
+        onClick={props.onManage}
+        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-50 hover:bg-slate-100 text-slate-700"
+      >
+        Gestisci giorni-tipo…
+      </button>
+      {!hasSel && (
+        <div className="text-[11px] text-slate-500 px-1 pt-2 leading-snug">
+          Suggerimento: SHIFT+Click sulle celle della matrice per selezionare un range, poi clicca un giorno-tipo per applicarlo.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoriesPanel(props: {
+  categories: PsValidityCategory[];
+  selectedCount: number;
+  onApply: (id: string | null) => void;
+  onManage: () => void;
+}) {
+  const hasSel = props.selectedCount > 0;
+  return (
+    <div className="space-y-2">
+      <div className="text-xs uppercase tracking-wide text-slate-500 px-1">Categorie Validità</div>
+      <div className="space-y-1">
+        {props.categories.map((c) => (
+          <button
+            key={c.id}
+            disabled={!hasSel}
+            onClick={() => props.onApply(c.id)}
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-slate-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            title={hasSel ? `Assegna "${c.name}" alle date selezionate` : "Seleziona prima delle celle"}
+          >
+            <span className="inline-block h-3 w-3 rounded" style={{ backgroundColor: c.color || "#94a3b8" }} />
+            <span className="truncate">{c.name}</span>
+          </button>
+        ))}
+        <button
+          disabled={!hasSel}
+          onClick={() => props.onApply(null)}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded border bg-white hover:bg-rose-50 text-sm disabled:opacity-50 disabled:cursor-not-allowed text-rose-700"
+        >
+          <X className="h-3 w-3" />
+          Rimuovi categoria
+        </button>
+      </div>
+      <button
+        onClick={props.onManage}
+        className="w-full mt-2 px-2 py-1.5 text-xs rounded border bg-slate-50 hover:bg-slate-100 text-slate-700"
+      >
+        Gestisci categorie…
+      </button>
+      {!hasSel && (
+        <div className="text-[11px] text-slate-500 px-1 pt-2 leading-snug">
+          Le categorie sono globali e si applicano a una data del calendario (una sola categoria per giorno).
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CategoryEditorDialog(props: {
+  onClose: () => void;
+  categories: PsValidityCategory[];
+}) {
+  const qc = useQueryClient();
+  const [draftName, setDraftName] = useState("");
+  const [draftCode, setDraftCode] = useState("");
+  const [draftColor, setDraftColor] = useState("#6366f1");
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      createPsValidityCategory({
+        code: draftCode.trim() || draftName.trim().toLowerCase().replace(/\s+/g, "_"),
+        name: draftName.trim(),
+        color: draftColor,
+      }),
+    onSuccess: () => {
+      setDraftName("");
+      setDraftCode("");
+      setDraftColor("#6366f1");
+      qc.invalidateQueries({ queryKey: ["validity-categories"] });
+    },
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3 border-b">
+          <div className="font-medium">Categorie Validità (globali)</div>
+          <button onClick={props.onClose} className="p-1 hover:bg-slate-100 rounded">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-4 space-y-2">
+          {props.categories.map((c) => (
+            <CategoryRow key={c.id} category={c} />
+          ))}
+          {props.categories.length === 0 && (
+            <div className="text-sm text-slate-500">Nessuna categoria. Creane una qui sotto.</div>
+          )}
+        </div>
+        <div className="border-t p-3 bg-slate-50 space-y-2">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Nuova categoria</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Nome (es. Scuole Aperte)"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              className="flex-1 px-2 py-1 text-sm border rounded"
+            />
+            <input
+              type="text"
+              placeholder="code"
+              value={draftCode}
+              onChange={(e) => setDraftCode(e.target.value)}
+              className="w-32 px-2 py-1 text-sm border rounded"
+            />
+            <input
+              type="color"
+              value={draftColor}
+              onChange={(e) => setDraftColor(e.target.value)}
+              className="h-8 w-10 border rounded"
+            />
+            <button
+              onClick={() => createMut.mutate()}
+              disabled={!draftName.trim() || createMut.isPending}
+              className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {createMut.isPending ? "…" : "Crea"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryRow({ category }: { category: PsValidityCategory }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(category.name);
+  const [color, setColor] = useState(category.color || "#6366f1");
+
+  const updateMut = useMutation({
+    mutationFn: () => updatePsValidityCategory(category.id, { name, color }),
+    onSuccess: () => {
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["validity-categories"] });
+    },
+  });
+  const deleteMut = useMutation({
+    mutationFn: () => deletePsValidityCategory(category.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["validity-categories"] });
+      qc.invalidateQueries({ queryKey: ["validity-category-calendar"] });
+    },
+  });
+
+  return (
+    <div className="flex items-center gap-2 border rounded px-2 py-1.5 bg-white">
+      <span className="inline-block h-4 w-4 rounded" style={{ backgroundColor: color }} />
+      {editing ? (
+        <>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="flex-1 px-2 py-0.5 text-sm border rounded"
+          />
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => setColor(e.target.value)}
+            className="h-6 w-8 border rounded"
+          />
+          <button
+            onClick={() => updateMut.mutate()}
+            disabled={updateMut.isPending}
+            className="px-2 py-0.5 text-xs rounded bg-indigo-600 text-white"
+          >
+            Salva
+          </button>
+          <button onClick={() => setEditing(false)} className="px-2 py-0.5 text-xs rounded border">
+            Annulla
+          </button>
+        </>
+      ) : (
+        <>
+          <div className="flex-1 text-sm">
+            <span className="font-medium">{category.name}</span>{" "}
+            <span className="text-xs text-slate-500">({category.code})</span>
+          </div>
+          <button onClick={() => setEditing(true)} className="px-2 py-0.5 text-xs rounded border">
+            Modifica
+          </button>
+          <button
+            onClick={() => {
+              if (confirm(`Eliminare la categoria "${category.name}"?`)) deleteMut.mutate();
+            }}
+            disabled={deleteMut.isPending}
+            className="px-2 py-0.5 text-xs rounded border text-rose-700 hover:bg-rose-50"
+          >
+            Elimina
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   ComputeUnitsDialog — calcolo & salvataggio Unità di Progettazione
+   ════════════════════════════════════════════════════════════════════ */
+function ComputeUnitsDialog(props: {
+  onClose: () => void;
+  onSaved: () => void;
+  projectId: string;
+  range: { from: string; to: string };
+}) {
+  const [from, setFrom] = useState(props.range.from);
+  const [to, setTo] = useState(props.range.to);
+  const [groups, setGroups] = useState<PsValidityUnitComputed[] | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [names, setNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setFrom(props.range.from);
+    setTo(props.range.to);
+    setGroups(null);
+    setSelected(new Set());
+    setNames({});
+  }, [props.range.from, props.range.to]);
+
+  const computeMut = useMutation({
+    mutationFn: () => computePsValidityUnits(props.projectId, { from, to }),
+    onSuccess: (res) => {
+      setGroups(res.units);
+      const all = new Set<string>(res.units.map((g) => g.validityId));
+      setSelected(all);
+      const n: Record<string, string> = {};
+      for (const g of res.units) {
+        const cat = g.categoryName ?? "Generico";
+        const dt = g.dayTypeName ?? "—";
+        n[g.validityId] = `${cat} · ${dt} (${g.tripCount} corse)`;
+      }
+      setNames(n);
+    },
+  });
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const items = (groups ?? [])
+        .filter((g) => selected.has(g.validityId))
+        .map((g) => ({
+          validityId: g.validityId,
+          name: names[g.validityId] || `Unità ${g.validityId.slice(0, 8)}`,
+          categoryId: g.categoryId,
+          dayTypeId: g.dayTypeId,
+          tripIds: g.tripIds,
+          dates: g.dates,
+          dayCount: g.dates.length,
+          tripCount: g.tripIds.length,
+        }));
+      return savePsValidityUnits(props.projectId, items);
+    },
+    onSuccess: () => {
+      props.onSaved();
+    },
+  });
+
+  const toggleAll = () => {
+    if (!groups) return;
+    if (selected.size === groups.length) setSelected(new Set());
+    else setSelected(new Set(groups.map((g) => g.validityId)));
+  };
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3 border-b">
+          <div className="font-medium flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-indigo-600" />
+            Calcola Unità di Progettazione
+          </div>
+          <button onClick={props.onClose} className="p-1 hover:bg-slate-100 rounded">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="px-5 py-3 border-b bg-slate-50 flex items-end gap-2">
+          <label className="text-xs text-slate-600">
+            Dal
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              className="block px-2 py-1 text-sm border rounded"
+            />
+          </label>
+          <label className="text-xs text-slate-600">
+            Al
+            <input
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              className="block px-2 py-1 text-sm border rounded"
+            />
+          </label>
+          <button
+            onClick={() => computeMut.mutate()}
+            disabled={!from || !to || computeMut.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {computeMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            Calcola
+          </button>
+          {groups && (
+            <div className="ml-auto text-xs text-slate-600">
+              {groups.length} gruppi · {selected.size} selezionati
+            </div>
+          )}
+        </div>
+        <div className="flex-1 overflow-auto p-3">
+          {!groups && !computeMut.isPending && (
+            <div className="text-sm text-slate-500 px-2 py-6 text-center">
+              Imposta il range e clicca <strong>Calcola</strong>. Le corse attive di ogni giorno verranno raggruppate per
+              categoria + giorno-tipo + composizione corse.
+            </div>
+          )}
+          {computeMut.isPending && (
+            <div className="text-sm text-slate-500 px-2 py-6 text-center flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Calcolo in corso…
+            </div>
+          )}
+          {groups && groups.length === 0 && (
+            <div className="text-sm text-slate-500 px-2 py-6 text-center">
+              Nessun gruppo trovato nel range selezionato.
+            </div>
+          )}
+          {groups && groups.length > 0 && (
+            <table className="w-full text-sm">
+              <thead className="text-xs text-slate-500 uppercase tracking-wide">
+                <tr>
+                  <th className="px-2 py-1 text-left">
+                    <input
+                      type="checkbox"
+                      checked={selected.size === groups.length}
+                      onChange={toggleAll}
+                    />
+                  </th>
+                  <th className="px-2 py-1 text-left">Nome</th>
+                  <th className="px-2 py-1 text-left">Categoria</th>
+                  <th className="px-2 py-1 text-left">Giorno-Tipo</th>
+                  <th className="px-2 py-1 text-right">Giorni</th>
+                  <th className="px-2 py-1 text-right">Corse</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => (
+                  <tr key={g.validityId} className="border-t hover:bg-slate-50">
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(g.validityId)}
+                        onChange={() => toggle(g.validityId)}
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="text"
+                        value={names[g.validityId] ?? ""}
+                        onChange={(e) => setNames({ ...names, [g.validityId]: e.target.value })}
+                        className="w-full px-2 py-0.5 text-sm border rounded"
+                      />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {g.categoryName ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
+                          style={{ backgroundColor: (g.categoryColor || "#94a3b8") + "33" }}
+                        >
+                          <span
+                            className="inline-block h-2 w-2 rounded"
+                            style={{ backgroundColor: g.categoryColor || "#94a3b8" }}
+                          />
+                          {g.categoryName}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {g.dayTypeName ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs"
+                          style={{ backgroundColor: (g.dayTypeColor || "#94a3b8") + "33" }}
+                        >
+                          <span
+                            className="inline-block h-2 w-2 rounded"
+                            style={{ backgroundColor: g.dayTypeColor || "#94a3b8" }}
+                          />
+                          {g.dayTypeName}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{g.dates.length}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums">{g.tripIds.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="border-t px-5 py-3 flex justify-end gap-2 bg-slate-50">
+          <button onClick={props.onClose} className="px-3 py-1.5 text-sm rounded border bg-white">
+            Annulla
+          </button>
+          <button
+            onClick={() => saveMut.mutate()}
+            disabled={!groups || selected.size === 0 || saveMut.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5"
+          >
+            {saveMut.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+            <Save className="h-3.5 w-3.5" />
+            Salva {selected.size} unità
           </button>
         </div>
       </div>
