@@ -2703,16 +2703,66 @@ function CategoryPeriodsDialog(props: {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const handleDayClick = (iso: string) => {
+  /* ─── Selezione celle del calendario (click toggle, SHIFT+Click range) ─── */
+  const [selectedDays, setSelectedDays] = useState<Set<string>>(() => new Set());
+  const [anchorISO, setAnchorISO] = useState<string | null>(null);
+
+  const handleDayClick = (iso: string, e: ReactMouseEvent) => {
+    // SHIFT+Click: range dall'ancora a iso (entrambi inclusi)
+    if (e.shiftKey && anchorISO) {
+      const a = anchorISO < iso ? anchorISO : iso;
+      const b = anchorISO < iso ? iso : anchorISO;
+      // genera tutte le date YYYY-MM-DD tra a e b (inclusi)
+      const out: string[] = [];
+      const start = new Date(a + "T00:00:00");
+      const end = new Date(b + "T00:00:00");
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        out.push(d.toISOString().slice(0, 10));
+      }
+      setSelectedDays((prev) => {
+        const next = new Set(prev);
+        for (const d of out) next.add(d);
+        return next;
+      });
+      setAnchorISO(iso);
+      return;
+    }
+    // Click semplice: toggle singolo
+    setSelectedDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(iso)) next.delete(iso);
+      else next.add(iso);
+      return next;
+    });
+    setAnchorISO(iso);
+  };
+
+  const clearSelection = () => {
+    setSelectedDays(new Set());
+    setAnchorISO(null);
+  };
+
+  const applySelection = () => {
+    if (selectedDays.size === 0) {
+      toast.error("Seleziona prima dei giorni cliccando sul calendario");
+      return;
+    }
     if (paintMode === "erase") {
-      setMut.mutate({ dates: [iso], categoryId: null });
+      setMut.mutate(
+        { dates: Array.from(selectedDays), categoryId: null },
+        { onSuccess: () => { clearSelection(); toast.success(`Categoria rimossa da ${selectedDays.size} giorni`); } },
+      );
       return;
     }
     if (!activeCategoryId) {
       toast.error("Seleziona prima una categoria a sinistra");
       return;
     }
-    setMut.mutate({ dates: [iso], categoryId: activeCategoryId });
+    const n = selectedDays.size;
+    setMut.mutate(
+      { dates: Array.from(selectedDays), categoryId: activeCategoryId },
+      { onSuccess: () => { clearSelection(); toast.success(`Categoria applicata a ${n} giorni`); } },
+    );
   };
 
   // Costruisci la griglia 7 colonne (Lun-Dom)
@@ -2827,12 +2877,40 @@ function CategoryPeriodsDialog(props: {
                 <button onClick={goNext} className="px-2 py-1 text-sm rounded border bg-white hover:bg-slate-100">›</button>
                 <div className="ml-3 text-base font-semibold text-slate-900 capitalize">{monthName}</div>
               </div>
-              <div className="text-xs text-slate-600">
-                {paintMode === "paint" && activeCategoryId
-                  ? <>Click per <strong>dipingere</strong> con: <span style={{ color: catById.get(activeCategoryId)?.color }}>{catById.get(activeCategoryId)?.name}</span></>
-                  : paintMode === "erase"
-                    ? <>Click per <strong>cancellare</strong> la categoria del giorno</>
-                    : <>Seleziona prima una categoria a sinistra</>}
+              <div className="text-xs text-slate-700 flex items-center gap-3">
+                <span>
+                  Click = seleziona/deseleziona · <kbd className="px-1 bg-slate-100 border rounded text-slate-900">SHIFT</kbd>+Click = range
+                </span>
+                {selectedDays.size > 0 && (
+                  <>
+                    <span className="font-bold text-blue-700">{selectedDays.size} sel.</span>
+                    {paintMode === "paint" && activeCategoryId && (
+                      <button
+                        onClick={applySelection}
+                        disabled={setMut.isPending}
+                        className="px-2 py-1 text-xs rounded font-semibold text-white shadow disabled:opacity-50"
+                        style={{ backgroundColor: catById.get(activeCategoryId)?.color }}
+                      >
+                        Applica "{catById.get(activeCategoryId)?.name}"
+                      </button>
+                    )}
+                    {paintMode === "erase" && (
+                      <button
+                        onClick={applySelection}
+                        disabled={setMut.isPending}
+                        className="px-2 py-1 text-xs rounded font-semibold text-white bg-rose-600 hover:bg-rose-700 shadow disabled:opacity-50"
+                      >
+                        Cancella categoria da {selectedDays.size} giorni
+                      </button>
+                    )}
+                    <button
+                      onClick={clearSelection}
+                      className="px-2 py-1 text-xs rounded border bg-white hover:bg-slate-100 text-slate-700"
+                    >
+                      Pulisci
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -2852,14 +2930,15 @@ function CategoryPeriodsDialog(props: {
                   const cat = catId ? catById.get(catId) : undefined;
                   const bg = cat?.color ? `${cat.color}40` : undefined; // 25% opacity
                   const ringColor = cat?.color;
+                  const isSel = selectedDays.has(c.iso);
                   return (
                     <button
                       key={c.iso}
-                      onClick={() => handleDayClick(c.iso)}
+                      onClick={(e) => handleDayClick(c.iso, e)}
                       disabled={setMut.isPending}
                       className={`h-20 rounded border text-left p-1.5 transition-all hover:shadow-md ${
                         c.weekend ? "bg-rose-50/30" : "bg-white"
-                      } ${cat ? "border-2" : "border-slate-200"} disabled:opacity-50`}
+                      } ${cat ? "border-2" : "border-slate-200"} ${isSel ? "ring-2 ring-blue-500 ring-offset-1" : ""} disabled:opacity-50`}
                       style={cat ? { backgroundColor: bg, borderColor: ringColor } : undefined}
                       title={cat ? `${c.iso} · ${cat.name}` : `${c.iso} · nessuna categoria`}
                     >
