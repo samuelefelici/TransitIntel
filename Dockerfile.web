@@ -1,0 +1,19 @@
+FROM node:20-slim AS builder
+
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+
+WORKDIR /app
+
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm -w run typecheck:libs && pnpm --filter @workspace/transitintel run build
+
+# --- Production stage: lightweight nginx ---
+FROM nginx:alpine
+
+COPY --from=builder /app/artifacts/transitintel/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

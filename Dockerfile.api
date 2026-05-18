@@ -1,0 +1,25 @@
+FROM node:20-slim
+
+# Enable pnpm
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+
+# Install Python for OR-Tools
+RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy everything (monorepo needs full context for workspace resolution)
+COPY . .
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Build backend (typecheck libs + build api-server + install ortools)
+RUN pnpm run build:deploy
+
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV PYTHONPATH=/app/.python_packages:/app/scripts
+
+EXPOSE 3000
+CMD ["node", "artifacts/api-server/dist/index.cjs"]
