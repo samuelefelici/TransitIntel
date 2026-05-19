@@ -390,6 +390,8 @@ export default function InteractiveGantt({
   const onPointerDown = useCallback(
     (e: React.PointerEvent, barId: string, mode: "move" | "resize-left" | "resize-right") => {
       if (!editable) return;
+      // Right-click must remain available for context menu actions.
+      if (e.button !== 0) return;
       const bar = bars.find(b => b.id === barId);
       if (!bar || bar.locked) return;
       e.preventDefault();
@@ -580,7 +582,7 @@ export default function InteractiveGantt({
     return (
       <div
         key={bar.id}
-        className={`absolute flex items-center justify-center overflow-hidden whitespace-nowrap text-[8px] text-white font-medium
+        className={`absolute flex items-center justify-center overflow-visible whitespace-nowrap text-[8px] text-white font-medium
           ${editable && !bar.locked ? "cursor-grab active:cursor-grabbing" : canInlineActions ? "cursor-pointer" : "cursor-default"}
           ${isBeingDragged
             ? isColliding
