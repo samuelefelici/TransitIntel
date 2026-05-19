@@ -862,9 +862,12 @@ export default function VehicleWorkspace({
     setTripContextMenu({ open: true, anchor, tripBar: bar });
   }, []);
 
-  const openInlineInsert = useCallback((mode: "before" | "after") => {
-    if (!result || !tripContextMenu.tripBar || !tripContextMenu.anchor) return;
-    const tripBar = tripContextMenu.tripBar;
+  const openInlineInsertFromTrip = useCallback((
+    tripBar: GanttBar,
+    mode: "before" | "after",
+    anchor: { x: number; y: number },
+  ) => {
+    if (!result) return;
     const shift = result.shifts.find(s => s.vehicleId === tripBar.rowId);
     if (!shift) return;
     const tripIdx = shift.trips.findIndex(t => t.type === "trip" && t.tripId === tripBar.id);
@@ -891,7 +894,7 @@ export default function VehicleWorkspace({
 
     setInlineDeadhead({
       open: true,
-      anchor: { x: tripContextMenu.anchor.x + 8, y: tripContextMenu.anchor.y + 8 },
+      anchor: { x: anchor.x + 8, y: anchor.y + 8 },
       vehicleId: shift.vehicleId,
       insertType: "deadhead",
       mode,
@@ -902,7 +905,12 @@ export default function VehicleWorkspace({
       insertStartMin,
     });
     setTripContextMenu({ open: false, anchor: null, tripBar: null });
-  }, [result, tripContextMenu]);
+  }, [result]);
+
+  const openInlineInsert = useCallback((mode: "before" | "after") => {
+    if (!tripContextMenu.tripBar || !tripContextMenu.anchor) return;
+    openInlineInsertFromTrip(tripContextMenu.tripBar, mode, tripContextMenu.anchor);
+  }, [tripContextMenu, openInlineInsertFromTrip]);
 
   const handleInsertInline = useCallback((data: {
     fromStop: string;
@@ -1835,6 +1843,9 @@ export default function VehicleWorkspace({
               onSelectedBarIdChange={setSelectedBarId}
               onDeleteSelectedBar={handleDeleteSelectedBar}
               onEditSelectedBar={handleEditSelectedBar}
+              onInsertDeadheadFromTrip={(bar, mode, anchor) => {
+                openInlineInsertFromTrip(bar, mode, anchor);
+              }}
               minHour={4}
               maxHour={26}
               snapMin={5}

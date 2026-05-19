@@ -100,6 +100,8 @@ export interface InteractiveGanttProps {
   onDeleteSelectedBar?: (bar: GanttBar) => void;
   /** Edit currently selected bar action. */
   onEditSelectedBar?: (bar: GanttBar) => void;
+  /** Request insertion of a new deadhead around a trip bar from tooltip actions. */
+  onInsertDeadheadFromTrip?: (bar: GanttBar, mode: "before" | "after", anchor: { x: number; y: number }) => void;
   /** Highlight rows during drag with a background color (e.g. green for compatible, red for incompatible). Map: rowId -> CSS color (rgba/hex). */
   rowHighlights?: Record<string, string>;
   /** Called when user starts dragging a bar (after the small movement threshold). Useful to compute rowHighlights via suggestions. */
@@ -161,6 +163,7 @@ export default function InteractiveGantt({
   onSelectedBarIdChange,
   onDeleteSelectedBar,
   onEditSelectedBar,
+  onInsertDeadheadFromTrip,
   rowHighlights,
   onBarDragStart,
   onBarDragEnd,
@@ -668,10 +671,24 @@ export default function InteractiveGantt({
             <div
               className="absolute left-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/20 transition-colors rounded-l"
               onPointerDown={(e) => { e.stopPropagation(); onPointerDown(e, bar.id, "resize-left"); }}
+              onContextMenu={(e) => {
+                if (!onBarContextMenu) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setSelectedBarId(bar.id);
+                onBarContextMenu(bar, { x: e.clientX, y: e.clientY, side: "left" });
+              }}
             />
             <div
               className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-white/20 transition-colors rounded-r"
               onPointerDown={(e) => { e.stopPropagation(); onPointerDown(e, bar.id, "resize-right"); }}
+              onContextMenu={(e) => {
+                if (!onBarContextMenu) return;
+                e.preventDefault();
+                e.stopPropagation();
+                setSelectedBarId(bar.id);
+                onBarContextMenu(bar, { x: e.clientX, y: e.clientY, side: "right" });
+              }}
             />
           </>
         )}
@@ -1016,6 +1033,34 @@ export default function InteractiveGantt({
                   </div>
                 );
               })()}
+
+              {hoveredBar.bar.meta?.type === "trip" && onInsertDeadheadFromTrip && (
+                <div className="pt-1.5 mt-1.5 border-t border-border/20 space-y-1">
+                  <div className="text-[9px] text-muted-foreground font-semibold uppercase tracking-wide">
+                    Fuorilinea
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      className="flex-1 text-left bg-muted/40 hover:bg-orange-500/20 border border-border/30 hover:border-orange-500/50 rounded px-1.5 py-1 text-[10px]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onInsertDeadheadFromTrip(hoveredBar.bar, "before", { x: hoveredBar.x, y: hoveredBar.y });
+                      }}
+                    >
+                      ↝ Inserisci prima
+                    </button>
+                    <button
+                      className="flex-1 text-left bg-muted/40 hover:bg-orange-500/20 border border-border/30 hover:border-orange-500/50 rounded px-1.5 py-1 text-[10px]"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onInsertDeadheadFromTrip(hoveredBar.bar, "after", { x: hoveredBar.x, y: hoveredBar.y });
+                      }}
+                    >
+                      ↝ Inserisci dopo
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {editable && !hoveredBar.bar.locked && (
                 <div className="text-[9px] text-muted-foreground/50 pt-1 border-t border-border/20">
