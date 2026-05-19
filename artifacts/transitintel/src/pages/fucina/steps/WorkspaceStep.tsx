@@ -16,10 +16,12 @@ import VehicleWorkspace from "@/pages/fucina/vehicle-workspace";
 import { getApiBase } from "@/lib/api";
 import type { GtfsSelection } from "@/pages/fucina";
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
+import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 
 interface Props {
   gtfsSelection: GtfsSelection;
   optimizationResult: ServiceProgramResult;
+  deadheadMatrix?: DeadheadMatrix | null;
   savedScenarioId?: string;
   onBack: () => void;
   /** Vai allo step 7 — Area di Lavoro Turni Guida (interno fucina) */
@@ -35,6 +37,7 @@ interface Props {
 export default function WorkspaceStep({
   gtfsSelection,
   optimizationResult,
+  deadheadMatrix,
   savedScenarioId,
   onBack,
   onContinueToDriverShifts,
@@ -170,7 +173,7 @@ export default function WorkspaceStep({
 
       {/* Workspace */}
       <div className="flex-1 overflow-hidden">
-        <VehicleWorkspace initialResult={optimizationResult} />
+        <VehicleWorkspace initialResult={optimizationResult} deadheadMatrix={deadheadMatrix} />
       </div>
 
       {/* Save dialog (modalità progetto) */}

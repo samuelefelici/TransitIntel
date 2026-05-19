@@ -90,6 +90,16 @@ export interface InteractiveGanttProps {
   getSuggestions?: (bar: GanttBar) => GanttSuggestion[];
   /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). */
   onBarClick?: (bar: GanttBar) => void;
+  /** Called on right click (or shift+click passthrough) over a bar with viewport anchor. */
+  onBarContextMenu?: (bar: GanttBar, anchor: { x: number; y: number }) => void;
+  /** Selected bar id for inline actions (controlled from parent). */
+  selectedBarId?: string | null;
+  /** Selection change callback. */
+  onSelectedBarIdChange?: (barId: string | null) => void;
+  /** Delete currently selected bar action (for deadhead/depot/pullout/pullin). */
+  onDeleteSelectedBar?: (bar: GanttBar) => void;
+  /** Edit currently selected bar action. */
+  onEditSelectedBar?: (bar: GanttBar) => void;
   /** Highlight rows during drag with a background color (e.g. green for compatible, red for incompatible). Map: rowId -> CSS color (rgba/hex). */
   rowHighlights?: Record<string, string>;
   /** Called when user starts dragging a bar (after the small movement threshold). Useful to compute rowHighlights via suggestions. */
@@ -146,6 +156,11 @@ export default function InteractiveGantt({
   onRowRename,
   getSuggestions,
   onBarClick,
+  onBarContextMenu,
+  selectedBarId,
+  onSelectedBarIdChange,
+  onDeleteSelectedBar,
+  onEditSelectedBar,
   rowHighlights,
   onBarDragStart,
   onBarDragEnd,
@@ -161,6 +176,7 @@ export default function InteractiveGantt({
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const [pinnedTooltip, setPinnedTooltip] = useState<string | null>(null);
+  const [localSelectedBarId, setLocalSelectedBarId] = useState<string | null>(null);
   // FIX-TOOLTIP: posizione finale dopo misurazione + clamp viewport
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
@@ -172,6 +188,12 @@ export default function InteractiveGantt({
     setUndoStack([]);
     setRedoStack([]);
   }, [initialBars]);
+
+  const activeSelectedBarId = selectedBarId !== undefined ? selectedBarId : localSelectedBarId;
+  const setSelectedBarId = useCallback((barId: string | null) => {
+    if (selectedBarId === undefined) setLocalSelectedBarId(barId);
+    onSelectedBarIdChange?.(barId);
+  }, [selectedBarId, onSelectedBarIdChange]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -323,6 +345,26 @@ export default function InteractiveGantt({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [undo, redo]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!activeSelectedBarId) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSelectedBarId(null);
+        return;
+      }
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const selected = bars.find(b => b.id === activeSelectedBarId);
+      if (!selected) return;
+      const kind = selected.meta?.type as string | undefined;
+      if (kind !== "deadhead" && kind !== "depot" && kind !== "pullout" && kind !== "pullin") return;
+      e.preventDefault();
+      onDeleteSelectedBar?.(selected);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [activeSelectedBarId, bars, onDeleteSelectedBar, setSelectedBarId]);
 
   // ── Drag state ──
   const dragState = useRef<{
@@ -487,6 +529,9 @@ export default function InteractiveGantt({
     const isModified = modifiedIds.has(bar.id);
 
     const isColliding = isBeingDragged && dragPreview!.collision;
+    const isSelected = activeSelectedBarId === bar.id;
+    const barKind = (bar.meta?.type as string | undefined) ?? "";
+    const canInlineActions = barKind === "deadhead" || barKind === "depot" || barKind === "pullout" || barKind === "pullin";
 
     // Build bar style
     let bgStyle: React.CSSProperties = { backgroundColor: bar.color, opacity: 0.85 };
@@ -494,22 +539,24 @@ export default function InteractiveGantt({
       bgStyle = { ...bgStyle, border: "1.5px dashed rgba(255,255,255,0.3)", opacity: 0.5 };
     } else if (bar.style === "striped") {
       bgStyle = {
-        ...bgStyle,
-        backgroundColor: "rgba(255,255,255,0.06)",
+        backgroundColor: "rgba(251,191,36,0.28)",
+        border: "1.5px dashed #fbbf24",
         backgroundImage:
-          "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.15) 3px, rgba(255,255,255,0.15) 6px)",
-        opacity: 0.6,
+          "repeating-linear-gradient(90deg, rgba(251,191,36,0.08), rgba(251,191,36,0.08) 3px, rgba(251,191,36,0.22) 3px, rgba(251,191,36,0.22) 6px)",
+        opacity: 0.95,
       };
     } else if (bar.style === "depot") {
-      // Se la barra ha un colore esplicito (non rgba "vuoto"), usalo come fondo solido
-      // — così i rientri/uscite deposito sono ben visibili nel Gantt.
-      const explicit = bar.color && !bar.color.startsWith("rgba");
+      const isIntermediateDepot = barKind === "depot";
+      const explicit = (bar.color && !bar.color.startsWith("rgba")) || isIntermediateDepot;
       bgStyle = {
-        backgroundColor: explicit ? bar.color : "rgba(255,255,255,0.05)",
-        border: explicit ? "1px dashed rgba(255,255,255,0.4)" : "1px dashed rgba(255,255,255,0.15)",
+        backgroundColor: isIntermediateDepot ? "rgba(245,158,11,0.34)" : (explicit ? bar.color : "rgba(255,255,255,0.05)"),
+        border: isIntermediateDepot
+          ? "1px solid rgba(245,158,11,0.95)"
+          : (explicit ? "1px dashed rgba(255,255,255,0.4)" : "1px dashed rgba(255,255,255,0.15)"),
         opacity: explicit ? 0.85 : 1,
-        backgroundImage:
-          "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.18) 4px, rgba(255,255,255,0.18) 8px)",
+        backgroundImage: isIntermediateDepot
+          ? "none"
+          : "repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(255,255,255,0.18) 4px, rgba(255,255,255,0.18) 8px)",
       };
     }
 
@@ -534,12 +581,14 @@ export default function InteractiveGantt({
       <div
         key={bar.id}
         className={`absolute flex items-center justify-center overflow-hidden whitespace-nowrap text-[8px] text-white font-medium
-          ${editable && !bar.locked ? "cursor-grab active:cursor-grabbing" : "cursor-default"}
+          ${editable && !bar.locked ? "cursor-grab active:cursor-grabbing" : canInlineActions ? "cursor-pointer" : "cursor-default"}
           ${isBeingDragged
             ? isColliding
               ? "z-30 ring-2 ring-red-500 shadow-lg shadow-red-500/30"
               : "z-30 ring-2 ring-primary/60 shadow-lg"
-            : "hover:brightness-125 hover:z-10"}
+            : isSelected
+              ? "z-20"
+              : "hover:brightness-125 hover:z-10"}
           transition-shadow`}
         style={{
           left,
@@ -548,10 +597,21 @@ export default function InteractiveGantt({
           top: isBeingDragged ? displayRowIdx * rowHeight + 4 : undefined,
           position: isBeingDragged ? "absolute" : undefined,
           borderRadius: 4,
+          transform: isSelected ? "scale(1.02)" : undefined,
+          boxShadow: isSelected
+            ? "0 0 0 2px rgba(249,115,22,1), 0 0 10px rgba(249,115,22,0.45)"
+            : bgStyle.boxShadow,
           ...bgStyle,
         }}
         onPointerDown={(e) => onPointerDown(e, bar.id, "move")}
         onClick={(e) => {
+          e.stopPropagation();
+          setSelectedBarId(bar.id);
+          if (e.shiftKey && bar.meta?.type === "trip" && onBarContextMenu) {
+            e.preventDefault();
+            onBarContextMenu(bar, { x: e.clientX, y: e.clientY });
+            return;
+          }
           // Click su QUALSIASI bar (anche locked): invoca callback custom — il parent
           // decide se gestire (es. apre dialog deadhead per bar locked).
           if (onBarClick && !dragState.current) {
@@ -589,6 +649,12 @@ export default function InteractiveGantt({
           if (pinnedTooltip === bar.id) return;
           setHoveredBar(null);
         }}
+        onContextMenu={(e) => {
+          if (!onBarContextMenu) return;
+          e.preventDefault();
+          setSelectedBarId(bar.id);
+          onBarContextMenu(bar, { x: e.clientX, y: e.clientY });
+        }}
       >
         {/* Resize handles */}
         {editable && !bar.locked && (
@@ -609,6 +675,33 @@ export default function InteractiveGantt({
           <span className="px-1 truncate select-none pointer-events-none">
             {bar.label}
           </span>
+        )}
+
+        {isSelected && canInlineActions && (
+          <div className="absolute -top-7 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 bg-black/90 border border-orange-500/40 rounded px-1.5 py-0.5">
+            <button
+              className="text-[9px] text-red-300 hover:text-red-200"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteSelectedBar?.(bar);
+              }}
+              aria-label="Elimina barra selezionata"
+              title="Elimina"
+            >
+              🗑 Elimina
+            </button>
+            <button
+              className="text-[9px] text-amber-200 hover:text-amber-100"
+              onClick={(e) => {
+                e.stopPropagation();
+                onEditSelectedBar?.(bar);
+              }}
+              aria-label="Modifica durata barra selezionata"
+              title="Modifica durata"
+            >
+              ✎ Modifica durata
+            </button>
+          </div>
         )}
 
         {/* Modified indicator */}
@@ -692,6 +785,7 @@ export default function InteractiveGantt({
         className="overflow-x-auto overflow-y-auto max-h-[55vh] border border-border/20 rounded-lg"
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onClick={() => setSelectedBarId(null)}
       >
         <div style={{ width: labelWidth + timelineWidthPx, minWidth: "100%" }}>
           {/* Time header */}

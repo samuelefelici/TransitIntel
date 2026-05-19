@@ -775,6 +775,7 @@ export default function FucinaPage() {
                     <WorkspaceStep
                       gtfsSelection={gtfsSelection!}
                       optimizationResult={optimizationResult!}
+                      deadheadMatrix={deadheadMatrix}
                       savedScenarioId={savedScenarioId ?? undefined}
                       onBack={() => setStep(5)}
                       // In pipeline mode con progetto: il bottone diventa

@@ -28,8 +28,9 @@ import {
   Plus, Pencil, Trash2, ArrowRight, Truck, AlertTriangle, Save, X,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useDeadheadOperations } from "@/pages/fucina/useDeadheadOperations";
 import type {
-  VehicleShift, ShiftTripEntry, ServiceProgramResult,
+  VehicleShift, ServiceProgramResult,
 } from "@/pages/optimizer-route/types";
 
 /* ──────────────────────────────────────────────────────────── */
@@ -42,7 +43,6 @@ const minToHHMM = (m: number) => {
   const mm = m % 60;
   return `${String(h).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
-const minToTimeStr = (m: number) => `${minToHHMM(m)}:00`;
 const hhmmToMin = (s: string): number | null => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
   if (!m) return null;
@@ -51,61 +51,6 @@ const hhmmToMin = (s: string): number | null => {
   if (h < 0 || h > 47 || mm < 0 || mm > 59) return null;
   return h * 60 + mm;
 };
-
-function recomputeShiftTotals(shift: VehicleShift): VehicleShift {
-  const trips = shift.trips;
-  const tripEntries = trips.filter(t => t.type === "trip");
-  const dhEntries = trips.filter(t => t.type === "deadhead");
-  const depotEntries = trips.filter(t => t.type === "depot");
-  const totalServiceMin = tripEntries.reduce(
-    (s, t) => s + Math.max(0, t.arrivalMin - t.departureMin), 0,
-  );
-  const totalDeadheadMin = dhEntries.reduce(
-    (s, t) => s + (t.deadheadMin ?? Math.max(0, t.arrivalMin - t.departureMin)), 0,
-  );
-  const totalDeadheadKm = dhEntries.reduce((s, t) => s + (t.deadheadKm ?? 0), 0);
-  const startMin = trips.length ? trips[0].departureMin : shift.startMin;
-  const endMin = trips.length ? trips[trips.length - 1].arrivalMin : shift.endMin;
-  return {
-    ...shift,
-    trips,
-    startMin,
-    endMin,
-    totalServiceMin,
-    totalDeadheadMin,
-    totalDeadheadKm,
-    depotReturns: depotEntries.length,
-    tripCount: tripEntries.length,
-    shiftDuration: Math.max(0, endMin - startMin),
-  };
-}
-
-function recomputeTotals(shifts: VehicleShift[]): VehicleShift[] {
-  return shifts.map(recomputeShiftTotals);
-}
-
-/** Inserisce/sostituisce un'entry deadhead riordinando per departureMin. */
-function withDeadhead(
-  shift: VehicleShift,
-  newEntry: ShiftTripEntry,
-  replaceIdx: number | null,
-): VehicleShift {
-  const next = [...shift.trips];
-  if (replaceIdx !== null && replaceIdx >= 0 && replaceIdx < next.length) {
-    next.splice(replaceIdx, 1);
-  }
-  let insertAt = next.findIndex(t => t.departureMin > newEntry.departureMin);
-  if (insertAt < 0) insertAt = next.length;
-  next.splice(insertAt, 0, newEntry);
-  return recomputeShiftTotals({ ...shift, trips: next });
-}
-
-/** Elimina l'entry alla posizione indicata. */
-function withoutEntry(shift: VehicleShift, idx: number): VehicleShift {
-  const next = [...shift.trips];
-  next.splice(idx, 1);
-  return recomputeShiftTotals({ ...shift, trips: next });
-}
 
 interface FreeSlot {
   /** Min in cui il veicolo è libero (arrivo della corsia precedente) */
@@ -251,48 +196,19 @@ export default function DeadheadEditorDialog({
       .filter(({ entry }) => entry.type === "deadhead" || entry.type === "depot");
   }, [selectedShift]);
 
-  /* ────────── Operazioni ────────── */
+  const { deleteEntry, upsertDeadhead } = useDeadheadOperations({
+    result,
+    customLabels,
+    onApply,
+  });
 
-  const apply = useCallback(
-    (op: DeadheadOperation, vehicleId: string, description: string, mutator: (sh: VehicleShift) => VehicleShift) => {
-      if (!result) return;
-      const newShifts = result.shifts.map(s =>
-        s.vehicleId === vehicleId ? mutator(s) : s,
-      );
-      const recomputed = recomputeTotals(newShifts);
-      const totalDhKm = recomputed.reduce((acc, s) => acc + s.totalDeadheadKm, 0);
-      const totalDhMin = recomputed.reduce((acc, s) => acc + s.totalDeadheadMin, 0);
-      const totalServiceMin = recomputed.reduce((acc, s) => acc + s.totalServiceMin, 0);
-      const newResult: ServiceProgramResult = {
-        ...result,
-        shifts: recomputed,
-        summary: result.summary
-          ? {
-              ...result.summary,
-              totalDeadheadKm: totalDhKm,
-              totalDeadheadHours: totalDhMin / 60,
-              totalServiceHours: totalServiceMin / 60,
-            }
-          : result.summary,
-      };
-      onApply(newResult, { vehicleId, operation: op, description });
-      toast.success(description);
-    },
-    [result, onApply],
-  );
+  /* ────────── Operazioni ────────── */
 
   const handleDelete = useCallback((shiftIdx: number, entryIdx: number) => {
     const shift = shifts[shiftIdx];
     if (!shift) return;
-    const entry = shift.trips[entryIdx];
-    if (!entry || (entry.type !== "deadhead" && entry.type !== "depot")) return;
-    const label = customLabels[shift.vehicleId] ?? shift.vehicleId;
-    const range = `${minToHHMM(entry.departureMin)}-${minToHHMM(entry.arrivalMin)}`;
-    const desc = entry.type === "deadhead"
-      ? `Eliminato vuoto ${entry.deadheadKm ?? 0}km su ${label} (${range})`
-      : `Eliminato rientro deposito su ${label} (${range})`;
-    apply("delete", shift.vehicleId, desc, sh => withoutEntry(sh, entryIdx));
-  }, [shifts, customLabels, apply]);
+    deleteEntry(shift.vehicleId, entryIdx);
+  }, [shifts, deleteEntry]);
 
   const openEditForm = useCallback((shiftIdx: number, entryIdx: number) => {
     const shift = shifts[shiftIdx];
@@ -355,28 +271,19 @@ export default function DeadheadEditorDialog({
       toast.error("I km non possono essere negativi");
       return;
     }
-    const newEntry: ShiftTripEntry = {
-      type: "deadhead",
-      tripId: `dh_${shift.vehicleId}_${departureMin}`,
-      routeId: editForm.routeIdTo || editForm.routeIdFrom || "",
-      routeName: "Trasferimento a vuoto",
-      headsign: null,
-      departureTime: minToTimeStr(departureMin),
-      arrivalTime: minToTimeStr(arrivalMin),
+    upsertDeadhead({
+      vehicleId: shift.vehicleId,
       departureMin,
       arrivalMin,
-      deadheadKm: km,
-      deadheadMin: arrivalMin - departureMin,
-      firstStopName: editForm.fromStop || undefined,
-      lastStopName: editForm.toStop || undefined,
-      durationMin: arrivalMin - departureMin,
-    };
-    const op: DeadheadOperation = entryIdx === null ? "add" : "edit";
-    const verb = entryIdx === null ? "Aggiunto" : "Modificato";
-    const desc = `${verb} vuoto ${km}km su ${customLabels[shift.vehicleId] ?? shift.vehicleId} (${minToHHMM(departureMin)}-${minToHHMM(arrivalMin)})`;
-    apply(op, shift.vehicleId, desc, sh => withDeadhead(sh, newEntry, entryIdx));
+      km,
+      routeIdFrom: editForm.routeIdFrom,
+      routeIdTo: editForm.routeIdTo,
+      fromStop: editForm.fromStop,
+      toStop: editForm.toStop,
+      replaceIdx: entryIdx,
+    });
     setEditForm(null);
-  }, [editForm, result, shifts, customLabels, apply]);
+  }, [editForm, result, shifts, upsertDeadhead]);
 
   /* ────────── Render ────────── */
 

@@ -34,6 +34,10 @@ import { SaveScenarioDialog, LoadScenarioDialog } from "./ScenarioDialogs";
 import { exportScenarioToPrint } from "./VehicleShiftsPrintExport";
 import DeadheadEditorDialog, { type DeadheadChange } from "./DeadheadEditorDialog";
 import { AddVehicleShiftDialog, createEmptyVehicleShift, nextVehicleId } from "./AddVehicleShiftDialog";
+import { useDeadheadOperations } from "./useDeadheadOperations";
+import { InlineDeadheadPopover } from "./InlineDeadheadPopover";
+import { calculateDeadhead } from "./deadhead-calculator";
+import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Conversion helpers — VehicleShift[] → GanttRow[] + GanttBar[]
@@ -69,7 +73,7 @@ function shiftsToBars(
         rowId: shift.vehicleId,
         startMin: pullStart,
         endMin: firstTrip.departureMin,
-        label: "🏁",
+        label: `🏁 ${pullOutMin}′`,
         color: "#16a34a",
         style: "depot",
         tooltip: ["Uscita dal deposito", `${pullOutMin}′`, `Verso ${firstTrip.firstStopName || "—"}`],
@@ -89,7 +93,7 @@ function shiftsToBars(
 
       if (entry.type === "deadhead") {
         style = "striped";
-        color = "rgba(255,255,255,0.12)";
+        color = "rgba(251,191,36,0.28)";
         locked = true;
       } else if (entry.type === "depot") {
         style = "depot";
@@ -117,7 +121,11 @@ function shiftsToBars(
         rowId: shift.vehicleId,
         startMin: entry.departureMin,
         endMin: entry.arrivalMin,
-        label: entry.type === "trip" ? entry.routeName : entry.type === "deadhead" ? "↝" : "🏠 dep.",
+        label: entry.type === "trip"
+          ? entry.routeName
+          : entry.type === "deadhead"
+            ? `↝ ${(entry.deadheadKm ?? 0).toFixed(1)}km · ${Math.max(0, entry.arrivalMin - entry.departureMin)}′`
+            : `🏠 Sosta dep. · ${Math.max(0, entry.arrivalMin - entry.departureMin)}′`,
         color,
         style,
         tooltip,
@@ -140,7 +148,7 @@ function shiftsToBars(
         rowId: shift.vehicleId,
         startMin: lastTripRev.arrivalMin,
         endMin: lastTripRev.arrivalMin + pullInMin,
-        label: "🏠",
+        label: `🏠 ${pullInMin}′`,
         color: "#0891b2",
         style: "depot",
         tooltip: ["Rientro finale in deposito", `${pullInMin}′`, `Da ${lastTripRev.lastStopName || "—"}`],
@@ -484,7 +492,13 @@ function rebuildOptimizeRequest(result: ServiceProgramResult): {
  *  Main component
  * ═══════════════════════════════════════════════════════════════ */
 
-export default function VehicleWorkspace({ initialResult }: { initialResult?: ServiceProgramResult }) {
+export default function VehicleWorkspace({
+  initialResult,
+  deadheadMatrix,
+}: {
+  initialResult?: ServiceProgramResult;
+  deadheadMatrix?: DeadheadMatrix | null;
+}) {
   // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
   //    dopo il salvataggio dello scenario. Pattern coperti:
   //      /fucina/:projectId/vehicles[/...]  → home = /fucina/:projectId
@@ -533,6 +547,24 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
     vehicleId: string;
     entryDepartureMin?: number;
     entryType?: "deadhead" | "depot" | "pullout" | "pullin" | "trip";
+  } | null>(null);
+  const [selectedBarId, setSelectedBarId] = useState<string | null>(null);
+  const [tripContextMenu, setTripContextMenu] = useState<{
+    open: boolean;
+    anchor: { x: number; y: number } | null;
+    tripBar: GanttBar | null;
+  }>({ open: false, anchor: null, tripBar: null });
+  const [inlineDeadhead, setInlineDeadhead] = useState<{
+    open: boolean;
+    anchor: { x: number; y: number } | null;
+    vehicleId: string;
+    insertType: "deadhead" | "depot";
+    mode: "before" | "after";
+    tripId: string;
+    gapMin: number;
+    defaultFromStop: string;
+    defaultToStop: string;
+    insertStartMin: number;
   } | null>(null);
   const [overwriteSaving, setOverwriteSaving] = useState(false);
 
@@ -744,28 +776,16 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
     }
   }, [pushHistory]);
 
-  /* ── Click su una bar nel Gantt: se è un deadhead/depot/pullout/pullin
-   * apre il DeadheadEditorDialog focalizzato su quella entry. ── */
+  const { deleteEntry, findEntryIndexByDeparture, upsertDeadhead } = useDeadheadOperations({
+    result,
+    customLabels,
+    onApply: handleDeadheadApply,
+  });
+
   const handleBarClick = useCallback((bar: GanttBar) => {
     const t = bar.meta?.type as string | undefined;
-    if (t === "trip" || !t) return;          // i trip seguono il flusso suggerimenti
-    if (t === "deadhead" || t === "depot") {
-      setDeadheadDialogFocus({
-        vehicleId: bar.rowId,
-        entryDepartureMin: bar.startMin,
-        entryType: t as "deadhead" | "depot",
-      });
-      setDeadheadDialogOpen(true);
-      return;
-    }
-    if (t === "pullout" || t === "pullin") {
-      setDeadheadDialogFocus({
-        vehicleId: bar.rowId,
-        entryType: t as "pullout" | "pullin",
-      });
-      setDeadheadDialogOpen(true);
-      return;
-    }
+    if (!t || t === "trip") return;
+    setSelectedBarId(bar.id);
   }, []);
 
   /* ── Modifica/eliminazione movimenti deposito sintetici (pull-out / pull-in) ──
@@ -793,6 +813,168 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
       toast.success(`${action} ${what} su ${label}`);
     }
   }, [result, customLabels, pushHistory]);
+
+  const handleDeleteSelectedBar = useCallback((bar: GanttBar) => {
+    const t = bar.meta?.type as string | undefined;
+    if (!t) return;
+
+    if (t === "pullout" || t === "pullin") {
+      handleDepotMovementChange(bar.rowId, t === "pullout" ? "pullOut" : "pullIn", 0);
+      setSelectedBarId(null);
+      return;
+    }
+
+    if (t === "deadhead" || t === "depot") {
+      const idx = findEntryIndexByDeparture(bar.rowId, t, bar.startMin);
+      if (idx >= 0) {
+        deleteEntry(bar.rowId, idx);
+        setSelectedBarId(null);
+      }
+    }
+  }, [deleteEntry, findEntryIndexByDeparture, handleDepotMovementChange]);
+
+  const handleEditSelectedBar = useCallback((bar: GanttBar) => {
+    const t = bar.meta?.type as string | undefined;
+    if (!t || t === "trip") return;
+    setDeadheadDialogFocus({
+      vehicleId: bar.rowId,
+      entryDepartureMin: t === "deadhead" || t === "depot" ? bar.startMin : undefined,
+      entryType: t as "deadhead" | "depot" | "pullout" | "pullin",
+    });
+    setDeadheadDialogOpen(true);
+  }, []);
+
+  const handleBarContextMenu = useCallback((bar: GanttBar, anchor: { x: number; y: number }) => {
+    if ((bar.meta?.type as string | undefined) !== "trip") return;
+    setTripContextMenu({ open: true, anchor, tripBar: bar });
+  }, []);
+
+  const openInlineInsert = useCallback((insertType: "deadhead" | "depot", mode: "before" | "after") => {
+    if (!result || !tripContextMenu.tripBar || !tripContextMenu.anchor) return;
+    const tripBar = tripContextMenu.tripBar;
+    const shift = result.shifts.find(s => s.vehicleId === tripBar.rowId);
+    if (!shift) return;
+    const tripIdx = shift.trips.findIndex(t => t.type === "trip" && t.tripId === tripBar.id);
+    if (tripIdx < 0) return;
+
+    const currentTrip = shift.trips[tripIdx];
+    const prev = tripIdx > 0 ? shift.trips[tripIdx - 1] : null;
+    const next = tripIdx < shift.trips.length - 1 ? shift.trips[tripIdx + 1] : null;
+
+    const insertStartMin = mode === "after"
+      ? currentTrip.arrivalMin
+      : (prev?.arrivalMin ?? Math.max(0, currentTrip.departureMin - 1));
+    const gapEndMin = mode === "after"
+      ? (next?.departureMin ?? currentTrip.arrivalMin + 60)
+      : currentTrip.departureMin;
+    const gapMin = Math.max(0, gapEndMin - insertStartMin);
+
+    const defaultFromStop = mode === "after"
+      ? (currentTrip.lastStopName ?? "")
+      : (prev?.lastStopName ?? currentTrip.firstStopName ?? "");
+    const defaultToStop = mode === "after"
+      ? (next?.firstStopName ?? currentTrip.lastStopName ?? "")
+      : (currentTrip.firstStopName ?? "");
+
+    setInlineDeadhead({
+      open: true,
+      anchor: { x: tripContextMenu.anchor.x + 8, y: tripContextMenu.anchor.y + 8 },
+      vehicleId: shift.vehicleId,
+      insertType,
+      mode,
+      tripId: tripBar.id,
+      gapMin,
+      defaultFromStop,
+      defaultToStop,
+      insertStartMin,
+    });
+    setTripContextMenu({ open: false, anchor: null, tripBar: null });
+  }, [result, tripContextMenu]);
+
+  const handleInsertInline = useCallback((data: {
+    fromStop: string;
+    toStop: string;
+    km: number;
+    durationMin: number;
+  }) => {
+    if (!inlineDeadhead || !result) return;
+    const arrivalMin = inlineDeadhead.insertStartMin + Math.max(1, Math.round(data.durationMin));
+
+    if (inlineDeadhead.insertType === "deadhead") {
+      upsertDeadhead({
+        vehicleId: inlineDeadhead.vehicleId,
+        departureMin: inlineDeadhead.insertStartMin,
+        arrivalMin,
+        km: Math.max(0, data.km),
+        fromStop: data.fromStop,
+        toStop: data.toStop,
+        replaceIdx: null,
+      });
+    } else {
+      const shift = result.shifts.find(s => s.vehicleId === inlineDeadhead.vehicleId);
+      if (!shift) return;
+      const entry: ShiftTripEntry = {
+        type: "depot",
+        tripId: `dep_${inlineDeadhead.vehicleId}_${inlineDeadhead.insertStartMin}`,
+        routeId: "",
+        routeName: "Sosta deposito",
+        headsign: null,
+        departureTime: `${String(Math.floor(inlineDeadhead.insertStartMin / 60)).padStart(2, "0")}:${String(inlineDeadhead.insertStartMin % 60).padStart(2, "0")}:00`,
+        arrivalTime: `${String(Math.floor(arrivalMin / 60)).padStart(2, "0")}:${String(arrivalMin % 60).padStart(2, "0")}:00`,
+        departureMin: inlineDeadhead.insertStartMin,
+        arrivalMin,
+        durationMin: Math.max(1, Math.round(data.durationMin)),
+        firstStopName: data.fromStop,
+        lastStopName: data.toStop,
+      };
+      const updatedShifts = result.shifts.map(s => {
+        if (s.vehicleId !== shift.vehicleId) return s;
+        const trips = [...s.trips];
+        let insertAt = trips.findIndex(t => t.departureMin > entry.departureMin);
+        if (insertAt < 0) insertAt = trips.length;
+        trips.splice(insertAt, 0, entry);
+        return recomputeShift({ ...s, trips });
+      });
+      handleDeadheadApply(
+        recomputeSummary({ ...result, shifts: updatedShifts }),
+        {
+          vehicleId: inlineDeadhead.vehicleId,
+          operation: "add",
+          description: `Aggiunta sosta deposito su ${inlineDeadhead.vehicleId} (${Math.max(1, Math.round(data.durationMin))}′)`,
+        },
+      );
+      toast.success("Sosta deposito inserita");
+    }
+
+    setInlineDeadhead(null);
+  }, [inlineDeadhead, result, upsertDeadhead, handleDeadheadApply]);
+
+  useEffect(() => {
+    if (!tripContextMenu.open) return;
+    const close = () => setTripContextMenu({ open: false, anchor: null, tripBar: null });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("contextmenu", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [tripContextMenu.open]);
+
+  const estimateInlineDeadhead = useCallback((
+    fromStop: string,
+    toStop: string,
+    category: ServiceCategory,
+  ) => calculateDeadhead({
+    fromStop,
+    toStop,
+    category,
+    deadheadMatrix,
+  }), [deadheadMatrix]);
 
   /* ── Smart suggestions: find compatible shifts for a trip bar ──
    * Scoring (lower = better):
@@ -1615,6 +1797,18 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
             )}
           </div>
 
+          <div className="mb-2 flex items-center gap-2 flex-wrap text-[10px]">
+            <span className="inline-flex items-center gap-1 rounded border border-amber-400/50 bg-amber-500/20 px-2 py-0.5 text-amber-200">
+              ↝ Trasferimento a vuoto
+            </span>
+            <span className="inline-flex items-center gap-1 rounded border border-amber-500/70 bg-amber-500/30 px-2 py-0.5 text-amber-100">
+              🏠 Sosta deposito
+            </span>
+            <span className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-emerald-200">
+              🏁/🏠 Movimenti deposito sintetici
+            </span>
+          </div>
+
           <div className="flex-1 min-h-0">
             <InteractiveGantt
               rows={ganttRows}
@@ -1623,6 +1817,11 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
               onRowRename={handleRowRename}
               getSuggestions={getSuggestions}
               onBarClick={handleBarClick}
+              onBarContextMenu={handleBarContextMenu}
+              selectedBarId={selectedBarId}
+              onSelectedBarIdChange={setSelectedBarId}
+              onDeleteSelectedBar={handleDeleteSelectedBar}
+              onEditSelectedBar={handleEditSelectedBar}
               minHour={4}
               maxHour={26}
               snapMin={5}
@@ -1784,6 +1983,72 @@ export default function VehicleWorkspace({ initialResult }: { initialResult?: Se
         <div className="fixed bottom-4 right-4 z-40 bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-2 text-xs text-red-400 max-w-sm">
           ⚠ {reoptimizeError}
         </div>
+      )}
+
+      {tripContextMenu.open && tripContextMenu.anchor && tripContextMenu.tripBar && (
+        <div
+          className="fixed z-[64] min-w-[260px] rounded-lg border border-orange-500/30 bg-background/95 backdrop-blur shadow-2xl p-1"
+          style={{ left: tripContextMenu.anchor.x, top: tripContextMenu.anchor.y }}
+          role="menu"
+          aria-label="Menu contestuale corsa"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
+            role="menuitem"
+            onClick={() => openInlineInsert("deadhead", "before")}
+          >
+            ↝ Inserisci vuoto PRIMA di questa corsa
+          </button>
+          <button
+            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
+            role="menuitem"
+            onClick={() => openInlineInsert("deadhead", "after")}
+          >
+            ↝ Inserisci vuoto DOPO questa corsa
+          </button>
+          <div className="my-1 border-t border-border/40" />
+          <button
+            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
+            role="menuitem"
+            onClick={() => openInlineInsert("depot", "before")}
+          >
+            🏠 Inserisci sosta deposito PRIMA
+          </button>
+          <button
+            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
+            role="menuitem"
+            onClick={() => openInlineInsert("depot", "after")}
+          >
+            🏠 Inserisci sosta deposito DOPO
+          </button>
+          <div className="my-1 border-t border-border/40" />
+          <button
+            className="w-full text-left px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted/40 rounded"
+            role="menuitem"
+            onClick={() => {
+              setTripContextMenu({ open: false, anchor: null, tripBar: null });
+              toast.info("Modifica corsa disponibile nella prossima iterazione");
+            }}
+          >
+            ✎ Modifica corsa
+          </button>
+        </div>
+      )}
+
+      {inlineDeadhead && (
+        <InlineDeadheadPopover
+          open={inlineDeadhead.open}
+          anchor={inlineDeadhead.anchor}
+          mode={inlineDeadhead.mode}
+          category={result.shifts.find(s => s.vehicleId === inlineDeadhead.vehicleId)?.category ?? "urbano"}
+          defaultFromStop={inlineDeadhead.defaultFromStop}
+          defaultToStop={inlineDeadhead.defaultToStop}
+          gapMin={inlineDeadhead.gapMin}
+          calculate={estimateInlineDeadhead}
+          onClose={() => setInlineDeadhead(null)}
+          onInsert={handleInsertInline}
+        />
       )}
 
       {/* ── Dialog salvataggio scenario con nome ── */}
