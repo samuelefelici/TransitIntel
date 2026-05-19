@@ -195,6 +195,16 @@ export default function DeadheadEditorDialog({
       .map((t, idx) => ({ entry: t, idx }))
       .filter(({ entry }) => entry.type === "deadhead" || entry.type === "depot");
   }, [selectedShift]);
+  const stopOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of shifts) {
+      for (const t of s.trips) {
+        if (t.firstStopName?.trim()) set.add(t.firstStopName.trim());
+        if (t.lastStopName?.trim()) set.add(t.lastStopName.trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "it"));
+  }, [shifts]);
 
   const { deleteEntry, upsertDeadhead } = useDeadheadOperations({
     result,
@@ -360,6 +370,7 @@ export default function DeadheadEditorDialog({
                     {editForm && editForm.shiftIdx === selectedShiftIdx && (
                       <DeadheadFormCard
                         form={editForm}
+                        stopOptions={stopOptions}
                         onChange={setEditForm}
                         onCancel={() => setEditForm(null)}
                         onSubmit={submitForm}
@@ -513,15 +524,24 @@ export default function DeadheadEditorDialog({
 
 interface FormCardProps {
   form: EditFormState;
+  stopOptions: string[];
   onChange: (next: EditFormState) => void;
   onCancel: () => void;
   onSubmit: () => void;
 }
 
-function DeadheadFormCard({ form, onChange, onCancel, onSubmit }: FormCardProps) {
+function DeadheadFormCard({ form, stopOptions, onChange, onCancel, onSubmit }: FormCardProps) {
   const isAdd = form.entryIdx === null;
   const [depStr, setDepStr] = useState(minToHHMM(form.departureMin));
   const [arrStr, setArrStr] = useState(minToHHMM(form.arrivalMin));
+  const fromOptions = useMemo(() => {
+    if (!form.fromStop || stopOptions.includes(form.fromStop)) return stopOptions;
+    return [form.fromStop, ...stopOptions];
+  }, [form.fromStop, stopOptions]);
+  const toOptions = useMemo(() => {
+    if (!form.toStop || stopOptions.includes(form.toStop)) return stopOptions;
+    return [form.toStop, ...stopOptions];
+  }, [form.toStop, stopOptions]);
 
   React.useEffect(() => {
     setDepStr(minToHHMM(form.departureMin));
@@ -595,21 +615,27 @@ function DeadheadFormCard({ form, onChange, onCancel, onSubmit }: FormCardProps)
       <div className="grid grid-cols-2 gap-2">
         <div>
           <Label className="text-[10px]">Da fermata</Label>
-          <Input
+          <select
             value={form.fromStop}
             onChange={e => onChange({ ...form, fromStop: e.target.value })}
-            className="h-7 text-[11px]"
-            placeholder="es. Capolinea Nord"
-          />
+            className="h-7 w-full rounded border border-input bg-background px-2 text-[11px]"
+          >
+            {fromOptions.map(stop => (
+              <option key={stop} value={stop}>{stop}</option>
+            ))}
+          </select>
         </div>
         <div>
           <Label className="text-[10px]">A fermata</Label>
-          <Input
+          <select
             value={form.toStop}
             onChange={e => onChange({ ...form, toStop: e.target.value })}
-            className="h-7 text-[11px]"
-            placeholder="es. Capolinea Sud"
-          />
+            className="h-7 w-full rounded border border-input bg-background px-2 text-[11px]"
+          >
+            {toOptions.map(stop => (
+              <option key={stop} value={stop}>{stop}</option>
+            ))}
+          </select>
         </div>
       </div>
       <div className="flex gap-2 justify-end pt-1">

@@ -20,7 +20,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ZoomIn, ZoomOut, Undo2, Redo2, RotateCcw, GripVertical,
   Clock, ArrowRight, Navigation, MapPin, AlertTriangle,
-  Pencil, Check, X, Sparkles, Move,
+  Pencil, Check, X, Sparkles, Move, Trash2,
 } from "lucide-react";
 
 // ─── Shared types ────────────────────────────────────────────
@@ -91,7 +91,7 @@ export interface InteractiveGanttProps {
   /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). */
   onBarClick?: (bar: GanttBar) => void;
   /** Called on right click (or shift+click passthrough) over a bar with viewport anchor. */
-  onBarContextMenu?: (bar: GanttBar, anchor: { x: number; y: number }) => void;
+  onBarContextMenu?: (bar: GanttBar, anchor: { x: number; y: number; side?: "left" | "right" }) => void;
   /** Selected bar id for inline actions (controlled from parent). */
   selectedBarId?: string | null;
   /** Selection change callback. */
@@ -611,7 +611,9 @@ export default function InteractiveGantt({
           setSelectedBarId(bar.id);
           if (e.shiftKey && bar.meta?.type === "trip" && onBarContextMenu) {
             e.preventDefault();
-            onBarContextMenu(bar, { x: e.clientX, y: e.clientY });
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            const side = (e.clientX - rect.left) <= rect.width / 2 ? "left" : "right";
+            onBarContextMenu(bar, { x: e.clientX, y: e.clientY, side });
             return;
           }
           // Click su QUALSIASI bar (anche locked): invoca callback custom — il parent
@@ -619,9 +621,9 @@ export default function InteractiveGantt({
           if (onBarClick && !dragState.current) {
             onBarClick(bar);
           }
-          // Pin tooltip with suggestions on click (only if not locked and we have suggestions)
-          if (!editable || bar.locked || !getSuggestions) return;
-          // avoid firing after a drag
+          // Pin tooltip on click for deadhead/depot entries and for trip suggestions.
+          const canPin = canInlineActions || (editable && !bar.locked && !!getSuggestions);
+          if (!canPin) return;
           if (dragState.current || modifiedIds.has(bar.id) === false && isBeingDragged) return;
           e.stopPropagation();
           setPinnedTooltip(prev => prev === bar.id ? null : bar.id);
@@ -655,7 +657,9 @@ export default function InteractiveGantt({
           if (!onBarContextMenu) return;
           e.preventDefault();
           setSelectedBarId(bar.id);
-          onBarContextMenu(bar, { x: e.clientX, y: e.clientY });
+          const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const side = (e.clientX - rect.left) <= rect.width / 2 ? "left" : "right";
+          onBarContextMenu(bar, { x: e.clientX, y: e.clientY, side });
         }}
       >
         {/* Resize handles */}
@@ -677,33 +681,6 @@ export default function InteractiveGantt({
           <span className="px-1 truncate select-none pointer-events-none">
             {bar.label}
           </span>
-        )}
-
-        {isSelected && canInlineActions && (
-          <div className="absolute -top-7 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1 bg-black/90 border border-orange-500/40 rounded px-1.5 py-0.5">
-            <button
-              className="text-[9px] text-red-300 hover:text-red-200"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDeleteSelectedBar?.(bar);
-              }}
-              aria-label="Elimina barra selezionata"
-              title="Elimina"
-            >
-              🗑 Elimina
-            </button>
-            <button
-              className="text-[9px] text-amber-200 hover:text-amber-100"
-              onClick={(e) => {
-                e.stopPropagation();
-                onEditSelectedBar?.(bar);
-              }}
-              aria-label="Modifica durata barra selezionata"
-              title="Modifica durata"
-            >
-              ✎ Modifica durata
-            </button>
-          </div>
         )}
 
         {/* Modified indicator */}
@@ -957,6 +934,49 @@ export default function InteractiveGantt({
               {hoveredBar.bar.tooltip?.map((line, i) => (
                 <div key={i} className="text-muted-foreground">{line}</div>
               ))}
+
+              {(() => {
+                const kind = (hoveredBar.bar.meta?.type as string | undefined) ?? "";
+                const fromStop = (hoveredBar.bar.meta?.fromStop as string | undefined)?.trim();
+                const toStop = (hoveredBar.bar.meta?.toStop as string | undefined)?.trim();
+                if (kind !== "deadhead" && kind !== "depot" && kind !== "pullout" && kind !== "pullin") return null;
+                return (
+                  <>
+                    {(fromStop || toStop) && (
+                      <div className="pt-1 mt-1 border-t border-border/20 text-[11px] text-muted-foreground flex items-center gap-1.5">
+                        <Navigation className="w-3 h-3" />
+                        <span className="truncate">{fromStop || "—"}</span>
+                        <ArrowRight className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{toStop || "—"}</span>
+                      </div>
+                    )}
+                    <div className="pt-1 mt-1 border-t border-border/20 flex items-center justify-end gap-1.5">
+                      <button
+                        className="p-1 rounded hover:bg-muted/40 text-amber-300"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onEditSelectedBar?.(hoveredBar.bar);
+                        }}
+                        aria-label="Modifica"
+                        title="Modifica"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                      <button
+                        className="p-1 rounded hover:bg-red-500/20 text-red-300"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteSelectedBar?.(hoveredBar.bar);
+                        }}
+                        aria-label="Elimina"
+                        title="Elimina"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Smart suggestions */}
               {editable && !hoveredBar.bar.locked && getSuggestions && (() => {

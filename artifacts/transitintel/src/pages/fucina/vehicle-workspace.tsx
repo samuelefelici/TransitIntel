@@ -136,6 +136,8 @@ function shiftsToBars(
           type: entry.type,
           vehicleType: shift.vehicleType,
           category: shift.category,
+          fromStop: entry.firstStopName ?? "",
+          toStop: entry.lastStopName ?? "",
         },
       });
     }
@@ -551,7 +553,7 @@ export default function VehicleWorkspace({
   const [selectedBarId, setSelectedBarId] = useState<string | null>(null);
   const [tripContextMenu, setTripContextMenu] = useState<{
     open: boolean;
-    anchor: { x: number; y: number } | null;
+    anchor: { x: number; y: number; side?: "left" | "right" } | null;
     tripBar: GanttBar | null;
   }>({ open: false, anchor: null, tripBar: null });
   const [inlineDeadhead, setInlineDeadhead] = useState<{
@@ -741,6 +743,17 @@ export default function VehicleWorkspace({
     () => result ? shiftsToBars(result.shifts, routeColorMap, depotMovementOverrides) : [],
     [result, routeColorMap, depotMovementOverrides],
   );
+  const stopOptions = useMemo(() => {
+    if (!result) return [] as string[];
+    const set = new Set<string>();
+    for (const shift of result.shifts) {
+      for (const t of shift.trips) {
+        if (t.firstStopName?.trim()) set.add(t.firstStopName.trim());
+        if (t.lastStopName?.trim()) set.add(t.lastStopName.trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "it"));
+  }, [result]);
 
   // Map vehicleId → VehicleShift for quick lookup
   // (kept for future extensions; currently unused)
@@ -844,12 +857,12 @@ export default function VehicleWorkspace({
     setDeadheadDialogOpen(true);
   }, []);
 
-  const handleBarContextMenu = useCallback((bar: GanttBar, anchor: { x: number; y: number }) => {
+  const handleBarContextMenu = useCallback((bar: GanttBar, anchor: { x: number; y: number; side?: "left" | "right" }) => {
     if ((bar.meta?.type as string | undefined) !== "trip") return;
     setTripContextMenu({ open: true, anchor, tripBar: bar });
   }, []);
 
-  const openInlineInsert = useCallback((insertType: "deadhead" | "depot", mode: "before" | "after") => {
+  const openInlineInsert = useCallback((mode: "before" | "after") => {
     if (!result || !tripContextMenu.tripBar || !tripContextMenu.anchor) return;
     const tripBar = tripContextMenu.tripBar;
     const shift = result.shifts.find(s => s.vehicleId === tripBar.rowId);
@@ -880,7 +893,7 @@ export default function VehicleWorkspace({
       open: true,
       anchor: { x: tripContextMenu.anchor.x + 8, y: tripContextMenu.anchor.y + 8 },
       vehicleId: shift.vehicleId,
-      insertType,
+      insertType: "deadhead",
       mode,
       tripId: tripBar.id,
       gapMin,
@@ -1996,31 +2009,9 @@ export default function VehicleWorkspace({
           <button
             className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
             role="menuitem"
-            onClick={() => openInlineInsert("deadhead", "before")}
+            onClick={() => openInlineInsert(tripContextMenu.anchor?.side === "left" ? "before" : "after")}
           >
-            ↝ Inserisci vuoto PRIMA di questa corsa
-          </button>
-          <button
-            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
-            role="menuitem"
-            onClick={() => openInlineInsert("deadhead", "after")}
-          >
-            ↝ Inserisci vuoto DOPO questa corsa
-          </button>
-          <div className="my-1 border-t border-border/40" />
-          <button
-            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
-            role="menuitem"
-            onClick={() => openInlineInsert("depot", "before")}
-          >
-            🏠 Inserisci sosta deposito PRIMA
-          </button>
-          <button
-            className="w-full text-left px-2 py-1 text-[11px] hover:bg-orange-500/10 rounded"
-            role="menuitem"
-            onClick={() => openInlineInsert("depot", "after")}
-          >
-            🏠 Inserisci sosta deposito DOPO
+            ↝ Inserisci fuorilinea {tripContextMenu.anchor?.side === "left" ? "PRIMA" : "DOPO"} questa corsa
           </button>
           <div className="my-1 border-t border-border/40" />
           <button
@@ -2044,6 +2035,7 @@ export default function VehicleWorkspace({
           category={result.shifts.find(s => s.vehicleId === inlineDeadhead.vehicleId)?.category ?? "urbano"}
           defaultFromStop={inlineDeadhead.defaultFromStop}
           defaultToStop={inlineDeadhead.defaultToStop}
+          stopOptions={stopOptions}
           gapMin={inlineDeadhead.gapMin}
           calculate={estimateInlineDeadhead}
           onClose={() => setInlineDeadhead(null)}

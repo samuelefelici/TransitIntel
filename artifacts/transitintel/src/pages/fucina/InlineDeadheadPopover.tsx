@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { ServiceCategory } from "@/pages/optimizer-route/types";
 import type { DeadheadEstimate } from "@/pages/fucina/deadhead-calculator";
@@ -11,6 +10,7 @@ interface Props {
   anchor: { x: number; y: number } | null;
   mode: "before" | "after";
   category: ServiceCategory;
+  stopOptions: string[];
   defaultFromStop: string;
   defaultToStop: string;
   gapMin: number;
@@ -29,6 +29,7 @@ function InlineDeadheadPopoverComponent({
   anchor,
   mode,
   category,
+  stopOptions,
   defaultFromStop,
   defaultToStop,
   gapMin,
@@ -45,11 +46,12 @@ function InlineDeadheadPopoverComponent({
   const [source, setSource] = useState<DeadheadEstimate["source"]>("fallback");
 
   useEffect(() => {
-    setFromStop(defaultFromStop);
-    setToStop(defaultToStop);
+    const first = stopOptions[0] ?? "";
+    setFromStop(defaultFromStop || first);
+    setToStop(defaultToStop || first);
     setKmAuto(true);
     setDurationAuto(true);
-  }, [defaultFromStop, defaultToStop, mode, open]);
+  }, [defaultFromStop, defaultToStop, mode, open, stopOptions]);
 
   useEffect(() => {
     const est = calculate(fromStop, toStop, category);
@@ -83,29 +85,35 @@ function InlineDeadheadPopoverComponent({
       <div className="grid grid-cols-1 gap-2">
         <div>
           <Label className="text-[10px]">Fermata di partenza</Label>
-          <Input
+          <select
             value={fromStop}
             onChange={e => setFromStop(e.target.value)}
-            className="h-7 text-[11px]"
-            placeholder="Da fermata"
-          />
+            className="h-7 w-full rounded border border-input bg-background px-2 text-[11px]"
+          >
+            {stopOptions.map(stop => (
+              <option key={stop} value={stop}>{stop}</option>
+            ))}
+          </select>
         </div>
 
         <div>
           <Label className="text-[10px]">Fermata di arrivo</Label>
-          <Input
+          <select
             value={toStop}
             onChange={e => setToStop(e.target.value)}
-            className="h-7 text-[11px]"
-            placeholder="A fermata"
-          />
+            className="h-7 w-full rounded border border-input bg-background px-2 text-[11px]"
+          >
+            {stopOptions.map(stop => (
+              <option key={stop} value={stop}>{stop}</option>
+            ))}
+          </select>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
           <div>
             <Label className="text-[10px]">Tempo (min)</Label>
             <div className="flex items-center gap-1">
-              <Input
+              <input
                 type="number"
                 min={1}
                 value={durationMin}
@@ -113,7 +121,7 @@ function InlineDeadheadPopoverComponent({
                   setDurationMin(Math.max(1, parseInt(e.target.value || "1", 10)));
                   setDurationAuto(false);
                 }}
-                className="h-7 text-[11px] font-mono"
+                className="h-7 w-full rounded border border-input bg-background px-2 text-[11px] font-mono"
               />
               {durationAuto && <Badge className="text-[9px]">auto-calcolato</Badge>}
             </div>
@@ -122,7 +130,7 @@ function InlineDeadheadPopoverComponent({
           <div>
             <Label className="text-[10px]">Km</Label>
             <div className="flex items-center gap-1">
-              <Input
+              <input
                 type="number"
                 min={0}
                 step={0.1}
@@ -131,7 +139,7 @@ function InlineDeadheadPopoverComponent({
                   setKm(Math.max(0, parseFloat(e.target.value || "0")));
                   setKmAuto(false);
                 }}
-                className="h-7 text-[11px] font-mono"
+                className="h-7 w-full rounded border border-input bg-background px-2 text-[11px] font-mono"
               />
               {kmAuto && <Badge className="text-[9px]">auto-calcolato</Badge>}
             </div>
