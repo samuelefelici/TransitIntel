@@ -175,7 +175,7 @@ export default function InteractiveGantt({
   const [scrollX, setScrollX] = useState(0);
   const [undoStack, setUndoStack] = useState<GanttBar[][]>([]);
   const [redoStack, setRedoStack] = useState<GanttBar[][]>([]);
-  const [hoveredBar, setHoveredBar] = useState<{ bar: GanttBar; x: number; y: number } | null>(null);
+  const [hoveredBar, setHoveredBar] = useState<{ bar: GanttBar; x: number; y: number; anchorTop: number } | null>(null);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
   const [pinnedTooltip, setPinnedTooltip] = useState<string | null>(null);
@@ -205,49 +205,33 @@ export default function InteractiveGantt({
   // reali e ricalcoliamo top/left per garantire che resti dentro il viewport.
   // Se non c'è abbastanza spazio sotto la barra, lo flippiamo sopra.
   useLayoutEffect(() => {
-    if (!hoveredBar || !tooltipRef.current || !containerRef.current) {
+    if (!hoveredBar || !tooltipRef.current) {
       setTipPos(null);
       return;
     }
     const tipEl = tooltipRef.current;
     const tipRect = tipEl.getBoundingClientRect();
-    const conRect = containerRef.current.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const margin = 8;
 
     // Default: ancora alla "y" calcolata in onMouseEnter (sotto la barra)
     let top = hoveredBar.y;
-    let left = hoveredBar.x;
+    let left = hoveredBar.x - tipRect.width / 2;
 
     // Clamp orizzontale dentro il viewport
-    const absLeft = conRect.left + left;
-    if (absLeft + tipRect.width + margin > vw) {
-      left = vw - tipRect.width - margin - conRect.left;
-    }
-    if (conRect.left + left < margin) {
-      left = margin - conRect.left;
-    }
+    if (left + tipRect.width + margin > vw) left = vw - tipRect.width - margin;
+    if (left < margin) left = margin;
 
     // Verifica overflow verticale (sotto al viewport)
-    const absTop = conRect.top + top;
-    if (absTop + tipRect.height + margin > vh) {
-      // Prova a flippare sopra: y "default" è bottom-bar+4, quindi
-      // sopra la barra serve sottrarre altezza tooltip + altezza barra (~rowHeight) + 8.
-      const flipped = top - tipRect.height - rowHeight - 12;
-      if (conRect.top + flipped > margin) {
-        top = flipped;
-      } else {
-        // Né sotto né sopra entrano: ancora il bordo inferiore al viewport
-        top = vh - conRect.top - tipRect.height - margin;
-      }
+    if (top + tipRect.height + margin > vh) {
+      const flipped = hoveredBar.anchorTop - tipRect.height - 6;
+      top = flipped > margin ? flipped : vh - tipRect.height - margin;
     }
-    if (conRect.top + top < margin) {
-      top = margin - conRect.top;
-    }
+    if (top < margin) top = margin;
 
     setTipPos({ left, top });
-  }, [hoveredBar, rowHeight]);
+  }, [hoveredBar]);
 
   const totalRangeMin = (maxHour - minHour) * 60;
   const timelineWidthPx = useMemo(
@@ -635,8 +619,9 @@ export default function InteractiveGantt({
           if (pRect) {
             setHoveredBar({
               bar,
-              x: rect.left - pRect.left + rect.width / 2,
-              y: rect.bottom - pRect.top + 4,
+              x: rect.left + rect.width / 2,
+              y: rect.bottom + 4,
+              anchorTop: rect.top,
             });
           }
         }}
@@ -647,8 +632,9 @@ export default function InteractiveGantt({
           if (pRect) {
             setHoveredBar({
               bar,
-              x: rect.left - pRect.left + rect.width / 2,
-              y: rect.bottom - pRect.top + 4,
+              x: rect.left + rect.width / 2,
+              y: rect.bottom + 4,
+              anchorTop: rect.top,
             });
           }
         }}
@@ -781,6 +767,12 @@ export default function InteractiveGantt({
         className="overflow-x-auto overflow-y-auto max-h-[55vh] border border-border/20 rounded-lg"
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onWheel={(e) => {
+          if (!(e.ctrlKey || e.metaKey)) return;
+          e.preventDefault();
+          const dir = e.deltaY > 0 ? -1 : 1;
+          setZoom(z => clamp(Math.round((z + dir * 0.1) * 10) / 10, 0.5, 4));
+        }}
         onClick={() => setSelectedBarId(null)}
       >
         <div style={{ width: labelWidth + timelineWidthPx, minWidth: "100%" }}>
@@ -913,10 +905,8 @@ export default function InteractiveGantt({
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: tipPos ? 1 : 0, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            className={`absolute z-50 ${pinnedTooltip === hoveredBar.bar.id ? "pointer-events-auto" : "pointer-events-none"}`}
+            className={`fixed z-[80] ${pinnedTooltip === hoveredBar.bar.id ? "pointer-events-auto" : "pointer-events-none"}`}
             style={{
-              // FIX-TOOLTIP: useLayoutEffect calcola posizione finale dentro viewport.
-              // Finché tipPos è null (primo paint), nascondiamo via opacity 0.
               left: tipPos?.left ?? hoveredBar.x,
               top: tipPos?.top ?? hoveredBar.y,
               maxHeight: "calc(100vh - 24px)",

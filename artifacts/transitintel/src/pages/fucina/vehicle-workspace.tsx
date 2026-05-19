@@ -1586,7 +1586,7 @@ export default function VehicleWorkspace({
   const hasModifications = modifications.length > 0;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col overflow-y-auto">
       {/* ── Summary stats ── */}
       <div className="px-4 pt-3 pb-2 border-b border-border/20 shrink-0">
         <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
@@ -1805,11 +1805,11 @@ export default function VehicleWorkspace({
       </div>
 
       {/* ── Interactive Gantt workspace ── */}
-      <div className="flex-1 overflow-hidden px-4 py-3">
+      <div className="flex-1 overflow-y-auto px-4 py-3">
         <div className="h-full flex flex-col">
           <div className="flex items-center gap-2 mb-1.5">
             <h3 className="text-xs font-semibold text-muted-foreground">
-              Turni Macchina — Trascina o clicca una corsa per i suggerimenti · Doppio click sul nome per rinominare
+              Turni Macchina — Trascina o clicca una corsa per i suggerimenti · Doppio click sul nome per rinominare · Ctrl/Cmd + rotella per zoom
             </h3>
             {result.solver && (
               <Badge variant="outline" className="text-[9px] border-orange-500/30 text-orange-400">
