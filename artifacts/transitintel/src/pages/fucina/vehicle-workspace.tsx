@@ -643,6 +643,11 @@ export default function VehicleWorkspace({
     const newShifts = [...result.shifts, newShift];
     const newResult = recomputeSummary({ ...result, shifts: newShifts });
     setResult(newResult);
+    setFreshShiftIds(prev => {
+      const next = new Set(prev);
+      next.add(opts.vehicleId);
+      return next;
+    });
     pushHistory(newResult, "drag", `➕ Nuovo turno ${opts.vehicleId} (${opts.vehicleType})`,
       `Categoria: ${opts.category}`);
     setShowAddVehicleDialog(false);
@@ -729,6 +734,7 @@ export default function VehicleWorkspace({
   const [scheduleDiff, setScheduleDiff] = useState<ScheduleDiff | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
   const [baselineResult, setBaselineResult] = useState<ServiceProgramResult | null>(null);
+  const [freshShiftIds, setFreshShiftIds] = useState<Set<string>>(new Set());
 
   // Build Gantt data from optimization result
   const routeColorMap = useMemo(
@@ -1033,6 +1039,8 @@ export default function VehicleWorkspace({
     for (const shift of result.shifts) {
       if (shift.vehicleId === bar.rowId) continue;
       if (fromVehicleType && shift.vehicleType !== fromVehicleType) continue;
+      const isEmptyShift = shift.trips.length === 0;
+      const isFreshEmptyShift = isEmptyShift && freshShiftIds.has(shift.vehicleId);
 
       // Verifica conflitti e cerca le corse adiacenti (prima e dopo)
       let conflict = false;
@@ -1079,14 +1087,20 @@ export default function VehicleWorkspace({
       }
 
       // Score: gap basso = meglio, bonus same-route + same-terminal, penalità per shift quasi vuoto
-      let score = tightestGap === Number.POSITIVE_INFINITY ? 9999 : tightestGap;
-      if (sameRoute) score -= 50;
-      if (sameTerminal) score -= 30;
-      if (shift.tripCount <= 1) score += 100;
+      let score = isEmptyShift
+        ? (isFreshEmptyShift ? 5 : 35)
+        : (tightestGap === Number.POSITIVE_INFINITY ? 9999 : tightestGap);
+      if (!isEmptyShift) {
+        if (sameRoute) score -= 50;
+        if (sameTerminal) score -= 30;
+        if (shift.tripCount <= 1) score += 100;
+      }
 
       const label = customLabels[shift.vehicleId] ?? shift.vehicleId;
       const vShort = VEHICLE_SHORT[shift.vehicleType] || shift.vehicleType;
       const tags: string[] = [];
+      if (isFreshEmptyShift) tags.push("nuovo turno");
+      if (isEmptyShift) tags.push("vuoto");
       if (sameRoute) tags.push("stessa linea");
       if (sameTerminal) tags.push("stesso capolinea");
       const tagStr = tags.length ? ` · ${tags.join(" · ")}` : "";
@@ -1097,9 +1111,11 @@ export default function VehicleWorkspace({
       else if (tightestGap <= 15) qual = "buono";
       else if (tightestGap <= 30) qual = "ok";
       else qual = "largo";
-      const detail = tightestGap === Number.POSITIVE_INFINITY
-        ? "libero"
-        : `${qual} · ${Math.round(tightestGap)}′`;
+      const detail = isEmptyShift
+        ? "contenitore libero"
+        : (tightestGap === Number.POSITIVE_INFINITY
+          ? "libero"
+          : `${qual} · ${Math.round(tightestGap)}′`);
 
       candidates.push({
         rowId: shift.vehicleId, label, reason, detail,
@@ -1109,7 +1125,7 @@ export default function VehicleWorkspace({
 
     candidates.sort((a, b) => a.score - b.score);
     return candidates.map(c => ({ rowId: c.rowId, label: c.label, reason: c.reason, detail: c.detail }));
-  }, [result, customLabels]);
+  }, [result, customLabels, freshShiftIds]);
 
   // Listen for optimization results dispatched by the existing optimizer-route page
   // (or load from API results)
@@ -1126,6 +1142,7 @@ export default function VehicleWorkspace({
         timestamp: Date.now(),
         description: "Scenario caricato dall'ottimizzatore",
       }]);
+      setFreshShiftIds(new Set());
       setModifications([]);
       setSavedId(null);
     };
@@ -1163,6 +1180,7 @@ export default function VehicleWorkspace({
           timestamp: Date.now(),
           description: `Scenario caricato: ${detail.name || "(senza nome)"}`,
         }]);
+        setFreshShiftIds(new Set());
         setScenarioName(detail.name || "");
         setModifications([]);
         setSavedId(null);
@@ -1809,7 +1827,7 @@ export default function VehicleWorkspace({
         <div className="h-full flex flex-col">
           <div className="flex items-center gap-2 mb-1.5">
             <h3 className="text-xs font-semibold text-muted-foreground">
-              Turni Macchina — Trascina o clicca una corsa per i suggerimenti · Doppio click sul nome per rinominare · Ctrl/Cmd + rotella per zoom
+              Turni Macchina — Trascina o clicca una corsa per i suggerimenti · Doppio click sul nome per rinominare · Alt/Ctrl/Cmd + rotella per zoom
             </h3>
             {result.solver && (
               <Badge variant="outline" className="text-[9px] border-orange-500/30 text-orange-400">

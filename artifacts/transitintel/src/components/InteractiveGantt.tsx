@@ -20,7 +20,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ZoomIn, ZoomOut, Undo2, Redo2, RotateCcw, GripVertical,
   Clock, ArrowRight, Navigation, MapPin, AlertTriangle,
-  Pencil, Check, X, Sparkles, Move, Trash2,
+  Pencil, Check, X, Sparkles, Move, Trash2, Maximize2, Minimize2,
 } from "lucide-react";
 
 // ─── Shared types ────────────────────────────────────────────
@@ -180,6 +180,7 @@ export default function InteractiveGantt({
   const [editingValue, setEditingValue] = useState("");
   const [pinnedTooltip, setPinnedTooltip] = useState<string | null>(null);
   const [localSelectedBarId, setLocalSelectedBarId] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   // FIX-TOOLTIP: posizione finale dopo misurazione + clamp viewport
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tipPos, setTipPos] = useState<{ left: number; top: number } | null>(null);
@@ -199,6 +200,7 @@ export default function InteractiveGantt({
   }, [selectedBarId, onSelectedBarIdChange]);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
 
   // FIX-TOOLTIP: dopo che il tooltip è renderizzato, misuriamo le dimensioni
@@ -319,6 +321,28 @@ export default function InteractiveGantt({
     setUndoStack([]);
     setRedoStack([]);
   }, [initialBars]);
+
+  const toggleFullscreen = useCallback(async () => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    try {
+      if (document.fullscreenElement === shell) {
+        await document.exitFullscreen();
+      } else {
+        await shell.requestFullscreen();
+      }
+    } catch {
+      // Ignore fullscreen errors (browser policy / unsupported contexts).
+    }
+  }, []);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === shellRef.current);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
 
   // ── Keyboard shortcuts ──
   useEffect(() => {
@@ -696,6 +720,7 @@ export default function InteractiveGantt({
 
   return (
     <div className="relative select-none" ref={containerRef}>
+      <div ref={shellRef} className={isFullscreen ? "h-full p-3 bg-background" : ""}>
       {/* Toolbar */}
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         <div className="flex items-center gap-1 bg-muted/30 rounded-lg px-2 py-1">
@@ -760,18 +785,46 @@ export default function InteractiveGantt({
             <span className="text-[10px] text-amber-400 font-medium">{modifiedIds.size} modifiche</span>
           </motion.div>
         )}
+
+        <button
+          onClick={toggleFullscreen}
+          className="ml-auto inline-flex items-center gap-1 bg-muted/30 rounded-lg px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          title={isFullscreen ? "Esci da tutto schermo" : "Apri a tutto schermo"}
+        >
+          {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          {isFullscreen ? "Riduci" : "Schermo intero"}
+        </button>
       </div>
 
       {/* Chart area */}
       <div
-        className="overflow-x-auto overflow-y-auto max-h-[55vh] border border-border/20 rounded-lg"
+        className={`overflow-x-auto overflow-y-auto border border-border/20 rounded-lg ${isFullscreen ? "h-[calc(100vh-88px)] max-h-none" : "max-h-[55vh]"}`}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onWheel={(e) => {
-          if (!(e.ctrlKey || e.metaKey)) return;
+          if (!(e.ctrlKey || e.metaKey || e.altKey)) return;
           e.preventDefault();
           const dir = e.deltaY > 0 ? -1 : 1;
-          setZoom(z => clamp(Math.round((z + dir * 0.1) * 10) / 10, 0.5, 4));
+          const scroller = e.currentTarget;
+          const rect = scroller.getBoundingClientRect();
+          const pointerXInScroller = e.clientX - rect.left;
+          const timelinePointer = Math.max(0, scroller.scrollLeft + pointerXInScroller - labelWidth);
+
+          setZoom(prevZoom => {
+            const oldWidth = Math.max(800, totalRangeMin * prevZoom * 1.2);
+            const nextZoom = clamp(Math.round((prevZoom + dir * 0.1) * 10) / 10, 0.5, 4);
+            const newWidth = Math.max(800, totalRangeMin * nextZoom * 1.2);
+            const ratio = oldWidth > 0 ? timelinePointer / oldWidth : 0;
+
+            requestAnimationFrame(() => {
+              const targetTimelineX = ratio * newWidth;
+              const nextScrollLeft = labelWidth + targetTimelineX - pointerXInScroller;
+              const maxScroll = Math.max(0, labelWidth + newWidth - scroller.clientWidth);
+              scroller.scrollLeft = clamp(nextScrollLeft, 0, maxScroll);
+            });
+
+            return nextZoom;
+          });
         }}
         onClick={() => setSelectedBarId(null)}
       >
@@ -1061,6 +1114,7 @@ export default function InteractiveGantt({
           </motion.div>
         )}
       </AnimatePresence>
+      </div>
     </div>
   );
 }
