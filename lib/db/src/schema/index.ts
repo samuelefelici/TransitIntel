@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, doublePrecision, integer, timestamp, jsonb, boolean, date, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, pgSchema, uuid, text, doublePrecision, integer, timestamp, jsonb, boolean, date, index, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const trafficSnapshots = pgTable("traffic_snapshots", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -87,9 +87,18 @@ export const gtfsStops = pgTable("gtfs_stops", {
   morningPeakTrips: integer("morning_peak_trips").default(0),
   eveningPeakTrips: integer("evening_peak_trips").default(0),
   serviceScore: doublePrecision("service_score").default(0),
+  // ── Classificazione tariffaria fermata (§6.1) — persistita per il validatore ──
+  // Codice numerico (0=non servita, 1=extraurbano, 2-7=urbano singolo,
+  // 12-17=mista extra+urbano, 99=multi-rete). Vedi deriveClassification() in fares.ts.
+  stopClassification:      integer("stop_classification"),
+  stopClassificationLabel: text("stop_classification_label"),
+  // Ramo del calcolo tariffario (§4): 'urbana' | 'mista_urbana' | 'extraurbana'
+  // | 'non_servita' | 'altro'. È la chiave che sceglie il ramo A (oraria) o B (O/D).
+  fareKind:                text("fare_kind"),
 }, (t) => [
   index("idx_gtfs_stops_feed_id").on(t.feedId),
   index("idx_gtfs_stops_feed_stop").on(t.feedId, t.stopId),
+  index("idx_gtfs_stops_feed_fare_kind").on(t.feedId, t.fareKind),
 ]);
 
 export const gtfsRoutes = pgTable("gtfs_routes", {
@@ -456,11 +465,17 @@ export const gtfsFareProducts = pgTable("gtfs_fare_products", {
   currency: text("currency").notNull().default("EUR"),
   durationMinutes: integer("duration_minutes"),         // validity in minutes (60, 100, etc.)
   fareType: text("fare_type").notNull().default("single"), // "single", "return", "zone"
+  // ── §6.2 — biglietto ORARIO urbano ──
+  // true = è IL biglietto orario di riferimento della rete urbana (prezzo fisso +
+  // finestra di validità in duration_minutes). È il prezzo atteso del ramo A (§4)
+  // che il validatore legge come oracolo per le fermate urbane / miste urbane.
+  isUrbanHourly: boolean("is_urban_hourly").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [
   index("idx_fare_products_feed").on(t.feedId),
   index("idx_fare_products_network").on(t.feedId, t.networkId),
+  index("idx_fare_products_urban_hourly").on(t.feedId, t.isUrbanHourly),
 ]);
 
 // Fare Areas — tariff zones (urban flat areas + extraurban km-based areas per route)
@@ -1047,3 +1062,81 @@ export const gtfsFareStopAssignmentOverrides = pgTable("gtfs_fare_stop_assignmen
 export type GtfsFareOfficialNode = typeof gtfsFareOfficialNodes.$inferSelect;
 export type GtfsFareNodeAssignmentRun = typeof gtfsFareNodeAssignmentRuns.$inferSelect;
 export type GtfsFareStopAssignmentOverride = typeof gtfsFareStopAssignmentOverrides.$inferSelect;
+
+// ════════════════════════════════════════════════════════════
+// SCHEMA `caronte` — dati read-write generati da AVM + validatore
+// ────────────────────────────────────────────────────────────
+// Tutto ciò che AVM e il validatore SCRIVONO vive in uno schema dedicato,
+// separato dai gtfs_* (che restano in `public`, sola lettura dal gestionale).
+// Vedi caronte_setup.sql per la creazione dello schema e dell'utente con
+// permessi di scrittura limitati a `caronte`.
+// ════════════════════════════════════════════════════════════
+export const caronte = pgSchema("caronte");
+
+// Ogni timbrata NFC (tap-IN in salita, tap-OUT in discesa).
+export const carontetapEvents = caronte.table("tap_events", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  deviceId:  text("device_id").notNull(),         // iPhone / validatore
+  vehicleId: text("vehicle_id"),                  // mezzo (legato a device→veicolo→corsa)
+  tripId:    text("trip_id"),                      // corsa GTFS corrente (da AVM)
+  routeId:   text("route_id"),
+  direction: text("direction").notNull(),          // 'in' | 'out'
+  stopId:    text("stop_id"),                      // fermata corrente (da AVM, non GPS)
+  clusterId: text("cluster_id"),                   // cluster tariffario della fermata
+  stopSeq:   integer("stop_seq"),                  // stop_sequence nella corsa
+  ticketUid: text("ticket_uid"),                   // UID del biglietto NFC
+  ts:        timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+  lat:       doublePrecision("lat"),
+  lon:       doublePrecision("lon"),
+  rawNfc:    jsonb("raw_nfc"),                      // payload grezzo letto via NFC
+}, (t) => [
+  index("idx_caronte_tap_trip").on(t.tripId),
+  index("idx_caronte_tap_stop").on(t.stopId),
+  index("idx_caronte_tap_ticket").on(t.ticketUid),
+  index("idx_caronte_tap_ts").on(t.ts),
+]);
+
+// Viaggio = coppia tap-IN → tap-OUT, con tariffa attesa vs addebitata.
+export const carontejourneys = caronte.table("journeys", {
+  id:            uuid("id").primaryKey().defaultRandom(),
+  deviceId:      text("device_id"),
+  ticketUid:     text("ticket_uid"),
+  tripId:        text("trip_id"),
+  routeId:       text("route_id"),
+  stopIn:        text("stop_in"),
+  stopOut:       text("stop_out"),
+  clusterIn:     text("cluster_in"),
+  clusterOut:    text("cluster_out"),
+  fareKind:      text("fare_kind"),                 // 'orario' | 'od_matrix'
+  expectedPrice: doublePrecision("expected_price"), // prezzo atteso letto dal fares engine (oracolo)
+  chargedPrice:  doublePrecision("charged_price"),  // prezzo addebitato dalla bigliettazione
+  priceMatch:    boolean("price_match"),            // expected == charged ? (verifica n°1)
+  tapInId:       uuid("tap_in_id"),                 // → caronte.tap_events.id
+  tapOutId:      uuid("tap_out_id"),
+  tsStart:       timestamp("ts_start", { withTimezone: true }),
+  tsEnd:         timestamp("ts_end", { withTimezone: true }),
+  createdAt:     timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("idx_caronte_journey_trip").on(t.tripId),
+  index("idx_caronte_journey_ticket").on(t.ticketUid),
+  index("idx_caronte_journey_match").on(t.priceMatch),
+]);
+
+// (opz.) traccia posizione mezzo da AVM — base per tempi/velocità (§5).
+export const carontevehiclePositions = caronte.table("vehicle_positions", {
+  id:            uuid("id").primaryKey().defaultRandom(),
+  vehicleId:     text("vehicle_id"),
+  tripId:        text("trip_id"),
+  ts:            timestamp("ts", { withTimezone: true }).notNull().defaultNow(),
+  lat:           doublePrecision("lat").notNull(),
+  lon:           doublePrecision("lon").notNull(),
+  nearestStopId: text("nearest_stop_id"),
+  speed:         doublePrecision("speed"),          // km/h
+}, (t) => [
+  index("idx_caronte_vpos_trip").on(t.tripId),
+  index("idx_caronte_vpos_ts").on(t.ts),
+]);
+
+export type CaronteTapEvent = typeof carontetapEvents.$inferSelect;
+export type CaronteJourney = typeof carontejourneys.$inferSelect;
+export type CaronteVehiclePosition = typeof carontevehiclePositions.$inferSelect;
