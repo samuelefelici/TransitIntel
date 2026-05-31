@@ -47,6 +47,7 @@ import {
   gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
   gtfsTimeframes, gtfsFareAttributes, gtfsFareRules,
   gtfsFareZoneClusters, gtfsFareZoneClusterStops,
+  gtfsFareOdMatrix,
   gtfsFeedInfo,
   gtfsFareAuditLog,
 } from "@workspace/db/schema";
@@ -989,13 +990,14 @@ router.post("/fares/products/seed", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
+    // isUrbanHourly = true → biglietto ORARIO di riferimento della rete (§6.2, ramo A §4)
     const urbanProducts = [
-      { fareProductId: "ancona_60min", fareProductName: "Biglietto Urbano Ancona 60 min", networkId: "urbano_ancona", amount: 1.35, durationMinutes: 60, fareType: "single" as const },
-      { fareProductId: "ancona_100min", fareProductName: "Biglietto Urbano Ancona 100 min", networkId: "urbano_ancona", amount: 1.50, durationMinutes: 100, fareType: "single" as const },
-      { fareProductId: "jesi_60min", fareProductName: "Biglietto Urbano Jesi 60 min", networkId: "urbano_jesi", amount: 1.35, durationMinutes: 60, fareType: "single" as const },
-      { fareProductId: "jesi_ar", fareProductName: "Biglietto Urbano Jesi A/R", networkId: "urbano_jesi", amount: 2.20, durationMinutes: 60, fareType: "return" as const },
-      { fareProductId: "falconara_60min", fareProductName: "Biglietto Urbano Falconara 60 min", networkId: "urbano_falconara", amount: 1.35, durationMinutes: 60, fareType: "single" as const },
-      { fareProductId: "falconara_ar", fareProductName: "Biglietto Urbano Falconara A/R", networkId: "urbano_falconara", amount: 2.00, durationMinutes: 60, fareType: "return" as const },
+      { fareProductId: "ancona_60min", fareProductName: "Biglietto Urbano Ancona 60 min", networkId: "urbano_ancona", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
+      { fareProductId: "ancona_100min", fareProductName: "Biglietto Urbano Ancona 100 min", networkId: "urbano_ancona", amount: 1.50, durationMinutes: 100, fareType: "single" as const, isUrbanHourly: false },
+      { fareProductId: "jesi_60min", fareProductName: "Biglietto Urbano Jesi 60 min", networkId: "urbano_jesi", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
+      { fareProductId: "jesi_ar", fareProductName: "Biglietto Urbano Jesi A/R", networkId: "urbano_jesi", amount: 2.20, durationMinutes: 60, fareType: "return" as const, isUrbanHourly: false },
+      { fareProductId: "falconara_60min", fareProductName: "Biglietto Urbano Falconara 60 min", networkId: "urbano_falconara", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
+      { fareProductId: "falconara_ar", fareProductName: "Biglietto Urbano Falconara A/R", networkId: "urbano_falconara", amount: 2.00, durationMinutes: 60, fareType: "return" as const, isUrbanHourly: false },
     ];
 
     const extraProducts = EXTRA_BANDS.map(b => ({
@@ -1005,6 +1007,7 @@ router.post("/fares/products/seed", async (req, res): Promise<void> => {
       amount: b.price,
       durationMinutes: null as number | null,
       fareType: "zone" as const,
+      isUrbanHourly: false,
     }));
 
     const all = [...urbanProducts, ...extraProducts];
@@ -1017,6 +1020,7 @@ router.post("/fares/products/seed", async (req, res): Promise<void> => {
         amount: p.amount,
         durationMinutes: p.durationMinutes,
         fareType: p.fareType,
+        isUrbanHourly: p.isUrbanHourly,
         riderCategoryId: "ordinario",
         fareMediaId: null, // null = any media (spec: empty fare_media_id means "all media accepted")
       }).onConflictDoNothing();
@@ -2960,48 +2964,75 @@ const URBAN_CODES: Record<string, { pure: number; mixed: number; label: string; 
   urbano_sassoferrato:  { pure: 7, mixed: 17, label: "Sassoferrato",  short: "SS" },
 };
 
+// Ramo del calcolo tariffario (§4) per ciascun codice di classificazione.
+// È la chiave che il validatore usa per scegliere il ramo A (oraria) o B (O/D):
+//   'urbana' / 'mista_urbana' → ramo A (tariffa oraria, prezzo fisso)
+//   'extraurbana'             → ramo B (matrice O/D)
+export type FareKind = "urbana" | "mista_urbana" | "extraurbana" | "non_servita" | "altro";
+
+function classificationToFareKind(classification: number): FareKind {
+  if (classification === 0) return "non_servita";
+  if (classification === 1) return "extraurbana";
+  if (classification >= 2 && classification <= 7) return "urbana";
+  if (classification >= 12 && classification <= 17) return "mista_urbana";
+  return "altro";
+}
+
+// Codice di classificazione → network_id urbano (per il ramo A dell'oracolo).
+// Si appoggia a URBAN_CODES (sotto): pure 2-7, mixed 12-17.
+function classificationToUrbanNetwork(classification: number): string | null {
+  for (const [networkId, c] of Object.entries(URBAN_CODES)) {
+    if (c.pure === classification || c.mixed === classification) return networkId;
+  }
+  return null;
+}
+
 interface StopClassification {
   classification: number;
   classLabel: string;
   classShortCode: string;
+  fareKind: FareKind;
 }
 
 function deriveClassification(networks: Set<string>): StopClassification {
   const hasExtra = networks.has("extraurbano");
   const urbanNets = Array.from(networks).filter(n => n.startsWith("urbano_"));
 
+  const withKind = (c: Omit<StopClassification, "fareKind">): StopClassification =>
+    ({ ...c, fareKind: classificationToFareKind(c.classification) });
+
   // 0 — non servita
   if (networks.size === 0) {
-    return { classification: 0, classLabel: "Non servita", classShortCode: "NONE" };
+    return withKind({ classification: 0, classLabel: "Non servita", classShortCode: "NONE" });
   }
 
   // 1 — solo extraurbano
   if (hasExtra && urbanNets.length === 0) {
-    return { classification: 1, classLabel: "Extraurbano", classShortCode: "EXTRA" };
+    return withKind({ classification: 1, classLabel: "Extraurbano", classShortCode: "EXTRA" });
   }
 
   // 2–7 — un solo urbano, nessun extraurbano
   if (!hasExtra && urbanNets.length === 1) {
     const u = URBAN_CODES[urbanNets[0]];
-    if (u) return {
+    if (u) return withKind({
       classification: u.pure,
       classLabel: `Urbano ${u.label}`,
       classShortCode: `URB_${u.short}`,
-    };
+    });
   }
 
   // 12–17 — un solo urbano + extraurbano
   if (hasExtra && urbanNets.length === 1) {
     const u = URBAN_CODES[urbanNets[0]];
-    if (u) return {
+    if (u) return withKind({
       classification: u.mixed,
       classLabel: `Mista Extraurbano + Urbano ${u.label}`,
       classShortCode: `MIX_EX_${u.short}`,
-    };
+    });
   }
 
   // 99 — tutto il resto (multi-urbano, ≥3 reti, network sconosciuti)
-  return { classification: 99, classLabel: "Multi-rete non prevista", classShortCode: "OTHER" };
+  return withKind({ classification: 99, classLabel: "Multi-rete non prevista", classShortCode: "OTHER" });
 }
 
 /**
@@ -3056,13 +3087,14 @@ async function computeStopsClassification(feedId: string) {
       else if (net.startsWith("urbano_")) urban++;
     }
 
-    const { classification, classLabel, classShortCode } = deriveClassification(networks);
+    const { classification, classLabel, classShortCode, fareKind } = deriveClassification(networks);
 
     return {
       ...s,
       classification,
       classLabel,
       classShortCode,
+      fareKind,
       networks: Array.from(networks).sort(),
       routeCount: routeIds.size,
       urbanRoutes: urban,
@@ -3136,22 +3168,196 @@ router.get("/fares/stops-classification/export", async (req, res): Promise<void>
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/fares/stops-classification/export — stops.txt with extra stop_classification field
-router.get("/fares/stops-classification/export", async (req, res): Promise<void> => {
+// POST /api/fares/stops-classification/persist — calcola e SCRIVE la classificazione
+// su gtfs_stops (stop_classification, stop_classification_label, fare_kind) così che
+// il validatore possa leggerla direttamente dal DB (§6.1). Da rilanciare dopo ogni
+// import GTFS o ri-assegnazione cluster/rete.
+router.post("/fares/stops-classification/persist", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const classified = await computeStopsClassification(feedId);
 
-    // Build stops.txt with extended field
-    let csv = "stop_id,stop_code,stop_name,stop_lat,stop_lon,wheelchair_boarding,stop_classification\n";
-    for (const s of classified) {
-      csv += `${s.stopId},${s.stopCode || ""},${csvEscape(s.stopName)},${s.stopLat},${s.stopLon},${s.wheelchairBoarding ?? 0},${s.classification}\n`;
+    if (classified.length > 0) {
+      // Un'unica UPDATE ... FROM jsonb_to_recordset per non fare 2878 round-trip.
+      const payload = JSON.stringify(classified.map(s => ({
+        sid: s.stopId,
+        c: s.classification,
+        l: s.classLabel,
+        fk: s.fareKind,
+      })));
+      await db.execute(sql`
+        UPDATE gtfs_stops AS gs SET
+          stop_classification       = v.c,
+          stop_classification_label = v.l,
+          fare_kind                 = v.fk
+        FROM jsonb_to_recordset(${payload}::jsonb) AS v(sid text, c int, l text, fk text)
+        WHERE gs.feed_id = ${feedId} AND gs.stop_id = v.sid
+      `);
     }
 
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader("Content-Disposition", 'attachment; filename="stops.txt"');
-    res.send(csv);
+    // Riepilogo per fareKind
+    const byKind: Record<string, number> = {};
+    for (const s of classified) byKind[s.fareKind] = (byKind[s.fareKind] ?? 0) + 1;
+
+    await logAudit(feedId, "persist_stops_classification",
+      `Persistita classificazione su gtfs_stops: ${classified.length} fermate`, { byKind });
+
+    res.json({ ok: true, updated: classified.length, byKind });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/fares/products/mark-urban-hourly — marca (idempotente) il biglietto ORARIO
+// di riferimento per ogni rete urbana (§6.2). Default: il prodotto single con la durata
+// minima > 0 e prezzo minimo per ciascuna rete urbano_*. Sovrascrivibile passando
+// { products: { "urbano_ancona": "ancona_60min", ... } }.
+router.post("/fares/products/mark-urban-hourly", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+
+    const overrides: Record<string, string> = req.body?.products ?? {};
+    const products = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+
+    // Per ogni rete urbana scegli il prodotto orario di riferimento
+    const chosen = new Map<string, string>(); // networkId → fareProductId
+    const urbanNets = new Set(products.map(p => p.networkId).filter((n): n is string => !!n && n.startsWith("urbano_")));
+    for (const net of urbanNets) {
+      if (overrides[net]) { chosen.set(net, overrides[net]); continue; }
+      const candidates = products
+        .filter(p => p.networkId === net && p.fareType === "single" && (p.durationMinutes ?? 0) > 0)
+        .sort((a, b) => (a.durationMinutes! - b.durationMinutes!) || (a.amount - b.amount));
+      if (candidates[0]) chosen.set(net, candidates[0].fareProductId);
+    }
+
+    const chosenIds = new Set(chosen.values());
+    // Reset + set in due UPDATE (solo prodotti urbani)
+    await db.update(gtfsFareProducts)
+      .set({ isUrbanHourly: false })
+      .where(and(eq(gtfsFareProducts.feedId, feedId), sql`${gtfsFareProducts.networkId} LIKE 'urbano_%'`));
+    if (chosenIds.size > 0) {
+      await db.update(gtfsFareProducts)
+        .set({ isUrbanHourly: true })
+        .where(and(eq(gtfsFareProducts.feedId, feedId), inArray(gtfsFareProducts.fareProductId, Array.from(chosenIds))));
+    }
+
+    await logAudit(feedId, "mark_urban_hourly",
+      `Marcati biglietti orari urbani: ${chosenIds.size} reti`, { chosen: Object.fromEntries(chosen) });
+    res.json({ ok: true, chosen: Object.fromEntries(chosen) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/fares/quote?stopIn=&stopOut=  — ORACOLO TARIFFARIO (§4)
+// Risolve stop_id → cluster_id → prezzo atteso scegliendo il ramo A/B in base alla
+// classificazione persistita della fermata. È il "prezzo atteso" che il validatore
+// confronta con quanto addebitato (verifica n°1). Legge soltanto, non ricalcola.
+//
+// Regola di selezione del ramo (default documentato; la regola fine IN≠OUT è un
+// punto aperto del §6):
+//   - entrambe urbana/mista_urbana → ramo A (tariffa oraria della rete urbana di IN)
+//   - altrimenti, se i due cluster esistono → ramo B (matrice O/D)
+router.get("/fares/quote", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+
+    const stopIn = String(req.query.stopIn ?? "");
+    const stopOut = String(req.query.stopOut ?? "");
+    if (!stopIn || !stopOut) { res.status(400).json({ error: "stopIn e stopOut richiesti" }); return; }
+
+    // 1. Classificazione persistita delle due fermate
+    const stopRows = await db.select({
+      stopId: gtfsStops.stopId,
+      classification: gtfsStops.stopClassification,
+      fareKind: gtfsStops.fareKind,
+    }).from(gtfsStops)
+      .where(and(eq(gtfsStops.feedId, feedId), inArray(gtfsStops.stopId, [stopIn, stopOut])));
+    const sIn = stopRows.find(s => s.stopId === stopIn);
+    const sOut = stopRows.find(s => s.stopId === stopOut);
+
+    if (!sIn?.fareKind || !sOut?.fareKind) {
+      res.status(409).json({
+        error: "Classificazione fermata non persistita",
+        hint: "Esegui prima POST /api/fares/stops-classification/persist",
+        stopIn: sIn ?? null, stopOut: sOut ?? null,
+      });
+      return;
+    }
+
+    // 2. Cluster tariffario delle due fermate
+    const clusterRows = await db.select({
+      stopId: gtfsFareZoneClusterStops.stopId,
+      clusterId: gtfsFareZoneClusterStops.clusterId,
+    }).from(gtfsFareZoneClusterStops)
+      .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), inArray(gtfsFareZoneClusterStops.stopId, [stopIn, stopOut])));
+    const clusterIn = clusterRows.find(c => c.stopId === stopIn)?.clusterId ?? null;
+    const clusterOut = clusterRows.find(c => c.stopId === stopOut)?.clusterId ?? null;
+
+    const base = {
+      stopIn, stopOut, clusterIn, clusterOut,
+      fareKindIn: sIn.fareKind, fareKindOut: sOut.fareKind,
+      currency: "EUR" as const,
+    };
+
+    const bothUrban = (k: string) => k === "urbana" || k === "mista_urbana";
+
+    // ── Ramo A — tariffa ORARIA urbana ───────────────────────────────────────
+    if (bothUrban(sIn.fareKind) && bothUrban(sOut.fareKind)) {
+      const urbanNet = classificationToUrbanNetwork(sIn.classification ?? -1);
+      if (!urbanNet) {
+        res.json({ ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null,
+          note: "Rete urbana non determinabile dalla classificazione di stopIn" });
+        return;
+      }
+      const [product] = await db.select().from(gtfsFareProducts)
+        .where(and(
+          eq(gtfsFareProducts.feedId, feedId),
+          eq(gtfsFareProducts.networkId, urbanNet),
+          eq(gtfsFareProducts.isUrbanHourly, true),
+        )).limit(1);
+      if (!product) {
+        res.json({ ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null, urbanNetwork: urbanNet,
+          note: "Nessun biglietto orario marcato per la rete (POST /api/fares/products/mark-urban-hourly)" });
+        return;
+      }
+      res.json({
+        ...base,
+        branch: "A_orario",
+        fareKind: "orario",
+        urbanNetwork: urbanNet,
+        fareProductId: product.fareProductId,
+        expectedPrice: product.amount,
+        validityMinutes: product.durationMinutes,
+      });
+      return;
+    }
+
+    // ── Ramo B — matrice O/D extraurbana ─────────────────────────────────────
+    if (!clusterIn || !clusterOut) {
+      res.status(409).json({ ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
+        error: "Cluster mancante per una delle due fermate" });
+      return;
+    }
+    const [od] = await db.select().from(gtfsFareOdMatrix)
+      .where(and(
+        eq(gtfsFareOdMatrix.feedId, feedId),
+        eq(gtfsFareOdMatrix.fromClusterId, clusterIn),
+        eq(gtfsFareOdMatrix.toClusterId, clusterOut),
+      )).limit(1);
+    if (!od) {
+      res.json({ ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
+        note: `Nessuna entry O/D per ${clusterIn} → ${clusterOut}` });
+      return;
+    }
+    res.json({
+      ...base,
+      branch: "B_od_matrix",
+      fareKind: "od_matrix",
+      fareProductId: od.fareProductId,
+      expectedPrice: od.prezzo,
+      kmTariffario: od.kmTariffario,
+      fascia: od.fascia,
+    });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
