@@ -18,5 +18,7 @@ export default defineConfig({
   dialect: "postgresql",
   dbCredentials: {
     url: process.env.DATABASE_URL,
+    // certificati self-signed (es. Postgres Coolify esposto): PGSSL_NO_VERIFY=1
+    ssl: process.env.PGSSL_NO_VERIFY === "1" ? { rejectUnauthorized: false } : undefined,
   },
 });

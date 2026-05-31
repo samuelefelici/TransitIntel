@@ -12,8 +12,10 @@ if (!process.env.DATABASE_URL) {
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Neon serverless: close idle connections before Neon kills them
-  idleTimeoutMillis: 20_000,       // release idle clients after 20s
+  // PGSSL_NO_VERIFY=1 → accetta certificati self-signed (es. Postgres Coolify
+  // esposto pubblicamente). Sulla rete interna Coolify in genere niente SSL.
+  ssl: process.env.PGSSL_NO_VERIFY === "1" ? { rejectUnauthorized: false } : undefined,
+  idleTimeoutMillis: 30_000,       // release idle clients after 30s
   connectionTimeoutMillis: 10_000, // fail fast if can't connect in 10s
   max: 10,
 });
