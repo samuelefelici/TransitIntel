@@ -24,6 +24,18 @@ CREATE INDEX IF NOT EXISTS idx_fare_products_urban_hourly ON gtfs_fare_products 
 -- ── schema caronte (read-write) ─────────────────────────────────────────────
 CREATE SCHEMA IF NOT EXISTS caronte;
 
+-- active_trips è scritta da Caronte (AVM); qui IF NOT EXISTS per sicurezza.
+CREATE TABLE IF NOT EXISTS caronte.active_trips (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id    TEXT,
+  route_id   TEXT,
+  vehicle_id TEXT,
+  device_id  TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_caronte_active_trips_open ON caronte.active_trips(vehicle_id) WHERE ended_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS caronte.tap_events (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   device_id  TEXT NOT NULL,

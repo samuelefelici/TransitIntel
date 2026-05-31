@@ -3256,108 +3256,113 @@ router.post("/fares/products/mark-urban-hourly", async (req, res): Promise<void>
 // punto aperto del §6):
 //   - entrambe urbana/mista_urbana → ramo A (tariffa oraria della rete urbana di IN)
 //   - altrimenti, se i due cluster esistono → ramo B (matrice O/D)
+// Logica dell'oracolo tariffario riusabile (route + ingest tap del validatore).
+// Ritorna httpStatus + body già pronto: il body include sempre fareKind
+// ('orario'|'od_matrix'), branch e expectedPrice (può essere null con `note`).
+export async function computeFareQuote(
+  feedId: string, stopIn: string, stopOut: string,
+): Promise<{ httpStatus: number; body: any }> {
+  if (!stopIn || !stopOut) {
+    return { httpStatus: 400, body: { error: "stopIn e stopOut richiesti" } };
+  }
+
+  // 1. Classificazione persistita delle due fermate
+  const stopRows = await db.select({
+    stopId: gtfsStops.stopId,
+    classification: gtfsStops.stopClassification,
+    fareKind: gtfsStops.fareKind,
+  }).from(gtfsStops)
+    .where(and(eq(gtfsStops.feedId, feedId), inArray(gtfsStops.stopId, [stopIn, stopOut])));
+  const sIn = stopRows.find(s => s.stopId === stopIn);
+  const sOut = stopRows.find(s => s.stopId === stopOut);
+
+  if (!sIn?.fareKind || !sOut?.fareKind) {
+    return { httpStatus: 409, body: {
+      error: "Classificazione fermata non persistita",
+      hint: "Esegui prima POST /api/fares/stops-classification/persist",
+      stopIn: sIn ?? null, stopOut: sOut ?? null,
+    } };
+  }
+
+  // 2. Cluster tariffario delle due fermate
+  const clusterRows = await db.select({
+    stopId: gtfsFareZoneClusterStops.stopId,
+    clusterId: gtfsFareZoneClusterStops.clusterId,
+  }).from(gtfsFareZoneClusterStops)
+    .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), inArray(gtfsFareZoneClusterStops.stopId, [stopIn, stopOut])));
+  const clusterIn = clusterRows.find(c => c.stopId === stopIn)?.clusterId ?? null;
+  const clusterOut = clusterRows.find(c => c.stopId === stopOut)?.clusterId ?? null;
+
+  const base = {
+    stopIn, stopOut, clusterIn, clusterOut,
+    fareKindIn: sIn.fareKind, fareKindOut: sOut.fareKind,
+    currency: "EUR" as const,
+  };
+
+  const bothUrban = (k: string) => k === "urbana" || k === "mista_urbana";
+
+  // ── Ramo A — tariffa ORARIA urbana ───────────────────────────────────────
+  if (bothUrban(sIn.fareKind) && bothUrban(sOut.fareKind)) {
+    const urbanNet = classificationToUrbanNetwork(sIn.classification ?? -1);
+    if (!urbanNet) {
+      return { httpStatus: 200, body: { ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null,
+        note: "Rete urbana non determinabile dalla classificazione di stopIn" } };
+    }
+    const [product] = await db.select().from(gtfsFareProducts)
+      .where(and(
+        eq(gtfsFareProducts.feedId, feedId),
+        eq(gtfsFareProducts.networkId, urbanNet),
+        eq(gtfsFareProducts.isUrbanHourly, true),
+      )).limit(1);
+    if (!product) {
+      return { httpStatus: 200, body: { ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null, urbanNetwork: urbanNet,
+        note: "Nessun biglietto orario marcato per la rete (POST /api/fares/products/mark-urban-hourly)" } };
+    }
+    return { httpStatus: 200, body: {
+      ...base,
+      branch: "A_orario",
+      fareKind: "orario",
+      urbanNetwork: urbanNet,
+      fareProductId: product.fareProductId,
+      expectedPrice: product.amount,
+      validityMinutes: product.durationMinutes,
+    } };
+  }
+
+  // ── Ramo B — matrice O/D extraurbana ─────────────────────────────────────
+  if (!clusterIn || !clusterOut) {
+    return { httpStatus: 409, body: { ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
+      error: "Cluster mancante per una delle due fermate" } };
+  }
+  const [od] = await db.select().from(gtfsFareOdMatrix)
+    .where(and(
+      eq(gtfsFareOdMatrix.feedId, feedId),
+      eq(gtfsFareOdMatrix.fromClusterId, clusterIn),
+      eq(gtfsFareOdMatrix.toClusterId, clusterOut),
+    )).limit(1);
+  if (!od) {
+    return { httpStatus: 200, body: { ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
+      note: `Nessuna entry O/D per ${clusterIn} → ${clusterOut}` } };
+  }
+  return { httpStatus: 200, body: {
+    ...base,
+    branch: "B_od_matrix",
+    fareKind: "od_matrix",
+    fareProductId: od.fareProductId,
+    expectedPrice: od.prezzo,
+    kmTariffario: od.kmTariffario,
+    fascia: od.fascia,
+  } };
+}
+
 router.get("/fares/quote", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-
     const stopIn = String(req.query.stopIn ?? "");
     const stopOut = String(req.query.stopOut ?? "");
-    if (!stopIn || !stopOut) { res.status(400).json({ error: "stopIn e stopOut richiesti" }); return; }
-
-    // 1. Classificazione persistita delle due fermate
-    const stopRows = await db.select({
-      stopId: gtfsStops.stopId,
-      classification: gtfsStops.stopClassification,
-      fareKind: gtfsStops.fareKind,
-    }).from(gtfsStops)
-      .where(and(eq(gtfsStops.feedId, feedId), inArray(gtfsStops.stopId, [stopIn, stopOut])));
-    const sIn = stopRows.find(s => s.stopId === stopIn);
-    const sOut = stopRows.find(s => s.stopId === stopOut);
-
-    if (!sIn?.fareKind || !sOut?.fareKind) {
-      res.status(409).json({
-        error: "Classificazione fermata non persistita",
-        hint: "Esegui prima POST /api/fares/stops-classification/persist",
-        stopIn: sIn ?? null, stopOut: sOut ?? null,
-      });
-      return;
-    }
-
-    // 2. Cluster tariffario delle due fermate
-    const clusterRows = await db.select({
-      stopId: gtfsFareZoneClusterStops.stopId,
-      clusterId: gtfsFareZoneClusterStops.clusterId,
-    }).from(gtfsFareZoneClusterStops)
-      .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), inArray(gtfsFareZoneClusterStops.stopId, [stopIn, stopOut])));
-    const clusterIn = clusterRows.find(c => c.stopId === stopIn)?.clusterId ?? null;
-    const clusterOut = clusterRows.find(c => c.stopId === stopOut)?.clusterId ?? null;
-
-    const base = {
-      stopIn, stopOut, clusterIn, clusterOut,
-      fareKindIn: sIn.fareKind, fareKindOut: sOut.fareKind,
-      currency: "EUR" as const,
-    };
-
-    const bothUrban = (k: string) => k === "urbana" || k === "mista_urbana";
-
-    // ── Ramo A — tariffa ORARIA urbana ───────────────────────────────────────
-    if (bothUrban(sIn.fareKind) && bothUrban(sOut.fareKind)) {
-      const urbanNet = classificationToUrbanNetwork(sIn.classification ?? -1);
-      if (!urbanNet) {
-        res.json({ ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null,
-          note: "Rete urbana non determinabile dalla classificazione di stopIn" });
-        return;
-      }
-      const [product] = await db.select().from(gtfsFareProducts)
-        .where(and(
-          eq(gtfsFareProducts.feedId, feedId),
-          eq(gtfsFareProducts.networkId, urbanNet),
-          eq(gtfsFareProducts.isUrbanHourly, true),
-        )).limit(1);
-      if (!product) {
-        res.json({ ...base, branch: "A_orario", fareKind: "orario", expectedPrice: null, urbanNetwork: urbanNet,
-          note: "Nessun biglietto orario marcato per la rete (POST /api/fares/products/mark-urban-hourly)" });
-        return;
-      }
-      res.json({
-        ...base,
-        branch: "A_orario",
-        fareKind: "orario",
-        urbanNetwork: urbanNet,
-        fareProductId: product.fareProductId,
-        expectedPrice: product.amount,
-        validityMinutes: product.durationMinutes,
-      });
-      return;
-    }
-
-    // ── Ramo B — matrice O/D extraurbana ─────────────────────────────────────
-    if (!clusterIn || !clusterOut) {
-      res.status(409).json({ ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
-        error: "Cluster mancante per una delle due fermate" });
-      return;
-    }
-    const [od] = await db.select().from(gtfsFareOdMatrix)
-      .where(and(
-        eq(gtfsFareOdMatrix.feedId, feedId),
-        eq(gtfsFareOdMatrix.fromClusterId, clusterIn),
-        eq(gtfsFareOdMatrix.toClusterId, clusterOut),
-      )).limit(1);
-    if (!od) {
-      res.json({ ...base, branch: "B_od_matrix", fareKind: "od_matrix", expectedPrice: null,
-        note: `Nessuna entry O/D per ${clusterIn} → ${clusterOut}` });
-      return;
-    }
-    res.json({
-      ...base,
-      branch: "B_od_matrix",
-      fareKind: "od_matrix",
-      fareProductId: od.fareProductId,
-      expectedPrice: od.prezzo,
-      kmTariffario: od.kmTariffario,
-      fascia: od.fascia,
-    });
+    const q = await computeFareQuote(feedId, stopIn, stopOut);
+    res.status(q.httpStatus).json(q.body);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
