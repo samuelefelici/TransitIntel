@@ -1,27 +1,231 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * SCHEMA `caronte` — ingestione + metriche (read-write)
+ * SCHEMA `caronte` — endpoint per il validatore di bordo + ingestione/metriche
  * ───────────────────────────────────────────────────────────────────────────
- * Endpoint alimentati da AVM (posizioni veicolo) e dal validatore iPhone
- * (tap NFC IN/OUT, viaggi con prezzo atteso vs addebitato). Tutto vive nello
- * schema dedicato `caronte`, separato dai gtfs_* (sola lettura dal gestionale).
+ * Alimentati da Caronte (AVM: active_trips, vehicle_positions) e dal validatore
+ * iPhone (tap NFC, journeys). Tutto nello schema dedicato `caronte`.
  *
- *   POST /api/caronte/tap-events          — ingest singola timbrata NFC
- *   POST /api/caronte/vehicle-positions   — ingest posizione mezzo da AVM
- *   POST /api/caronte/journeys            — registra viaggio (IN→OUT) + verifica prezzo
- *   GET  /api/caronte/onboard?tripId=     — saldo persone a bordo (IN − OUT) per corsa
- *   GET  /api/caronte/stop-flows?tripId=  — salite/discese per fermata
- *   GET  /api/caronte/revenue             — fatturato (somma charged/expected)
+ * Auth: header `Authorization: Bearer <CERBERO_API_KEY>` (vedi requireCaronteKey).
+ *
+ * Per il validatore:
+ *   GET  /api/caronte/active-trip?vehicle_id=   — corsa attiva + fermata corrente
+ *   GET  /api/caronte/current-stop?vehicle_id=  — solo fermata corrente
+ *   POST /api/caronte/taps                      — ingest tap (+ journey su tap-OUT)
+ *
+ * Ingest/metriche di supporto:
+ *   POST /api/caronte/tap-events
+ *   POST /api/caronte/vehicle-positions
+ *   POST /api/caronte/journeys
+ *   GET  /api/caronte/onboard?tripId=
+ *   GET  /api/caronte/stop-flows?tripId=
+ *   GET  /api/caronte/revenue
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 import { db } from "@workspace/db";
 import { carontetapEvents, carontejourneys, carontevehiclePositions } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
+import { getLatestFeedId } from "./gtfs-helpers";
+import { computeFareQuote } from "./fares";
 
 const router: IRouter = Router();
 
-// POST /api/caronte/tap-events — ogni timbrata NFC (tap-IN / tap-OUT)
+// ── Auth: Bearer API key statica condivisa col validatore ───────────────────
+// Se CERBERO_API_KEY è impostata viene applicata; se non lo è, si lascia passare
+// (comodità dev) loggando un avviso. In produzione imposta sempre la chiave.
+const requireCaronteKey: RequestHandler = (req, res, next) => {
+  const key = process.env.CERBERO_API_KEY;
+  if (!key) {
+    console.warn("[caronte] CERBERO_API_KEY non impostata: endpoint non protetti");
+    return next();
+  }
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (token !== key) { res.status(401).json({ error: "Non autorizzato" }); return; }
+  next();
+};
+router.use(requireCaronteKey);
+
+// Feed GTFS attivo: GTFS_FEED_ID forza, altrimenti il feed is_active=true.
+async function resolveFeedId(): Promise<string | null> {
+  if (process.env.GTFS_FEED_ID) return process.env.GTFS_FEED_ID;
+  return getLatestFeedId();
+}
+
+// Arricchisce una fermata GTFS con nome + cluster tariffario.
+async function enrichStop(feedId: string | null, stopId: string | null) {
+  if (!feedId || !stopId) return { stopName: null, clusterId: null };
+  const r = await db.execute<any>(sql`
+    SELECT s.stop_name, zcs.cluster_id
+    FROM gtfs_stops s
+    LEFT JOIN gtfs_fare_zone_cluster_stops zcs
+      ON zcs.feed_id = s.feed_id AND zcs.stop_id = s.stop_id
+    WHERE s.feed_id = ${feedId} AND s.stop_id = ${stopId}
+    LIMIT 1
+  `);
+  const row = r.rows[0];
+  return { stopName: row?.stop_name ?? null, clusterId: row?.cluster_id ?? null };
+}
+
+// GET /api/caronte/active-trip — corsa attiva (da Caronte) + fermata corrente
+router.get("/caronte/active-trip", async (req, res): Promise<void> => {
+  try {
+    const vehicleId = req.query.vehicle_id ? String(req.query.vehicle_id) : null;
+    const feedId = await resolveFeedId();
+
+    const r = await db.execute<any>(sql`
+      SELECT a.trip_id, a.route_id, a.vehicle_id, a.started_at,
+             p.nearest_stop_id, p.lat, p.lon, p.ts AS pos_ts
+      FROM caronte.active_trips a
+      LEFT JOIN LATERAL (
+        SELECT nearest_stop_id, lat, lon, ts
+        FROM caronte.vehicle_positions vp
+        WHERE vp.trip_id = a.trip_id
+          AND (a.vehicle_id IS NULL OR vp.vehicle_id = a.vehicle_id)
+        ORDER BY vp.ts DESC
+        LIMIT 1
+      ) p ON true
+      WHERE a.ended_at IS NULL
+        AND (${vehicleId}::text IS NULL OR a.vehicle_id = ${vehicleId})
+      ORDER BY a.started_at DESC
+      LIMIT 1
+    `);
+    const row = r.rows[0];
+    if (!row) { res.status(404).json({ error: "Nessuna corsa attiva" }); return; }
+
+    let stop = null;
+    if (row.nearest_stop_id) {
+      const { stopName, clusterId } = await enrichStop(feedId, row.nearest_stop_id);
+      stop = {
+        stopId: row.nearest_stop_id,
+        stopName,
+        clusterId,
+        lat: row.lat, lon: row.lon, ts: row.pos_ts,
+      };
+    }
+    res.json({ tripId: row.trip_id, routeId: row.route_id, vehicleId: row.vehicle_id, stop });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/caronte/current-stop — solo fermata corrente di un veicolo
+router.get("/caronte/current-stop", async (req, res): Promise<void> => {
+  try {
+    const vehicleId = String(req.query.vehicle_id ?? "");
+    if (!vehicleId) { res.status(400).json({ error: "vehicle_id richiesto" }); return; }
+    const feedId = await resolveFeedId();
+
+    const r = await db.execute<any>(sql`
+      SELECT nearest_stop_id, trip_id, lat, lon, ts
+      FROM caronte.vehicle_positions
+      WHERE vehicle_id = ${vehicleId}
+      ORDER BY ts DESC
+      LIMIT 1
+    `);
+    const row = r.rows[0];
+    if (!row?.nearest_stop_id) { res.status(404).json({ error: "Nessuna fermata corrente" }); return; }
+
+    const { stopName, clusterId } = await enrichStop(feedId, row.nearest_stop_id);
+    res.json({
+      tripId: row.trip_id,
+      stop: { stopId: row.nearest_stop_id, stopName, clusterId, lat: row.lat, lon: row.lon, ts: row.ts },
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/caronte/taps — ingest tap NFC; su tap-OUT chiude la journey con tariffa
+router.post("/caronte/taps", async (req, res): Promise<void> => {
+  try {
+    const b = req.body ?? {};
+    if (!b.deviceId || (b.direction !== "in" && b.direction !== "out")) {
+      res.status(400).json({ error: "deviceId e direction ('in'|'out') richiesti" });
+      return;
+    }
+
+    // Passo A — inserisci sempre il tap
+    const [tap] = await db.insert(carontetapEvents).values({
+      deviceId:  b.deviceId,
+      vehicleId: b.vehicleId ?? null,
+      tripId:    b.tripId ?? null,
+      routeId:   b.routeId ?? null,
+      direction: b.direction,
+      stopId:    b.stopId ?? null,
+      clusterId: b.clusterId ?? null,
+      stopSeq:   b.stopSeq ?? null,
+      ticketUid: b.ticketUid ?? null,
+      ts:        b.ts ? new Date(b.ts) : undefined,
+      lat:       b.lat ?? null,
+      lon:       b.lon ?? null,
+      rawNfc:    b.rawNfc ?? null,
+    }).returning();
+
+    // tap-IN: niente journey
+    if (b.direction === "in") { res.status(201).json({ tapId: tap.id, journey: null }); return; }
+
+    // tap-OUT: trova il tap-IN aperto più recente dello stesso biglietto
+    if (!b.ticketUid) { res.status(201).json({ tapId: tap.id, journey: null, note: "ticketUid assente: journey non creata" }); return; }
+    const inq = await db.execute<any>(sql`
+      SELECT t.id, t.stop_id, t.cluster_id, t.ts
+      FROM caronte.tap_events t
+      WHERE t.ticket_uid = ${b.ticketUid}
+        AND t.direction = 'in'
+        AND NOT EXISTS (SELECT 1 FROM caronte.journeys j WHERE j.tap_in_id = t.id)
+      ORDER BY t.ts DESC
+      LIMIT 1
+    `);
+    const tapIn = inq.rows[0];
+    if (!tapIn) { res.status(201).json({ tapId: tap.id, journey: null, note: "Nessun tap-IN aperto per questo biglietto" }); return; }
+
+    // Tariffa attesa via oracolo
+    const feedId = await resolveFeedId();
+    const stopIn = tapIn.stop_id as string | null;
+    const stopOut = (b.stopId ?? null) as string | null;
+    let expectedPrice: number | null = null;
+    let fareKind: string | null = null;
+    let branch: string | null = null;
+    if (feedId && stopIn && stopOut) {
+      const q = await computeFareQuote(feedId, stopIn, stopOut);
+      expectedPrice = q.body?.expectedPrice ?? null;
+      fareKind = q.body?.fareKind ?? null;
+      branch = q.body?.branch ?? null;
+    }
+
+    // chargedPrice: per ora default = expectedPrice finché non c'è il pagamento reale
+    const chargedPrice: number | null = b.chargedPrice ?? expectedPrice;
+    const priceMatch =
+      expectedPrice != null && chargedPrice != null
+        ? Math.abs(Number(expectedPrice) - Number(chargedPrice)) < 0.005
+        : null;
+
+    const [journey] = await db.insert(carontejourneys).values({
+      deviceId:      b.deviceId,
+      ticketUid:     b.ticketUid,
+      tripId:        b.tripId ?? null,
+      routeId:       b.routeId ?? null,
+      stopIn:        stopIn,
+      stopOut:       stopOut,
+      clusterIn:     tapIn.cluster_id ?? null,
+      clusterOut:    b.clusterId ?? null,
+      fareKind:      fareKind,
+      expectedPrice: expectedPrice,
+      chargedPrice:  chargedPrice,
+      priceMatch:    priceMatch,
+      tapInId:       tapIn.id,
+      tapOutId:      tap.id,
+      tsStart:       tapIn.ts ? new Date(tapIn.ts) : null,
+      tsEnd:         b.ts ? new Date(b.ts) : new Date(),
+    }).returning();
+
+    res.status(201).json({
+      tapId: tap.id,
+      journey: {
+        id: journey.id,
+        expectedPrice, chargedPrice, priceMatch, fareKind, branch,
+      },
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/caronte/tap-events — insert grezzo di una timbrata (debug/import)
 router.post("/caronte/tap-events", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
@@ -73,7 +277,6 @@ router.post("/caronte/vehicle-positions", async (req, res): Promise<void> => {
 router.post("/caronte/journeys", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
-    // price_match calcolato lato server se entrambi i prezzi sono noti
     const expected = b.expectedPrice ?? null;
     const charged = b.chargedPrice ?? null;
     const priceMatch =

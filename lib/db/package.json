@@ -9,7 +9,9 @@
   },
   "scripts": {
     "push": "drizzle-kit push --config ./drizzle.config.ts",
-    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
+    "push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
+    "run-sql": "node scripts/run-sql.mjs",
+    "setup-caronte": "node scripts/run-sql.mjs ../../caronte_setup.sql"
   },
   "dependencies": {
     "drizzle-orm": "catalog:",
