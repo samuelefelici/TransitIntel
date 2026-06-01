@@ -90,6 +90,18 @@ router.post("/caronte/mark-urban-hourly", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/caronte/quote?stopIn=&stopOut= — alias API-key dell'oracolo /api/fares/quote
+router.get("/caronte/quote", async (req, res): Promise<void> => {
+  try {
+    const feedId = await resolveFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const stopIn = String(req.query.stopIn ?? "");
+    const stopOut = String(req.query.stopOut ?? "");
+    const q = await computeFareQuote(feedId, stopIn, stopOut);
+    res.status(q.httpStatus).json(q.body);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/caronte/active-trip — corsa attiva (da Caronte) + fermata corrente
 router.get("/caronte/active-trip", async (req, res): Promise<void> => {
   try {
