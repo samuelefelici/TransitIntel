@@ -26,7 +26,7 @@ import { db } from "@workspace/db";
 import { carontetapEvents, carontejourneys, carontevehiclePositions } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
-import { computeFareQuote } from "./fares";
+import { computeFareQuote, persistStopsClassification, markUrbanHourly } from "./fares";
 
 const router: IRouter = Router();
 
@@ -66,6 +66,29 @@ async function enrichStop(feedId: string | null, stopId: string | null) {
   const row = r.rows[0];
   return { stopName: row?.stop_name ?? null, clusterId: row?.cluster_id ?? null };
 }
+
+// ── Admin (stessa API-key): setup tariffario lanciabile via curl ────────────
+// Equivalenti API-key delle route JWT in fares.ts, per non dover loggare.
+
+// POST /api/caronte/persist-classification — calcola e persiste fare_kind su gtfs_stops (§6.1)
+router.post("/caronte/persist-classification", async (_req, res): Promise<void> => {
+  try {
+    const feedId = await resolveFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const out = await persistStopsClassification(feedId);
+    res.json({ ok: true, feedId, ...out });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/caronte/mark-urban-hourly — marca il biglietto orario urbano (§6.2)
+router.post("/caronte/mark-urban-hourly", async (req, res): Promise<void> => {
+  try {
+    const feedId = await resolveFeedId();
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const out = await markUrbanHourly(feedId, req.body?.products ?? {});
+    res.json({ ok: true, feedId, ...out });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 
 // GET /api/caronte/active-trip — corsa attiva (da Caronte) + fermata corrente
 router.get("/caronte/active-trip", async (req, res): Promise<void> => {

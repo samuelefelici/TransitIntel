@@ -3172,38 +3172,63 @@ router.get("/fares/stops-classification/export", async (req, res): Promise<void>
 // su gtfs_stops (stop_classification, stop_classification_label, fare_kind) così che
 // il validatore possa leggerla direttamente dal DB (§6.1). Da rilanciare dopo ogni
 // import GTFS o ri-assegnazione cluster/rete.
+// Logica riusabile: calcola e PERSISTE la classificazione su gtfs_stops (§6.1).
+// Esportata così la possono richiamare sia la route JWT sia quella API-key (caronte).
+export async function persistStopsClassification(feedId: string): Promise<{ updated: number; byKind: Record<string, number> }> {
+  const classified = await computeStopsClassification(feedId);
+  if (classified.length > 0) {
+    // Un'unica UPDATE ... FROM jsonb_to_recordset per non fare 2878 round-trip.
+    const payload = JSON.stringify(classified.map(s => ({
+      sid: s.stopId, c: s.classification, l: s.classLabel, fk: s.fareKind,
+    })));
+    await db.execute(sql`
+      UPDATE gtfs_stops AS gs SET
+        stop_classification       = v.c,
+        stop_classification_label = v.l,
+        fare_kind                 = v.fk
+      FROM jsonb_to_recordset(${payload}::jsonb) AS v(sid text, c int, l text, fk text)
+      WHERE gs.feed_id = ${feedId} AND gs.stop_id = v.sid
+    `);
+  }
+  const byKind: Record<string, number> = {};
+  for (const s of classified) byKind[s.fareKind] = (byKind[s.fareKind] ?? 0) + 1;
+  await logAudit(feedId, "persist_stops_classification",
+    `Persistita classificazione su gtfs_stops: ${classified.length} fermate`, { byKind });
+  return { updated: classified.length, byKind };
+}
+
+// Logica riusabile: marca (idempotente) il biglietto orario urbano di riferimento (§6.2).
+export async function markUrbanHourly(feedId: string, overrides: Record<string, string> = {}): Promise<{ chosen: Record<string, string> }> {
+  const products = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+  const chosen = new Map<string, string>(); // networkId → fareProductId
+  const urbanNets = new Set(products.map(p => p.networkId).filter((n): n is string => !!n && n.startsWith("urbano_")));
+  for (const net of urbanNets) {
+    if (overrides[net]) { chosen.set(net, overrides[net]); continue; }
+    const candidates = products
+      .filter(p => p.networkId === net && p.fareType === "single" && (p.durationMinutes ?? 0) > 0)
+      .sort((a, b) => (a.durationMinutes! - b.durationMinutes!) || (a.amount - b.amount));
+    if (candidates[0]) chosen.set(net, candidates[0].fareProductId);
+  }
+  const chosenIds = new Set(chosen.values());
+  await db.update(gtfsFareProducts)
+    .set({ isUrbanHourly: false })
+    .where(and(eq(gtfsFareProducts.feedId, feedId), sql`${gtfsFareProducts.networkId} LIKE 'urbano_%'`));
+  if (chosenIds.size > 0) {
+    await db.update(gtfsFareProducts)
+      .set({ isUrbanHourly: true })
+      .where(and(eq(gtfsFareProducts.feedId, feedId), inArray(gtfsFareProducts.fareProductId, Array.from(chosenIds))));
+  }
+  await logAudit(feedId, "mark_urban_hourly",
+    `Marcati biglietti orari urbani: ${chosenIds.size} reti`, { chosen: Object.fromEntries(chosen) });
+  return { chosen: Object.fromEntries(chosen) };
+}
+
 router.post("/fares/stops-classification/persist", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const classified = await computeStopsClassification(feedId);
-
-    if (classified.length > 0) {
-      // Un'unica UPDATE ... FROM jsonb_to_recordset per non fare 2878 round-trip.
-      const payload = JSON.stringify(classified.map(s => ({
-        sid: s.stopId,
-        c: s.classification,
-        l: s.classLabel,
-        fk: s.fareKind,
-      })));
-      await db.execute(sql`
-        UPDATE gtfs_stops AS gs SET
-          stop_classification       = v.c,
-          stop_classification_label = v.l,
-          fare_kind                 = v.fk
-        FROM jsonb_to_recordset(${payload}::jsonb) AS v(sid text, c int, l text, fk text)
-        WHERE gs.feed_id = ${feedId} AND gs.stop_id = v.sid
-      `);
-    }
-
-    // Riepilogo per fareKind
-    const byKind: Record<string, number> = {};
-    for (const s of classified) byKind[s.fareKind] = (byKind[s.fareKind] ?? 0) + 1;
-
-    await logAudit(feedId, "persist_stops_classification",
-      `Persistita classificazione su gtfs_stops: ${classified.length} fermate`, { byKind });
-
-    res.json({ ok: true, updated: classified.length, byKind });
+    const out = await persistStopsClassification(feedId);
+    res.json({ ok: true, ...out });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3215,35 +3240,8 @@ router.post("/fares/products/mark-urban-hourly", async (req, res): Promise<void>
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-
-    const overrides: Record<string, string> = req.body?.products ?? {};
-    const products = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
-
-    // Per ogni rete urbana scegli il prodotto orario di riferimento
-    const chosen = new Map<string, string>(); // networkId → fareProductId
-    const urbanNets = new Set(products.map(p => p.networkId).filter((n): n is string => !!n && n.startsWith("urbano_")));
-    for (const net of urbanNets) {
-      if (overrides[net]) { chosen.set(net, overrides[net]); continue; }
-      const candidates = products
-        .filter(p => p.networkId === net && p.fareType === "single" && (p.durationMinutes ?? 0) > 0)
-        .sort((a, b) => (a.durationMinutes! - b.durationMinutes!) || (a.amount - b.amount));
-      if (candidates[0]) chosen.set(net, candidates[0].fareProductId);
-    }
-
-    const chosenIds = new Set(chosen.values());
-    // Reset + set in due UPDATE (solo prodotti urbani)
-    await db.update(gtfsFareProducts)
-      .set({ isUrbanHourly: false })
-      .where(and(eq(gtfsFareProducts.feedId, feedId), sql`${gtfsFareProducts.networkId} LIKE 'urbano_%'`));
-    if (chosenIds.size > 0) {
-      await db.update(gtfsFareProducts)
-        .set({ isUrbanHourly: true })
-        .where(and(eq(gtfsFareProducts.feedId, feedId), inArray(gtfsFareProducts.fareProductId, Array.from(chosenIds))));
-    }
-
-    await logAudit(feedId, "mark_urban_hourly",
-      `Marcati biglietti orari urbani: ${chosenIds.size} reti`, { chosen: Object.fromEntries(chosen) });
-    res.json({ ok: true, chosen: Object.fromEntries(chosen) });
+    const out = await markUrbanHourly(feedId, req.body?.products ?? {});
+    res.json({ ok: true, ...out });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
