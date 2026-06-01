@@ -52,7 +52,7 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(authRouter);
 router.use(cronRouter); // pubblico (webhook/job esterni)
-router.use(caronteRouter); // pubblico: auth via Bearer CERBERO_API_KEY (validatore)
+router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
 
 // ⛔ Tutto sotto qui richiede autenticazione + colonne tenant pronte
 router.use(requireAuth);

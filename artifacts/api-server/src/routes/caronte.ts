@@ -71,7 +71,7 @@ async function enrichStop(feedId: string | null, stopId: string | null) {
 // Equivalenti API-key delle route JWT in fares.ts, per non dover loggare.
 
 // POST /api/caronte/persist-classification — calcola e persiste fare_kind su gtfs_stops (§6.1)
-router.post("/caronte/persist-classification", async (_req, res): Promise<void> => {
+router.post("/persist-classification", async (_req, res): Promise<void> => {
   try {
     const feedId = await resolveFeedId();
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
@@ -81,7 +81,7 @@ router.post("/caronte/persist-classification", async (_req, res): Promise<void> 
 });
 
 // POST /api/caronte/mark-urban-hourly — marca il biglietto orario urbano (§6.2)
-router.post("/caronte/mark-urban-hourly", async (req, res): Promise<void> => {
+router.post("/mark-urban-hourly", async (req, res): Promise<void> => {
   try {
     const feedId = await resolveFeedId();
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
@@ -91,7 +91,7 @@ router.post("/caronte/mark-urban-hourly", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/quote?stopIn=&stopOut= — alias API-key dell'oracolo /api/fares/quote
-router.get("/caronte/quote", async (req, res): Promise<void> => {
+router.get("/quote", async (req, res): Promise<void> => {
   try {
     const feedId = await resolveFeedId();
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
@@ -103,7 +103,7 @@ router.get("/caronte/quote", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/active-trip — corsa attiva (da Caronte) + fermata corrente
-router.get("/caronte/active-trip", async (req, res): Promise<void> => {
+router.get("/active-trip", async (req, res): Promise<void> => {
   try {
     const vehicleId = req.query.vehicle_id ? String(req.query.vehicle_id) : null;
     const feedId = await resolveFeedId();
@@ -143,7 +143,7 @@ router.get("/caronte/active-trip", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/current-stop — solo fermata corrente di un veicolo
-router.get("/caronte/current-stop", async (req, res): Promise<void> => {
+router.get("/current-stop", async (req, res): Promise<void> => {
   try {
     const vehicleId = String(req.query.vehicle_id ?? "");
     if (!vehicleId) { res.status(400).json({ error: "vehicle_id richiesto" }); return; }
@@ -168,7 +168,7 @@ router.get("/caronte/current-stop", async (req, res): Promise<void> => {
 });
 
 // POST /api/caronte/taps — ingest tap NFC; su tap-OUT chiude la journey con tariffa
-router.post("/caronte/taps", async (req, res): Promise<void> => {
+router.post("/taps", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     if (!b.deviceId || (b.direction !== "in" && b.direction !== "out")) {
@@ -261,7 +261,7 @@ router.post("/caronte/taps", async (req, res): Promise<void> => {
 });
 
 // POST /api/caronte/tap-events — insert grezzo di una timbrata (debug/import)
-router.post("/caronte/tap-events", async (req, res): Promise<void> => {
+router.post("/tap-events", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     if (!b.deviceId || (b.direction !== "in" && b.direction !== "out")) {
@@ -288,7 +288,7 @@ router.post("/caronte/tap-events", async (req, res): Promise<void> => {
 });
 
 // POST /api/caronte/vehicle-positions — traccia posizione mezzo (da AVM)
-router.post("/caronte/vehicle-positions", async (req, res): Promise<void> => {
+router.post("/vehicle-positions", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     if (typeof b.lat !== "number" || typeof b.lon !== "number") {
@@ -309,7 +309,7 @@ router.post("/caronte/vehicle-positions", async (req, res): Promise<void> => {
 });
 
 // POST /api/caronte/journeys — viaggio IN→OUT con verifica prezzo (oracolo vs addebitato)
-router.post("/caronte/journeys", async (req, res): Promise<void> => {
+router.post("/journeys", async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     const expected = b.expectedPrice ?? null;
@@ -342,7 +342,7 @@ router.post("/caronte/journeys", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/onboard?tripId= — persone a bordo (saldo progressivo IN − OUT)
-router.get("/caronte/onboard", async (req, res): Promise<void> => {
+router.get("/onboard", async (req, res): Promise<void> => {
   try {
     const tripId = String(req.query.tripId ?? "");
     if (!tripId) { res.status(400).json({ error: "tripId richiesto" }); return; }
@@ -359,7 +359,7 @@ router.get("/caronte/onboard", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/stop-flows?tripId= — salite/discese per fermata
-router.get("/caronte/stop-flows", async (req, res): Promise<void> => {
+router.get("/stop-flows", async (req, res): Promise<void> => {
   try {
     const tripId = String(req.query.tripId ?? "");
     const r = await db.execute<any>(sql`
@@ -377,7 +377,7 @@ router.get("/caronte/stop-flows", async (req, res): Promise<void> => {
 });
 
 // GET /api/caronte/revenue — fatturato (charged, fallback expected) + verifica prezzi
-router.get("/caronte/revenue", async (req, res): Promise<void> => {
+router.get("/revenue", async (req, res): Promise<void> => {
   try {
     const r = await db.execute<any>(sql`
       SELECT
