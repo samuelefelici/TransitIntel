@@ -158,11 +158,20 @@ def apply_shift_rules_override(cfg: dict) -> None:
 # se esiste almeno un pair che lo copre (forza accorpamento → meno turni vuoti).
 MIN_WORK_PER_DUTY = 360            # 6h00
 
-# Cap HARD sulle vetture aziendali necessarie ai trasferimenti a vuoto driver
-# (transfer fra fine s1 e inizio s2 di un pair semiunico/spezzato).
-# Vincolo cumulative: massimo MAX_COMPANY_CARS pair "in trasferimento" in
-# qualunque istante del giorno.
+# Cap HARD sulle vetture aziendali necessarie ai trasferimenti a vuoto driver.
+# Una vettura serve SOLO per i brevi trasferimenti (accompagnamento a fine s1
+# verso il deposito + ripresa a inizio s2), NON per l'intera interruzione del
+# turno biripresa. Vincolo cumulative: massimo MAX_COMPANY_CARS trasferimenti
+# vettura simultanei in qualunque istante del giorno.
 MAX_COMPANY_CARS = COMPANY_CARS    # default 5
+
+# FIX-CSP-4: penalità (in € "virtuali") per ogni turno OLTRE il cap percentuale
+# della sua tipologia (supplementi/semiunici/spezzati). I cap diventano SOFT:
+# restano rispettati ogni volta che è strutturalmente possibile, ma non rendono
+# il modello INFEASIBLE quando la rete impone più turni speciali del consentito
+# (in quel caso meglio una soluzione valida penalizzata che il fallback greedy).
+# Letto da config.bds.optimizer.weightTypeCapViolation.
+WEIGHT_TYPE_CAP_VIOLATION = 2000   # ~2000 € virtuali per turno oltre il cap
 
 # FIX-CSP-1: Peso per minimizzare aggressivamente il numero di turni.
 # Default alzato da 5000 a 20000 per dominare le differenze di costo orario
@@ -197,7 +206,7 @@ def apply_optimizer_overrides(cfg: dict) -> None:
     """
     global MIN_WORK_PER_DUTY, MAX_COMPANY_CARS
     global WEIGHT_DUTY_COUNT, WEIGHT_IDLE_PENALTY, IDLE_PENALTY_MAX_MIN
-    global SCORE_PER_DUTY
+    global SCORE_PER_DUTY, WEIGHT_TYPE_CAP_VIOLATION
 
     bds = cfg.get("bds", {}) if cfg else {}
     opt = bds.get("optimizer") or {}
@@ -226,11 +235,12 @@ def apply_optimizer_overrides(cfg: dict) -> None:
     WEIGHT_IDLE_PENALTY  = _set_int("weightIdlePenalty", WEIGHT_IDLE_PENALTY)
     IDLE_PENALTY_MAX_MIN = _set_int("idlePenaltyMaxMin", IDLE_PENALTY_MAX_MIN)
     SCORE_PER_DUTY       = _set_float("scorePerDuty",    SCORE_PER_DUTY)
+    WEIGHT_TYPE_CAP_VIOLATION = _set_int("weightTypeCapViolation", WEIGHT_TYPE_CAP_VIOLATION)
 
     log(f"[V4] Optimizer overrides: minWork={MIN_WORK_PER_DUTY}min, "
         f"maxCompanyCars={MAX_COMPANY_CARS}, "
         f"wDuty={WEIGHT_DUTY_COUNT}, wIdle={WEIGHT_IDLE_PENALTY} (cap {IDLE_PENALTY_MAX_MIN}min), "
-        f"scorePerDuty={SCORE_PER_DUTY}")
+        f"scorePerDuty={SCORE_PER_DUTY}, wTypeCap={WEIGHT_TYPE_CAP_VIOLATION}")
 
 
 # ----------------------------------------------------------------
@@ -1609,9 +1619,15 @@ def _build_cpsat_model(
         log(f"[V4][CPSAT] Saturazione: vietati {n_forbidden_single} single sotto {MIN_WORK_PER_DUTY}min lavoro")
 
     # -- HARD: cap vetture aziendali simultanee per trasferimenti a vuoto --
-    # Ogni pair (semiunico/spezzato) richiede UNA vettura aziendale per spostare
-    # il driver da fine s1 a inizio s2. Modelliamo come cumulative su intervalli
-    # opzionali con capacita' MAX_COMPANY_CARS.
+    # FIX-CSP-BUG1: una vettura aziendale serve SOLO per i due brevi trasferimenti
+    # di un pair (accompagnamento del driver al deposito a fine s1 + ripresa al
+    # capolinea a inizio s2), NON per l'intera interruzione. Modellare la vettura
+    # come occupata per tutta l'interruzione (spesso 3-4h, tutte sovrapposte a
+    # mezzogiorno) cappava di fatto il numero TOTALE di turni biripresa a
+    # MAX_COMPANY_CARS, rendendo il modello INFEASIBLE non appena servivano più
+    # biripresa delle vetture disponibili. Qui usiamo due intervalli CORTI pari
+    # alla durata effettiva del trasferimento: competono per le vetture solo le
+    # finestre di trasferimento realmente sovrapposte.
     if MAX_COMPANY_CARS > 0 and pair_vars:
         car_intervals = []
         for key, pv in pair_vars.items():
@@ -1619,32 +1635,36 @@ def _build_cpsat_model(
             s1, s2 = seg_by_idx[s1_idx], seg_by_idx[s2_idx]
             if s1.start_min > s2.start_min:
                 s1, s2 = s2, s1
-            car_start = s1.end_min
-            car_end = s2.start_min
-            duration = car_end - car_start
-            if duration <= 0:
-                continue
-            iv = model.new_optional_fixed_size_interval_var(
-                start=car_start,
-                size=duration,
-                is_present=pv,
-                name=f"car_iv_{key[0]}_{key[1]}",
-            )
-            car_intervals.append(iv)
+            # Accompagnamento a fine s1: vettura occupata per il transfer verso il deposito.
+            drop_dur = depot_transfer_min(s1.last_stop, clusters)
+            if drop_dur > 0:
+                car_intervals.append(model.new_optional_fixed_size_interval_var(
+                    start=s1.end_min, size=drop_dur, is_present=pv,
+                    name=f"car_drop_{key[0]}_{key[1]}",
+                ))
+            # Ripresa a inizio s2: vettura occupata per il transfer dal deposito al capolinea.
+            pick_dur = depot_transfer_min(s2.first_stop, clusters)
+            if pick_dur > 0:
+                car_intervals.append(model.new_optional_fixed_size_interval_var(
+                    start=s2.start_min - pick_dur, size=pick_dur, is_present=pv,
+                    name=f"car_pick_{key[0]}_{key[1]}",
+                ))
         if car_intervals:
             model.add_cumulative(
                 car_intervals,
                 [1] * len(car_intervals),
                 MAX_COMPANY_CARS,
             )
-            log(f"[V4][CPSAT] Cap HARD vetture aziendali = {MAX_COMPANY_CARS} su {len(car_intervals)} pair")
+            log(f"[V4][CPSAT] Cap HARD vetture aziendali = {MAX_COMPANY_CARS} su "
+                f"{len(car_intervals)} trasferimenti ({len(pair_vars)} pair)")
 
     # -- Vincoli: copertura esatta --
+    # FIX-CSP-B1: usa l'indice pairs_by_seg invece di riscansionare TUTTI i pair
+    # per ogni segmento (era O(n_seg × n_pair) ad ogni build, ripetuto per ogni
+    # scenario). Con l'indice è O(n_pair) totale.
     for s in segments:
         involved = [single[s.idx]]
-        for key, pv in pair_vars.items():
-            if s.idx in key:
-                involved.append(pv)
+        involved.extend(pair_vars[key] for key in pairs_by_seg[s.idx])
         model.add_exactly_one(involved)
 
     # -- Penalita nastro violato --
@@ -1683,23 +1703,39 @@ def _build_cpsat_model(
 
     model.add(total_duties == sum(single.values()) + sum(pair_vars.values()))
 
-    # Vincoli percentuali
+    # -- Vincoli percentuali tipologie turno — SOFT --
+    # FIX-CSP-BUG2: i cap su supplementi/semiunici/spezzati erano HARD: se la
+    # rete imponeva strutturalmente più turni speciali del consentito, OGNI
+    # scenario diventava INFEASIBLE e si finiva nel greedy_fallback (che però
+    # ignora questi stessi cap). Ora sono soft: una variabile "_over" misura il
+    # numero di turni oltre il cap e viene penalizzata con peso alto
+    # (WEIGHT_TYPE_CAP_VIOLATION). Il solver rispetta il cap ogni volta che è
+    # possibile e lo sfora — pagando caro — solo quando non c'è alternativa.
+    cap_penalty_terms: list[Any] = []
+
     if n_supplemento:
         suppl_count = model.new_int_var(0, n_seg, "suppl_count")
         model.add(suppl_count == sum(n_supplemento))
-        model.add(10 * suppl_count <= total_duties)
+        suppl_over = model.new_int_var(0, n_seg, "suppl_over")
+        # cap 10%: 10*suppl <= total  ->  10*suppl <= total + 10*over
+        model.add(10 * suppl_count <= total_duties + 10 * suppl_over)
+        cap_penalty_terms.append(WEIGHT_TYPE_CAP_VIOLATION * COST_SCALE * suppl_over)
 
     if n_semi:
         semi_count = model.new_int_var(0, n_seg, "semi_count")
         model.add(semi_count == sum(n_semi))
         semi_max_pct = rules.get("semiunico", SHIFT_RULES["semiunico"]).get("maxPct", 12)
-        model.add(100 * semi_count <= semi_max_pct * total_duties)
+        semi_over = model.new_int_var(0, n_seg, "semi_over")
+        model.add(100 * semi_count <= semi_max_pct * total_duties + 100 * semi_over)
+        cap_penalty_terms.append(WEIGHT_TYPE_CAP_VIOLATION * COST_SCALE * semi_over)
 
     if n_spezzato:
         spez_count = model.new_int_var(0, n_seg, "spez_count")
         model.add(spez_count == sum(n_spezzato))
         spez_max_pct = rules.get("spezzato", SHIFT_RULES["spezzato"]).get("maxPct", 13)
-        model.add(100 * spez_count <= spez_max_pct * total_duties)
+        spez_over = model.new_int_var(0, n_seg, "spez_over")
+        model.add(100 * spez_count <= spez_max_pct * total_duties + 100 * spez_over)
+        cap_penalty_terms.append(WEIGHT_TYPE_CAP_VIOLATION * COST_SCALE * spez_over)
 
     # -- Obiettivo (con noise per multi-scenario) --
     rng = random.Random(scenario_seed)
@@ -1773,6 +1809,9 @@ def _build_cpsat_model(
     # a 2 single, anche quando l'aritmetica oraria sarebbe quasi pari.
     if WEIGHT_DUTY_COUNT > 0:
         obj_terms.append(WEIGHT_DUTY_COUNT * COST_SCALE * total_duties)
+
+    # Penalità soft per sforamento dei cap di tipologia (vedi sopra).
+    obj_terms.extend(cap_penalty_terms)
 
     model.minimize(sum(obj_terms))
 
@@ -1874,6 +1913,76 @@ def _capture_solver_decisions(
     single_decisions = {s_idx: bool(solver.value(sv)) for s_idx, sv in single.items()}
     pair_decisions = {key: bool(solver.value(pv)) for key, pv in pair_vars.items()}
     return single_decisions, pair_decisions
+
+
+def _decisions_from_duties(
+    duties: list[DriverDutyV3],
+    pair_key_set: set[tuple[int, int]],
+) -> tuple[set[int], set[tuple[int, int]]]:
+    """FIX-CSP-B2: converte una lista di turni (es. dal greedy) negli insiemi di
+    decisioni single/pair corrispondenti, da iniettare come warm-start hint in
+    CP-SAT. Un turno a 2 segmenti diventa un pair (se la coppia è ammissibile),
+    altrimenti ripiega su single."""
+    single_true: set[int] = set()
+    pair_true: set[tuple[int, int]] = set()
+    for d in duties:
+        segs = d.segments
+        if len(segs) == 2:
+            a, b = segs[0].idx, segs[1].idx
+            if (a, b) in pair_key_set:
+                pair_true.add((a, b))
+                continue
+            if (b, a) in pair_key_set:
+                pair_true.add((b, a))
+                continue
+            single_true.update((a, b))
+        else:
+            single_true.update(s.idx for s in segs)
+    return single_true, pair_true
+
+
+def _apply_warmstart_hints(
+    model: cp_model.CpModel,
+    single: dict[int, Any],
+    pair_vars: dict[tuple[int, int], Any],
+    single_true: set[int],
+    pair_true: set[tuple[int, int]],
+) -> int:
+    """Inietta hint=1 sulle variabili scelte dall'incumbent/greedy. Gli hint
+    sono parziali: CP-SAT completa il resto via add_exactly_one."""
+    n = 0
+    for s_idx in single_true:
+        sv = single.get(s_idx)
+        if sv is not None:
+            model.add_hint(sv, 1)
+            n += 1
+    for key in pair_true:
+        pv = pair_vars.get(key)
+        if pv is not None:
+            model.add_hint(pv, 1)
+            n += 1
+    return n
+
+
+def _score_from_metrics(m: dict) -> float:
+    """FIX-CSP-BUG4: ricostruisce lo score da un dizionario di metriche già
+    calcolato, evitando di ricalcolare costi/validazioni per ogni turno una
+    seconda volta (lo facevano _score_solution e _compute_scenario_metrics
+    in sequenza, per ogni scenario)."""
+    n_total = m["duties"]
+    score = m["totalCost"] + m["bdsViolations"] * 50.0 + m["invalidi"] * 500.0
+    score += n_total * SCORE_PER_DUTY
+    suppl_pct = m["supplementi"] / max(n_total, 1)
+    if suppl_pct > 0.15:
+        score += (suppl_pct - 0.15) * n_total * 20.0
+    # FIX-CSP-BUG2: i cap su semiunici/spezzati ora sono soft nel modello; lo
+    # score li penalizza qui in modo che, a parità di costo, il portfolio
+    # preferisca scenari CONFORMI ai limiti di tipologia (semi ≤12%, spez ≤13%).
+    if m.get("semiPct", 0) > 12:
+        score += (m["semiPct"] - 12) * n_total * 2.0
+    if m.get("spezPct", 0) > 13:
+        score += (m["spezPct"] - 13) * n_total * 2.0
+    return score
 
 
 def _score_solution(
@@ -2049,6 +2158,22 @@ def optimize_multi_scenario(
 
     log(f"CP-SAT: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili")
 
+    # -- FIX-CSP-B2: warm-start greedy --
+    # Calcola una soluzione greedy iniziale e convertila in decisioni single/pair.
+    # Serve come warm-start hint per i primi scenari (finché non c'è un incumbent
+    # CP-SAT migliore), così ogni solve parte da una soluzione valida invece che
+    # "a freddo": con budget per-scenario brevi (6-8s) questo accelera molto la
+    # convergenza verso buoni incumbent.
+    pair_key_set = {(a, b) for a, b, _ in feasible_pairs}
+    warm_single_true: set[int] = set()
+    warm_pair_true: set[tuple[int, int]] = set()
+    try:
+        _greedy_warm = greedy_fallback(blocks, segments, config, clusters, bds)
+        warm_single_true, warm_pair_true = _decisions_from_duties(_greedy_warm, pair_key_set)
+        log(f"Warm-start greedy: {len(warm_single_true)} single + {len(warm_pair_true)} pair")
+    except Exception as e:  # il greedy non deve mai bloccare l'ottimizzazione
+        log(f"Warm-start greedy non disponibile: {e}")
+
     # -- Scenari: portfolio di strategie diverse --
     best_duties: list[DriverDutyV3] | None = None
     best_score = float('inf')
@@ -2057,6 +2182,9 @@ def optimize_multi_scenario(
     # FIX-CSP-3: salva decisioni del best per warm-start polish
     best_single_decisions: dict[int, bool] = {}
     best_pair_decisions: dict[tuple[int, int], bool] = {}
+    # FIX-CSP-B2: insiemi di decisioni del miglior incumbent, per warm-start scenari
+    best_single_true: set[int] = set()
+    best_pair_true: set[tuple[int, int]] = set()
     scenario_results: list[dict] = []
 
     base_seed = int(time.time()) % 10000
@@ -2105,6 +2233,13 @@ def optimize_multi_scenario(
             scenario_noise=params["noise"],
             strategy=params["strategy"],
         )
+
+        # FIX-CSP-B2: warm-start. Usa il miglior incumbent CP-SAT trovato finora
+        # (esploitazione) oppure, al primo giro, la soluzione greedy.
+        ws_single = best_single_true if best_single_true or best_pair_true else warm_single_true
+        ws_pair = best_pair_true if best_single_true or best_pair_true else warm_pair_true
+        if ws_single or ws_pair:
+            _apply_warmstart_hints(model, single, pvars, ws_single, ws_pair)
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = scenario_budget
@@ -2159,8 +2294,11 @@ def optimize_multi_scenario(
             solver, segments, single, pvars, ptypes, clusters, bds,
         )
 
-        score = _score_solution(duties, rates, bds, clusters)
+        # FIX-CSP-BUG4: metriche calcolate UNA volta; lo score deriva da quelle
+        # (prima _score_solution e _compute_scenario_metrics ricalcolavano
+        # entrambi costo+validazione per ogni turno, raddoppiando il lavoro).
         metrics = _compute_scenario_metrics(duties, rates, bds, clusters)
+        score = _score_from_metrics(metrics)
 
         n_total = len(duties)
         n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
@@ -2192,6 +2330,9 @@ def optimize_multi_scenario(
             best_single_decisions, best_pair_decisions = _capture_solver_decisions(
                 solver, single, pvars,
             )
+            # FIX-CSP-B2: insiemi di decisioni "true" per warm-start scenari successivi
+            best_single_true = {i for i, v in best_single_decisions.items() if v}
+            best_pair_true = {k for k, v in best_pair_decisions.items() if v}
 
         if time.time() - t_total_start > scenario_time_total:
             log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
@@ -2251,8 +2392,8 @@ def optimize_multi_scenario(
             polish_duties = _extract_duties_from_solution(
                 polish_solver, segments, p_single, p_pvars, p_ptypes, clusters, bds,
             )
-            polish_score = _score_solution(polish_duties, rates, bds, clusters)
             polish_metrics = _compute_scenario_metrics(polish_duties, rates, bds, clusters)
+            polish_score = _score_from_metrics(polish_metrics)
 
             log(f"  Polish: score={polish_score:.0f} (prima={best_score:.0f}) in {polish_elapsed:.1f}s")
 
