@@ -1049,6 +1049,12 @@ def merge_config(user_config: dict | None) -> dict:
     # ── v3: restrizione cambi a cluster definiti ──
     merged["cutOnlyAtClusters"] = user_config.get("cutOnlyAtClusters", True)
 
+    # ── bds: passthrough (config normativa + override ottimizzatore + engine) ──
+    # Senza questo, bds.optimizer.* (minWorkPerDuty, engine, pesi...) andrebbe perso
+    # e gli override applicati da apply_optimizer_overrides non avrebbero effetto.
+    if "bds" in user_config:
+        merged["bds"] = user_config["bds"]
+
     return merged
 
 

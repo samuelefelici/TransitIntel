@@ -3039,13 +3039,30 @@ def main() -> None:
     log(f"Fase 2: classificazione = {class_summary}")
     report_progress("analyze", 20, f"Classificati: {class_summary}")
 
-    # ── Fase 3: Costruzione segmenti ──
-    segments = build_initial_segments(blocks, clusters)
-    log(f"Fase 3: {len(segments)} segmenti generati")
-    report_progress("segments", 25, f"{len(segments)} segmenti")
+    # ── Selezione motore: "chain" (set-partitioning a catena) o "v4" (single/pair) ──
+    engine = (config.get("bds", {}).get("optimizer", {}) or {}).get("engine", "v4")
 
-    # ── Fase 4: Ottimizzazione multi-scenario CP-SAT (RD 131/1938) ──
-    duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
+    if engine == "chain":
+        # ── Motore a CATENA: un turno guida concatena più pezzi di bus diversi
+        #    (cambio al cluster) → meno turni. (WIP: vedi crew_engine_chain.py) ──
+        import crew_engine_chain as ce
+        log("Fase 3-4: motore CHAIN (set-partitioning a catena)")
+        report_progress("optimize", 28, "Motore a catena: generazione pezzi + colonne")
+        duties, chain_analysis = ce.optimize_chain(
+            blocks, config, time_limit_sec, clusters, bds,
+            max_company_cars=MAX_COMPANY_CARS,
+        )
+        segments = ce.build_pieces(blocks, clusters)
+        global LAST_OPTIMIZATION_ANALYSIS
+        LAST_OPTIMIZATION_ANALYSIS = chain_analysis
+    else:
+        # ── Fase 3: Costruzione segmenti ──
+        segments = build_initial_segments(blocks, clusters)
+        log(f"Fase 3: {len(segments)} segmenti generati")
+        report_progress("segments", 25, f"{len(segments)} segmenti")
+
+        # ── Fase 4: Ottimizzazione multi-scenario CP-SAT (RD 131/1938) ──
+        duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
 
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
