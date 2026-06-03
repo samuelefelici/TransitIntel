@@ -12,3 +12,8 @@ replit.nix
 .turbo/
 .neon
 scripts/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
