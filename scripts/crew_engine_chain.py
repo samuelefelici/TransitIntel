@@ -438,6 +438,7 @@ def solve_set_partition(
     time_limit: float,
     seed: int = 1,
     warmstart_cols: list[int] | None = None,
+    free_ride=None,
 ) -> tuple[str, list[DutyColumn]]:
     """Copri ogni pezzo esattamente una volta minimizzando #turni poi costo."""
     model = cp_model.CpModel()
@@ -475,13 +476,22 @@ def solve_set_partition(
             car_intervals.append(model.new_optional_fixed_size_interval_var(
                 start=t_cluster - tr, size=2 * tr, is_present=x[c], name=tag))
 
+        # Un relief con un deadhead bus disponibile (pull-out verso il cluster / pull-in
+        # dal cluster, orari FISSI dal timetable) viaggia in "taxi" gratis: non consuma
+        # auto. free_ride(direzione, cluster, orario) -> bool (stima ottimistica: non
+        # considera i posti; il piano definitivo capacità-limitato è post-solve).
+        def _has_ride(direction, cluster_id, t):
+            return bool(free_ride) and free_ride(direction, cluster_id, t)
+
         for c, col in enumerate(columns):
             segs = [by_idx[i] for i in col.piece_idxs]
             first, last = segs[0], segs[-1]
-            if not first.is_pullout and first.first_cluster:
+            if (not first.is_pullout and first.first_cluster
+                    and not _has_ride("to_cluster", first.first_cluster, first.start_min)):
                 tr = depot_transfer_min(first.first_stop, clusters) or DEPOT_TRANSFER_CENTRAL
                 _shuttle(c, first.start_min, tr, f"cro{c}")
-            if not last.is_pullin and last.last_cluster:
+            if (not last.is_pullin and last.last_cluster
+                    and not _has_ride("to_depot", last.last_cluster, last.end_min)):
                 tr = depot_transfer_min(last.last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
                 _shuttle(c, last.end_min, tr, f"cri{c}")
             for i in range(len(segs) - 1):
@@ -643,10 +653,17 @@ def optimize_chain(
             warm_cols.append(len(columns) - 1)
     log(f"[CHAIN] warm-start greedy: {len(greedy_chains)} turni")
 
+    # Indice FISSO dei passaggi-bus (deadhead) per scontare i relief "in taxi".
+    try:
+        from crew_transport import free_ride_index
+        has_ride = free_ride_index(blocks, clusters, window=30)
+    except Exception:
+        has_ride = None
+
     status, chosen = solve_set_partition(
         pieces, columns, clusters, max_company_cars, weight_duty,
         hourly_rate, car_cost, time_limit=max(5, time_limit_sec * 0.8),
-        warmstart_cols=warm_cols,
+        warmstart_cols=warm_cols, free_ride=has_ride,
     )
     log(f"[CHAIN] solve={status}: {len(chosen)} turni guida")
 

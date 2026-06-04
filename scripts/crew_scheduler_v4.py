@@ -2670,6 +2670,7 @@ from crew_scheduler_v3 import (
     compute_car_pool,
     car_pool_by_driver,
     _max_simultaneous_cars_out,
+    get_last_car_plan,
 )
 
 
@@ -2772,6 +2773,7 @@ def serialize_output(
         handovers_by_driver.setdefault(h.incoming_driver, []).append(h)
 
     car_by_driver = car_pool_by_driver(car_movements)
+    car_plan = get_last_car_plan()
 
     # ── Costi BDS ──
     total_cost = 0.0
@@ -2816,28 +2818,42 @@ def serialize_output(
 
             deliver = all_delivers[si] if si < len(all_delivers) else None
             if deliver:
-                car_label = f"Auto {deliver.car_id}" if deliver.car_id else "⚠️ Nessuna auto"
+                if deliver.mode == "bus":
+                    desc = f"Taxi: passeggero sul bus {deliver.ride_vehicle_id} dal deposito a {deliver.cluster_name}"
+                elif deliver.car_id:
+                    desc = f"Guidi Auto {deliver.car_id} dal deposito a {deliver.cluster_name}"
+                else:
+                    desc = f"⚠️ Nessuna auto disponibile per {deliver.cluster_name}"
                 rip["carPoolOut"] = {
+                    "mode": deliver.mode,
                     "carId": deliver.car_id,
+                    "rideVehicleId": deliver.ride_vehicle_id,
                     "departMin": deliver.depart_min,
                     "departTime": min_to_time(deliver.depart_min),
                     "arriveMin": deliver.arrive_min,
                     "arriveTime": min_to_time(deliver.arrive_min),
-                    "description": f"Guidi {car_label} dal deposito a {deliver.cluster_name}",
+                    "description": desc,
                 }
             else:
                 rip["carPoolOut"] = None
 
             pickup = all_pickups[si] if si < len(all_pickups) else None
             if pickup:
-                car_label = f"Auto {pickup.car_id}" if pickup.car_id else "⚠️ Nessuna auto"
+                if pickup.mode == "bus":
+                    desc = f"Taxi: passeggero sul bus {pickup.ride_vehicle_id} da {pickup.cluster_name} al deposito"
+                elif pickup.car_id:
+                    desc = f"Prendi Auto {pickup.car_id} da {pickup.cluster_name} al deposito"
+                else:
+                    desc = f"⚠️ Nessuna auto al cluster {pickup.cluster_name} per il rientro"
                 rip["carPoolReturn"] = {
+                    "mode": pickup.mode,
                     "carId": pickup.car_id,
+                    "rideVehicleId": pickup.ride_vehicle_id,
                     "departMin": pickup.depart_min,
                     "departTime": min_to_time(pickup.depart_min),
                     "arriveMin": pickup.arrive_min,
                     "arriveTime": min_to_time(pickup.arrive_min),
-                    "description": f"Prendi {car_label} da {pickup.cluster_name} al deposito",
+                    "description": desc,
                 }
             else:
                 rip["carPoolReturn"] = None
@@ -2992,8 +3008,13 @@ def serialize_output(
             "totalTrips": len(car_movements),
             "deliveries": sum(1 for t in car_movements if t.trip_type == "deliver"),
             "pickups": sum(1 for t in car_movements if t.trip_type == "pickup"),
-            "conflicts": sum(1 for t in car_movements if t.car_id is None),
-            "maxSimultaneous": _max_simultaneous_cars_out(car_movements),
+            "carTrips": sum(1 for t in car_movements if t.mode == "car"),
+            "busRides": sum(1 for t in car_movements if t.mode == "bus"),
+            "reusedCars": (car_plan.n_pairs if car_plan else 0),
+            "idleViolations": sum(1 for t in car_movements if t.idle_violation),
+            "maxIdleMin": (car_plan.max_idle_min if car_plan else 0),
+            "conflicts": sum(1 for t in car_movements if t.conflict),
+            "maxSimultaneous": (car_plan.fleet_peak if car_plan else _max_simultaneous_cars_out(car_movements)),
         },
         "rates": rates.to_dict(),
     }
@@ -3110,11 +3131,15 @@ def main() -> None:
     handovers = compute_handovers(duties, clusters)
     log(f"Fase 6: {len(handovers)} cambi bus identificati")
 
-    car_movements = compute_car_pool(duties, clusters)
-    n_conflicts = sum(1 for m in car_movements if m.car_id is None)
-    max_sim = _max_simultaneous_cars_out(car_movements)
-    log(f"Fase 6: {len(car_movements)} viaggi auto, {n_conflicts} conflitti, max {max_sim} auto fuori deposito")
-    report_progress("carpool", 90, f"{len(car_movements)} viaggi auto")
+    car_movements = compute_car_pool(duties, clusters, blocks=blocks,
+                                     config=config, n_cars=MAX_COMPANY_CARS)
+    car_plan = get_last_car_plan()
+    n_conflicts = sum(1 for m in car_movements if m.conflict)
+    max_sim = car_plan.fleet_peak if car_plan else _max_simultaneous_cars_out(car_movements)
+    log(f"Fase 6: {sum(1 for m in car_movements if m.mode=='car')} tratte auto, "
+        f"{sum(1 for m in car_movements if m.mode=='bus')} taxi su bus, "
+        f"{n_conflicts} senza auto, parco max {max_sim}")
+    report_progress("carpool", 90, f"parco auto max {max_sim}")
 
     # ── Validazione HARD post-solve: cap vetture aziendali ──
     # Anche se il CP-SAT applica add_cumulative, il post-processing dei pair

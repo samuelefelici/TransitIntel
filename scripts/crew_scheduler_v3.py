@@ -1263,12 +1263,19 @@ class CarTrip:
     depart_min: int         # minuto partenza
     arrive_min: int         # minuto arrivo
     transfer_min: int       # durata tratta
-    car_id: int | None = None  # auto assegnata (1-5), None se conflitto
+    car_id: int | None = None  # auto assegnata (1..N), None se viaggio in bus o conflitto
+    mode: str = "car"          # "car" = autovettura aziendale; "bus" = passeggero su bus (taxi)
+    ride_vehicle_id: str | None = None  # bus che trasporta il conducente (se mode="bus")
+    idle_violation: bool = False        # auto rimasta in sosta oltre il massimo consentito
+    conflict: bool = False              # impossibile reperire un'auto al cluster
 
 
 def compute_car_pool(
     duties: list[DriverDutyV3],
     clusters: list[Cluster],
+    blocks: list | None = None,
+    config: dict | None = None,
+    n_cars: int = COMPANY_CARS,
 ) -> list[CarTrip]:
     """
     Calcola tutti i viaggi auto aziendale necessari.
@@ -1394,40 +1401,32 @@ def compute_car_pool(
                 elif t_from_last > 0:
                     log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
 
-    # ── Assegnazione auto: pool omogeneo dal deposito (modello a spola) ──
-    # Operiamo sulle OCCUPAZIONI (scambi pickup+deliver accoppiati = 1 auto). Un'auto
-    # è disponibile se rientrata da un'occupazione precedente; altrimenti è un conflitto.
-    import heapq
-    occ = sorted(car_occupancies(trips), key=lambda o: o[0])
-    free: list[int] = list(range(1, COMPANY_CARS + 1))
-    busy: list[tuple[int, int]] = []           # (rientro_min, car_id)
-    conflicts: list[CarTrip] = []
+    # ── Pianificazione trasporto multimodale (taxi su bus + riuso auto) ──
+    # Vedi crew_transport.plan_car_pool. Memorizziamo il risultato a livello di modulo
+    # così main/serializzazione possono leggere le metriche (parco, taxi, conflitti).
+    global _LAST_CAR_PLAN
+    from crew_transport import TransportParams, extract_bus_rides, plan_car_pool
+    params = TransportParams.from_config(config, n_cars)
+    rides = extract_bus_rides(blocks, clusters, seats=params.ride_seats) if blocks else []
+    _LAST_CAR_PLAN = plan_car_pool(trips, rides, params)
+    r = _LAST_CAR_PLAN
 
-    for out_start, out_end, grp in occ:
-        while busy and busy[0][0] <= out_start:
-            _, freed = heapq.heappop(busy)
-            free.append(freed)
-        if free:
-            car_id = free.pop(0)
-            for t in grp:
-                t.car_id = car_id
-            heapq.heappush(busy, (out_end, car_id))
-        else:
-            for t in grp:
-                t.car_id = None
-            conflicts.extend(grp)
-
-    if conflicts:
-        log(f"⚠️  Car pool: {len(conflicts)} trasferimenti senza auto disponibile!")
-        for c in conflicts:
-            log(f"    {c.driver_id} {c.trip_type} alle {min_to_time(c.depart_min)} ({c.cluster_name})")
-
-    assigned = [t for t in trips if t.car_id is not None]
-    log(f"🚗 Car pool: {len(assigned)}/{len(trips)} viaggi assegnati ({len(occ)} occupazioni), "
-        f"{len(conflicts)} conflitti, "
-        f"max {_max_simultaneous_cars_out(trips)} auto fuori deposito")
+    log(f"🚗 Trasporto: {r.n_car_trips} tratte auto, {r.n_bus_rides} taxi su bus, "
+        f"{r.n_pairs} auto riusate, parco max {r.fleet_peak} "
+        f"(idle max {r.max_idle_min}', {r.n_idle_violations} sosta-oltre-max, {r.n_conflicts} senza auto)")
+    for c in (t for t in trips if t.conflict):
+        log(f"    ⚠️  {c.driver_id} prelievo alle {min_to_time(c.depart_min)} ({c.cluster_name}) senza auto al cluster")
 
     return trips
+
+
+# Risultato dell'ultima pianificazione trasporto (per metriche/serializzazione).
+_LAST_CAR_PLAN = None
+
+
+def get_last_car_plan():
+    """Metriche dell'ultima compute_car_pool (crew_transport.PlanResult o None)."""
+    return _LAST_CAR_PLAN
 
 
 def car_pool_by_driver(trips: list[CarTrip]) -> dict[str, dict[str, CarTrip | list[CarTrip] | None]]:
@@ -1503,8 +1502,13 @@ def car_occupancies(trips: list[CarTrip]) -> list[tuple[int, int, list[CarTrip]]
 
 
 def _max_simultaneous_cars_out(trips: list[CarTrip]) -> int:
-    """Massimo di auto aziendali fuori dal deposito contemporaneamente (modello a spola
-    + scambi accoppiati: pickup e deliver dello stesso scambio condividono un'unica auto)."""
+    """Massimo di auto aziendali in uso simultaneo (= dimensione minima del parco).
+
+    Se è disponibile la pianificazione multimodale più recente (con riuso auto e taxi
+    su bus), ne riporta il `fleet_peak`. Altrimenti ricade su una stima a spola che
+    accoppia solo gli scambi simultanei (modello legacy)."""
+    if _LAST_CAR_PLAN is not None:
+        return _LAST_CAR_PLAN.fleet_peak
     occ = car_occupancies(trips)
     if not occ:
         return 0
