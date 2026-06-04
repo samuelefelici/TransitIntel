@@ -3051,6 +3051,23 @@ def main() -> None:
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")
     report_progress("init", 5, f"{len(vehicle_shifts_raw)} turni macchina")
 
+    # ── Fase 0: Arricchimento GTFS (genera i clusterStops dai transiti in linea) ──
+    # Se la config fornisce un feed GTFS (stop_times) e i cluster hanno stop_ids, per
+    # ogni corsa popoliamo i transiti intermedi per i cluster (orari di passaggio).
+    # È il dato su cui si fonda il "taxi su bus di linea" cluster→cluster. Senza feed
+    # configurato è un no-op: i clusterStops restano quelli (eventuali) già nell'input.
+    gtfs_path = (config.get("gtfs", {}) or {}).get("stopTimesPath")
+    if gtfs_path and any(c.stop_ids for c in clusters):
+        try:
+            from gtfs_clusters import build_cluster_passages, attach_cluster_stops_to_shifts
+            trip_ids = {t.get("tripId", "") for vs in vehicle_shifts_raw for t in vs.get("trips", [])}
+            passages = build_cluster_passages(gtfs_path, clusters, only_trip_ids=trip_ids)
+            n_enriched = attach_cluster_stops_to_shifts(vehicle_shifts_raw, passages)
+            log(f"Fase 0: GTFS → {n_enriched} corse arricchite con transiti-cluster "
+                f"({len(passages)} corse toccano un cluster)")
+        except Exception as e:
+            log(f"⚠️  Fase 0: arricchimento GTFS saltato ({e})")
+
     # ── Fase 1: Parsing ──
     blocks = parse_vehicle_blocks(vehicle_shifts_raw, clusters)
     log(f"Fase 1: {len(blocks)} vehicle blocks parsati")

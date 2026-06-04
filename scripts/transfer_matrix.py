@@ -54,6 +54,7 @@ def build_transfer_matrix(
     tasks: list[Task],
     rates: CostRates,
     max_gap: int = 180,
+    inservice=None,
 ) -> dict[tuple[int, int], TaskTransfer]:
     """
     Pre-calcola la matrice dei trasferimenti tra tutte le coppie
@@ -62,9 +63,14 @@ def build_transfer_matrix(
     Ordine di precedenza:
       1. same_vehicle/same_stop → 0 costo
       2. same_cluster → cambio in linea (€5 overhead)
-      3. walk (< 0.5 km) → tempo a piedi, €0 + retribuzione
-      4. company_car (< 5 km) → €8/uso
-      5. taxi (≥ 5 km) → €6 + km
+      3. bus_inservice → bus di linea cluster→cluster (€0, se `inservice` lo offre)
+      4. walk (< 0.5 km) → tempo a piedi, €0 + retribuzione
+      5. company_car (< 5 km) → €8/uso
+      6. taxi (≥ 5 km) → €6 + km
+
+    `inservice` (opzionale): indice di connettività in linea (gtfs_clusters.InServiceIndex).
+    Se un bus di linea collega A→B nella finestra del gap, il trasferimento è gratuito
+    e preferito ad auto/taxi. Assente → comportamento invariato (nessuna regressione).
     """
     import bisect
 
@@ -104,7 +110,17 @@ def build_transfer_matrix(
                     a.idx, b.idx, "same_stop", 0, 3, rates.cambio_overhead)
                 continue
 
-            # 3-5. Calcola distanza reale se abbiamo coordinate
+            # 3. Bus di linea cluster→cluster (passeggero, gratuito) — preferito ad auto/taxi
+            if (inservice is not None and a.last_cluster and b.first_cluster
+                    and a.last_cluster != b.first_cluster):
+                e = inservice.connect(a.last_cluster, b.first_cluster, a.end_min, gap)
+                if e is not None and e.alight_min <= b.start_min:
+                    ride = max(1, e.alight_min - a.end_min)   # attesa + viaggio, ≤ gap
+                    matrix[(a.idx, b.idx)] = TaskTransfer(
+                        a.idx, b.idx, "bus_inservice", 0.0, ride, 0.0)
+                    continue
+
+            # 4-6. Calcola distanza reale se abbiamo coordinate
             a_lat = getattr(a, "last_lat", 0.0)
             a_lon = getattr(a, "last_lon", 0.0)
             b_lat = getattr(b, "first_lat", 0.0)
