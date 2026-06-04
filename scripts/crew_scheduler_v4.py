@@ -1110,8 +1110,14 @@ def check_rd131(duty: DriverDutyV3, rd: RD131Config) -> tuple[bool, list[str]]:
 check_cee561 = check_rd131
 
 
-def check_sosta_capolinea(duty: DriverDutyV3, rules: dict = SHIFT_RULES) -> tuple[bool, list[str]]:
-    """RD 131/1938: turno intero deve avere almeno 1 sosta ≥15min al capolinea."""
+def check_sosta_capolinea(duty: DriverDutyV3, rules: dict = SHIFT_RULES,
+                          attivo: bool = True) -> tuple[bool, list[str]]:
+    """RD 131/1938: turno intero deve avere almeno 1 sosta ≥15min al capolinea.
+
+    Per i turni URBANI è un impegno "di norma" (soft): con attivo=False non viene
+    imposto come vincolo rigido."""
+    if not attivo:
+        return True, []
     if duty.duty_type != "intero":
         return True, []
 
@@ -1320,8 +1326,8 @@ def validate_duty_bds(
     result.rd131_ok = rd_ok
     result.violations.extend(rd_viol)
 
-    # Sosta capolinea (turni intero)
-    sosta_ok, sosta_viol = check_sosta_capolinea(duty)
+    # Sosta capolinea (turni intero) — soft per l'urbano (gating su rd131.attivo)
+    sosta_ok, sosta_viol = check_sosta_capolinea(duty, attivo=bds.rd131.attivo)
     result.sosta_capolinea_ok = sosta_ok
     result.violations.extend(sosta_viol)
 
@@ -3052,9 +3058,14 @@ def main() -> None:
     if engine == "chain":
         try:
             import crew_engine_chain as ce
-            # Pause pasto escluse nel percorso chain (non previste dall'esercizio).
+            # Profilo URBANO: vincola SOLO il nastro lavorativo.
+            #  - nessun cap di guida (servizio urbano esente dal Reg. CE 561/2006)
+            #  - sosta ~15' negli unici "di norma" (soft)
+            #  - nessuna pausa pasto (non prevista dall'esercizio)
             bds.pasto.attivo = False
-            log("Fase 3-4: motore CHAIN (set-partitioning a catena, conforme RD131)")
+            bds.rd131.attivo = False                       # no cap guida continuativa
+            bds.riprese.max_guida_per_ripresa = 10 ** 9    # no cap guida per ripresa
+            log("Fase 3-4: motore CHAIN (turni urbani: vincolo sul solo nastro)")
             report_progress("optimize", 28, "Motore a catena: generazione pezzi + colonne")
             duties, chain_analysis = ce.optimize_chain(
                 blocks, config, time_limit_sec, clusters, bds,

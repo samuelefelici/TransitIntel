@@ -29,9 +29,8 @@ from typing import Any
 from ortools.sat.python import cp_model
 
 from optimizer_common import (
-    SHIFT_RULES, MAX_CONTINUOUS_DRIVING, MIN_BREAK_AFTER_DRIVING,
-    DEPOT_TRANSFER_CENTRAL, DEPOT_TRANSFER_OUTER, COMPANY_CARS,
-    PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN,
+    SHIFT_RULES, DEPOT_TRANSFER_CENTRAL, DEPOT_TRANSFER_OUTER, COMPANY_CARS,
+    PRE_TURNO_MIN,
     Segment, DriverDutyV3, Cluster, VehicleBlock, VShiftTrip, CambioInfo,
     match_cluster, depot_transfer_min, log,
 )
@@ -48,11 +47,10 @@ RELIEF_FANOUT = 6                # max successori considerati per pezzo (branchi
 NODE_BUDGET = 1_500_000          # budget globale di nodi DFS (garantisce terminazione)
 MAX_COLS_PER_START = 1500        # max colonne emesse a partire da ogni pezzo
 
-# Regole strutturali RD 131 (allineate a GestoreRiprese di optimizer_common)
-MAX_GUIDA_PER_RIPRESA = 270      # max guida (min) in un periodo di lavoro (4h30)
-SOSTA_SPEZZA = 75                # una sosta ≥75' chiude la ripresa (nuova ripresa)
-SOSTA_MIN_CAPOLINEA = 15         # sosta minima al capolinea per un turno intero
-MAX_RIPRESE = 2                  # al più 2 riprese per turno
+# Struttura turni urbani: nessun cap di guida (esente CE 561/2006), vincola il
+# nastro. Una interruzione ≥75' (1h15) separa le due riprese di semiunici/spezzati.
+SOSTA_SPEZZA = 75                # interruzione ≥75' = nuova ripresa (in residenza)
+MAX_RIPRESE = 2                  # turni divisi al più in due parti (riprese)
 
 # Soglie tipologia (da SHIFT_RULES, default RD 131)
 _INTERO = SHIFT_RULES["intero"]
@@ -60,10 +58,8 @@ _SEMI = SHIFT_RULES["semiunico"]
 _SPEZ = SHIFT_RULES["spezzato"]
 _SUPPL = SHIFT_RULES["supplemento"]
 
-
-def pre_turno_for(transfer_min: int) -> int:
-    """Pre-turno: 5' se l'autista esce con auto aziendale (transfer>0), 12' altrimenti."""
-    return PRE_TURNO_AUTO_MIN if transfer_min > 0 else PRE_TURNO_MIN
+# Pre-turno (controllo veicolo): PRE_TURNO_MIN (12') all'inizio del turno E di
+# ogni ripresa (quindi 24' in un semiunico/spezzato).
 
 
 # ════════════════════════════════════════════════════════════════
@@ -123,47 +119,36 @@ def build_pieces(blocks: list[VehicleBlock], clusters: list[Cluster]) -> list[Se
 class ChainMetrics:
     feasible: bool
     duty_type: str
-    nastro_min: int
-    work_min: int
-    driving_min: int
-    interruption_min: int        # interruzione lunga (≥75')
-    max_continuous: int          # guida continuativa max (reset su sosta ≥15')
-    max_rip_driving: int         # guida max in una singola ripresa (cap 270)
-    n_long_interruptions: int    # 0=intero/suppl, 1=semi/spezz
-    n_riprese: int
-    has_sosta15: bool            # esiste una sosta ≥15' (per i turni interi)
-    transfer_out: int
-    transfer_back: int
-    pre_turno: int
+    nastro_min: int              # NASTRO = ora fine - ora inizio (include interruzione)
+    work_min: int                # LAVORO = nastro - interruzione (somma delle riprese)
+    driving_min: int             # guida effettiva (somma durate corse)
+    interruption_min: int        # INTERRUZIONE = nastro - somma riprese
+    n_riprese: int               # 1 (unico/suppl) o 2 (semiunico/spezzato)
+    pre_total: int               # Pre totale (12' per ripresa)
+    transfer_out: int            # spostamento a vuoto in uscita (prima ripresa)
+    transfer_back: int           # spostamento a vuoto in rientro (ultima ripresa)
     n_relief: int                # cambi bus (link tra veicoli diversi)
 
 
-def _classify(nastro: int, work: int, maxrun: int, max_rip_driving: int,
-              n_long: int, long_gap: int, n_pieces: int,
-              has_sosta15: bool) -> tuple[bool, str]:
-    """Determina (fattibile, tipologia) RD 131 da scalari già calcolati.
+def _classify(nastro: int, interruption: int, n_riprese: int) -> tuple[bool, str]:
+    """Classificazione RD/CCNL per i turni URBANI a partire dagli scalari.
 
-    Regole strutturali imposte: guida continuativa ≤4h30, guida per ripresa ≤4h30,
-    al più 2 riprese, un turno intero richiede una sosta ≥15' al capolinea.
+    Vincola SOLO il nastro lavorativo (nessun cap di guida: l'urbano è esente
+    dal Reg. CE 561/2006). La sosta ~15' negli unici è un impegno "di norma"
+    (soft), non un vincolo rigido.
     """
-    if maxrun > MAX_CONTINUOUS_DRIVING or max_rip_driving > MAX_GUIDA_PER_RIPRESA:
-        return False, "invalido"
-    if n_long > MAX_RIPRESE - 1:
-        return False, "invalido"
-    if n_long == 0:
-        # un'unica ripresa: intero (con sosta) o supplemento (corto straordinario)
-        if nastro <= _INTERO["maxNastro"] and work <= _INTERO["maxLavoro"] and has_sosta15:
-            return True, "intero"
+    if n_riprese == 1:
+        # un'unica ripresa: supplemento (corto autonomo) o turno unico/intero
         if nastro <= _SUPPL["maxNastro"]:
             return True, "supplemento"
+        if nastro <= _INTERO["maxNastro"]:
+            return True, "intero"
         return False, "invalido"
-    # n_long == 1: due riprese separate da un'interruzione
-    if _SEMI["intMin"] <= long_gap <= _SEMI["intMax"]:
-        if nastro <= _SEMI["maxNastro"] and work <= _SEMI["maxLavoro"]:
+    if n_riprese == 2:
+        # due riprese separate da un'interruzione in residenza
+        if _SEMI["intMin"] <= interruption <= _SEMI["intMax"] and nastro <= _SEMI["maxNastro"]:
             return True, "semiunico"
-        return False, "invalido"
-    if long_gap >= _SPEZ["intMin"]:
-        if nastro <= _SPEZ["maxNastro"] and work <= _SPEZ["maxLavoro"]:
+        if interruption >= _SPEZ["intMin"] and nastro <= _SPEZ["maxNastro"]:
             return True, "spezzato"
         return False, "invalido"
     return False, "invalido"
@@ -172,122 +157,90 @@ def _classify(nastro: int, work: int, maxrun: int, max_rip_driving: int,
 @dataclass
 class _DState:
     """Stato incrementale di una catena (fold pezzo-per-pezzo)."""
-    first: Segment
+    first: Segment           # primo pezzo del turno (inizio nastro)
     pieces: tuple[int, ...]
+    cur_rip_first: Segment   # primo pezzo della ripresa corrente
     last_end: int
     last_stop: str
     last_vehicle: str
-    last_arr: int
-    run: int                 # guida continuativa corrente
-    maxrun: int
-    cur_rip_driving: int
-    max_rip_driving: int
-    cur_rip_has15: bool      # la ripresa corrente ha una sosta ≥15'
-    driving_total: int
-    n_long: int
-    long_gap: int
+    lavoro_closed: int       # somma durate delle riprese già chiuse
+    n_long: int              # interruzioni lunghe (≥75') già viste
     n_relief: int
+    driving_total: int
 
 
-def _fold_trips(trips, run, maxrun, last_arr, crd, has15):
-    """Aggiorna guida continuativa/ripresa scorrendo le corse di un pezzo.
-    Una sosta ≥15' tra corse azzera la guida continuativa e segna la sosta."""
-    for t in trips:
-        if last_arr is not None and t.departure_min - last_arr >= MIN_BREAK_AFTER_DRIVING:
-            run = 0
-            has15 = True
-        dur = t.arrival_min - t.departure_min
-        run += dur
-        if run > maxrun:
-            maxrun = run
-        crd += dur
-        last_arr = t.arrival_min
-    return run, maxrun, last_arr, crd, has15
+def _ripresa_dur(first_piece: Segment, last_end: int, last_stop: str,
+                 clusters: list[Cluster]) -> int:
+    """Durata di una ripresa = (fine servizio + vuoto rientro) -
+    (inizio servizio - Pre - vuoto uscita). Pre = 12' per ogni ripresa."""
+    do = depot_transfer_min(first_piece.first_stop, clusters)
+    db = depot_transfer_min(last_stop, clusters)
+    return (last_end + db) - (first_piece.start_min - PRE_TURNO_MIN - do)
 
 
 def _new_state(p: Segment) -> _DState:
-    run, maxrun, last_arr, crd, has15 = _fold_trips(p.trips, 0, 0, None, 0, False)
     return _DState(
-        first=p, pieces=(p.idx,), last_end=p.end_min, last_stop=p.last_stop,
-        last_vehicle=p.vehicle_id, last_arr=last_arr, run=run, maxrun=maxrun,
-        cur_rip_driving=crd, max_rip_driving=crd, cur_rip_has15=has15,
-        driving_total=p.driving_min, n_long=0, long_gap=0, n_relief=0,
+        first=p, pieces=(p.idx,), cur_rip_first=p, last_end=p.end_min,
+        last_stop=p.last_stop, last_vehicle=p.vehicle_id, lavoro_closed=0,
+        n_long=0, n_relief=0, driving_total=p.driving_min,
     )
 
 
-def _extend_state(st: _DState, q: Segment) -> _DState | None:
-    """Estende lo stato col pezzo q (q segue temporalmente). None se infattibile."""
+def _extend_state(st: _DState, q: Segment, clusters: list[Cluster]) -> _DState | None:
+    """Estende lo stato col pezzo q (che segue temporalmente). None se infattibile
+    (sovrapposizione o più di 2 riprese)."""
     gap = q.start_min - st.last_end
     if gap < 0:
         return None
-    n_long, long_gap = st.n_long, st.long_gap
-    crd, mrd, has15 = st.cur_rip_driving, st.max_rip_driving, st.cur_rip_has15
-    run, maxrun = st.run, st.maxrun
+    n_long = st.n_long
+    lavoro_closed = st.lavoro_closed
+    cur_rip_first = st.cur_rip_first
     if gap >= SOSTA_SPEZZA:
-        # chiude la ripresa corrente, ne apre una nuova
-        mrd = max(mrd, crd)
-        crd = 0
-        has15 = False
-        run = 0
+        # interruzione lunga: chiude la ripresa corrente e ne apre una nuova
+        lavoro_closed += _ripresa_dur(cur_rip_first, st.last_end, st.last_stop, clusters)
         n_long += 1
-        long_gap = gap
         if n_long > MAX_RIPRESE - 1:
             return None
-    elif gap >= MIN_BREAK_AFTER_DRIVING:
-        has15 = True
-        run = 0
-    run, maxrun, last_arr, crd, has15 = _fold_trips(q.trips, run, maxrun, st.last_arr, crd, has15)
-    mrd = max(mrd, crd)
-    if maxrun > MAX_CONTINUOUS_DRIVING or mrd > MAX_GUIDA_PER_RIPRESA:
-        return None
+        cur_rip_first = q
     return _DState(
-        first=st.first, pieces=st.pieces + (q.idx,), last_end=q.end_min,
-        last_stop=q.last_stop, last_vehicle=q.vehicle_id, last_arr=last_arr,
-        run=run, maxrun=maxrun, cur_rip_driving=crd, max_rip_driving=mrd,
-        cur_rip_has15=has15, driving_total=st.driving_total + q.driving_min,
-        n_long=n_long, long_gap=long_gap,
+        first=st.first, pieces=st.pieces + (q.idx,), cur_rip_first=cur_rip_first,
+        last_end=q.end_min, last_stop=q.last_stop, last_vehicle=q.vehicle_id,
+        lavoro_closed=lavoro_closed, n_long=n_long,
         n_relief=st.n_relief + (1 if q.vehicle_id != st.last_vehicle else 0),
+        driving_total=st.driving_total + q.driving_min,
     )
 
 
 def _finalize(st: _DState, clusters: list[Cluster]) -> ChainMetrics:
-    transfer_out = depot_transfer_min(st.first.first_stop, clusters)
-    transfer_back = depot_transfer_min(st.last_stop, clusters)
-    pre = pre_turno_for(transfer_out)
-    nastro = (st.last_end + transfer_back) - (st.first.start_min - pre - transfer_out)
-    interruption = st.long_gap if st.n_long == 1 else 0
-    work = nastro - interruption
+    do_first = depot_transfer_min(st.first.first_stop, clusters)
+    db_last = depot_transfer_min(st.last_stop, clusters)
+    nastro = (st.last_end + db_last) - (st.first.start_min - PRE_TURNO_MIN - do_first)
+    cur_dur = _ripresa_dur(st.cur_rip_first, st.last_end, st.last_stop, clusters)
+    lavoro = st.lavoro_closed + cur_dur
+    interruption = nastro - lavoro
     n_riprese = st.n_long + 1
-    feasible, dtype = _classify(
-        nastro, work, st.maxrun, st.max_rip_driving, st.n_long, st.long_gap,
-        len(st.pieces), st.cur_rip_has15,
-    )
+    feasible, dtype = _classify(nastro, interruption, n_riprese)
     return ChainMetrics(
-        feasible=feasible, duty_type=dtype, nastro_min=nastro, work_min=work,
+        feasible=feasible, duty_type=dtype, nastro_min=nastro, work_min=lavoro,
         driving_min=st.driving_total, interruption_min=interruption,
-        max_continuous=st.maxrun, max_rip_driving=st.max_rip_driving,
-        n_long_interruptions=st.n_long, n_riprese=n_riprese,
-        has_sosta15=st.cur_rip_has15, transfer_out=transfer_out,
-        transfer_back=transfer_back, pre_turno=pre, n_relief=st.n_relief,
+        n_riprese=n_riprese, pre_total=PRE_TURNO_MIN * n_riprese,
+        transfer_out=do_first, transfer_back=db_last, n_relief=st.n_relief,
     )
 
 
 def chain_metrics(chain: list[Segment], clusters: list[Cluster]) -> ChainMetrics:
-    """Metriche RD 131 di una catena (fold dei pezzi + classificazione)."""
+    """Metriche di una catena (fold dei pezzi + classificazione)."""
     st = _new_state(chain[0])
     for q in chain[1:]:
-        nxt = _extend_state(st, q)
+        nxt = _extend_state(st, q, clusters)
         if nxt is None:
-            # catena strutturalmente infattibile: ritorna metriche non-fattibili
             m = _finalize(st, clusters)
             return ChainMetrics(
                 feasible=False, duty_type="invalido", nastro_min=m.nastro_min,
                 work_min=m.work_min, driving_min=m.driving_min,
-                interruption_min=m.interruption_min, max_continuous=m.max_continuous,
-                max_rip_driving=m.max_rip_driving, n_long_interruptions=m.n_long_interruptions,
-                n_riprese=m.n_riprese, has_sosta15=m.has_sosta15,
-                transfer_out=m.transfer_out, transfer_back=m.transfer_back,
-                pre_turno=m.pre_turno, n_relief=m.n_relief,
+                interruption_min=m.interruption_min, n_riprese=m.n_riprese,
+                pre_total=m.pre_total, transfer_out=m.transfer_out,
+                transfer_back=m.transfer_back, n_relief=m.n_relief,
             )
         st = nxt
     return _finalize(st, clusters)
@@ -364,10 +317,8 @@ def enumerate_duties(pieces: list[Segment], clusters: list[Cluster]) -> list[Dut
             m = ChainMetrics(
                 feasible=True, duty_type=m.duty_type if m.duty_type != "invalido" else "intero",
                 nastro_min=m.nastro_min, work_min=m.work_min, driving_min=m.driving_min,
-                interruption_min=0, max_continuous=m.max_continuous,
-                max_rip_driving=m.max_rip_driving, n_long_interruptions=0, n_riprese=1,
-                has_sosta15=m.has_sosta15, transfer_out=m.transfer_out,
-                transfer_back=m.transfer_back, pre_turno=m.pre_turno, n_relief=0,
+                interruption_min=m.interruption_min, n_riprese=1, pre_total=m.pre_total,
+                transfer_out=m.transfer_out, transfer_back=m.transfer_back, n_relief=0,
             )
         columns.append(DutyColumn(piece_idxs=(p.idx,), metrics=m))
 
@@ -381,7 +332,7 @@ def enumerate_duties(pieces: list[Segment], clusters: list[Cluster]) -> list[Dut
         for nxt in succ[st.pieces[-1]]:
             if nxt in st.pieces:
                 continue
-            ns = _extend_state(st, by_idx[nxt])
+            ns = _extend_state(st, by_idx[nxt], clusters)
             if ns is None:
                 continue
             m = _finalize(ns, clusters)
@@ -455,7 +406,7 @@ def _column_cost_cents(col: DutyColumn, hourly_rate: float, car_cost: float) -> 
     hours = m.work_min / 60.0
     cost = hours * hourly_rate
     # auto: una per ogni biripresa (rientro deposito) + relief che richiede trasporto
-    n_car = m.n_long_interruptions
+    n_car = m.n_riprese - 1
     cost += n_car * car_cost
     return int(cost * COST_SCALE)
 
@@ -496,7 +447,7 @@ def solve_set_partition(
         car_intervals = []
         for c, col in enumerate(columns):
             m = col.metrics
-            if m.n_long_interruptions == 0:
+            if m.n_riprese < 2:
                 continue
             chain = col.piece_idxs
             by_idx = {p.idx: p for p in pieces}
@@ -601,7 +552,7 @@ def columns_to_duties(
             seg_counter += 1
 
         first, last = merged[0], merged[-1]
-        nastro_start = first.start_min - m.pre_turno - m.transfer_out
+        nastro_start = first.start_min - PRE_TURNO_MIN - m.transfer_out
         nastro_end = last.end_min + m.transfer_back
         duties.append(DriverDutyV3(
             idx=di,
@@ -614,7 +565,7 @@ def columns_to_duties(
             work_min=m.work_min,
             driving_min=m.driving_min,
             interruption_min=m.interruption_min,
-            pre_turno_min=m.pre_turno,
+            pre_turno_min=m.pre_total,
             transfer_min=m.transfer_out,
             transfer_back_min=m.transfer_back,
             cambi=cambi,

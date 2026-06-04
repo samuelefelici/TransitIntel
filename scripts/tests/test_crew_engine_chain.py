@@ -41,7 +41,10 @@ def _setup(shifts):
     config = merge_config({"solverIntensity": 1})
     clusters = parse_clusters_from_config(config)
     bds = v4.BDSConfig.from_config(config)
-    bds.pasto.attivo = False   # pause pasto escluse (come da esercizio)
+    # Profilo URBANO: vincola solo il nastro (no cap guida, sosta soft, no pasto).
+    bds.pasto.attivo = False
+    bds.rd131.attivo = False
+    bds.riprese.max_guida_per_ripresa = 10 ** 9
     blocks = v4.parse_vehicle_blocks(shifts, clusters)
     return config, clusters, bds, blocks
 
@@ -61,23 +64,26 @@ def test_build_pieces_splits_at_cluster_boundaries():
 # Classificazione RD131 (riprese, guida, sosta)
 # ----------------------------------------------------------------
 def test_classify_types():
+    # firma: _classify(nastro, interruption, n_riprese). Vincola SOLO il nastro
+    # (urbano esente da cap di guida).
     C = ce._classify
-    # supplemento: corto, una ripresa
-    assert C(120, 120, 60, 120, 0, 0, 1, False) == (True, "supplemento")
-    # intero: una ripresa, guida ≤4h30, CON sosta ≥15
-    assert C(420, 420, 200, 240, 0, 0, 6, True) == (True, "intero")
-    # intero SENZA sosta ≥15 -> non valido come intero (ma corto -> supplemento)
-    assert C(140, 140, 120, 140, 0, 0, 2, False) == (True, "supplemento")
-    # semiunico: una interruzione 75-179'
-    assert C(500, 380, 200, 240, 1, 120, 4, True) == (True, "semiunico")
-    # spezzato: una interruzione ≥180'
-    assert C(600, 360, 200, 240, 1, 240, 4, True) == (True, "spezzato")
-    # guida continuativa > 4h30 -> infattibile
-    assert C(400, 400, 300, 240, 0, 0, 5, True)[0] is False
-    # guida per ripresa > 4h30 -> infattibile
-    assert C(420, 420, 200, 300, 0, 0, 6, True)[0] is False
-    # due interruzioni lunghe -> infattibile
-    assert C(600, 300, 200, 200, 2, 120, 5, True)[0] is False
+    # supplemento: corto, una ripresa (nastro ≤ 150)
+    assert C(120, 0, 1) == (True, "supplemento")
+    # intero (unico): una ripresa, nastro ≤ 7h15 (435)
+    assert C(420, 0, 1) == (True, "intero")
+    assert C(435, 0, 1) == (True, "intero")
+    # nastro oltre 7h15 in una ripresa -> non valido
+    assert C(500, 0, 1)[0] is False
+    # semiunico: due riprese, interruzione 1h15-2h59 (75-179), nastro ≤ 9h15 (555)
+    assert C(500, 120, 2) == (True, "semiunico")
+    assert C(555, 75, 2) == (True, "semiunico")
+    # spezzato: due riprese, interruzione ≥ 3h (180), nastro ≤ 10h30 (630)
+    assert C(600, 240, 2) == (True, "spezzato")
+    assert C(630, 180, 2) == (True, "spezzato")
+    # interruzione fuori dalle fasce (es. 60' < 75') -> non valido
+    assert C(500, 60, 2)[0] is False
+    # nastro oltre il massimo di tipo -> non valido
+    assert C(640, 200, 2)[0] is False
 
 
 # ----------------------------------------------------------------
