@@ -460,37 +460,37 @@ def solve_set_partition(
 
     # ── Vincolo HARD vetture aziendali (capacità SIMULTANEA) ──
     # Un'auto è impegnata SOLO per i cambi in linea (il conducente è trasportato),
-    # mai per un'uscita/rientro col bus (pull-out/pull-in). Modelliamo come intervalli:
-    #   - relief in uscita (primo pezzo non pull-out): deposito→cluster, [start-tr, start]
-    #   - relief in rientro (ultimo pezzo non pull-in): cluster→deposito, [end, end+tr]
-    #   - biripresa: drop a inizio interruzione + pickup a fine interruzione
-    # add_cumulative garantisce ≤ max_company_cars auto sovrapposte nel tempo.
+    # mai per un'uscita/rientro col bus (pull-out/pull-in). Modello "a spola": per
+    # ogni trasporto l'auto fa deposito→cluster→deposito ed è occupata nella finestra
+    # [t_cluster - tr, t_cluster + tr] (andata + ritorno a vuoto). add_cumulative
+    # garantisce ≤ max_company_cars auto sovrapposte nel tempo.
     if max_company_cars > 0:
         by_idx = {p.idx: p for p in pieces}
         car_intervals = []
+
+        def _shuttle(c: int, t_cluster: int, tr: int, tag: str):
+            car_intervals.append(model.new_optional_fixed_size_interval_var(
+                start=t_cluster - tr, size=2 * tr, is_present=x[c], name=tag))
+
         for c, col in enumerate(columns):
             segs = [by_idx[i] for i in col.piece_idxs]
             first, last = segs[0], segs[-1]
-            # relief in uscita
+            # relief in uscita: auto porta il conducente al cluster per le t_cluster=start
             if not first.is_pullout and first.first_cluster:
                 tr = depot_transfer_min(first.first_stop, clusters) or DEPOT_TRANSFER_CENTRAL
-                car_intervals.append(model.new_optional_fixed_size_interval_var(
-                    start=first.start_min - tr, size=tr, is_present=x[c], name=f"cro{c}"))
-            # relief in rientro
+                _shuttle(c, first.start_min, tr, f"cro{c}")
+            # relief in rientro: auto preleva il conducente al cluster a t_cluster=end
             if not last.is_pullin and last.last_cluster:
                 tr = depot_transfer_min(last.last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
-                car_intervals.append(model.new_optional_fixed_size_interval_var(
-                    start=last.end_min, size=tr, is_present=x[c], name=f"cri{c}"))
-            # trasferimenti di interruzione (biripresa)
+                _shuttle(c, last.end_min, tr, f"cri{c}")
+            # biripresa: rientro a inizio interruzione + andata a fine interruzione
             for i in range(len(segs) - 1):
                 gap = segs[i + 1].start_min - segs[i].end_min
                 if gap < _SEMI["intMin"]:
                     continue
                 tr = depot_transfer_min(segs[i].last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
-                car_intervals.append(model.new_optional_fixed_size_interval_var(
-                    start=segs[i].end_min, size=tr, is_present=x[c], name=f"cd{c}_{i}"))
-                car_intervals.append(model.new_optional_fixed_size_interval_var(
-                    start=segs[i + 1].start_min - tr, size=tr, is_present=x[c], name=f"cp{c}_{i}"))
+                _shuttle(c, segs[i].end_min, tr, f"cd{c}_{i}")
+                _shuttle(c, segs[i + 1].start_min, tr, f"cp{c}_{i}")
         if car_intervals:
             model.add_cumulative(car_intervals, [1] * len(car_intervals), max_company_cars)
 

@@ -1394,68 +1394,29 @@ def compute_car_pool(
                 elif t_from_last > 0:
                     log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
 
-    # ── Assegnazione auto per cluster (simulazione cronologica) ──
-    # Ordiniamo TUTTI gli eventi per tempo.
-    # Per deliver: l'auto esce dal deposito a depart_min e arriva al cluster a arrive_min
-    # Per pickup: l'auto esce dal cluster a depart_min e rientra al deposito a arrive_min
-    #
-    # Usiamo due tipi di evento per timing corretto:
-    #   deliver_depart  → auto lascia deposito
-    #   deliver_arrive  → auto arriva al cluster (diventa disponibile)
-    #   pickup_depart   → auto lascia cluster (deve essere disponibile!)
-    #   pickup_arrive   → auto rientra al deposito
-    all_events: list[tuple[int, str, CarTrip]] = []
-    for t in trips:
-        if t.trip_type == "deliver":
-            all_events.append((t.depart_min, "deliver_depart", t))
-            all_events.append((t.arrive_min, "deliver_arrive", t))
-        else:
-            all_events.append((t.depart_min, "pickup_depart", t))
-            all_events.append((t.arrive_min, "pickup_arrive", t))
-
-    # Ordina per tempo; a parità: arrivi prima di partenze (così auto appena arrivate sono disponibili)
-    EVENT_ORDER = {"deliver_arrive": 0, "pickup_arrive": 1, "deliver_depart": 2, "pickup_depart": 3}
-    all_events.sort(key=lambda e: (e[0], EVENT_ORDER.get(e[1], 9)))
-
-    car_ids_at_depot: list[int] = list(range(1, COMPANY_CARS + 1))
-    car_ids_at_cluster: dict[str, list[int]] = {}
-    car_assignment: dict[int, int] = {}  # id(trip) → car_id
+    # ── Assegnazione auto: pool omogeneo dal deposito (modello a spola) ──
+    # Ogni trasporto occupa un'auto per il viaggio andata/ritorno deposito↔cluster.
+    # Le auto sono intercambiabili: un trasporto può partire se nel pool c'è un'auto
+    # libera (cioè rientrata da un viaggio precedente), altrimenti è un conflitto.
+    import heapq
+    ordered = sorted(trips, key=lambda t: _car_out_window(t)[0])
+    free: list[int] = list(range(1, COMPANY_CARS + 1))  # auto disponibili in deposito
+    busy: list[tuple[int, int]] = []                     # (rientro_min, car_id)
     conflicts: list[CarTrip] = []
 
-    for _, event_type, trip in all_events:
-        cid = trip.cluster_id or "unknown"
-
-        if event_type == "deliver_depart":
-            # Auto esce dal deposito
-            if car_ids_at_depot:
-                car_id = car_ids_at_depot.pop(0)
-                car_assignment[id(trip)] = car_id
-                trip.car_id = car_id
-            else:
-                trip.car_id = None
-                conflicts.append(trip)
-
-        elif event_type == "deliver_arrive":
-            # Auto arriva al cluster — la parcheggiamo lì
-            car_id = car_assignment.get(id(trip))
-            if car_id is not None:
-                car_ids_at_cluster.setdefault(cid, []).append(car_id)
-
-        elif event_type == "pickup_depart":
-            # Autista prende un'auto dal cluster
-            if car_ids_at_cluster.get(cid):
-                car_id = car_ids_at_cluster[cid].pop(0)
-                car_assignment[id(trip)] = car_id
-                trip.car_id = car_id
-            else:
-                trip.car_id = None
-                conflicts.append(trip)
-
-        elif event_type == "pickup_arrive":
-            # Auto rientra al deposito
-            car_id = car_assignment.get(id(trip))
-            if car_id is not None:
-                car_ids_at_depot.append(car_id)
+    for trip in ordered:
+        out_start, out_end = _car_out_window(trip)
+        # libera le auto rientrate prima dell'inizio di questo viaggio
+        while busy and busy[0][0] <= out_start:
+            _, freed = heapq.heappop(busy)
+            free.append(freed)
+        if free:
+            car_id = free.pop(0)
+            trip.car_id = car_id
+            heapq.heappush(busy, (out_end, car_id))
+        else:
+            trip.car_id = None
+            conflicts.append(trip)
 
     if conflicts:
         log(f"⚠️  Car pool: {len(conflicts)} trasferimenti senza auto disponibile!")
@@ -1490,22 +1451,27 @@ def car_pool_by_driver(trips: list[CarTrip]) -> dict[str, dict[str, CarTrip | li
     return result
 
 
+def _car_out_window(t: CarTrip) -> tuple[int, int]:
+    """Finestra in cui l'auto è fuori dal deposito per un trasporto (modello a spola:
+    deposito→cluster→deposito). Larghezza = 2×transfer attorno al momento al cluster."""
+    if t.trip_type == "deliver":
+        # parte dal deposito (depart_min), arriva al cluster (arrive_min), torna a vuoto
+        return t.depart_min, t.arrive_min + t.transfer_min
+    # pickup: parte a vuoto dal deposito, arriva al cluster (depart_min), rientra col conducente
+    return t.depart_min - t.transfer_min, t.arrive_min
+
+
 def _max_simultaneous_cars_out(trips: list[CarTrip]) -> int:
-    """Calcola il massimo di auto aziendali fuori dal deposito contemporaneamente.
-    
-    Un'auto è "fuori deposito" dal momento in cui un deliver parte dal deposito
-    fino a quando un pickup arriva al deposito.
-    """
+    """Massimo di auto aziendali fuori dal deposito contemporaneamente (modello a spola:
+    ogni trasporto occupa un'auto solo per la durata del viaggio andata/ritorno)."""
     if not trips:
         return 0
     events: list[tuple[int, int]] = []
     for t in trips:
-        if t.car_id is None:
-            continue
-        if t.trip_type == "deliver":
-            events.append((t.depart_min, +1))   # auto esce dal deposito
-        else:  # pickup
-            events.append((t.arrive_min, -1))    # auto rientra al deposito
+        out_start, out_end = _car_out_window(t)
+        events.append((out_start, +1))
+        events.append((out_end, -1))
+    # a parità di istante: prima i rientri (-1), poi le uscite (+1)
     events.sort(key=lambda e: (e[0], e[1]))
     current = 0
     max_sim = 0
