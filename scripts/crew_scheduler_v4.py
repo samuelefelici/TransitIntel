@@ -3039,23 +3039,37 @@ def main() -> None:
     log(f"Fase 2: classificazione = {class_summary}")
     report_progress("analyze", 20, f"Classificati: {class_summary}")
 
-    # ── Selezione motore: "chain" (set-partitioning a catena) o "v4" (single/pair) ──
-    engine = (config.get("bds", {}).get("optimizer", {}) or {}).get("engine", "v4")
+    # ── Selezione motore: "chain" (set-partitioning a catena, DEFAULT) o "v4" ──
+    # Il motore a catena costruisce un turno guida come CATENA di pezzi di bus
+    # diversi collegati da cambio al cluster (relief), conforme RD 131 (riprese,
+    # guida ≤4h30/ripresa, sosta ≥15' per gli interi). In caso di errore o
+    # soluzione vuota, fallback automatico al motore v4 single/pair.
+    engine = (config.get("bds", {}).get("optimizer", {}) or {}).get("engine", "chain")
+    global LAST_OPTIMIZATION_ANALYSIS
 
+    duties = None
+    segments = None
     if engine == "chain":
-        # ── Motore a CATENA: un turno guida concatena più pezzi di bus diversi
-        #    (cambio al cluster) → meno turni. (WIP: vedi crew_engine_chain.py) ──
-        import crew_engine_chain as ce
-        log("Fase 3-4: motore CHAIN (set-partitioning a catena)")
-        report_progress("optimize", 28, "Motore a catena: generazione pezzi + colonne")
-        duties, chain_analysis = ce.optimize_chain(
-            blocks, config, time_limit_sec, clusters, bds,
-            max_company_cars=MAX_COMPANY_CARS,
-        )
-        segments = ce.build_pieces(blocks, clusters)
-        global LAST_OPTIMIZATION_ANALYSIS
-        LAST_OPTIMIZATION_ANALYSIS = chain_analysis
-    else:
+        try:
+            import crew_engine_chain as ce
+            # Pause pasto escluse nel percorso chain (non previste dall'esercizio).
+            bds.pasto.attivo = False
+            log("Fase 3-4: motore CHAIN (set-partitioning a catena, conforme RD131)")
+            report_progress("optimize", 28, "Motore a catena: generazione pezzi + colonne")
+            duties, chain_analysis = ce.optimize_chain(
+                blocks, config, time_limit_sec, clusters, bds,
+                max_company_cars=MAX_COMPANY_CARS,
+            )
+            segments = ce.build_pieces(blocks, clusters)
+            LAST_OPTIMIZATION_ANALYSIS = chain_analysis
+            if not duties:
+                raise RuntimeError("motore chain: nessun turno prodotto")
+        except Exception as e:
+            log(f"[CHAIN] errore/empty ({e}) → fallback a motore v4")
+            duties = None
+            engine = "v4"
+
+    if duties is None:
         # ── Fase 3: Costruzione segmenti ──
         segments = build_initial_segments(blocks, clusters)
         log(f"Fase 3: {len(segments)} segmenti generati")
