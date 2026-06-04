@@ -1266,8 +1266,9 @@ class CarTrip:
     car_id: int | None = None  # auto assegnata (1..N), None se viaggio in bus o conflitto
     mode: str = "car"          # "car" = autovettura aziendale; "bus" = passeggero su bus (taxi)
     ride_vehicle_id: str | None = None  # bus che trasporta il conducente (se mode="bus")
+    from_depot: bool = False            # auto inviata dal deposito (nessun riuso possibile)
     idle_violation: bool = False        # auto rimasta in sosta oltre il massimo consentito
-    conflict: bool = False              # impossibile reperire un'auto al cluster
+    conflict: bool = False              # nessuna auto disponibile (cap del parco superato)
 
 
 def compute_car_pool(
@@ -1412,10 +1413,9 @@ def compute_car_pool(
     r = _LAST_CAR_PLAN
 
     log(f"🚗 Trasporto: {r.n_car_trips} tratte auto, {r.n_bus_rides} taxi su bus, "
-        f"{r.n_pairs} auto riusate, parco max {r.fleet_peak} "
-        f"(idle max {r.max_idle_min}', {r.n_idle_violations} sosta-oltre-max, {r.n_conflicts} senza auto)")
-    for c in (t for t in trips if t.conflict):
-        log(f"    ⚠️  {c.driver_id} prelievo alle {min_to_time(c.depart_min)} ({c.cluster_name}) senza auto al cluster")
+        f"{r.n_pairs} auto riusate (sosta max {r.max_idle_min}'), "
+        f"{r.n_depot_shuttle} navette dal deposito, parco max {r.fleet_peak}"
+        + (f", {r.n_conflicts} SENZA AUTO (cap superato)" if r.n_conflicts else ""))
 
     return trips
 

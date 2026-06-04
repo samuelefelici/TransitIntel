@@ -43,17 +43,18 @@ def test_riuso_auto_entro_max_idle():
     assert res.max_idle_min == 45
     assert d.mode == "car" and u.mode == "car"
     assert d.car_id == u.car_id          # stessa auto
-    assert res.n_conflicts == 0 and res.n_idle_violations == 0
+    assert res.n_conflicts == 0 and res.n_depot_shuttle == 0
 
 
 def test_default_sosta_massima_15min():
     """Regola operativa: chiavi a bordo → auto incustodita al cluster max 15'.
     È il default. Oltre i 15' non c'è riuso; entro i 15' sì."""
     assert TransportParams(n_cars=5).car_max_idle_min == 15
-    # divario 20' > 15' → niente riuso
+    # divario 20' > 15' → niente riuso: entrambi serviti da navetta dal deposito
     d, u = deliver("X", 600), pickup("X", 620)
     res = plan_car_pool([d, u], rides=[], params=TransportParams(n_cars=5))
-    assert res.n_pairs == 0 and res.n_idle_violations == 1 and res.n_conflicts == 1
+    assert res.n_pairs == 0 and res.n_depot_shuttle == 2 and res.n_conflicts == 0
+    assert d.from_depot and u.from_depot
     # divario 12' ≤ 15' → riuso con una sola auto
     d2, u2 = deliver("Y", 600), pickup("Y", 612)
     res2 = plan_car_pool([d2, u2], rides=[], params=TransportParams(n_cars=5))
@@ -62,13 +63,24 @@ def test_default_sosta_massima_15min():
 
 def test_no_riuso_oltre_max_idle():
     """Prelievo troppo distante dalla consegna (oltre max_idle): niente riuso →
-    consegna in sosta-oltre-max e prelievo senza auto."""
+    entrambi serviti da navetta auto dal deposito (non è un conflitto)."""
     p = TransportParams(n_cars=5, car_max_idle_min=60)
     d = deliver("X", 600); u = pickup("X", 800)   # 200' > 60'
     res = plan_car_pool([d, u], rides=[], params=p)
     assert res.n_pairs == 0
-    assert res.n_idle_violations == 1 and d.idle_violation
-    assert res.n_conflicts == 1 and u.conflict
+    assert res.n_depot_shuttle == 2 and d.from_depot and u.from_depot
+    assert res.n_conflicts == 0
+
+
+def test_conflitto_solo_se_cap_superato():
+    """Con cap=1 e due navette sovrapposte nel tempo, la seconda resta senza auto."""
+    p = TransportParams(n_cars=1, car_max_idle_min=10)
+    # due prelievi simultanei a cluster diversi → 2 auto necessarie, cap=1
+    u1 = pickup("X", 600); u2 = pickup("Y", 600)
+    res = plan_car_pool([u1, u2], rides=[], params=p)
+    assert res.fleet_peak == 2
+    assert res.n_conflicts == 1            # una sola auto disponibile
+    assert sum(1 for t in (u1, u2) if t.conflict) == 1
 
 
 def test_riuso_a_catena_una_sola_auto():

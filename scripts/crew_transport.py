@@ -132,10 +132,10 @@ class PlanResult:
     fleet_peak: int = 0          # auto in uso simultaneo (= dimensione parco necessaria)
     n_bus_rides: int = 0         # conducenti trasportati gratis su bus
     n_car_trips: int = 0         # tratte effettive in autovettura
-    n_pairs: int = 0             # scambi serviti da un'unica auto riusata
-    n_idle_violations: int = 0   # consegne con auto in sosta oltre il massimo
-    n_conflicts: int = 0         # prelievi senza auto reperibile
-    max_idle_min: int = 0        # sosta massima osservata
+    n_pairs: int = 0             # scambi serviti da un'unica auto riusata (≤ 15')
+    n_depot_shuttle: int = 0     # tratte auto dal deposito senza riuso (navetta dedicata)
+    n_conflicts: int = 0         # tratte rimaste senza auto (cap del parco superato)
+    max_idle_min: int = 0        # sosta massima osservata di un'auto al cluster
     notes: list[str] = field(default_factory=list)
 
 
@@ -232,26 +232,28 @@ def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) ->
             res.n_pairs += 1
             car_tasks.append({"start": d.depart_min, "end": u.arrive_min, "trips": [d, u]})
 
-    # ── (c) Auto dedicata per ciò che resta ──
-    for d in still_delivers:
-        d.idle_violation = True
-        res.n_idle_violations += 1
-        # auto fuori finché non viene riportata: al più resta in sosta max_idle
-        car_tasks.append({"start": d.depart_min,
-                          "end": d.arrive_min + params.car_max_idle_min, "trips": [d]})
-    for p in still_pickups:
-        p.conflict = True
-        res.n_conflicts += 1
-        # un'auto va inviata a vuoto dal deposito per riportare l'uscente
+    # ── (c) Navetta auto dal deposito per chi resta (nessun riuso né taxi) ──
+    # Un'auto del pool fa il round-trip deposito↔cluster (~2×transfer): è l'uso BASE
+    # dell'autovettura aziendale. È guidata sia all'andata sia al ritorno, quindi non
+    # resta mai incustodita oltre i 15'. Conta nel parco; NON è un conflitto. Il numero
+    # di queste navette è il carico di lavoro "non ottimizzabile" col solo riuso/taxi.
+    for d in still_delivers:                       # entrante: navetta lo porta e riporta l'auto
+        d.from_depot = True
+        res.n_depot_shuttle += 1
+        car_tasks.append({"start": d.depart_min, "end": d.arrive_min + d.transfer_min, "trips": [d]})
+    for p in still_pickups:                        # uscente: navetta a vuoto, poi lo riporta
+        p.from_depot = True
+        res.n_depot_shuttle += 1
         car_tasks.append({"start": p.depart_min - p.transfer_min, "end": p.arrive_min, "trips": [p]})
 
     # ── (d) Colorazione intervalli → numero minimo di auto simultanee ──
     res.fleet_peak = _color_tasks(car_tasks, params.n_cars)
+    res.n_conflicts = sum(1 for t in trips if t.conflict)   # solo se il cap è superato
     res.n_car_trips = sum(1 for t in trips if t.mode == "car")
+    if res.n_depot_shuttle:
+        res.notes.append(f"{res.n_depot_shuttle} tratte auto dal deposito senza riuso (navetta)")
     if res.n_conflicts:
-        res.notes.append(f"{res.n_conflicts} prelievi senza auto al cluster (vettura a vuoto)")
-    if res.n_idle_violations:
-        res.notes.append(f"{res.n_idle_violations} auto in sosta oltre {params.car_max_idle_min}'")
+        res.notes.append(f"{res.n_conflicts} tratte senza auto: cap parco ({params.n_cars}) superato")
     return res
 
 
@@ -277,6 +279,7 @@ def _color_tasks(tasks: list[dict], n_cars: int) -> int:
         for tr in t["trips"]:
             tr.mode = "car"
             tr.car_id = None if over_cap else cid
+            tr.conflict = over_cap
         heapq.heappush(busy, (t["end"], cid))
         peak = max(peak, len(busy))
     return peak

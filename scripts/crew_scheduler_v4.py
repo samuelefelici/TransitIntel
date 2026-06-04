@@ -3011,7 +3011,7 @@ def serialize_output(
             "carTrips": sum(1 for t in car_movements if t.mode == "car"),
             "busRides": sum(1 for t in car_movements if t.mode == "bus"),
             "reusedCars": (car_plan.n_pairs if car_plan else 0),
-            "idleViolations": sum(1 for t in car_movements if t.idle_violation),
+            "depotShuttles": sum(1 for t in car_movements if t.from_depot),
             "maxIdleMin": (car_plan.max_idle_min if car_plan else 0),
             "conflicts": sum(1 for t in car_movements if t.conflict),
             "maxSimultaneous": (car_plan.fleet_peak if car_plan else _max_simultaneous_cars_out(car_movements)),
