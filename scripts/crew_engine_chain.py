@@ -262,21 +262,54 @@ def chain_metrics(chain: list[Segment], clusters: list[Cluster]) -> ChainMetrics
     return _finalize(st, clusters)
 
 
-def _link_feasible(p: Segment, q: Segment) -> bool:
-    """p precede q. Link ammissibile se condividono il cluster di snodo e q parte
-    dopo la fine di p entro la finestra massima (il nastro≤630 limita comunque)."""
+def _inservice_edge(p: Segment, q: Segment, inservice):
+    """Bus di linea che porta il conducente dal cluster di fine di p a quello di
+    inizio di q (cambio CROSS-cluster), o None. Solo cambi brevi ENTRO la ripresa
+    (gap < 75'): l'autista sale dopo la fine di p e scende prima dell'inizio di q."""
+    if inservice is None or not p.last_cluster or not q.first_cluster:
+        return None
+    if p.last_cluster == q.first_cluster:
+        return None
+    gap = q.start_min - p.end_min
+    if gap < RELIEF_CHANGEOVER_MIN or gap >= SOSTA_SPEZZA:
+        return None
+    e = inservice.connect(p.last_cluster, q.first_cluster, p.end_min, gap)
+    if e is not None and e.alight_min <= q.start_min:
+        return e
+    return None
+
+
+def _link_feasible(p: Segment, q: Segment, inservice=None) -> bool:
+    """p precede q. Link ammissibile se:
+      - STESSO cluster di snodo (cambio a piedi), oppure
+      - cluster DIVERSI ma un bus di linea li collega entro il gap (increment 2,
+        cross-cluster gratuito) — solo se `inservice` è fornito.
+    q deve partire dopo la fine di p, entro la finestra massima (il nastro≤630 limita)."""
     if p.last_cluster is None or q.first_cluster is None:
         return False
-    if p.last_cluster != q.first_cluster:
-        return False  # increment 1: solo cambio nello STESSO cluster (a piedi)
     gap = q.start_min - p.end_min
     if gap < 0:
         return False
+    if p.last_cluster != q.first_cluster:
+        # cambio CROSS-cluster: ammesso solo se un bus di linea lo serve (gratis)
+        return _inservice_edge(p, q, inservice) is not None
+    # stesso cluster (cambio a piedi) — invariato
     if p.vehicle_id != q.vehicle_id and gap < RELIEF_CHANGEOVER_MIN:
         return False
     if gap > MAX_CHAIN_GAP_MIN:
         return False
     return True
+
+
+def _successor_candidates(p: Segment, by_cluster_start: dict, inservice) -> list[Segment]:
+    """Pezzi che possono seguire p: quelli che iniziano allo STESSO cluster di fine di
+    p, più (se c'è connettività in linea) quelli che iniziano a un cluster RAGGIUNGIBILE
+    in linea. Il filtro di fattibilità resta a _link_feasible."""
+    out = list(by_cluster_start.get(p.last_cluster, []))
+    if inservice is not None and p.last_cluster:
+        for b in inservice.dests_from(p.last_cluster):
+            out.extend(by_cluster_start.get(b, []))
+    return out
 
 
 # ════════════════════════════════════════════════════════════════
@@ -289,16 +322,20 @@ class DutyColumn:
     metrics: ChainMetrics
 
 
-def enumerate_duties(pieces: list[Segment], clusters: list[Cluster]) -> list[DutyColumn]:
+def enumerate_duties(pieces: list[Segment], clusters: list[Cluster],
+                     inservice=None) -> list[DutyColumn]:
     """Enumera catene fattibili (colonne) + singoletti garantiti per ogni pezzo.
 
     Enumerazione TRACTABILE: fan-out limitato dei successori + budget globale di
-    nodi (il crew scheduling reale non enumera tutte le catene possibili)."""
+    nodi (il crew scheduling reale non enumera tutte le catene possibili).
+
+    `inservice` (opzionale): indice di connettività in linea — abilita i cambi
+    CROSS-cluster serviti da un bus di linea. Assente → solo cambi stesso-cluster."""
     by_idx = {p.idx: p for p in pieces}
     pieces_sorted = sorted(pieces, key=lambda p: p.start_min)
 
-    # successori: stesso cluster, dopo, entro finestra; continuazione prioritaria,
-    # poi le prime RELIEF_FANOUT alternative più precoci.
+    # successori: stesso cluster (a piedi) o cluster raggiungibile in linea, dopo,
+    # entro finestra; continuazione prioritaria, poi le prime RELIEF_FANOUT alternative.
     succ: dict[int, list[int]] = {}
     by_cluster_start: dict[str | None, list[Segment]] = {}
     for p in pieces_sorted:
@@ -307,8 +344,8 @@ def enumerate_duties(pieces: list[Segment], clusters: list[Cluster]) -> list[Dut
         if p.last_cluster is None:
             succ[p.idx] = []
             continue
-        cands = [q for q in by_cluster_start.get(p.last_cluster, [])
-                 if q.idx != p.idx and _link_feasible(p, q)]
+        cands = [q for q in _successor_candidates(p, by_cluster_start, inservice)
+                 if q.idx != p.idx and _link_feasible(p, q, inservice)]
         cands.sort(key=lambda q: q.start_min)
         chosen: list[int] = []
         cont = [q for q in cands if q.vehicle_id == p.vehicle_id]
@@ -368,7 +405,8 @@ def enumerate_duties(pieces: list[Segment], clusters: list[Cluster]) -> list[Dut
 
 
 def greedy_chain_cover(pieces: list[Segment], clusters: list[Cluster],
-                       target_nastro: int | None = None) -> list[tuple[int, ...]]:
+                       target_nastro: int | None = None,
+                       inservice=None) -> list[tuple[int, ...]]:
     """Costruisce una copertura GREEDY di catene (interi ben riempiti): parte dal
     pezzo libero più precoce ed estende con il successore libero più precoce finché
     resta fattibile e sotto il nastro target. Serve da warm-start per il CP-SAT."""
@@ -393,8 +431,10 @@ def greedy_chain_cover(pieces: list[Segment], clusters: list[Cluster],
             if tail.last_cluster is None:
                 break
             best = None
-            for q in by_cluster_start.get(tail.last_cluster, []):
-                if q.idx not in free or not _link_feasible(tail, q):
+            cands = sorted(_successor_candidates(tail, by_cluster_start, inservice),
+                           key=lambda q: q.start_min)
+            for q in cands:
+                if q.idx not in free or not _link_feasible(tail, q, inservice):
                     continue
                 m = chain_metrics([by_idx[i] for i in chain] + [q], clusters)
                 if not m.feasible:
@@ -576,11 +616,19 @@ def columns_to_duties(
         for i in range(len(raw_segs) - 1):
             a, b = raw_segs[i], raw_segs[i + 1]
             if a.vehicle_id != b.vehicle_id and (b.start_min - a.end_min) < SOSTA_SPEZZA:
+                cross = bool(a.last_cluster and b.first_cluster
+                             and a.last_cluster != b.first_cluster)
                 cid = a.last_cluster or b.first_cluster or ""
+                if cross:
+                    # cambio CROSS-cluster: il conducente si sposta A→B su bus di linea
+                    name = (f"{cluster_name.get(a.last_cluster, a.last_cluster)} → "
+                            f"{cluster_name.get(b.first_cluster, b.first_cluster)} (bus linea)")
+                else:
+                    name = cluster_name.get(cid, cid)
                 cambi.append(CambioInfo(
-                    cluster=cid, cluster_name=cluster_name.get(cid, cid),
+                    cluster=cid, cluster_name=name,
                     from_vehicle=a.vehicle_id, to_vehicle=b.vehicle_id,
-                    cut_type="inter", stop_id="", stop_sequence=0,
+                    cut_type="inter_cross" if cross else "inter", stop_id="", stop_sequence=0,
                     trip_id="", route_name="",
                 ))
 
@@ -633,13 +681,26 @@ def optimize_chain(
     pieces = build_pieces(blocks, clusters)
     log(f"[CHAIN] {len(pieces)} pezzi da {len(blocks)} turni macchina")
 
+    # Connettività in linea cluster→cluster (dai transiti GTFS sulle corse). Abilita i
+    # cambi cross-cluster serviti da un bus di linea. Vuota (clusterStops non popolati)
+    # → None → solo cambi stesso-cluster, comportamento invariato.
+    inservice = None
+    try:
+        from gtfs_clusters import build_inservice_index
+        idx = build_inservice_index(blocks, clusters)
+        if idx.edges:
+            inservice = idx
+            log(f"[CHAIN] connettività in linea: {len(idx.edges)} coppie cluster collegate da bus")
+    except Exception as e:
+        log(f"[CHAIN] indice in linea non disponibile ({e})")
+
     t_enum = time.time()
-    columns = enumerate_duties(pieces, clusters)
+    columns = enumerate_duties(pieces, clusters, inservice)
     log(f"[CHAIN] {len(columns)} colonne (turni candidati) in {time.time() - t_enum:.2f}s")
 
     # Warm-start: copertura greedy. Le sue catene vengono aggiunte come colonne
     # (se non già presenti) e usate come hint per il CP-SAT.
-    greedy_chains = greedy_chain_cover(pieces, clusters)
+    greedy_chains = greedy_chain_cover(pieces, clusters, inservice=inservice)
     by_idx = {p.idx: p for p in pieces}
     col_index = {col.piece_idxs: i for i, col in enumerate(columns)}
     warm_cols: list[int] = []
@@ -673,6 +734,9 @@ def optimize_chain(
         log(f"[CHAIN] uso copertura greedy ({len(chosen)} turni)")
 
     duties = columns_to_duties(chosen, pieces, clusters)
+    n_cross = sum(1 for d in duties for c in d.cambi if c.cut_type == "inter_cross")
+    if n_cross:
+        log(f"[CHAIN] {n_cross} cambi cross-cluster serviti da bus di linea (gratis)")
     analysis = {
         "engine": "chain",
         "nPieces": len(pieces),
@@ -680,6 +744,7 @@ def optimize_chain(
         "status": status,
         "nDuties": len(duties),
         "nGreedy": len(greedy_chains),
+        "nCrossClusterReliefs": n_cross,
         "elapsedSec": round(time.time() - t0, 2),
     }
     return duties, analysis

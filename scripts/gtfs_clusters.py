@@ -166,6 +166,10 @@ class InServiceIndex:
         for lst in self.edges.values():
             lst.sort(key=lambda e: e.board_min)
 
+    def dests_from(self, from_cluster: str) -> set[str]:
+        """Cluster raggiungibili in linea (come passeggero) partendo da `from_cluster`."""
+        return {b for (a, b) in self.edges if a == from_cluster}
+
     def connect(self, from_cluster: str, to_cluster: str, ready_min: int,
                 window: int) -> InServiceEdge | None:
         """Primo bus che parte da `from_cluster` non prima di `ready_min` ed entro
