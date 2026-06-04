@@ -459,11 +459,14 @@ def solve_set_partition(
         model.add_exactly_one(x[c] for c in clist)
 
     # ── Vincolo HARD vetture aziendali (capacità SIMULTANEA) ──
-    # Un'auto è impegnata SOLO per i cambi in linea (il conducente è trasportato),
-    # mai per un'uscita/rientro col bus (pull-out/pull-in). Modello "a spola": per
-    # ogni trasporto l'auto fa deposito→cluster→deposito ed è occupata nella finestra
-    # [t_cluster - tr, t_cluster + tr] (andata + ritorno a vuoto). add_cumulative
-    # garantisce ≤ max_company_cars auto sovrapposte nel tempo.
+    # Un'auto serve SOLO per un cambio in linea (il conducente è trasportato), mai per
+    # un'uscita/rientro col bus (pull-out/pull-in). Modello "a spola": l'auto è occupata
+    # nella finestra [t_cluster - tr, t_cluster + tr]. Qui il conteggio è per-colonna e
+    # CONSERVATIVO (conta sia il lato entrante sia quello uscente): l'accoppiamento degli
+    # scambi è globale e non esprimibile per-colonna, quindi resta al post-solve
+    # (compute_car_pool/_max_simultaneous_cars_out) che è la misura autoritativa. Così il
+    # solver non sottostima mai le auto e, quando il cap non è raggiungibile, ricade
+    # pulito sul greedy con warning HARD esplicito in main.
     if max_company_cars > 0:
         by_idx = {p.idx: p for p in pieces}
         car_intervals = []
@@ -475,18 +478,14 @@ def solve_set_partition(
         for c, col in enumerate(columns):
             segs = [by_idx[i] for i in col.piece_idxs]
             first, last = segs[0], segs[-1]
-            # relief in uscita: auto porta il conducente al cluster per le t_cluster=start
             if not first.is_pullout and first.first_cluster:
                 tr = depot_transfer_min(first.first_stop, clusters) or DEPOT_TRANSFER_CENTRAL
                 _shuttle(c, first.start_min, tr, f"cro{c}")
-            # relief in rientro: auto preleva il conducente al cluster a t_cluster=end
             if not last.is_pullin and last.last_cluster:
                 tr = depot_transfer_min(last.last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
                 _shuttle(c, last.end_min, tr, f"cri{c}")
-            # biripresa: rientro a inizio interruzione + andata a fine interruzione
             for i in range(len(segs) - 1):
-                gap = segs[i + 1].start_min - segs[i].end_min
-                if gap < _SEMI["intMin"]:
+                if segs[i + 1].start_min - segs[i].end_min < _SEMI["intMin"]:
                     continue
                 tr = depot_transfer_min(segs[i].last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
                 _shuttle(c, segs[i].end_min, tr, f"cd{c}_{i}")

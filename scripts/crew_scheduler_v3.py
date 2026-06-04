@@ -1395,28 +1395,27 @@ def compute_car_pool(
                     log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
 
     # ── Assegnazione auto: pool omogeneo dal deposito (modello a spola) ──
-    # Ogni trasporto occupa un'auto per il viaggio andata/ritorno deposito↔cluster.
-    # Le auto sono intercambiabili: un trasporto può partire se nel pool c'è un'auto
-    # libera (cioè rientrata da un viaggio precedente), altrimenti è un conflitto.
+    # Operiamo sulle OCCUPAZIONI (scambi pickup+deliver accoppiati = 1 auto). Un'auto
+    # è disponibile se rientrata da un'occupazione precedente; altrimenti è un conflitto.
     import heapq
-    ordered = sorted(trips, key=lambda t: _car_out_window(t)[0])
-    free: list[int] = list(range(1, COMPANY_CARS + 1))  # auto disponibili in deposito
-    busy: list[tuple[int, int]] = []                     # (rientro_min, car_id)
+    occ = sorted(car_occupancies(trips), key=lambda o: o[0])
+    free: list[int] = list(range(1, COMPANY_CARS + 1))
+    busy: list[tuple[int, int]] = []           # (rientro_min, car_id)
     conflicts: list[CarTrip] = []
 
-    for trip in ordered:
-        out_start, out_end = _car_out_window(trip)
-        # libera le auto rientrate prima dell'inizio di questo viaggio
+    for out_start, out_end, grp in occ:
         while busy and busy[0][0] <= out_start:
             _, freed = heapq.heappop(busy)
             free.append(freed)
         if free:
             car_id = free.pop(0)
-            trip.car_id = car_id
+            for t in grp:
+                t.car_id = car_id
             heapq.heappush(busy, (out_end, car_id))
         else:
-            trip.car_id = None
-            conflicts.append(trip)
+            for t in grp:
+                t.car_id = None
+            conflicts.extend(grp)
 
     if conflicts:
         log(f"⚠️  Car pool: {len(conflicts)} trasferimenti senza auto disponibile!")
@@ -1424,7 +1423,7 @@ def compute_car_pool(
             log(f"    {c.driver_id} {c.trip_type} alle {min_to_time(c.depart_min)} ({c.cluster_name})")
 
     assigned = [t for t in trips if t.car_id is not None]
-    log(f"🚗 Car pool: {len(assigned)}/{len(trips)} viaggi assegnati, "
+    log(f"🚗 Car pool: {len(assigned)}/{len(trips)} viaggi assegnati ({len(occ)} occupazioni), "
         f"{len(conflicts)} conflitti, "
         f"max {_max_simultaneous_cars_out(trips)} auto fuori deposito")
 
@@ -1461,20 +1460,61 @@ def _car_out_window(t: CarTrip) -> tuple[int, int]:
     return t.depart_min - t.transfer_min, t.arrive_min
 
 
+SWAP_PAIR_WINDOW = 30   # finestra (min) per accoppiare pickup+deliver nello stesso scambio
+
+
+def _cluster_moment(t: CarTrip) -> int:
+    """Istante in cui l'auto è al cluster (drop dell'entrante / pickup dell'uscente)."""
+    return t.arrive_min if t.trip_type == "deliver" else t.depart_min
+
+
+def car_occupancies(trips: list[CarTrip]) -> list[tuple[int, int, list[CarTrip]]]:
+    """Raggruppa i trasporti in OCCUPAZIONI auto (finestra fuori-deposito), accoppiando
+    pickup+deliver dello stesso scambio bus (stesso cluster, istante ravvicinato): una
+    sola auto porta il conducente entrante e riporta l'uscente in un unico viaggio.
+    Ritorna [(out_start, out_end, [trips che condividono l'auto]), ...]."""
+    from collections import defaultdict
+    by_cluster: dict[str, dict[str, list[CarTrip]]] = defaultdict(lambda: {"deliver": [], "pickup": []})
+    for t in trips:
+        by_cluster[t.cluster_id or "?"][t.trip_type].append(t)
+
+    occ: list[tuple[int, int, list[CarTrip]]] = []
+    for _cid, grp in by_cluster.items():
+        delivers = sorted(grp["deliver"], key=_cluster_moment)
+        pickups = sorted(grp["pickup"], key=_cluster_moment)
+        used = [False] * len(pickups)
+        for d in delivers:
+            dm = _cluster_moment(d)
+            j = next((k for k, p in enumerate(pickups)
+                      if not used[k] and abs(_cluster_moment(p) - dm) <= SWAP_PAIR_WINDOW), None)
+            if j is not None:
+                used[j] = True
+                p = pickups[j]
+                ws = [_car_out_window(d), _car_out_window(p)]
+                occ.append((min(w[0] for w in ws), max(w[1] for w in ws), [d, p]))
+            else:
+                s, e = _car_out_window(d)
+                occ.append((s, e, [d]))
+        for k, p in enumerate(pickups):
+            if not used[k]:
+                s, e = _car_out_window(p)
+                occ.append((s, e, [p]))
+    return occ
+
+
 def _max_simultaneous_cars_out(trips: list[CarTrip]) -> int:
-    """Massimo di auto aziendali fuori dal deposito contemporaneamente (modello a spola:
-    ogni trasporto occupa un'auto solo per la durata del viaggio andata/ritorno)."""
-    if not trips:
+    """Massimo di auto aziendali fuori dal deposito contemporaneamente (modello a spola
+    + scambi accoppiati: pickup e deliver dello stesso scambio condividono un'unica auto)."""
+    occ = car_occupancies(trips)
+    if not occ:
         return 0
     events: list[tuple[int, int]] = []
-    for t in trips:
-        out_start, out_end = _car_out_window(t)
+    for out_start, out_end, _ in occ:
         events.append((out_start, +1))
         events.append((out_end, -1))
     # a parità di istante: prima i rientri (-1), poi le uscite (+1)
     events.sort(key=lambda e: (e[0], e[1]))
-    current = 0
-    max_sim = 0
+    current = max_sim = 0
     for _, delta in events:
         current += delta
         max_sim = max(max_sim, current)
