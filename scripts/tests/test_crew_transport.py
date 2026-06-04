@@ -129,6 +129,29 @@ def test_pairing_prima_del_taxi():
     assert d.car_id == u.car_id
 
 
+def test_coppia_interamente_in_taxi_zero_auto():
+    """Se SIA l'entrante SIA l'uscente hanno un bus disponibile, lo scambio non usa
+    alcuna auto."""
+    p = TransportParams(n_cars=5, car_max_idle_min=120, ride_window_min=60)
+    d = deliver("X", 600); u = pickup("X", 640)
+    rides = [ride("to_cluster", "X", 590), ride("to_depot", "X", 650)]
+    res = plan_car_pool([d, u], rides=rides, params=p)
+    assert res.fleet_peak == 0
+    assert res.n_bus_rides == 2 and res.n_pairs == 0
+    assert d.mode == "bus" and u.mode == "bus"
+
+
+def test_coppia_in_taxi_solo_se_capienza_per_entrambi():
+    """Un solo posto sul to_depot: la coppia NON si converte (servirebbero 2 posti),
+    resta su una auto riusata."""
+    p = TransportParams(n_cars=5, car_max_idle_min=120, ride_window_min=60)
+    d = deliver("X", 600); u = pickup("X", 640)
+    rides = [ride("to_cluster", "X", 590, seats=3), ride("to_depot", "X", 650, seats=0)]
+    res = plan_car_pool([d, u], rides=rides, params=p)
+    assert res.n_pairs == 1 and res.fleet_peak == 1
+    assert d.car_id == u.car_id
+
+
 # ── estrazione deadhead dai blocchi ──────────────────────────────
 
 def test_extract_bus_rides_e_index():

@@ -138,16 +138,25 @@ class PlanResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _find_ride(rides: list[BusRide], direction: str, cluster_id: str | None,
+               need_min: int, window: int) -> BusRide | None:
+    """Primo deadhead bus compatibile con un posto libero (None se nessuno)."""
+    for r in rides:
+        if _ride_fits(r, direction, cluster_id, need_min, window):
+            return r
+    return None
+
+
 def _try_bus(trip, rides: list[BusRide], direction: str, need_min: int,
              window: int) -> bool:
-    for r in rides:
-        if _ride_fits(r, direction, trip.cluster_id, need_min, window):
-            r.seats_left -= 1
-            trip.mode = "bus"
-            trip.car_id = None
-            trip.ride_vehicle_id = r.vehicle_id
-            return True
-    return False
+    r = _find_ride(rides, direction, trip.cluster_id, need_min, window)
+    if r is None:
+        return False
+    r.seats_left -= 1
+    trip.mode = "bus"
+    trip.car_id = None
+    trip.ride_vehicle_id = r.vehicle_id
+    return True
 
 
 def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) -> PlanResult:
@@ -163,6 +172,7 @@ def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) ->
         slot[t.trip_type].append(t)
 
     car_tasks: list[dict] = []          # {start, end, trips:[...]}
+    pairs: list[tuple] = []             # (deliver, pickup) riusabili con UNA auto
     leftover_delivers: list = []
     leftover_pickups: list = []
 
@@ -182,10 +192,7 @@ def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) ->
                 leftover_delivers.append(parked.pop(0))
             if parked:
                 d = parked.pop(0)   # riusa l'auto più vecchia ancora valida
-                idle = p.depart_min - d.arrive_min
-                res.max_idle_min = max(res.max_idle_min, idle)
-                res.n_pairs += 1
-                car_tasks.append({"start": d.depart_min, "end": p.arrive_min, "trips": [d, p]})
+                pairs.append((d, p))
             else:
                 leftover_pickups.append(p)
         # consegne mai riusate (oltre quelle già rimaste in coda)
@@ -205,6 +212,24 @@ def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) ->
             res.n_bus_rides += 1
         else:
             still_pickups.append(p)
+
+    # ── (b2) Coppia interamente in taxi: se SIA l'entrante SIA l'uscente hanno un
+    #         deadhead bus disponibile, lo scambio non richiede alcuna auto. Si fa dopo
+    #         i rimasti (che altrimenti sarebbero conflitti/sosta-oltre-max): i posti
+    #         residui sui bus vengono usati per azzerare le auto delle coppie. ──
+    for d, u in pairs:
+        ride_d = _find_ride(rides, "to_cluster", d.cluster_id, d.arrive_min, params.ride_window_min)
+        ride_u = _find_ride(rides, "to_depot", u.cluster_id, u.depart_min, params.ride_window_min)
+        if ride_d is not None and ride_u is not None:
+            ride_d.seats_left -= 1; ride_u.seats_left -= 1
+            for t, r in ((d, ride_d), (u, ride_u)):
+                t.mode = "bus"; t.car_id = None; t.ride_vehicle_id = r.vehicle_id
+            res.n_bus_rides += 2
+        else:
+            idle = u.depart_min - d.arrive_min
+            res.max_idle_min = max(res.max_idle_min, idle)
+            res.n_pairs += 1
+            car_tasks.append({"start": d.depart_min, "end": u.arrive_min, "trips": [d, u]})
 
     # ── (c) Auto dedicata per ciò che resta ──
     for d in still_delivers:
