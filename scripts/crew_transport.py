@@ -48,6 +48,9 @@ class TransportParams:
     n_cars: int = 5                 # vetture aziendali disponibili (cap simultaneo)
     car_max_idle_min: int = 15      # sosta MASSIMA di un'auto incustodita a un cluster:
                                     # le chiavi restano a bordo, non può restare di più
+    car_seats: int = 4              # conducenti per autovettura (uno guida, gli altri
+                                    # rientrano/escono insieme — carpool)
+    pool_window_min: int = 15       # scarto massimo d'orario per condividere la stessa auto
     ride_window_min: int = 30       # attesa massima di un conducente per il "taxi" su bus
     ride_seats: int = 3             # passeggeri trasportabili per ogni deadhead bus
 
@@ -59,6 +62,8 @@ class TransportParams:
         return cls(
             n_cars=n_cars,
             car_max_idle_min=int(car.get("maxIdleMin", cfg.get("carMaxIdleMin", 15))),
+            car_seats=int(car.get("seats", cfg.get("carSeats", 4))),
+            pool_window_min=int(car.get("poolWindowMin", cfg.get("carPoolWindowMin", 15))),
             ride_window_min=int(bus.get("rideWindowMin", cfg.get("busRideWindowMin", 30))),
             ride_seats=int(bus.get("rideSeats", cfg.get("busRideSeats", 3))),
         )
@@ -160,100 +165,130 @@ def _try_bus(trip, rides: list[BusRide], direction: str, need_min: int,
     return True
 
 
+@dataclass
+class _Group:
+    """Un gruppo di conducenti che condividono la STESSA autovettura su una tratta
+    deposito↔cluster (uno guida, gli altri sono passeggeri — carpool)."""
+    cluster_id: str
+    kind: str                 # "deliver" (verso il cluster) | "pickup" (verso il deposito)
+    time_min: int             # quando l'auto è al cluster (arrivo deliver / partenza pickup)
+    transfer_min: int
+    trips: list
+
+
+def _pool(items: list, kind: str, window: int, seats: int) -> list[_Group]:
+    """Raggruppa domande dello stesso cluster/direzione, vicine nel tempo, in auto da
+    `seats` posti. Per i deliver l'auto arriva entro il primo orario richiesto (gli
+    altri attendono ≤ window); per i pickup parte all'ultimo (gli altri attendono)."""
+    key = (lambda t: t.arrive_min) if kind == "deliver" else (lambda t: t.depart_min)
+    items = sorted(items, key=key)
+    groups: list[_Group] = []
+    cur: list = []
+    for t in items:
+        if cur and (len(cur) >= seats or abs(key(t) - key(cur[0])) > window):
+            groups.append(_mk_group(cur, kind))
+            cur = []
+        cur.append(t)
+    if cur:
+        groups.append(_mk_group(cur, kind))
+    return groups
+
+
+def _mk_group(trips: list, kind: str) -> _Group:
+    tr = max(t.transfer_min for t in trips)
+    if kind == "deliver":          # l'auto deve essere al cluster per il PRIMO che inizia
+        t_cluster = min(t.arrive_min for t in trips)
+    else:                          # parte quando l'ULTIMO uscente è pronto
+        t_cluster = max(t.depart_min for t in trips)
+    return _Group(trips[0].cluster_id or "?", kind, t_cluster, tr, trips)
+
+
 def plan_car_pool(trips: list, rides: list[BusRide], params: TransportParams) -> PlanResult:
     """Arricchisce in-place i CarTrip (mode/car_id/flags) e ritorna le metriche.
 
-    `trips` sono le DOMANDE di trasporto già estratte (deliver = entrante verso il
-    cluster, pickup = uscente verso il deposito)."""
+    Priorità: taxi su bus (gratis) → carpool in auto con riuso (un'auto porta più
+    conducenti e viene ripresa entro 15') → navetta dal deposito per i rimasti.
+
+    `trips` sono le DOMANDE di trasporto (deliver = entrante verso il cluster,
+    pickup = uscente verso il deposito)."""
     res = PlanResult()
-    by_cluster: dict[str, dict[str, list]] = {}
+
+    # ── (a) Taxi su bus: assegna i deadhead disponibili (gratis, limitati dai posti) ──
+    car_delivers: list = []
+    car_pickups: list = []
     for t in trips:
-        cid = t.cluster_id or "?"
-        slot = by_cluster.setdefault(cid, {"deliver": [], "pickup": []})
-        slot[t.trip_type].append(t)
+        if t.trip_type == "deliver":
+            if _try_bus(t, rides, "to_cluster", t.arrive_min, params.ride_window_min):
+                res.n_bus_rides += 1
+            else:
+                car_delivers.append(t)
+        else:
+            if _try_bus(t, rides, "to_depot", t.depart_min, params.ride_window_min):
+                res.n_bus_rides += 1
+            else:
+                car_pickups.append(t)
+
+    # ── (b) Carpool: raggruppa per cluster i conducenti in auto da `car_seats` ──
+    by_cluster: dict[str, dict[str, list]] = {}
+    for t in car_delivers:
+        by_cluster.setdefault(t.cluster_id or "?", {"deliver": [], "pickup": []})["deliver"].append(t)
+    for t in car_pickups:
+        by_cluster.setdefault(t.cluster_id or "?", {"deliver": [], "pickup": []})["pickup"].append(t)
 
     car_tasks: list[dict] = []          # {start, end, trips:[...]}
-    pairs: list[tuple] = []             # (deliver, pickup) riusabili con UNA auto
-    leftover_delivers: list = []
-    leftover_pickups: list = []
+    leftover_dg: list[_Group] = []
+    leftover_pg: list[_Group] = []
 
     for cid, slot in by_cluster.items():
-        delivers = sorted(slot["deliver"], key=lambda t: t.arrive_min)
-        pickups = sorted(slot["pickup"], key=lambda t: t.depart_min)
+        dgroups = _pool(slot["deliver"], "deliver", params.pool_window_min, params.car_seats)
+        pgroups = _pool(slot["pickup"], "pickup", params.pool_window_min, params.car_seats)
 
-        # coda FIFO delle auto parcheggiate: (arrive_min, deliver_trip)
-        parked: list = []
+        # ── (c) Riuso: un'auto-carpool arrivata col gruppo entrante viene ripresa dal
+        #        gruppo uscente entro car_max_idle_min (la sosta incustodita ≤ 15'). ──
+        parked: list[_Group] = []
         di = 0
-        for p in pickups:
-            # aggiungi al parcheggio tutte le consegne arrivate entro il prelievo
-            while di < len(delivers) and delivers[di].arrive_min <= p.depart_min:
-                parked.append(delivers[di]); di += 1
-            # scarta dalla testa le auto in sosta da troppo tempo per questo prelievo
-            while parked and (p.depart_min - parked[0].arrive_min) > params.car_max_idle_min:
-                leftover_delivers.append(parked.pop(0))
+        dgroups.sort(key=lambda g: g.time_min)
+        pgroups.sort(key=lambda g: g.time_min)
+        for pg in pgroups:
+            while di < len(dgroups) and dgroups[di].time_min <= pg.time_min:
+                parked.append(dgroups[di]); di += 1
+            while parked and (pg.time_min - parked[0].time_min) > params.car_max_idle_min:
+                leftover_dg.append(parked.pop(0))
             if parked:
-                d = parked.pop(0)   # riusa l'auto più vecchia ancora valida
-                pairs.append((d, p))
+                dg = parked.pop(0)
+                res.max_idle_min = max(res.max_idle_min, pg.time_min - dg.time_min)
+                res.n_pairs += 1
+                # un'auto: esce col gruppo entrante, sosta ≤15', rientra col gruppo uscente
+                car_tasks.append({"start": dg.time_min - dg.transfer_min,
+                                  "end": pg.time_min + pg.transfer_min,
+                                  "trips": dg.trips + pg.trips})
             else:
-                leftover_pickups.append(p)
-        # consegne mai riusate (oltre quelle già rimaste in coda)
-        leftover_delivers.extend(parked)
-        leftover_delivers.extend(delivers[di:])
+                leftover_pg.append(pg)
+        leftover_dg.extend(parked)
+        leftover_dg.extend(dgroups[di:])
 
-    # ── (b) Taxi su bus per i rimasti ──
-    still_delivers: list = []
-    for d in leftover_delivers:
-        if _try_bus(d, rides, "to_cluster", d.arrive_min, params.ride_window_min):
-            res.n_bus_rides += 1
-        else:
-            still_delivers.append(d)
-    still_pickups: list = []
-    for p in leftover_pickups:
-        if _try_bus(p, rides, "to_depot", p.depart_min, params.ride_window_min):
-            res.n_bus_rides += 1
-        else:
-            still_pickups.append(p)
-
-    # ── (b2) Coppia interamente in taxi: se SIA l'entrante SIA l'uscente hanno un
-    #         deadhead bus disponibile, lo scambio non richiede alcuna auto. Si fa dopo
-    #         i rimasti (che altrimenti sarebbero conflitti/sosta-oltre-max): i posti
-    #         residui sui bus vengono usati per azzerare le auto delle coppie. ──
-    for d, u in pairs:
-        ride_d = _find_ride(rides, "to_cluster", d.cluster_id, d.arrive_min, params.ride_window_min)
-        ride_u = _find_ride(rides, "to_depot", u.cluster_id, u.depart_min, params.ride_window_min)
-        if ride_d is not None and ride_u is not None:
-            ride_d.seats_left -= 1; ride_u.seats_left -= 1
-            for t, r in ((d, ride_d), (u, ride_u)):
-                t.mode = "bus"; t.car_id = None; t.ride_vehicle_id = r.vehicle_id
-            res.n_bus_rides += 2
-        else:
-            idle = u.depart_min - d.arrive_min
-            res.max_idle_min = max(res.max_idle_min, idle)
-            res.n_pairs += 1
-            car_tasks.append({"start": d.depart_min, "end": u.arrive_min, "trips": [d, u]})
-
-    # ── (c) Navetta auto dal deposito per chi resta (nessun riuso né taxi) ──
-    # Un'auto del pool fa il round-trip deposito↔cluster (~2×transfer): è l'uso BASE
-    # dell'autovettura aziendale. È guidata sia all'andata sia al ritorno, quindi non
-    # resta mai incustodita oltre i 15'. Conta nel parco; NON è un conflitto. Il numero
-    # di queste navette è il carico di lavoro "non ottimizzabile" col solo riuso/taxi.
-    for d in still_delivers:                       # entrante: navetta lo porta e riporta l'auto
-        d.from_depot = True
+    # ── (d) Navetta dal deposito per i gruppi rimasti (round-trip, mai sosta >15') ──
+    for dg in leftover_dg:
         res.n_depot_shuttle += 1
-        car_tasks.append({"start": d.depart_min, "end": d.arrive_min + d.transfer_min, "trips": [d]})
-    for p in still_pickups:                        # uscente: navetta a vuoto, poi lo riporta
-        p.from_depot = True
+        for t in dg.trips:
+            t.from_depot = True
+        car_tasks.append({"start": dg.time_min - dg.transfer_min,
+                          "end": dg.time_min + dg.transfer_min, "trips": dg.trips})
+    for pg in leftover_pg:
         res.n_depot_shuttle += 1
-        car_tasks.append({"start": p.depart_min - p.transfer_min, "end": p.arrive_min, "trips": [p]})
+        for t in pg.trips:
+            t.from_depot = True
+        car_tasks.append({"start": pg.time_min - pg.transfer_min,
+                          "end": pg.time_min + pg.transfer_min, "trips": pg.trips})
 
-    # ── (d) Colorazione intervalli → numero minimo di auto simultanee ──
+    # ── (e) Colorazione intervalli → numero minimo di auto simultanee ──
     res.fleet_peak = _color_tasks(car_tasks, params.n_cars)
     res.n_conflicts = sum(1 for t in trips if t.conflict)   # solo se il cap è superato
-    res.n_car_trips = sum(1 for t in trips if t.mode == "car")
+    res.n_car_trips = len(car_tasks)
     if res.n_depot_shuttle:
-        res.notes.append(f"{res.n_depot_shuttle} tratte auto dal deposito senza riuso (navetta)")
+        res.notes.append(f"{res.n_depot_shuttle} navette auto dal deposito (senza riuso)")
     if res.n_conflicts:
-        res.notes.append(f"{res.n_conflicts} tratte senza auto: cap parco ({params.n_cars}) superato")
+        res.notes.append(f"{res.n_conflicts} conducenti senza auto: cap parco ({params.n_cars}) superato")
     return res
 
 

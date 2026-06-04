@@ -96,13 +96,23 @@ def test_riuso_a_catena_una_sola_auto():
     assert all(t.car_id == 1 for t in trips)
 
 
-def test_due_scambi_simultanei_due_auto():
-    """Due scambi nello stesso istante e cluster: servono due auto contemporanee."""
-    p = TransportParams(n_cars=5, car_max_idle_min=60)
+def test_carpool_due_scambi_una_sola_auto():
+    """Due scambi nello stesso istante/cluster: con auto da 4 posti un'unica vettura
+    porta i 2 entranti e riporta i 2 uscenti (carpool)."""
+    p = TransportParams(n_cars=5, car_max_idle_min=60, car_seats=4)
     trips = [deliver("X", 600), pickup("X", 600),
              deliver("X", 600), pickup("X", 600)]
     res = plan_car_pool(trips, rides=[], params=p)
-    assert res.n_pairs == 2
+    assert res.fleet_peak == 1                 # carpool: una sola auto
+    assert len({t.car_id for t in trips}) == 1
+
+
+def test_carpool_capienza_limita_il_gruppo():
+    """Cinque entranti simultanei con auto da 4 posti: servono 2 vetture."""
+    p = TransportParams(n_cars=5, car_seats=4, pool_window_min=15)
+    trips = [deliver("X", 600) for _ in range(5)]
+    res = plan_car_pool(trips, rides=[], params=p)
+    assert res.n_depot_shuttle == 2            # gruppi da 4 e da 1
     assert res.fleet_peak == 2
 
 
@@ -143,16 +153,15 @@ def test_taxi_rispetta_posti():
 
 # ── la coppia (riuso) ha la precedenza sul taxi (no regressioni) ──
 
-def test_pairing_prima_del_taxi():
-    """Consegna+prelievo accoppiabili: usano UNA auto riusata anche se esiste un
-    taxi disponibile (il pairing non viene rotto)."""
+def test_taxi_ha_la_precedenza_poi_auto():
+    """Il taxi gratis viene assegnato per primo: l'entrante con un pull-out viaggia in
+    taxi, l'uscente (senza bus) rientra in auto."""
     p = TransportParams(n_cars=5, car_max_idle_min=120, ride_window_min=60)
     d = deliver("X", 600); u = pickup("X", 640)
-    r = ride("to_cluster", "X", 590)
+    r = ride("to_cluster", "X", 590)       # solo per l'entrante
     res = plan_car_pool([d, u], rides=[r], params=p)
-    assert res.n_pairs == 1
-    assert res.n_bus_rides == 0            # taxi non consumato: la coppia ha la precedenza
-    assert d.car_id == u.car_id
+    assert d.mode == "bus" and u.mode == "car"
+    assert res.n_bus_rides == 1 and res.fleet_peak == 1
 
 
 def test_coppia_interamente_in_taxi_zero_auto():
@@ -167,15 +176,15 @@ def test_coppia_interamente_in_taxi_zero_auto():
     assert d.mode == "bus" and u.mode == "bus"
 
 
-def test_coppia_in_taxi_solo_se_capienza_per_entrambi():
-    """Un solo posto sul to_depot: la coppia NON si converte (servirebbero 2 posti),
-    resta su una auto riusata."""
+def test_solo_chi_ha_il_bus_va_in_taxi():
+    """Posti solo sul to_cluster: l'entrante va in taxi, l'uscente (nessun posto sul
+    to_depot) rientra in auto-navetta."""
     p = TransportParams(n_cars=5, car_max_idle_min=120, ride_window_min=60)
     d = deliver("X", 600); u = pickup("X", 640)
     rides = [ride("to_cluster", "X", 590, seats=3), ride("to_depot", "X", 650, seats=0)]
     res = plan_car_pool([d, u], rides=rides, params=p)
-    assert res.n_pairs == 1 and res.fleet_peak == 1
-    assert d.car_id == u.car_id
+    assert d.mode == "bus" and u.mode == "car"
+    assert res.n_bus_rides == 1 and res.n_depot_shuttle == 1 and res.fleet_peak == 1
 
 
 # ── estrazione deadhead dai blocchi ──────────────────────────────
