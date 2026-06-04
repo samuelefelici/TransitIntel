@@ -381,18 +381,20 @@ def compute_pre_post_total(
     first_seg = duty.segments[0]
     last_seg = duty.segments[-1]
 
-    # Pre-turno: deposito se ha trasferimento, cambio altrimenti
-    is_depot_start = duty.transfer_min > 0
+    # Pre-turno: 12' se uscita-vettura dal deposito (controlli bus), 5' se cambio in linea
+    is_depot_start = getattr(first_seg, "is_pullout", duty.transfer_min > 0)
     total += pre_turno_bds(is_depot_start, pp)
 
-    # Post-turno
-    is_depot_end = duty.transfer_back_min > 0
+    # Post-turno: deposito se rientra col bus (pull-in), cambio altrimenti
+    is_depot_end = getattr(last_seg, "is_pullin", duty.transfer_back_min > 0)
     total += post_turno_bds(is_depot_end, pp)
 
-    # Se biripresa (2+ segmenti), aggiungi pre/post ripresa
+    # Se biripresa (2+ segmenti), aggiungi pre/post ripresa.
+    # Il pre della 2ª ripresa è "deposito" (12') solo se è un'uscita-vettura, sennò "cambio" (5').
     if n_segs >= 2:
         total += pp.post_ripresa  # fine prima ripresa
-        total += pp.pre_ripresa   # inizio seconda ripresa
+        second_is_pullout = getattr(duty.segments[1], "is_pullout", True)
+        total += pp.pre_ripresa if second_is_pullout else pp.pre_turno_cambio
 
     # Pre/post pezzo per cambi in linea (veicoli diversi nello stesso segmento)
     for seg in duty.segments:
@@ -780,6 +782,10 @@ def _make_segment(
         last_cluster=match_cluster(last_stop, clusters),
         half=half,
         cut_index=cut_index,
+        # "first"/"full" partono dall'inizio blocco (uscita-vettura); "second"/"full"
+        # finiscono a fine blocco (rientro col bus). "middle" = né l'uno né l'altro.
+        is_pullout=half in ("full", "first"),
+        is_pullin=half in ("full", "second"),
     )
 
 

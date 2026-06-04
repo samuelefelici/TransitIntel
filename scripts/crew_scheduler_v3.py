@@ -1324,8 +1324,10 @@ def compute_car_pool(
             first_cluster = first_seg.first_cluster
             last_cluster = last_seg.last_cluster
 
-            # DELIVER
-            if t_out > 0 and first_cluster:
+            # Un'auto serve SOLO per i cambi in linea: se il conducente esce col bus
+            # dal deposito (pull-out) o vi rientra guidandolo (pull-in) NON serve auto.
+            # DELIVER (solo se l'inizio NON è un'uscita-vettura)
+            if t_out > 0 and first_cluster and not getattr(first_seg, "is_pullout", True):
                 trips.append(CarTrip(
                     driver_id=d.driver_id,
                     cluster_id=first_cluster,
@@ -1336,11 +1338,11 @@ def compute_car_pool(
                     arrive_min=first_seg.start_min,
                     transfer_min=t_out,
                 ))
-            elif t_out > 0:
+            elif t_out > 0 and not getattr(first_seg, "is_pullout", True) and not first_cluster:
                 log(f"⚠️  Car pool: {d.driver_id} prima fermata '{first_seg.first_stop}' NON è in un cluster — no deliver")
 
-            # PICKUP
-            if t_back > 0 and last_cluster:
+            # PICKUP (solo se la fine NON è un rientro-col-bus)
+            if t_back > 0 and last_cluster and not getattr(last_seg, "is_pullin", True):
                 trips.append(CarTrip(
                     driver_id=d.driver_id,
                     cluster_id=last_cluster,
@@ -1362,8 +1364,8 @@ def compute_car_pool(
                 t_to_first = depot_transfer_min(seg.first_stop, clusters)
                 t_from_last = depot_transfer_min(seg.last_stop, clusters)
 
-                # DELIVER: deposito → primo cluster di questo segmento
-                if t_to_first > 0 and seg_first_cluster:
+                # DELIVER: deposito → primo cluster (solo se NON è un'uscita-vettura)
+                if t_to_first > 0 and seg_first_cluster and not getattr(seg, "is_pullout", True):
                     trips.append(CarTrip(
                         driver_id=d.driver_id,
                         cluster_id=seg_first_cluster,
@@ -1377,8 +1379,8 @@ def compute_car_pool(
                 elif t_to_first > 0:
                     log(f"⚠️  Car pool: {d.driver_id} seg{si+1} prima fermata '{seg.first_stop}' NON è in un cluster — no deliver")
 
-                # PICKUP: ultimo cluster di questo segmento → deposito
-                if t_from_last > 0 and seg_last_cluster:
+                # PICKUP: ultimo cluster → deposito (solo se NON è un rientro-col-bus)
+                if t_from_last > 0 and seg_last_cluster and not getattr(seg, "is_pullin", True):
                     trips.append(CarTrip(
                         driver_id=d.driver_id,
                         cluster_id=seg_last_cluster,

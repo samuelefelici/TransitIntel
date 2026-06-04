@@ -68,7 +68,7 @@ _SUPPL = SHIFT_RULES["supplemento"]
 
 def _build_piece(idx: int, vehicle_id: str, vtype: str,
                  trips: list[VShiftTrip], clusters: list[Cluster],
-                 is_pullout: bool) -> Segment:
+                 is_pullout: bool, is_pullin: bool) -> Segment:
     start = trips[0].departure_min
     end = trips[-1].arrival_min
     work = end - start
@@ -81,7 +81,7 @@ def _build_piece(idx: int, vehicle_id: str, vtype: str,
         first_stop=first_stop, last_stop=last_stop,
         first_cluster=match_cluster(first_stop, clusters),
         last_cluster=match_cluster(last_stop, clusters),
-        half="piece", cut_index=None, is_pullout=is_pullout,
+        half="piece", cut_index=None, is_pullout=is_pullout, is_pullin=is_pullin,
     )
 
 
@@ -106,10 +106,12 @@ def build_pieces(blocks: list[VehicleBlock], clusters: list[Cluster]) -> list[Se
         for b_end in boundaries:
             run = trips[start_i:b_end + 1]
             if run:
-                # il primo pezzo del blocco è un'uscita-vettura dal deposito (Pre 12');
-                # i successivi sono cambi in linea raggiunti in autovettura (Pre 5').
+                # il primo pezzo del blocco è un'uscita-vettura dal deposito (Pre 12', no auto);
+                # i successivi sono cambi in linea raggiunti in autovettura (Pre 5'). Allo stesso
+                # modo l'ultimo pezzo rientra in deposito guidando il bus (no auto al rientro).
                 pieces.append(_build_piece(idx, b.vehicle_id, b.vehicle_type, run,
-                                           clusters, is_pullout=(start_i == 0)))
+                                           clusters, is_pullout=(start_i == 0),
+                                           is_pullin=(b_end == len(trips) - 1)))
                 idx += 1
             start_i = b_end + 1
     return pieces
@@ -456,25 +458,37 @@ def solve_set_partition(
             continue
         model.add_exactly_one(x[c] for c in clist)
 
-    # vincolo HARD vetture aziendali: due brevi trasferimenti per ogni biripresa
+    # ── Vincolo HARD vetture aziendali (capacità SIMULTANEA) ──
+    # Un'auto è impegnata SOLO per i cambi in linea (il conducente è trasportato),
+    # mai per un'uscita/rientro col bus (pull-out/pull-in). Modelliamo come intervalli:
+    #   - relief in uscita (primo pezzo non pull-out): deposito→cluster, [start-tr, start]
+    #   - relief in rientro (ultimo pezzo non pull-in): cluster→deposito, [end, end+tr]
+    #   - biripresa: drop a inizio interruzione + pickup a fine interruzione
+    # add_cumulative garantisce ≤ max_company_cars auto sovrapposte nel tempo.
     if max_company_cars > 0:
+        by_idx = {p.idx: p for p in pieces}
         car_intervals = []
         for c, col in enumerate(columns):
-            m = col.metrics
-            if m.n_riprese < 2:
-                continue
-            chain = col.piece_idxs
-            by_idx = {p.idx: p for p in pieces}
-            segs = [by_idx[i] for i in chain]
+            segs = [by_idx[i] for i in col.piece_idxs]
+            first, last = segs[0], segs[-1]
+            # relief in uscita
+            if not first.is_pullout and first.first_cluster:
+                tr = depot_transfer_min(first.first_stop, clusters) or DEPOT_TRANSFER_CENTRAL
+                car_intervals.append(model.new_optional_fixed_size_interval_var(
+                    start=first.start_min - tr, size=tr, is_present=x[c], name=f"cro{c}"))
+            # relief in rientro
+            if not last.is_pullin and last.last_cluster:
+                tr = depot_transfer_min(last.last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
+                car_intervals.append(model.new_optional_fixed_size_interval_var(
+                    start=last.end_min, size=tr, is_present=x[c], name=f"cri{c}"))
+            # trasferimenti di interruzione (biripresa)
             for i in range(len(segs) - 1):
                 gap = segs[i + 1].start_min - segs[i].end_min
                 if gap < _SEMI["intMin"]:
                     continue
                 tr = depot_transfer_min(segs[i].last_stop, clusters) or DEPOT_TRANSFER_CENTRAL
-                # drop a inizio interruzione
                 car_intervals.append(model.new_optional_fixed_size_interval_var(
                     start=segs[i].end_min, size=tr, is_present=x[c], name=f"cd{c}_{i}"))
-                # pickup a fine interruzione
                 car_intervals.append(model.new_optional_fixed_size_interval_var(
                     start=segs[i + 1].start_min - tr, size=tr, is_present=x[c], name=f"cp{c}_{i}"))
         if car_intervals:
@@ -514,9 +528,10 @@ def _merge_ripresa(idx: int, segs: list[Segment], clusters: list[Cluster]) -> Se
     unico Segment, concatenandone le corse: così un turno ha 1-2 segmenti
     (= riprese) e il validatore/serializzatore v4 lo interpreta correttamente."""
     trips = [t for s in segs for t in s.trips]
-    # il Pre della ripresa dipende da come inizia: eredita il flag del primo pezzo
+    # come inizia la ripresa (Pre/auto in uscita) dipende dal primo pezzo;
+    # come finisce (auto in rientro) dipende dall'ultimo pezzo.
     return _build_piece(idx, segs[0].vehicle_id, segs[0].vehicle_type, trips,
-                        clusters, is_pullout=segs[0].is_pullout)
+                        clusters, is_pullout=segs[0].is_pullout, is_pullin=segs[-1].is_pullin)
 
 
 def _split_into_riprese(segs: list[Segment]) -> list[list[Segment]]:

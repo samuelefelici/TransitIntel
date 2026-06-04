@@ -1201,6 +1201,8 @@ class Segment:
     cut_index: int | None         # indice del CutCandidate usato per produrre questo segmento
     is_pullout: bool = True        # True = uscita-vettura dal deposito (Pre 12', controlli bus);
                                    # False = cambio in linea raggiunto in autovettura (Pre 5')
+    is_pullin: bool = True         # True = il conducente rientra in deposito guidando il bus
+                                   # (nessuna auto); False = lascia il bus a un cambio (auto per rientro)
 
 
 @dataclass
