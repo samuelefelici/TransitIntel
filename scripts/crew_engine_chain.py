@@ -30,7 +30,7 @@ from ortools.sat.python import cp_model
 
 from optimizer_common import (
     SHIFT_RULES, DEPOT_TRANSFER_CENTRAL, DEPOT_TRANSFER_OUTER, COMPANY_CARS,
-    PRE_TURNO_MIN,
+    PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN,
     Segment, DriverDutyV3, Cluster, VehicleBlock, VShiftTrip, CambioInfo,
     match_cluster, depot_transfer_min, log,
 )
@@ -67,7 +67,8 @@ _SUPPL = SHIFT_RULES["supplemento"]
 # ════════════════════════════════════════════════════════════════
 
 def _build_piece(idx: int, vehicle_id: str, vtype: str,
-                 trips: list[VShiftTrip], clusters: list[Cluster]) -> Segment:
+                 trips: list[VShiftTrip], clusters: list[Cluster],
+                 is_pullout: bool) -> Segment:
     start = trips[0].departure_min
     end = trips[-1].arrival_min
     work = end - start
@@ -80,7 +81,7 @@ def _build_piece(idx: int, vehicle_id: str, vtype: str,
         first_stop=first_stop, last_stop=last_stop,
         first_cluster=match_cluster(first_stop, clusters),
         last_cluster=match_cluster(last_stop, clusters),
-        half="piece", cut_index=None,
+        half="piece", cut_index=None, is_pullout=is_pullout,
     )
 
 
@@ -105,7 +106,10 @@ def build_pieces(blocks: list[VehicleBlock], clusters: list[Cluster]) -> list[Se
         for b_end in boundaries:
             run = trips[start_i:b_end + 1]
             if run:
-                pieces.append(_build_piece(idx, b.vehicle_id, b.vehicle_type, run, clusters))
+                # il primo pezzo del blocco è un'uscita-vettura dal deposito (Pre 12');
+                # i successivi sono cambi in linea raggiunti in autovettura (Pre 5').
+                pieces.append(_build_piece(idx, b.vehicle_id, b.vehicle_type, run,
+                                           clusters, is_pullout=(start_i == 0)))
                 idx += 1
             start_i = b_end + 1
     return pieces
@@ -124,7 +128,7 @@ class ChainMetrics:
     driving_min: int             # guida effettiva (somma durate corse)
     interruption_min: int        # INTERRUZIONE = nastro - somma riprese
     n_riprese: int               # 1 (unico/suppl) o 2 (semiunico/spezzato)
-    pre_total: int               # Pre totale (12' per ripresa)
+    pre_total: int               # Pre totale (12' uscita-vettura / 5' cambio-auto, per ripresa)
     transfer_out: int            # spostamento a vuoto in uscita (prima ripresa)
     transfer_back: int           # spostamento a vuoto in rientro (ultima ripresa)
     n_relief: int                # cambi bus (link tra veicoli diversi)
@@ -164,25 +168,32 @@ class _DState:
     last_stop: str
     last_vehicle: str
     lavoro_closed: int       # somma durate delle riprese già chiuse
+    pre_closed: int          # somma dei Pre delle riprese già chiuse
     n_long: int              # interruzioni lunghe (≥75') già viste
     n_relief: int
     driving_total: int
 
 
+def _pre_for(first_piece: Segment) -> int:
+    """Pre della ripresa: 12' se inizia con l'uscita-vettura dal deposito (controlli
+    bus), 5' se la ripresa è raggiunta in autovettura per un cambio in linea."""
+    return PRE_TURNO_MIN if first_piece.is_pullout else PRE_TURNO_AUTO_MIN
+
+
 def _ripresa_dur(first_piece: Segment, last_end: int, last_stop: str,
                  clusters: list[Cluster]) -> int:
     """Durata di una ripresa = (fine servizio + vuoto rientro) -
-    (inizio servizio - Pre - vuoto uscita). Pre = 12' per ogni ripresa."""
+    (inizio servizio - Pre - vuoto uscita)."""
     do = depot_transfer_min(first_piece.first_stop, clusters)
     db = depot_transfer_min(last_stop, clusters)
-    return (last_end + db) - (first_piece.start_min - PRE_TURNO_MIN - do)
+    return (last_end + db) - (first_piece.start_min - _pre_for(first_piece) - do)
 
 
 def _new_state(p: Segment) -> _DState:
     return _DState(
         first=p, pieces=(p.idx,), cur_rip_first=p, last_end=p.end_min,
         last_stop=p.last_stop, last_vehicle=p.vehicle_id, lavoro_closed=0,
-        n_long=0, n_relief=0, driving_total=p.driving_min,
+        pre_closed=0, n_long=0, n_relief=0, driving_total=p.driving_min,
     )
 
 
@@ -194,10 +205,12 @@ def _extend_state(st: _DState, q: Segment, clusters: list[Cluster]) -> _DState |
         return None
     n_long = st.n_long
     lavoro_closed = st.lavoro_closed
+    pre_closed = st.pre_closed
     cur_rip_first = st.cur_rip_first
     if gap >= SOSTA_SPEZZA:
         # interruzione lunga: chiude la ripresa corrente e ne apre una nuova
         lavoro_closed += _ripresa_dur(cur_rip_first, st.last_end, st.last_stop, clusters)
+        pre_closed += _pre_for(cur_rip_first)
         n_long += 1
         if n_long > MAX_RIPRESE - 1:
             return None
@@ -205,7 +218,7 @@ def _extend_state(st: _DState, q: Segment, clusters: list[Cluster]) -> _DState |
     return _DState(
         first=st.first, pieces=st.pieces + (q.idx,), cur_rip_first=cur_rip_first,
         last_end=q.end_min, last_stop=q.last_stop, last_vehicle=q.vehicle_id,
-        lavoro_closed=lavoro_closed, n_long=n_long,
+        lavoro_closed=lavoro_closed, pre_closed=pre_closed, n_long=n_long,
         n_relief=st.n_relief + (1 if q.vehicle_id != st.last_vehicle else 0),
         driving_total=st.driving_total + q.driving_min,
     )
@@ -214,16 +227,17 @@ def _extend_state(st: _DState, q: Segment, clusters: list[Cluster]) -> _DState |
 def _finalize(st: _DState, clusters: list[Cluster]) -> ChainMetrics:
     do_first = depot_transfer_min(st.first.first_stop, clusters)
     db_last = depot_transfer_min(st.last_stop, clusters)
-    nastro = (st.last_end + db_last) - (st.first.start_min - PRE_TURNO_MIN - do_first)
+    nastro = (st.last_end + db_last) - (st.first.start_min - _pre_for(st.first) - do_first)
     cur_dur = _ripresa_dur(st.cur_rip_first, st.last_end, st.last_stop, clusters)
     lavoro = st.lavoro_closed + cur_dur
     interruption = nastro - lavoro
     n_riprese = st.n_long + 1
+    pre_total = st.pre_closed + _pre_for(st.cur_rip_first)
     feasible, dtype = _classify(nastro, interruption, n_riprese)
     return ChainMetrics(
         feasible=feasible, duty_type=dtype, nastro_min=nastro, work_min=lavoro,
         driving_min=st.driving_total, interruption_min=interruption,
-        n_riprese=n_riprese, pre_total=PRE_TURNO_MIN * n_riprese,
+        n_riprese=n_riprese, pre_total=pre_total,
         transfer_out=do_first, transfer_back=db_last, n_relief=st.n_relief,
     )
 
@@ -500,7 +514,9 @@ def _merge_ripresa(idx: int, segs: list[Segment], clusters: list[Cluster]) -> Se
     unico Segment, concatenandone le corse: così un turno ha 1-2 segmenti
     (= riprese) e il validatore/serializzatore v4 lo interpreta correttamente."""
     trips = [t for s in segs for t in s.trips]
-    return _build_piece(idx, segs[0].vehicle_id, segs[0].vehicle_type, trips, clusters)
+    # il Pre della ripresa dipende da come inizia: eredita il flag del primo pezzo
+    return _build_piece(idx, segs[0].vehicle_id, segs[0].vehicle_type, trips,
+                        clusters, is_pullout=segs[0].is_pullout)
 
 
 def _split_into_riprese(segs: list[Segment]) -> list[list[Segment]]:
@@ -552,8 +568,8 @@ def columns_to_duties(
             seg_counter += 1
 
         first, last = merged[0], merged[-1]
-        nastro_start = first.start_min - PRE_TURNO_MIN - m.transfer_out
         nastro_end = last.end_min + m.transfer_back
+        nastro_start = nastro_end - m.nastro_min
         duties.append(DriverDutyV3(
             idx=di,
             driver_id=f"D{di + 1:03d}",

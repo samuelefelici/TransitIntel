@@ -1199,6 +1199,8 @@ class Segment:
     last_cluster: str | None
     half: str                     # "full" | "first" | "second" | "middle"
     cut_index: int | None         # indice del CutCandidate usato per produrre questo segmento
+    is_pullout: bool = True        # True = uscita-vettura dal deposito (Pre 12', controlli bus);
+                                   # False = cambio in linea raggiunto in autovettura (Pre 5')
 
 
 @dataclass
