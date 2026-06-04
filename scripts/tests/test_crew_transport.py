@@ -46,6 +46,20 @@ def test_riuso_auto_entro_max_idle():
     assert res.n_conflicts == 0 and res.n_idle_violations == 0
 
 
+def test_default_sosta_massima_15min():
+    """Regola operativa: chiavi a bordo → auto incustodita al cluster max 15'.
+    È il default. Oltre i 15' non c'è riuso; entro i 15' sì."""
+    assert TransportParams(n_cars=5).car_max_idle_min == 15
+    # divario 20' > 15' → niente riuso
+    d, u = deliver("X", 600), pickup("X", 620)
+    res = plan_car_pool([d, u], rides=[], params=TransportParams(n_cars=5))
+    assert res.n_pairs == 0 and res.n_idle_violations == 1 and res.n_conflicts == 1
+    # divario 12' ≤ 15' → riuso con una sola auto
+    d2, u2 = deliver("Y", 600), pickup("Y", 612)
+    res2 = plan_car_pool([d2, u2], rides=[], params=TransportParams(n_cars=5))
+    assert res2.n_pairs == 1 and res2.max_idle_min == 12 and d2.car_id == u2.car_id
+
+
 def test_no_riuso_oltre_max_idle():
     """Prelievo troppo distante dalla consegna (oltre max_idle): niente riuso →
     consegna in sosta-oltre-max e prelievo senza auto."""

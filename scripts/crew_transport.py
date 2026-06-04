@@ -46,7 +46,8 @@ from optimizer_common import (
 @dataclass
 class TransportParams:
     n_cars: int = 5                 # vetture aziendali disponibili (cap simultaneo)
-    car_max_idle_min: int = 120     # sosta massima di un'auto incustodita a un cluster
+    car_max_idle_min: int = 15      # sosta MASSIMA di un'auto incustodita a un cluster:
+                                    # le chiavi restano a bordo, non può restare di più
     ride_window_min: int = 30       # attesa massima di un conducente per il "taxi" su bus
     ride_seats: int = 3             # passeggeri trasportabili per ogni deadhead bus
 
@@ -57,7 +58,7 @@ class TransportParams:
         car = cfg.get("carPool", {}) if isinstance(cfg.get("carPool"), dict) else {}
         return cls(
             n_cars=n_cars,
-            car_max_idle_min=int(car.get("maxIdleMin", cfg.get("carMaxIdleMin", 120))),
+            car_max_idle_min=int(car.get("maxIdleMin", cfg.get("carMaxIdleMin", 15))),
             ride_window_min=int(bus.get("rideWindowMin", cfg.get("busRideWindowMin", 30))),
             ride_seats=int(bus.get("rideSeats", cfg.get("busRideSeats", 3))),
         )
