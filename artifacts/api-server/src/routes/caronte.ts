@@ -254,6 +254,8 @@ router.post("/taps", async (req, res): Promise<void> => {
       tapId: tap.id,
       journey: {
         id: journey.id,
+        ticketUid: b.ticketUid,
+        stopIn, stopOut,
         expectedPrice, chargedPrice, priceMatch, fareKind, branch,
       },
     });
