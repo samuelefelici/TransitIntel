@@ -14,6 +14,22 @@ CREATE SCHEMA IF NOT EXISTS caronte;
 
 -- Tabelle (mirror di lib/db/src/schema/index.ts; usare drizzle push in dev) ----
 
+-- active_trips: la SCRIVE Caronte (AVM) su AVVIA/TERMINA corsa, la LEGGE Cerbero
+-- (GET /api/caronte/active-trip). Non è nello schema Drizzle: va creata qui (o
+-- dalla migrazione) altrimenti l'endpoint active-trip fallisce con "relation
+-- does not exist". Creata prima dei GRANT così caronte_app eredita la scrittura.
+CREATE TABLE IF NOT EXISTS caronte.active_trips (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id    TEXT,
+  route_id   TEXT,
+  vehicle_id TEXT,
+  device_id  TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at   TIMESTAMPTZ                 -- NULL = corsa attiva
+);
+CREATE INDEX IF NOT EXISTS idx_caronte_active_trips_open
+  ON caronte.active_trips(vehicle_id) WHERE ended_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS caronte.tap_events (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   device_id  TEXT NOT NULL,
