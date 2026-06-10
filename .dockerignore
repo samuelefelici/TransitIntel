@@ -1,0 +1,17 @@
+# Riduce il build context e preserva la cache dei layer Docker.
+# NB: NON escludere i package.json dei workspace né i sorgenti: servono a pnpm.
+.git
+.gitignore
+**/node_modules
+**/dist
+**/.turbo
+**/*.tsbuildinfo
+.python_packages
+attached_assets
+*.log
+.DS_Store
+.env
+.env.*
+.vscode
+.cache
+.replit*

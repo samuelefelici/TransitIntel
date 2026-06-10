@@ -4,10 +4,15 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
 
-COPY . .
+# ── Dipendenze JS nello store pnpm (layer cache su lockfile/workspace) ──
+COPY pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm fetch
 
-RUN pnpm install --frozen-lockfile
-RUN pnpm -w run typecheck:libs && pnpm --filter @workspace/transitintel run build
+# ── Sorgenti + install offline + build frontend ────────────────────
+COPY . .
+RUN pnpm install --frozen-lockfile --prefer-offline \
+ && pnpm -w run typecheck:libs \
+ && pnpm --filter @workspace/transitintel run build
 
 # --- Production stage: lightweight nginx ---
 FROM nginx:alpine

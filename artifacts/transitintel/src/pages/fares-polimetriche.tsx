@@ -25,11 +25,17 @@ import {
 const API = () => getApiBase();
 const SEGMENT_KM = 6; // ogni 6 km → nuova tratta
 
-/* ── Palette tratte (colori distinti, ciclica) ───────────────── */
+/* ── Palette tratte (ordine richiesto: 1→9) ──────────────────── */
 const TRATTA_PALETTE = [
-  "#10b981", "#f59e0b", "#3b82f6", "#ef4444", "#a855f7", "#14b8a6",
-  "#ec4899", "#84cc16", "#f97316", "#06b6d4", "#8b5cf6", "#eab308",
-  "#22c55e", "#e11d48", "#0ea5e9", "#d946ef",
+  "#38bdf8", // 1 Azzurro
+  "#ef4444", // 2 Rosso
+  "#22c55e", // 3 Verde
+  "#eab308", // 4 Giallo
+  "#2563eb", // 5 Blu
+  "#8b4513", // 6 Marrone
+  "#ec4899", // 7 Rosa
+  "#9ca3af", // 8 Grigio
+  "#8b5cf6", // 9 Viola
 ];
 const trattaColor = (i: number) => TRATTA_PALETTE[i % TRATTA_PALETTE.length];
 
@@ -62,7 +68,7 @@ interface PercorsoDetail {
 
 const dirLabel = (d: number | null): string => d === 0 ? "Andata" : d === 1 ? "Ritorno" : "—";
 interface Tratta {
-  index: number; label: string; color: string;
+  index: number; label: string; color: string; nodeName: string;
   fromStopIdx: number; toStopIdx: number;
   fromStopName: string; toStopName: string;
   fromKm: number; toKm: number; km: number; stopCount: number;
@@ -86,7 +92,7 @@ function autoBoundaries(stops: PStop[]): number[] {
 }
 
 /* ── Costruisce le tratte a partire dai confini ─────────────────── */
-function buildTratte(stops: PStop[], boundaries: number[]): Tratta[] {
+function buildTratte(stops: PStop[], boundaries: number[], nodeNames?: Record<number, string>): Tratta[] {
   const bounds = [...new Set(boundaries)].filter(i => i > 0 && i < stops.length).sort((a, b) => a - b);
   const starts = [0, ...bounds];
   const tratte: Tratta[] = [];
@@ -99,6 +105,7 @@ function buildTratte(stops: PStop[], boundaries: number[]): Tratta[] {
       index: k,
       label: `Tratta ${k + 1}`,
       color: trattaColor(k),
+      nodeName: nodeNames?.[k] ?? "",
       fromStopIdx: from,
       toStopIdx: to,
       fromStopName: stops[from].stopName,
@@ -135,6 +142,24 @@ export default function FaresPolimetrichePage() {
   const [sel, setSel] = React.useState<{ lineCode: string; routeId: string; variantId: string } | null>(null);
   const [detail, setDetail] = React.useState<PercorsoDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = React.useState(false);
+
+  // larghezza ridimensionabile della sidebar linee
+  const [railWidth, setRailWidth] = React.useState(300);
+  const startRailDrag = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railWidth;
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(640, Math.max(200, startW + (ev.clientX - startX)));
+      setRailWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [railWidth]);
 
   const refetchImports = React.useCallback(() => {
     fetch(`${API()}/api/fares/polimetriche/imports`)
@@ -271,9 +296,9 @@ export default function FaresPolimetrichePage() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
-        {/* Rail linee */}
-        <div className="min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden flex flex-col">
+      <div className="flex-1 min-h-0 flex">
+        {/* Rail linee (ridimensionabile) */}
+        <div style={{ width: railWidth }} className="shrink-0 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden flex flex-col">
           <div className="px-3 py-2 border-b border-emerald-900/40 text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60 flex items-center gap-2">
             <Layers className="w-3.5 h-3.5" /> Linee extraurbane
           </div>
@@ -284,8 +309,17 @@ export default function FaresPolimetrichePage() {
           )}
         </div>
 
+        {/* Splitter trascinabile */}
+        <div
+          onPointerDown={startRailDrag}
+          title="Trascina per ridimensionare la sidebar"
+          className="group/split w-2 mx-1 shrink-0 cursor-col-resize rounded flex items-center justify-center hover:bg-emerald-500/15 transition-colors"
+        >
+          <span className="w-[3px] h-10 rounded-full bg-emerald-800/50 group-hover/split:bg-emerald-400/60 transition-colors" />
+        </div>
+
         {/* Workspace percorso */}
-        <div className="min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
+        <div className="flex-1 min-w-0 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
           {!sel ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-emerald-400/50 gap-3 px-6">
               <RouteIcon className="w-10 h-10 opacity-40" />
@@ -563,6 +597,7 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 
   // boundaries: ricalcola auto al cambio percorso/direzione (carica salvato se presente)
   const [boundaries, setBoundaries] = React.useState<number[]>([]);
+  const [nodeNames, setNodeNames] = React.useState<Record<number, string>>({}); // nodo tariffario per tratta (per indice)
   const [name, setName] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [loadedSaved, setLoadedSaved] = React.useState(false);
@@ -579,18 +614,23 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
         if (match && Array.isArray(match.boundaries)) {
           setBoundaries(match.boundaries.filter((i: number) => i > 0 && i < stops.length));
           setName(match.name || "");
+          // ripristina i nomi-nodo dalle tratte salvate (per indice)
+          const nn: Record<number, string> = {};
+          if (Array.isArray(match.tratte)) for (const t of match.tratte) if (t?.nodeName) nn[t.index] = t.nodeName;
+          setNodeNames(nn);
         } else {
           setBoundaries(autoBoundaries(stops));
           setName("");
+          setNodeNames({});
         }
         setLoadedSaved(true);
       })
-      .catch(() => { if (!cancelled) { setBoundaries(autoBoundaries(stops)); setLoadedSaved(true); } });
+      .catch(() => { if (!cancelled) { setBoundaries(autoBoundaries(stops)); setNodeNames({}); setLoadedSaved(true); } });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importId, detail.routeId, detail.variantId, direction]);
 
-  const tratte = React.useMemo(() => buildTratte(stops, boundaries), [stops, boundaries]);
+  const tratte = React.useMemo(() => buildTratte(stops, boundaries, nodeNames), [stops, boundaries, nodeNames]);
   const trattaOf = React.useMemo(() => stopTrattaMap(stops, boundaries), [stops, boundaries]);
 
   const moveBoundary = (i: number, dir: -1 | 1) => {
@@ -666,7 +706,7 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
         <span className="text-[11px] text-emerald-400/60 font-semibold uppercase tracking-wider flex items-center gap-1.5">
           <Ruler className="w-3.5 h-3.5" /> Polimetrica · {tratte.length} tratte
         </span>
-        <button onClick={() => setBoundaries(autoBoundaries(stops))}
+        <button onClick={() => { setBoundaries(autoBoundaries(stops)); setNodeNames({}); }}
           className="text-[11px] px-2 py-1 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 flex items-center gap-1">
           <RefreshCw className="w-3 h-3" /> Rigenera ogni {SEGMENT_KM} km
         </button>
@@ -695,7 +735,8 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
             <div className="flex items-center justify-center py-10 text-emerald-400/40"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
             <StripDiagram stops={stops} boundaries={boundaries} trattaOf={trattaOf}
-              onSetBoundaries={setBoundaries} />
+              nodeNames={nodeNames} onSetBoundaries={setBoundaries}
+              onSetNodeName={(idx, val) => setNodeNames(prev => ({ ...prev, [idx]: val }))} />
           )}
         </div>
 
@@ -704,23 +745,31 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
           <RoutePreviewSvg stops={stops} shape={direction === "AB" ? detail.shape : (detail.shape ? [...detail.shape].reverse() : null)} trattaOf={trattaOf} />
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/50 mb-1.5">Tratte</p>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {tratte.map((t) => (
-                <div key={t.index} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-900/40">
-                  <span className="w-3 h-3 rounded-sm shrink-0" style={{ background: t.color }} />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[11px] text-emerald-100 font-medium leading-tight">{t.label}</p>
-                    <p className="text-[9px] text-emerald-400/50 font-mono truncate">
-                      {fmtKm(t.km)} km · {t.stopCount} ferm · {fmtKm(t.fromKm)}→{fmtKm(t.toKm)}
-                    </p>
-                  </div>
-                  {t.index > 0 && (
-                    <div className="flex flex-col shrink-0">
-                      <button title="Sposta confine indietro" onClick={() => moveBoundary(t.fromStopIdx, -1)}
-                        className="p-0.5 text-emerald-400/50 hover:text-emerald-200"><ArrowUp className="w-3 h-3" /></button>
-                      <button title="Sposta confine avanti" onClick={() => moveBoundary(t.fromStopIdx, 1)}
-                        className="p-0.5 text-emerald-400/50 hover:text-emerald-200"><ArrowDown className="w-3 h-3" /></button>
+                <div key={t.index} className="px-2 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-900/40">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-sm shrink-0" style={{ background: t.color }} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] text-emerald-100 font-medium leading-tight">{t.label}</p>
+                      <p className="text-[9px] text-emerald-400/50 font-mono truncate">
+                        {fmtKm(t.km)} km · {t.stopCount} ferm · {fmtKm(t.fromKm)}→{fmtKm(t.toKm)}
+                      </p>
                     </div>
+                    {t.index > 0 && (
+                      <div className="flex flex-col shrink-0">
+                        <button title="Sposta confine indietro" onClick={() => moveBoundary(t.fromStopIdx, -1)}
+                          className="p-0.5 text-emerald-400/50 hover:text-emerald-200"><ArrowUp className="w-3 h-3" /></button>
+                        <button title="Sposta confine avanti" onClick={() => moveBoundary(t.fromStopIdx, 1)}
+                          className="p-0.5 text-emerald-400/50 hover:text-emerald-200"><ArrowDown className="w-3 h-3" /></button>
+                      </div>
+                    )}
+                  </div>
+                  {/* Nodo tariffario (modificabile nello strip a sinistra) */}
+                  {nodeNames[t.index] && (
+                    <p className="mt-1 text-[10px] text-emerald-300/80 truncate" style={{ borderLeft: `3px solid ${t.color}`, paddingLeft: 6 }}>
+                      🏷 {nodeNames[t.index]}
+                    </p>
                   )}
                 </div>
               ))}
@@ -735,9 +784,11 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 /* ════════════════════════════════════════════════════════════════
  *  Strip diagram — elenco fermate con banda tratte e confini editabili
  * ════════════════════════════════════════════════════════════════ */
-function StripDiagram({ stops, boundaries, trattaOf, onSetBoundaries }: {
+function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries, onSetNodeName }: {
   stops: PStop[]; boundaries: number[]; trattaOf: number[];
+  nodeNames: Record<number, string>;
   onSetBoundaries: (b: number[]) => void;
+  onSetNodeName: (idx: number, val: string) => void;
 }) {
   const rowRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = React.useRef<number | null>(null);          // confine in trascinamento (valore corrente)
@@ -832,6 +883,20 @@ function StripDiagram({ stops, boundaries, trattaOf, onSetBoundaries }: {
                 </button>
               )
             )}
+            {/* Header tratta: etichetta + NODO TARIFFARIO (editabile) */}
+            {isFirstOfTratta && (
+              <div className="flex items-center gap-2 mt-2 mb-1">
+                <span className="w-[3px] self-stretch shrink-0" style={{ background: color }} />
+                <span className="text-[10px] px-1.5 py-1 rounded font-bold shrink-0" style={{ background: `${color}22`, color }}>T{tIdx + 1}</span>
+                <input
+                  value={nodeNames[tIdx] ?? ""}
+                  onChange={(e) => onSetNodeName(tIdx, e.target.value)}
+                  placeholder="Nome nodo tariffario…"
+                  className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded bg-emerald-950/60 border text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none focus:border-emerald-400/70"
+                  style={{ borderColor: `${color}66`, borderLeftWidth: 3, borderLeftColor: color }}
+                />
+              </div>
+            )}
             {/* Fermata */}
             <div className="flex items-stretch gap-2">
               <span className="w-[3px] shrink-0" style={{ background: color }} />
@@ -841,11 +906,6 @@ function StripDiagram({ stops, boundaries, trattaOf, onSetBoundaries }: {
                 </span>
                 <span className="text-[10px] text-emerald-500/40 font-mono w-6 text-right shrink-0">{i + 1}</span>
                 <span className="flex-1 min-w-0 text-[13px] text-emerald-100 truncate">{s.stopName}</span>
-                {isFirstOfTratta && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-semibold" style={{ background: `${color}22`, color }}>
-                    T{tIdx + 1}
-                  </span>
-                )}
                 <span className="text-[10px] text-emerald-300/70 font-mono w-16 text-right shrink-0">{fmtKm(s.km)} km</span>
                 <span className="text-[10px] text-emerald-400/40 font-mono w-16 text-right shrink-0">
                   {i > 0 ? `+${fmtKm(s.distPrev)}` : "—"}
@@ -911,6 +971,7 @@ interface SavedPolimetrica {
   variantId: string; direction: string; name: string | null;
   totalKm: number | null; stopCount: number | null; trattaCount: number | null;
   stops: { stopName: string; km: number; tratta: number }[] | null;
+  tratte: { index: number; nodeName?: string; label?: string }[] | null;
 }
 
 const esc = (s: string) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
@@ -940,11 +1001,17 @@ function renderGradoniTable(p: SavedPolimetrica): string {
     rows += `<tr>${cells}</tr>`;
   }
   const dirLbl = p.direction === "BA" ? "Ritorno (invertito)" : "Andata (diretto)";
+  const tratteArr = p.tratte || [];
+  const legend = tratteArr.length
+    ? `<div class="legend">${tratteArr.map(t =>
+        `<span class="lg"><i style="background:${trattaColor(t.index)}"></i>T${t.index + 1}${t.nodeName ? ` · ${esc(t.nodeName)}` : ""}</span>`).join("")}</div>`
+    : "";
   return `
     <section class="poli">
       <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${stops[0].stopName} → ${stops[n - 1].stopName}`)}</h2>
       <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? stops[n - 1].km)} km · ${p.trattaCount ?? maxV} tratte · ${n} fermate
         <span class="hint">— il valore in cella è il <b>numero di tratte</b> tra le due fermate (fascia tariffaria).</span></p>
+      ${legend}
       <table class="grad"><tbody>${rows}</tbody></table>
     </section>`;
 }
@@ -966,8 +1033,11 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   button.print{background:#10b981;color:#053b2c;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
   section.poli{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:18px;break-inside:avoid}
   section.poli h2{font-size:15px;margin:0 0 2px;color:#0f172a}
-  .meta{font-size:11px;color:#64748b;margin:0 0 10px}
+  .meta{font-size:11px;color:#64748b;margin:0 0 8px}
   .meta .hint{color:#94a3b8}
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+  .legend .lg{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#334155;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px}
+  .legend .lg i{width:9px;height:9px;border-radius:2px;display:inline-block}
   table.grad{border-collapse:collapse;font-size:9px}
   table.grad td{border:1px solid #e2e8f0;text-align:center;height:16px;min-width:16px;padding:0 2px}
   table.grad td.v{font-variant-numeric:tabular-nums;font-weight:600}
