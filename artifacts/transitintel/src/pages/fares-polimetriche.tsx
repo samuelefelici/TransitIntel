@@ -39,6 +39,14 @@ const TRATTA_PALETTE = [
 ];
 const trattaColor = (i: number) => TRATTA_PALETTE[i % TRATTA_PALETTE.length];
 
+/**
+ * Banda chilometrica (1-based) di una posizione km: ogni 6 km = una tratta.
+ * km 0 → 1 ; (0,6] → 1 ; (6,12] → 2 ; … ; (24,30] → 5 ; (36,42] → 7.
+ * Serve a far "saltare" il numero di tratta quando tra due fermate ci sono
+ * più di 6 km (es. km30 = fine tratta 5, km40 = tratta 7, non 6).
+ */
+const bandOf = (km: number): number => (km <= 1e-6 ? 1 : Math.ceil(km / SEGMENT_KM));
+
 /* ── Tipi ─────────────────────────────────────────────────────── */
 interface ImportSummary {
   id: string; filename: string; agencyName: string | null;
@@ -68,7 +76,7 @@ interface PercorsoDetail {
 
 const dirLabel = (d: number | null): string => d === 0 ? "Andata" : d === 1 ? "Ritorno" : "—";
 interface Tratta {
-  index: number; label: string; color: string; nodeName: string;
+  index: number; number: number; label: string; color: string; nodeName: string;
   fromStopIdx: number; toStopIdx: number;
   fromStopName: string; toStopName: string;
   fromKm: number; toKm: number; km: number; stopCount: number;
@@ -76,17 +84,13 @@ interface Tratta {
 
 const fmtKm = (n: number) => (Math.round(n * 100) / 100).toFixed(2);
 
-/* ── Genera confini automatici ogni 6 km (snap alle fermate) ───── */
+/* ── Genera confini automatici: nuova tratta quando cambia la banda 6 km ─── */
 function autoBoundaries(stops: PStop[]): number[] {
   const b: number[] = [];
   if (stops.length < 2) return b;
-  let target = SEGMENT_KM;
   for (let i = 1; i < stops.length; i++) {
-    if (stops[i].km >= target) {
-      b.push(i);
-      // avanza il target oltre il km corrente (gestisce salti > 6km)
-      while (target <= stops[i].km) target += SEGMENT_KM;
-    }
+    // confine alla prima fermata la cui banda 6km differisce dalla precedente
+    if (bandOf(stops[i].km) !== bandOf(stops[i - 1].km)) b.push(i);
   }
   return b;
 }
@@ -101,10 +105,13 @@ function buildTratte(stops: PStop[], boundaries: number[], nodeNames?: Record<nu
     const to = k + 1 < starts.length ? starts[k + 1] : stops.length - 1;
     const fromKm = stops[from].km;
     const toKm = stops[to].km;
+    // numero di tratta = banda 6km della fermata d'inizio (può saltare su gap >6km)
+    const number = bandOf(fromKm);
     tratte.push({
       index: k,
-      label: `Tratta ${k + 1}`,
-      color: trattaColor(k),
+      number,
+      label: `Tratta ${number}`,
+      color: trattaColor(number - 1),
       nodeName: nodeNames?.[k] ?? "",
       fromStopIdx: from,
       toStopIdx: to,
@@ -216,17 +223,27 @@ export default function FaresPolimetrichePage() {
     if (next) setSel({ lineCode: next.lineCode, routeId: next.routeId, variantId: next.variantId });
   }, [sel, flatPercorsi]);
 
-  // elimina (pulisci) un percorso dall'elenco
-  const deletePercorso = React.useCallback((routeId: string, variantId: string) => {
-    if (!importId) return;
-    fetch(`${API()}/api/fares/polimetriche/imports/${importId}/percorso?routeId=${encodeURIComponent(routeId)}&variantId=${encodeURIComponent(variantId)}`, { method: "DELETE" })
-      .then(r => r.ok ? r.json() : Promise.reject(r))
-      .then(() => {
-        if (sel && sel.routeId === routeId && sel.variantId === variantId) { setSel(null); setDetail(null); }
-        loadTree(importId);
-      })
-      .catch(() => toast({ title: "Errore", description: "Impossibile eliminare il percorso", variant: "destructive" }));
+  // elimina (pulisci) percorsi dall'elenco — aggiornamento OTTIMISTICO:
+  // non ricarico l'albero (evita lo spinner che smonta la rail e perde la
+  // posizione/scroll), rimuovo localmente e persisto in background.
+  const deletePercorsi = React.useCallback((items: { routeId: string; variantId: string }[]) => {
+    if (!importId || items.length === 0) return;
+    const keys = new Set(items.map(i => `${i.routeId}::${i.variantId}`));
+    setTree(prev => prev ? {
+      ...prev,
+      lines: prev.lines
+        .map(l => ({ ...l, percorsi: l.percorsi.filter(p => !keys.has(`${p.routeId}::${p.variantId}`)) }))
+        .filter(l => l.percorsi.length > 0),
+    } : prev);
+    if (sel && keys.has(`${sel.routeId}::${sel.variantId}`)) { setSel(null); setDetail(null); }
+    fetch(`${API()}/api/fares/polimetriche/imports/${importId}/percorsi/delete`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }),
+    })
+      .then(r => { if (!r.ok) throw new Error(); })
+      .catch(() => { toast({ title: "Errore", description: "Eliminazione non riuscita, ricarico", variant: "destructive" }); loadTree(importId); });
   }, [importId, sel, loadTree, toast]);
+  const deletePercorso = React.useCallback((routeId: string, variantId: string) =>
+    deletePercorsi([{ routeId, variantId }]), [deletePercorsi]);
 
   // export "a gradoni" (matrice triangolare) di tutte le polimetriche salvate
   const [exporting, setExporting] = React.useState(false);
@@ -305,7 +322,7 @@ export default function FaresPolimetrichePage() {
           {loadingTree ? (
             <div className="flex-1 flex items-center justify-center text-emerald-400/50"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
-            <LinesRail lines={tree?.lines || []} sel={sel} onSelect={setSel} onDeletePercorso={deletePercorso} />
+            <LinesRail lines={tree?.lines || []} sel={sel} onSelect={setSel} onDeletePercorso={deletePercorso} onDeleteMany={deletePercorsi} />
           )}
         </div>
 
@@ -455,11 +472,12 @@ function ImportScreen({ imports, onImported, onSelect, onDelete, toast }: {
 /* ════════════════════════════════════════════════════════════════
  *  Rail linee → percorsi
  * ════════════════════════════════════════════════════════════════ */
-function LinesRail({ lines, sel, onSelect, onDeletePercorso }: {
+function LinesRail({ lines, sel, onSelect, onDeletePercorso, onDeleteMany }: {
   lines: LineMeta[];
   sel: { lineCode: string; routeId: string; variantId: string } | null;
   onSelect: (s: { lineCode: string; routeId: string; variantId: string }) => void;
   onDeletePercorso: (routeId: string, variantId: string) => void;
+  onDeleteMany: (items: { routeId: string; variantId: string }[]) => void;
 }) {
   const [open, setOpen] = React.useState<Set<string>>(() => new Set(sel ? [sel.lineCode] : []));
   React.useEffect(() => { if (sel) setOpen(prev => new Set(prev).add(sel.lineCode)); }, [sel]);
@@ -467,6 +485,18 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso }: {
 
   const [dirFilter, setDirFilter] = React.useState<"all" | "0" | "1">("all");
   const [confirmDel, setConfirmDel] = React.useState<string | null>(null); // `${routeId}:${variantId}`
+  const [marked, setMarked] = React.useState<Set<string>>(new Set()); // multi-selezione `${routeId}::${variantId}`
+  const [confirmBulk, setConfirmBulk] = React.useState(false);
+  const mk = (routeId: string, variantId: string) => `${routeId}::${variantId}`;
+  const toggleMark = (routeId: string, variantId: string) =>
+    setMarked(prev => { const n = new Set(prev); const k = mk(routeId, variantId); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const bulkDelete = () => {
+    if (!confirmBulk) { setConfirmBulk(true); setTimeout(() => setConfirmBulk(false), 3000); return; }
+    const items = [...marked].map(k => { const [routeId, variantId] = k.split("::"); return { routeId, variantId }; });
+    onDeleteMany(items);
+    setMarked(new Set());
+    setConfirmBulk(false);
+  };
 
   // applica filtro direzione
   const filteredLines = React.useMemo(() => {
@@ -496,6 +526,21 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso }: {
         ))}
       </div>
 
+      {/* Barra multi-selezione */}
+      {marked.size > 0 && (
+        <div className="mx-2 mb-2 px-2 py-1.5 rounded-lg bg-emerald-900/40 border border-emerald-700/50 flex items-center gap-2">
+          <span className="text-[11px] text-emerald-200 flex-1">{marked.size} selezionati</span>
+          <button onClick={bulkDelete}
+            className={`text-[11px] px-2 py-1 rounded flex items-center gap-1 transition-colors ${
+              confirmBulk ? "bg-red-500/30 text-red-200" : "bg-red-500/15 text-red-300 hover:bg-red-500/25"
+            }`}>
+            <Trash2 className="w-3 h-3" /> {confirmBulk ? "Conferma" : "Elimina"}
+          </button>
+          <button onClick={() => { setMarked(new Set()); setConfirmBulk(false); }}
+            className="text-[11px] px-2 py-1 rounded text-emerald-400/70 hover:bg-emerald-500/10">Annulla</button>
+        </div>
+      )}
+
       {filteredLines.map((l) => {
         const isOpen = open.has(l.lineCode);
         const lineSaved = l.percorsi.filter(p => p.savedAB || p.savedBA).length;
@@ -522,6 +567,13 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso }: {
                       className={`group/p flex items-start gap-1 px-2 py-1.5 rounded-lg transition-colors ${
                         active ? "bg-emerald-500/20 text-emerald-100" : "text-emerald-300/70 hover:bg-emerald-500/8"
                       }`}>
+                      <input
+                        type="checkbox"
+                        checked={marked.has(mk(p.routeId, p.variantId))}
+                        onChange={(e) => { e.stopPropagation(); toggleMark(p.routeId, p.variantId); }}
+                        title="Seleziona per eliminazione multipla"
+                        className="mt-1 shrink-0 accent-emerald-500 cursor-pointer"
+                      />
                       <button onClick={() => onSelect({ lineCode: l.lineCode, routeId: p.routeId, variantId: p.variantId })}
                         className="flex items-start gap-2 flex-1 min-w-0 text-left">
                         {done
@@ -632,6 +684,12 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 
   const tratte = React.useMemo(() => buildTratte(stops, boundaries, nodeNames), [stops, boundaries, nodeNames]);
   const trattaOf = React.useMemo(() => stopTrattaMap(stops, boundaries), [stops, boundaries]);
+  // numero (banda 6km) per indice-gruppo: usato per colore/etichetta delle tratte
+  const groupNumbers = React.useMemo(() => {
+    const arr: number[] = [];
+    for (const t of tratte) arr[t.index] = t.number;
+    return arr;
+  }, [tratte]);
 
   const moveBoundary = (i: number, dir: -1 | 1) => {
     const ni = i + dir;
@@ -735,14 +793,14 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
             <div className="flex items-center justify-center py-10 text-emerald-400/40"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
             <StripDiagram stops={stops} boundaries={boundaries} trattaOf={trattaOf}
-              nodeNames={nodeNames} onSetBoundaries={setBoundaries}
+              groupNumbers={groupNumbers} nodeNames={nodeNames} onSetBoundaries={setBoundaries}
               onSetNodeName={(idx, val) => setNodeNames(prev => ({ ...prev, [idx]: val }))} />
           )}
         </div>
 
         {/* Pannello laterale: preview geografica + elenco tratte */}
         <div className="min-h-0 overflow-y-auto border-l border-emerald-900/40 bg-emerald-950/20 p-3 space-y-3">
-          <RoutePreviewSvg stops={stops} shape={direction === "AB" ? detail.shape : (detail.shape ? [...detail.shape].reverse() : null)} trattaOf={trattaOf} />
+          <RoutePreviewSvg stops={stops} shape={direction === "AB" ? detail.shape : (detail.shape ? [...detail.shape].reverse() : null)} trattaOf={trattaOf} groupNumbers={groupNumbers} />
           <div>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/50 mb-1.5">Tratte</p>
             <div className="space-y-1.5">
@@ -784,12 +842,14 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 /* ════════════════════════════════════════════════════════════════
  *  Strip diagram — elenco fermate con banda tratte e confini editabili
  * ════════════════════════════════════════════════════════════════ */
-function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries, onSetNodeName }: {
+function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, onSetBoundaries, onSetNodeName }: {
   stops: PStop[]; boundaries: number[]; trattaOf: number[];
+  groupNumbers: number[];
   nodeNames: Record<number, string>;
   onSetBoundaries: (b: number[]) => void;
   onSetNodeName: (idx: number, val: string) => void;
 }) {
+  const numOf = (gi: number) => groupNumbers[gi] ?? gi + 1;
   const rowRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = React.useRef<number | null>(null);          // confine in trascinamento (valore corrente)
   const boundsRef = React.useRef<number[]>(boundaries);       // copia autorevole durante il drag
@@ -845,7 +905,8 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries,
     <div className="max-w-2xl select-none">
       {stops.map((s, i) => {
         const tIdx = trattaOf[i];
-        const color = trattaColor(tIdx);
+        const tNum = numOf(tIdx);
+        const color = trattaColor(tNum - 1);
         const isBoundary = boundaries.includes(i);
         const isFirstOfTratta = i === 0 || trattaOf[i - 1] !== tIdx;
         return (
@@ -859,12 +920,12 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries,
                     onPointerDown={(e) => { e.preventDefault(); startDrag(i); }}
                     title="Trascina per spostare il confine di tratta"
                     className="flex-1 flex items-center gap-1.5 cursor-grab active:cursor-grabbing text-[9px] font-medium"
-                    style={{ color: trattaColor(trattaOf[i]) }}
+                    style={{ color }}
                   >
-                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: trattaColor(trattaOf[i]) }} />
+                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: color }} />
                     <GripHorizontal className="w-3.5 h-3.5" />
                     <span className="uppercase tracking-wide">confine · trascina</span>
-                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: trattaColor(trattaOf[i]) }} />
+                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: color }} />
                   </div>
                   <button onClick={() => removeBoundary(i)} title="Unisci alla tratta precedente"
                     className="shrink-0 p-0.5 rounded text-emerald-400/50 hover:text-red-400 hover:bg-red-500/10">
@@ -887,7 +948,7 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries,
             {isFirstOfTratta && (
               <div className="flex items-center gap-2 mt-2 mb-1">
                 <span className="w-[3px] self-stretch shrink-0" style={{ background: color }} />
-                <span className="text-[10px] px-1.5 py-1 rounded font-bold shrink-0" style={{ background: `${color}22`, color }}>T{tIdx + 1}</span>
+                <span className="text-[10px] px-1.5 py-1 rounded font-bold shrink-0" style={{ background: `${color}22`, color }}>T{tNum}</span>
                 <input
                   value={nodeNames[tIdx] ?? ""}
                   onChange={(e) => onSetNodeName(tIdx, e.target.value)}
@@ -922,9 +983,10 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries,
 /* ════════════════════════════════════════════════════════════════
  *  Preview geografica SVG (no token mapbox) — polilinea colorata per tratta
  * ════════════════════════════════════════════════════════════════ */
-function RoutePreviewSvg({ stops, shape, trattaOf }: {
-  stops: PStop[]; shape: [number, number][] | null; trattaOf: number[];
+function RoutePreviewSvg({ stops, shape, trattaOf, groupNumbers }: {
+  stops: PStop[]; shape: [number, number][] | null; trattaOf: number[]; groupNumbers: number[];
 }) {
+  const colorOf = (gi: number) => trattaColor((groupNumbers[gi] ?? gi + 1) - 1);
   const W = 256, H = 200, pad = 10;
   const pts = React.useMemo(() => stops.map(s => ({ x: s.lon, y: s.lat })), [stops]);
   const all = shape && shape.length > 1 ? shape.map(([lon, lat]) => ({ x: lon, y: lat })) : pts;
@@ -949,14 +1011,13 @@ function RoutePreviewSvg({ stops, shape, trattaOf }: {
         {/* segmenti fermata→fermata colorati per tratta */}
         {stops.slice(1).map((s, i) => {
           const a = stops[i], b = s;
-          const color = trattaColor(trattaOf[i + 1]);
           return <line key={i} x1={tx(a.lon)} y1={ty(a.lat)} x2={tx(b.lon)} y2={ty(b.lat)}
-            stroke={color} strokeWidth={2} strokeLinecap="round" />;
+            stroke={colorOf(trattaOf[i + 1])} strokeWidth={2} strokeLinecap="round" />;
         })}
         {/* fermate */}
         {stops.map((s, i) => (
           <circle key={i} cx={tx(s.lon)} cy={ty(s.lat)} r={i === 0 || i === stops.length - 1 ? 3.2 : 1.8}
-            fill={trattaColor(trattaOf[i])} stroke="#000" strokeWidth={0.5} />
+            fill={colorOf(trattaOf[i])} stroke="#000" strokeWidth={0.5} />
         ))}
       </svg>
     </div>
@@ -971,7 +1032,7 @@ interface SavedPolimetrica {
   variantId: string; direction: string; name: string | null;
   totalKm: number | null; stopCount: number | null; trattaCount: number | null;
   stops: { stopName: string; km: number; tratta: number }[] | null;
-  tratte: { index: number; nodeName?: string; label?: string; km?: number; fromStopName?: string; toStopName?: string }[] | null;
+  tratte: { index: number; number?: number; nodeName?: string; label?: string; km?: number; fromStopName?: string; toStopName?: string }[] | null;
 }
 
 const esc = (s: string) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
@@ -984,27 +1045,44 @@ function gradoniCellColor(v: number, maxV: number): { bg: string; fg: string } {
 }
 
 function renderGradoniTable(p: SavedPolimetrica): string {
-  // Matrice triangolare NODO TARIFFARIO × NODO TARIFFARIO (una riga/colonna per tratta).
-  // Molto più compatta della versione fermata×fermata.
+  // Matrice triangolare NODO TARIFFARIO × NODO TARIFFARIO (compatta) + colonna
+  // laterale con tutte le fermate colorate per tratta (come nell'area di lavoro).
   const tratte = (p.tratte || []).slice().sort((a, b) => a.index - b.index);
   const stops = p.stops || [];
   if (tratte.length < 1) return `<p class="empty">Nessuna tratta definita.</p>`;
   const N = tratte.length;
-  const nodeLabel = (i: number) => (tratte[i].nodeName || "").trim() || tratte[i].label || `Tratta ${i + 1}`;
-  const maxV = N; // valore max = n. nodi (dal primo all'ultimo)
+  const numberOf = (i: number) => tratte[i].number ?? i + 1;       // numero banda 6km
+  const colorOf = (i: number) => trattaColor(numberOf(i) - 1);
+  const nodeLabel = (i: number) => (tratte[i].nodeName || "").trim() || `Tratta ${numberOf(i)}`;
+  const maxV = numberOf(N - 1) - numberOf(0) + 1;
+
+  // ── Matrice a gradoni (nodo × nodo) ──
   let rows = "";
   for (let r = 0; r < N; r++) {
     let cells = "";
     for (let c = 0; c < r; c++) {
-      const v = r - c + 1; // n. tratte tra nodo c e nodo r (inclusivo)
+      const v = numberOf(r) - numberOf(c) + 1; // n. tratte tra nodo c e nodo r
       const { bg, fg } = gradoniCellColor(v, maxV);
       cells += `<td class="v" style="background:${bg};color:${fg}">${v}</td>`;
     }
-    const col = trattaColor(r);
-    const km = tratte[r].km != null ? ` <em>${fmtKm(tratte[r].km as number)} km</em>` : "";
-    cells += `<td class="name"><span class="dot" style="background:${col}"></span>${esc(nodeLabel(r))}${km}</td>`;
+    cells += `<td class="name"><span class="dot" style="background:${colorOf(r)}"></span>T${numberOf(r)} · ${esc(nodeLabel(r))}</td>`;
     rows += `<tr>${cells}</tr>`;
   }
+
+  // ── Colonna fermate colorate per tratta ──
+  let stopRows = "";
+  let prevG = -1;
+  for (const s of stops) {
+    const gi = s.tratta;
+    if (gi !== prevG) {
+      const lbl = gi >= 0 && gi < N ? `T${numberOf(gi)} · ${esc(nodeLabel(gi))}` : `Tratta`;
+      stopRows += `<div class="grp" style="border-left-color:${gi >= 0 && gi < N ? colorOf(gi) : "#ccc"}">${lbl}</div>`;
+      prevG = gi;
+    }
+    const col = gi >= 0 && gi < N ? colorOf(gi) : "#ccc";
+    stopRows += `<div class="st"><span class="d" style="background:${col}"></span><span class="nm">${esc(s.stopName)}</span><span class="km">${fmtKm(s.km)}</span></div>`;
+  }
+
   const dirLbl = p.direction === "BA" ? "Ritorno (invertito)" : "Andata (diretto)";
   const first = stops[0]?.stopName ?? nodeLabel(0);
   const last = stops[stops.length - 1]?.stopName ?? nodeLabel(N - 1);
@@ -1012,8 +1090,11 @@ function renderGradoniTable(p: SavedPolimetrica): string {
     <section class="poli">
       <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${first} → ${last}`)}</h2>
       <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? 0)} km · ${N} nodi tariffari${stops.length ? ` · ${stops.length} fermate` : ""}
-        <span class="hint">— il valore è il <b>numero di tratte</b> tra i due nodi tariffari (fascia).</span></p>
-      <table class="grad"><tbody>${rows}</tbody></table>
+        <span class="hint">— valore cella = numero di tratte tra i due nodi (fascia).</span></p>
+      <div class="cols">
+        <table class="grad"><tbody>${rows}</tbody></table>
+        <div class="stoplist">${stopRows}</div>
+      </div>
     </section>`;
 }
 
@@ -1026,25 +1107,30 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
 <title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
 <style>
+  @page{size:A4;margin:10mm}
   :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
   body{margin:0;padding:24px;color:#0f172a;background:#f8fafc}
-  header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;border-bottom:2px solid #10b981;padding-bottom:12px}
-  header h1{font-size:18px;margin:0;color:#065f46}
-  header .sub{font-size:12px;color:#475569;margin-top:2px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;border-bottom:2px solid #10b981;padding-bottom:10px}
+  header h1{font-size:16px;margin:0;color:#065f46}
+  header .sub{font-size:11px;color:#475569;margin-top:2px}
   button.print{background:#10b981;color:#053b2c;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
-  section.poli{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:18px;break-inside:avoid}
-  section.poli h2{font-size:15px;margin:0 0 2px;color:#0f172a}
-  .meta{font-size:11px;color:#64748b;margin:0 0 8px}
+  section.poli{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:14px;break-inside:avoid;page-break-inside:avoid}
+  section.poli h2{font-size:14px;margin:0 0 2px;color:#0f172a}
+  .meta{font-size:10px;color:#64748b;margin:0 0 8px}
   .meta .hint{color:#94a3b8}
-  .legend{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
-  .legend .lg{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:#334155;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;padding:2px 7px}
-  .legend .lg i{width:9px;height:9px;border-radius:2px;display:inline-block}
-  table.grad{border-collapse:collapse;font-size:9px}
-  table.grad td{border:1px solid #e2e8f0;text-align:center;height:16px;min-width:16px;padding:0 2px}
-  table.grad td.v{font-variant-numeric:tabular-nums;font-weight:600}
-  table.grad td.name{text-align:left;white-space:nowrap;padding:0 6px;font-weight:500;background:#fff;border-left:2px solid #cbd5e1}
-  table.grad td.name em{color:#94a3b8;font-style:normal;font-size:8px;margin-left:4px}
+  .cols{display:flex;gap:18px;align-items:flex-start}
+  table.grad{border-collapse:collapse;font-size:9px;flex:0 0 auto}
+  table.grad td{border:1px solid #e2e8f0;text-align:center;height:15px;min-width:15px;padding:0 2px}
+  table.grad td.v{font-variant-numeric:tabular-nums;font-weight:700}
+  table.grad td.name{text-align:left;white-space:nowrap;padding:0 6px;font-weight:600;background:#fff;border-left:2px solid #cbd5e1}
   .name .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  /* colonna fermate colorate per tratta */
+  .stoplist{flex:1 1 auto;min-width:0;columns:2;column-gap:18px;font-size:9px}
+  .stoplist .grp{break-inside:avoid;font-weight:700;color:#0f172a;background:#f1f5f9;border-left:3px solid #ccc;padding:2px 6px;margin:4px 0 2px}
+  .stoplist .st{display:flex;align-items:center;gap:5px;padding:1px 2px;break-inside:avoid}
+  .stoplist .st .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .stoplist .st .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stoplist .st .km{color:#94a3b8;font-variant-numeric:tabular-nums;flex:0 0 auto}
   .empty{color:#94a3b8;font-style:italic}
   @media print{body{background:#fff;padding:0}button.print{display:none}header{position:static}}
 </style></head>
