@@ -1132,11 +1132,46 @@ export const carontevehiclePositions = caronte.table("vehicle_positions", {
   lon:           doublePrecision("lon").notNull(),
   nearestStopId: text("nearest_stop_id"),
   speed:         doublePrecision("speed"),          // km/h
+  heading:       doublePrecision("heading"),        // gradi 0-360 (rotta GPS, da AVM)
 }, (t) => [
   index("idx_caronte_vpos_trip").on(t.tripId),
   index("idx_caronte_vpos_ts").on(t.ts),
 ]);
 
+// Corsa attiva (AVVIA/TERMINA dal navigatore AVM). Una sola aperta per mezzo.
+export const caronteactiveTrips = caronte.table("active_trips", {
+  id:        uuid("id").primaryKey().defaultRandom(),
+  tripId:    text("trip_id"),
+  routeId:   text("route_id"),
+  vehicleId: text("vehicle_id"),
+  deviceId:  text("device_id"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  endedAt:   timestamp("ended_at", { withTimezone: true }),
+});
+
+// Transito reale a una fermata (da AVM): orario programmato vs effettivo.
+// È la base dei KPI di puntualità della Sala Operativa e dei TripUpdates GTFS-RT.
+export const carontestopTransits = caronte.table("stop_transits", {
+  id:           uuid("id").primaryKey().defaultRandom(),
+  tripId:       text("trip_id"),
+  routeId:      text("route_id"),
+  vehicleId:    text("vehicle_id"),
+  deviceId:     text("device_id"),
+  stopId:       text("stop_id").notNull(),
+  stopSeq:      integer("stop_seq"),
+  scheduled:    text("scheduled"),                  // HH:MM:SS programmato (GTFS)
+  actualTs:     timestamp("actual_ts", { withTimezone: true }).notNull().defaultNow(),
+  delaySeconds: integer("delay_seconds"),           // >0 ritardo, <0 anticipo
+  lat:          doublePrecision("lat"),
+  lon:          doublePrecision("lon"),
+}, (t) => [
+  index("idx_caronte_transit_trip").on(t.tripId),
+  index("idx_caronte_transit_route").on(t.routeId),
+  index("idx_caronte_transit_ts").on(t.actualTs),
+]);
+
 export type CaronteTapEvent = typeof carontetapEvents.$inferSelect;
 export type CaronteJourney = typeof carontejourneys.$inferSelect;
 export type CaronteVehiclePosition = typeof carontevehiclePositions.$inferSelect;
+export type CaronteActiveTrip = typeof caronteactiveTrips.$inferSelect;
+export type CaronteStopTransit = typeof carontestopTransits.$inferSelect;

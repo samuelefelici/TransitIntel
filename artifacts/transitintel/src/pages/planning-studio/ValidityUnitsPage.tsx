@@ -19,6 +19,7 @@ import {
   type PsValidityUnit,
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
+import { apiFetch } from "@/lib/api";
 
 export default function PlanningStudioValidityUnitsPage() {
   const params = useParams<{ id: string }>();
@@ -45,6 +46,34 @@ export default function PlanningStudioValidityUnitsPage() {
     mutationFn: (id: string) => deletePsValidityUnit(projectId, id),
     onSuccess: () => { toast.success("Unità eliminata"); invalidate(); },
     onError: (e: Error) => toast.error(e.message),
+  });
+
+  // Ponte PS → Scheduling Engine: riusa il progetto di esercizio agganciato a
+  // questo progetto PS (se esiste), altrimenti lo crea (la creazione avvia in
+  // automatico la materializzazione PS → feed GTFS) e apre la pipeline Fucina.
+  const pipelineMut = useMutation({
+    mutationFn: async () => {
+      const found = await apiFetch<{ projects: Array<{ id: string }> }>(
+        `/api/scheduling/projects?planningStudioProjectId=${projectId}`,
+      );
+      if (found.projects.length > 0) return found.projects[0].id;
+      const created = await apiFetch<{ project: { id: string } }>(
+        "/api/scheduling/projects",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: `${projectQ.data?.name ?? "Progetto"} · Esercizio`,
+            description: "Creato dalle Unità di Progettazione (Planner Studio)",
+            planningStudioProjectId: projectId,
+          }),
+        },
+      );
+      return created.project.id;
+    },
+    onSuccess: (schedulingProjectId) => {
+      setLocation(`/fucina/${schedulingProjectId}/pipeline`);
+    },
+    onError: (e: Error) => toast.error(`Pipeline scheduling: ${e.message}`),
   });
 
   const sorted = useMemo(() => {
@@ -117,8 +146,9 @@ export default function PlanningStudioValidityUnitsPage() {
                   if (confirm(`Eliminare l'unità "${u.name}"?`)) delMut.mutate(u.id);
                 }}
                 onPipeline={() => {
-                  toast.info("Pipeline scheduling: integrazione in arrivo");
-                  // TODO: setLocation(`/fucina/${u.schedulingProjectId}/pipeline`);
+                  if (pipelineMut.isPending) return;
+                  toast.info("Apro la pipeline scheduling…");
+                  pipelineMut.mutate();
                 }}
               />
             ))}

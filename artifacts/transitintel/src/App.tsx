@@ -12,6 +12,7 @@ import VirgilioController from "@/components/VirgilioController";
 // Lazy-loaded pages — each is code-split into its own chunk
 const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
+const OperationsPage = lazy(() => import("@/pages/operations"));
 const Traffic = lazy(() => import("@/pages/traffic"));
 const Territory = lazy(() => import("@/pages/territory"));
 const NetworkPage = lazy(() => import("@/pages/network"));
@@ -98,6 +99,9 @@ function Router() {
               <Redirect to="/dashboard" />
             </Route>
             <Route path="/dashboard" component={Dashboard} />
+            <Route path="/operations">
+              <Gated perm="analytics"><OperationsPage /></Gated>
+            </Route>
             <Route path="/traffic">
               <Gated perm="analytics"><Traffic /></Gated>
             </Route>

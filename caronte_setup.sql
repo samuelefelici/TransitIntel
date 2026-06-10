@@ -67,10 +67,45 @@ CREATE TABLE IF NOT EXISTS caronte.vehicle_positions (
   lat             DOUBLE PRECISION NOT NULL,
   lon             DOUBLE PRECISION NOT NULL,
   nearest_stop_id TEXT,
-  speed           DOUBLE PRECISION
+  speed           DOUBLE PRECISION,
+  heading         DOUBLE PRECISION                  -- rotta GPS 0-360 (da AVM)
 );
 CREATE INDEX IF NOT EXISTS idx_caronte_vpos_trip ON caronte.vehicle_positions(trip_id);
 CREATE INDEX IF NOT EXISTS idx_caronte_vpos_ts   ON caronte.vehicle_positions(ts);
+CREATE INDEX IF NOT EXISTS idx_caronte_vpos_vehicle_ts
+  ON caronte.vehicle_positions(vehicle_id, ts DESC);
+
+-- Corsa attiva (AVVIA/TERMINA dal navigatore AVM): una sola aperta per mezzo.
+CREATE TABLE IF NOT EXISTS caronte.active_trips (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id    TEXT,
+  route_id   TEXT,
+  vehicle_id TEXT,
+  device_id  TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  ended_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_caronte_active_trips_open ON caronte.active_trips(vehicle_id) WHERE ended_at IS NULL;
+
+-- Transito reale a una fermata (programmato vs effettivo): base dei KPI di
+-- puntualità della Sala Operativa e dei TripUpdates GTFS-RT.
+CREATE TABLE IF NOT EXISTS caronte.stop_transits (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id       TEXT,
+  route_id      TEXT,
+  vehicle_id    TEXT,
+  device_id     TEXT,
+  stop_id       TEXT NOT NULL,
+  stop_seq      INTEGER,
+  scheduled     TEXT,                                -- HH:MM:SS programmato (GTFS)
+  actual_ts     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  delay_seconds INTEGER,                             -- >0 ritardo, <0 anticipo
+  lat           DOUBLE PRECISION,
+  lon           DOUBLE PRECISION
+);
+CREATE INDEX IF NOT EXISTS idx_caronte_transit_trip  ON caronte.stop_transits(trip_id);
+CREATE INDEX IF NOT EXISTS idx_caronte_transit_route ON caronte.stop_transits(route_id);
+CREATE INDEX IF NOT EXISTS idx_caronte_transit_ts    ON caronte.stop_transits(actual_ts);
 
 -- ─── Utente applicativo: scrive SOLO su `caronte`, legge SOLO i gtfs_* ──────────
 -- Imposta la password reale via psql o cambiandola dopo la creazione.
