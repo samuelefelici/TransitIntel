@@ -1107,7 +1107,7 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
 <title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
 <style>
-  @page{size:A4;margin:10mm}
+  @page{size:A3 landscape;margin:10mm}
   /* forza la stampa degli sfondi colorati (gradoni, pallini, banda tratte) */
   *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -1120,14 +1120,14 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   section.poli h2{font-size:14px;margin:0 0 2px;color:#0f172a}
   .meta{font-size:10px;color:#64748b;margin:0 0 8px}
   .meta .hint{color:#94a3b8}
-  .cols{display:flex;gap:18px;align-items:flex-start}
-  table.grad{border-collapse:collapse;font-size:9px;flex:0 0 auto}
-  table.grad td{border:1px solid #e2e8f0;text-align:center;height:15px;min-width:15px;padding:0 2px}
+  .cols{display:flex;gap:24px;align-items:flex-start}
+  table.grad{border-collapse:collapse;font-size:11px;flex:0 0 auto}
+  table.grad td{border:1px solid #e2e8f0;text-align:center;height:18px;min-width:18px;padding:0 3px}
   table.grad td.v{font-variant-numeric:tabular-nums;font-weight:700}
-  table.grad td.name{text-align:left;white-space:nowrap;padding:0 6px;font-weight:600;background:#fff;border-left:2px solid #cbd5e1}
-  .name .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
-  /* colonna fermate colorate per tratta */
-  .stoplist{flex:1 1 auto;min-width:0;columns:2;column-gap:18px;font-size:9px}
+  table.grad td.name{text-align:left;white-space:nowrap;padding:0 7px;font-weight:600;background:#fff;border-left:2px solid #cbd5e1}
+  .name .dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  /* colonna fermate colorate per tratta (A3 orizzontale → 3 colonne) */
+  .stoplist{flex:1 1 auto;min-width:0;columns:3;column-gap:24px;font-size:10px}
   .stoplist .grp{break-inside:avoid;font-weight:700;color:#0f172a;background:#f1f5f9;border-left:3px solid #ccc;padding:2px 6px;margin:4px 0 2px}
   .stoplist .st{display:flex;align-items:center;gap:5px;padding:1px 2px;break-inside:avoid}
   .stoplist .st .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
