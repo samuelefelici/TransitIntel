@@ -41,6 +41,7 @@ artifacts-monorepo/
 
 - `/dashboard` — Full-screen Mapbox map with layer toggles (traffic heatmap, demand heatmap, POIs, GTFS stops) and live status overlay
 - `/operations` — Sala Operativa: live fleet map (AVM/caronte data), active trips, delays per stop, daily punctuality KPIs (polling 10s)
+- `/timetables` — Stampa Orari: printable stop departure posters + general line timetables from the active service program
 - `/traffic` — Traffic analysis charts (by hour, by day of week) with Recharts
 - `/territory` — Population density & POI distribution analysis
 - `/stops` — Bus stop CRUD management with nearby POI/population data
@@ -83,6 +84,12 @@ artifacts-monorepo/
 ### GTFS-Realtime (public, optional `GTFS_RT_API_KEY` via ?key= or Bearer)
 - `GET /api/gtfs-rt/vehicle-positions` — Protobuf VehiclePositions feed (`?format=json` for debug)
 - `GET /api/gtfs-rt/trip-updates` — Protobuf TripUpdates feed from real stop transits
+
+### Service Program & Timetables
+- `POST /api/planning-studio/projects/:id/activate` — "Metti in esercizio": promotes the project's materialized feed to THE active feed (single operational service program; AVM/operations/fares/GTFS-RT follow it automatically)
+- `GET /api/timetables/stops/search?q=` — Stop picker with served routes
+- `GET /api/timetables/stop/:stopId?dayType=weekday|saturday|sunday` — Stop departure poster (per line: hour × minutes grid)
+- `GET /api/timetables/route/:routeId?dayType=&directionId=` — Line timetable (stops × trips, topological merge of patterns)
 
 ### Cron Routes (Protected by CRON_SECRET header)
 - `POST /api/cron/traffic` — Ingest TomTom traffic data

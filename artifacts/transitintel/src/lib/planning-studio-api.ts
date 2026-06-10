@@ -29,6 +29,10 @@ export interface PsProject {
   memberCount?: number;
   myRole?: "owner" | "editor" | "viewer";
   counts?: { stops: number; routes: number; variants: number; trips: number; calendars: number };
+  materializedFeedId?: string | null;
+  materializedAt?: string | null;
+  /** true se il feed materializzato è quello attivo = programma di esercizio operativo */
+  isOperational?: boolean;
 }
 
 export interface PsStop {
@@ -218,6 +222,15 @@ export async function updatePsProject(id: string, patch: Partial<PsProject>): Pr
 
 export async function deletePsProject(id: string): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${id}`, { method: "DELETE" });
+}
+
+/** "Metti in esercizio": promuove il feed materializzato a feed attivo unico.
+ * Da quel momento Sala Operativa, AVM, GTFS-RT e tariffe puntano a questo
+ * programma. Richiede progetto già materializzato (sync PS → feed). */
+export async function activatePsProject(id: string): Promise<{ ok: true; feedId: string }> {
+  return apiFetch<{ ok: true; feedId: string }>(`/api/planning-studio/projects/${id}/activate`, {
+    method: "POST",
+  });
 }
 
 /* ─── Membri / attività ─── */

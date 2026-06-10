@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio,
+  Milestone, Radio, Printer,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -61,6 +61,7 @@ const NAV_SECTIONS: NavSection[] = [
     permission: "analytics",
     items: [
       { href: "/network", label: "Linee & Fermate", icon: Network },
+      { href: "/timetables", label: "Stampa Orari", icon: Printer },
     ],
   },
   {

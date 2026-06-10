@@ -31,6 +31,7 @@ import faresPolimetricheRouter from "./fares-polimetriche";
 import caronteRouter from "./caronte";
 import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
+import timetablesRouter from "./timetables";
 import depotsRouter from "./depots";
 import deadheadsRouter from "./deadheads";
 import intermodalOptimizerRouter from "./intermodal-optimizer";
@@ -84,6 +85,7 @@ router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
 router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
+router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea
 router.use(faresRouter);
 router.use(faresMinOdRouter);
 router.use(faresNodeAssignmentRouter);

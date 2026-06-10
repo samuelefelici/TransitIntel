@@ -10,10 +10,10 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power,
 } from "lucide-react";
 import {
-  listPsProjects, createPsProject, deletePsProject,
+  listPsProjects, createPsProject, deletePsProject, activatePsProject,
   type PsProject,
 } from "@/lib/planning-studio-api";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
@@ -72,6 +72,21 @@ export default function PlanningStudioListPage() {
     }
   }
 
+  async function handleActivate(p: PsProject) {
+    if (!confirm(
+      `Mettere in esercizio "${p.name}"?\n\n` +
+      `Diventerà il programma operativo unico: Sala Operativa, AVM, GTFS-RT e ` +
+      `tariffe punteranno al suo feed. Gli altri programmi restano modificabili ma non operativi.`,
+    )) return;
+    try {
+      await activatePsProject(p.id);
+      toast.success(`"${p.name}" è ora il programma di esercizio operativo`);
+      refresh();
+    } catch (e: any) {
+      toast.error("Messa in esercizio fallita", { description: e?.message });
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100">
       {/* Header */}
@@ -117,6 +132,7 @@ export default function PlanningStudioListPage() {
                 onOpen={() => navigate(`/planning-studio/${p.id}`)}
                 onDelete={() => handleDelete(p)}
                 onShare={() => setShareProject(p)}
+                onActivate={() => handleActivate(p)}
               />
             ))}
           </div>
@@ -205,16 +221,30 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 }
 
 function ProjectCard({
-  project: p, onOpen, onDelete, onShare,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void }) {
+  project: p, onOpen, onDelete, onShare, onActivate,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void }) {
   const isOwner = p.myRole === "owner";
+  const canActivate = (p.myRole === "owner" || p.myRole === "editor") && !p.isOperational;
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
       whileHover={{ y: -2 }}
-      className="group relative rounded-xl bg-slate-900/80 border border-slate-800 hover:border-emerald-500/50 p-5 cursor-pointer transition shadow-sm hover:shadow-lg hover:shadow-emerald-900/20"
+      className={`group relative rounded-xl bg-slate-900/80 border p-5 cursor-pointer transition shadow-sm hover:shadow-lg ${
+        p.isOperational
+          ? "border-emerald-500/60 shadow-emerald-900/30 ring-1 ring-emerald-500/30"
+          : "border-slate-800 hover:border-emerald-500/50 hover:shadow-emerald-900/20"
+      }`}
       onClick={onOpen}
     >
+      {p.isOperational && (
+        <div className="absolute -top-2.5 left-4 flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold uppercase tracking-wider shadow-lg shadow-emerald-900/50">
+          <span className="relative flex h-1.5 w-1.5">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white" />
+          </span>
+          In esercizio
+        </div>
+      )}
       <div className="flex items-start justify-between mb-3">
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold text-base text-slate-100 truncate group-hover:text-emerald-300 transition-colors">
@@ -244,6 +274,24 @@ function ProjectCard({
         </span>
         {isOwner && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+            {canActivate && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!p.materializedFeedId) {
+                    toast.info("Prima materializza il programma", {
+                      description: "Apri il progetto ed esegui la sincronizzazione PS → feed GTFS, poi mettilo in esercizio.",
+                    });
+                    return;
+                  }
+                  onActivate();
+                }}
+                className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
+                title={p.materializedFeedId ? "Metti in esercizio (diventa il programma operativo)" : "Da materializzare prima della messa in esercizio"}
+              >
+                <Power className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={(e) => { e.stopPropagation(); onShare(); }}
               className="p-1 rounded hover:bg-cyan-500/10 text-slate-500 hover:text-cyan-400 transition"
