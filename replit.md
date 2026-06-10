@@ -40,6 +40,7 @@ artifacts-monorepo/
 ## TransitIntel Feature Pages
 
 - `/dashboard` — Full-screen Mapbox map with layer toggles (traffic heatmap, demand heatmap, POIs, GTFS stops) and live status overlay
+- `/operations` — Sala Operativa: live fleet map (AVM/caronte data), active trips, delays per stop, daily punctuality KPIs (polling 10s)
 - `/traffic` — Traffic analysis charts (by hour, by day of week) with Recharts
 - `/territory` — Population density & POI distribution analysis
 - `/stops` — Bus stop CRUD management with nearby POI/population data
@@ -71,6 +72,17 @@ artifacts-monorepo/
 - `GET /api/analysis/demand-score` — Composite demand score grid
 - `GET /api/analysis/underserved` — High-demand zones without stops
 - `GET /api/analysis/stats` — Dashboard summary stats
+
+### Operations API (Sala Operativa — reads `caronte` schema written by AVM)
+- `GET /api/operations/live` — Fleet snapshot: latest position per vehicle + active trip + last delay + daily KPIs
+- `GET /api/operations/punctuality?date=` — Punctuality by route / hour / worst stops
+- `GET /api/operations/trend?days=` — Daily on-time-performance series
+- `GET /api/operations/trips/:tripId/transits` — Scheduled vs actual per stop
+- `GET /api/operations/vehicles/:vehicleId/track?minutes=` — Recent GPS track
+
+### GTFS-Realtime (public, optional `GTFS_RT_API_KEY` via ?key= or Bearer)
+- `GET /api/gtfs-rt/vehicle-positions` — Protobuf VehiclePositions feed (`?format=json` for debug)
+- `GET /api/gtfs-rt/trip-updates` — Protobuf TripUpdates feed from real stop transits
 
 ### Cron Routes (Protected by CRON_SECRET header)
 - `POST /api/cron/traffic` — Ingest TomTom traffic data

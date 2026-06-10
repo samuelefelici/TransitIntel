@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone,
+  Milestone, Radio,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -30,6 +30,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Panoramica",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { href: "/operations", label: "Sala Operativa", icon: Radio },
       { href: "/traffic", label: "Traffico & Rete", icon: Activity },
       { href: "/territory", label: "Territorio & Domanda", icon: Map },
     ],
@@ -86,7 +87,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           return {
             ...s,
             items: s.items.filter(i => {
-              if (i.href === "/traffic" || i.href === "/territory") return hasPermission("analytics");
+              if (i.href === "/traffic" || i.href === "/territory" || i.href === "/operations") return hasPermission("analytics");
               return true;
             }),
           };
@@ -806,7 +807,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Main Content */}
       <main className={`flex-1 relative flex flex-col h-full overflow-hidden pt-14 md:pt-0 ${isFaresZone ? "fares-zone" : ""}`}>
         <div className={`flex-1 w-full h-full ${
-          location === "/dashboard" || location === "/scenarios" ||
+          location === "/dashboard" || location === "/operations" || location === "/scenarios" ||
           /^\/planning-studio\/[^/]+$/.test(location)
             ? ""
             : "overflow-y-auto p-3 sm:p-4 md:p-8"

@@ -36,6 +36,7 @@ parlarsi via rete interna:
    ```bash
    psql "$DATABASE_URL" -f setup.sql
    psql "$DATABASE_URL" -f migrations/2026-05_caronte_and_stop_classification.sql
+   psql "$DATABASE_URL" -f migrations/2026-06_operations_live.sql   # Sala Operativa + GTFS-RT
    # opzionale, validatore Caronte:
    psql "$DATABASE_URL" -f caronte_setup.sql
    ```
@@ -154,6 +155,9 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PROVINCE_BBOX` | — | default `12.7,43.2,13.65,43.95` |
 | `LOG_LEVEL` | — | `info` / `debug` / `warn` / `error` |
 | `COPILOT_MODEL` | — | override modello provider AI |
+| `CERBERO_API_KEY` | — | Bearer key per `/api/caronte/*` (validatore + AVM) |
+| `GTFS_RT_API_KEY` | — | key per i feed `/api/gtfs-rt/*` (vuota = feed pubblico) |
+| `GTFS_FEED_ID` | — | forza il feed GTFS usato da Sala Operativa / caronte |
 
 ### Web (`Dockerfile.web`) — **build-time** (build args)
 

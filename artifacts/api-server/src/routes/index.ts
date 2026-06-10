@@ -29,6 +29,8 @@ import faresMinOdRouter from "./fares-min-od";
 import faresNodeAssignmentRouter from "./fares-node-assignment";
 import faresPolimetricheRouter from "./fares-polimetriche";
 import caronteRouter from "./caronte";
+import gtfsRtRouter from "./gtfs-rt";
+import operationsRouter from "./operations";
 import depotsRouter from "./depots";
 import deadheadsRouter from "./deadheads";
 import intermodalOptimizerRouter from "./intermodal-optimizer";
@@ -54,6 +56,7 @@ router.use(healthRouter);
 router.use(authRouter);
 router.use(cronRouter); // pubblico (webhook/job esterni)
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
+router.use("/gtfs-rt", gtfsRtRouter); // pubblico (aggregatori infomobilità): key opzionale GTFS_RT_API_KEY
 
 // ⛔ Tutto sotto qui richiede autenticazione + colonne tenant pronte
 router.use(requireAuth);
@@ -80,6 +83,7 @@ router.use(driverShiftsRouter);
 router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
+router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
 router.use(faresRouter);
 router.use(faresMinOdRouter);
 router.use(faresNodeAssignmentRouter);

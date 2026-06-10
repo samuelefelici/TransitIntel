@@ -80,6 +80,26 @@ Mappa Mapbox full-screen con layer toggle: heatmap traffico, heatmap domanda, PO
 
 - **4 stili mappa** selezionabili: Dark, City 3D, 3D Night, Satellite
 
+### 1-bis. **Sala Operativa** `/operations` — Esercizio Live
+
+Il cerchio Planning → Scheduling → **Esercizio** si chiude qui: mappa live della
+flotta alimentata dall'AVM Caronte (schema `caronte` condiviso sul database).
+
+- **Mappa flotta in tempo reale**: marker direzionali (heading GPS) colorati per
+  stato di puntualità (verde in orario, rosso ritardo >5', ambra anticipo >1')
+- **KPI giornata**: mezzi in linea, corse attive, % puntualità, ritardo medio,
+  transiti registrati — aggiornati ogni 10 secondi
+- **Dettaglio corsa**: tabella programmato vs reale per ogni fermata, traccia
+  GPS delle ultime 2 ore del mezzo selezionato
+- **Analisi puntualità**: istogramma per fascia oraria, classifica per linea,
+  fermate peggiori
+- **Corse senza GPS**: evidenzia le corse avviate dall'autista ma senza segnale
+- **Feed GTFS-Realtime** (`/api/gtfs-rt/vehicle-positions`, `/api/gtfs-rt/trip-updates`):
+  protobuf standard consumabile da Google Maps, Moovit, Transit — la rete diventa
+  visibile ai passeggeri sulle app che già usano
+- **Virgilio integrato**: chiedi "come sta andando il servizio?" e l'AI legge i
+  dati live (tool `get_live_operations`) e ti porta sulla mappa
+
 ### 2. **Traffico & Rete** `/traffic`- **Layer attivabili**: traffico Mapbox in tempo reale, domanda demografica (heatmap censuaria), punti di interesse (POI), fermate GTFS, tracciati linee (shapes), edifici 3D
 
 Grafici Recharts su congestione media per ora del giorno e giorno della settimana.- **Filtro linee**: ricerca per nome/codice, selezione multipla, filtro per direzione (andata/ritorno), fascia oraria (slider 4:00–26:00), tipo giorno (feriale/sabato/festivo)

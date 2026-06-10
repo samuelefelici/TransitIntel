@@ -120,6 +120,12 @@ export const TOOL_DEFS: Anthropic.Tool[] = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "get_live_operations",
+    description:
+      "Sala Operativa: stato live della flotta dall'AVM (mezzi in servizio negli ultimi 15 minuti, corse attive) e KPI di puntualità della giornata dai transiti reali (percentuale in orario, ritardo medio, corse più in ritardo adesso). Usalo per domande tipo 'come sta andando il servizio?', 'ci sono bus in ritardo?', 'quanti mezzi sono fuori?'. Dopo i dati, ui_navigate(/operations) per mostrare la mappa live.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "get_pois",
     description:
       "Restituisce POI (Punti di Interesse OSM) per categoria. Categorie disponibili: school, hospital, shopping, transit, industrial, leisure, office. Restituisce conteggi e top esempi.",
@@ -175,7 +181,7 @@ export const TOOL_DEFS: Anthropic.Tool[] = [
   {
     name: "ui_navigate",
     description:
-      "AZIONE UI: naviga l'utente verso una pagina dell'app. Usalo quando un'analisi è più chiara su una pagina specifica (es: zone scoperte → /territory; linee → /network; mappa traffico → /traffic). Sempre PRIMA di highlight/focus_map. Path validi: /dashboard, /traffic, /territory, /network, /data, /scenarios, /intermodal, /trip-planner, /fares, /fucina, /optimization.",
+      "AZIONE UI: naviga l'utente verso una pagina dell'app. Usalo quando un'analisi è più chiara su una pagina specifica (es: zone scoperte → /territory; linee → /network; mappa traffico → /traffic). Sempre PRIMA di highlight/focus_map. Path validi: /dashboard, /operations, /traffic, /territory, /network, /data, /scenarios, /intermodal, /trip-planner, /fares, /fucina, /optimization.",
     input_schema: {
       type: "object",
       properties: {
@@ -385,6 +391,58 @@ export async function executeTool(
     case "get_traffic_stats": {
       try {
         return await internalGet("/api/traffic/stats");
+      } catch (e: any) {
+        return { error: e.message };
+      }
+    }
+
+    case "get_live_operations": {
+      try {
+        const schemaOk = (await db.execute(sql`
+          SELECT to_regclass('caronte.vehicle_positions') AS vp,
+                 to_regclass('caronte.stop_transits')     AS st
+        `)).rows[0] as any;
+        if (!schemaOk?.vp || !schemaOk?.st) {
+          return { available: false, note: "Schema caronte non inizializzato: nessun dato AVM. Eseguire migrations/2026-06_operations_live.sql." };
+        }
+        const [fleet] = (await db.execute(sql`
+          SELECT COUNT(DISTINCT COALESCE(vehicle_id, trip_id))::int AS vehicles_online
+          FROM caronte.vehicle_positions
+          WHERE ts > now() - interval '15 minutes'
+        `)).rows as any;
+        const [active] = (await db.execute(sql`
+          SELECT COUNT(*)::int AS trips_active
+          FROM caronte.active_trips
+          WHERE ended_at IS NULL AND started_at > now() - interval '12 hours'
+        `)).rows as any;
+        const [punct] = (await db.execute(sql`
+          SELECT COUNT(*)::int AS transits,
+                 AVG(delay_seconds)::int AS avg_delay_s,
+                 (COUNT(*) FILTER (WHERE delay_seconds BETWEEN -60 AND 300))::float
+                   / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
+          FROM caronte.stop_transits
+          WHERE actual_ts >= date_trunc('day', now()) AND delay_seconds IS NOT NULL
+        `)).rows as any;
+        const lateNow = (await db.execute(sql`
+          SELECT DISTINCT ON (st.trip_id)
+                 st.trip_id, st.route_id, st.vehicle_id, st.delay_seconds
+          FROM caronte.stop_transits st
+          WHERE st.actual_ts > now() - interval '30 minutes' AND st.delay_seconds > 300
+          ORDER BY st.trip_id, st.actual_ts DESC
+        `)).rows as any[];
+        return {
+          available: true,
+          vehicles_online_15min: fleet?.vehicles_online ?? 0,
+          trips_active: active?.trips_active ?? 0,
+          today: {
+            stop_transits: punct?.transits ?? 0,
+            avg_delay_seconds: punct?.avg_delay_s ?? null,
+            on_time_pct: punct?.on_time_pct != null ? Math.round(punct.on_time_pct * 10) / 10 : null,
+          },
+          trips_late_now: lateNow
+            .sort((a, b) => b.delay_seconds - a.delay_seconds)
+            .slice(0, 5),
+        };
       } catch (e: any) {
         return { error: e.message };
       }
