@@ -1108,6 +1108,8 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
 <title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
 <style>
   @page{size:A4;margin:10mm}
+  /* forza la stampa degli sfondi colorati (gradoni, pallini, banda tratte) */
+  *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
   body{margin:0;padding:24px;color:#0f172a;background:#f8fafc}
   header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;border-bottom:2px solid #10b981;padding-bottom:10px}
