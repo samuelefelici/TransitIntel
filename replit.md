@@ -42,6 +42,7 @@ artifacts-monorepo/
 - `/dashboard` — Full-screen Mapbox map with layer toggles (traffic heatmap, demand heatmap, POIs, GTFS stops) and live status overlay
 - `/operations` — Sala Operativa: live fleet map (AVM/caronte data), active trips, delays per stop, daily punctuality KPIs (polling 10s)
 - `/timetables` — Stampa Orari: printable stop departure posters + general line timetables from the active service program
+- `/roster` — Roster: crew assignment board (drivers × days; per-day uncovered duties panel fed by saved driver-shift scenarios)
 - `/traffic` — Traffic analysis charts (by hour, by day of week) with Recharts
 - `/territory` — Population density & POI distribution analysis
 - `/stops` — Bus stop CRUD management with nearby POI/population data
@@ -90,6 +91,12 @@ artifacts-monorepo/
 - `GET /api/timetables/stops/search?q=` — Stop picker with served routes
 - `GET /api/timetables/stop/:stopId?dayType=weekday|saturday|sunday` — Stop departure poster (per line: hour × minutes grid)
 - `GET /api/timetables/route/:routeId?dayType=&directionId=` — Line timetable (stops × trips, topological merge of patterns)
+
+### Roster (crew assignment board)
+- `GET /api/roster/drivers` · `POST /api/roster/drivers` · `POST /api/roster/drivers/seed` — Operators (incl. fictitious seeding)
+- `GET /api/roster/duty-sources` — Saved driver-shift scenarios (DSS) usable as duty source
+- `GET /api/roster/board?from=&days=&dssId=` — Grid: drivers × days, duties, assignments, uncovered per day
+- `POST /api/roster/assignments` · `DELETE /api/roster/assignments/:id` — Assign/unassign (1 duty per driver/day, 1 driver per duty/day)
 
 ### Cron Routes (Protected by CRON_SECRET header)
 - `POST /api/cron/traffic` — Ingest TomTom traffic data

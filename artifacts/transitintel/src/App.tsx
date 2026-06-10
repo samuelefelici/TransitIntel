@@ -14,6 +14,7 @@ const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
 const OperationsPage = lazy(() => import("@/pages/operations"));
 const TimetablesPage = lazy(() => import("@/pages/timetables"));
+const RosterPage = lazy(() => import("@/pages/roster"));
 const Traffic = lazy(() => import("@/pages/traffic"));
 const Territory = lazy(() => import("@/pages/territory"));
 const NetworkPage = lazy(() => import("@/pages/network"));
@@ -231,6 +232,9 @@ function Router() {
             </Route>
             <Route path="/optimization">
               <Gated perm="scheduling"><OptimizationPage /></Gated>
+            </Route>
+            <Route path="/roster">
+              <Gated perm="scheduling"><RosterPage /></Gated>
             </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono

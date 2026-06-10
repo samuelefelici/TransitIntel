@@ -47,6 +47,7 @@ const NAV_SECTIONS: NavSection[] = [
     permission: "scheduling",
     items: [
       { href: "/fucina", label: "Scheduling Engine", icon: Flame },
+      { href: "/roster", label: "Roster Personale", icon: Users },
     ],
   },
   {
