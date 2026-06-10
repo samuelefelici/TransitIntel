@@ -7,11 +7,12 @@
 import React from "react";
 import { motion } from "framer-motion";
 import {
-  Ticket, BarChart3, Gamepad2, BookOpen, MapPinCheck, ArrowRight,
+  Ticket, BarChart3, Gamepad2, BookOpen, MapPinCheck, ArrowRight, Milestone,
 } from "lucide-react";
 
 const MODULES = [
   { label: "Bigliettazione",      icon: Ticket },
+  { label: "Polimetriche",        icon: Milestone },
   { label: "Analisi Tariffaria",  icon: BarChart3 },
   { label: "Simulatore",          icon: Gamepad2 },
   { label: "Metodologia & Docs",  icon: BookOpen },

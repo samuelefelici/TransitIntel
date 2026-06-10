@@ -7,6 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
+  Milestone,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -110,6 +111,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const isFaresZone =
     location === "/fares-engine" ||
     location === "/fares" ||
+    location === "/fares-polimetriche" ||
     location === "/fare-analytics" ||
     location === "/fare-simulator" ||
     location === "/fare-docs" ||
@@ -469,6 +471,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {[
               { href: "/fares-engine", label: "Home Fares Engine", icon: Wallet, desc: "Panoramica · navigazione" },
               { href: "/fares", label: "Bigliettazione", icon: Ticket, desc: "Tariffe · titoli · zone" },
+              { href: "/fares-polimetriche", label: "Polimetriche", icon: Milestone, desc: "Tratte · area di lavoro" },
               { href: "/fare-analytics", label: "Analisi Tariffaria", icon: BarChart3, desc: "Ricavi · OD · KPI" },
               { href: "/fare-simulator", label: "Simulatore", icon: Gamepad2, desc: "What-if · scenari" },
               { href: "/trip-planner", label: "Trip Planner", icon: Navigation, desc: "Game maps · door-to-door" },

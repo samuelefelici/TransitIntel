@@ -30,6 +30,7 @@ const DriverScenariosPage = lazy(() => import("@/pages/scheduling/DriverScenario
 const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
 const FaresPage = lazy(() => import("@/pages/fares"));
+const FaresPolimetrichePage = lazy(() => import("@/pages/fares-polimetriche"));
 const FareAnalyticsPage = lazy(() => import("@/pages/fare-analytics"));
 const FareDocsPage = lazy(() => import("@/pages/fare-docs"));
 const FareSimulatorPage = lazy(() => import("@/pages/fare-simulator"));
@@ -178,6 +179,9 @@ function Router() {
             </Route>
             <Route path="/fares">
               <Gated perm="fares"><FaresPage /></Gated>
+            </Route>
+            <Route path="/fares-polimetriche">
+              <Gated perm="fares"><FaresPolimetrichePage /></Gated>
             </Route>
             <Route path="/fare-analytics">
               <Gated perm="fares"><FareAnalyticsPage /></Gated>
