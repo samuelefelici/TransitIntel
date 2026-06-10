@@ -177,10 +177,8 @@ interface Percorso {
   variantId: string;
   routeId: string;
   routeIds: string[];
-  direction: "AB" | "BA";
+  directionId: number | null; // verso operato dal bus (direction_id GTFS): 0=andata, 1=ritorno
   tripCount: number;
-  forwardCount: number;
-  reverseCount: number;
   firstStopName: string;
   lastStopName: string;
   stopCount: number;
@@ -297,16 +295,15 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
     const lines: Linea[] = [];
     for (const [lineCode, ridSet] of lineRouteIds) {
       const routeIds = [...ridSet];
-      // bucket per signature canonica
+      // bucket per signature ESATTA (sequenza fermate come operata dal bus).
+      // Andata e ritorno restano percorsi DISTINTI, distinti dal direction_id.
       type Bucket = {
-        canonical: string;
-        stopSeq: string[];     // direzione forward del rappresentante
+        sig: string;            // signature forward esatta
+        stopSeq: string[];      // fermate nell'ordine operato
         repShapeId: string | null;
         routeIds: Set<string>;
         tripCount: number;
-        forwardCount: number;
-        reverseCount: number;
-        repDirectionId: string | null;
+        dirCount: Record<string, number>;  // direction_id → n. trip
       };
       const buckets = new Map<string, Bucket>();
       for (const [tid, info] of tripInfo) {
@@ -314,27 +311,16 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
         const seq = tripStops.get(tid);
         if (!seq || seq.length < 2) continue;
         const ids = seq.map(s => s.stopId);
-        const fwd = ids.join("|");
-        const rev = [...ids].reverse().join("|");
-        const canonical = fwd <= rev ? fwd : rev;
-        const isForward = fwd === canonical;
-        let b = buckets.get(canonical);
+        const sig = ids.join("|");
+        let b = buckets.get(sig);
         if (!b) {
-          b = {
-            canonical,
-            stopSeq: isForward ? ids : [...ids].reverse(),
-            repShapeId: info.shapeId,
-            routeIds: new Set(),
-            tripCount: 0,
-            forwardCount: 0,
-            reverseCount: 0,
-            repDirectionId: info.directionId,
-          };
-          buckets.set(canonical, b);
+          b = { sig, stopSeq: ids, repShapeId: info.shapeId, routeIds: new Set(), tripCount: 0, dirCount: {} };
+          buckets.set(sig, b);
         }
         b.routeIds.add(info.routeId);
         b.tripCount++;
-        if (isForward) b.forwardCount++; else b.reverseCount++;
+        const d = info.directionId ?? "?";
+        b.dirCount[d] = (b.dirCount[d] ?? 0) + 1;
         if (!b.repShapeId && info.shapeId) b.repShapeId = info.shapeId;
       }
       if (buckets.size === 0) continue;
@@ -360,6 +346,14 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
           }
           if (!kms) kms = cumKmHaversine(stopLL);
 
+          // direction_id dominante (0 = andata, 1 = ritorno)
+          let directionId: number | null = null;
+          let bestN = -1;
+          for (const [k, n] of Object.entries(b.dirCount)) {
+            if (k !== "0" && k !== "1") continue;
+            if (n > bestN) { bestN = n; directionId = parseInt(k, 10); }
+          }
+
           const stops: PercorsoStop[] = b.stopSeq.map((id, i) => {
             const s = stopById.get(id);
             return {
@@ -373,13 +367,11 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
           });
           const totalKm = stops.length ? stops[stops.length - 1].km : 0;
           return {
-            variantId: shortHash(b.canonical),
+            variantId: shortHash(b.sig),
             routeId: [...b.routeIds][0],
             routeIds: [...b.routeIds],
-            direction: "AB" as const,
+            directionId,
             tripCount: b.tripCount,
-            forwardCount: b.forwardCount,
-            reverseCount: b.reverseCount,
             firstStopName: stops[0]?.stopName ?? "",
             lastStopName: stops[stops.length - 1]?.stopName ?? "",
             stopCount: stops.length,
@@ -488,10 +480,8 @@ router.get("/fares/polimetriche/imports/:id", async (req, res): Promise<void> =>
         percorsi: l.percorsi.map(p => ({
           variantId: p.variantId,
           routeId: p.routeId,
-          direction: p.direction,
+          directionId: p.directionId,
           tripCount: p.tripCount,
-          forwardCount: p.forwardCount,
-          reverseCount: p.reverseCount,
           firstStopName: p.firstStopName,
           lastStopName: p.lastStopName,
           stopCount: p.stopCount,
@@ -549,6 +539,38 @@ router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void>
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[polimetriche] delete import", e);
+    res.status(500).json({ error: e?.message || "Errore" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
+ *  DELETE /api/fares/polimetriche/imports/:id/percorso?routeId=&variantId=
+ *      → rimuove un percorso dall'elenco dell'import (pulizia)
+ * ───────────────────────────────────────────────────────────── */
+router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise<void> => {
+  try {
+    await ensureTables();
+    const { routeId, variantId } = req.query as { routeId?: string; variantId?: string };
+    if (!routeId || !variantId) { res.status(400).json({ error: "routeId e variantId richiesti" }); return; }
+    const r = await db.execute<any>(sql`SELECT payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
+    const row = r.rows?.[0];
+    if (!row) { res.status(404).json({ error: "Import non trovato" }); return; }
+    const payload = row.payload as { agencyName: string | null; lines: Linea[] };
+    let removed = 0;
+    for (const l of payload.lines || []) {
+      const before = l.percorsi.length;
+      l.percorsi = l.percorsi.filter(p => !(p.variantId === variantId && (p.routeId === routeId || p.routeIds.includes(routeId))));
+      removed += before - l.percorsi.length;
+    }
+    payload.lines = (payload.lines || []).filter(l => l.percorsi.length > 0);
+    const percorsoCount = payload.lines.reduce((s, l) => s + l.percorsi.length, 0);
+    await db.execute(sql`
+      UPDATE polim_imports
+      SET payload = ${JSON.stringify(payload)}::jsonb, line_count = ${payload.lines.length}, percorso_count = ${percorsoCount}
+      WHERE id = ${req.params.id}`);
+    res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
+  } catch (e: any) {
+    console.error("[polimetriche] delete percorso", e);
     res.status(500).json({ error: e?.message || "Errore" });
   }
 });
