@@ -576,6 +576,40 @@ router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Prom
 });
 
 /* ─────────────────────────────────────────────────────────────
+ *  POST /api/fares/polimetriche/imports/:id/percorsi/delete
+ *      → rimuove PIÙ percorsi in un colpo solo. Body: { items: [{routeId, variantId}] }
+ * ───────────────────────────────────────────────────────────── */
+router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res): Promise<void> => {
+  try {
+    await ensureTables();
+    const items: { routeId: string; variantId: string }[] = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (items.length === 0) { res.status(400).json({ error: "Nessun percorso da eliminare" }); return; }
+    const keys = new Set(items.map(i => `${i.routeId}::${i.variantId}`));
+    const r = await db.execute<any>(sql`SELECT payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
+    const row = r.rows?.[0];
+    if (!row) { res.status(404).json({ error: "Import non trovato" }); return; }
+    const payload = row.payload as { agencyName: string | null; lines: Linea[] };
+    let removed = 0;
+    for (const l of payload.lines || []) {
+      const before = l.percorsi.length;
+      l.percorsi = l.percorsi.filter(p =>
+        !(keys.has(`${p.routeId}::${p.variantId}`) || p.routeIds.some(rid => keys.has(`${rid}::${p.variantId}`))));
+      removed += before - l.percorsi.length;
+    }
+    payload.lines = (payload.lines || []).filter(l => l.percorsi.length > 0);
+    const percorsoCount = payload.lines.reduce((s, l) => s + l.percorsi.length, 0);
+    await db.execute(sql`
+      UPDATE polim_imports
+      SET payload = ${JSON.stringify(payload)}::jsonb, line_count = ${payload.lines.length}, percorso_count = ${percorsoCount}
+      WHERE id = ${req.params.id}`);
+    res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
+  } catch (e: any) {
+    console.error("[polimetriche] batch delete percorsi", e);
+    res.status(500).json({ error: e?.message || "Errore" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
  *  GET /api/fares/polimetriche/saved?importId=
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/saved", async (req, res): Promise<void> => {
