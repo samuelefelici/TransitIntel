@@ -25,11 +25,17 @@ import {
 const API = () => getApiBase();
 const SEGMENT_KM = 6; // ogni 6 km → nuova tratta
 
-/* ── Palette tratte (colori distinti, ciclica) ───────────────── */
+/* ── Palette tratte (ordine richiesto: 1→9) ──────────────────── */
 const TRATTA_PALETTE = [
-  "#10b981", "#f59e0b", "#3b82f6", "#ef4444", "#a855f7", "#14b8a6",
-  "#ec4899", "#84cc16", "#f97316", "#06b6d4", "#8b5cf6", "#eab308",
-  "#22c55e", "#e11d48", "#0ea5e9", "#d946ef",
+  "#38bdf8", // 1 Azzurro
+  "#ef4444", // 2 Rosso
+  "#22c55e", // 3 Verde
+  "#eab308", // 4 Giallo
+  "#2563eb", // 5 Blu
+  "#8b4513", // 6 Marrone
+  "#ec4899", // 7 Rosa
+  "#9ca3af", // 8 Grigio
+  "#8b5cf6", // 9 Viola
 ];
 const trattaColor = (i: number) => TRATTA_PALETTE[i % TRATTA_PALETTE.length];
 
@@ -136,6 +142,24 @@ export default function FaresPolimetrichePage() {
   const [sel, setSel] = React.useState<{ lineCode: string; routeId: string; variantId: string } | null>(null);
   const [detail, setDetail] = React.useState<PercorsoDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = React.useState(false);
+
+  // larghezza ridimensionabile della sidebar linee
+  const [railWidth, setRailWidth] = React.useState(300);
+  const startRailDrag = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = railWidth;
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(640, Math.max(200, startW + (ev.clientX - startX)));
+      setRailWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [railWidth]);
 
   const refetchImports = React.useCallback(() => {
     fetch(`${API()}/api/fares/polimetriche/imports`)
@@ -272,9 +296,9 @@ export default function FaresPolimetrichePage() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
-        {/* Rail linee */}
-        <div className="min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden flex flex-col">
+      <div className="flex-1 min-h-0 flex">
+        {/* Rail linee (ridimensionabile) */}
+        <div style={{ width: railWidth }} className="shrink-0 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden flex flex-col">
           <div className="px-3 py-2 border-b border-emerald-900/40 text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60 flex items-center gap-2">
             <Layers className="w-3.5 h-3.5" /> Linee extraurbane
           </div>
@@ -285,8 +309,17 @@ export default function FaresPolimetrichePage() {
           )}
         </div>
 
+        {/* Splitter trascinabile */}
+        <div
+          onPointerDown={startRailDrag}
+          title="Trascina per ridimensionare la sidebar"
+          className="group/split w-2 mx-1 shrink-0 cursor-col-resize rounded flex items-center justify-center hover:bg-emerald-500/15 transition-colors"
+        >
+          <span className="w-[3px] h-10 rounded-full bg-emerald-800/50 group-hover/split:bg-emerald-400/60 transition-colors" />
+        </div>
+
         {/* Workspace percorso */}
-        <div className="min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
+        <div className="flex-1 min-w-0 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
           {!sel ? (
             <div className="h-full flex flex-col items-center justify-center text-center text-emerald-400/50 gap-3 px-6">
               <RouteIcon className="w-10 h-10 opacity-40" />
@@ -702,7 +735,8 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
             <div className="flex items-center justify-center py-10 text-emerald-400/40"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
             <StripDiagram stops={stops} boundaries={boundaries} trattaOf={trattaOf}
-              nodeNames={nodeNames} onSetBoundaries={setBoundaries} />
+              nodeNames={nodeNames} onSetBoundaries={setBoundaries}
+              onSetNodeName={(idx, val) => setNodeNames(prev => ({ ...prev, [idx]: val }))} />
           )}
         </div>
 
@@ -731,14 +765,12 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
                       </div>
                     )}
                   </div>
-                  {/* Nodo tariffario della tratta */}
-                  <input
-                    value={nodeNames[t.index] ?? ""}
-                    onChange={(e) => setNodeNames(prev => ({ ...prev, [t.index]: e.target.value }))}
-                    placeholder="Nodo tariffario…"
-                    className="mt-1.5 w-full text-[11px] px-2 py-1 rounded bg-emerald-950/60 border border-emerald-800/50 text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none focus:border-emerald-500/60"
-                    style={{ borderLeft: `3px solid ${t.color}` }}
-                  />
+                  {/* Nodo tariffario (modificabile nello strip a sinistra) */}
+                  {nodeNames[t.index] && (
+                    <p className="mt-1 text-[10px] text-emerald-300/80 truncate" style={{ borderLeft: `3px solid ${t.color}`, paddingLeft: 6 }}>
+                      🏷 {nodeNames[t.index]}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>
@@ -752,10 +784,11 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 /* ════════════════════════════════════════════════════════════════
  *  Strip diagram — elenco fermate con banda tratte e confini editabili
  * ════════════════════════════════════════════════════════════════ */
-function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries }: {
+function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries, onSetNodeName }: {
   stops: PStop[]; boundaries: number[]; trattaOf: number[];
   nodeNames: Record<number, string>;
   onSetBoundaries: (b: number[]) => void;
+  onSetNodeName: (idx: number, val: string) => void;
 }) {
   const rowRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   const dragRef = React.useRef<number | null>(null);          // confine in trascinamento (valore corrente)
@@ -850,6 +883,20 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries 
                 </button>
               )
             )}
+            {/* Header tratta: etichetta + NODO TARIFFARIO (editabile) */}
+            {isFirstOfTratta && (
+              <div className="flex items-center gap-2 mt-2 mb-1">
+                <span className="w-[3px] self-stretch shrink-0" style={{ background: color }} />
+                <span className="text-[10px] px-1.5 py-1 rounded font-bold shrink-0" style={{ background: `${color}22`, color }}>T{tIdx + 1}</span>
+                <input
+                  value={nodeNames[tIdx] ?? ""}
+                  onChange={(e) => onSetNodeName(tIdx, e.target.value)}
+                  placeholder="Nome nodo tariffario…"
+                  className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded bg-emerald-950/60 border text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none focus:border-emerald-400/70"
+                  style={{ borderColor: `${color}66`, borderLeftWidth: 3, borderLeftColor: color }}
+                />
+              </div>
+            )}
             {/* Fermata */}
             <div className="flex items-stretch gap-2">
               <span className="w-[3px] shrink-0" style={{ background: color }} />
@@ -859,11 +906,6 @@ function StripDiagram({ stops, boundaries, trattaOf, nodeNames, onSetBoundaries 
                 </span>
                 <span className="text-[10px] text-emerald-500/40 font-mono w-6 text-right shrink-0">{i + 1}</span>
                 <span className="flex-1 min-w-0 text-[13px] text-emerald-100 truncate">{s.stopName}</span>
-                {isFirstOfTratta && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded shrink-0 font-semibold max-w-[10rem] truncate" style={{ background: `${color}22`, color }}>
-                    T{tIdx + 1}{nodeNames[tIdx] ? ` · ${nodeNames[tIdx]}` : ""}
-                  </span>
-                )}
                 <span className="text-[10px] text-emerald-300/70 font-mono w-16 text-right shrink-0">{fmtKm(s.km)} km</span>
                 <span className="text-[10px] text-emerald-400/40 font-mono w-16 text-right shrink-0">
                   {i > 0 ? `+${fmtKm(s.distPrev)}` : "—"}
