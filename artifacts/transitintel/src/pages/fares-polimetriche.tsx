@@ -971,7 +971,7 @@ interface SavedPolimetrica {
   variantId: string; direction: string; name: string | null;
   totalKm: number | null; stopCount: number | null; trattaCount: number | null;
   stops: { stopName: string; km: number; tratta: number }[] | null;
-  tratte: { index: number; nodeName?: string; label?: string }[] | null;
+  tratte: { index: number; nodeName?: string; label?: string; km?: number; fromStopName?: string; toStopName?: string }[] | null;
 }
 
 const esc = (s: string) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
@@ -984,34 +984,35 @@ function gradoniCellColor(v: number, maxV: number): { bg: string; fg: string } {
 }
 
 function renderGradoniTable(p: SavedPolimetrica): string {
+  // Matrice triangolare NODO TARIFFARIO × NODO TARIFFARIO (una riga/colonna per tratta).
+  // Molto più compatta della versione fermata×fermata.
+  const tratte = (p.tratte || []).slice().sort((a, b) => a.index - b.index);
   const stops = p.stops || [];
-  if (stops.length < 2) return `<p class="empty">Percorso con meno di 2 fermate.</p>`;
-  const n = stops.length;
-  const maxV = stops[n - 1].tratta - stops[0].tratta + 1;
+  if (tratte.length < 1) return `<p class="empty">Nessuna tratta definita.</p>`;
+  const N = tratte.length;
+  const nodeLabel = (i: number) => (tratte[i].nodeName || "").trim() || tratte[i].label || `Tratta ${i + 1}`;
+  const maxV = N; // valore max = n. nodi (dal primo all'ultimo)
   let rows = "";
-  for (let r = 0; r < n; r++) {
+  for (let r = 0; r < N; r++) {
     let cells = "";
     for (let c = 0; c < r; c++) {
-      const v = stops[r].tratta - stops[c].tratta + 1; // n. tratte tra fermata c e r
+      const v = r - c + 1; // n. tratte tra nodo c e nodo r (inclusivo)
       const { bg, fg } = gradoniCellColor(v, maxV);
       cells += `<td class="v" style="background:${bg};color:${fg}">${v}</td>`;
     }
-    const col = trattaColor(stops[r].tratta);
-    cells += `<td class="name"><span class="dot" style="background:${col}"></span>${esc(stops[r].stopName)} <em>${fmtKm(stops[r].km)}</em></td>`;
+    const col = trattaColor(r);
+    const km = tratte[r].km != null ? ` <em>${fmtKm(tratte[r].km as number)} km</em>` : "";
+    cells += `<td class="name"><span class="dot" style="background:${col}"></span>${esc(nodeLabel(r))}${km}</td>`;
     rows += `<tr>${cells}</tr>`;
   }
   const dirLbl = p.direction === "BA" ? "Ritorno (invertito)" : "Andata (diretto)";
-  const tratteArr = p.tratte || [];
-  const legend = tratteArr.length
-    ? `<div class="legend">${tratteArr.map(t =>
-        `<span class="lg"><i style="background:${trattaColor(t.index)}"></i>T${t.index + 1}${t.nodeName ? ` · ${esc(t.nodeName)}` : ""}</span>`).join("")}</div>`
-    : "";
+  const first = stops[0]?.stopName ?? nodeLabel(0);
+  const last = stops[stops.length - 1]?.stopName ?? nodeLabel(N - 1);
   return `
     <section class="poli">
-      <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${stops[0].stopName} → ${stops[n - 1].stopName}`)}</h2>
-      <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? stops[n - 1].km)} km · ${p.trattaCount ?? maxV} tratte · ${n} fermate
-        <span class="hint">— il valore in cella è il <b>numero di tratte</b> tra le due fermate (fascia tariffaria).</span></p>
-      ${legend}
+      <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${first} → ${last}`)}</h2>
+      <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? 0)} km · ${N} nodi tariffari${stops.length ? ` · ${stops.length} fermate` : ""}
+        <span class="hint">— il valore è il <b>numero di tratte</b> tra i due nodi tariffari (fascia).</span></p>
       <table class="grad"><tbody>${rows}</tbody></table>
     </section>`;
 }
