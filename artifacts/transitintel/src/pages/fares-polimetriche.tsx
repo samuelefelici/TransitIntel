@@ -19,6 +19,7 @@ import {
   Upload, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
   ChevronRight, ChevronDown, Scissors, ArrowLeftRight, Check, Loader2,
   RefreshCw, ArrowRight, ListChecks, X, Milestone, ArrowUp, ArrowDown, Layers,
+  Download, GripHorizontal, Filter,
 } from "lucide-react";
 
 const API = () => getApiBase();
@@ -38,8 +39,8 @@ interface ImportSummary {
   lineCount: number; percorsoCount: number; createdAt: string;
 }
 interface PercorsoMeta {
-  variantId: string; routeId: string; direction: string;
-  tripCount: number; forwardCount: number; reverseCount: number;
+  variantId: string; routeId: string; directionId: number | null;
+  tripCount: number;
   firstStopName: string; lastStopName: string; stopCount: number;
   totalKm: number; distanceMethod: "shape" | "haversine";
   savedAB: boolean; savedBA: boolean;
@@ -53,10 +54,13 @@ interface PStop { stopId: string; stopName: string; lat: number; lon: number; km
 interface PercorsoDetail {
   lineCode: string; lineName: string;
   variantId: string; routeId: string; routeIds: string[];
+  directionId: number | null;
   tripCount: number; firstStopName: string; lastStopName: string;
   stopCount: number; totalKm: number; distanceMethod: "shape" | "haversine";
   stops: PStop[]; shape: [number, number][] | null;
 }
+
+const dirLabel = (d: number | null): string => d === 0 ? "Andata" : d === 1 ? "Ritorno" : "—";
 interface Tratta {
   index: number; label: string; color: string;
   fromStopIdx: number; toStopIdx: number;
@@ -187,6 +191,37 @@ export default function FaresPolimetrichePage() {
     if (next) setSel({ lineCode: next.lineCode, routeId: next.routeId, variantId: next.variantId });
   }, [sel, flatPercorsi]);
 
+  // elimina (pulisci) un percorso dall'elenco
+  const deletePercorso = React.useCallback((routeId: string, variantId: string) => {
+    if (!importId) return;
+    fetch(`${API()}/api/fares/polimetriche/imports/${importId}/percorso?routeId=${encodeURIComponent(routeId)}&variantId=${encodeURIComponent(variantId)}`, { method: "DELETE" })
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then(() => {
+        if (sel && sel.routeId === routeId && sel.variantId === variantId) { setSel(null); setDetail(null); }
+        loadTree(importId);
+      })
+      .catch(() => toast({ title: "Errore", description: "Impossibile eliminare il percorso", variant: "destructive" }));
+  }, [importId, sel, loadTree, toast]);
+
+  // export "a gradoni" (matrice triangolare) di tutte le polimetriche salvate
+  const [exporting, setExporting] = React.useState(false);
+  const exportGradoni = React.useCallback(async () => {
+    if (!importId) return;
+    setExporting(true);
+    try {
+      const rows = await fetch(`${API()}/api/fares/polimetriche/saved?importId=${importId}`).then(r => r.ok ? r.json() : []);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        toast({ title: "Nessuna polimetrica", description: "Salva almeno una polimetrica prima di esportare.", variant: "destructive" });
+        return;
+      }
+      openGradoniExport(rows, tree?.agencyName ?? null, tree?.filename ?? "");
+    } catch {
+      toast({ title: "Errore", description: "Export non riuscito", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
+  }, [importId, tree, toast]);
+
   /* ── Schermata import ──────────────────────────────────────── */
   if (!importId) {
     return (
@@ -220,6 +255,14 @@ export default function FaresPolimetrichePage() {
             <ListChecks className="w-3.5 h-3.5" /> {savedCount}/{flatPercorsi.length} salvati
           </span>
           <button
+            onClick={exportGradoni}
+            disabled={exporting || savedCount === 0}
+            title="Esporta tutte le polimetriche salvate come matrice triangolare a gradoni"
+            className="text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+          >
+            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Esporta a gradoni
+          </button>
+          <button
             onClick={() => { setImportId(null); setSel(null); setDetail(null); }}
             className="text-[12px] px-3 py-1.5 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 transition-colors"
           >
@@ -237,7 +280,7 @@ export default function FaresPolimetrichePage() {
           {loadingTree ? (
             <div className="flex-1 flex items-center justify-center text-emerald-400/50"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
-            <LinesRail lines={tree?.lines || []} sel={sel} onSelect={setSel} />
+            <LinesRail lines={tree?.lines || []} sel={sel} onSelect={setSel} onDeletePercorso={deletePercorso} />
           )}
         </div>
 
@@ -378,18 +421,48 @@ function ImportScreen({ imports, onImported, onSelect, onDelete, toast }: {
 /* ════════════════════════════════════════════════════════════════
  *  Rail linee → percorsi
  * ════════════════════════════════════════════════════════════════ */
-function LinesRail({ lines, sel, onSelect }: {
+function LinesRail({ lines, sel, onSelect, onDeletePercorso }: {
   lines: LineMeta[];
   sel: { lineCode: string; routeId: string; variantId: string } | null;
   onSelect: (s: { lineCode: string; routeId: string; variantId: string }) => void;
+  onDeletePercorso: (routeId: string, variantId: string) => void;
 }) {
   const [open, setOpen] = React.useState<Set<string>>(() => new Set(sel ? [sel.lineCode] : []));
   React.useEffect(() => { if (sel) setOpen(prev => new Set(prev).add(sel.lineCode)); }, [sel]);
   const toggle = (code: string) => setOpen(prev => { const n = new Set(prev); n.has(code) ? n.delete(code) : n.add(code); return n; });
 
+  const [dirFilter, setDirFilter] = React.useState<"all" | "0" | "1">("all");
+  const [confirmDel, setConfirmDel] = React.useState<string | null>(null); // `${routeId}:${variantId}`
+
+  // applica filtro direzione
+  const filteredLines = React.useMemo(() => {
+    if (dirFilter === "all") return lines;
+    const want = parseInt(dirFilter, 10);
+    return lines
+      .map(l => ({ ...l, percorsi: l.percorsi.filter(p => p.directionId === want) }))
+      .filter(l => l.percorsi.length > 0);
+  }, [lines, dirFilter]);
+
+  const FILTERS: { key: "all" | "0" | "1"; label: string }[] = [
+    { key: "all", label: "Tutti" }, { key: "0", label: "Andata" }, { key: "1", label: "Ritorno" },
+  ];
+
   return (
     <div className="flex-1 overflow-y-auto py-1">
-      {lines.map((l) => {
+      {/* Filtro direzione */}
+      <div className="px-2 pb-2 flex items-center gap-1">
+        <Filter className="w-3 h-3 text-emerald-400/40 shrink-0 ml-1 mr-0.5" />
+        {FILTERS.map(f => (
+          <button key={f.key} onClick={() => setDirFilter(f.key)}
+            className={`text-[10px] px-2 py-1 rounded-md transition-colors ${
+              dirFilter === f.key ? "bg-emerald-500/25 text-emerald-100" : "text-emerald-400/60 hover:bg-emerald-500/10"
+            }`}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {filteredLines.map((l) => {
         const isOpen = open.has(l.lineCode);
         const lineSaved = l.percorsi.filter(p => p.savedAB || p.savedBA).length;
         return (
@@ -408,22 +481,43 @@ function LinesRail({ lines, sel, onSelect }: {
                 {l.percorsi.map((p) => {
                   const active = sel?.routeId === p.routeId && sel?.variantId === p.variantId;
                   const done = p.savedAB || p.savedBA;
+                  const key = `${p.routeId}:${p.variantId}`;
+                  const confirming = confirmDel === key;
                   return (
-                    <button key={`${p.routeId}:${p.variantId}`}
-                      onClick={() => onSelect({ lineCode: l.lineCode, routeId: p.routeId, variantId: p.variantId })}
-                      className={`w-full flex items-start gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${
+                    <div key={key}
+                      className={`group/p flex items-start gap-1 px-2 py-1.5 rounded-lg transition-colors ${
                         active ? "bg-emerald-500/20 text-emerald-100" : "text-emerald-300/70 hover:bg-emerald-500/8"
                       }`}>
-                      {done
-                        ? <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                        : <RouteIcon className="w-3.5 h-3.5 text-emerald-500/40 shrink-0 mt-0.5" />}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[11px] leading-tight truncate">{p.firstStopName} → {p.lastStopName}</p>
-                        <p className="text-[9px] text-emerald-400/40 font-mono">
-                          {p.stopCount} ferm · {fmtKm(p.totalKm)} km · {p.tripCount} corse
-                        </p>
-                      </div>
-                    </button>
+                      <button onClick={() => onSelect({ lineCode: l.lineCode, routeId: p.routeId, variantId: p.variantId })}
+                        className="flex items-start gap-2 flex-1 min-w-0 text-left">
+                        {done
+                          ? <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                          : <RouteIcon className="w-3.5 h-3.5 text-emerald-500/40 shrink-0 mt-0.5" />}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] leading-tight truncate">{p.firstStopName} → {p.lastStopName}</p>
+                          <p className="text-[9px] text-emerald-400/40 font-mono flex items-center gap-1">
+                            {p.directionId != null && (
+                              <span className="px-1 rounded bg-emerald-500/15 text-emerald-300/80">{dirLabel(p.directionId)}</span>
+                            )}
+                            {p.stopCount} ferm · {fmtKm(p.totalKm)} km · {p.tripCount} corse
+                          </p>
+                        </div>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirming) { onDeletePercorso(p.routeId, p.variantId); setConfirmDel(null); }
+                          else { setConfirmDel(key); setTimeout(() => setConfirmDel(prev => prev === key ? null : prev), 3000); }
+                        }}
+                        title={confirming ? "Conferma eliminazione" : "Elimina percorso dall'elenco"}
+                        className={`shrink-0 p-1 rounded transition-all ${
+                          confirming
+                            ? "text-red-300 bg-red-500/25 opacity-100"
+                            : "text-emerald-400/40 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover/p:opacity-100"
+                        }`}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   );
                 })}
               </div>
@@ -431,8 +525,10 @@ function LinesRail({ lines, sel, onSelect }: {
           </div>
         );
       })}
-      {lines.length === 0 && (
-        <p className="px-3 py-4 text-[12px] text-emerald-400/40 italic">Nessuna linea extraurbana in questo import.</p>
+      {filteredLines.length === 0 && (
+        <p className="px-3 py-4 text-[12px] text-emerald-400/40 italic">
+          {lines.length === 0 ? "Nessuna linea extraurbana in questo import." : "Nessun percorso per il filtro selezionato."}
+        </p>
       )}
     </div>
   );
@@ -497,10 +593,6 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
   const tratte = React.useMemo(() => buildTratte(stops, boundaries), [stops, boundaries]);
   const trattaOf = React.useMemo(() => stopTrattaMap(stops, boundaries), [stops, boundaries]);
 
-  const toggleBoundary = (i: number) => {
-    if (i <= 0 || i >= stops.length) return;
-    setBoundaries(prev => prev.includes(i) ? prev.filter(x => x !== i) : [...prev, i].sort((a, b) => a - b));
-  };
   const moveBoundary = (i: number, dir: -1 | 1) => {
     const ni = i + dir;
     if (ni <= 0 || ni >= stops.length) return;
@@ -546,16 +638,20 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
           <p className="text-sm text-emerald-100 font-medium leading-tight truncate">
             {stops[0]?.stopName} <ArrowRight className="w-3.5 h-3.5 inline mx-0.5 text-emerald-400/60" /> {stops[stops.length - 1]?.stopName}
           </p>
-          <p className="text-[10px] text-emerald-400/50 font-mono">
+          <p className="text-[10px] text-emerald-400/50 font-mono flex items-center gap-1.5 flex-wrap">
+            {detail.directionId != null && (
+              <span className="px-1 rounded bg-emerald-500/15 text-emerald-300/80">verso GTFS: {dirLabel(detail.directionId)}</span>
+            )}
             {detail.stopCount} fermate · {fmtKm(stops[stops.length - 1]?.km ?? 0)} km · {detail.tripCount} corse · km via {detail.distanceMethod === "shape" ? "shape GTFS" : "haversine"}
           </p>
         </div>
 
         <div className="ml-auto flex items-center gap-2">
-          {/* Direzione */}
+          {/* Orientamento polimetrica: stesso percorso, diretto o invertito */}
           <button onClick={() => setDirection(d => d === "AB" ? "BA" : "AB")}
+            title="Costruisci la polimetrica per lo stesso percorso in senso diretto (Andata) o invertito (Ritorno). Si salvano separatamente."
             className="flex items-center gap-1.5 text-[12px] px-2.5 py-1.5 rounded-lg border border-emerald-700/50 text-emerald-200 hover:bg-emerald-500/10 transition-colors">
-            <ArrowLeftRight className="w-3.5 h-3.5" /> {direction === "AB" ? "Andata" : "Ritorno"}
+            <ArrowLeftRight className="w-3.5 h-3.5" /> {direction === "AB" ? "Andata (diretto)" : "Ritorno (invertito)"}
           </button>
           {savedThis && (
             <span className="text-[11px] px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
@@ -599,7 +695,7 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
             <div className="flex items-center justify-center py-10 text-emerald-400/40"><Loader2 className="w-5 h-5 animate-spin" /></div>
           ) : (
             <StripDiagram stops={stops} boundaries={boundaries} trattaOf={trattaOf}
-              onToggleBoundary={toggleBoundary} />
+              onSetBoundaries={setBoundaries} />
           )}
         </div>
 
@@ -639,46 +735,109 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 /* ════════════════════════════════════════════════════════════════
  *  Strip diagram — elenco fermate con banda tratte e confini editabili
  * ════════════════════════════════════════════════════════════════ */
-function StripDiagram({ stops, boundaries, trattaOf, onToggleBoundary }: {
+function StripDiagram({ stops, boundaries, trattaOf, onSetBoundaries }: {
   stops: PStop[]; boundaries: number[]; trattaOf: number[];
-  onToggleBoundary: (i: number) => void;
+  onSetBoundaries: (b: number[]) => void;
 }) {
+  const rowRefs = React.useRef<(HTMLDivElement | null)[]>([]);
+  const dragRef = React.useRef<number | null>(null);          // confine in trascinamento (valore corrente)
+  const boundsRef = React.useRef<number[]>(boundaries);       // copia autorevole durante il drag
+  const [activeDrag, setActiveDrag] = React.useState<number | null>(null);
+  // mantieni boundsRef allineato ai props quando NON stai trascinando
+  if (dragRef.current == null) boundsRef.current = boundaries;
+
+  const createBoundary = (i: number) => {
+    if (i <= 0 || i >= stops.length) return;
+    onSetBoundaries([...new Set([...boundaries, i])].sort((a, b) => a - b));
+  };
+  const removeBoundary = (i: number) => onSetBoundaries(boundaries.filter(x => x !== i));
+
+  // drag: listener globali, attivi solo quando dragRef != null
+  React.useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const cur = dragRef.current;
+      if (cur == null) return;
+      e.preventDefault();
+      // gap più vicino (1..n-1) confrontando con il bordo superiore della riga
+      let best = -1, bestD = Infinity;
+      for (let g = 1; g < stops.length; g++) {
+        const el = rowRefs.current[g];
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top;
+        const d = Math.abs(e.clientY - top);
+        if (d < bestD) { bestD = d; best = g; }
+      }
+      if (best < 0) return;
+      // non superare i confini adiacenti (partizioni: niente sovrapposizioni)
+      const others = boundsRef.current.filter(b => b !== cur);
+      const prev = others.filter(b => b < cur).reduce((m, b) => Math.max(m, b), 0);
+      const nextArr = others.filter(b => b > cur);
+      const next = nextArr.length ? Math.min(...nextArr) : stops.length;
+      let g = Math.min(Math.max(best, prev + 1), next - 1);
+      if (g < 1) g = 1; if (g > stops.length - 1) g = stops.length - 1;
+      if (g === cur) return;
+      const updated = [...others, g].sort((a, b) => a - b);
+      boundsRef.current = updated;
+      dragRef.current = g;
+      setActiveDrag(g);
+      onSetBoundaries(updated);
+    };
+    const onUp = () => { dragRef.current = null; setActiveDrag(null); };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [stops.length, onSetBoundaries]);
+
+  const startDrag = (i: number) => { dragRef.current = i; setActiveDrag(i); };
+
   return (
-    <div className="max-w-2xl">
+    <div className="max-w-2xl select-none">
       {stops.map((s, i) => {
         const tIdx = trattaOf[i];
         const color = trattaColor(tIdx);
         const isBoundary = boundaries.includes(i);
         const isFirstOfTratta = i === 0 || trattaOf[i - 1] !== tIdx;
         return (
-          <div key={`${s.stopId}-${i}`}>
-            {/* Divisore confine tra fermata i-1 e i */}
+          <div key={`${s.stopId}-${i}`} ref={(el) => { rowRefs.current[i] = el; }}>
+            {/* Confine tra fermata i-1 e i */}
             {i > 0 && (
-              <button
-                onClick={() => onToggleBoundary(i)}
-                title={isBoundary ? "Unisci alla tratta precedente" : "Inizia una nuova tratta qui"}
-                className="group/divider w-full flex items-center gap-2 h-5 -my-px"
-              >
-                {/* tratto verticale colorato continua */}
-                <span className="w-[3px] self-stretch shrink-0" style={{ background: isBoundary ? "transparent" : color }} />
-                <span className={`flex-1 flex items-center gap-2 text-[9px] transition-opacity ${
-                  isBoundary ? "text-emerald-300" : "text-emerald-500/0 group-hover/divider:text-emerald-400/70"
-                }`}>
-                  <span className="flex-1 border-t border-dashed border-emerald-700/0 group-hover/divider:border-emerald-600/50" />
-                  {isBoundary
-                    ? <span className="flex items-center gap-1"><Scissors className="w-2.5 h-2.5" /> nuova tratta · unisci</span>
-                    : <span className="flex items-center gap-1 opacity-0 group-hover/divider:opacity-100"><Scissors className="w-2.5 h-2.5" /> dividi qui</span>}
-                  <span className="flex-1 border-t border-dashed border-emerald-700/0 group-hover/divider:border-emerald-600/50" />
-                </span>
-              </button>
+              isBoundary ? (
+                <div className={`flex items-center gap-2 h-6 -my-px rounded ${activeDrag === i ? "bg-emerald-500/10" : ""}`}>
+                  <span className="w-[3px] self-stretch shrink-0 bg-transparent" />
+                  <div
+                    onPointerDown={(e) => { e.preventDefault(); startDrag(i); }}
+                    title="Trascina per spostare il confine di tratta"
+                    className="flex-1 flex items-center gap-1.5 cursor-grab active:cursor-grabbing text-[9px] font-medium"
+                    style={{ color: trattaColor(trattaOf[i]) }}
+                  >
+                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: trattaColor(trattaOf[i]) }} />
+                    <GripHorizontal className="w-3.5 h-3.5" />
+                    <span className="uppercase tracking-wide">confine · trascina</span>
+                    <span className="flex-1 border-t-2 border-dashed" style={{ borderColor: trattaColor(trattaOf[i]) }} />
+                  </div>
+                  <button onClick={() => removeBoundary(i)} title="Unisci alla tratta precedente"
+                    className="shrink-0 p-0.5 rounded text-emerald-400/50 hover:text-red-400 hover:bg-red-500/10">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <button onClick={() => createBoundary(i)} title="Dividi: inizia una nuova tratta qui"
+                  className="group/divider w-full flex items-center gap-2 h-4 -my-px">
+                  <span className="w-[3px] self-stretch shrink-0" style={{ background: color }} />
+                  <span className="flex-1 flex items-center gap-2 text-[9px] text-emerald-500/0 group-hover/divider:text-emerald-400/70 transition-opacity">
+                    <span className="flex-1 border-t border-dashed border-emerald-700/0 group-hover/divider:border-emerald-600/50" />
+                    <span className="flex items-center gap-1 opacity-0 group-hover/divider:opacity-100"><Scissors className="w-2.5 h-2.5" /> dividi qui</span>
+                    <span className="flex-1 border-t border-dashed border-emerald-700/0 group-hover/divider:border-emerald-600/50" />
+                  </span>
+                </button>
+              )
             )}
             {/* Fermata */}
             <div className="flex items-stretch gap-2">
-              {/* banda colore tratta */}
               <span className="w-[3px] shrink-0" style={{ background: color }} />
               <div className="flex items-center gap-3 flex-1 py-1.5">
                 <span className="relative flex items-center justify-center shrink-0">
-                  <span className="w-2.5 h-2.5 rounded-full ring-2" style={{ background: color, boxShadow: `0 0 0 2px rgba(0,0,0,0.3)` }} />
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ background: color, boxShadow: `0 0 0 2px rgba(0,0,0,0.3)` }} />
                 </span>
                 <span className="text-[10px] text-emerald-500/40 font-mono w-6 text-right shrink-0">{i + 1}</span>
                 <span className="flex-1 min-w-0 text-[13px] text-emerald-100 truncate">{s.stopName}</span>
@@ -742,4 +901,95 @@ function RoutePreviewSvg({ stops, shape, trattaOf }: {
       </svg>
     </div>
   );
+}
+
+/* ════════════════════════════════════════════════════════════════
+ *  Export "a gradoni" — matrice triangolare delle polimetriche salvate
+ * ════════════════════════════════════════════════════════════════ */
+interface SavedPolimetrica {
+  id: string; routeId: string; lineCode: string | null; lineName: string | null;
+  variantId: string; direction: string; name: string | null;
+  totalKm: number | null; stopCount: number | null; trattaCount: number | null;
+  stops: { stopName: string; km: number; tratta: number }[] | null;
+}
+
+const esc = (s: string) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+
+/** colore cella in base al numero di tratte (più tratte = più scuro). */
+function gradoniCellColor(v: number, maxV: number): { bg: string; fg: string } {
+  const t = maxV <= 1 ? 0 : (v - 1) / (maxV - 1);
+  const L = Math.round(88 - t * 45); // 88% → 43%
+  return { bg: `hsl(152,55%,${L}%)`, fg: L < 60 ? "#ffffff" : "#064e3b" };
+}
+
+function renderGradoniTable(p: SavedPolimetrica): string {
+  const stops = p.stops || [];
+  if (stops.length < 2) return `<p class="empty">Percorso con meno di 2 fermate.</p>`;
+  const n = stops.length;
+  const maxV = stops[n - 1].tratta - stops[0].tratta + 1;
+  let rows = "";
+  for (let r = 0; r < n; r++) {
+    let cells = "";
+    for (let c = 0; c < r; c++) {
+      const v = stops[r].tratta - stops[c].tratta + 1; // n. tratte tra fermata c e r
+      const { bg, fg } = gradoniCellColor(v, maxV);
+      cells += `<td class="v" style="background:${bg};color:${fg}">${v}</td>`;
+    }
+    const col = trattaColor(stops[r].tratta);
+    cells += `<td class="name"><span class="dot" style="background:${col}"></span>${esc(stops[r].stopName)} <em>${fmtKm(stops[r].km)}</em></td>`;
+    rows += `<tr>${cells}</tr>`;
+  }
+  const dirLbl = p.direction === "BA" ? "Ritorno (invertito)" : "Andata (diretto)";
+  return `
+    <section class="poli">
+      <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${stops[0].stopName} → ${stops[n - 1].stopName}`)}</h2>
+      <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? stops[n - 1].km)} km · ${p.trattaCount ?? maxV} tratte · ${n} fermate
+        <span class="hint">— il valore in cella è il <b>numero di tratte</b> tra le due fermate (fascia tariffaria).</span></p>
+      <table class="grad"><tbody>${rows}</tbody></table>
+    </section>`;
+}
+
+function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, filename: string) {
+  // ordina per linea/codice
+  const sorted = [...rows].sort((a, b) =>
+    (a.lineCode || "").localeCompare(b.lineCode || "", "it", { numeric: true }) ||
+    (a.direction || "").localeCompare(b.direction || ""));
+  const body = sorted.map(renderGradoniTable).join("\n");
+  const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
+<title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
+<style>
+  :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  body{margin:0;padding:24px;color:#0f172a;background:#f8fafc}
+  header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;border-bottom:2px solid #10b981;padding-bottom:12px}
+  header h1{font-size:18px;margin:0;color:#065f46}
+  header .sub{font-size:12px;color:#475569;margin-top:2px}
+  button.print{background:#10b981;color:#053b2c;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+  section.poli{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;margin-bottom:18px;break-inside:avoid}
+  section.poli h2{font-size:15px;margin:0 0 2px;color:#0f172a}
+  .meta{font-size:11px;color:#64748b;margin:0 0 10px}
+  .meta .hint{color:#94a3b8}
+  table.grad{border-collapse:collapse;font-size:9px}
+  table.grad td{border:1px solid #e2e8f0;text-align:center;height:16px;min-width:16px;padding:0 2px}
+  table.grad td.v{font-variant-numeric:tabular-nums;font-weight:600}
+  table.grad td.name{text-align:left;white-space:nowrap;padding:0 6px;font-weight:500;background:#fff;border-left:2px solid #cbd5e1}
+  table.grad td.name em{color:#94a3b8;font-style:normal;font-size:8px;margin-left:4px}
+  .name .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .empty{color:#94a3b8;font-style:italic}
+  @media print{body{background:#fff;padding:0}button.print{display:none}header{position:static}}
+</style></head>
+<body>
+  <header>
+    <div>
+      <h1>Polimetriche a gradoni${agencyName ? " · " + esc(agencyName) : ""}</h1>
+      <div class="sub">${esc(filename || "")} · ${sorted.length} polimetriche · generato il ${new Date().toLocaleString("it-IT")}</div>
+    </div>
+    <button class="print" onclick="window.print()">Stampa / Salva PDF</button>
+  </header>
+  ${body || '<p class="empty">Nessuna polimetrica.</p>'}
+</body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
 }
