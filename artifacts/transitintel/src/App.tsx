@@ -13,6 +13,9 @@ import VirgilioController from "@/components/VirgilioController";
 const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
 const OperationsPage = lazy(() => import("@/pages/operations"));
+const TimetablesPage = lazy(() => import("@/pages/timetables"));
+const RosterPage = lazy(() => import("@/pages/roster"));
+const ServiceDbPage = lazy(() => import("@/pages/service-db"));
 const Traffic = lazy(() => import("@/pages/traffic"));
 const Territory = lazy(() => import("@/pages/territory"));
 const NetworkPage = lazy(() => import("@/pages/network"));
@@ -50,6 +53,7 @@ const PlanningStudioTripsPage = lazy(() => import("@/pages/planning-studio/Trips
 const PlanningStudioNetworkPage = lazy(() => import("@/pages/planning-studio/NetworkPage"));
 const PlanningStudioValidityPage = lazy(() => import("@/pages/planning-studio/ValidityPage"));
 const PlanningStudioValidityUnitsPage = lazy(() => import("@/pages/planning-studio/ValidityUnitsPage"));
+const PlanningStudioCalendarProfilePage = lazy(() => import("@/pages/planning-studio/CalendarProfilePage"));
 const NetworkEngineHub = lazy(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const NotFound = lazy(() => import("@/pages/not-found"));
@@ -101,6 +105,9 @@ function Router() {
             <Route path="/dashboard" component={Dashboard} />
             <Route path="/operations">
               <Gated perm="analytics"><OperationsPage /></Gated>
+            </Route>
+            <Route path="/timetables">
+              <Gated perm="analytics"><TimetablesPage /></Gated>
             </Route>
             <Route path="/traffic">
               <Gated perm="analytics"><Traffic /></Gated>
@@ -176,6 +183,9 @@ function Router() {
             <Route path="/planning-studio/:id/validity-units">
               <Gated perm="network"><PlanningStudioValidityUnitsPage /></Gated>
             </Route>
+            <Route path="/planning-studio/:id/calendar">
+              <Gated perm="network"><PlanningStudioCalendarProfilePage /></Gated>
+            </Route>
 
             {/* Bigliettazione (fares) */}
             <Route path="/fares-engine">
@@ -227,6 +237,12 @@ function Router() {
             </Route>
             <Route path="/optimization">
               <Gated perm="scheduling"><OptimizationPage /></Gated>
+            </Route>
+            <Route path="/roster">
+              <Gated perm="scheduling"><RosterPage /></Gated>
+            </Route>
+            <Route path="/service-db">
+              <Gated perm="scheduling"><ServiceDbPage /></Gated>
             </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono

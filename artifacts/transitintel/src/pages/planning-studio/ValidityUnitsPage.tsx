@@ -101,6 +101,11 @@ export default function PlanningStudioValidityUnitsPage() {
             Insiemi univoci di (categoria · day-type · corse attive) raggruppati per giorni equivalenti.
           </span>
           <div className="ml-auto flex items-center gap-2">
+            <Link href={`/planning-studio/${projectId}/calendar`}>
+              <button className="px-3 py-1.5 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1.5">
+                <CalendarIcon className="h-4 w-4" /> Calendario aziendale
+              </button>
+            </Link>
             <Link href={`/planning-studio/${projectId}/validity`}>
               <button className="px-3 py-1.5 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1.5">
                 <CalendarIcon className="h-4 w-4" /> Vai alla matrice di validità

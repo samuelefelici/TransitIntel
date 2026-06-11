@@ -365,6 +365,21 @@ async function ensurePsTables(): Promise<void> {
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_sp_project ON ps_service_periods(project_id)`);
 
+    /* Programma di esercizio: feed materializzato + flag operativo sui feed.
+       (le stesse ALTER vivono anche in planning-studio-materialize.ts e
+       gtfs-upload: qui garantiamo che la lista progetti non dipenda
+       dall'ordine di bootstrap dei moduli) */
+    await db.execute(sql`
+      ALTER TABLE ps_projects
+      ADD COLUMN IF NOT EXISTS materialized_feed_id uuid,
+      ADD COLUMN IF NOT EXISTS materialized_at timestamptz
+    `);
+    await db.execute(sql`
+      ALTER TABLE gtfs_feeds
+      ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false
+    `);
+
     bootstrapped = true;
     console.log("[planning-studio] tables ready (epic schema v2)");
   } catch (e: any) {
@@ -406,6 +421,10 @@ function rowToProject(r: any) {
     memberCount: r.member_count != null ? Number(r.member_count) : undefined,
     myRole: r.my_role ?? (r.owner_user_id ? "owner" : undefined),
     counts: r.counts ?? undefined,
+    materializedFeedId: r.materialized_feed_id ?? null,
+    materializedAt: r.materialized_at ?? null,
+    // "Programma di esercizio operativo": il feed materializzato è quello attivo
+    isOperational: r.is_operational != null ? !!r.is_operational : undefined,
   };
 }
 
@@ -592,13 +611,15 @@ router.get("/planning-studio/projects", async (req, res) => {
            u.full_name AS owner_full_name,
            (SELECT count(*)::int FROM ps_project_members pm2 WHERE pm2.project_id = p.id) AS member_count,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
-                ELSE pm.role END AS my_role
+                ELSE pm.role END AS my_role,
+           (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)) AS is_operational
       FROM ps_projects p
       LEFT JOIN users u ON u.id = p.owner_user_id
+      LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
       LEFT JOIN ps_project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
      WHERE p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL
-     ORDER BY p.updated_at DESC
+     ORDER BY is_operational DESC, p.updated_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
   res.json({ projects: rows.map(rowToProject) });
@@ -621,6 +642,41 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   await logActivity(row.id, userId, "ps.project.create", { payload: { name } });
   res.json({ project: rowToProject({ ...row, my_role: "owner" }) });
+});
+
+/* POST /api/planning-studio/projects/:id/activate — "Metti in esercizio".
+ *
+ * Il flusso aziendale prevede più programmi di esercizio ma UNO SOLO operativo:
+ * questo endpoint promuove il feed materializzato del progetto a feed attivo
+ * (is_active + is_default esclusivi su gtfs_feeds). Da quel momento tutto il
+ * resto del sistema — Sala Operativa, AVM Caronte, GTFS-RT, tariffe — risolve
+ * automaticamente questo feed (getLatestFeedId / ORDER BY is_active DESC).
+ */
+router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
+  if (!proj.materialized_feed_id) {
+    res.status(400).json({
+      error: "Il programma non è ancora materializzato: esegui prima la sincronizzazione (PS → feed GTFS), poi mettilo in esercizio.",
+    });
+    return;
+  }
+  const feedCheck = await db.execute(sql`SELECT id FROM gtfs_feeds WHERE id = ${proj.materialized_feed_id}::uuid LIMIT 1`);
+  if (!((feedCheck as any).rows?.[0] ?? (feedCheck as any)[0])) {
+    res.status(409).json({ error: "Il feed materializzato non esiste più: rimaterializza il programma e riprova." });
+    return;
+  }
+
+  await db.execute(sql`
+    UPDATE gtfs_feeds
+       SET is_active = (id = ${proj.materialized_feed_id}::uuid),
+           is_default = (id = ${proj.materialized_feed_id}::uuid)
+  `);
+  await logActivity(proj.id, req.user!.id, "ps.project.activate", {
+    targetType: "feed", targetId: proj.materialized_feed_id,
+    payload: { name: proj.name },
+  });
+  res.json({ ok: true, feedId: proj.materialized_feed_id });
 });
 
 // GET /api/planning-studio/projects/:id — dettaglio + counts

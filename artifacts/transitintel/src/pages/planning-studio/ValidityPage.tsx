@@ -2108,6 +2108,10 @@ function ComputeUnitsDialog(props: {
 }) {
   const [from, setFrom] = useState(props.range.from);
   const [to, setTo] = useState(props.range.to);
+  // tolleranza Jaccard (%): fonde i giorni quasi-uguali dentro la stessa
+  // foglia del calendario aziendale → meno unità, eccezioni marcate
+  const [tolerancePct, setTolerancePct] = useState(0);
+  const [exactGroups, setExactGroups] = useState<number | null>(null);
   const [groups, setGroups] = useState<PsValidityUnitComputed[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Record<string, string>>({});
@@ -2121,16 +2125,17 @@ function ComputeUnitsDialog(props: {
   }, [props.range.from, props.range.to]);
 
   const computeMut = useMutation({
-    mutationFn: () => computePsValidityUnits(props.projectId, { from, to }),
+    mutationFn: () => computePsValidityUnits(props.projectId, { from, to, tolerance: tolerancePct / 100 }),
     onSuccess: (res) => {
       setGroups(res.units);
+      setExactGroups(res.exactGroups ?? null);
       const all = new Set<string>(res.units.map((g) => g.validityId));
       setSelected(all);
       const n: Record<string, string> = {};
       for (const g of res.units) {
-        const cat = g.categoryName ?? "Generico";
-        const dt = g.dayTypeName ?? "—";
-        n[g.validityId] = `${cat} · ${dt} (${g.tripCount} corse)`;
+        // nome proposto: foglia del calendario aziendale se disponibile
+        const base = g.leafLabel ?? `${g.categoryName ?? "Generico"} · ${g.dayTypeName ?? "—"}`;
+        n[g.validityId] = `${base} (${g.tripCount} corse)`;
       }
       setNames(n);
     },
@@ -2205,6 +2210,16 @@ function ComputeUnitsDialog(props: {
               className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
             />
           </label>
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 min-w-36">
+            Tolleranza fusione <span className="text-indigo-300 font-mono normal-case">{tolerancePct}%</span>
+            <input
+              type="range" min={0} max={10} step={1}
+              value={tolerancePct}
+              onChange={(e) => setTolerancePct(Number(e.target.value))}
+              title="0% = solo giorni identici. Con 2–5% i giorni quasi-uguali della stessa classe (es. feriale scolastico) si fondono in un'unica unità."
+              className="block mt-2 w-full accent-indigo-500"
+            />
+          </label>
           <button
             onClick={() => computeMut.mutate()}
             disabled={!from || !to || computeMut.isPending}
@@ -2215,7 +2230,10 @@ function ComputeUnitsDialog(props: {
           </button>
           {groups && (
             <div className="ml-auto text-xs text-slate-400">
-              <span className="text-slate-200 font-semibold">{groups.length}</span> gruppi · <span className="text-indigo-300 font-semibold">{selected.size}</span> selezionati
+              <span className="text-slate-200 font-semibold">{groups.length}</span> unità
+              {exactGroups != null && exactGroups !== groups.length && (
+                <span className="text-emerald-400"> (da {exactGroups} gruppi esatti)</span>
+              )} · <span className="text-indigo-300 font-semibold">{selected.size}</span> selezionate
             </div>
           )}
         </div>
