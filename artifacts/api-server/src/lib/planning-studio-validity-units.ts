@@ -168,6 +168,52 @@ interface ComputedUnit {
   tripCount: number;
   dates: string[];
   dayCount: number;
+  /** foglia del calendario aziendale (albero validità a 3 livelli), se configurato */
+  leafKey: string | null;
+  leafLabel: string | null;
+  /** quanti gruppi esatti sono stati fusi in questa unità (tolleranza Jaccard) */
+  mergedCount?: number;
+}
+
+/** distanza di Jaccard tra insiemi di corse: 0 = identici, 1 = disgiunti */
+function jaccardDistance(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) return 0;
+  const sa = new Set(a);
+  let inter = 0;
+  for (const x of b) if (sa.has(x)) inter++;
+  const union = a.length + b.length - inter;
+  return union === 0 ? 0 : 1 - inter / union;
+}
+
+/**
+ * Fonde i gruppi esatti quasi-uguali DENTRO la stessa foglia del calendario
+ * (mai tra foglie: feriale/sabato/festivo restano separati per contratto).
+ * Greedy: parte dal gruppo con più giorni e assorbe i gruppi della stessa
+ * foglia con distanza di Jaccard ≤ tolerance. Deterministico e spiegabile.
+ */
+function mergeUnitsByJaccard(units: ComputedUnit[], tolerance: number): ComputedUnit[] {
+  if (tolerance <= 0) return units;
+  const sorted = [...units].sort((a, b) => b.dayCount - a.dayCount);
+  const out: ComputedUnit[] = [];
+  const absorbed = new Set<string>();
+  for (const u of sorted) {
+    if (absorbed.has(u.validityId)) continue;
+    const rep: ComputedUnit = { ...u, dates: [...u.dates], mergedCount: 1 };
+    for (const v of sorted) {
+      if (v === u || absorbed.has(v.validityId)) continue;
+      const sameLeaf = (rep.leafKey ?? `dt:${rep.dayTypeId}`) === (v.leafKey ?? `dt:${v.dayTypeId}`);
+      if (!sameLeaf) continue;
+      if (jaccardDistance(rep.tripIds, v.tripIds) <= tolerance) {
+        rep.dates.push(...v.dates);
+        rep.dayCount += v.dayCount;
+        rep.mergedCount = (rep.mergedCount ?? 1) + 1;
+        absorbed.add(v.validityId);
+      }
+    }
+    rep.dates.sort();
+    out.push(rep);
+  }
+  return out;
 }
 
 /* ────────── POST /compute (preview, no save) ────────── */
@@ -182,6 +228,8 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
   if (!isValidISODate(from) || !isValidISODate(to) || from > to) {
     res.status(400).json({ error: "from_to_required" }); return;
   }
+  // tolleranza Jaccard 0–10%: 0 = solo gruppi esatti (comportamento storico)
+  const tolerance = Math.min(Math.max(Number(req.body?.tolerance) || 0, 0), 0.1);
   const dates = isoRange(from, to);
   if (dates.length > 731) { // max ~2 anni
     res.status(400).json({ error: "range_too_large", maxDays: 731 }); return;
@@ -210,6 +258,22 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
 
     // Day-type per data
     const dtMap = await buildDayTypeMap(proj.id, dates, patronSaints);
+
+    // Calendario aziendale (albero validità a 3 livelli): se configurato, ogni
+    // data ha una foglia (Scuole Aperte / Chiuse Inv-Est / Festivo Dom-Rosso)
+    // che fa da partizione hard per i gruppi e per il merge a tolleranza.
+    const { loadCalendarProfile } = await import("./planning-studio-calendar");
+    const { classifyDate, italianHolidays } = await import("./day-classifier");
+    const calProfile = await loadCalendarProfile(proj.id);
+    const calConfigured = calProfile.schoolPeriods.length > 0 || !!calProfile.summerPeriod;
+    const holidaysByYear = new Map<number, Set<string>>();
+    const leafOf = (d: string): { key: string; label: string } | null => {
+      if (!calConfigured) return null;
+      const y = Number(d.slice(0, 4));
+      if (!holidaysByYear.has(y)) holidaysByYear.set(y, italianHolidays(y));
+      const c = classifyDate(d, calProfile, holidaysByYear.get(y));
+      return { key: c.key, label: c.label };
+    };
 
     // Day-type metadata
     const dtIds = Array.from(new Set(Array.from(dtMap.values()).filter(Boolean) as string[]));
@@ -286,7 +350,8 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       }
       active.sort();
 
-      const hashSrc = `${cat?.id ?? "null"}|${dtId ?? "null"}|${active.join(",")}`;
+      const leaf = leafOf(d);
+      const hashSrc = `${leaf?.key ?? "null"}|${cat?.id ?? "null"}|${dtId ?? "null"}|${active.join(",")}`;
       const validityId = createHash("sha256").update(hashSrc).digest("hex").slice(0, 32);
 
       const existing = groups.get(validityId);
@@ -306,6 +371,8 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
           tripCount: active.length,
           dates: [d],
           dayCount: 1,
+          leafKey: leaf?.key ?? null,
+          leafLabel: leaf?.label ?? null,
         });
       }
     }
@@ -316,11 +383,18 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     `);
     const savedSet = new Set<string>(((savedR as any).rows ?? []).map((r: any) => r.validity_id));
 
-    const list = Array.from(groups.values())
+    const exactCount = groups.size;
+    const merged = mergeUnitsByJaccard(Array.from(groups.values()), tolerance);
+    const list = merged
       .sort((a, b) => b.dayCount - a.dayCount)
       .map((u) => ({ ...u, alreadySaved: savedSet.has(u.validityId) }));
 
-    res.json({ from, to, totalDays: dates.length, totalGroups: list.length, units: list });
+    res.json({
+      from, to, totalDays: dates.length,
+      totalGroups: list.length, exactGroups: exactCount, tolerance,
+      calendarConfigured: calConfigured,
+      units: list,
+    });
   } catch (e: any) {
     console.error("[ps-validity-units.compute] error:", e?.message || e);
     res.status(500).json({ error: e?.message || "internal_error" });

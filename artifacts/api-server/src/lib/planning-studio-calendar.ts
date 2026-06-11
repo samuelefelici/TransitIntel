@@ -36,6 +36,11 @@ router.use(async (_req, _res, next) => { await ensureTable(); next(); });
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+export async function loadCalendarProfile(projectId: string): Promise<CalendarProfile> {
+  await ensureTable();
+  return loadProfile(projectId);
+}
+
 async function loadProfile(projectId: string): Promise<CalendarProfile> {
   const r = await db.execute<any>(sql`
     SELECT school_periods, summer_period, extra_holidays

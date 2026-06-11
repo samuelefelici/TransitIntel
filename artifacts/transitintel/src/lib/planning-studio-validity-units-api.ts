@@ -91,6 +91,11 @@ export interface PsValidityUnitComputed {
   dates: string[];
   dayCount: number;
   alreadySaved: boolean;
+  /** foglia del calendario aziendale (albero validità), se configurato */
+  leafKey?: string | null;
+  leafLabel?: string | null;
+  /** gruppi esatti fusi in questa unità (merge a tolleranza Jaccard) */
+  mergedCount?: number;
 }
 
 export interface PsValidityUnit {
@@ -114,7 +119,13 @@ export interface PsValidityUnit {
 
 export function computePsValidityUnits(projectId: string, input: {
   from: string; to: string;
-}): Promise<{ from: string; to: string; totalDays: number; totalGroups: number; units: PsValidityUnitComputed[] }> {
+  /** tolleranza Jaccard 0–0.1: fonde i giorni quasi-uguali nella stessa foglia */
+  tolerance?: number;
+}): Promise<{
+  from: string; to: string; totalDays: number; totalGroups: number;
+  exactGroups?: number; tolerance?: number; calendarConfigured?: boolean;
+  units: PsValidityUnitComputed[];
+}> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/validity-units/compute`, {
     method: "POST",
     body: JSON.stringify(input),
