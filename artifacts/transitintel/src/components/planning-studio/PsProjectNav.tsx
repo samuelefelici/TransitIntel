@@ -17,6 +17,7 @@ import {
   CalendarCheck,
   Boxes,
   Network,
+  Landmark,
   type LucideIcon,
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ const TABS: NavTab[] = [
   { label: "Corse", segment: "/trips", icon: Bus },
   { label: "Validità", segment: "/validity", icon: CalendarCheck },
   { label: "Unità", segment: "/validity-units", icon: Boxes },
+  { label: "Zonizzazione", segment: "/zones", icon: Landmark },
   { label: "Rete", segment: "/network", icon: Network },
 ];
 

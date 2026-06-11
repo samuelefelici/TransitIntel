@@ -53,6 +53,7 @@ import planningStudioValidityRouter from "../lib/planning-studio-validity";
 import planningStudioValidityCategoriesRouter from "../lib/planning-studio-validity-categories";
 import planningStudioValidityUnitsRouter from "../lib/planning-studio-validity-units";
 import planningStudioCalendarRouter from "../lib/planning-studio-calendar";
+import planningStudioZonesRouter from "../lib/planning-studio-zones";
 
 const router: IRouter = Router();
 
@@ -113,5 +114,6 @@ router.use(planningStudioValidityRouter);
 router.use(planningStudioValidityCategoriesRouter);
 router.use(planningStudioValidityUnitsRouter);
 router.use(planningStudioCalendarRouter); // calendario aziendale + classificazione giorni (albero validità)
+router.use(planningStudioZonesRouter); // zonizzazione: confini comunali + km sviluppati per comune
 
 export default router;
