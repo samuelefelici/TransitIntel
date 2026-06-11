@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Network, Bus, MapPin, Search, ChevronRight, Loader2,
@@ -115,6 +116,7 @@ export default function PlanningStudioNetworkPage() {
           </span>
         )}
       </div>
+      <PsProjectNav projectId={projectId} />
 
       {/* 3 colonne */}
       <div className="flex-1 flex overflow-hidden">
@@ -472,7 +474,7 @@ function StopDetailPanel({ projectId, stopId, onDrillVariant, onDrillRoute, acti
 
       {/* Cluster */}
       {d.cluster && (
-        <Section title="Cluster di appartenenza" icon={<Layers className="w-3.5 h-3.5" />}>
+        <Section title="Nodo di appartenenza" icon={<Layers className="w-3.5 h-3.5" />}>
           <div className="text-xs text-slate-300">
             {d.cluster.name}
             {d.cluster.kind === "interchange" && (

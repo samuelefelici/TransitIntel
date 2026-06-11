@@ -10,6 +10,7 @@
  */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation, useParams, Link } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import Map, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -96,7 +97,7 @@ export default function PlanningStudioClustersPage() {
     onSuccess: (c) => {
       qc.invalidateQueries({ queryKey: ["ps", projectId, "clusters"] });
       setSelectedId(c.id);
-      toast.success("Cluster creato");
+      toast.success("Nodo creato");
     },
     onError: (e: any) => toast.error(e?.message || "Errore creazione cluster"),
   });
@@ -112,7 +113,7 @@ export default function PlanningStudioClustersPage() {
       qc.invalidateQueries({ queryKey: ["ps", projectId, "clusters"] });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "stops"] });
       if (selectedId === id) setSelectedId(null);
-      toast.success("Cluster eliminato");
+      toast.success("Nodo eliminato");
     },
     onError: (e: any) => toast.error(e?.message || "Errore eliminazione"),
   });
@@ -353,7 +354,7 @@ export default function PlanningStudioClustersPage() {
         </Link>
         <div className="flex items-center gap-2">
           <Layers className="w-5 h-5 text-cyan-400" />
-          <h1 className="font-semibold text-sm">Cluster fermate</h1>
+          <h1 className="font-semibold text-sm">Nodi di scambio</h1>
         </div>
         {project && (
           <span className="text-xs text-slate-500 ml-2">
@@ -385,6 +386,7 @@ export default function PlanningStudioClustersPage() {
           <Plus className="w-4 h-4" /> Nuovo cluster
         </button>
       </div>
+      <PsProjectNav projectId={projectId} />
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar sx */}
         <div className="w-[380px] border-r border-slate-800 bg-slate-900/60 flex flex-col">

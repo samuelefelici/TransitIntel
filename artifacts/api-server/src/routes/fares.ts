@@ -2717,13 +2717,17 @@ router.put("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
       .where(and(eq(gtfsTrips.feedId, feedId), eq(gtfsTrips.routeId, routeId)));
     const tripIds = trips.map(t => t.tripId);
 
+    // Array come literal Postgres quotato: l'interpolazione diretta di un
+    // array JS genera una tupla ($1,$2,…) non valida dentro ANY().
+    const tripIdsLiteral = `{${tripIds.map((t) => `"${String(t).replace(/"/g, '\\"')}"`).join(",")}}`;
+
     let updated = 0;
     for (const u of updates) {
       const result = await db.execute(sql`
         UPDATE gtfs_stop_times
         SET pickup_type = ${u.pickupType}, drop_off_type = ${u.dropOffType}
         WHERE feed_id = ${feedId} AND stop_id = ${u.stopId}
-          AND trip_id = ANY(${tripIds})
+          AND trip_id = ANY(${tripIdsLiteral}::text[])
       `);
       updated += (result as any).rowCount || 0;
     }
