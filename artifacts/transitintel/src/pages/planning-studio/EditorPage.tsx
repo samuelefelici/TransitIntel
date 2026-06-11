@@ -26,7 +26,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
-  CalendarCheck, Eye, EyeOff, Box,
+  CalendarCheck, Eye, EyeOff, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import { getApiBase } from "@/lib/api";
@@ -65,6 +65,24 @@ interface GlobalDepot {
   lat: number | null; lon: number | null;
   address?: string | null;
   capacity?: number | null;
+}
+
+/* ─── Nodi (ps_stop_clusters): tipo Logico vs Di cambio ───
+ * Storage: due flag indipendenti in attributes.isLogical / attributes.isInterchange.
+ * Backward-compat: se i flag sono assenti si derivano dall'enum legacy `kind`.
+ * Un nodo può essere logico oppure logico+di cambio: la forma sulla mappa
+ * riflette il tipo (● = logico, ▲ = logico e di cambio). */
+function isInterchangeOf(c: PsCluster | null | undefined): boolean {
+  if (!c) return false;
+  const v = (c.attributes as any)?.isInterchange;
+  if (typeof v === "boolean") return v;
+  return c.kind === "interchange";
+}
+function isLogicalOf(c: PsCluster | null | undefined): boolean {
+  if (!c) return false;
+  const v = (c.attributes as any)?.isLogical;
+  if (typeof v === "boolean") return v;
+  return c.kind === "none";
 }
 
 /* Convex hull (Andrew monotone chain) — per disegnare poligono cluster */
@@ -312,48 +330,54 @@ export default function PlanningStudioEditorPage() {
     if (showDepots && depots.length === 0 && !overlayLoading.depots) reloadDepots();
   }, [showDepots]);
 
-  // Mappa: psStopId → colore del cluster a cui appartiene.
+  // Mappa: psStopId → { color, interchange } del nodo a cui appartiene.
   // Combina due sorgenti:
   //   (a) cluster PS del progetto (sempre, anche senza overlay): match diretto
   //       per cluster_id sulla fermata. Colore = attributes.color o default per kind.
-  //   (b) overlay legacy "Nodi (Network)" se attivo: match per code/coord.
+  //   (b) overlay legacy "Nodi globali (Network)" se attivo: match per code/coord.
   // (a) ha precedenza su (b) per coerenza con la lista nel pannello.
-  const stopIdToClusterColor: { [k: string]: string } = useMemo(() => {
-    const out: { [k: string]: string } = {};
+  // `interchange` guida la FORMA del marker fermata: ▲ se il nodo è anche di
+  // cambio, ● se è solo logico (vedi layer ps-stops-triangle / ps-stops-circle).
+  type StopNodeInfo = { color: string; interchange: boolean };
+  const stopIdToNode: { [k: string]: StopNodeInfo } = useMemo(() => {
+    const out: { [k: string]: StopNodeInfo } = {};
 
     // (a) Cluster PS — sempre attivi, basta che la fermata abbia clusterId
     if (clusters.length > 0) {
-      const colorByClusterId: { [k: string]: string } = {};
+      const nodeByClusterId: { [k: string]: StopNodeInfo } = {};
       for (const c of clusters) {
         const custom = (c.attributes && typeof (c.attributes as any).color === "string")
           ? (c.attributes as any).color : null;
-        colorByClusterId[c.id] = custom || (c.kind === "interchange" ? "#0ea5e9" : "#64748b");
+        nodeByClusterId[c.id] = {
+          color: custom || (c.kind === "interchange" ? "#0ea5e9" : "#64748b"),
+          interchange: isInterchangeOf(c),
+        };
       }
       for (const s of stops) {
-        if (s.clusterId && colorByClusterId[s.clusterId]) {
-          out[s.id] = colorByClusterId[s.clusterId];
+        if (s.clusterId && nodeByClusterId[s.clusterId]) {
+          out[s.id] = nodeByClusterId[s.clusterId];
         }
       }
     }
 
     // (b) Cluster legacy overlay (solo se toggle on) — non sovrascrive (a)
     if (showGlobalClusters) {
-      const byCode: { [k: string]: string } = {};
-      const byCoord: { [k: string]: string } = {};
+      const byCode: { [k: string]: StopNodeInfo } = {};
+      const byCoord: { [k: string]: StopNodeInfo } = {};
       for (const c of globalClusters) {
-        const color = c.color || "#0ea5e9";
+        const info: StopNodeInfo = { color: c.color || "#0ea5e9", interchange: !!c.isInterchange };
         for (const cs of (c.stops || [])) {
-          if (cs.gtfsStopId) byCode[String(cs.gtfsStopId)] = color;
+          if (cs.gtfsStopId) byCode[String(cs.gtfsStopId)] = info;
           if (Number.isFinite(cs.stopLat) && Number.isFinite(cs.stopLon)) {
-            byCoord[`${cs.stopLat.toFixed(5)},${cs.stopLon.toFixed(5)}`] = color;
+            byCoord[`${cs.stopLat.toFixed(5)},${cs.stopLon.toFixed(5)}`] = info;
           }
         }
       }
       for (const s of stops) {
         if (out[s.id]) continue;
         const key = `${Number(s.lat).toFixed(5)},${Number(s.lon).toFixed(5)}`;
-        const col = (s.code && byCode[s.code]) || byCoord[key];
-        if (col) out[s.id] = col;
+        const info = (s.code && byCode[s.code]) || byCoord[key];
+        if (info) out[s.id] = info;
       }
     }
 
@@ -369,7 +393,8 @@ export default function PlanningStudioEditorPage() {
         .filter(s => Number.isFinite(s.stopLon) && Number.isFinite(s.stopLat))
         .map(s => [Number(s.stopLon), Number(s.stopLat)] as [number, number]);
       if (pts.length === 0) continue;
-      const props = { id: c.id, name: c.name, color: c.color || "#0ea5e9" };
+      // isInterchange guida la forma delle fermate del nodo (▲ vs ●) nei layer ne-clusters-*
+      const props = { id: c.id, name: c.name, color: c.color || "#0ea5e9", isInterchange: !!c.isInterchange };
       if (pts.length >= 3) {
         const hull = convexHull(pts);
         if (hull.length >= 3) {
@@ -424,7 +449,7 @@ export default function PlanningStudioEditorPage() {
   const visibleStopsGeoJSON = useMemo(() => ({
     type: "FeatureCollection" as const,
     features: visibleStops.map(s => {
-      const clusterColor = stopIdToClusterColor[s.id];
+      const node = stopIdToNode[s.id];
       const inSeq = editor?.stops.find(vs => vs.stopId === s.id);
       return {
         type: "Feature" as const,
@@ -432,13 +457,16 @@ export default function PlanningStudioEditorPage() {
         properties: {
           id: s.id,
           name: s.name,
-          color: clusterColor || (inSeq ? "#34d399" : "#ffffff"),
+          color: node?.color || (inSeq ? "#34d399" : "#ffffff"),
           inSeq: !!inSeq,
+          // Forma: "tri" (▲) se la fermata appartiene a un nodo logico E di
+          // cambio, "dot" (●) altrimenti — simbologia condivisa con la legenda.
+          shape: node?.interchange ? "tri" : "dot",
         },
         geometry: { type: "Point" as const, coordinates: [Number(s.lon), Number(s.lat)] },
       };
     }),
-  }), [visibleStops, stopIdToClusterColor, editor?.stops]);
+  }), [visibleStops, stopIdToNode, editor?.stops]);
 
   // GeoJSON delle fermate della variante selezionata (vista percorso):
   // evidenziate sulla mappa con il colore della linea + numero di sequenza.
@@ -1058,6 +1086,33 @@ export default function PlanningStudioEditorPage() {
     }
   }
 
+  /* ─── Toolbar: voce unificata "Nodi" (tab Progetto + Globali legacy) ───
+   * Un solo pannello: la tab attiva è mappata su activePanel ("clusters" =
+   * nodi di progetto, "ne-clusters" = cluster globali legacy) così tutta la
+   * logica esistente (layer mappa, visibleStops, draw…) resta invariata.
+   * Se il pannello è già aperto su una delle due tab, lo chiude. */
+  function toggleNodesPanel() {
+    setOpenMenu(null);
+    if (activePanel === "clusters" || activePanel === "ne-clusters") {
+      setActivePanel(null);
+      setClusterDraw(null); // esci da eventuale modalità draw/stops in corso
+    } else {
+      setActivePanel("clusters"); // tab "Progetto" di default
+      // Pre-carica i nodi globali legacy così il conteggio della tab è subito corretto
+      if (globalClusters.length === 0 && !overlayLoading.clusters) reloadGlobalClusters();
+    }
+  }
+
+  /* Cambio tab interna del pannello Nodi (Progetto ⇄ Globali legacy) */
+  function switchNodesTab(tab: "clusters" | "ne-clusters") {
+    if (activePanel === tab) return;
+    if (tab === "ne-clusters") {
+      setClusterDraw(null); // il draw ha senso solo sui nodi di progetto
+      if (globalClusters.length === 0 && !overlayLoading.clusters) reloadGlobalClusters();
+    }
+    setActivePanel(tab);
+  }
+
   /* ─── Cursor sulla mappa secondo tool ─── */
   const mapCursor = pickingDepotLocation ? "crosshair"
                   : (clusterDraw && clusterDraw.mode === "draw") ? "crosshair"
@@ -1172,6 +1227,9 @@ export default function PlanningStudioEditorPage() {
             <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Activity} label="Inspector di rete" note="pagina" accent="violet"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/network`); }} />
+            {/* Orario grafico (diagramma tempo-distanza) — pagina dedicata */}
+            <MenuItem icon={LineChart} label="Orario grafico (TTD)" note="pagina" accent="amber"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
           </MenuGroup>
 
           {/* Orari: calendari, corse, periodi e matrice di validità */}
@@ -1181,7 +1239,11 @@ export default function PlanningStudioEditorPage() {
             open={openMenu === "orari"}
             onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
           >
-            <MenuItem icon={CalendarIcon} label="Calendari" count={calendars.length} accent="indigo"
+            {/* Ex "Calendari": rinominata per chiarezza — sono i pattern di giorni
+                in cui circolano le corse (lun-ven, sabato, festivi…) */}
+            <MenuItem icon={CalendarIcon} label="Giorni di circolazione"
+              desc="quando circolano le corse: pattern settimanali"
+              count={calendars.length} accent="indigo"
               active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
             <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
@@ -1192,17 +1254,20 @@ export default function PlanningStudioEditorPage() {
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
           </MenuGroup>
 
-          {/* Infrastruttura: nodi di cambio, nodi globali (Network), depositi */}
+          {/* Infrastruttura: nodi (progetto + globali legacy in un solo pannello), depositi */}
           <MenuGroup
             label="Infrastruttura" icon={Building2} accent="orange"
             active={activePanel === "clusters" || activePanel === "ne-clusters" || activePanel === "ne-depots"}
             open={openMenu === "infrastruttura"}
             onToggle={() => setOpenMenu(m => m === "infrastruttura" ? null : "infrastruttura")}
           >
-            <MenuItem icon={Layers} label="Nodi di cambio" count={clusters.length || undefined} accent="cyan"
-              active={activePanel === "clusters"} onClick={() => togglePanel("clusters")} />
-            <MenuItem icon={Grip} label="Nodi (Network)" count={globalClusters.length || undefined} accent="cyan"
-              active={activePanel === "ne-clusters"} onClick={() => togglePanel("ne-clusters")} />
+            {/* Voce unificata: pannello con tab "Progetto" (ps_stop_clusters) e
+                "Globali legacy" (cluster Network Engine). Conteggio = totale. */}
+            <MenuItem icon={Layers} label="Nodi"
+              desc="di progetto + globali legacy"
+              count={(clusters.length + globalClusters.length) || undefined} accent="cyan"
+              active={activePanel === "clusters" || activePanel === "ne-clusters"}
+              onClick={toggleNodesPanel} />
             <MenuItem icon={Building2} label="Depositi aziendali" count={depots.length || undefined} accent="orange"
               active={activePanel === "ne-depots"} onClick={() => togglePanel("ne-depots")} />
           </MenuGroup>
@@ -1848,9 +1913,13 @@ export default function PlanningStudioEditorPage() {
                 <h2 className="text-sm font-semibold flex items-center gap-2">
                   {activePanel === "stops" && <><MapPin className="w-4 h-4 text-emerald-400" /> Fermate</>}
                   {activePanel === "routes" && <><Bus className="w-4 h-4 text-cyan-400" /> Linee</>}
-                  {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Calendari</>}
-                  {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Nodi di cambio</>}
-                  {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Nodi (Network)</>}
+                  {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Giorni di circolazione</>}
+                  {(activePanel === "clusters" || activePanel === "ne-clusters") && (
+                    <><Layers className="w-4 h-4 text-cyan-400" /> Nodi
+                      <span className="text-[10px] font-normal text-slate-500">
+                        ({clusters.length + globalClusters.length} totali)
+                      </span></>
+                  )}
                   {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi aziendali <span className="text-[9px] font-normal text-slate-500">(condivisi tra tutti i progetti)</span></>}
                 </h2>
                 <button onClick={() => setActivePanel(null)}
@@ -1858,6 +1927,42 @@ export default function PlanningStudioEditorPage() {
                   <X className="w-4 h-4" />
                 </button>
               </div>
+              {/* Sottotitolo esplicativo dei calendari (nessuna logica cambiata) */}
+              {activePanel === "calendars" && (
+                <p className="px-4 py-2 border-b border-slate-800 text-[10px] text-slate-500 leading-snug shrink-0">
+                  Ogni calendario è un pattern di giorni (lun-ven, sab…): le corse agganciate circolano solo in quei giorni.
+                </p>
+              )}
+              {/* Pannello Nodi unificato: tab Progetto / Globali legacy + mini-legenda.
+                  La tab attiva coincide con activePanel, così layer mappa e logica
+                  esistente (clusters / ne-clusters) restano invariati. */}
+              {(activePanel === "clusters" || activePanel === "ne-clusters") && (
+                <div className="px-3 py-2 border-b border-slate-800 shrink-0 space-y-1.5">
+                  <div className="flex gap-1 bg-slate-900 rounded p-0.5 border border-slate-800">
+                    <button
+                      onClick={() => switchNodesTab("clusters")}
+                      className={`flex-1 text-[11px] py-1 rounded font-medium transition ${
+                        activePanel === "clusters" ? "bg-cyan-600 text-white" : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      Progetto ({clusters.length})
+                    </button>
+                    <button
+                      onClick={() => switchNodesTab("ne-clusters")}
+                      className={`flex-1 text-[11px] py-1 rounded font-medium transition ${
+                        activePanel === "ne-clusters" ? "bg-cyan-600 text-white" : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      Globali legacy ({globalClusters.length})
+                    </button>
+                  </div>
+                  {/* Mini-legenda simbologia mappa: le fermate di un nodo ne ereditano
+                      il colore; la forma indica il tipo di nodo */}
+                  <p className="text-[10px] text-slate-500 leading-snug">
+                    <span className="text-slate-300">●</span> logico · <span className="text-slate-300">▲</span> logico e di cambio — le fermate ereditano il colore del nodo
+                  </p>
+                </div>
+              )}
               <div className="flex-1 overflow-y-auto">
                 {activePanel === "stops" && (
                   <StopsPanel
@@ -2680,24 +2785,11 @@ function ClustersPanel({
   }
 
   // ── Logico vs Cambio (un cluster può essere entrambi) ────────
-  // Storage: due flag indipendenti in attributes.isLogical /
-  // attributes.isInterchange. Backward-compat: se i flag sono assenti,
-  // si derivano dall'enum legacy `kind`. Lo Scheduling Engine usa il
-  // campo enum `kind = 'interchange'` (mirror su stop_clusters legacy
+  // I flag sono letti dagli helper a livello modulo isInterchangeOf /
+  // isLogicalOf (condivisi con la simbologia mappa). Lo Scheduling Engine
+  // usa il campo enum `kind = 'interchange'` (mirror su stop_clusters legacy
   // filtra per quello), quindi quando isInterchange=true salviamo
   // sempre kind='interchange', altrimenti kind='none'.
-  function isInterchangeOf(c: PsCluster | null | undefined): boolean {
-    if (!c) return false;
-    const v = (c.attributes as any)?.isInterchange;
-    if (typeof v === "boolean") return v;
-    return c.kind === "interchange";
-  }
-  function isLogicalOf(c: PsCluster | null | undefined): boolean {
-    if (!c) return false;
-    const v = (c.attributes as any)?.isLogical;
-    if (typeof v === "boolean") return v;
-    return c.kind === "none";
-  }
   function clusterTypeLabel(c: PsCluster): string {
     const i = isInterchangeOf(c), l = isLogicalOf(c);
     if (i && l) return "Logico + Cambio";
@@ -3594,21 +3686,25 @@ function MenuGroup({
 }
 
 /* Voce di sottomenu: icona + label; evidenziata (accent + check) se attiva.
- * `count` mostra il numero di elementi, `note` un'etichetta secondaria. */
+ * `count` mostra il numero di elementi, `note` un'etichetta secondaria,
+ * `desc` una nota descrittiva su una seconda riga sotto la label. */
 function MenuItem({
-  icon: Icon, label, note, count, accent, active, onClick,
+  icon: Icon, label, note, desc, count, accent, active, onClick,
 }: {
-  icon: any; label: string; note?: string; count?: number;
+  icon: any; label: string; note?: string; desc?: string; count?: number;
   accent: MenuAccent; active?: boolean; onClick: () => void;
 }) {
   return (
-    <button onClick={onClick} title={label}
+    <button onClick={onClick} title={desc ? `${label} — ${desc}` : label}
       className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs transition ${
         active ? `bg-slate-800 ${MENU_ACCENT_TEXT[accent]}`
                : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
       }`}>
       <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? "" : "text-slate-500"}`} />
-      <span className="flex-1 truncate font-medium">{label}</span>
+      <span className="flex-1 min-w-0">
+        <span className="block truncate font-medium">{label}</span>
+        {desc && <span className="block truncate text-[9px] font-normal text-slate-500">{desc}</span>}
+      </span>
       {note && <span className="text-[9px] text-slate-500">{note}</span>}
       {count != null && <span className="text-[10px] tabular-nums text-slate-500">{count}</span>}
       {active && <Check className="w-3.5 h-3.5 shrink-0" />}

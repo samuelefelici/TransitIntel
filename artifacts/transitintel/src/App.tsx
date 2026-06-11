@@ -54,6 +54,7 @@ const PlanningStudioNetworkPage = lazy(() => import("@/pages/planning-studio/Net
 const PlanningStudioValidityPage = lazy(() => import("@/pages/planning-studio/ValidityPage"));
 const PlanningStudioValidityUnitsPage = lazy(() => import("@/pages/planning-studio/ValidityUnitsPage"));
 const PlanningStudioCalendarProfilePage = lazy(() => import("@/pages/planning-studio/CalendarProfilePage"));
+const PlanningStudioTtdPage = lazy(() => import("@/pages/planning-studio/TtdPage"));
 const NetworkEngineHub = lazy(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
 const NotFound = lazy(() => import("@/pages/not-found"));
@@ -185,6 +186,9 @@ function Router() {
             </Route>
             <Route path="/planning-studio/:id/calendar">
               <Gated perm="network"><PlanningStudioCalendarProfilePage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/ttd">
+              <Gated perm="network"><PlanningStudioTtdPage /></Gated>
             </Route>
 
             {/* Bigliettazione (fares) */}

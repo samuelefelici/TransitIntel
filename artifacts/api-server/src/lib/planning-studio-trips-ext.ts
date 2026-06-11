@@ -6,6 +6,8 @@
  *   GET    /projects/:id/trips/:tripId/exceptions
  *   POST   /projects/:id/trips/:tripId/exceptions
  *   DELETE /projects/:id/trips/:tripId/exceptions/:date
+ *   POST   /projects/:id/trips/:tripId/shift  (trasla tutti gli orari di ±N minuti — orario grafico)
+ *   POST   /projects/:id/trips/batch-create   (crea N corse con stop_times — cadenzamento orario grafico)
  *
  * exception_type (semantica GTFS-like):
  *   1 = aggiunta (corsa attiva quel giorno anche se calendar non lo prevede)
@@ -153,6 +155,138 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   const count = ((r as any).rows ?? []).length;
   await logActivity(req.params.id, userId, "trip.bulk_update", "trip", null, { count, fields });
   res.json({ ok: true, count });
+});
+
+/* ─── Helper orari HH:MM:SS (consente >24:00 per corse dopo mezzanotte) ─── */
+
+const HHMMSS_RE = /^\d{1,2}:[0-5]\d:[0-5]\d$/;
+
+function hmsToSec(t: string): number {
+  const [h, m, s] = t.split(":").map(Number);
+  return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
+}
+function secToHms(sec: number): string {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/* ─── SHIFT corsa: trasla tutti gli orari del trip di ±N minuti ───
+ * Usato dall'orario grafico (drag orizzontale di una corsa nel diagramma
+ * tempo-distanza). Aggiorna in blocco tutti i ps_stop_times del trip. */
+
+router.post("/planning-studio/projects/:id/trips/:tripId/shift", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  if (!UUID_RE.test(req.params.tripId)) { res.status(400).json({ error: "tripId invalid" }); return; }
+
+  const deltaMinutes = Number(req.body?.deltaMinutes);
+  if (!Number.isInteger(deltaMinutes) || deltaMinutes === 0 || Math.abs(deltaMinutes) > 1440) {
+    res.status(400).json({ error: "deltaMinutes deve essere un intero non nullo tra -1440 e 1440" }); return;
+  }
+
+  // Verifica che il trip appartenga al progetto
+  const tr = await db.execute(sql`
+    SELECT id FROM ps_trips
+     WHERE id = ${req.params.tripId}::uuid AND project_id = ${req.params.id}::uuid
+  `);
+  if (!((tr as any).rows ?? []).length) { res.status(404).json({ error: "trip not found" }); return; }
+
+  const r = await db.execute(sql`
+    SELECT stop_seq, arrival_time, departure_time
+      FROM ps_stop_times
+     WHERE trip_id = ${req.params.tripId}::uuid
+     ORDER BY stop_seq ASC
+  `);
+  const rows: any[] = (r as any).rows ?? [];
+  if (rows.length === 0) { res.status(400).json({ error: "il trip non ha stop_times" }); return; }
+
+  const deltaSec = deltaMinutes * 60;
+  // Calcola i nuovi orari e rifiuta se uno scenderebbe sotto 00:00:00
+  const updated = rows.map(row => ({
+    stopSeq: row.stop_seq,
+    arrivalTime: hmsToSec(row.arrival_time) + deltaSec,
+    departureTime: hmsToSec(row.departure_time) + deltaSec,
+  }));
+  if (updated.some(u => u.arrivalTime < 0 || u.departureTime < 0)) {
+    res.status(400).json({ error: "lo shift porterebbe orari negativi (prima di 00:00)" }); return;
+  }
+
+  for (const u of updated) {
+    await db.execute(sql`
+      UPDATE ps_stop_times
+         SET arrival_time = ${secToHms(u.arrivalTime)},
+             departure_time = ${secToHms(u.departureTime)}
+       WHERE trip_id = ${req.params.tripId}::uuid AND stop_seq = ${u.stopSeq}
+    `);
+  }
+  await logActivity(req.params.id, userId, "trip.shift", "trip", req.params.tripId, { deltaMinutes, count: updated.length });
+  res.json({ ok: true, count: updated.length, deltaMinutes });
+});
+
+/* ─── BATCH CREATE corse: crea N trip con i rispettivi stop_times ───
+ * Usato dall'orario grafico per il cadenzamento ("moltiplica corsa"):
+ * il client genera N corse traslando il profilo tempi di una corsa base. */
+
+router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+
+  const trips: any[] = Array.isArray(req.body?.trips) ? req.body.trips : [];
+  if (trips.length === 0) { res.status(400).json({ error: "trips required" }); return; }
+  if (trips.length > 200) { res.status(400).json({ error: "massimo 200 corse per batch" }); return; }
+
+  // Validazione preventiva di tutto il batch (o tutto o niente)
+  for (const t of trips) {
+    if (!UUID_RE.test(String(t?.routeId ?? "")) || !UUID_RE.test(String(t?.variantId ?? ""))) {
+      res.status(400).json({ error: "routeId e variantId obbligatori per ogni corsa" }); return;
+    }
+    const sts: any[] = Array.isArray(t?.stopTimes) ? t.stopTimes : [];
+    if (sts.length < 2) { res.status(400).json({ error: "ogni corsa richiede almeno 2 stopTimes" }); return; }
+    for (const st of sts) {
+      if (!UUID_RE.test(String(st?.stopId ?? ""))) {
+        res.status(400).json({ error: "stopId non valido negli stopTimes" }); return;
+      }
+      if (!HHMMSS_RE.test(String(st?.arrivalTime ?? "")) || !HHMMSS_RE.test(String(st?.departureTime ?? ""))) {
+        res.status(400).json({ error: "arrivalTime/departureTime devono essere HH:MM:SS" }); return;
+      }
+    }
+  }
+
+  const tripIds: string[] = [];
+  for (const t of trips) {
+    const ins = await db.execute(sql`
+      INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id,
+                            headsign, short_name, direction, block_id, attributes, service_label)
+      VALUES (${req.params.id}::uuid, ${t.routeId}::uuid, ${t.variantId}::uuid,
+              ${t.calendarId ?? null}, ${t.headsign ?? null}, ${t.shortName ?? null},
+              ${t.direction ?? 0}, ${t.blockId ?? null},
+              ${JSON.stringify(t.attributes ?? {})}::jsonb, ${t.serviceLabel ?? null})
+      RETURNING id
+    `);
+    const tripId: string = ((ins as any).rows?.[0])?.id;
+    let seq = 1;
+    for (const st of t.stopTimes) {
+      await db.execute(sql`
+        INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                   pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+        VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
+                ${st.arrivalTime}, ${st.departureTime},
+                ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
+                ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
+      `);
+      seq++;
+    }
+    tripIds.push(tripId);
+  }
+  await logActivity(req.params.id, userId, "trip.batch_create", "trip", null, { count: tripIds.length });
+  res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
 
 /* ─── Eccezioni date ─── */

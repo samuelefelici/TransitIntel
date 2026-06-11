@@ -453,6 +453,38 @@ export async function setPsStopTimes(
   );
 }
 
+/** Trasla tutti gli orari di una corsa di ±N minuti (drag nell'orario grafico). */
+export async function shiftPsTripTimes(
+  projectId: string, tripId: string, deltaMinutes: number,
+): Promise<{ ok: boolean; count: number; deltaMinutes: number }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/${tripId}/shift`,
+    { method: "POST", body: JSON.stringify({ deltaMinutes }) },
+  );
+}
+
+/** Input per la creazione batch di corse (cadenzamento da orario grafico). */
+export interface PsBatchTripInput {
+  routeId: string;
+  variantId: string;
+  calendarId?: string | null;
+  headsign?: string | null;
+  shortName?: string | null;
+  direction?: number;
+  serviceLabel?: string | null;
+  stopTimes: { stopId: string; arrivalTime: string; departureTime: string; timepoint?: number }[];
+}
+
+/** Crea N corse con i rispettivi stop_times in una sola chiamata. */
+export async function batchCreatePsTrips(
+  projectId: string, trips: PsBatchTripInput[],
+): Promise<{ ok: boolean; count: number; tripIds: string[] }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/batch-create`,
+    { method: "POST", body: JSON.stringify({ trips }) },
+  );
+}
+
 /* ─── Import GTFS ─── */
 
 export interface PsImportCounts {
