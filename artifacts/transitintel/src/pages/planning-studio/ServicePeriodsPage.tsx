@@ -10,6 +10,7 @@
  */
 import { useMemo, useState } from "react";
 import { useLocation, useParams, Link } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -127,6 +128,7 @@ export default function PlanningStudioServicePeriodsPage() {
           <Plus className="w-4 h-4" /> Nuovo periodo
         </button>
       </div>
+      <PsProjectNav projectId={projectId} />
 
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">

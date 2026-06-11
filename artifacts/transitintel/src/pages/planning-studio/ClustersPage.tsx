@@ -10,6 +10,7 @@
  */
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation, useParams, Link } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import Map, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -385,6 +386,7 @@ export default function PlanningStudioClustersPage() {
           <Plus className="w-4 h-4" /> Nuovo cluster
         </button>
       </div>
+      <PsProjectNav projectId={projectId} />
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar sx */}
         <div className="w-[380px] border-r border-slate-800 bg-slate-900/60 flex flex-col">
