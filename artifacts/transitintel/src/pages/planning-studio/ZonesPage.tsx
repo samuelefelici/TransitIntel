@@ -130,6 +130,25 @@ export default function PlanningStudioZonesPage() {
     onError: (e: any) => toast.error(e?.message || "Errore import confini"),
   });
 
+  // Import one-click dei 47 comuni della provincia di Ancona: il GeoJSON
+  // (fonte openpolis/geojson-italy, confini ISTAT) è incluso negli asset.
+  const anconaMut = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`${import.meta.env.BASE_URL}data/comuni-provincia-ancona.geojson`);
+      if (!res.ok) throw new Error("GeoJSON comuni non trovato negli asset");
+      const json = await res.json();
+      return apiFetch<{ ok: boolean; inserted: number; updated: number; skipped: number }>(
+        "/api/zones/import",
+        { method: "POST", body: JSON.stringify(json) },
+      );
+    },
+    onSuccess: (r) => {
+      toast.success(`Comuni provincia di Ancona importati: ${r.inserted} nuovi, ${r.updated} aggiornati`);
+      qc.invalidateQueries({ queryKey: ["zones"] });
+    },
+    onError: (e: any) => toast.error(e?.message || "Errore import comuni Ancona"),
+  });
+
   const clearMut = useMutation({
     mutationFn: () => apiFetch<{ ok: boolean }>("/api/zones", { method: "DELETE" }),
     onSuccess: () => {
@@ -287,12 +306,21 @@ export default function PlanningStudioZonesPage() {
           }}
         />
         <button
+          onClick={() => anconaMut.mutate()}
+          disabled={anconaMut.isPending}
+          title="Importa i 47 comuni della provincia di Ancona (confini ISTAT, inclusi nell'app)"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600/90 hover:bg-amber-600 text-xs text-white font-medium"
+        >
+          {anconaMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Landmark className="w-3.5 h-3.5" />}
+          Comuni prov. Ancona
+        </button>
+        <button
           onClick={() => fileRef.current?.click()}
           disabled={importMut.isPending}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700"
         >
           {importMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
-          Importa confini GeoJSON
+          Altro GeoJSON…
         </button>
         {zones.length > 0 && (
           <button
