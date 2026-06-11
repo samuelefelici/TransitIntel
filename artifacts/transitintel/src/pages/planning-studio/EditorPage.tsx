@@ -29,6 +29,7 @@ import {
   CalendarCheck, Eye, EyeOff,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
+import { getApiBase } from "@/lib/api";
 import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
@@ -268,7 +269,7 @@ export default function PlanningStudioEditorPage() {
   const reloadGlobalClusters = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, clusters: true }));
     try {
-      const r = await fetch("/api/clusters");
+      const r = await fetch(`${getApiBase()}/api/clusters`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalCluster[] = Array.isArray(j) ? j : (j.data ?? []);
@@ -279,7 +280,7 @@ export default function PlanningStudioEditorPage() {
   const reloadDepots = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, depots: true }));
     try {
-      const r = await fetch("/api/depots");
+      const r = await fetch(`${getApiBase()}/api/depots`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalDepot[] = Array.isArray(j) ? j : (j.data ?? []);
@@ -1837,7 +1838,7 @@ export default function PlanningStudioEditorPage() {
                   {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Calendari</>}
                   {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Nodi di cambio</>}
                   {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Nodi (Network)</>}
-                  {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi (Network)</>}
+                  {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi aziendali <span className="text-[9px] font-normal text-slate-500">(condivisi tra tutti i progetti)</span></>}
                 </h2>
                 <button onClick={() => setActivePanel(null)}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400">
@@ -3653,7 +3654,7 @@ function NeClustersPanel({
     if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate associate verranno scollegate.`)) return;
     setBusyId(c.id);
     try {
-      const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+      const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, { method: "DELETE" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success("Nodo eliminato");
       await onReload();
@@ -3666,7 +3667,7 @@ function NeClustersPanel({
     if (!editName.trim()) { toast.error("Nome richiesto"); return; }
     setBusyId(c.id);
     try {
-      const r = await fetch(`/api/clusters/${c.id}`, {
+      const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: editName.trim() }),
@@ -3696,7 +3697,7 @@ function NeClustersPanel({
         const c = queue.shift();
         if (!c) return;
         try {
-          const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+          const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, { method: "DELETE" });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           ok++;
         } catch { ko++; }
@@ -3977,7 +3978,8 @@ function DepotEditModal({
         lat: latN, lon: lonN,
         capacity: capacity.trim() === "" ? null : Number(capacity),
       };
-      const r = await fetch(isNew ? "/api/depots" : `/api/depots/${depot.id}`, {
+      // URL assoluto verso l'API: i path relativi in prod finiscono sul dominio web (405)
+      const r = await fetch(isNew ? `${getApiBase()}/api/depots` : `${getApiBase()}/api/depots/${depot.id}`, {
         method: isNew ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -3994,7 +3996,7 @@ function DepotEditModal({
     if (!confirm(`Eliminare il deposito "${name}"?`)) return;
     setSaving(true);
     try {
-      const r = await fetch(`/api/depots/${depot.id}`, { method: "DELETE" });
+      const r = await fetch(`${getApiBase()}/api/depots/${depot.id}`, { method: "DELETE" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success("Deposito eliminato");
       await onSaved();
