@@ -99,6 +99,40 @@ function pointInPolygon(pt: [number, number], poly: [number, number][]): boolean
   return inside;
 }
 
+/* ─── Edit tracciato (vista percorso): costanti + helpers ─── */
+// Numero massimo di vertici draggabili mostrati durante l'edit del tracciato.
+// Oltre questa soglia campioniamo 1 vertice ogni N e ricostruiamo i segmenti
+// non campionati interpolando lo spostamento (vedi moveShapeVertex).
+const SHAPE_EDIT_MAX_VERTICES = 60;
+
+/* Indici dei vertici campionati: tutti se pochi, 1 ogni N se la LineString
+ * è densa. Primo e ultimo punto sono sempre inclusi. */
+function sampleVertexIndices(n: number): number[] {
+  if (n <= SHAPE_EDIT_MAX_VERTICES) return Array.from({ length: n }, (_, i) => i);
+  const step = Math.ceil(n / SHAPE_EDIT_MAX_VERTICES);
+  const idx: number[] = [];
+  for (let i = 0; i < n; i += step) idx.push(i);
+  if (idx[idx.length - 1] !== n - 1) idx.push(n - 1);
+  return idx;
+}
+
+/* Lunghezza in metri di una LineString (haversine) — usata per ricalcolare
+ * distanceM dopo un edit manuale dei vertici. */
+function lineLengthM(coords: [number, number][]): number {
+  const R = 6371000;
+  let total = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [lon1, lat1] = coords[i - 1];
+    const [lon2, lat2] = coords[i];
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    total += 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+  return total;
+}
+
 interface VariantEditorState {
   variantId: string;
   routeId: string;
@@ -108,6 +142,29 @@ interface VariantEditorState {
   shapeMode: "driving" | "manual"; // modalità di snap globale (i singoli waypoint hanno comunque il loro mode)
   geometry: { type: "LineString"; coordinates: [number, number][] } | null;
   distanceM: number | null;
+  durationS: number | null;
+  dirty: boolean;
+}
+
+/* ─── Vista percorso: variante selezionata dal pannello Linee.
+ * Mostra lista ordinata delle fermate + tracciato evidenziato sulla mappa,
+ * con possibilità di entrare in modalità "Edita tracciato". ─── */
+interface RouteViewState {
+  routeId: string;
+  variantId: string;
+  variantName: string;
+  direction: number;
+  routeShortName: string;
+  routeColor: string;
+  stops: PsVariantStop[];   // sequenza ordinata (seq, nome, coordinate)
+  shape: PsShape | null;    // shape salvato (GeoJSON LineString)
+}
+
+/* ─── Edit tracciato: copia di lavoro della LineString della variante ─── */
+interface ShapeEditState {
+  coordinates: [number, number][]; // geometria corrente in lavorazione
+  vertexIdx: number[];             // indici dei vertici campionati (Marker draggabili)
+  distanceM: number | null;        // da OSRM dopo "Snap"; null se editata a mano
   durationS: number | null;
   dirty: boolean;
 }
@@ -158,6 +215,15 @@ export default function PlanningStudioEditorPage() {
   const [editor, setEditor] = useState<VariantEditorState | null>(null);
   const [snapBusy, setSnapBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // ── Vista percorso (selezione variante → fermate + tracciato) ──────
+  const [routeView, setRouteView] = useState<RouteViewState | null>(null);
+  // Edit tracciato: copia di lavoro della LineString (null = non in edit)
+  const [shapeEdit, setShapeEdit] = useState<ShapeEditState | null>(null);
+  const [shapeEditBusy, setShapeEditBusy] = useState(false);   // snap OSRM in corso
+  const [shapeEditSaving, setShapeEditSaving] = useState(false);
+  // Toggle "Mostra altre fermate" durante l'edit (tutte le fermate progetto, dimmed)
+  const [showOtherStops, setShowOtherStops] = useState(false);
 
   // ── Cluster editor (interattivo sulla mappa) ───────────────
   // mode "draw" = utente sta cliccando per disegnare poligono area
@@ -358,6 +424,38 @@ export default function PlanningStudioEditorPage() {
     }),
   }), [visibleStops, stopIdToClusterColor, editor?.stops]);
 
+  // GeoJSON delle fermate della variante selezionata (vista percorso):
+  // evidenziate sulla mappa con il colore della linea + numero di sequenza.
+  const routeViewStopsGeoJSON = useMemo(() => {
+    if (!routeView) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: routeView.stops.map(s => ({
+        type: "Feature" as const,
+        properties: { id: s.stopId, name: s.stopName, seq: s.seq },
+        geometry: { type: "Point" as const, coordinates: [Number(s.lon), Number(s.lat)] },
+      })),
+    };
+  }, [routeView]);
+
+  // GeoJSON delle "altre fermate" del progetto (non appartenenti alla variante),
+  // mostrate dimmed durante l'edit del tracciato per agganciare la linea.
+  const isShapeEditing = shapeEdit !== null;
+  const routeViewOtherStopsGeoJSON = useMemo(() => {
+    if (!routeView || !isShapeEditing || !showOtherStops) return null;
+    const inVariant = new Set(routeView.stops.map(s => s.stopId));
+    return {
+      type: "FeatureCollection" as const,
+      features: stops
+        .filter(s => !inVariant.has(s.id))
+        .map(s => ({
+          type: "Feature" as const,
+          properties: { id: s.id, name: s.name },
+          geometry: { type: "Point" as const, coordinates: [Number(s.lon), Number(s.lat)] },
+        })),
+    };
+  }, [routeView, isShapeEditing, showOtherStops, stops]);
+
   // Carica e cache stopIds per una linea (somma stop di tutte le sue varianti).
   const loadRouteStopIds = useCallback(async (routeId: string) => {
     if (routeStopIds[routeId]) return;
@@ -546,6 +644,10 @@ export default function PlanningStudioEditorPage() {
 
   async function startEditingVariant(routeId: string, variantId: string) {
     try {
+      // Chiudi l'eventuale vista percorso per non sovrapporre i pannelli
+      setRouteView(null);
+      setShapeEdit(null);
+      setShowOtherStops(false);
       const data = await getPsVariant(projectId, variantId);
       const route = routes.find(r => r.id === routeId);
       setEditor({
@@ -753,6 +855,174 @@ export default function PlanningStudioEditorPage() {
     } catch (e: any) {
       toast.error("Errore salvataggio", { description: e?.message });
     } finally { setSaving(false); }
+  }
+
+  /* ════════════════════════════════════════════════════════════
+   *  Vista percorso: selezione variante → fermate + edit tracciato
+   * ════════════════════════════════════════════════════════════ */
+
+  /* Apre la vista percorso per una variante: carica fermate ordinate + shape
+   * e inquadra la mappa sul tracciato. */
+  async function openRouteView(routeId: string, variantId: string) {
+    try {
+      const data = await getPsVariant(projectId, variantId);
+      const route = routes.find(r => r.id === routeId);
+      setShapeEdit(null);
+      setShowOtherStops(false);
+      setRouteView({
+        routeId,
+        variantId,
+        variantName: data.variant?.name || "",
+        direction: data.variant?.direction ?? 0,
+        routeShortName: route?.shortName || "",
+        routeColor: route?.color || "#10b981",
+        stops: data.stops || [],
+        shape: data.shape,
+      });
+      // Inquadra il percorso: shape se presente, altrimenti le fermate
+      const coords = data.shape?.geometry?.coordinates?.length
+        ? data.shape.geometry.coordinates
+        : (data.stops || []).map(s => [s.lon, s.lat] as [number, number]);
+      if (coords.length > 0) fitToCoords(coords);
+    } catch (e: any) {
+      toast.error("Errore caricamento percorso", { description: e?.message });
+    }
+  }
+
+  function closeRouteView() {
+    setRouteView(null);
+    setShapeEdit(null);
+    setShowOtherStops(false);
+  }
+
+  /* Entra in modalità "Edita tracciato": copia di lavoro della LineString.
+   * Se la variante non ha ancora uno shape, parte dalla spezzata fermata→fermata. */
+  function startShapeEdit() {
+    if (!routeView) return;
+    const coords: [number, number][] = routeView.shape?.geometry?.coordinates?.length
+      ? routeView.shape.geometry.coordinates.map(c => [c[0], c[1]] as [number, number])
+      : routeView.stops.map(s => [Number(s.lon), Number(s.lat)] as [number, number]);
+    if (coords.length < 2) {
+      toast.error("Tracciato non editabile", { description: "Servono almeno 2 punti (shape o fermate)." });
+      return;
+    }
+    setShapeEdit({
+      coordinates: coords,
+      vertexIdx: sampleVertexIndices(coords.length),
+      distanceM: routeView.shape?.distanceM ?? null,
+      durationS: routeView.shape?.durationS ?? null,
+      dirty: false,
+    });
+  }
+
+  /* Sposta un vertice campionato. I punti non campionati tra i vertici
+   * adiacenti vengono ricostruiti interpolando lo spostamento (peso 1 sul
+   * vertice trascinato → 0 sui vertici vicini), così la linea resta continua
+   * anche quando mostriamo solo 1 vertice ogni N. */
+  function moveShapeVertex(vertexPos: number, lngLat: [number, number]) {
+    setShapeEdit(prev => {
+      if (!prev) return prev;
+      const coords = prev.coordinates.map(c => [c[0], c[1]] as [number, number]);
+      const i = prev.vertexIdx[vertexPos];
+      const dx = lngLat[0] - coords[i][0];
+      const dy = lngLat[1] - coords[i][1];
+      coords[i] = [lngLat[0], lngLat[1]];
+      // Interpola i segmenti non campionati verso il vertice precedente…
+      const p = vertexPos > 0 ? prev.vertexIdx[vertexPos - 1] : i;
+      for (let j = p + 1; j < i; j++) {
+        const t = (j - p) / (i - p);
+        coords[j] = [coords[j][0] + dx * t, coords[j][1] + dy * t];
+      }
+      // …e verso il successivo
+      const n = vertexPos < prev.vertexIdx.length - 1 ? prev.vertexIdx[vertexPos + 1] : i;
+      for (let j = i + 1; j < n; j++) {
+        const t = (n - j) / (n - i);
+        coords[j] = [coords[j][0] + dx * t, coords[j][1] + dy * t];
+      }
+      // distanceM/durationS OSRM non più validi dopo edit manuale
+      return { ...prev, coordinates: coords, distanceM: null, durationS: null, dirty: true };
+    });
+  }
+
+  /* "Snap OSRM": ricostruisce il tracciato concatenando routeSnap tra coppie
+   * consecutive di fermate della variante. */
+  async function snapShapeToStops() {
+    if (!routeView || !shapeEdit) return;
+    if (routeView.stops.length < 2) {
+      toast.error("Servono almeno 2 fermate per lo snap OSRM");
+      return;
+    }
+    setShapeEditBusy(true);
+    try {
+      const merged: [number, number][] = [];
+      let dist = 0, dur = 0;
+      for (let i = 0; i < routeView.stops.length - 1; i++) {
+        const a = routeView.stops[i];
+        const b = routeView.stops[i + 1];
+        const r = await routeSnap(
+          [[Number(a.lon), Number(a.lat)], [Number(b.lon), Number(b.lat)]],
+          "driving",
+        );
+        const seg = r.geometry?.coordinates || [];
+        // Salta il primo punto del segmento (coincide con l'ultimo già inserito)
+        for (let k = merged.length > 0 ? 1 : 0; k < seg.length; k++) merged.push(seg[k]);
+        dist += r.distanceM || 0;
+        dur += r.durationS || 0;
+      }
+      if (merged.length < 2) throw new Error("Nessuna geometria restituita da OSRM");
+      setShapeEdit(prev => prev ? {
+        ...prev,
+        coordinates: merged,
+        vertexIdx: sampleVertexIndices(merged.length),
+        distanceM: dist,
+        durationS: dur,
+        dirty: true,
+      } : prev);
+      toast.success("Tracciato ricalcolato via OSRM", {
+        description: `${(dist / 1000).toFixed(2)} km · ${routeView.stops.length} fermate`,
+      });
+    } catch (e: any) {
+      toast.error("Errore snap OSRM", { description: e?.message });
+    } finally { setShapeEditBusy(false); }
+  }
+
+  /* "Salva": persiste la LineString editata con setPsVariantShape. */
+  async function saveShapeEdit() {
+    if (!routeView || !shapeEdit) return;
+    setShapeEditSaving(true);
+    try {
+      const geometry = { type: "LineString" as const, coordinates: shapeEdit.coordinates };
+      // Riusa i waypoint esistenti se presenti, altrimenti derivali dalle fermate
+      const waypoints: PsWaypoint[] = routeView.shape?.waypoints?.length
+        ? routeView.shape.waypoints
+        : routeView.stops.map(s => ({
+            lng: Number(s.lon), lat: Number(s.lat), stopId: s.stopId, mode: "snap" as const,
+          }));
+      const distanceM = shapeEdit.distanceM ?? Math.round(lineLengthM(shapeEdit.coordinates));
+      const saved = await setPsVariantShape(projectId, routeView.variantId, {
+        mode: routeView.shape?.mode || "snap",
+        geometry,
+        waypoints,
+        distanceM,
+        durationS: shapeEdit.durationS ?? undefined,
+      });
+      setRouteView({ ...routeView, shape: saved });
+      setShapeEdit(null);
+      setShowOtherStops(false);
+      toast.success("Tracciato salvato", { description: `${(distanceM / 1000).toFixed(2)} km` });
+      // Aggiorna il flag hasShape nella lista varianti della linea
+      const updated = await listPsVariants(projectId, routeView.routeId);
+      setRouteVariants(prev => ({ ...prev, [routeView.routeId]: updated }));
+    } catch (e: any) {
+      toast.error("Errore salvataggio tracciato", { description: e?.message });
+    } finally { setShapeEditSaving(false); }
+  }
+
+  /* "Annulla": scarta la copia di lavoro → la mappa torna allo shape originale. */
+  function cancelShapeEdit() {
+    if (shapeEdit?.dirty && !confirm("Annullare le modifiche al tracciato?")) return;
+    setShapeEdit(null);
+    setShowOtherStops(false);
   }
 
   /* ─── Cursor sulla mappa secondo tool ─── */
@@ -1381,6 +1651,114 @@ export default function PlanningStudioEditorPage() {
             </Marker>
           ))}
 
+          {/* ─── Vista percorso: tracciato + fermate della variante selezionata ─── */}
+          {routeView && !editor && (
+            <>
+              {/* Altre fermate del progetto (dimmed) durante l'edit, per
+                  agganciare visivamente il tracciato alle fermate vicine */}
+              {routeViewOtherStopsGeoJSON && routeViewOtherStopsGeoJSON.features.length > 0 && (
+                <Source id="route-view-other-stops-src" type="geojson" data={routeViewOtherStopsGeoJSON}>
+                  <Layer
+                    id="route-view-other-stops-circle"
+                    type="circle"
+                    paint={{
+                      "circle-radius": 4,
+                      "circle-color": "#94a3b8",
+                      "circle-opacity": 0.35,
+                      "circle-stroke-color": "#1e293b",
+                      "circle-stroke-width": 1,
+                      "circle-stroke-opacity": 0.35,
+                    }}
+                  />
+                </Source>
+              )}
+
+              {/* Tracciato: in edit usa la copia di lavoro, altrimenti lo shape salvato */}
+              {(() => {
+                const coords = shapeEdit
+                  ? shapeEdit.coordinates
+                  : routeView.shape?.geometry?.coordinates;
+                if (!coords || coords.length < 2) return null;
+                return (
+                  <Source
+                    id="route-view-shape-src"
+                    type="geojson"
+                    data={{
+                      type: "Feature", properties: {},
+                      geometry: { type: "LineString", coordinates: coords },
+                    } as any}
+                  >
+                    <Layer
+                      id="route-view-shape-line"
+                      type="line"
+                      paint={{
+                        "line-color": routeView.routeColor,
+                        "line-width": shapeEdit ? 4 : 5,
+                        "line-opacity": 0.9,
+                        ...(shapeEdit ? { "line-dasharray": [2, 1.2] } : {}),
+                      }}
+                      layout={{ "line-join": "round", "line-cap": "round" }}
+                    />
+                  </Source>
+                );
+              })()}
+
+              {/* Fermate del percorso evidenziate con il colore della linea + seq */}
+              {routeViewStopsGeoJSON && routeViewStopsGeoJSON.features.length > 0 && (
+                <Source id="route-view-stops-src" type="geojson" data={routeViewStopsGeoJSON}>
+                  <Layer
+                    id="route-view-stops-circle"
+                    type="circle"
+                    paint={{
+                      "circle-radius": 6,
+                      "circle-color": routeView.routeColor,
+                      "circle-stroke-color": "#ffffff",
+                      "circle-stroke-width": 2,
+                    }}
+                  />
+                  <Layer
+                    id="route-view-stops-seq"
+                    type="symbol"
+                    layout={{
+                      "text-field": ["to-string", ["get", "seq"]],
+                      "text-size": 10,
+                      "text-offset": [0, -1.3],
+                      "text-anchor": "bottom",
+                      "text-allow-overlap": true,
+                    }}
+                    paint={{
+                      "text-color": routeView.routeColor,
+                      "text-halo-color": "#ffffff",
+                      "text-halo-width": 1.5,
+                    }}
+                  />
+                </Source>
+              )}
+
+              {/* Vertici draggabili del tracciato in modalità edit (campionati) */}
+              {shapeEdit && shapeEdit.vertexIdx.map((ci, vi) => (
+                <Marker
+                  key={`shape-v-${vi}`}
+                  longitude={shapeEdit.coordinates[ci][0]}
+                  latitude={shapeEdit.coordinates[ci][1]}
+                  draggable
+                  anchor="center"
+                  onDragEnd={(e) => moveShapeVertex(vi, [e.lngLat.lng, e.lngLat.lat])}
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    title={`Vertice ${vi + 1}/${shapeEdit.vertexIdx.length} · trascina per modificare il tracciato`}
+                  >
+                    <div
+                      className="w-3.5 h-3.5 rounded-full border-2 border-white shadow-lg cursor-grab active:cursor-grabbing"
+                      style={{ backgroundColor: routeView.routeColor }}
+                    />
+                  </div>
+                </Marker>
+              ))}
+            </>
+          )}
+
           {/* Pending stop in modalità addStop */}
           {pendingStop && (
             <Popup longitude={pendingStop.lon} latitude={pendingStop.lat} closeOnClick={false} closeButton={false} anchor="bottom" offset={12}>
@@ -1511,6 +1889,7 @@ export default function PlanningStudioEditorPage() {
                       catch (e: any) { toast.error("Errore", { description: e?.message }); }
                     }}
                     onCreateVariant={handleCreateVariant}
+                    onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
                     onDeleteVariant={async (id) => {
                       if (!confirm("Eliminare la variante?")) return;
@@ -1607,9 +1986,38 @@ export default function PlanningStudioEditorPage() {
           )}
         </AnimatePresence>
 
+        {/* ─── Pannello vista percorso (dx): fermate variante + edit tracciato ─── */}
+        <AnimatePresence>
+          {routeView && !editor && (
+            <motion.div
+              initial={{ x: 360, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 360, opacity: 0 }}
+              transition={{ type: "spring", damping: 26, stiffness: 260 }}
+              className="absolute top-3 right-3 bottom-3 w-[330px] z-20 rounded-xl bg-slate-950/95 backdrop-blur border border-slate-800 shadow-2xl flex flex-col overflow-hidden"
+              style={{ borderColor: `${routeView.routeColor}66` }}
+            >
+              <RouteViewPanel
+                view={routeView}
+                shapeEdit={shapeEdit}
+                snapBusy={shapeEditBusy}
+                saving={shapeEditSaving}
+                showOtherStops={showOtherStops}
+                onToggleOtherStops={() => setShowOtherStops(v => !v)}
+                onFlyToStop={(s) => mapRef.current?.flyTo({ center: [Number(s.lon), Number(s.lat)], zoom: 16, duration: 600 })}
+                onStartEdit={startShapeEdit}
+                onSnapOsrm={snapShapeToStops}
+                onSave={saveShapeEdit}
+                onCancel={cancelShapeEdit}
+                onClose={closeRouteView}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ─── Inspector floating (dx) per fermata selezionata ─── */}
         <AnimatePresence>
-          {selectedStopId && !editingStop && !editor && (() => {
+          {selectedStopId && !editingStop && !editor && !routeView && (() => {
             const s = stops.find(x => x.id === selectedStopId);
             if (!s) return null;
             // Trova varianti che includono questa fermata
@@ -1965,7 +2373,7 @@ function StopsPanel({
 function RoutesPanel({
   routes, variantsByRoute, openRouteId,
   onToggleRoute, onCreateRoute, onDeleteRoute,
-  onCreateVariant, onEditVariant, onDeleteVariant,
+  onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
 }: {
   routes: PsRoute[];
   variantsByRoute: Record<string, PsVariant[]>;
@@ -1974,6 +2382,8 @@ function RoutesPanel({
   onCreateRoute: (input: { shortName: string; longName?: string; color?: string }) => Promise<PsRoute | undefined>;
   onDeleteRoute: (id: string) => void;
   onCreateVariant: (routeId: string, name: string, dir: number) => Promise<PsVariant | undefined>;
+  /** Selezione percorso: apre la vista con fermate ordinate + tracciato evidenziato */
+  onSelectVariant?: (routeId: string, variantId: string) => void;
   onEditVariant: (routeId: string, variantId: string) => void;
   onDeleteVariant: (id: string) => void;
 }) {
@@ -2034,18 +2444,21 @@ function RoutesPanel({
               {open && (
                 <div className="px-3 pb-3 space-y-1 border-t border-slate-800/50 bg-slate-900/30">
                   {variants.map(v => (
-                    <div key={v.id} className="group flex items-center gap-2 py-1.5">
+                    <div key={v.id}
+                      className="group flex items-center gap-2 py-1.5 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-800/50"
+                      title="Mostra percorso e fermate sulla mappa"
+                      onClick={() => onSelectVariant?.(r.id, v.id)}>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${v.direction === 0 ? "bg-blue-500/20 text-blue-300" : "bg-purple-500/20 text-purple-300"}`}>
                         {v.direction === 0 ? "→" : "←"}
                       </span>
                       <span className="text-xs flex-1 truncate">{v.name}</span>
                       <span className="text-[10px] text-slate-500">{v.stopCount ?? 0} ferm.</span>
                       {v.hasShape && <span className="text-[10px] text-emerald-400">●</span>}
-                      <button onClick={() => onEditVariant(r.id, v.id)}
+                      <button onClick={(e) => { e.stopPropagation(); onEditVariant(r.id, v.id); }}
                         className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/80 hover:bg-emerald-500 text-white opacity-0 group-hover:opacity-100">
                         Edita
                       </button>
-                      <button onClick={() => onDeleteVariant(v.id)}
+                      <button onClick={(e) => { e.stopPropagation(); onDeleteVariant(v.id); }}
                         className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-500 hover:text-red-400">
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -2944,6 +3357,165 @@ function VariantEditorPanel({
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           {editor.dirty ? "Salva variante" : "Nessuna modifica"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Pannello vista percorso (dx) — fermate ordinate + edit tracciato
+ *  Flusso operatore TPL: selezione percorso → lista fermate (seq, nome,
+ *  click → flyTo) → "Edita tracciato" → drag vertici / Snap OSRM →
+ *  Salva (setPsVariantShape) o Annulla.
+ * ════════════════════════════════════════════════════════════ */
+function RouteViewPanel({
+  view, shapeEdit, snapBusy, saving, showOtherStops,
+  onToggleOtherStops, onFlyToStop, onStartEdit, onSnapOsrm, onSave, onCancel, onClose,
+}: {
+  view: RouteViewState;
+  shapeEdit: ShapeEditState | null;
+  snapBusy: boolean;
+  saving: boolean;
+  showOtherStops: boolean;
+  onToggleOtherStops: () => void;
+  onFlyToStop: (s: PsVariantStop) => void;
+  onStartEdit: () => void;
+  onSnapOsrm: () => void;
+  onSave: () => void;
+  onCancel: () => void;
+  onClose: () => void;
+}) {
+  const editing = shapeEdit !== null;
+  // Distanza mostrata: dallo snap OSRM se appena ricalcolata, altrimenti dallo shape salvato
+  const distanceM = shapeEdit?.distanceM ?? view.shape?.distanceM ?? null;
+  const canEdit = view.stops.length >= 2 || (view.shape?.geometry?.coordinates?.length ?? 0) >= 2;
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header: linea + variante */}
+      <div className="px-4 py-3 border-b border-slate-800 shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 min-w-0">
+            <span
+              className="px-2 py-0.5 rounded text-xs font-bold text-white shrink-0"
+              style={{ backgroundColor: view.routeColor }}
+            >
+              {view.routeShortName || "—"}
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-medium truncate">{view.variantName}</p>
+              <p className="text-[10px] text-slate-500">
+                {view.direction === 0 ? "Andata" : "Ritorno"} · {view.stops.length} fermate
+                {distanceM != null && ` · ${(distanceM / 1000).toFixed(2)} km`}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-slate-800 text-slate-400 shrink-0">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Azioni: vista normale → "Edita tracciato"; edit → Snap/Salva/Annulla */}
+      <div className="px-3 py-2.5 border-b border-slate-800 shrink-0 space-y-2">
+        {!editing ? (
+          <>
+            <button
+              onClick={onStartEdit}
+              disabled={!canEdit}
+              title={canEdit ? "Modifica il tracciato trascinando i vertici" : "Servono almeno 2 punti (shape o fermate)"}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium"
+            >
+              <PenLine className="w-4 h-4" /> Edita tracciato
+            </button>
+            {!view.shape && (
+              <p className="text-[10px] text-amber-400/90 text-center">
+                Nessun tracciato salvato: partirà dalla spezzata tra le fermate.
+              </p>
+            )}
+          </>
+        ) : (
+          <>
+            <p className="text-[10px] text-slate-400 leading-snug">
+              Trascina i <span className="font-semibold" style={{ color: view.routeColor }}>vertici</span> sulla
+              mappa per modificare il tracciato
+              {shapeEdit!.vertexIdx.length < shapeEdit!.coordinates.length &&
+                ` (${shapeEdit!.vertexIdx.length} vertici campionati su ${shapeEdit!.coordinates.length} punti)`}.
+            </p>
+            <button
+              onClick={onSnapOsrm}
+              disabled={snapBusy || saving || view.stops.length < 2}
+              title="Ricostruisce il tracciato concatenando i percorsi OSRM tra fermate consecutive"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-indigo-500/90 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium"
+            >
+              {snapBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RouteIcon className="w-3.5 h-3.5" />}
+              {snapBusy ? "Calcolo percorso…" : "Snap OSRM (fermata → fermata)"}
+            </button>
+            {/* Toggle "Mostra altre fermate" per agganciare il tracciato */}
+            <button
+              onClick={onToggleOtherStops}
+              className={`w-full flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition ${
+                showOtherStops
+                  ? "border-slate-500 bg-slate-700/60 text-slate-100"
+                  : "border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {showOtherStops ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+              Mostra altre fermate
+            </button>
+            <div className="flex gap-2 pt-0.5">
+              <button
+                onClick={onCancel}
+                disabled={saving}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-medium"
+              >
+                <X className="w-3.5 h-3.5" /> Annulla
+              </button>
+              <button
+                onClick={onSave}
+                disabled={saving || !shapeEdit!.dirty}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                Salva
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Lista ordinata delle fermate della variante (seq, nome) */}
+      <div className="flex-1 overflow-y-auto p-3">
+        <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">
+          Fermate del percorso ({view.stops.length})
+        </p>
+        {view.stops.length === 0 && (
+          <p className="text-xs text-slate-500 text-center py-6 italic">
+            Nessuna fermata associata a questa variante.
+          </p>
+        )}
+        <div className="space-y-0.5">
+          {view.stops.map(s => (
+            <button
+              key={`${s.stopId}-${s.seq}`}
+              onClick={() => onFlyToStop(s)}
+              title="Vai alla fermata sulla mappa"
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-slate-800/60 transition group"
+            >
+              <span
+                className="w-5 h-5 rounded-full text-[10px] font-bold text-white flex items-center justify-center shrink-0"
+                style={{ backgroundColor: view.routeColor }}
+              >
+                {s.seq}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs truncate text-slate-200">{s.stopName}</p>
+                {s.stopCode && <p className="text-[10px] text-slate-500">{s.stopCode}</p>}
+              </div>
+              <MapPin className="w-3 h-3 text-slate-600 group-hover:text-slate-400 shrink-0" />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
