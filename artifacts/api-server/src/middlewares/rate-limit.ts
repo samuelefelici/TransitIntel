@@ -1,12 +1,15 @@
 import rateLimit from "express-rate-limit";
 
 /**
- * Global API rate limiter — 100 requests per minute per IP.
+ * Global API rate limiter — 600 requests per minute per IP.
+ * La SPA fa legittimamente decine di chiamate parallele (mappa, pannelli,
+ * TanStack Query): 100/min faceva scattare 429 nell'uso normale del
+ * Planner Studio. 600/min resta protettivo contro abusi/scraping.
  * Permissive enough for normal usage, prevents abuse / scraping.
  */
 export const globalLimiter = rateLimit({
   windowMs: 60 * 1000,     // 1 minuto
-  max: 100,                // max 100 req per finestra
+  max: 600,                // max 600 req per finestra
   standardHeaders: "draft-7", // RateLimit-* headers (RFC draft-7)
   legacyHeaders: false,    // disabilita X-RateLimit-* vecchi
   message: { error: "Troppe richieste, riprova tra un minuto." },

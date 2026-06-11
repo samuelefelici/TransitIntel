@@ -31,7 +31,7 @@ import {
   getPsVariant, type PsVariantStop,
   listPsCalendars,
   listPsTrips, type PsTrip,
-  getPsStopTimes, type PsStopTime,
+  getPsStopTimesBulk, type PsStopTime,
   shiftPsTripTimes,
   batchCreatePsTrips, type PsBatchTripInput,
 } from "@/lib/planning-studio-api";
@@ -208,18 +208,16 @@ export default function PlanningStudioTtdPage() {
     if (missing.length === 0) return;
     let cancelled = false;
     (async () => {
-      // fan-out con concorrenza limitata per non saturare l'API
-      for (let i = 0; i < missing.length; i += 6) {
-        if (cancelled) return;
-        const chunk = missing.slice(i, i + 6);
-        const res = await Promise.all(chunk.map(id => getPsStopTimes(projectId, id).catch(() => [] as PsStopTime[])));
+      // una sola chiamata bulk: la versione corsa-per-corsa faceva 429
+      try {
+        const byTrip = await getPsStopTimesBulk(projectId, missing);
         if (cancelled) return;
         setStMap(prev => {
           const next = { ...prev };
-          chunk.forEach((id, j) => { next[id] = res[j]; });
+          for (const id of missing) next[id] = byTrip[id] ?? [];
           return next;
         });
-      }
+      } catch { /* riproverà al prossimo render */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -266,14 +264,10 @@ export default function PlanningStudioTtdPage() {
       for (const vid of missing) {
         try {
           const trips = (await listPsTrips(projectId, { variantId: vid })).slice(0, 80);
-          const st: Record<string, PsStopTime[]> = {};
-          for (let i = 0; i < trips.length; i += 6) {
-            if (cancelled) return;
-            const chunk = trips.slice(i, i + 6);
-            const res = await Promise.all(chunk.map(t => getPsStopTimes(projectId, t.id).catch(() => [] as PsStopTime[])));
-            chunk.forEach((t, j) => { st[t.id] = res[j]; });
-          }
-          if (!cancelled) setOverlayData(prev => ({ ...prev, [vid]: { trips, st } }));
+          // una sola chiamata bulk per variante (niente fan-out → niente 429)
+          const st = await getPsStopTimesBulk(projectId, trips.map(t => t.id));
+          if (cancelled) return;
+          setOverlayData(prev => ({ ...prev, [vid]: { trips, st } }));
         } catch { /* variante non caricabile: la ignoriamo */ }
       }
     })();
