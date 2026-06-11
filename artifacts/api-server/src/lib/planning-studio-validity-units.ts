@@ -128,11 +128,14 @@ async function buildDayTypeMap(
   for (const r of (sysR as any).rows ?? []) sysIdByCode.set(r.code, r.id);
 
   // Calendar override: priorità project > global
+  // NB: gli array vanno passati come literal Postgres '{a,b}' in un singolo
+  // parametro: ${dates} verrebbe espanso in una tupla ($1,...)::date[] invalida.
+  const datesLiteral = `{${dates.join(",")}}`;
   const calR = await db.execute(sql`
     SELECT to_char(date, 'YYYY-MM-DD') AS date, day_type_id, project_id
       FROM ps_day_calendar
      WHERE (project_id = ${projectId}::uuid OR project_id IS NULL)
-       AND date = ANY(${dates}::date[])
+       AND date = ANY(${datesLiteral}::date[])
   `);
   const projectOverride = new Map<string, string>();
   const globalOverride  = new Map<string, string>();
@@ -243,13 +246,15 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       for (const d of settings.patronSaintDates) if (isValidISODate(d)) patronSaints.add(d);
     }
 
-    // Calendario categorie (globale)
+    // Calendario categorie (globale) — array come literal Postgres (vedi nota
+    // in buildDayTypeMap: l'interpolazione diretta genera una tupla invalida)
+    const datesArrLiteral = `{${dates.join(",")}}`;
     const catCalR = await db.execute(sql`
       SELECT to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id,
              cat.name AS category_name, cat.color AS category_color
         FROM ps_validity_category_calendar c
         LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
-       WHERE c.date = ANY(${dates}::date[])
+       WHERE c.date = ANY(${datesArrLiteral}::date[])
     `);
     const catByDate = new Map<string, { id: string; name: string; color: string }>();
     for (const r of (catCalR as any).rows ?? []) {
@@ -280,7 +285,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     const dtMeta = new Map<string, { name: string; color: string }>();
     if (dtIds.length > 0) {
       const dtR = await db.execute(sql`
-        SELECT id, name, color FROM ps_day_types WHERE id = ANY(${dtIds}::uuid[])
+        SELECT id, name, color FROM ps_day_types WHERE id = ANY(${`{${dtIds.join(",")}}`}::uuid[])
       `);
       for (const r of (dtR as any).rows ?? []) {
         dtMeta.set(r.id, { name: r.name, color: r.color });
@@ -306,7 +311,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       const tdvR = await db.execute(sql`
         SELECT trip_id, day_type_id, is_valid
           FROM ps_trip_day_validity
-         WHERE trip_id = ANY(${tripIds}::uuid[])
+         WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
       `);
       for (const r of (tdvR as any).rows ?? []) {
         if (!tdvMap.has(r.trip_id)) tdvMap.set(r.trip_id, new Map());
@@ -320,7 +325,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       const excR = await db.execute(sql`
         SELECT trip_id, to_char(date, 'YYYY-MM-DD') AS date, exception_type
           FROM ps_trip_exceptions
-         WHERE trip_id = ANY(${tripIds}::uuid[])
+         WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
            AND date >= ${from}::date AND date <= ${to}::date
       `);
       for (const r of (excR as any).rows ?? []) {

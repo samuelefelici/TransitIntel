@@ -234,7 +234,7 @@ export default function PlanningStudioEditorPage() {
   // Combina due sorgenti:
   //   (a) cluster PS del progetto (sempre, anche senza overlay): match diretto
   //       per cluster_id sulla fermata. Colore = attributes.color o default per kind.
-  //   (b) overlay legacy "Cluster (Network)" se attivo: match per code/coord.
+  //   (b) overlay legacy "Nodi (Network)" se attivo: match per code/coord.
   // (a) ha precedenza su (b) per coerenza con la lista nel pannello.
   const stopIdToClusterColor: { [k: string]: string } = useMemo(() => {
     const out: { [k: string]: string } = {};
@@ -407,7 +407,7 @@ export default function PlanningStudioEditorPage() {
         if (sR.status === "fulfilled") setStops(sR.value); else toast.warning("Fermate non caricate");
         if (rR.status === "fulfilled") setRoutes(rR.value); else toast.warning("Linee non caricate");
         if (cR.status === "fulfilled") setCalendars(cR.value); else toast.warning("Calendari non caricati");
-        if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Cluster non caricati");
+        if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Nodi non caricati");
       } catch (e: any) {
         toast.error("Errore caricamento", { description: e?.message });
       } finally { setLoading(false); }
@@ -783,7 +783,7 @@ export default function PlanningStudioEditorPage() {
       if (sR.status === "fulfilled") setStops(s); else toast.warning("Fermate non ricaricate");
       if (rrR.status === "fulfilled") setRoutes(rrR.value); else toast.warning("Linee non ricaricate");
       if (cR.status === "fulfilled") setCalendars(cR.value); else toast.warning("Calendari non ricaricati");
-      if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Cluster non ricaricati");
+      if (clR.status === "fulfilled") setClusters(clR.value); else toast.warning("Nodi non ricaricati");
       // Fit map sulle fermate
       if (s.length > 0) {
         const coords = s.map(x => [x.lon, x.lat] as [number, number]);
@@ -876,7 +876,7 @@ export default function PlanningStudioEditorPage() {
           onClick={() => setActivePanel(activePanel === "calendars" ? null : "calendars")}
         />
         <DataTabBtn
-          icon={Grip} label="Cluster" count={clusters.length || undefined} accent="cyan"
+          icon={Grip} label="Nodi" count={clusters.length || undefined} accent="cyan"
           active={activePanel === "clusters"}
           onClick={() => {
             if (activePanel === "clusters") {
@@ -1457,8 +1457,8 @@ export default function PlanningStudioEditorPage() {
                   {activePanel === "stops" && <><MapPin className="w-4 h-4 text-emerald-400" /> Fermate</>}
                   {activePanel === "routes" && <><Bus className="w-4 h-4 text-cyan-400" /> Linee</>}
                   {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Calendari</>}
-                  {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Cluster di cambio</>}
-                  {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Cluster (Network)</>}
+                  {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Nodi di cambio</>}
+                  {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Nodi (Network)</>}
                   {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi (Network)</>}
                 </h2>
                 <button onClick={() => setActivePanel(null)}
@@ -2175,7 +2175,7 @@ function CalendarsPanel({
 }
 
 /* ════════════════════════════════════════════════════════════
- *  Sidebar — Cluster di cambio (interscambi)
+ *  Sidebar — Nodi di cambio (interscambi)
  *  Editing interattivo direttamente sulla mappa: il pannello
  *  ospita la lista, il tasto "+" e il pannello di modifica.
  *  Il disegno area + click fermate avviene nello stato `clusterDraw`
@@ -2342,7 +2342,7 @@ function ClustersPanel({
       await deletePsCluster(projectId, c.id);
       await onChanged();
       if (clusterDraw?.clusterId === c.id) setClusterDraw(null);
-      toast.success("Cluster eliminato");
+      toast.success("Nodo eliminato");
     } catch (e: any) { toast.error(e?.message || "Errore"); }
     finally { setBusyId(null); }
   }
@@ -3083,7 +3083,7 @@ function NeClustersPanel({
     try {
       const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      toast.success("Cluster eliminato");
+      toast.success("Nodo eliminato");
       await onReload();
     } catch (e: any) {
       toast.error("Errore eliminazione", { description: e?.message });

@@ -472,7 +472,7 @@ function StopDetailPanel({ projectId, stopId, onDrillVariant, onDrillRoute, acti
 
       {/* Cluster */}
       {d.cluster && (
-        <Section title="Cluster di appartenenza" icon={<Layers className="w-3.5 h-3.5" />}>
+        <Section title="Nodo di appartenenza" icon={<Layers className="w-3.5 h-3.5" />}>
           <div className="text-xs text-slate-300">
             {d.cluster.name}
             {d.cluster.kind === "interchange" && (

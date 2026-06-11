@@ -96,7 +96,7 @@ export default function PlanningStudioClustersPage() {
     onSuccess: (c) => {
       qc.invalidateQueries({ queryKey: ["ps", projectId, "clusters"] });
       setSelectedId(c.id);
-      toast.success("Cluster creato");
+      toast.success("Nodo creato");
     },
     onError: (e: any) => toast.error(e?.message || "Errore creazione cluster"),
   });
@@ -112,7 +112,7 @@ export default function PlanningStudioClustersPage() {
       qc.invalidateQueries({ queryKey: ["ps", projectId, "clusters"] });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "stops"] });
       if (selectedId === id) setSelectedId(null);
-      toast.success("Cluster eliminato");
+      toast.success("Nodo eliminato");
     },
     onError: (e: any) => toast.error(e?.message || "Errore eliminazione"),
   });
@@ -353,7 +353,7 @@ export default function PlanningStudioClustersPage() {
         </Link>
         <div className="flex items-center gap-2">
           <Layers className="w-5 h-5 text-cyan-400" />
-          <h1 className="font-semibold text-sm">Cluster fermate</h1>
+          <h1 className="font-semibold text-sm">Nodi di scambio</h1>
         </div>
         {project && (
           <span className="text-xs text-slate-500 ml-2">
