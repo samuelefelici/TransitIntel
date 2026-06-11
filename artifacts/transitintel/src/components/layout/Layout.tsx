@@ -48,6 +48,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: "/fucina", label: "Scheduling Engine", icon: Flame },
       { href: "/roster", label: "Roster Personale", icon: Users },
+      { href: "/service-db", label: "Database di Esercizio", icon: Database },
     ],
   },
   {

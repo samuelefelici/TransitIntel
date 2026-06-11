@@ -33,6 +33,7 @@ import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
 import timetablesRouter from "./timetables";
 import rosterRouter from "./roster";
+import serviceDbRouter from "./service-db";
 import depotsRouter from "./depots";
 import deadheadsRouter from "./deadheads";
 import intermodalOptimizerRouter from "./intermodal-optimizer";
@@ -88,6 +89,7 @@ router.use(weatherRouter);
 router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
 router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea
 router.use(rosterRouter); // Roster: assegnazione turni guida al personale viaggiante
+router.use(serviceDbRouter); // Database di Esercizio: vista unica della catena di pianificazione
 router.use(faresRouter);
 router.use(faresMinOdRouter);
 router.use(faresNodeAssignmentRouter);
