@@ -1380,6 +1380,46 @@ router.get("/planning-studio/projects/:id/trips/:tripId/stop-times", async (req,
   });
 });
 
+// POST /stop-times/bulk — orari di MOLTE corse in una sola chiamata.
+// Nato per il TTD (orario grafico): la versione corsa-per-corsa generava
+// centinaia di GET e faceva scattare il rate limiter (429).
+router.post("/planning-studio/projects/:id/stop-times/bulk", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  const tripIds: string[] = Array.isArray(req.body?.tripIds)
+    ? req.body.tripIds.filter((t: unknown) => UUID_RE.test(String(t))).slice(0, 2000)
+    : [];
+  if (tripIds.length === 0) { res.json({ stopTimesByTrip: {} }); return; }
+  // array come literal Postgres: l'interpolazione diretta genera una tupla invalida
+  const idsLiteral = `{${tripIds.join(",")}}`;
+  const r = await db.execute(sql`
+    SELECT st.*, s.name AS stop_name, s.code AS stop_code
+      FROM ps_stop_times st
+      JOIN ps_stops s ON s.id = st.stop_id
+      JOIN ps_trips t ON t.id = st.trip_id
+     WHERE st.trip_id = ANY(${idsLiteral}::uuid[])
+       AND t.project_id = ${proj.id}::uuid
+     ORDER BY st.trip_id, st.stop_seq ASC
+  `);
+  const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  const byTrip: Record<string, any[]> = {};
+  for (const row of rows) {
+    (byTrip[row.trip_id] ??= []).push({
+      tripId: row.trip_id,
+      stopSeq: row.stop_seq,
+      stopId: row.stop_id,
+      stopName: row.stop_name,
+      stopCode: row.stop_code,
+      arrivalTime: row.arrival_time,
+      departureTime: row.departure_time,
+      pickupType: row.pickup_type,
+      dropOffType: row.drop_off_type,
+      timepoint: row.timepoint,
+      shapeDistTraveled: row.shape_dist_traveled,
+    });
+  }
+  res.json({ stopTimesByTrip: byTrip });
+});
+
 // PUT /trips/:tripId/stop-times — sostituisce gli orari
 router.put("/planning-studio/projects/:id/trips/:tripId/stop-times", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;

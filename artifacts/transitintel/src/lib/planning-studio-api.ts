@@ -443,6 +443,23 @@ export async function getPsStopTimes(projectId: string, tripId: string): Promise
   );
   return r.stopTimes;
 }
+
+/** Orari di molte corse in una sola chiamata (evita N GET → 429). */
+export async function getPsStopTimesBulk(
+  projectId: string, tripIds: string[],
+): Promise<Record<string, PsStopTime[]>> {
+  if (tripIds.length === 0) return {};
+  const out: Record<string, PsStopTime[]> = {};
+  // chunk prudenziale: payload contenuti anche con migliaia di corse
+  for (let i = 0; i < tripIds.length; i += 500) {
+    const r = await apiFetch<{ stopTimesByTrip: Record<string, PsStopTime[]> }>(
+      `/api/planning-studio/projects/${projectId}/stop-times/bulk`,
+      { method: "POST", body: JSON.stringify({ tripIds: tripIds.slice(i, i + 500) }) },
+    );
+    Object.assign(out, r.stopTimesByTrip);
+  }
+  return out;
+}
 export async function setPsStopTimes(
   projectId: string, tripId: string,
   stopTimes: { stopId: string; arrivalTime: string; departureTime: string }[]
