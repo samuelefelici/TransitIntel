@@ -204,10 +204,17 @@ export default function PlanningStudioValidityPage() {
     enabled: !!projectId,
   });
 
+  // Progetti grandi (oltre il cap del backend): matrice SOLO per linea, senza
+  // nemmeno tentare la chiamata non filtrata (evita i 400 "too many trips").
+  const MATRIX_TRIP_CAP = 2000;
+  const projectTrips = projectQ.data?.counts?.trips ?? null;
+  const bigProject = projectTrips != null && projectTrips > MATRIX_TRIP_CAP;
+
   const matrixQ = useQuery({
     queryKey: ["ps", projectId, "validity", "matrix", from, to, routeId],
     queryFn: () => getPsValidityMatrix(projectId, { from, to, routeId }),
-    enabled: !!projectId,
+    // attende i counts del progetto; se grande, parte solo con una linea scelta
+    enabled: !!projectId && projectTrips != null && (!bigProject || !!routeId),
     retry: false, // l'errore "too many trips" non va riprovato
   });
 
@@ -215,7 +222,7 @@ export default function PlanningStudioValidityPage() {
   const matrixErrBody = (matrixQ.error as any)?.body as
     | { error?: string; tripCount?: number; maxTripsPerPage?: number; needsRouteFilter?: boolean }
     | undefined;
-  const needsRouteFilter = !!matrixErrBody?.needsRouteFilter;
+  const needsRouteFilter = bigProject || !!matrixErrBody?.needsRouteFilter;
 
   // Auto-selezione: se la matrice è troppo grande e non c'è ancora una linea scelta,
   // pre-seleziona la prima disponibile per sbloccare la UI

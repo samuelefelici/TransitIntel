@@ -11,7 +11,7 @@
  *                       aggiunge waypoint snap-ato via OSRM, drag waypoint per
  *                       spostare, toggle modalità manuale per tratti fuori rete)
  */
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
 import { useLocation, useParams } from "wouter";
 import Map, {
   Marker, Source, Layer, NavigationControl, Popup,
@@ -26,9 +26,10 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
-  CalendarCheck, Eye, EyeOff,
+  CalendarCheck, Eye, EyeOff, Box,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
+import { getApiBase } from "@/lib/api";
 import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
@@ -49,6 +50,8 @@ const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 }; // Rom
 
 type Tool = "select" | "addStop" | "editVariant";
 type DataPanel = "stops" | "routes" | "calendars" | "clusters" | "ne-clusters" | "ne-depots" | null;
+/* Gruppi della toolbar: ogni gruppo apre un menu a tendina con sottovoci */
+type ToolbarMenu = "rete" | "orari" | "infrastruttura" | "vista" | "progetto";
 
 /* ─── Tipi cluster/depositi globali (Network Engine) ─── */
 interface GlobalClusterStop { gtfsStopId: string; stopName: string; stopLat: number; stopLon: number; }
@@ -264,11 +267,24 @@ export default function PlanningStudioEditorPage() {
   const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
   const [depotModalHidden, setDepotModalHidden] = useState(false);
 
+  /* ─── Toolbar: menu a tendina aperto + chiusura con click fuori ─── */
+  const [openMenu, setOpenMenu] = useState<ToolbarMenu | null>(null);
+  const menuBarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!openMenu) return;
+    const onDown = (e: MouseEvent) => {
+      // Chiude il menu se il click avviene fuori dalla barra dei menu
+      if (menuBarRef.current && !menuBarRef.current.contains(e.target as Node)) setOpenMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [openMenu]);
+
   // Reload helpers (riusabili dai pannelli dopo CRUD)
   const reloadGlobalClusters = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, clusters: true }));
     try {
-      const r = await fetch("/api/clusters");
+      const r = await fetch(`${getApiBase()}/api/clusters`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalCluster[] = Array.isArray(j) ? j : (j.data ?? []);
@@ -279,7 +295,7 @@ export default function PlanningStudioEditorPage() {
   const reloadDepots = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, depots: true }));
     try {
-      const r = await fetch("/api/depots");
+      const r = await fetch(`${getApiBase()}/api/depots`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalDepot[] = Array.isArray(j) ? j : (j.data ?? []);
@@ -1025,6 +1041,23 @@ export default function PlanningStudioEditorPage() {
     setShowOtherStops(false);
   }
 
+  /* ─── Toolbar: apre/chiude un pannello dati da una voce di menu ───
+   * Stessa logica dei vecchi bottoni piatti: toggle del pannello + effetti
+   * collaterali (uscita dal draw cluster, sync overlay depositi, lazy-load
+   * dei nodi globali). Chiude sempre il menu a tendina. */
+  function togglePanel(p: Exclude<DataPanel, null>) {
+    setOpenMenu(null);
+    if (activePanel === p) {
+      setActivePanel(null);
+      if (p === "clusters") setClusterDraw(null);   // esci da eventuale modalità draw/stops in corso
+      if (p === "ne-depots") setShowDepots(false);  // spegni anche l'overlay depositi
+    } else {
+      setActivePanel(p);
+      if (p === "ne-depots") setShowDepots(true);   // accendi l'overlay depositi
+      if (p === "ne-clusters" && globalClusters.length === 0 && !overlayLoading.clusters) reloadGlobalClusters();
+    }
+  }
+
   /* ─── Cursor sulla mappa secondo tool ─── */
   const mapCursor = pickingDepotLocation ? "crosshair"
                   : (clusterDraw && clusterDraw.mode === "draw") ? "crosshair"
@@ -1090,7 +1123,8 @@ export default function PlanningStudioEditorPage() {
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
       {/* ─── Toolbar top ─── */}
-      <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30 overflow-x-auto overflow-y-hidden whitespace-nowrap [scrollbar-width:thin]">
+      {/* Nota: niente overflow-x sulla barra, altrimenti i menu a tendina verrebbero tagliati */}
+      <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30 whitespace-nowrap">
         {/* Back + project info */}
         <button onClick={() => navigate("/planning-studio")}
           className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition shrink-0">
@@ -1102,15 +1136,6 @@ export default function PlanningStudioEditorPage() {
             {project.agencyName || project.myRole}
           </p>
         </div>
-
-        <button
-          onClick={() => setShareOpen(true)}
-          title={project.myRole === "owner" ? "Condividi progetto" : "Vedi membri"}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-200 text-xs font-medium transition shrink-0"
-        >
-          <Share2 className="w-3.5 h-3.5" />
-          {project.myRole === "owner" ? "Condividi" : "Membri"}
-        </button>
 
         {/* Badge ruolo */}
         <span
@@ -1129,53 +1154,98 @@ export default function PlanningStudioEditorPage() {
 
         <div className="h-7 w-px bg-slate-800 mx-1" />
 
-        {/* Data toolbar — accesso ai pannelli dati */}
-        <DataTabBtn
-          icon={MapPin} label="Fermate" count={stops.length} accent="emerald"
-          active={activePanel === "stops"}
-          onClick={() => setActivePanel(activePanel === "stops" ? null : "stops")}
-        />
-        <DataTabBtn
-          icon={Bus} label="Linee" count={routes.length} accent="cyan"
-          active={activePanel === "routes"}
-          onClick={() => setActivePanel(activePanel === "routes" ? null : "routes")}
-        />
-        <DataTabBtn
-          icon={CalendarIcon} label="Calendari" count={calendars.length} accent="indigo"
-          active={activePanel === "calendars"}
-          onClick={() => setActivePanel(activePanel === "calendars" ? null : "calendars")}
-        />
-        <DataTabBtn
-          icon={Grip} label="Nodi" count={clusters.length || undefined} accent="cyan"
-          active={activePanel === "clusters"}
-          onClick={() => {
-            if (activePanel === "clusters") {
-              setActivePanel(null);
-              // Esci da eventuale modalità draw/stops in corso
-              setClusterDraw(null);
-            } else {
-              setActivePanel("clusters");
-            }
-          }}
-        />
-        <DataTabBtn
-          icon={Building2} label="Depositi" count={depots.length || undefined} accent="orange"
-          active={activePanel === "ne-depots" || showDepots}
-          onClick={() => {
-            if (activePanel === "ne-depots") {
-              setActivePanel(null);
-              setShowDepots(false);
-            } else {
-              setActivePanel("ne-depots");
-              setShowDepots(true);
-            }
-          }}
-        />
+        {/* ─── Barra menu: gruppi a tendina (click fuori per chiudere) ───
+         * Stesse azioni dei vecchi bottoni piatti, riorganizzate per categoria.
+         * Ogni voce resta raggiungibile in ≤2 click. */}
+        <div ref={menuBarRef} className="flex items-center gap-1 shrink-0">
+          {/* Rete: dati di rete del progetto (fermate, linee) + inspector */}
+          <MenuGroup
+            label="Rete" icon={RouteIcon} accent="emerald"
+            active={activePanel === "stops" || activePanel === "routes"}
+            open={openMenu === "rete"}
+            onToggle={() => setOpenMenu(m => m === "rete" ? null : "rete")}
+          >
+            <MenuItem icon={MapPin} label="Fermate" count={stops.length} accent="emerald"
+              active={activePanel === "stops"} onClick={() => togglePanel("stops")} />
+            <MenuItem icon={Bus} label="Linee & Percorsi" count={routes.length} accent="cyan"
+              active={activePanel === "routes"} onClick={() => togglePanel("routes")} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Activity} label="Inspector di rete" note="pagina" accent="violet"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/network`); }} />
+          </MenuGroup>
+
+          {/* Orari: calendari, corse, periodi e matrice di validità */}
+          <MenuGroup
+            label="Orari" icon={CalendarIcon} accent="indigo"
+            active={activePanel === "calendars"}
+            open={openMenu === "orari"}
+            onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
+          >
+            <MenuItem icon={CalendarIcon} label="Calendari" count={calendars.length} accent="indigo"
+              active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
+            <MenuItem icon={CalendarIcon} label="Periodi di esercizio" note="pagina" accent="indigo"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/service-periods`); }} />
+            <MenuItem icon={CalendarCheck} label="Matrice di validità" note="pagina" accent="emerald"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
+          </MenuGroup>
+
+          {/* Infrastruttura: nodi di cambio, nodi globali (Network), depositi */}
+          <MenuGroup
+            label="Infrastruttura" icon={Building2} accent="orange"
+            active={activePanel === "clusters" || activePanel === "ne-clusters" || activePanel === "ne-depots"}
+            open={openMenu === "infrastruttura"}
+            onToggle={() => setOpenMenu(m => m === "infrastruttura" ? null : "infrastruttura")}
+          >
+            <MenuItem icon={Layers} label="Nodi di cambio" count={clusters.length || undefined} accent="cyan"
+              active={activePanel === "clusters"} onClick={() => togglePanel("clusters")} />
+            <MenuItem icon={Grip} label="Nodi (Network)" count={globalClusters.length || undefined} accent="cyan"
+              active={activePanel === "ne-clusters"} onClick={() => togglePanel("ne-clusters")} />
+            <MenuItem icon={Building2} label="Depositi aziendali" count={depots.length || undefined} accent="orange"
+              active={activePanel === "ne-depots"} onClick={() => togglePanel("ne-depots")} />
+          </MenuGroup>
+
+          {/* Vista: toggle 3D e layer overlay (le voci non chiudono il menu) */}
+          <MenuGroup
+            label="Vista" icon={Eye} accent="violet"
+            active={is3D || showGlobalClusters || showDepots}
+            open={openMenu === "vista"}
+            onToggle={() => setOpenMenu(m => m === "vista" ? null : "vista")}
+          >
+            <MenuItem icon={Box} label="Vista 3D (edifici)" accent="violet"
+              active={is3D} onClick={() => setIs3D(v => !v)} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Grip} label="Overlay nodi globali" accent="cyan"
+              active={showGlobalClusters} onClick={() => setShowGlobalClusters(v => !v)} />
+            <MenuItem icon={Building2} label="Overlay depositi" accent="orange"
+              active={showDepots} onClick={() => setShowDepots(v => !v)} />
+          </MenuGroup>
+
+          {/* Progetto: import, condivisione, scheduling collegato */}
+          <MenuGroup
+            label="Progetto" icon={FolderOpen} accent="cyan"
+            active={false}
+            open={openMenu === "progetto"}
+            onToggle={() => setOpenMenu(m => m === "progetto" ? null : "progetto")}
+          >
+            {(project.myRole === "owner" || project.myRole === "editor") && (
+              <MenuItem icon={Upload} label="Importa GTFS" note="sovrascrive" accent="cyan"
+                onClick={() => { setOpenMenu(null); setImportOpen(true); }} />
+            )}
+            <MenuItem icon={Share2} label={project.myRole === "owner" ? "Condividi progetto" : "Vedi membri"} accent="cyan"
+              onClick={() => { setOpenMenu(null); setShareOpen(true); }} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Flame} label="Scheduling collegati" note="pagina" accent="orange"
+              onClick={() => { setOpenMenu(null); navigate(`/fucina?ps=${projectId}`); }} />
+          </MenuGroup>
+        </div>
 
         <div className="flex-1" />
 
-        {/* Tools */}
-        <div className="flex items-center gap-1 bg-slate-900/80 rounded-lg p-1 border border-slate-800">
+        {/* Tools primari: sempre visibili perché usatissimi */}
+        <div className="flex items-center gap-1 bg-slate-900/80 rounded-lg p-1 border border-slate-800 shrink-0">
           <ToolBtn label="Seleziona" icon={MousePointer2} active={tool === "select"} onClick={() => setTool("select")} />
           <ToolBtn label="Nuova fermata" icon={Crosshair} active={tool === "addStop"} onClick={() => setTool("addStop")} disabled={!!editor} />
           {editor && (
@@ -1183,70 +1253,14 @@ export default function PlanningStudioEditorPage() {
           )}
         </div>
 
-        {/* Import GTFS button (sempre disponibile per owner/editor) */}
-        {(project.myRole === "owner" || project.myRole === "editor") && (
-          <button
-            onClick={() => setImportOpen(true)}
-            className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300"
-            title="Importa GTFS (sovrascrive)"
-          >
-            <Upload className="w-3.5 h-3.5" /> GTFS
-          </button>
-        )}
-
-        {/* Periodi di esercizio */}
+        {/* CTA primaria: nuovo progetto Scheduling collegato a questo PS */}
         <button
-          onClick={() => navigate(`/planning-studio/${projectId}/service-periods`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-slate-800 text-indigo-300"
-          title="Periodi di esercizio (Estivo, Invernale, ecc.)"
+          onClick={() => navigate(`/fucina?ps=${projectId}&new=1`)}
+          className="ml-1 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_15px_rgba(251,146,60,0.4)] transition-shadow shrink-0"
+          title="Crea un nuovo progetto Scheduling collegato a questo PS"
         >
-          <CalendarIcon className="w-3.5 h-3.5" /> Periodi
+          <Plus className="w-3.5 h-3.5" /> Nuovo Scheduling
         </button>
-
-        {/* Gestione corse */}
-        <button
-          onClick={() => navigate(`/planning-studio/${projectId}/trips`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-slate-800 text-amber-300"
-          title="Corse: validità, eccezioni date, calendario"
-        >
-          <Bus className="w-3.5 h-3.5" /> Corse
-        </button>
-
-        {/* Inspector di rete */}
-        <button
-          onClick={() => navigate(`/planning-studio/${projectId}/network`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-slate-800 text-violet-300"
-          title="Esplora la rete: linee, percorsi, fermate e relazioni"
-        >
-          <Activity className="w-3.5 h-3.5" /> Rete
-        </button>
-
-        {/* Validity Matrix (Cerbero) */}
-        <button
-          onClick={() => navigate(`/planning-studio/${projectId}/validity`)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-emerald-500/30 text-emerald-300"
-          title="Matrice di validità: corse × giorni, day-types, eccezioni e generazione Unità"
-        >
-          <CalendarCheck className="w-3.5 h-3.5" /> Validità
-        </button>
-
-        {/* Scheduling Engine: progetti agganciati a questo PS */}
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={() => navigate(`/fucina?ps=${projectId}`)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-900 hover:bg-slate-800 border border-orange-500/30 text-orange-300"
-            title="Vedi i progetti di Scheduling collegati a questo PS"
-          >
-            <Flame className="w-3.5 h-3.5" /> Scheduling
-          </button>
-          <button
-            onClick={() => navigate(`/fucina?ps=${projectId}&new=1`)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_15px_rgba(251,146,60,0.4)] transition-shadow"
-            title="Crea un nuovo progetto Scheduling collegato a questo PS"
-          >
-            <Plus className="w-3.5 h-3.5" /> Nuovo Scheduling
-          </button>
-        </div>
       </div>
 
       {/* ─── Area di lavoro: mappa full + overlays ─── */}
@@ -1837,7 +1851,7 @@ export default function PlanningStudioEditorPage() {
                   {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Calendari</>}
                   {activePanel === "clusters" && <><Layers className="w-4 h-4 text-cyan-400" /> Nodi di cambio</>}
                   {activePanel === "ne-clusters" && <><Grip className="w-4 h-4 text-cyan-400" /> Nodi (Network)</>}
-                  {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi (Network)</>}
+                  {activePanel === "ne-depots" && <><Building2 className="w-4 h-4 text-orange-400" /> Depositi aziendali <span className="text-[9px] font-normal text-slate-500">(condivisi tra tutti i progetti)</span></>}
                 </h2>
                 <button onClick={() => setActivePanel(null)}
                   className="p-1 rounded hover:bg-slate-800 text-slate-400">
@@ -3539,24 +3553,65 @@ function ToolBtn({
   );
 }
 
-function DataTabBtn({
-  icon: Icon, label, count, accent, active, onClick,
-}: { icon: any; label: string; count?: number; accent: "emerald" | "cyan" | "indigo" | "orange"; active: boolean; onClick: () => void }) {
-  const accentMap = {
-    emerald: "border-emerald-500 text-emerald-300 bg-emerald-500/10",
-    cyan:    "border-cyan-500 text-cyan-300 bg-cyan-500/10",
-    indigo:  "border-indigo-500 text-indigo-300 bg-indigo-500/10",
-    orange:  "border-orange-500 text-orange-300 bg-orange-500/10",
-  } as const;
+/* ─── Toolbar a menu: accenti colore condivisi tra trigger e voci ─── */
+type MenuAccent = "emerald" | "cyan" | "indigo" | "orange" | "violet" | "amber";
+const MENU_ACCENT_TEXT: Record<MenuAccent, string> = {
+  emerald: "text-emerald-300",
+  cyan:    "text-cyan-300",
+  indigo:  "text-indigo-300",
+  orange:  "text-orange-300",
+  violet:  "text-violet-300",
+  amber:   "text-amber-300",
+};
+
+/* Gruppo della toolbar: bottone trigger + menu a tendina assoluto.
+ * La chiusura con click fuori è gestita dal contenitore (menuBarRef). */
+function MenuGroup({
+  label, icon: Icon, accent, active, open, onToggle, children,
+}: {
+  label: string; icon: any; accent: MenuAccent; active: boolean; open: boolean;
+  onToggle: () => void; children: ReactNode;
+}) {
+  return (
+    <div className="relative shrink-0">
+      <button onClick={onToggle} title={label}
+        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
+          open ? "bg-slate-800 text-slate-100 border-slate-700"
+               : active ? `border-transparent bg-slate-900 ${MENU_ACCENT_TEXT[accent]}`
+                        : "border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+        }`}>
+        <Icon className="w-3.5 h-3.5" />
+        <span>{label}</span>
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1.5 min-w-[230px] rounded-lg border border-slate-800 bg-slate-900 shadow-2xl py-1 z-50">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Voce di sottomenu: icona + label; evidenziata (accent + check) se attiva.
+ * `count` mostra il numero di elementi, `note` un'etichetta secondaria. */
+function MenuItem({
+  icon: Icon, label, note, count, accent, active, onClick,
+}: {
+  icon: any; label: string; note?: string; count?: number;
+  accent: MenuAccent; active?: boolean; onClick: () => void;
+}) {
   return (
     <button onClick={onClick} title={label}
-      className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
-        active ? accentMap[accent]
-               : "border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-900"
+      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs transition ${
+        active ? `bg-slate-800 ${MENU_ACCENT_TEXT[accent]}`
+               : "text-slate-300 hover:bg-slate-800 hover:text-slate-100"
       }`}>
-      <Icon className="w-3.5 h-3.5" />
-      <span>{label}</span>
-      {count != null && <span className="text-[10px] tabular-nums opacity-70">{count}</span>}
+      <Icon className={`w-3.5 h-3.5 shrink-0 ${active ? "" : "text-slate-500"}`} />
+      <span className="flex-1 truncate font-medium">{label}</span>
+      {note && <span className="text-[9px] text-slate-500">{note}</span>}
+      {count != null && <span className="text-[10px] tabular-nums text-slate-500">{count}</span>}
+      {active && <Check className="w-3.5 h-3.5 shrink-0" />}
     </button>
   );
 }
@@ -3653,7 +3708,7 @@ function NeClustersPanel({
     if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate associate verranno scollegate.`)) return;
     setBusyId(c.id);
     try {
-      const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+      const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, { method: "DELETE" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success("Nodo eliminato");
       await onReload();
@@ -3666,7 +3721,7 @@ function NeClustersPanel({
     if (!editName.trim()) { toast.error("Nome richiesto"); return; }
     setBusyId(c.id);
     try {
-      const r = await fetch(`/api/clusters/${c.id}`, {
+      const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: editName.trim() }),
@@ -3696,7 +3751,7 @@ function NeClustersPanel({
         const c = queue.shift();
         if (!c) return;
         try {
-          const r = await fetch(`/api/clusters/${c.id}`, { method: "DELETE" });
+          const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, { method: "DELETE" });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           ok++;
         } catch { ko++; }
@@ -3977,7 +4032,8 @@ function DepotEditModal({
         lat: latN, lon: lonN,
         capacity: capacity.trim() === "" ? null : Number(capacity),
       };
-      const r = await fetch(isNew ? "/api/depots" : `/api/depots/${depot.id}`, {
+      // URL assoluto verso l'API: i path relativi in prod finiscono sul dominio web (405)
+      const r = await fetch(isNew ? `${getApiBase()}/api/depots` : `${getApiBase()}/api/depots/${depot.id}`, {
         method: isNew ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -3994,7 +4050,7 @@ function DepotEditModal({
     if (!confirm(`Eliminare il deposito "${name}"?`)) return;
     setSaving(true);
     try {
-      const r = await fetch(`/api/depots/${depot.id}`, { method: "DELETE" });
+      const r = await fetch(`${getApiBase()}/api/depots/${depot.id}`, { method: "DELETE" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       toast.success("Deposito eliminato");
       await onSaved();
