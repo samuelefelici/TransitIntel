@@ -34,6 +34,26 @@ interface RuntimesResp {
 }
 interface GtfsRoute { routeId: string; routeShortName: string | null; routeLongName: string | null }
 
+interface TripRuntime {
+  tripId: string;
+  routeId: string | null;
+  routeShortName: string | null;
+  routeLongName: string | null;
+  routeColor: string | null;
+  directionId: number | null;
+  headsign: string | null;
+  shapeId: string | null;
+  startTime: string | null;
+  runs: number;
+  avgObsStops: number | null;
+  totalStops: number | null;
+  schedSeconds: number | null;
+  obsMedianSeconds: number | null;
+  deltaSeconds: number | null;
+  deltaPct: number | null;
+}
+interface ByTripResp { caronteAvailable: boolean; trips: TripRuntime[] }
+
 const BANDS = [
   { label: "Tutto il giorno", hourFrom: null as number | null, hourTo: null as number | null },
   { label: "Punta AM (6–9)", hourFrom: 6, hourTo: 9 },
@@ -58,6 +78,9 @@ export default function RuntimesPage() {
   const [days, setDays] = useState(14);
   const [routeId, setRouteId] = useState("");
   const [band, setBand] = useState(0);
+  // classificazione richiesta: Linea → Percorso → Corsa (vista default) + per tratta
+  const [view, setView] = useState<"corse" | "tratte">("corse");
+  const [openRoutes, setOpenRoutes] = useState<Set<string>>(new Set());
 
   const routesQ = useQuery({
     queryKey: ["runtimes", "routes"],
@@ -73,6 +96,52 @@ export default function RuntimesPage() {
   const dataQ = useQuery({
     queryKey: ["runtimes", days, routeId, band],
     queryFn: () => apiFetch<RuntimesResp>(`/api/operations/runtimes?${qs.toString()}`),
+    enabled: view === "tratte",
+  });
+
+  const byTripQ = useQuery({
+    queryKey: ["runtimes-trip", days, routeId, band],
+    queryFn: () => apiFetch<ByTripResp>(`/api/operations/runtimes/by-trip?${qs.toString()}`),
+    enabled: view === "corse",
+  });
+
+  /* Gerarchia Linea → Percorso (direzione+destinazione/shape) → Corse */
+  const tree = useMemo(() => {
+    const trips = byTripQ.data?.trips ?? [];
+    const routes = new Map<string, {
+      key: string; shortName: string | null; longName: string | null; color: string | null;
+      variants: Map<string, { key: string; label: string; trips: TripRuntime[] }>;
+    }>();
+    for (const t of trips) {
+      const rKey = t.routeId ?? "?";
+      let r = routes.get(rKey);
+      if (!r) {
+        r = { key: rKey, shortName: t.routeShortName, longName: t.routeLongName, color: t.routeColor, variants: new Map() };
+        routes.set(rKey, r);
+      }
+      const vKey = t.shapeId ?? `d${t.directionId ?? "?"}|${t.headsign ?? ""}`;
+      let v = r.variants.get(vKey);
+      if (!v) {
+        const dir = t.directionId === 1 ? "Ritorno" : t.directionId === 0 ? "Andata" : "—";
+        v = { key: vKey, label: `${dir}${t.headsign ? ` → ${t.headsign}` : ""}`, trips: [] };
+        r.variants.set(vKey, v);
+      }
+      v.trips.push(t);
+    }
+    const out = [...routes.values()].map(r => ({
+      ...r,
+      variantList: [...r.variants.values()].map(v => {
+        const sorted = [...v.trips].sort((a, c) => String(a.startTime ?? "").localeCompare(String(c.startTime ?? "")));
+        const deltas = sorted.map(t => t.deltaPct).filter((d): d is number => d != null);
+        const avgDelta = deltas.length ? Math.round((deltas.reduce((x, y) => x + y, 0) / deltas.length) * 10) / 10 : null;
+        return { ...v, trips: sorted, avgDelta };
+      }).sort((a, c) => a.label.localeCompare(c.label)),
+    })).sort((a, c) => String(a.shortName ?? "").localeCompare(String(c.shortName ?? ""), "it", { numeric: true }));
+    return out;
+  }, [byTripQ.data]);
+
+  const toggleRoute = (k: string) => setOpenRoutes(prev => {
+    const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n;
   });
 
   const segments = dataQ.data?.segments ?? [];
@@ -146,6 +215,100 @@ export default function RuntimesPage() {
         </div>
       </div>
 
+      {/* Selettore vista: classificazione per corsa (Linea→Percorso→Corsa) o per tratta */}
+      <div className="flex rounded-lg overflow-hidden border border-border/60 w-fit">
+        <button onClick={() => setView("corse")}
+          className={`px-4 py-2 text-xs transition-colors ${view === "corse" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+          Linee · Percorsi · Corse
+        </button>
+        <button onClick={() => setView("tratte")}
+          className={`px-4 py-2 text-xs transition-colors ${view === "tratte" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+          Per tratta
+        </button>
+      </div>
+
+      {/* ── Vista gerarchica: Linea → Percorso → Corsa ── */}
+      {view === "corse" && (
+        <div className="space-y-3">
+          {byTripQ.isLoading && (
+            <div className="p-10 text-center text-sm text-muted-foreground flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-card/60">
+              <Loader2 className="w-4 h-4 animate-spin" /> Analizzo le corse osservate…
+            </div>
+          )}
+          {!byTripQ.isLoading && tree.length === 0 && (
+            <div className="p-10 text-center text-sm text-muted-foreground rounded-xl border border-border/60 bg-card/60">
+              Nessuna corsa osservata nel periodo: i dati si accumulano con l'uso di Caronte.
+            </div>
+          )}
+          {tree.map(r => {
+            const nTrips = r.variantList.reduce((sum, v) => sum + v.trips.length, 0);
+            const open = openRoutes.has(r.key);
+            return (
+              <div key={r.key} className="rounded-xl border border-border/60 bg-card/60 overflow-hidden">
+                {/* Livello 1: LINEA */}
+                <button onClick={() => toggleRoute(r.key)}
+                  className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-white/5 text-left">
+                  <span className="px-2 py-0.5 rounded text-white text-xs font-bold"
+                    style={{ backgroundColor: r.color ? `#${String(r.color).replace(/^#/, "")}` : "#334155" }}>
+                    {r.shortName ?? r.key}
+                  </span>
+                  <span className="text-xs text-muted-foreground truncate flex-1">{r.longName}</span>
+                  <span className="text-[10px] font-mono text-muted-foreground">
+                    {r.variantList.length} percorsi · {nTrips} corse
+                  </span>
+                  <span className={`text-xs transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
+                </button>
+
+                {open && r.variantList.map(v => (
+                  <div key={v.key} className="border-t border-border/30">
+                    {/* Livello 2: PERCORSO */}
+                    <div className="px-5 py-1.5 bg-white/[0.03] flex items-center gap-2 text-[11px]">
+                      <span className="font-semibold">{v.label}</span>
+                      <span className="text-muted-foreground">· {v.trips.length} corse</span>
+                      {v.avgDelta != null && (
+                        <span className="ml-auto font-mono font-bold" style={{ color: deltaColor(v.avgDelta) }}>
+                          Δ medio {v.avgDelta > 0 ? "+" : ""}{v.avgDelta}%
+                        </span>
+                      )}
+                    </div>
+                    {/* Livello 3: CORSE */}
+                    <table className="min-w-full text-[11px] border-collapse">
+                      <thead>
+                        <tr className="text-muted-foreground text-left">
+                          <th className="px-5 py-1 font-medium">Partenza</th>
+                          <th className="px-2 py-1 font-medium text-right">Giornate</th>
+                          <th className="px-2 py-1 font-medium text-right">Copertura</th>
+                          <th className="px-2 py-1 font-medium text-right">Programmato</th>
+                          <th className="px-2 py-1 font-medium text-right">Osservato</th>
+                          <th className="px-4 py-1 font-medium text-right">Δ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {v.trips.map(t => (
+                          <tr key={t.tripId} className="odd:bg-white/[0.02]">
+                            <td className="px-5 py-1 font-mono">{t.startTime ? t.startTime.slice(0, 5) : "—"}</td>
+                            <td className="px-2 py-1 text-right font-mono">{t.runs}</td>
+                            <td className="px-2 py-1 text-right font-mono text-muted-foreground">
+                              {t.avgObsStops != null && t.totalStops ? `${t.avgObsStops}/${t.totalStops}` : "—"}
+                            </td>
+                            <td className="px-2 py-1 text-right font-mono">{fmtSec(t.schedSeconds)}</td>
+                            <td className="px-2 py-1 text-right font-mono font-semibold">{fmtSec(t.obsMedianSeconds)}</td>
+                            <td className="px-4 py-1 text-right font-mono font-bold" style={{ color: deltaColor(t.deltaPct) }}>
+                              {t.deltaPct != null ? `${t.deltaPct > 0 ? "+" : ""}${t.deltaPct}%` : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {view === "tratte" && (<>
       {/* KPI sintesi */}
       <div className="flex flex-wrap gap-2 text-[11px]">
         <span className="px-3 py-1.5 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
@@ -221,6 +384,7 @@ export default function RuntimesPage() {
         🔴 osservato &gt;20% oltre il programmato: tratta da ri-tempare (orario irrealistico) ·
         🔵 osservato &gt;15% sotto: orario largo, possibile recupero di minuti nel TTD.
       </p>
+      </>)}
     </div>
   );
 }
