@@ -454,6 +454,111 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
   }
 });
 
+// ── GET /operations/runtimes/by-trip — classificazione Linea→Percorso→Corsa ──
+// Per ogni corsa osservata: tempo capolinea→capolinea (tra primo e ultimo
+// transito di ogni giornata) osservato vs programmato, con direzione/headsign
+// /shape dal feed attivo per raggruppare in percorsi.
+router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, trips: [] });
+      return;
+    }
+    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
+    const routeId = String(req.query.routeId ?? "") || null;
+    const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
+    const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
+    const feedId = await resolveFeedId(req);
+
+    const q = await db.execute<any>(sql`
+      WITH t AS (
+        SELECT trip_id, route_id, actual_ts::date AS day, stop_seq, actual_ts, scheduled,
+               ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq ASC)  AS rn_a,
+               ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq DESC) AS rn_d,
+               COUNT(*)    OVER (PARTITION BY trip_id, actual_ts::date) AS n_obs
+        FROM caronte.stop_transits
+        WHERE actual_ts > now() - (${days} * interval '1 day')
+          AND stop_seq IS NOT NULL
+          AND (${routeId}::text IS NULL OR route_id = ${routeId})
+      ),
+      runs AS (
+        -- una riga per (corsa, giornata): primo e ultimo transito osservati
+        SELECT f.trip_id, f.route_id, f.day, f.n_obs,
+               f.scheduled AS start_sched,
+               EXTRACT(EPOCH FROM l.actual_ts - f.actual_ts) AS obs_s,
+               CASE WHEN f.scheduled IS NOT NULL AND l.scheduled IS NOT NULL THEN
+                 (split_part(l.scheduled, ':', 1)::int * 3600
+                + split_part(l.scheduled, ':', 2)::int * 60
+                + COALESCE(NULLIF(split_part(l.scheduled, ':', 3), ''), '0')::int)
+               - (split_part(f.scheduled, ':', 1)::int * 3600
+                + split_part(f.scheduled, ':', 2)::int * 60
+                + COALESCE(NULLIF(split_part(f.scheduled, ':', 3), ''), '0')::int)
+               END AS sched_s,
+               EXTRACT(HOUR FROM f.actual_ts)::int AS start_hour
+        FROM t f
+        JOIN t l ON l.trip_id = f.trip_id AND l.day = f.day
+        WHERE f.rn_a = 1 AND l.rn_d = 1 AND f.stop_seq < l.stop_seq
+      )
+      SELECT r.trip_id, r.route_id,
+             COUNT(*)::int AS runs,
+             MIN(r.start_sched) AS start_sched,
+             AVG(r.n_obs)::float AS avg_obs_stops,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY r.obs_s) AS obs_median_s,
+             AVG(r.sched_s) FILTER (WHERE r.sched_s IS NOT NULL AND r.sched_s > 0) AS sched_s,
+             gt.direction_id, gt.trip_headsign, gt.shape_id,
+             gr.route_short_name, gr.route_color, gr.route_long_name,
+             stt.n_stops AS total_stops
+      FROM runs r
+      LEFT JOIN gtfs_trips gt
+        ON ${feedId}::text IS NOT NULL AND gt.feed_id = ${feedId}::uuid AND gt.trip_id = r.trip_id
+      LEFT JOIN gtfs_routes gr
+        ON ${feedId}::text IS NOT NULL AND gr.feed_id = ${feedId}::uuid
+       AND gr.route_id = COALESCE(gt.route_id, r.route_id)
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS n_stops FROM gtfs_stop_times s
+        WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.trip_id = r.trip_id
+      ) stt ON true
+      WHERE r.obs_s BETWEEN 60 AND 4 * 3600
+        AND (${hourFrom}::int IS NULL OR r.start_hour >= ${hourFrom})
+        AND (${hourTo}::int IS NULL OR r.start_hour < ${hourTo})
+      GROUP BY r.trip_id, r.route_id, gt.direction_id, gt.trip_headsign, gt.shape_id,
+               gr.route_short_name, gr.route_color, gr.route_long_name, stt.n_stops
+      ORDER BY gr.route_short_name NULLS LAST, MIN(r.start_sched)
+      LIMIT 3000
+    `);
+
+    res.json({
+      caronteAvailable: true,
+      days, routeId, hourFrom, hourTo,
+      trips: q.rows.map((r: any) => {
+        const obs = r.obs_median_s != null ? Math.round(Number(r.obs_median_s)) : null;
+        const sched = r.sched_s != null ? Math.round(Number(r.sched_s)) : null;
+        return {
+          tripId: r.trip_id,
+          routeId: r.route_id,
+          routeShortName: r.route_short_name,
+          routeLongName: r.route_long_name,
+          routeColor: r.route_color,
+          directionId: r.direction_id,
+          headsign: r.trip_headsign,
+          shapeId: r.shape_id,
+          startTime: r.start_sched,            // partenza programmata (primo transito)
+          runs: r.runs,                        // giornate osservate
+          avgObsStops: r.avg_obs_stops != null ? Math.round(Number(r.avg_obs_stops)) : null,
+          totalStops: r.total_stops,
+          schedSeconds: sched,
+          obsMedianSeconds: obs,
+          deltaSeconds: obs != null && sched != null ? obs - sched : null,
+          deltaPct: obs != null && sched != null && sched > 0
+            ? Math.round(((obs - sched) / sched) * 1000) / 10 : null,
+        };
+      }),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /operations/trips/:tripId/transits — programmato vs reale per fermata ─
 router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void> => {
   try {
