@@ -263,6 +263,12 @@ def _estimate_trip_km(trip: Trip, rates: VehicleCostRates) -> float:
 
 def trips_vehicle_compatible(ti: Trip, tj: Trip) -> bool:
     """Check if any vehicle type can serve BOTH trips."""
+    # Urbano ed extraurbano usano FLOTTE DISTINTE (vetture diverse anche se di
+    # pari dimensione): mai concatenare corse di categorie diverse sullo stesso
+    # turno macchina. Gli archi sono l'unico canale di concatenamento, quindi
+    # il vincolo copre greedy, CP-SAT, local search ed eliminazione veicoli.
+    if ti.category != tj.category:
+        return False
     si = VEHICLE_SIZE.get(ti.required_vehicle, 3)
     sj = VEHICLE_SIZE.get(tj.required_vehicle, 3)
     for vt in VEHICLE_TYPES:
@@ -2017,6 +2023,9 @@ def chains_to_shifts(
 ) -> list[VehicleShift]:
     """Convert solver chains to VehicleShift objects matching TypeScript format."""
     shifts: list[VehicleShift] = []
+    # Numerazione separata per rete: U### = urbano, E### = extraurbano
+    # (flotte distinte → codifiche distinte, richiesta operatore).
+    cat_counters: dict[str, int] = {}
 
     for vi, chain in enumerate(chains):
         if not chain:
@@ -2024,12 +2033,16 @@ def chains_to_shifts(
 
         vtype = assign_vehicle_type(chain, trips)
         vsize = VEHICLE_SIZE.get(vtype, 3)
-        vid = f"V{str(vi + 1).zfill(3)}"
 
+        # Le catene sono pure per categoria (vincolo in trips_vehicle_compatible);
+        # la maggioranza resta come fallback difensivo su dati legacy.
         cat_count = {"urbano": 0, "extraurbano": 0}
         for idx in chain:
             cat_count[trips[idx].category] = cat_count.get(trips[idx].category, 0) + 1
         category = max(cat_count, key=cat_count.get)
+        prefix = "U" if category == "urbano" else "E"
+        cat_counters[category] = cat_counters.get(category, 0) + 1
+        vid = f"{prefix}{str(cat_counters[category]).zfill(3)}"
 
         vs = VehicleShift(
             vehicle_id=vid,
