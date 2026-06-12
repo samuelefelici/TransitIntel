@@ -442,6 +442,40 @@ def build_compatible_arcs_fast(
     if tight_arc_count > 0:
         log(f"  [VSP-TIGHT] {tight_arc_count} archi tight (gap<{MIN_LAYOVER}min) "
             f"salvati grazie a layover=0 sullo stesso capolinea")
+
+    # ── PRUNING ANTI-OOM ────────────────────────────────────────────────
+    # Con migliaia di corse gli archi crescono quadraticamente (1391 corse →
+    # ~800k archi): i 5+1 modelli CP-SAT costruiti in sequenza esauriscono la
+    # RAM e il processo viene ucciso (exit code null → 500 al frontend), con
+    # tutti gli scenari in UNKNOWN perche' il modello e' troppo grande per il
+    # time limit. Sopra la soglia teniamo, per ogni corsa, i K successori
+    # migliori (gap+deadhead minori) E i K predecessori migliori: l'unione
+    # preserva la connettivita' (nessuna corsa resta orfana) riducendo gli
+    # archi di ~4-8x. K e' dimensionato sul budget totale.
+    MAX_ARCS_TOTAL = 250_000
+    if len(arcs) > MAX_ARCS_TOTAL:
+        k_per_trip = max(25, MAX_ARCS_TOTAL // (2 * max(n, 1)))
+
+        def _arc_rank(a: Arc) -> tuple:
+            # preferisci attese brevi e trasferimenti corti
+            return (a.gap_min + a.dh_min * 3, a.dh_km)
+
+        by_succ: dict[int, list[Arc]] = {}
+        by_pred: dict[int, list[Arc]] = {}
+        for a in arcs:
+            by_succ.setdefault(a.i, []).append(a)
+            by_pred.setdefault(a.j, []).append(a)
+        keep: set[tuple[int, int]] = set()
+        for lst in by_succ.values():
+            lst.sort(key=_arc_rank)
+            keep.update((a.i, a.j) for a in lst[:k_per_trip])
+        for lst in by_pred.values():
+            lst.sort(key=_arc_rank)
+            keep.update((a.i, a.j) for a in lst[:k_per_trip])
+        before = len(arcs)
+        arcs = [a for a in arcs if (a.i, a.j) in keep]
+        log(f"  [VSP-PRUNE] archi {before} -> {len(arcs)} "
+            f"(top-{k_per_trip} successori+predecessori per corsa, anti-OOM)")
     return arcs
 
 

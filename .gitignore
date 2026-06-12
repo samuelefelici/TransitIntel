@@ -12,3 +12,4 @@ replit.nix
 .turbo/
 .neon
 scripts/data/
+__pycache__/
