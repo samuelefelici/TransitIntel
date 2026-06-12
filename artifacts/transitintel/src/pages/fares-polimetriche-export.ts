@@ -3305,11 +3305,13 @@ const CLUSTER_EXTRA_STYLES = `
   .hop-bands-table th { background: #eef2ff; color: #3730a3; font-weight: 700; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.5px; }
   .hop-bands-table .hb-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; background: #6366f1; color: #fff; font-weight: 700; font-size: 10pt; }
   .hop-bands-table .hb-price { font-weight: 800; color: #1e1b4b; font-variant-numeric: tabular-nums; font-size: 12pt; text-align: right; }
+
 `;
 
 interface ClustersExportOpts {
   agencyName?: string;
   date?: string;
+  routeIds?: string[];
 }
 
 /**
@@ -3356,7 +3358,7 @@ async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
   const agencyName = opts.agencyName ?? "Conerobus · Trasporto Pubblico Locale";
   const date = opts.date ?? new Date().toLocaleDateString("it-IT");
 
-  const [clusters, routesVariants, hopBands] = await Promise.all([
+  const [clusters, routesVariantsAll, hopBands] = await Promise.all([
     loadClustersFull(),
     loadRouteVariants(),
     loadHopBands(),
@@ -3364,6 +3366,12 @@ async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
   if (clusters.length === 0) {
     throw new Error("Nessun cluster trovato. Genera prima i cluster dal tab 'Cluster Tariffari'.");
   }
+  const routeIdsFilter = (opts.routeIds ?? []).map((x) => String(x).trim()).filter(Boolean);
+  const routeIdsSet = routeIdsFilter.length > 0 ? new Set(routeIdsFilter) : null;
+  const routesVariants = routeIdsSet
+    ? routesVariantsAll.filter((rv) => routeIdsSet.has(rv.routeId))
+    : routesVariantsAll;
+
   if (routesVariants.length === 0) {
     throw new Error("Nessuna linea con varianti di percorso. Verifica che il GTFS sia caricato e contenga linee extraurbane.");
   }
