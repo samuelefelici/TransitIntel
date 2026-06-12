@@ -9,7 +9,6 @@
  */
 import { useMemo, useState } from "react";
 import { Link, useParams, useLocation } from "wouter";
-import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -115,7 +114,6 @@ export default function PlanningStudioValidityUnitsPage() {
           </div>
         </div>
       </div>
-      <PsProjectNav projectId={projectId} />
 
       <div className="flex-1 overflow-auto p-6">
         {unitsQ.isLoading && (

@@ -12,7 +12,6 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
-import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -199,7 +198,6 @@ export default function PlanningStudioTripsPage() {
           </span>
         )}
       </div>
-      <PsProjectNav projectId={projectId} />
 
       {/* Filtri */}
       <div className="h-12 border-b border-slate-800 bg-slate-900/40 px-4 flex items-center gap-3 text-xs">

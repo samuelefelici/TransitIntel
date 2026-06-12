@@ -9,7 +9,6 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
-import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Network, Bus, MapPin, Search, ChevronRight, Loader2,
@@ -116,7 +115,6 @@ export default function PlanningStudioNetworkPage() {
           </span>
         )}
       </div>
-      <PsProjectNav projectId={projectId} />
 
       {/* 3 colonne */}
       <div className="flex-1 flex overflow-hidden">

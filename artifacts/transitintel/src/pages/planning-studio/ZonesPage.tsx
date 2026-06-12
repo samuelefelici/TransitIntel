@@ -20,7 +20,6 @@ import {
   ArrowLeft, Landmark, Upload, Trash2, Calculator, Download, Loader2,
   ChevronRight, ChevronDown, Info, Bus,
 } from "lucide-react";
-import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { apiFetch } from "@/lib/api";
 import { MAPBOX_TOKEN, MAP_STYLES } from "@/pages/dashboard/constants";
 import { getPsProject } from "@/lib/planning-studio-api";
@@ -333,7 +332,6 @@ export default function PlanningStudioZonesPage() {
           </button>
         )}
       </div>
-      <PsProjectNav projectId={projectId} />
 
       <div className="flex-1 flex overflow-hidden">
         {/* ─── Pannello sinistro: calcolo + risultati ─── */}
@@ -499,6 +497,36 @@ export default function PlanningStudioZonesPage() {
           {zonesQ.isLoading && (
             <div className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded bg-slate-900/80 text-xs text-slate-300">
               <Loader2 className="w-3.5 h-3.5 animate-spin" /> Caricamento confini…
+            </div>
+          )}
+
+          {/* Stato vuoto: nessun confine caricato → CTA impossibile da mancare */}
+          {!zonesQ.isLoading && zones.length === 0 && MAPBOX_TOKEN && (
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60 backdrop-blur-[2px]">
+              <div className="max-w-md mx-4 rounded-2xl border border-slate-700 bg-slate-900/95 p-6 text-center shadow-2xl">
+                <Landmark className="w-10 h-10 mx-auto mb-3 text-amber-400" />
+                <p className="text-sm font-semibold text-slate-100 mb-1">Nessun confine caricato</p>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                  Per calcolare i km sviluppati per comune servono i confini amministrativi.
+                  I 47 comuni della provincia di Ancona sono già inclusi nell'app: un click e via.
+                </p>
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    onClick={() => anconaMut.mutate()}
+                    disabled={anconaMut.isPending}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-sm font-bold text-black"
+                  >
+                    {anconaMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Landmark className="w-4 h-4" />}
+                    Carica comuni provincia di Ancona
+                  </button>
+                  <button
+                    onClick={() => fileRef.current?.click()}
+                    className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700"
+                  >
+                    Altro GeoJSON…
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </section>
