@@ -14,6 +14,7 @@ const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
 const OperationsPage = lazy(() => import("@/pages/operations"));
 const TimetablesPage = lazy(() => import("@/pages/timetables"));
+const RuntimesPage = lazy(() => import("@/pages/runtimes"));
 const RosterPage = lazy(() => import("@/pages/roster"));
 const ServiceDbPage = lazy(() => import("@/pages/service-db"));
 const Traffic = lazy(() => import("@/pages/traffic"));
@@ -110,6 +111,9 @@ function Router() {
             </Route>
             <Route path="/timetables">
               <Gated perm="analytics"><TimetablesPage /></Gated>
+            </Route>
+            <Route path="/runtimes">
+              <Gated perm="analytics"><RuntimesPage /></Gated>
             </Route>
             <Route path="/traffic">
               <Gated perm="analytics"><Traffic /></Gated>
