@@ -26,7 +26,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
-  CalendarCheck, Eye, EyeOff, Box, LineChart,
+  CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import { getApiBase } from "@/lib/api";
@@ -51,7 +51,7 @@ const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 }; // Rom
 type Tool = "select" | "addStop" | "editVariant";
 type DataPanel = "stops" | "routes" | "calendars" | "clusters" | "ne-clusters" | "ne-depots" | null;
 /* Gruppi della toolbar: ogni gruppo apre un menu a tendina con sottovoci */
-type ToolbarMenu = "rete" | "orari" | "infrastruttura" | "vista" | "progetto";
+type ToolbarMenu = "rete" | "orari" | "validita" | "infrastruttura" | "vista" | "progetto";
 
 /* ─── Tipi cluster/depositi globali (Network Engine) ─── */
 interface GlobalClusterStop { gtfsStopId: string; stopName: string; stopLat: number; stopLon: number; }
@@ -1232,31 +1232,44 @@ export default function PlanningStudioEditorPage() {
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
           </MenuGroup>
 
-          {/* Orari: calendari, corse, periodi e matrice di validità */}
+          {/* Orari: corse, pattern di circolazione, periodi, calendario aziendale */}
           <MenuGroup
             label="Orari" icon={CalendarIcon} accent="indigo"
             active={activePanel === "calendars"}
             open={openMenu === "orari"}
             onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
           >
+            <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
             {/* Ex "Calendari": rinominata per chiarezza — sono i pattern di giorni
                 in cui circolano le corse (lun-ven, sabato, festivi…) */}
             <MenuItem icon={CalendarIcon} label="Giorni di circolazione"
               desc="quando circolano le corse: pattern settimanali"
               count={calendars.length} accent="indigo"
               active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
-            <div className="my-1 h-px bg-slate-800" />
-            <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
             <MenuItem icon={CalendarIcon} label="Periodi di esercizio" note="pagina" accent="indigo"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/service-periods`); }} />
-            <MenuItem icon={CalendarCheck} label="Matrice di validità" note="pagina" accent="emerald"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
+            <MenuItem icon={CalendarRange} label="Calendario Aziendale" note="pagina" accent="indigo"
+              desc="scolastico · estivo · festività"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/calendar`); }} />
           </MenuGroup>
 
-          {/* Infrastruttura: nodi (progetto + globali legacy in un solo pannello), depositi */}
+          {/* Validità: matrice + unità di progettazione */}
           <MenuGroup
-            label="Infrastruttura" icon={Building2} accent="orange"
+            label="Validità" icon={CalendarCheck} accent="emerald"
+            active={false}
+            open={openMenu === "validita"}
+            onToggle={() => setOpenMenu(m => m === "validita" ? null : "validita")}
+          >
+            <MenuItem icon={CalendarCheck} label="Matrice di validità" note="pagina" accent="emerald"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
+            <MenuItem icon={Boxes} label="Unità di Progettazione" note="pagina" accent="indigo"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity-units`); }} />
+          </MenuGroup>
+
+          {/* Territorio: nodi, depositi, zonizzazione (km per comune) */}
+          <MenuGroup
+            label="Territorio" icon={Building2} accent="orange"
             active={activePanel === "clusters" || activePanel === "ne-clusters" || activePanel === "ne-depots"}
             open={openMenu === "infrastruttura"}
             onToggle={() => setOpenMenu(m => m === "infrastruttura" ? null : "infrastruttura")}
@@ -1270,6 +1283,10 @@ export default function PlanningStudioEditorPage() {
               onClick={toggleNodesPanel} />
             <MenuItem icon={Building2} label="Depositi aziendali" count={depots.length || undefined} accent="orange"
               active={activePanel === "ne-depots"} onClick={() => togglePanel("ne-depots")} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Landmark} label="Zonizzazione" note="pagina" accent="amber"
+              desc="confini comunali · km per comune"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/zones`); }} />
           </MenuGroup>
 
           {/* Vista: toggle 3D e layer overlay (le voci non chiudono il menu) */}

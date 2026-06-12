@@ -89,7 +89,7 @@ function featureName(props: Record<string, any>, index: number): string {
 
 /** Ricava il codice ISTAT dalle properties (opzionale). */
 function featureIstat(props: Record<string, any>): string | null {
-  const candidates = ["PRO_COM", "PRO_COM_T", "ISTAT", "istat"];
+  const candidates = ["PRO_COM", "PRO_COM_T", "ISTAT", "istat", "com_istat_code", "com_istat_code_num"];
   for (const key of candidates) {
     const v = props?.[key];
     if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
