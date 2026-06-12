@@ -64,6 +64,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: "/network", label: "Linee & Fermate", icon: Network },
       { href: "/timetables", label: "Stampa Orari", icon: Printer },
+      { href: "/runtimes", label: "Tempi di Percorrenza", icon: Timer },
     ],
   },
   {

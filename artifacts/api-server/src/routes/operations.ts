@@ -356,6 +356,104 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
   }
 });
 
+// ── GET /operations/runtimes — tempi di percorrenza automatici per tratta ────
+// Dai transiti reali AVM: coppie di fermate consecutive della stessa corsa →
+// tempo osservato (mediana e p85) vs programmato, aggregato per linea+tratta.
+// È la base per la ritaratura degli orari (TTD).
+router.get("/operations/runtimes", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, segments: [] });
+      return;
+    }
+    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
+    const routeId = String(req.query.routeId ?? "") || null;
+    const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
+    const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
+    const feedId = await resolveFeedId(req);
+
+    const q = await db.execute<any>(sql`
+      WITH seq AS (
+        SELECT trip_id, route_id, stop_id, stop_seq, actual_ts, scheduled,
+               LAG(stop_id)   OVER w AS prev_stop,
+               LAG(actual_ts) OVER w AS prev_ts,
+               LAG(scheduled) OVER w AS prev_sched,
+               LAG(stop_seq)  OVER w AS prev_seq
+        FROM caronte.stop_transits
+        WHERE actual_ts > now() - (${days} * interval '1 day')
+          AND stop_seq IS NOT NULL
+          AND (${routeId}::text IS NULL OR route_id = ${routeId})
+        WINDOW w AS (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq)
+      ),
+      pairs AS (
+        SELECT route_id, prev_stop AS from_stop, stop_id AS to_stop,
+               EXTRACT(EPOCH FROM actual_ts - prev_ts) AS obs_s,
+               -- scheduled è testo HH:MM:SS (anche >24h): differenza in secondi
+               CASE WHEN scheduled IS NOT NULL AND prev_sched IS NOT NULL THEN
+                 (split_part(scheduled,  ':', 1)::int * 3600
+                + split_part(scheduled,  ':', 2)::int * 60
+                + COALESCE(NULLIF(split_part(scheduled,  ':', 3), ''), '0')::int)
+               - (split_part(prev_sched, ':', 1)::int * 3600
+                + split_part(prev_sched, ':', 2)::int * 60
+                + COALESCE(NULLIF(split_part(prev_sched, ':', 3), ''), '0')::int)
+               END AS sched_s
+        FROM seq
+        WHERE prev_stop IS NOT NULL
+          AND stop_seq = prev_seq + 1
+          AND EXTRACT(EPOCH FROM actual_ts - prev_ts) BETWEEN 5 AND 3600
+          AND (${hourFrom}::int IS NULL OR EXTRACT(HOUR FROM prev_ts) >= ${hourFrom})
+          AND (${hourTo}::int IS NULL OR EXTRACT(HOUR FROM prev_ts) < ${hourTo})
+      )
+      SELECT p.route_id, p.from_stop, p.to_stop,
+             COUNT(*)::int AS samples,
+             percentile_cont(0.5)  WITHIN GROUP (ORDER BY p.obs_s) AS obs_median_s,
+             percentile_cont(0.85) WITHIN GROUP (ORDER BY p.obs_s) AS obs_p85_s,
+             AVG(p.sched_s) FILTER (WHERE p.sched_s IS NOT NULL AND p.sched_s >= 0) AS sched_s,
+             r.route_short_name, r.route_color,
+             sf.stop_name AS from_name, st2.stop_name AS to_name
+      FROM pairs p
+      LEFT JOIN gtfs_routes r
+        ON ${feedId}::text IS NOT NULL AND r.feed_id = ${feedId}::uuid AND r.route_id = p.route_id
+      LEFT JOIN gtfs_stops sf
+        ON ${feedId}::text IS NOT NULL AND sf.feed_id = ${feedId}::uuid AND sf.stop_id = p.from_stop
+      LEFT JOIN gtfs_stops st2
+        ON ${feedId}::text IS NOT NULL AND st2.feed_id = ${feedId}::uuid AND st2.stop_id = p.to_stop
+      GROUP BY p.route_id, p.from_stop, p.to_stop,
+               r.route_short_name, r.route_color, sf.stop_name, st2.stop_name
+      HAVING COUNT(*) >= 3
+      ORDER BY r.route_short_name NULLS LAST, samples DESC
+      LIMIT 1500
+    `);
+
+    res.json({
+      caronteAvailable: true,
+      days, routeId, hourFrom, hourTo,
+      segments: q.rows.map((s: any) => {
+        const obsMed = s.obs_median_s != null ? Math.round(Number(s.obs_median_s)) : null;
+        const sched = s.sched_s != null ? Math.round(Number(s.sched_s)) : null;
+        return {
+          routeId: s.route_id,
+          routeShortName: s.route_short_name,
+          routeColor: s.route_color,
+          fromStopId: s.from_stop,
+          fromStopName: s.from_name,
+          toStopId: s.to_stop,
+          toStopName: s.to_name,
+          samples: s.samples,
+          schedSeconds: sched,
+          obsMedianSeconds: obsMed,
+          obsP85Seconds: s.obs_p85_s != null ? Math.round(Number(s.obs_p85_s)) : null,
+          deltaSeconds: obsMed != null && sched != null ? obsMed - sched : null,
+          deltaPct: obsMed != null && sched != null && sched > 0
+            ? Math.round(((obsMed - sched) / sched) * 1000) / 10 : null,
+        };
+      }),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /operations/trips/:tripId/transits — programmato vs reale per fermata ─
 router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void> => {
   try {
