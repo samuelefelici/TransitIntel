@@ -4868,13 +4868,57 @@ function GenerateTab() {
   const [generating, setGenerating] = useState(false);
   const [downloadingZip, setDownloadingZip] = useState(false);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
-  const [zoningMethod, setZoningMethod] = useState<"shape" | "direct" | "dominant" | "cluster">("direct");
+  const [zoningMethod, setZoningMethod] = useState<"shape" | "direct" | "dominant" | "cluster">("shape");
   const [validating, setValidating] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; checks: { id: string; label: string; ok: boolean; detail?: string }[] } | null>(null);
   const [deduplicating, setDeduplicating] = useState(false);
   const [sharingPolimetriche, setSharingPolimetriche] = useState<null | "stops" | "zones" | "min-od-stops" | "min-od-zones" | "clusters">(null);
   const [shareLink, setShareLink] = useState<{ id: string; url: string; routeCount: number; mode: "stops" | "zones" } | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
+  const [clusterRouteOptions, setClusterRouteOptions] = useState<RouteNetwork[]>([]);
+  const [clusterRoutesLoading, setClusterRoutesLoading] = useState(false);
+  const [selectedClusterRouteIds, setSelectedClusterRouteIds] = useState<string[]>([]);
+
+  const CLUSTER_ROUTE_SELECTION_KEY = "fares.generate.polimetriche.cluster.routeSelection.v1";
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setClusterRoutesLoading(true);
+      try {
+        const routes = await apiFetch<RouteNetwork[]>("/api/fares/route-networks");
+        if (!mounted) return;
+        const extra = (routes ?? [])
+          .filter((r) => (r.networkId ?? r.defaultNetworkId) === "extraurbano")
+          .sort((a, b) => {
+            const sa = a.shortName ?? a.routeId;
+            const sb = b.shortName ?? b.routeId;
+            return sa.localeCompare(sb, "it", { numeric: true });
+          });
+        setClusterRouteOptions(extra);
+
+        let savedIds: string[] = [];
+        try {
+          const raw = localStorage.getItem(CLUSTER_ROUTE_SELECTION_KEY);
+          const parsed = raw ? JSON.parse(raw) : null;
+          if (Array.isArray(parsed)) savedIds = parsed.map((x) => String(x));
+        } catch {
+          savedIds = [];
+        }
+
+        const validSaved = savedIds.filter((id) => extra.some((r) => r.routeId === id));
+        setSelectedClusterRouteIds(validSaved.length > 0 ? validSaved : extra.map((r) => r.routeId));
+      } catch {
+        if (mounted) {
+          setClusterRouteOptions([]);
+          setSelectedClusterRouteIds([]);
+        }
+      } finally {
+        if (mounted) setClusterRoutesLoading(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   /** 1-click: genera regole tariffarie + anteprima completa (solo Fares V2) */
   const generateAll = async () => {
@@ -4931,7 +4975,6 @@ function GenerateTab() {
             <p className="text-xs font-medium text-muted-foreground shrink-0">Metodo zonizzazione extraurbana:</p>
             <div className="flex gap-2 flex-wrap">
               {([
-                { value: "direct",   label: "Km Diretto",          icon: <MapPin className="w-3 h-3" />,   desc: "Haversine stop→stop (consigliato)" },
                 { value: "shape",    label: "Proiezione Shape",     icon: <Route className="w-3 h-3" />,    desc: "Km progressivi sul shape del percorso" },
                 { value: "dominant", label: "Percorso Dominante",   icon: <TrendingUp className="w-3 h-3" />, desc: "Fermata più frequente per tratta" },
                 { value: "cluster",  label: "Cluster Territoriali", icon: <Hexagon className="w-3 h-3" />,  desc: "Zone da partizioni geografiche" },
@@ -4950,7 +4993,6 @@ function GenerateTab() {
               ))}
             </div>
             <p className="text-[10px] text-muted-foreground">
-              { zoningMethod === "direct"   && "Zone extraurbane calcolate con distanza Haversine tra stop consecutivi" }
               { zoningMethod === "shape"    && "Zone calcolate sulla distanza progressiva lungo il shape GTFS del percorso" }
               { zoningMethod === "dominant" && "Zone basate sul percorso con il maggior numero di corse (linea dominante)" }
               { zoningMethod === "cluster"  && "Zone derivate dai cluster geografici delle fermate extraurbane" }
@@ -5212,15 +5254,91 @@ function GenerateTab() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
+          <div className="rounded-lg border border-pink-200 bg-white/80 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-[11px] font-semibold text-pink-700">
+                Percorsi selezionati: {selectedClusterRouteIds.length}/{clusterRouteOptions.length || 0}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-pink-200 text-pink-700"
+                  disabled={clusterRoutesLoading || clusterRouteOptions.length === 0}
+                  onClick={() => setSelectedClusterRouteIds(clusterRouteOptions.map((r) => r.routeId))}
+                >
+                  Tutti
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 border-pink-200 text-pink-700"
+                  disabled={clusterRoutesLoading || clusterRouteOptions.length === 0}
+                  onClick={() => setSelectedClusterRouteIds([])}
+                >
+                  Nessuno
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 bg-pink-600 hover:bg-pink-500 text-white border-0"
+                  disabled={clusterRoutesLoading || clusterRouteOptions.length === 0}
+                  onClick={() => {
+                    localStorage.setItem(CLUSTER_ROUTE_SELECTION_KEY, JSON.stringify(selectedClusterRouteIds));
+                    toast({ title: "Selezione percorsi salvata", description: `${selectedClusterRouteIds.length} percorsi convalidati` });
+                  }}
+                >
+                  Convalida e salva
+                </Button>
+              </div>
+            </div>
+
+            <details>
+              <summary className="cursor-pointer text-[11px] text-pink-700 font-medium">Seleziona alcuni percorsi</summary>
+              <div className="mt-2 max-h-48 overflow-auto grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                {clusterRoutesLoading && (
+                  <p className="text-[11px] text-muted-foreground">Caricamento percorsi…</p>
+                )}
+                {!clusterRoutesLoading && clusterRouteOptions.length === 0 && (
+                  <p className="text-[11px] text-muted-foreground">Nessun percorso extraurbano disponibile.</p>
+                )}
+                {!clusterRoutesLoading && clusterRouteOptions.map((r) => {
+                  const checked = selectedClusterRouteIds.includes(r.routeId);
+                  return (
+                    <label key={r.routeId} className="flex items-center gap-2 text-[11px] text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedClusterRouteIds((prev) => (
+                            prev.includes(r.routeId)
+                              ? prev.filter((id) => id !== r.routeId)
+                              : [...prev, r.routeId]
+                          ));
+                        }}
+                      />
+                      <span className="font-mono">{r.shortName || r.routeId}</span>
+                      <span className="truncate text-muted-foreground">{r.longName || "—"}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </details>
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
             <Button
               onClick={async () => {
-                try { await exportPolimetricheClustersToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                if (selectedClusterRouteIds.length === 0) {
+                  toast({ title: "Nessun percorso selezionato", description: "Seleziona almeno un percorso prima dell'export PDF.", variant: "destructive" });
+                  return;
+                }
+                try { await exportPolimetricheClustersToPrint({ date: new Date().toLocaleDateString("it-IT"), routeIds: selectedClusterRouteIds }); }
                 catch (e: any) { toast({ title: "Errore polimetriche cluster", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
+              disabled={clusterRoutesLoading || selectedClusterRouteIds.length === 0}
               className="bg-gradient-to-r from-pink-600 to-violet-600 hover:from-pink-500 hover:to-violet-500 text-white border-0 shadow-md"
-              title="Genera PDF: copertina con metodologia, mappa SVG dei cluster, una pagina per linea con matrice e composizione cluster"
+              title="Genera PDF: copertina con metodologia, mappa SVG dei cluster, una pagina per linea con matrice e composizione cluster (solo percorsi selezionati)"
             >
               <BarChart3 className="w-4 h-4 mr-2" />
               📊 Genera PDF cluster
