@@ -21,6 +21,9 @@ interface ExportStop {
   samples: number;
   stopped: boolean;       // il mezzo si è fermato (sosta rilevata dal GPS)
   stoppedRuns: number;
+  totalRuns: number;
+  stoppedPct: number | null;
+  dwellSec: number | null;
   proposedSec: number | null;
   arcSchedSec: number | null;
   arcObsSec: number | null;
@@ -31,9 +34,13 @@ interface ExportTrip {
   headsign: string | null;
   directionId: number | null;
   runs: number;
+  gpsRuns: number;
   startSchedSec: number | null;
   coveredStops: number;
   totalStops: number;
+  servedStops: number;
+  servedPct: number | null;
+  avgDwellSec: number | null;
   totalSchedSec: number | null;
   totalObsSec: number | null;
   totalDeltaSec: number | null;
@@ -77,6 +84,12 @@ function deltaCls(sec: number | null): string {
   if (sec < -90) return "fast";
   return "ok";
 }
+function pctCls(p: number | null): string {
+  if (p == null) return "";
+  if (p >= 90) return "ok";
+  if (p >= 70) return "warn";
+  return "neg";
+}
 function esc(s: string | null | undefined): string {
   if (s == null) return "";
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -108,6 +121,10 @@ interface ProfStop {
   arcDeltaSec: number | null;
   fatta: boolean;
   imputed: boolean;
+  stoppedPct: number | null;
+  stoppedRuns: number;
+  totalRuns: number;
+  dwellSec: number | null;
 }
 
 function buildProfile(t: ExportTrip): ProfStop[] {
@@ -130,6 +147,8 @@ function buildProfile(t: ExportTrip): ProfStop[] {
       comeDovrebbeSec: effettivoSec != null ? effettivoSec - depDelay : null,
       arcDeltaSec: null,
       fatta, imputed: false,
+      stoppedPct: s.stoppedPct, stoppedRuns: s.stoppedRuns, totalRuns: s.totalRuns,
+      dwellSec: s.dwellSec,
     };
   });
 
@@ -195,6 +214,15 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   const nRoutes = data.routes.length;
   const nTrips = data.routes.reduce((s, r) => s + r.trips.length, 0);
 
+  // Analisi fermate fatte aggregata (su tutte le rilevazioni)
+  const allTrips = data.routes.flatMap((r) => r.trips);
+  const pcts = allTrips.map((t) => t.servedPct).filter((x): x is number => x != null);
+  const avgServedPct = pcts.length ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null;
+  const dwells = allTrips.map((t) => t.avgDwellSec).filter((x): x is number => x != null);
+  const avgDwellSec = dwells.length ? Math.round(dwells.reduce((a, b) => a + b, 0) / dwells.length) : null;
+  const totRilev = allTrips.reduce((a, t) => a + (t.gpsRuns || 0), 0);
+  const corseAffidabili = allTrips.filter((t) => (t.servedPct ?? 0) >= 90).length;
+
   const routeSections = data.routes.map((r) => {
     const color = r.routeColor ? `#${String(r.routeColor).replace(/^#/, "")}` : "#1f2937";
     const tripBlocks = r.trips.map((t) => {
@@ -206,6 +234,8 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
           : s.imputed
             ? `<span class="warn" title="capolinea stimato">◐</span>`
             : `<span class="neg" title="non si è fermato">○</span>`;
+        const pct = s.stoppedPct != null
+          ? `<span class="${pctCls(s.stoppedPct)}" title="${s.stoppedRuns}/${s.totalRuns} corse">${s.stoppedPct}%</span>` : "—";
         return `
         <tr>
           <td class="num">${s.seq}</td>
@@ -215,6 +245,8 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
           <td class="num">${clock(s.effettivoSec)}</td>
           <td class="num ${deltaCls(s.scartoSec)}">${signed(s.scartoSec)}</td>
           <td class="num proposed">${clock(s.comeDovrebbeSec)}</td>
+          <td class="num">${s.dwellSec != null ? dur(s.dwellSec) : "—"}</td>
+          <td class="num">${pct}</td>
         </tr>`;
       }).join("");
       return `
@@ -222,8 +254,11 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
           <div class="trip-head">
             <span class="trip-time">${clock(t.startSchedSec)}</span>
             <span class="trip-dir">${dirLabel(t.directionId)}${t.headsign ? ` → ${esc(t.headsign)}` : ""}</span>
-            <span class="trip-meta">${fatte}/${prof.length} fermate fatte · durata reale ${dur(t.totalObsSec)}
-              (programmata ${dur(t.totalSchedSec)}, <span class="${deltaCls(t.totalDeltaSec)}">${signed(t.totalDeltaSec)}</span>) · ${t.runs} giorni</span>
+            <span class="trip-meta">
+              <b class="${pctCls(t.servedPct)}">${t.servedPct != null ? `${t.servedPct}%` : "—"} fermate fatte</b>
+              (${fatte}/${prof.length} servite) · sosta media ${t.avgDwellSec != null ? dur(t.avgDwellSec) : "—"} ·
+              durata reale ${dur(t.totalObsSec)} (prog ${dur(t.totalSchedSec)}, <span class="${deltaCls(t.totalDeltaSec)}">${signed(t.totalDeltaSec)}</span>) ·
+              ${t.gpsRuns} rilevazioni</span>
           </div>
           ${buildDiagramSVG(prof)}
           <table>
@@ -231,6 +266,7 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
               <th class="num">#</th><th class="cstato">Fatta</th><th>Fermata</th>
               <th class="num">Programmato</th><th class="num">Effettivo</th>
               <th class="num">Scarto</th><th class="num">Come dovrebbe essere</th>
+              <th class="num">Sosta</th><th class="num">% fatte</th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -285,6 +321,11 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   .footer img { height:20px; opacity:.8; }
   .footer .powered { font-weight:700; color:#475569; letter-spacing:.3px; }
   .legend { font-size:9px; color:#64748b; margin:0 0 16px; }
+  .analysis { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:0 0 14px; }
+  .acard { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:8px 12px; }
+  .acard .alabel { font-size:8.5px; text-transform:uppercase; letter-spacing:.4px; color:#64748b; font-weight:600; }
+  .acard .aval { font-size:20px; font-weight:700; color:#0f172a; line-height:1.1; margin-top:2px; }
+  .acard .asub { font-size:8.5px; color:#94a3b8; margin-top:1px; }
   td.cstato, th.cstato { text-align:center; width:34px; }
   td.cstato span { font-size:11px; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   @media print { .page { padding:14px 18px; } .hero,.proposed { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
@@ -303,8 +344,23 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
       <div>Generato ${today}</div>
     </div>
   </div>
+  <div class="analysis">
+    <div class="acard"><div class="alabel">Fermate fatte (media)</div>
+      <div class="aval ${pctCls(avgServedPct)}">${avgServedPct != null ? `${avgServedPct}%` : "—"}</div>
+      <div class="asub">su tutte le rilevazioni</div></div>
+    <div class="acard"><div class="alabel">Corse affidabili</div>
+      <div class="aval">${corseAffidabili}/${nTrips}</div>
+      <div class="asub">≥ 90% fermate fatte</div></div>
+    <div class="acard"><div class="alabel">Sosta media</div>
+      <div class="aval">${avgDwellSec != null ? dur(avgDwellSec) : "—"}</div>
+      <div class="asub">tempo di fermata</div></div>
+    <div class="acard"><div class="alabel">Rilevazioni</div>
+      <div class="aval">${totRilev}</div>
+      <div class="asub">corse-giorno analizzate</div></div>
+  </div>
   <p class="legend">
     <b>Fatta</b> = il mezzo si è fermato (sosta rilevata dal GPS): <span class="ok">●</span> fermato · <span class="warn">◐</span> capolinea stimato · <span class="neg">○</span> non fermato.
+    <b>% fatte</b> = quota di corse in cui il mezzo si è fermato a quella fermata; <b>Sosta</b> = tempo medio di fermata.
     <b>Effettivo</b> = orario tipico reale (programmato + ritardo mediano). <b>Scarto</b> = effettivo − programmato.
     <b>Come dovrebbe essere</b> = effettivo riportato alla partenza programmata (si anticipano tutti i transiti del ritardo di partenza),
     cioè i tempi reali di percorrenza con la stessa ora di partenza.
