@@ -98,27 +98,43 @@ function arcColor(sec: number | null): string {
 function buildDiagramSVG(stops: ExportStop[]): string {
   const n = stops.length;
   if (n < 2) return "";
-  const W = 1000, mX = 36, y = 30, r = 4.5;
+  const W = 1000, mX = 40, y = 34, r = 5;
   const usable = W - 2 * mX;
   const x = (i: number) => mX + (usable * i) / (n - 1);
-  let body = "";
+
+  // scarto cumulato (quanto la corsa è dietro/avanti sull'orario) per i pallini
+  let cum = 0;
+  const cumDelta: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (i > 0) {
+      const d = stops[i].arcObsSec != null && stops[i].arcSchedSec != null
+        ? stops[i].arcObsSec! - stops[i].arcSchedSec! : 0;
+      cum += d;
+    }
+    cumDelta.push(cum);
+  }
+
+  let body = `<rect x="0" y="0" width="${W}" height="58" fill="#fff"/>`;
+  // tratte (archi) colorate per scarto di percorrenza
   for (let i = 1; i < n; i++) {
     const delta = stops[i].arcObsSec != null && stops[i].arcSchedSec != null
       ? stops[i].arcObsSec! - stops[i].arcSchedSec! : null;
     const c = arcColor(delta);
-    body += `<line x1="${x(i - 1).toFixed(1)}" y1="${y}" x2="${x(i).toFixed(1)}" y2="${y}" stroke="${c}" stroke-width="7" stroke-linecap="round"/>`;
+    body += `<line x1="${x(i - 1).toFixed(1)}" y1="${y}" x2="${x(i).toFixed(1)}" y2="${y}" stroke="${c}" stroke-width="8" stroke-linecap="round" style="-webkit-print-color-adjust:exact;print-color-adjust:exact"/>`;
     if (delta != null && Math.abs(delta) >= 30) {
-      body += `<text x="${((x(i - 1) + x(i)) / 2).toFixed(1)}" y="${y - 9}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">${signed(delta)}</text>`;
+      body += `<text x="${((x(i - 1) + x(i)) / 2).toFixed(1)}" y="${y - 11}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">${signed(delta)}</text>`;
     }
   }
+  // fermate: pallino colorato per scarto cumulato (verde in orario → rosso in ritardo)
   for (let i = 0; i < n; i++) {
-    body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#fff" stroke="#334155" stroke-width="1.4"/>`;
+    const c = arcColor(cumDelta[i]);
+    body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="1.6" style="-webkit-print-color-adjust:exact;print-color-adjust:exact"/>`;
   }
   const first = esc((stops[0].stopName ?? stops[0].stopId ?? "").slice(0, 28));
   const last = esc((stops[n - 1].stopName ?? stops[n - 1].stopId ?? "").slice(0, 28));
   body += `<text x="${x(0).toFixed(1)}" y="${y + 18}" text-anchor="start" font-size="9" fill="#475569">${first}</text>`;
   body += `<text x="${x(n - 1).toFixed(1)}" y="${y + 18}" text-anchor="end" font-size="9" fill="#475569">${last}</text>`;
-  return `<svg viewBox="0 0 ${W} 52" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;margin:2px 0 6px">${body}</svg>`;
+  return `<svg viewBox="0 0 ${W} 58" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;margin:2px 0 8px;-webkit-print-color-adjust:exact;print-color-adjust:exact">${body}</svg>`;
 }
 
 function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): string {
