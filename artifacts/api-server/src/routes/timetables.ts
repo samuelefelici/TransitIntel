@@ -21,6 +21,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId, buildServiceDayMap } from "./gtfs-helpers";
 import { mergeStopPatterns } from "../lib/timetable-merge";
+import { loadCalendarProfile } from "../lib/planning-studio-calendar";
+import { resolveValidityServiceFilter, type Validity } from "../lib/timetable-validity";
 
 const router: IRouter = Router();
 
@@ -28,6 +30,27 @@ type DayType = "weekday" | "saturday" | "sunday";
 function parseDayType(q: unknown): DayType {
   const s = String(q ?? "weekday");
   return s === "saturday" || s === "sunday" ? s : "weekday";
+}
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+/**
+ * Risolve il filtro validità (scuole aperte/chiuse) dai query param della richiesta.
+ * Richiede sia `validity` sia `projectId` (calendario del progetto PS); altrimenti
+ * ritorna serviceIds null → il chiamante usa il fallback per dayType.
+ */
+async function validityFilterFromReq(
+  feedId: string, dayType: DayType, q: any,
+): Promise<{ serviceIds: Set<string> | null; representativeDate: string | null; note?: string; validity: Validity | null }> {
+  const validity: Validity | null =
+    q?.validity === "scuole_aperte" || q?.validity === "scuole_chiuse" ? q.validity : null;
+  const projectId = String(q?.projectId ?? "");
+  if (!validity || !UUID_RE.test(projectId)) {
+    return { serviceIds: null, representativeDate: null, validity: null };
+  }
+  const profile = await loadCalendarProfile(projectId);
+  const r = await resolveValidityServiceFilter(feedId, { validity, projectId, dayType, profile });
+  return { ...r, validity };
 }
 
 // ── GET /timetables/routes — linee del feed risolto (programma attivo) ──────
@@ -127,6 +150,7 @@ router.get("/timetables/stop/:stopId", async (req, res): Promise<void> => {
     `);
 
     const dayMap = await buildServiceDayMap(feedId);
+    const vf = await validityFilterFromReq(feedId, dayType, req.query);
 
     // Raggruppa: linea → destinazioni → ora → minuti
     interface Line {
@@ -137,8 +161,12 @@ router.get("/timetables/stop/:stopId", async (req, res): Promise<void> => {
     }
     const lines = new Map<string, Line>();
     for (const row of depQ.rows) {
-      const svc = dayMap[row.service_id];
-      if (svc && !svc[dayType]) continue;
+      if (vf.serviceIds) {
+        if (!vf.serviceIds.has(row.service_id)) continue;
+      } else {
+        const svc = dayMap[row.service_id];
+        if (svc && !svc[dayType]) continue;
+      }
       // dep "HH:MM:SS" (può superare 24 per le corse dopo mezzanotte)
       const mDep = /^(\d{1,2}):(\d{2})/.exec(String(row.departure_time));
       if (!mDep) continue;
@@ -165,6 +193,9 @@ router.get("/timetables/stop/:stopId", async (req, res): Promise<void> => {
     res.json({
       feedId,
       dayType,
+      validity: vf.validity,
+      representativeDate: vf.representativeDate,
+      validityNote: vf.note ?? null,
       stop: { stopId: stop.stop_id, stopName: stop.stop_name, stopCode: stop.stop_code },
       lines: [...lines.values()]
         .sort((a, b) => String(a.shortName ?? "").localeCompare(String(b.shortName ?? ""), "it", { numeric: true }))
@@ -214,13 +245,19 @@ router.get("/timetables/route/:routeId", async (req, res): Promise<void> => {
     `);
 
     const dayMap = await buildServiceDayMap(feedId);
+    const vf = await validityFilterFromReq(feedId, dayType, req.query);
 
-    // Raggruppa per corsa, filtra per tipo giorno
+    // Raggruppa per corsa, filtra per validità (data rappresentativa) o, in
+    // assenza, per tipo giorno (buildServiceDayMap).
     interface TripRow { tripId: string; headsign: string | null; directionId: number | null; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
     const trips = new Map<string, TripRow>();
     for (const r of rowsQ.rows) {
-      const svc = dayMap[r.service_id];
-      if (svc && !svc[dayType]) continue;
+      if (vf.serviceIds) {
+        if (!vf.serviceIds.has(r.service_id)) continue;
+      } else {
+        const svc = dayMap[r.service_id];
+        if (svc && !svc[dayType]) continue;
+      }
       let t = trips.get(r.trip_id);
       if (!t) {
         t = { tripId: r.trip_id, headsign: r.trip_headsign, directionId: r.direction_id, stops: [] };
@@ -256,6 +293,9 @@ router.get("/timetables/route/:routeId", async (req, res): Promise<void> => {
       feedId,
       dayType,
       directionId,
+      validity: vf.validity,
+      representativeDate: vf.representativeDate,
+      validityNote: vf.note ?? null,
       route: {
         routeId: route.route_id, shortName: route.route_short_name,
         longName: route.route_long_name, color: route.route_color,
