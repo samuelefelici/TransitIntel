@@ -11,11 +11,11 @@
  * l'export delle polimetriche.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Bus, Clock, Loader2, MapPin, Printer, Search, SignpostBig,
+  ArrowLeftRight, Loader2, MapPin, Printer, Search, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
@@ -46,6 +46,9 @@ interface RouteTimetable {
   feedId: string;
   dayType: DayType;
   directionId: number | null;
+  validity?: Validity | null;
+  representativeDate?: string | null; // YYYY-MM-DD (giorno tipo)
+  validityNote?: string | null;
   route: { routeId: string; shortName: string | null; longName: string | null; color: string | null };
   stops: Array<{ stopId: string; stopName: string }>;
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
@@ -54,6 +57,14 @@ interface RouteTimetable {
 interface GtfsRoute {
   routeId: string; routeShortName: string | null; routeLongName: string | null; routeColor: string | null;
 }
+
+interface PsProject { id: string; name: string }
+
+type Validity = "scuole_aperte" | "scuole_chiuse";
+const VALIDITY_LABEL: Record<Validity, string> = {
+  scuole_aperte: "Scuole aperte", scuole_chiuse: "Scuole chiuse",
+};
+const DEFAULT_PROJECT_ID = "722e651e-42e9-4284-8483-21fe15d30caf";
 
 /* ─── Helpers stampa ─── */
 
@@ -149,8 +160,33 @@ function buildStopPosterHtml(data: StopTimetable): string {
   </body></html>`;
 }
 
-/** HTML standalone dell'orario generale di linea (orizzontale, paginato). */
-function buildRouteTimetableHtml(data: RouteTimetable): string {
+/** Etichetta giorno/validità per l'intestazione dell'orario di linea. */
+function dayHeaderLabel(d: RouteTimetable): string {
+  const parts: string[] = [];
+  if (d.validity && d.dayType !== "sunday") parts.push(VALIDITY_LABEL[d.validity]);
+  parts.push(DAY_LABEL[d.dayType]);
+  let s = parts.join(" · ");
+  if (d.representativeDate) {
+    try { s += ` · giorno tipo ${new Date(d.representativeDate).toLocaleDateString("it-IT")}`; } catch { /* noop */ }
+  }
+  return s;
+}
+
+const ROUTE_TT_CSS = `
+  ${PRINT_BASE_CSS}
+  @page { size: A4 landscape; margin: 8mm; }
+  table.tt { width: 100%; border-collapse: collapse; }
+  table.tt th, table.tt td { border: 1px solid #999; font-size: 9.5px; padding: 2px 4px; text-align: center; font-variant-numeric: tabular-nums; }
+  table.tt th.stop { text-align: left; background: #f1f1f1; font-weight: 600; max-width: 52mm; min-width: 38mm; }
+  table.tt th.stop.head { background: #111; color: #fff; }
+  table.tt th.trip { background: #111; color: #fff; }
+  table.tt th.trip .hs { font-size: 7.5px; font-weight: 600; max-width: 18mm; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  table.tt tbody tr:nth-child(even) td { background: #fafafa; }
+  table.tt td { font-weight: 600; }
+`;
+
+/** Sezioni-pagina dell'orario di una linea (senza wrapper <html>). */
+function routeTimetablePages(data: RouteTimetable): string {
   const gen = new Date().toLocaleString("it-IT");
   const col = lineColor(data.route.color);
   const PER_PAGE = 14;
@@ -159,8 +195,9 @@ function buildRouteTimetableHtml(data: RouteTimetable): string {
   if (chunks.length === 0) chunks.push([]);
 
   const dirLabel = data.directionId == null ? "Andata + Ritorno" : data.directionId === 0 ? "Andata" : "Ritorno";
+  const dayLbl = dayHeaderLabel(data);
 
-  const pages = chunks.map((chunk, pi) => {
+  return chunks.map((chunk, pi) => {
     const headRow = chunk.map((t) => `<th class="trip"><div class="hs">${esc(t.headsign ?? "")}</div></th>`).join("");
     const bodyRows = data.stops.map((s, si) => `
       <tr>
@@ -172,7 +209,7 @@ function buildRouteTimetableHtml(data: RouteTimetable): string {
       <header class="doc">
         <div class="pill" style="background:${col}">${esc(data.route.shortName ?? "?")}</div>
         <h1>${esc(data.route.longName ?? "Orario di linea")}</h1>
-        <div class="day">${DAY_LABEL[data.dayType]} · ${dirLabel}${chunks.length > 1 ? `<br><small style="font-weight:400">pagina ${pi + 1}/${chunks.length}</small>` : ""}</div>
+        <div class="day">${esc(dayLbl)} · ${dirLabel}${chunks.length > 1 ? `<br><small style="font-weight:400">pagina ${pi + 1}/${chunks.length}</small>` : ""}</div>
       </header>
       <table class="tt">
         <thead><tr><th class="stop head">Fermata</th>${headRow}</tr></thead>
@@ -181,21 +218,14 @@ function buildRouteTimetableHtml(data: RouteTimetable): string {
       <footer class="doc"><span>TransitIntel · orario generale linea ${esc(data.route.shortName ?? "")}</span><span>Generato il ${gen}</span></footer>
     </section>`;
   }).join("");
+}
 
+/** HTML standalone con gli orari di più linee/giorni in un unico documento. */
+function buildCombinedRouteTimetableHtml(docs: RouteTimetable[]): string {
+  const body = docs.filter((d) => d.trips.length > 0).map(routeTimetablePages).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
-  <title>Orario linea ${esc(data.route.shortName ?? "")}</title>
-  <style>
-    ${PRINT_BASE_CSS}
-    @page { size: A4 landscape; margin: 8mm; }
-    table.tt { width: 100%; border-collapse: collapse; }
-    table.tt th, table.tt td { border: 1px solid #999; font-size: 9.5px; padding: 2px 4px; text-align: center; font-variant-numeric: tabular-nums; }
-    table.tt th.stop { text-align: left; background: #f1f1f1; font-weight: 600; max-width: 52mm; min-width: 38mm; }
-    table.tt th.stop.head { background: #111; color: #fff; }
-    table.tt th.trip { background: #111; color: #fff; }
-    table.tt th.trip .hs { font-size: 7.5px; font-weight: 600; max-width: 18mm; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-    table.tt tbody tr:nth-child(even) td { background: #fafafa; }
-    table.tt td { font-weight: 600; }
-  </style></head><body>${pages}</body></html>`;
+  <title>Orari per il pubblico</title>
+  <style>${ROUTE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
 }
 
 /* ─── Pagina ─── */
@@ -204,13 +234,39 @@ export default function TimetablesPage() {
   const [tab, setTab] = useState<"stop" | "route">("stop");
   const [dayType, setDayType] = useState<DayType>("weekday");
 
+  // validità condivisa (calendario del progetto Planning Studio)
+  const [projectId, setProjectId] = useState<string>(DEFAULT_PROJECT_ID);
+  const [validity, setValidity] = useState<Validity>("scuole_aperte");
+
   // quadro di fermata
   const [stopQuery, setStopQuery] = useState("");
   const [selectedStop, setSelectedStop] = useState<StopSearchItem | null>(null);
 
-  // orario di linea
-  const [selectedRouteId, setSelectedRouteId] = useState<string>("");
+  // orario di linea (multi-selezione)
   const [directionId, setDirectionId] = useState<string>("all"); // all | 0 | 1
+  const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
+  const [routeSearch, setRouteSearch] = useState("");
+  const [selectedDays, setSelectedDays] = useState<DayType[]>(["weekday"]);
+  const [printing, setPrinting] = useState(false);
+
+  // suffisso query per la validità (solo se progetto valorizzato)
+  const validityQS = projectId ? `&validity=${validity}&projectId=${encodeURIComponent(projectId)}` : "";
+
+  const projectsQ = useQuery({
+    queryKey: ["timetables", "ps-projects"],
+    queryFn: () => apiFetch<any>("/api/planning-studio/projects"),
+    staleTime: 5 * 60 * 1000,
+  });
+  const projects: PsProject[] = useMemo(() => {
+    const d: any = projectsQ.data;
+    const list = Array.isArray(d) ? d : (d?.projects ?? []);
+    return list.map((p: any) => ({ id: p.id, name: p.name ?? p.id }));
+  }, [projectsQ.data]);
+  useEffect(() => {
+    if (projects.length && !projects.some((p) => p.id === projectId)) {
+      setProjectId(projects.find((p) => p.id === DEFAULT_PROJECT_ID)?.id ?? projects[0].id);
+    }
+  }, [projects, projectId]);
 
   const stopSearchQ = useQuery({
     queryKey: ["timetables", "stop-search", stopQuery],
@@ -219,8 +275,8 @@ export default function TimetablesPage() {
   });
 
   const stopTtQ = useQuery({
-    queryKey: ["timetables", "stop", selectedStop?.stopId, dayType],
-    queryFn: () => apiFetch<StopTimetable>(`/api/timetables/stop/${encodeURIComponent(selectedStop!.stopId)}?dayType=${dayType}`),
+    queryKey: ["timetables", "stop", selectedStop?.stopId, dayType, validity, projectId],
+    queryFn: () => apiFetch<StopTimetable>(`/api/timetables/stop/${encodeURIComponent(selectedStop!.stopId)}?dayType=${dayType}${validityQS}`),
     enabled: tab === "stop" && !!selectedStop,
   });
 
@@ -231,19 +287,50 @@ export default function TimetablesPage() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const routeTtQ = useQuery({
-    queryKey: ["timetables", "route", selectedRouteId, dayType, directionId],
-    queryFn: () => apiFetch<RouteTimetable>(
-      `/api/timetables/route/${encodeURIComponent(selectedRouteId)}?dayType=${dayType}${directionId !== "all" ? `&directionId=${directionId}` : ""}`,
-    ),
-    enabled: tab === "route" && !!selectedRouteId,
-  });
-
   const sortedRoutes = useMemo(() => {
     const list = routesQ.data?.routes ?? [];
     return [...list].sort((a, b) =>
       String(a.routeShortName ?? "").localeCompare(String(b.routeShortName ?? ""), "it", { numeric: true }));
   }, [routesQ.data]);
+
+  const filteredRoutes = useMemo(() => {
+    const q = routeSearch.trim().toLowerCase();
+    if (!q) return sortedRoutes;
+    return sortedRoutes.filter((r) =>
+      `${r.routeShortName ?? ""} ${r.routeLongName ?? ""}`.toLowerCase().includes(q));
+  }, [sortedRoutes, routeSearch]);
+
+  function toggleRoute(id: string) {
+    setSelectedRouteIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  }
+  function toggleDay(d: DayType) {
+    setSelectedDays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+  }
+
+  // Stampa "orari per il pubblico": per ogni linea × giorno selezionato.
+  async function printPublic() {
+    const ids = sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId);
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    if (!selectedDays.length) { toast.error("Seleziona almeno un tipo di giorno"); return; }
+    setPrinting(true);
+    try {
+      const docs: RouteTimetable[] = [];
+      for (const rid of ids) {
+        for (const d of selectedDays) {
+          const url = `/api/timetables/route/${encodeURIComponent(rid)}?dayType=${d}`
+            + (directionId !== "all" ? `&directionId=${directionId}` : "")
+            + validityQS;
+          docs.push(await apiFetch<RouteTimetable>(url));
+        }
+      }
+      if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
+      openPrintWindow(buildCombinedRouteTimetableHtml(docs));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore durante la stampa");
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   return (
     <div className="max-w-5xl mx-auto space-y-5">
@@ -260,7 +347,7 @@ export default function TimetablesPage() {
         </div>
       </div>
 
-      {/* Tab + day type */}
+      {/* Tab */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex rounded-lg overflow-hidden border border-border/60">
           <button
@@ -277,17 +364,47 @@ export default function TimetablesPage() {
           </button>
         </div>
 
-        <div className="flex rounded-lg overflow-hidden border border-border/60 ml-auto">
-          {(Object.keys(DAY_LABEL) as DayType[]).map((d) => (
+        {tab === "stop" && (
+          <div className="flex rounded-lg overflow-hidden border border-border/60 ml-auto">
+            {(Object.keys(DAY_LABEL) as DayType[]).map((d) => (
+              <button
+                key={d}
+                onClick={() => setDayType(d)}
+                className={`px-3 py-2 text-xs transition-colors ${dayType === d ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}
+              >
+                {DAY_LABEL[d]}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Validità condivisa (calendario del progetto Planning Studio) */}
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border/50 bg-card/40 px-3 py-2.5">
+        <span className="text-xs font-medium text-muted-foreground">Validità</span>
+        <select
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
+          className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 max-w-56"
+          title="Calendario validità: progetto Planning Studio"
+        >
+          {projects.length === 0 && <option value={projectId}>Progetto predefinito</option>}
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <div className="flex rounded-lg overflow-hidden border border-border/60">
+          {(["scuole_aperte", "scuole_chiuse"] as Validity[]).map((v) => (
             <button
-              key={d}
-              onClick={() => setDayType(d)}
-              className={`px-3 py-2 text-xs transition-colors ${dayType === d ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}
+              key={v}
+              onClick={() => setValidity(v)}
+              className={`px-3 py-1.5 text-xs transition-colors ${validity === v ? "bg-amber-500/20 text-amber-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}
             >
-              {DAY_LABEL[d]}
+              {VALIDITY_LABEL[v]}
             </button>
           ))}
         </div>
+        <span className="text-[10px] text-muted-foreground ml-auto">
+          Periodi definiti in Planning Studio → Validità
+        </span>
       </div>
 
       {/* ── Tab: quadro di fermata ── */}
@@ -384,93 +501,74 @@ export default function TimetablesPage() {
         </div>
       )}
 
-      {/* ── Tab: orario di linea ── */}
+      {/* ── Tab: orario di linea (orari per il pubblico) ── */}
       {tab === "route" && (
         <div className="space-y-4">
-          <div className="flex flex-wrap gap-3">
-            <select
-              value={selectedRouteId}
-              onChange={(e) => setSelectedRouteId(e.target.value)}
-              className="flex-1 min-w-56 px-3 py-2.5 rounded-lg bg-card border border-border/60 text-sm outline-none focus:border-sky-500/60"
-            >
-              <option value="">— Scegli la linea —</option>
-              {sortedRoutes.map((r) => (
-                <option key={r.routeId} value={r.routeId}>
-                  {r.routeShortName ?? r.routeId} · {r.routeLongName ?? ""}
-                </option>
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-xs font-medium text-muted-foreground">Giorni</span>
+            <div className="flex rounded-lg overflow-hidden border border-border/60">
+              {(Object.keys(DAY_LABEL) as DayType[]).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => toggleDay(d)}
+                  className={`px-3 py-2 text-xs transition-colors ${selectedDays.includes(d) ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}
+                >
+                  {DAY_LABEL[d]}
+                </button>
               ))}
-            </select>
+            </div>
             <select
               value={directionId}
               onChange={(e) => setDirectionId(e.target.value)}
-              className="px-3 py-2.5 rounded-lg bg-card border border-border/60 text-sm outline-none focus:border-sky-500/60"
+              className="px-3 py-2 rounded-lg bg-card border border-border/60 text-sm outline-none focus:border-sky-500/60"
             >
               <option value="all">Andata + Ritorno</option>
               <option value="0">Andata</option>
               <option value="1">Ritorno</option>
             </select>
             <button
-              onClick={() => {
-                if (!routeTtQ.data) return;
-                openPrintWindow(buildRouteTimetableHtml(routeTtQ.data));
-              }}
-              disabled={!routeTtQ.data || routeTtQ.data.trips.length === 0}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+              onClick={printPublic}
+              disabled={printing || selectedRouteIds.length === 0 || selectedDays.length === 0}
+              className="ml-auto flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
             >
-              <Printer className="w-4 h-4" /> Stampa orario
+              {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+              Stampa orari pubblico{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
             </button>
           </div>
 
-          {routeTtQ.isLoading && (
-            <div className="text-xs text-muted-foreground flex items-center gap-2 py-8 justify-center">
-              <Loader2 className="w-4 h-4 animate-spin" /> Costruisco l'orario…
+          {/* Selezione linee */}
+          <div className="rounded-xl border border-border/60 bg-card/60 overflow-hidden">
+            <div className="px-3 py-2 border-b border-border/50 flex items-center gap-2">
+              <Search className="w-4 h-4 text-muted-foreground" />
+              <input
+                value={routeSearch}
+                onChange={(e) => setRouteSearch(e.target.value)}
+                placeholder="Filtra linee…"
+                className="flex-1 bg-transparent text-sm outline-none"
+              />
+              <button onClick={() => setSelectedRouteIds(filteredRoutes.map((r) => r.routeId))} className="text-[11px] text-sky-400 hover:underline">Seleziona tutte</button>
+              <button onClick={() => setSelectedRouteIds([])} className="text-[11px] text-muted-foreground hover:underline">Deseleziona</button>
             </div>
-          )}
+            <div className="max-h-[55vh] overflow-y-auto divide-y divide-border/30">
+              {routesQ.isLoading && (
+                <div className="p-3 text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico linee…</div>
+              )}
+              {!routesQ.isLoading && filteredRoutes.length === 0 && (
+                <div className="p-3 text-xs text-muted-foreground">Nessuna linea.</div>
+              )}
+              {filteredRoutes.map((r) => (
+                <label key={r.routeId} className="flex items-center gap-3 px-3 py-2 hover:bg-white/5 cursor-pointer">
+                  <input type="checkbox" checked={selectedRouteIds.includes(r.routeId)} onChange={() => toggleRoute(r.routeId)} className="accent-sky-500" />
+                  <span className="px-2 py-0.5 rounded text-white text-xs font-bold shrink-0" style={{ backgroundColor: lineColor(r.routeColor) }}>{r.routeShortName ?? "?"}</span>
+                  <span className="text-sm truncate">{r.routeLongName ?? r.routeId}</span>
+                </label>
+              ))}
+            </div>
+          </div>
 
-          {routeTtQ.data && routeTtQ.data.trips.length === 0 && (
-            <div className="text-xs text-muted-foreground py-8 text-center">
-              Nessuna corsa per «{DAY_LABEL[dayType]}» su questa linea/direzione.
-            </div>
-          )}
-
-          {routeTtQ.data && routeTtQ.data.trips.length > 0 && (
-            <div className="rounded-xl border border-border/60 bg-card/60 overflow-hidden">
-              <div className="px-4 py-3 border-b border-border/50 flex items-center gap-2 text-xs text-muted-foreground">
-                <Bus className="w-4 h-4 text-sky-400" />
-                <span className="px-2 py-0.5 rounded text-white font-bold" style={{ backgroundColor: lineColor(routeTtQ.data.route.color) }}>
-                  {routeTtQ.data.route.shortName}
-                </span>
-                <span className="truncate">{routeTtQ.data.route.longName}</span>
-                <span className="ml-auto flex items-center gap-1"><Clock className="w-3 h-3" /> {routeTtQ.data.trips.length} corse · {routeTtQ.data.stops.length} fermate</span>
-              </div>
-              <div className="overflow-auto max-h-[60vh]">
-                <table className="text-[11px] border-collapse min-w-full">
-                  <thead className="sticky top-0 bg-background z-10">
-                    <tr>
-                      <th className="text-left px-2 py-1.5 border-b border-border/50 sticky left-0 bg-background min-w-44">Fermata</th>
-                      {routeTtQ.data.trips.map((t) => (
-                        <th key={t.tripId} className="px-1.5 py-1.5 border-b border-border/50 font-medium text-muted-foreground max-w-20 truncate" title={t.headsign ?? ""}>
-                          {t.headsign ? t.headsign.slice(0, 10) : "·"}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {routeTtQ.data.stops.map((s, si) => (
-                      <tr key={s.stopId} className="odd:bg-white/[0.02]">
-                        <td className="px-2 py-1 border-b border-border/20 sticky left-0 bg-background truncate max-w-56" title={s.stopName}>{s.stopName}</td>
-                        {routeTtQ.data!.trips.map((t) => (
-                          <td key={t.tripId} className="px-1.5 py-1 border-b border-border/20 text-center font-mono">
-                            {t.times[si] ?? <span className="text-muted-foreground/40">·</span>}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          <p className="text-[11px] text-muted-foreground">
+            La stampa produce un documento unico: una sezione per ogni linea selezionata × giorno scelto, con validità «{VALIDITY_LABEL[validity]}» (giorno tipo dal calendario del progetto). Output A4 orizzontale → salva in PDF dal dialogo di stampa.
+          </p>
         </div>
       )}
     </div>
