@@ -7,9 +7,12 @@
  * "fuori soglia" (osservato >> programmato) sono quelle da ritarare nel
  * TTD / Planner Studio.
  */
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Clock, Download, Gauge, Loader2, Timer } from "lucide-react";
+import {
+  AlertTriangle, CheckCircle2, Clock, Download, Gauge, Loader2,
+  MapPin, Radio, Timer, XCircle,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 interface RuntimeSegment {
@@ -54,6 +57,38 @@ interface TripRuntime {
 }
 interface ByTripResp { caronteAvailable: boolean; trips: TripRuntime[] }
 
+interface DetailStop {
+  seq: number;
+  stopId: string;
+  stopName: string | null;
+  lat: number | null;
+  lon: number | null;
+  scheduledSec: number | null;
+  actualTs: string | null;
+  delaySeconds: number | null;
+  recorded: boolean;
+  arcSchedSeconds: number | null;
+  arcObsSeconds: number | null;
+  arcDeltaSeconds: number | null;
+  dwellSeconds: number | null;
+  served: boolean;
+}
+interface RuntimeDetail {
+  caronteAvailable: boolean;
+  day: string | null;
+  availableDays: Array<{ day: string; transits: number }>;
+  dwellRadius: number;
+  dwellSeconds: number;
+  trip: { headsign: string | null; routeShortName: string | null; routeColor: string | null } | null;
+  totals: {
+    scheduledStops: number; recordedStops: number; servedStops: number; missingStops: number;
+    schedTotalSeconds: number | null; obsTotalSeconds: number | null; deltaSeconds: number | null;
+    gpsPoints: number;
+  } | null;
+  stops: DetailStop[];
+  missing: Array<{ seq: number; stopId: string; stopName: string | null }>;
+}
+
 const BANDS = [
   { label: "Tutto il giorno", hourFrom: null as number | null, hourTo: null as number | null },
   { label: "Punta AM (6–9)", hourFrom: 6, hourTo: 9 },
@@ -73,6 +108,33 @@ function deltaColor(pct: number | null): string {
   if (pct < -15) return "#38bdf8";  // molto più veloce: orario largo
   return "#10b981";
 }
+// secondi con segno (ritardo +, anticipo −)
+function fmtSigned(s: number | null): string {
+  if (s == null) return "—";
+  const sign = s > 0 ? "+" : s < 0 ? "−" : "";
+  const a = Math.abs(s);
+  return `${sign}${Math.floor(a / 60)}'${String(a % 60).padStart(2, "0")}"`;
+}
+// secondi-dal-mezzanotte → HH:MM (gestisce le corse oltre le 24)
+function fmtClock(sec: number | null): string {
+  if (sec == null) return "—";
+  const h = Math.floor(sec / 3600) % 24;
+  const m = Math.floor((sec % 3600) / 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+function fmtTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+}
+// puntualità: in orario −60s..+300s = verde, ritardo = ambra/rosso, anticipo = blu
+function delayColor(s: number | null): string {
+  if (s == null) return "#64748b";
+  if (s > 300) return "#ef4444";
+  if (s > 60) return "#f59e0b";
+  if (s < -60) return "#38bdf8";
+  return "#10b981";
+}
 
 export default function RuntimesPage() {
   const [days, setDays] = useState(14);
@@ -81,10 +143,11 @@ export default function RuntimesPage() {
   // classificazione richiesta: Linea → Percorso → Corsa (vista default) + per tratta
   const [view, setView] = useState<"corse" | "tratte">("corse");
   const [openRoutes, setOpenRoutes] = useState<Set<string>>(new Set());
+  const [openTrip, setOpenTrip] = useState<string | null>(null);
 
   const routesQ = useQuery({
     queryKey: ["runtimes", "routes"],
-    queryFn: () => apiFetch<{ data: GtfsRoute[] }>("/api/gtfs/routes"),
+    queryFn: () => apiFetch<{ routes: GtfsRoute[] }>("/api/timetables/routes"),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -149,7 +212,7 @@ export default function RuntimesPage() {
   const loose = useMemo(() => segments.filter(s => (s.deltaPct ?? 0) < -15).length, [segments]);
 
   const sortedRoutes = useMemo(() => {
-    const list = routesQ.data?.data ?? [];
+    const list = routesQ.data?.routes ?? [];
     return [...list].sort((a, c) =>
       String(a.routeShortName ?? "").localeCompare(String(c.routeShortName ?? ""), "it", { numeric: true }));
   }, [routesQ.data]);
@@ -178,7 +241,8 @@ export default function RuntimesPage() {
         <div className="flex-1 min-w-52">
           <h1 className="text-xl font-bold">Tempi di Percorrenza</h1>
           <p className="text-xs text-muted-foreground">
-            Programmato vs osservato per tratta, misurato automaticamente dai transiti AVM
+            Programmato vs osservato dai transiti AVM · clicca una corsa per il dettaglio fermata×fermata,
+            archi, fermate effettivamente fatte e analisi in tempo reale
           </p>
         </div>
         <button
@@ -284,9 +348,17 @@ export default function RuntimesPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {v.trips.map(t => (
-                          <tr key={t.tripId} className="odd:bg-white/[0.02]">
-                            <td className="px-5 py-1 font-mono">{t.startTime ? t.startTime.slice(0, 5) : "—"}</td>
+                        {v.trips.map(t => {
+                          const isOpen = openTrip === t.tripId;
+                          return (
+                          <Fragment key={t.tripId}>
+                          <tr
+                            onClick={() => setOpenTrip(isOpen ? null : t.tripId)}
+                            className={`cursor-pointer transition-colors ${isOpen ? "bg-rose-500/10" : "odd:bg-white/[0.02] hover:bg-white/[0.05]"}`}>
+                            <td className="px-5 py-1 font-mono">
+                              <span className={`inline-block mr-1.5 text-[9px] transition-transform ${isOpen ? "rotate-90" : ""}`}>▸</span>
+                              {t.startTime ? t.startTime.slice(0, 5) : "—"}
+                            </td>
                             <td className="px-2 py-1 text-right font-mono">{t.runs}</td>
                             <td className="px-2 py-1 text-right font-mono text-muted-foreground">
                               {t.avgObsStops != null && t.totalStops ? `${t.avgObsStops}/${t.totalStops}` : "—"}
@@ -297,7 +369,16 @@ export default function RuntimesPage() {
                               {t.deltaPct != null ? `${t.deltaPct > 0 ? "+" : ""}${t.deltaPct}%` : "—"}
                             </td>
                           </tr>
-                        ))}
+                          {isOpen && (
+                            <tr>
+                              <td colSpan={6} className="p-0">
+                                <TripRuntimeDetail tripId={t.tripId} days={days} />
+                              </td>
+                            </tr>
+                          )}
+                          </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -385,6 +466,152 @@ export default function RuntimesPage() {
         🔵 osservato &gt;15% sotto: orario largo, possibile recupero di minuti nel TTD.
       </p>
       </>)}
+    </div>
+  );
+}
+
+/* ── Dettaglio corsa fermata×fermata: delta, archi, fermate fatte (dwell) ── */
+function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
+  const [date, setDate] = useState<string>("");   // "" = ultima giornata osservata
+  const [live, setLive] = useState(false);
+
+  const qs = new URLSearchParams({ days: String(days) });
+  if (date) qs.set("date", date);
+
+  const q = useQuery({
+    queryKey: ["runtime-detail", tripId, days, date],
+    queryFn: () => apiFetch<RuntimeDetail>(`/api/operations/trips/${encodeURIComponent(tripId)}/runtime-detail?${qs.toString()}`),
+    refetchInterval: live ? 15_000 : false,
+  });
+
+  const d = q.data;
+  const t = d?.totals;
+
+  return (
+    <div className="bg-background/60 border-t border-rose-500/30 px-4 py-3 space-y-3">
+      {q.isLoading ? (
+        <div className="py-6 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" /> Carico il dettaglio della corsa…
+        </div>
+      ) : !d || d.stops.length === 0 ? (
+        <div className="py-6 text-center text-xs text-muted-foreground">
+          Nessun transito o posizione GPS registrati per questa corsa nel periodo.
+        </div>
+      ) : (
+        <>
+          {/* Barra controlli: giornata + aggiornamento live */}
+          <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <span className="text-muted-foreground">Giornata analizzata:</span>
+            <select
+              value={date || (d.day ?? "")}
+              onChange={(e) => setDate(e.target.value)}
+              className="px-2 py-1 rounded bg-card border border-border/60 text-[11px] font-mono">
+              {d.availableDays.map((a) => (
+                <option key={a.day} value={a.day}>
+                  {new Date(a.day).toLocaleDateString("it-IT")} · {a.transits} transiti
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setLive((v) => !v)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors ${
+                live ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-border/60 text-muted-foreground hover:bg-white/10"}`}>
+              <Radio className={`w-3 h-3 ${live ? "animate-pulse" : ""}`} /> {live ? "Tempo reale (15s)" : "Aggiorna in tempo reale"}
+            </button>
+            <span className="text-muted-foreground ml-auto">
+              sosta ≥ {d.dwellSeconds}s entro {d.dwellRadius}m · {t?.gpsPoints ?? 0} punti GPS
+            </span>
+          </div>
+
+          {/* Chip riepilogo */}
+          <div className="flex flex-wrap gap-2 text-[11px]">
+            <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              Transito segnalato {t?.recordedStops}/{t?.scheduledStops}
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-sky-400" />
+              Fermate effettivamente fatte {t?.servedStops}/{t?.scheduledStops}
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 flex items-center gap-1.5">
+              <XCircle className="w-3.5 h-3.5" /> {t?.missingStops} non rilevate
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-rose-400" />
+              Totale {fmtSec(t?.obsTotalSeconds ?? null)} oss · {fmtSec(t?.schedTotalSeconds ?? null)} prog
+              {t?.deltaSeconds != null && (
+                <span className="font-bold font-mono" style={{ color: delayColor(t.deltaSeconds) }}>
+                  &nbsp;({fmtSigned(t.deltaSeconds)})
+                </span>
+              )}
+            </span>
+          </div>
+
+          {/* Tabella fermata × fermata */}
+          <div className="rounded-lg border border-border/50 overflow-auto max-h-[50vh]">
+            <table className="min-w-full text-[11px] border-collapse">
+              <thead className="sticky top-0 bg-background z-10">
+                <tr className="text-muted-foreground text-left">
+                  <th className="px-2 py-1.5 font-medium">#</th>
+                  <th className="px-2 py-1.5 font-medium">Fermata</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Programmato</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Reale</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Δ orario</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Arco oss/prog</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Scarto arco</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Sosta</th>
+                  <th className="px-2 py-1.5 font-medium text-center">Stato</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.stops.map((s) => (
+                  <tr key={s.seq} className={`border-t border-border/20 ${!s.served ? "bg-red-500/[0.06]" : "odd:bg-white/[0.02]"}`}>
+                    <td className="px-2 py-1 font-mono text-muted-foreground">{s.seq}</td>
+                    <td className="px-2 py-1 max-w-[16rem] truncate" title={s.stopName ?? s.stopId}>{s.stopName ?? s.stopId}</td>
+                    <td className="px-2 py-1 text-right font-mono">{fmtClock(s.scheduledSec)}</td>
+                    <td className="px-2 py-1 text-right font-mono">{fmtTime(s.actualTs)}</td>
+                    <td className="px-2 py-1 text-right font-mono font-semibold" style={{ color: delayColor(s.delaySeconds) }}>
+                      {fmtSigned(s.delaySeconds)}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono text-muted-foreground">
+                      {s.arcObsSeconds != null ? fmtSec(s.arcObsSeconds) : "—"}
+                      {s.arcSchedSeconds != null && <span className="opacity-50"> / {fmtSec(s.arcSchedSeconds)}</span>}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono font-semibold" style={{ color: delayColor(s.arcDeltaSeconds) }}>
+                      {fmtSigned(s.arcDeltaSeconds)}
+                    </td>
+                    <td className="px-2 py-1 text-right font-mono text-muted-foreground">
+                      {s.dwellSeconds != null && s.dwellSeconds > 0 ? `${s.dwellSeconds}s` : "—"}
+                    </td>
+                    <td className="px-2 py-1 text-center">
+                      {s.recorded ? (
+                        <span title="Transito registrato dal validatore" className="inline-flex items-center gap-1 text-emerald-400">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        </span>
+                      ) : s.served ? (
+                        <span title="Fermata fatta (sosta rilevata dal GPS) ma transito non registrato" className="inline-flex items-center gap-1 text-sky-400">
+                          <MapPin className="w-3.5 h-3.5" />
+                        </span>
+                      ) : (
+                        <span title="Nessun transito né sosta rilevati: fermata probabilmente non servita" className="inline-flex items-center gap-1 text-red-400">
+                          <XCircle className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-[10px] text-muted-foreground leading-relaxed">
+            <CheckCircle2 className="inline w-3 h-3 text-emerald-400" /> transito registrato dal validatore ·
+            <MapPin className="inline w-3 h-3 text-sky-400 ml-1" /> fermata fatta (sosta GPS rilevata) ma transito non segnalato ·
+            <XCircle className="inline w-3 h-3 text-red-400 ml-1" /> fermata non rilevata.
+            Δ orario = anticipo/ritardo sul programmato · scarto arco = tempo perso/recuperato sulla tratta dalla fermata precedente.
+          </p>
+        </>
+      )}
     </div>
   );
 }

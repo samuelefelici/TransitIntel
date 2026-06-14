@@ -226,7 +226,7 @@ export default function TimetablesPage() {
 
   const routesQ = useQuery({
     queryKey: ["timetables", "routes"],
-    queryFn: () => apiFetch<{ data: GtfsRoute[] }>("/api/gtfs/routes"),
+    queryFn: () => apiFetch<{ routes: GtfsRoute[] }>("/api/timetables/routes"),
     enabled: tab === "route",
     staleTime: 5 * 60 * 1000,
   });
@@ -240,7 +240,7 @@ export default function TimetablesPage() {
   });
 
   const sortedRoutes = useMemo(() => {
-    const list = routesQ.data?.data ?? [];
+    const list = routesQ.data?.routes ?? [];
     return [...list].sort((a, b) =>
       String(a.routeShortName ?? "").localeCompare(String(b.routeShortName ?? ""), "it", { numeric: true }));
   }, [routesQ.data]);
