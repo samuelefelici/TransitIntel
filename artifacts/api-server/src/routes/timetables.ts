@@ -30,6 +30,33 @@ function parseDayType(q: unknown): DayType {
   return s === "saturday" || s === "sunday" ? s : "weekday";
 }
 
+// ── GET /timetables/routes — linee del feed risolto (programma attivo) ──────
+// Il picker della pagina DEVE elencare solo le linee del feed su cui poi si
+// calcola l'orario: /api/gtfs/routes senza feedId mescola tutti i feed e
+// porta a 404 "Linea non trovata" selezionando linee di feed vecchi.
+router.get("/timetables/routes", async (req, res): Promise<void> => {
+  try {
+    const feedId = String(req.query.feedId ?? "") || (await getLatestFeedId(req));
+    if (!feedId) { res.json({ feedId: null, routes: [] }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT route_id, route_short_name, route_long_name, route_color
+      FROM gtfs_routes WHERE feed_id = ${feedId}
+      ORDER BY route_short_name
+    `);
+    res.json({
+      feedId,
+      routes: r.rows.map((x: any) => ({
+        routeId: x.route_id,
+        routeShortName: x.route_short_name,
+        routeLongName: x.route_long_name,
+        routeColor: x.route_color,
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /timetables/stops/search?q= — picker fermate con linee servite ───────
 router.get("/timetables/stops/search", async (req, res): Promise<void> => {
   try {

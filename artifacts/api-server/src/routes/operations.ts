@@ -642,6 +642,246 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
   }
 });
 
+// ── GET /operations/trips/:tripId/runtime-detail — dettaglio corsa fermata×fermata
+// Per una singola corsa (e una giornata specifica, default l'ultima osservata):
+//   • per ogni fermata: orario programmato, transito reale, delta (anticipo/ritardo)
+//   • per ogni arco fra fermate consecutive: tempo osservato vs programmato + scarto
+//   • totali: tempo programmato/osservato, fermate segnalate vs mancanti
+//   • "fermate effettivamente fatte": rilevate dalla sosta del mezzo vicino alla
+//     fermata (posizione ferma entro un raggio per più di N secondi) anche quando
+//     il transito non è stato registrato.
+function hmsToSec(t: string | null | undefined): number | null {
+  if (!t) return null;
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(String(t));
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] ?? 0);
+}
+// distanza approssimata (equirettangolare) in metri — sufficiente a scala fermata
+function distM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const rad = Math.PI / 180;
+  const x = (lon2 - lon1) * rad * Math.cos(((lat1 + lat2) / 2) * rad);
+  const y = (lat2 - lat1) * rad;
+  return Math.sqrt(x * x + y * y) * R;
+}
+
+router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, trip: null, day: null, availableDays: [], stops: [], totals: null, missing: [] });
+      return;
+    }
+    const tripId = String(req.params.tripId);
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 120);
+    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 45, 10), 200); // metri
+    const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 20, 5), 600); // secondi
+    const feedId = await resolveFeedId(req);
+
+    // Giornate con transiti registrati per la corsa (per lo switch nella UI)
+    const daysQ = await db.execute<any>(sql`
+      SELECT actual_ts::date AS day, COUNT(*)::int AS transits
+      FROM caronte.stop_transits
+      WHERE trip_id = ${tripId}
+        AND actual_ts > now() - (${days} * interval '1 day')
+      GROUP BY 1 ORDER BY 1 DESC
+    `);
+    const availableDays = daysQ.rows.map((r: any) => ({
+      day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+      transits: r.transits,
+    }));
+
+    const reqDate = String(req.query.date ?? "");
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(reqDate) ? reqDate : (availableDays[0]?.day ?? null);
+
+    // Info corsa
+    let tripInfo: any = null;
+    if (feedId) {
+      const tQ = await db.execute<any>(sql`
+        SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
+               r.route_short_name, r.route_long_name, r.route_color
+        FROM gtfs_trips t
+        LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
+        WHERE t.feed_id = ${feedId}::uuid AND t.trip_id = ${tripId}
+        LIMIT 1
+      `);
+      tripInfo = tQ.rows[0] ?? null;
+    }
+
+    // Sequenza programmata (tutte le fermate della corsa)
+    const schedRows = feedId
+      ? (await db.execute<any>(sql`
+          SELECT stt.stop_sequence AS seq, stt.stop_id,
+                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+                 s.stop_name, s.stop_lat, s.stop_lon
+          FROM gtfs_stop_times stt
+          LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+          WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
+          ORDER BY stt.stop_sequence
+        `)).rows
+      : [];
+
+    // Transiti reali della giornata scelta
+    const obsRows = day
+      ? (await db.execute<any>(sql`
+          SELECT stop_id, stop_seq, actual_ts, delay_seconds, scheduled, lat, lon
+          FROM caronte.stop_transits
+          WHERE trip_id = ${tripId} AND actual_ts::date = ${day}::date
+          ORDER BY stop_seq NULLS LAST, actual_ts
+        `)).rows
+      : [];
+
+    // Posizioni GPS della giornata (per la sosta = fermata effettivamente fatta)
+    const posRows = day
+      ? (await db.execute<any>(sql`
+          SELECT ts, lat, lon, speed
+          FROM caronte.vehicle_positions
+          WHERE trip_id = ${tripId} AND ts::date = ${day}::date
+            AND lat IS NOT NULL AND lon IS NOT NULL
+          ORDER BY ts
+          LIMIT 30000
+        `)).rows
+      : [];
+
+    // Indicizza i transiti per stop_seq (preferito) e per stop_id (fallback)
+    const obsBySeq = new Map<number, any>();
+    const obsById = new Map<string, any>();
+    for (const o of obsRows) {
+      if (o.stop_seq != null) obsBySeq.set(Number(o.stop_seq), o);
+      if (o.stop_id != null && !obsById.has(o.stop_id)) obsById.set(o.stop_id, o);
+    }
+
+    // Base = sequenza programmata se disponibile, altrimenti i soli transiti
+    type Base = { seq: number; stopId: string; stopName: string | null; lat: number | null; lon: number | null; schedSec: number | null };
+    let base: Base[];
+    if (schedRows.length > 0) {
+      base = schedRows.map((s: any) => ({
+        seq: Number(s.seq),
+        stopId: s.stop_id,
+        stopName: s.stop_name,
+        lat: s.stop_lat != null ? Number(s.stop_lat) : null,
+        lon: s.stop_lon != null ? Number(s.stop_lon) : null,
+        schedSec: hmsToSec(s.scheduled),
+      }));
+    } else {
+      base = obsRows.map((o: any) => ({
+        seq: Number(o.stop_seq ?? 0),
+        stopId: o.stop_id,
+        stopName: null,
+        lat: o.lat != null ? Number(o.lat) : null,
+        lon: o.lon != null ? Number(o.lon) : null,
+        schedSec: hmsToSec(o.scheduled),
+      }));
+    }
+
+    // Sosta per fermata: tempo massimo in cui il mezzo è rimasto entro dwellRadius
+    function dwellAt(lat: number | null, lon: number | null): number | null {
+      if (lat == null || lon == null || posRows.length === 0) return null;
+      let best = 0;
+      let runStart: number | null = null;
+      let runEnd: number | null = null;
+      for (const p of posRows) {
+        const pl = p.lat != null ? Number(p.lat) : null;
+        const pn = p.lon != null ? Number(p.lon) : null;
+        const t = new Date(p.ts).getTime();
+        if (pl != null && pn != null && distM(lat, lon, pl, pn) <= dwellRadius) {
+          if (runStart == null) runStart = t;
+          runEnd = t;
+        } else if (runStart != null) {
+          best = Math.max(best, (runEnd! - runStart) / 1000);
+          runStart = null; runEnd = null;
+        }
+      }
+      if (runStart != null) best = Math.max(best, (runEnd! - runStart) / 1000);
+      return Math.round(best);
+    }
+
+    // Costruisci righe per fermata con delta, arco e sosta
+    let prevActualMs: number | null = null;
+    let prevSchedSec: number | null = null;
+    const stops = base.map((b) => {
+      const o = (b.seq != null && obsBySeq.get(b.seq)) || obsById.get(b.stopId) || null;
+      const actualTs = o?.actual_ts ?? null;
+      const actualMs = actualTs ? new Date(actualTs).getTime() : null;
+      const delaySeconds = o?.delay_seconds != null ? Number(o.delay_seconds) : null;
+      const recorded = !!o;
+
+      // arco osservato (dal transito precedente) e programmato
+      const arcObs = actualMs != null && prevActualMs != null ? Math.round((actualMs - prevActualMs) / 1000) : null;
+      const arcSched = b.schedSec != null && prevSchedSec != null ? b.schedSec - prevSchedSec : null;
+      const arcDelta = arcObs != null && arcSched != null ? arcObs - arcSched : null;
+
+      const dwell = dwellAt(b.lat, b.lon);
+      const served = recorded || (dwell != null && dwell >= dwellSeconds);
+
+      if (actualMs != null) prevActualMs = actualMs;
+      if (b.schedSec != null) prevSchedSec = b.schedSec;
+
+      return {
+        seq: b.seq,
+        stopId: b.stopId,
+        stopName: b.stopName,
+        lat: b.lat,
+        lon: b.lon,
+        scheduledSec: b.schedSec,
+        actualTs,
+        delaySeconds,
+        recorded,
+        arcSchedSeconds: arcSched,
+        arcObsSeconds: arcObs,
+        arcDeltaSeconds: arcDelta,
+        dwellSeconds: dwell,
+        served,
+      };
+    });
+
+    const recordedCount = stops.filter((s) => s.recorded).length;
+    const servedCount = stops.filter((s) => s.served).length;
+    const missing = stops.filter((s) => !s.served).map((s) => ({ seq: s.seq, stopId: s.stopId, stopName: s.stopName }));
+
+    // Totali: dal primo all'ultimo transito reale, e dal primo all'ultimo programmato
+    const recStops = stops.filter((s) => s.actualTs);
+    const obsTotal = recStops.length >= 2
+      ? Math.round((new Date(recStops[recStops.length - 1].actualTs!).getTime() - new Date(recStops[0].actualTs!).getTime()) / 1000)
+      : null;
+    const schedStops = stops.filter((s) => s.scheduledSec != null);
+    const schedTotal = schedStops.length >= 2
+      ? schedStops[schedStops.length - 1].scheduledSec! - schedStops[0].scheduledSec!
+      : null;
+
+    res.json({
+      caronteAvailable: true,
+      day,
+      availableDays,
+      dwellRadius,
+      dwellSeconds,
+      trip: tripInfo && {
+        tripId: tripInfo.trip_id,
+        routeId: tripInfo.route_id,
+        headsign: tripInfo.trip_headsign,
+        directionId: tripInfo.direction_id,
+        shapeId: tripInfo.shape_id,
+        routeShortName: tripInfo.route_short_name,
+        routeLongName: tripInfo.route_long_name,
+        routeColor: tripInfo.route_color,
+      },
+      totals: {
+        scheduledStops: stops.length,
+        recordedStops: recordedCount,
+        servedStops: servedCount,
+        missingStops: stops.length - servedCount,
+        schedTotalSeconds: schedTotal,
+        obsTotalSeconds: obsTotal,
+        deltaSeconds: obsTotal != null && schedTotal != null ? obsTotal - schedTotal : null,
+        gpsPoints: posRows.length,
+      },
+      stops,
+      missing,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /operations/vehicles/:vehicleId/track?minutes=60 — traccia GPS ───────
 router.get("/operations/vehicles/:vehicleId/track", async (req, res): Promise<void> => {
   try {
