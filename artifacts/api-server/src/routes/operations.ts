@@ -1029,18 +1029,33 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       )
       SELECT trip_id, seq,
              COUNT(*) FILTER (WHERE span_s >= ${dwellSeconds} OR min_speed <= 3)::int AS stopped_runs,
-             COUNT(*)::int AS seen_runs
+             COUNT(*)::int AS seen_runs,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY span_s)
+               FILTER (WHERE span_s >= ${dwellSeconds} OR min_speed <= 3) AS dwell_median_s
       FROM per_day
       GROUP BY trip_id, seq
     `);
-    const stoppedMap = new Map<string, Map<number, { stoppedRuns: number; seenRuns: number }>>();
+    const stoppedMap = new Map<string, Map<number, { stoppedRuns: number; seenRuns: number; dwellSec: number | null }>>();
     for (const r of dwellQ.rows) {
       if (!stoppedMap.has(r.trip_id)) stoppedMap.set(r.trip_id, new Map());
       stoppedMap.get(r.trip_id)!.set(Number(r.seq), {
         stoppedRuns: Number(r.stopped_runs ?? 0),
         seenRuns: Number(r.seen_runs ?? 0),
+        dwellSec: r.dwell_median_s != null ? Math.round(Number(r.dwell_median_s)) : null,
       });
     }
+
+    // Numero di corse (giorni) con dati GPS per ogni trip → denominatore della
+    // percentuale di fermate fatte (analisi su più rilevazioni).
+    const gpsDaysQ = await db.execute<any>(sql`
+      SELECT trip_id, COUNT(DISTINCT ts::date)::int AS gps_days
+      FROM caronte.vehicle_positions
+      WHERE ts > now() - (${days} * interval '1 day')
+        AND trip_id = ANY(string_to_array(${idsCsv}, chr(31)))
+      GROUP BY trip_id
+    `);
+    const gpsDaysMap = new Map<string, number>();
+    for (const r of gpsDaysQ.rows) gpsDaysMap.set(r.trip_id, Number(r.gps_days ?? 0));
 
     // Raggruppa per corsa
     interface TripAgg {
@@ -1069,11 +1084,13 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     function buildTrip(t: TripAgg) {
       const obs = obsByTrip.get(t.tripId) ?? new Map();
       const stopped = stoppedMap.get(t.tripId) ?? new Map();
+      const gpsRuns = gpsDaysMap.get(t.tripId) ?? 0;
       const seqs = t.rows.map((r) => ({ ...r, schedSec: hmsToSec(r.scheduled) }));
       const firstSchedSec = seqs.find((r) => r.schedSec != null)?.schedSec ?? null;
       const stops = seqs.map((r) => {
         const o = obs.get(Number(r.seq));
         const dw = stopped.get(Number(r.seq));
+        const stoppedRuns = dw?.stoppedRuns ?? 0;
         const obsOffset = o?.obs_offset_s != null ? Math.round(Number(o.obs_offset_s)) : null; // traslato dalla partenza
         const schedOffset = r.schedSec != null && firstSchedSec != null ? r.schedSec - firstSchedSec : null;
         return {
@@ -1086,8 +1103,11 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
           medianDelaySec: o?.median_delay != null ? Math.round(Number(o.median_delay)) : null,
           samples: o?.samples ?? 0,
           // fermata FATTA = il mezzo si è fermato (sosta GPS) in almeno una corsa
-          stopped: (dw?.stoppedRuns ?? 0) > 0,
-          stoppedRuns: dw?.stoppedRuns ?? 0,
+          stopped: stoppedRuns > 0,
+          stoppedRuns,
+          totalRuns: gpsRuns,                    // corse osservate (denominatore %)
+          stoppedPct: gpsRuns > 0 ? Math.round((stoppedRuns / gpsRuns) * 100) : null,
+          dwellSec: dw?.dwellSec ?? null,        // tempo di fermata (mediana sulle corse)
           // orario corretto proposto = partenza programmata + tempo reale traslato
           proposedSec: obsOffset != null && firstSchedSec != null ? firstSchedSec + obsOffset : null,
         };
@@ -1103,15 +1123,26 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       const withObs = stops.filter((s) => s.obsOffsetSec != null);
       const totalObsSec = withObs.length ? withObs[withObs.length - 1].obsOffsetSec : null;
       const totalSchedSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
+      // Analisi fermate fatte su più rilevazioni
+      const servedStops = stops.filter((s) => s.stopped).length;
+      const sumStoppedRuns = stops.reduce((a, s) => a + s.stoppedRuns, 0);
+      const servedPct = stops.length > 0 && gpsRuns > 0
+        ? Math.round((sumStoppedRuns / (stops.length * gpsRuns)) * 100) : null;
+      const dwells = stops.map((s) => s.dwellSec).filter((x): x is number => x != null);
+      const avgDwellSec = dwells.length ? Math.round(dwells.reduce((a, b) => a + b, 0) / dwells.length) : null;
       return {
         tripId: t.tripId,
         headsign: t.headsign,
         directionId: t.directionId,
         shapeId: t.shapeId,
         runs: tripRuns.get(t.tripId) ?? 0,
+        gpsRuns,                                 // corse con dati GPS (base dell'analisi)
         startSchedSec: firstSchedSec,
         coveredStops: withObs.length,
         totalStops: stops.length,
+        servedStops,                             // fermate fatte almeno una volta
+        servedPct,                               // % media fermate fatte (su tutte le rilevazioni)
+        avgDwellSec,                             // tempo medio di fermata
         totalSchedSec,
         totalObsSec,
         totalDeltaSec: totalObsSec != null && totalSchedSec != null ? totalObsSec - totalSchedSec : null,
