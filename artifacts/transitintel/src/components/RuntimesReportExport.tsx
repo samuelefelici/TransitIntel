@@ -84,6 +84,43 @@ function dirLabel(d: number | null): string {
   return d === 1 ? "Ritorno" : d === 0 ? "Andata" : "—";
 }
 
+// Colore della tratta in base allo scarto reale−programmato
+function arcColor(sec: number | null): string {
+  if (sec == null) return "#cbd5e1";
+  if (sec > 60) return "#dc2626";   // ritardo forte
+  if (sec > 20) return "#f59e0b";   // ritardo
+  if (sec < -60) return "#0284c7";  // anticipo forte
+  if (sec < -20) return "#38bdf8";  // anticipo
+  return "#059669";                 // in orario
+}
+
+// Diagramma a linea colorata della corsa (SVG, scala con la pagina/stampa)
+function buildDiagramSVG(stops: ExportStop[]): string {
+  const n = stops.length;
+  if (n < 2) return "";
+  const W = 1000, mX = 36, y = 30, r = 4.5;
+  const usable = W - 2 * mX;
+  const x = (i: number) => mX + (usable * i) / (n - 1);
+  let body = "";
+  for (let i = 1; i < n; i++) {
+    const delta = stops[i].arcObsSec != null && stops[i].arcSchedSec != null
+      ? stops[i].arcObsSec! - stops[i].arcSchedSec! : null;
+    const c = arcColor(delta);
+    body += `<line x1="${x(i - 1).toFixed(1)}" y1="${y}" x2="${x(i).toFixed(1)}" y2="${y}" stroke="${c}" stroke-width="7" stroke-linecap="round"/>`;
+    if (delta != null && Math.abs(delta) >= 30) {
+      body += `<text x="${((x(i - 1) + x(i)) / 2).toFixed(1)}" y="${y - 9}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">${signed(delta)}</text>`;
+    }
+  }
+  for (let i = 0; i < n; i++) {
+    body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#fff" stroke="#334155" stroke-width="1.4"/>`;
+  }
+  const first = esc((stops[0].stopName ?? stops[0].stopId ?? "").slice(0, 28));
+  const last = esc((stops[n - 1].stopName ?? stops[n - 1].stopId ?? "").slice(0, 28));
+  body += `<text x="${x(0).toFixed(1)}" y="${y + 18}" text-anchor="start" font-size="9" fill="#475569">${first}</text>`;
+  body += `<text x="${x(n - 1).toFixed(1)}" y="${y + 18}" text-anchor="end" font-size="9" fill="#475569">${last}</text>`;
+  return `<svg viewBox="0 0 ${W} 52" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;margin:2px 0 6px">${body}</svg>`;
+}
+
 function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): string {
   const today = new Date().toLocaleString("it-IT", {
     day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
@@ -94,38 +131,40 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   const routeSections = data.routes.map((r) => {
     const color = r.routeColor ? `#${String(r.routeColor).replace(/^#/, "")}` : "#1f2937";
     const tripBlocks = r.trips.map((t) => {
-      const rows = t.stops.map((s, i) => `
+      // Orario corretto: STESSA partenza del programmato, poi si applicano i
+      // tempi reali di percorrenza tratta per tratta (fallback al programmato
+      // dove la tratta non è stata misurata).
+      const dep = t.startSchedSec;
+      let cum = 0;
+      const rows = t.stops.map((s, i) => {
+        const arcReal = i === 0 ? null : (s.arcObsSec ?? s.arcSchedSec ?? 0);
+        if (i > 0) cum += arcReal ?? 0;
+        const proposedSec = dep != null ? dep + cum : null;
+        const scarto = proposedSec != null && s.scheduledSec != null ? proposedSec - s.scheduledSec : null;
+        return `
         <tr>
           <td class="num">${s.seq}</td>
           <td>${esc(s.stopName ?? s.stopId)}</td>
           <td class="num">${clock(s.scheduledSec)}</td>
-          <td class="num">${dur(s.schedOffsetSec)}</td>
-          <td class="num strong">${dur(s.obsOffsetSec)}</td>
-          <td class="num ${deltaCls(s.obsOffsetSec != null && s.schedOffsetSec != null ? s.obsOffsetSec - s.schedOffsetSec : null)}">
-            ${signed(s.obsOffsetSec != null && s.schedOffsetSec != null ? s.obsOffsetSec - s.schedOffsetSec : null)}</td>
-          <td class="num">${i === 0 ? "—" : dur(s.arcSchedSec)}</td>
-          <td class="num">${i === 0 ? "—" : dur(s.arcObsSec)}</td>
-          <td class="num ${deltaCls(s.arcDeltaSec)}">${i === 0 ? "—" : signed(s.arcDeltaSec)}</td>
-          <td class="num ${deltaCls(s.medianDelaySec)}">${signed(s.medianDelaySec)}</td>
-          <td class="num proposed">${clock(s.proposedSec)}</td>
-          <td class="num muted">${s.samples || "—"}</td>
-        </tr>`).join("");
+          <td class="num proposed">${clock(proposedSec)}</td>
+          <td class="num ${deltaCls(scarto)}">${i === 0 ? "in partenza" : signed(scarto)}</td>
+          <td class="num">${i === 0 ? "—" : dur(arcReal)}</td>
+        </tr>`;
+      }).join("");
       return `
         <div class="trip">
           <div class="trip-head">
             <span class="trip-time">${clock(t.startSchedSec)}</span>
             <span class="trip-dir">${dirLabel(t.directionId)}${t.headsign ? ` → ${esc(t.headsign)}` : ""}</span>
-            <span class="trip-meta">${t.runs} giornate · copertura ${t.coveredStops}/${t.totalStops} ·
-              prog ${dur(t.totalSchedSec)} · reale ${dur(t.totalObsSec)}
-              <span class="${deltaCls(t.totalDeltaSec)}">(${signed(t.totalDeltaSec)})</span></span>
+            <span class="trip-meta">durata reale ${dur(t.totalObsSec)} (programmata ${dur(t.totalSchedSec)},
+              <span class="${deltaCls(t.totalDeltaSec)}">${signed(t.totalDeltaSec)}</span>) · ${t.runs} giorni rilevati</span>
           </div>
+          ${buildDiagramSVG(t.stops)}
           <table>
             <thead><tr>
               <th class="num">#</th><th>Fermata</th>
-              <th class="num">Orario prog</th><th class="num">Cum. prog</th>
-              <th class="num">Cum. reale</th><th class="num">Δ cum</th>
-              <th class="num">Arco prog</th><th class="num">Arco reale</th><th class="num">Δ arco</th>
-              <th class="num">Ritardo med</th><th class="num">Orario corretto</th><th class="num">Camp.</th>
+              <th class="num">Programmato</th><th class="num">Corretto</th>
+              <th class="num">Scarto</th><th class="num">Percorrenza tratta</th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -197,9 +236,10 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
     </div>
   </div>
   <p class="legend">
-    <b>Cum. prog/reale</b> = tempo dalla partenza (capolinea) · <b>Cum. reale</b> traslato sulla partenza effettiva ·
-    <b>Δ</b> scarto reale−programmato (<span class="neg">rosso</span> più lento, <span class="fast">azzurro</span> più veloce) ·
-    <b>Orario corretto</b> = partenza programmata + tempo reale traslato (proposta di ritaratura).
+    La <b>linea colorata</b> mostra il percorso: <span class="neg">rosso</span> = tratta in ritardo,
+    <span class="fast">azzurro</span> = in anticipo, <span class="ok">verde</span> = in orario.
+    L'<b>orario corretto</b> mantiene la <b>stessa partenza</b> del programmato e applica i tempi reali di percorrenza;
+    lo <b>scarto</b> indica quanto la fermata arriva prima/dopo rispetto all'orario attuale.
   </p>
   ${routeSections || '<p style="text-align:center;color:#94a3b8;padding:40px">Nessun dato nel periodo selezionato.</p>'}
   <div class="footer">
