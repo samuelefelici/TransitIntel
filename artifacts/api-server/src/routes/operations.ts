@@ -674,7 +674,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const tripId = String(req.params.tripId);
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 120);
     // GPS = telefono dell'autista: jitter ampio e campioni radi → soglie morbide
-    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 60, 10), 250); // metri
+    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 20, 8), 250); // metri
     const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
 
@@ -931,7 +931,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const routeId = String(req.query.routeId ?? "") || null;
     const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
     const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
-    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 60, 10), 250); // metri
+    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 20, 8), 250); // metri
     const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
 
