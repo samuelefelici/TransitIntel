@@ -285,10 +285,11 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
 <html lang="it"><head><meta charset="UTF-8" />
 <title>Cerbero Analytics — Tempi di Percorrenza</title>
 <style>
+  @page { size: A3 landscape; margin: 10mm; }
   * { box-sizing: border-box; }
   html, body { margin:0; padding:0; background:#fff; color:#111;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; font-size:11px; line-height:1.45; }
-  .page { max-width:1080px; margin:0 auto; padding:28px 36px; }
+  .page { max-width:1480px; margin:0 auto; padding:24px 32px; }
   .hero { background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%); color:#fff;
     padding:22px 28px; border-radius:14px; margin-bottom:24px; display:flex; align-items:center; gap:20px; }
   .hero img { height:52px; width:auto; filter:drop-shadow(0 0 8px rgba(56,189,248,.5)); }
@@ -328,7 +329,7 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   .acard .asub { font-size:8.5px; color:#94a3b8; margin-top:1px; }
   td.cstato, th.cstato { text-align:center; width:34px; }
   td.cstato span { font-size:11px; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-  @media print { .page { padding:14px 18px; } .hero,.proposed { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  @media print { .page { padding:0; max-width:none; } .hero,.proposed { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     section.route { page-break-inside:auto; } .trip { page-break-inside:avoid; } }
 </style></head>
 <body><div class="page">
