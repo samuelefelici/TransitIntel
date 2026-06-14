@@ -245,24 +245,61 @@ export default function FaresPolimetrichePage() {
   const deletePercorso = React.useCallback((routeId: string, variantId: string) =>
     deletePercorsi([{ routeId, variantId }]), [deletePercorsi]);
 
-  // export "a gradoni" (matrice triangolare) di tutte le polimetriche salvate
+  // Convalida generale: esporta TUTTI i percorsi in PDF (matrice a gradoni).
+  // Dove esiste una polimetrica salvata la uso (con nomi nodo), altrimenti
+  // genero le tratte in automatico (regola 6 km), anche senza salvataggio/nomi.
   const [exporting, setExporting] = React.useState(false);
   const exportGradoni = React.useCallback(async () => {
     if (!importId) return;
     setExporting(true);
     try {
-      const rows = await fetch(`${API()}/api/fares/polimetriche/saved?importId=${importId}`).then(r => r.ok ? r.json() : []);
-      if (!Array.isArray(rows) || rows.length === 0) {
-        toast({ title: "Nessuna polimetrica", description: "Salva almeno una polimetrica prima di esportare.", variant: "destructive" });
+      const [full, savedRows, logo] = await Promise.all([
+        fetch(`${API()}/api/fares/polimetriche/imports/${importId}/full`).then(r => r.ok ? r.json() : null),
+        fetch(`${API()}/api/fares/polimetriche/saved?importId=${importId}`).then(r => r.ok ? r.json() : []),
+        fetchLogoDataUrl(),
+      ]);
+      if (!full || !Array.isArray(full.lines) || full.lines.length === 0) {
+        toast({ title: "Nessun percorso", description: "Import vuoto.", variant: "destructive" });
         return;
       }
-      openGradoniExport(rows, tree?.agencyName ?? null, tree?.filename ?? "");
+      // mappa salvati per percorso (preferisci direzione AB)
+      const savedMap = new Map<string, SavedPolimetrica>();
+      for (const s of (Array.isArray(savedRows) ? savedRows : [])) {
+        const key = `${s.routeId}::${s.variantId}`;
+        if (!savedMap.has(key) || s.direction === "AB") savedMap.set(key, s);
+      }
+      const items: SavedPolimetrica[] = [];
+      for (const line of full.lines) {
+        for (const p of line.percorsi) {
+          const key = `${p.routeId}::${p.variantId}`;
+          const saved = savedMap.get(key);
+          if (saved) { items.push(saved); continue; }
+          // auto: tratte ogni 6 km, nessun nome nodo
+          const st = (p.stops || []) as PStop[];
+          if (st.length < 2) continue;
+          const b = autoBoundaries(st);
+          const tr = buildTratte(st, b);
+          const tof = stopTrattaMap(st, b);
+          items.push({
+            id: key, routeId: p.routeId, lineCode: line.lineCode, lineName: line.lineName,
+            variantId: p.variantId, direction: "AB", name: null,
+            totalKm: p.totalKm, stopCount: st.length, trattaCount: tr.length,
+            stops: st.map((s, i) => ({ stopName: s.stopName, km: s.km, tratta: tof[i] })),
+            tratte: tr.map(t => ({ index: t.index, number: t.number, nodeName: t.nodeName, label: t.label, km: t.km })),
+          });
+        }
+      }
+      if (items.length === 0) {
+        toast({ title: "Nessun percorso valido", description: "Niente da esportare.", variant: "destructive" });
+        return;
+      }
+      openGradoniExport(items, full.agencyName ?? null, full.filename ?? "", logo);
     } catch {
       toast({ title: "Errore", description: "Export non riuscito", variant: "destructive" });
     } finally {
       setExporting(false);
     }
-  }, [importId, tree, toast]);
+  }, [importId, toast]);
 
   /* ── Schermata import ──────────────────────────────────────── */
   if (!importId) {
@@ -298,11 +335,11 @@ export default function FaresPolimetrichePage() {
           </span>
           <button
             onClick={exportGradoni}
-            disabled={exporting || savedCount === 0}
-            title="Esporta tutte le polimetriche salvate come matrice triangolare a gradoni"
+            disabled={exporting || flatPercorsi.length === 0}
+            title="Convalida ed esporta TUTTI i percorsi in PDF (matrice a gradoni). Usa le polimetriche salvate dove presenti, altrimenti le genera in automatico."
             className="text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-40 transition-colors flex items-center gap-1.5"
           >
-            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Esporta a gradoni
+            {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Convalida & Esporta PDF
           </button>
           <button
             onClick={() => { setImportId(null); setSel(null); setDetail(null); }}
@@ -1083,13 +1120,13 @@ function renderGradoniTable(p: SavedPolimetrica): string {
     stopRows += `<div class="st"><span class="d" style="background:${col}"></span><span class="nm">${esc(s.stopName)}</span><span class="km">${fmtKm(s.km)}</span></div>`;
   }
 
-  const dirLbl = p.direction === "BA" ? "Ritorno (invertito)" : "Andata (diretto)";
   const first = stops[0]?.stopName ?? nodeLabel(0);
   const last = stops[stops.length - 1]?.stopName ?? nodeLabel(N - 1);
+  const codice = [p.routeId, p.variantId].filter(Boolean).join(" · ");
   return `
     <section class="poli">
       <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${first} → ${last}`)}</h2>
-      <p class="meta">${dirLbl} · ${fmtKm(p.totalKm ?? 0)} km · ${N} nodi tariffari${stops.length ? ` · ${stops.length} fermate` : ""}
+      <p class="meta"><b>Cod. percorso:</b> ${esc(codice)} · ${fmtKm(p.totalKm ?? 0)} km · ${N} nodi tariffari${stops.length ? ` · ${stops.length} fermate` : ""}
         <span class="hint">— valore cella = numero di tratte tra i due nodi (fascia).</span></p>
       <div class="cols">
         <table class="grad"><tbody>${rows}</tbody></table>
@@ -1098,23 +1135,45 @@ function renderGradoniTable(p: SavedPolimetrica): string {
     </section>`;
 }
 
-function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, filename: string) {
+/** Scarica il logo Fares Engine e lo converte in data URL (stampa affidabile). */
+async function fetchLogoDataUrl(): Promise<string | null> {
+  try {
+    const r = await fetch("/faresengine.png");
+    if (!r.ok) return null;
+    const blob = await r.blob();
+    return await new Promise<string | null>((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(typeof fr.result === "string" ? fr.result : null);
+      fr.onerror = () => resolve(null);
+      fr.readAsDataURL(blob);
+    });
+  } catch { return null; }
+}
+
+function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, filename: string, logoDataUrl: string | null) {
   // ordina per linea/codice
   const sorted = [...rows].sort((a, b) =>
     (a.lineCode || "").localeCompare(b.lineCode || "", "it", { numeric: true }) ||
-    (a.direction || "").localeCompare(b.direction || ""));
+    (a.routeId || "").localeCompare(b.routeId || "") ||
+    (a.variantId || "").localeCompare(b.variantId || ""));
   const body = sorted.map(renderGradoniTable).join("\n");
+  const logoImg = logoDataUrl ? `<img src="${logoDataUrl}" alt="Fares Engine" />` : "";
   const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
 <title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
 <style>
-  @page{size:A3 landscape;margin:10mm}
+  @page{size:A3 landscape;margin:10mm 10mm 16mm 10mm}
   /* forza la stampa degli sfondi colorati (gradoni, pallini, banda tratte) */
   *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  body{margin:0;padding:24px;color:#0f172a;background:#f8fafc}
+  body{margin:0;padding:24px 24px 56px;color:#0f172a;background:#f8fafc}
   header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;border-bottom:2px solid #10b981;padding-bottom:10px}
   header h1{font-size:16px;margin:0;color:#065f46}
   header .sub{font-size:11px;color:#475569;margin-top:2px}
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand img{height:36px;width:auto}
+  .brand .bt{line-height:1.15}
+  .brand .bt small{display:block;font-weight:600;color:#10b981;font-size:8px;letter-spacing:.1em;text-transform:uppercase}
+  .brand .bt b{font-size:13px;font-weight:800;color:#065f46}
   button.print{background:#10b981;color:#053b2c;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
   section.poli{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin-bottom:14px;break-inside:avoid;page-break-inside:avoid}
   section.poli h2{font-size:14px;margin:0 0 2px;color:#0f172a}
@@ -1134,17 +1193,24 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   .stoplist .st .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .stoplist .st .km{color:#94a3b8;font-variant-numeric:tabular-nums;flex:0 0 auto}
   .empty{color:#94a3b8;font-style:italic}
-  @media print{body{background:#fff;padding:0}button.print{display:none}header{position:static}}
+  /* footer di sponsorizzazione — ripetuto su ogni pagina in stampa */
+  .brand-footer{position:fixed;left:0;right:0;bottom:4mm;display:flex;align-items:center;justify-content:center;gap:7px;font-size:9px;color:#64748b}
+  .brand-footer img{height:14px;width:auto;opacity:.95}
+  @media print{body{background:#fff;padding:8px 0 56px}button.print{display:none}header{position:static}}
 </style></head>
 <body>
   <header>
     <div>
       <h1>Polimetriche a gradoni${agencyName ? " · " + esc(agencyName) : ""}</h1>
-      <div class="sub">${esc(filename || "")} · ${sorted.length} polimetriche · generato il ${new Date().toLocaleString("it-IT")}</div>
+      <div class="sub">${esc(filename || "")} · ${sorted.length} percorsi · generato il ${new Date().toLocaleString("it-IT")}</div>
     </div>
-    <button class="print" onclick="window.print()">Stampa / Salva PDF</button>
+    <div style="display:flex;align-items:center;gap:14px">
+      <div class="brand">${logoImg}<div class="bt"><small>Powered by</small><b>Cerbero Fares Engine</b></div></div>
+      <button class="print" onclick="window.print()">Stampa / Salva PDF</button>
+    </div>
   </header>
-  ${body || '<p class="empty">Nessuna polimetrica.</p>'}
+  ${body || '<p class="empty">Nessun percorso.</p>'}
+  <div class="brand-footer">${logoImg}<span>Powered by <b>Cerbero Fares Engine</b></span></div>
 </body></html>`;
   const w = window.open("", "_blank");
   if (!w) return;

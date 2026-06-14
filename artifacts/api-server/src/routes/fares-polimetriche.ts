@@ -530,6 +530,42 @@ router.get("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise
 });
 
 /* ─────────────────────────────────────────────────────────────
+ *  GET /api/fares/polimetriche/imports/:id/full
+ *      → tutti i percorsi con fermate (stopName + km) per l'export massivo.
+ *        Niente shape/lat/lon per tenere il payload leggero.
+ * ───────────────────────────────────────────────────────────── */
+router.get("/fares/polimetriche/imports/:id/full", async (req, res): Promise<void> => {
+  try {
+    await ensureTables();
+    const r = await db.execute<any>(sql`
+      SELECT agency_name, filename, payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
+    const row = r.rows?.[0];
+    if (!row) { res.status(404).json({ error: "Import non trovato" }); return; }
+    const payload = row.payload as { lines: Linea[] };
+    res.json({
+      agencyName: row.agency_name,
+      filename: row.filename,
+      lines: (payload.lines || []).map(l => ({
+        lineCode: l.lineCode,
+        lineName: l.lineName,
+        percorsi: l.percorsi.map(p => ({
+          variantId: p.variantId,
+          routeId: p.routeId,
+          directionId: p.directionId,
+          firstStopName: p.firstStopName,
+          lastStopName: p.lastStopName,
+          totalKm: p.totalKm,
+          stops: p.stops.map(s => ({ stopName: s.stopName, km: s.km })),
+        })),
+      })),
+    });
+  } catch (e: any) {
+    console.error("[polimetriche] get full", e);
+    res.status(500).json({ error: e?.message || "Errore" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
  *  DELETE /api/fares/polimetriche/imports/:id
  * ───────────────────────────────────────────────────────────── */
 router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void> => {
