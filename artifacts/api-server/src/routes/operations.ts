@@ -931,6 +931,8 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const routeId = String(req.query.routeId ?? "") || null;
     const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
     const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
+    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 60, 10), 250); // metri
+    const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
 
     // Aggregati osservati per (corsa, fermata): offset traslato dalla partenza
@@ -989,6 +991,57 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       ORDER BY stt.trip_id, stt.stop_sequence
     `);
 
+    // Fermate effettivamente FATTE = il mezzo si è fermato vicino alla fermata.
+    // Dalla posizione GPS: per ogni (corsa, fermata, giorno) il mezzo è "fermo"
+    // se è rimasto entro dwellRadius per ≥ dwellSeconds, oppure con velocità ~0.
+    const dwellQ = await db.execute<any>(sql`
+      WITH stops AS (
+        SELECT st.trip_id, st.stop_sequence AS seq,
+               s.stop_lat::float AS lat, s.stop_lon::float AS lon
+        FROM gtfs_stop_times st
+        JOIN gtfs_stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+        WHERE st.feed_id = ${feedId}::uuid
+          AND st.trip_id = ANY(string_to_array(${idsCsv}, chr(31)))
+          AND s.stop_lat IS NOT NULL AND s.stop_lon IS NOT NULL
+      ),
+      hits AS (
+        SELECT st.trip_id, st.seq, vp.ts::date AS day, vp.ts, vp.speed
+        FROM stops st
+        JOIN caronte.vehicle_positions vp
+          ON vp.trip_id = st.trip_id
+         AND vp.ts > now() - (${days} * interval '1 day')
+         AND vp.lat IS NOT NULL AND vp.lon IS NOT NULL
+         AND vp.lat BETWEEN st.lat - (${dwellRadius}::float / 111320.0)
+                        AND st.lat + (${dwellRadius}::float / 111320.0)
+         AND vp.lon BETWEEN st.lon - (${dwellRadius}::float / (111320.0 * cos(radians(st.lat))))
+                        AND st.lon + (${dwellRadius}::float / (111320.0 * cos(radians(st.lat))))
+         AND 6371000.0 * sqrt(
+               power(radians(vp.lat - st.lat), 2) +
+               power(radians(vp.lon - st.lon) * cos(radians((vp.lat + st.lat) / 2.0)), 2)
+             ) <= ${dwellRadius}::float
+      ),
+      per_day AS (
+        SELECT trip_id, seq, day,
+               EXTRACT(EPOCH FROM (MAX(ts) - MIN(ts))) AS span_s,
+               MIN(speed) AS min_speed
+        FROM hits
+        GROUP BY trip_id, seq, day
+      )
+      SELECT trip_id, seq,
+             COUNT(*) FILTER (WHERE span_s >= ${dwellSeconds} OR min_speed <= 3)::int AS stopped_runs,
+             COUNT(*)::int AS seen_runs
+      FROM per_day
+      GROUP BY trip_id, seq
+    `);
+    const stoppedMap = new Map<string, Map<number, { stoppedRuns: number; seenRuns: number }>>();
+    for (const r of dwellQ.rows) {
+      if (!stoppedMap.has(r.trip_id)) stoppedMap.set(r.trip_id, new Map());
+      stoppedMap.get(r.trip_id)!.set(Number(r.seq), {
+        stoppedRuns: Number(r.stopped_runs ?? 0),
+        seenRuns: Number(r.seen_runs ?? 0),
+      });
+    }
+
     // Raggruppa per corsa
     interface TripAgg {
       tripId: string; routeId: string | null; headsign: string | null;
@@ -1015,10 +1068,12 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     type TripOut = ReturnType<typeof buildTrip>;
     function buildTrip(t: TripAgg) {
       const obs = obsByTrip.get(t.tripId) ?? new Map();
+      const stopped = stoppedMap.get(t.tripId) ?? new Map();
       const seqs = t.rows.map((r) => ({ ...r, schedSec: hmsToSec(r.scheduled) }));
       const firstSchedSec = seqs.find((r) => r.schedSec != null)?.schedSec ?? null;
       const stops = seqs.map((r) => {
         const o = obs.get(Number(r.seq));
+        const dw = stopped.get(Number(r.seq));
         const obsOffset = o?.obs_offset_s != null ? Math.round(Number(o.obs_offset_s)) : null; // traslato dalla partenza
         const schedOffset = r.schedSec != null && firstSchedSec != null ? r.schedSec - firstSchedSec : null;
         return {
@@ -1030,6 +1085,9 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
           obsOffsetSec: obsOffset,               // cumulato reale traslato dalla partenza
           medianDelaySec: o?.median_delay != null ? Math.round(Number(o.median_delay)) : null,
           samples: o?.samples ?? 0,
+          // fermata FATTA = il mezzo si è fermato (sosta GPS) in almeno una corsa
+          stopped: (dw?.stoppedRuns ?? 0) > 0,
+          stoppedRuns: dw?.stoppedRuns ?? 0,
           // orario corretto proposto = partenza programmata + tempo reale traslato
           proposedSec: obsOffset != null && firstSchedSec != null ? firstSchedSec + obsOffset : null,
         };

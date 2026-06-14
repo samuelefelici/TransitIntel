@@ -19,6 +19,8 @@ interface ExportStop {
   obsOffsetSec: number | null;
   medianDelaySec: number | null;
   samples: number;
+  stopped: boolean;       // il mezzo si è fermato (sosta rilevata dal GPS)
+  stoppedRuns: number;
   proposedSec: number | null;
   arcSchedSec: number | null;
   arcObsSec: number | null;
@@ -115,13 +117,16 @@ function buildProfile(t: ExportTrip): ProfStop[] {
   const depDelay = firstObs?.medianDelaySec ?? 0;
 
   const prof: ProfStop[] = ss.map((s) => {
-    const fatta = s.samples > 0 && s.medianDelaySec != null;
-    const effettivoSec = fatta && s.scheduledSec != null ? s.scheduledSec + (s.medianDelaySec as number) : null;
+    // FATTA = il mezzo si è fermato (sosta GPS). I tempi (effettivo/scarto)
+    // restano basati sui transiti, segnali distinti.
+    const fatta = s.stopped === true;
+    const hasTransit = s.samples > 0 && s.medianDelaySec != null;
+    const effettivoSec = hasTransit && s.scheduledSec != null ? s.scheduledSec + (s.medianDelaySec as number) : null;
     return {
       seq: s.seq, stopName: s.stopName, stopId: s.stopId,
       scheduledSec: s.scheduledSec,
       effettivoSec,
-      scartoSec: fatta ? s.medianDelaySec : null,
+      scartoSec: hasTransit ? s.medianDelaySec : null,
       comeDovrebbeSec: effettivoSec != null ? effettivoSec - depDelay : null,
       arcDeltaSec: null,
       fatta, imputed: false,
@@ -131,7 +136,7 @@ function buildProfile(t: ExportTrip): ProfStop[] {
   // capolinea d'arrivo: se il GPS non lo registra, stima = penultima + percorrenza programmata
   if (prof.length >= 2) {
     const last = prof[prof.length - 1], pen = prof[prof.length - 2];
-    if (!last.fatta && pen.effettivoSec != null && last.scheduledSec != null && pen.scheduledSec != null && last.scheduledSec >= pen.scheduledSec) {
+    if (last.effettivoSec == null && pen.effettivoSec != null && last.scheduledSec != null && pen.scheduledSec != null && last.scheduledSec >= pen.scheduledSec) {
       last.effettivoSec = pen.effettivoSec + (last.scheduledSec - pen.scheduledSec);
       last.scartoSec = last.effettivoSec - last.scheduledSec;
       last.comeDovrebbeSec = last.effettivoSec - depDelay;
@@ -168,10 +173,10 @@ function buildDiagramSVG(prof: ProfStop[]): string {
   }
   for (let i = 0; i < n; i++) {
     const s = prof[i];
-    if (s.imputed) {
-      body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#f59e0b" stroke="#fff" stroke-width="1.6" stroke-dasharray="2 1.5" style="${pc}"/>`;
-    } else if (s.fatta) {
+    if (s.fatta) {
       body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#059669" stroke="#fff" stroke-width="1.6" style="${pc}"/>`;
+    } else if (s.imputed) {
+      body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#f59e0b" stroke="#fff" stroke-width="1.6" stroke-dasharray="2 1.5" style="${pc}"/>`;
     } else {
       body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r - 0.5}" fill="#fff" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="2 1.5" style="${pc}"/>`;
     }
@@ -196,11 +201,11 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
       const prof = buildProfile(t);
       const fatte = prof.filter((s) => s.fatta || s.imputed).length;
       const rows = prof.map((s) => {
-        const stato = s.imputed
-          ? `<span class="warn" title="capolinea stimato">◐</span>`
-          : s.fatta
-            ? `<span class="ok" title="fermata fatta">●</span>`
-            : `<span class="neg" title="non rilevata">○</span>`;
+        const stato = s.fatta
+          ? `<span class="ok" title="il mezzo si è fermato">●</span>`
+          : s.imputed
+            ? `<span class="warn" title="capolinea stimato">◐</span>`
+            : `<span class="neg" title="non si è fermato">○</span>`;
         return `
         <tr>
           <td class="num">${s.seq}</td>
@@ -299,7 +304,7 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
     </div>
   </div>
   <p class="legend">
-    <b>Fatta</b>: <span class="ok">●</span> rilevata · <span class="warn">◐</span> capolinea stimato · <span class="neg">○</span> non rilevata.
+    <b>Fatta</b> = il mezzo si è fermato (sosta rilevata dal GPS): <span class="ok">●</span> fermato · <span class="warn">◐</span> capolinea stimato · <span class="neg">○</span> non fermato.
     <b>Effettivo</b> = orario tipico reale (programmato + ritardo mediano). <b>Scarto</b> = effettivo − programmato.
     <b>Come dovrebbe essere</b> = effettivo riportato alla partenza programmata (si anticipano tutti i transiti del ritardo di partenza),
     cioè i tempi reali di percorrenza con la stessa ora di partenza.
