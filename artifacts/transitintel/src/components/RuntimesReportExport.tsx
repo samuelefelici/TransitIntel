@@ -94,47 +94,93 @@ function arcColor(sec: number | null): string {
   return "#059669";                 // in orario
 }
 
-// Diagramma a linea colorata della corsa (SVG, scala con la pagina/stampa)
-function buildDiagramSVG(stops: ExportStop[]): string {
-  const n = stops.length;
+// Profilo della corsa: per ogni fermata calcola effettivo (tipico = programmato
+// + ritardo mediano), scarto e "come dovrebbe essere" (effettivo riportato alla
+// partenza programmata: si anticipano tutti i transiti del ritardo di partenza).
+interface ProfStop {
+  seq: number; stopName: string | null; stopId: string;
+  scheduledSec: number | null;
+  effettivoSec: number | null;
+  scartoSec: number | null;
+  comeDovrebbeSec: number | null;
+  arcDeltaSec: number | null;
+  fatta: boolean;
+  imputed: boolean;
+}
+
+function buildProfile(t: ExportTrip): ProfStop[] {
+  const ss = t.stops;
+  // ritardo di partenza = scarto della prima fermata rilevata (capolinea)
+  const firstObs = ss.find((s) => s.samples > 0 && s.medianDelaySec != null);
+  const depDelay = firstObs?.medianDelaySec ?? 0;
+
+  const prof: ProfStop[] = ss.map((s) => {
+    const fatta = s.samples > 0 && s.medianDelaySec != null;
+    const effettivoSec = fatta && s.scheduledSec != null ? s.scheduledSec + (s.medianDelaySec as number) : null;
+    return {
+      seq: s.seq, stopName: s.stopName, stopId: s.stopId,
+      scheduledSec: s.scheduledSec,
+      effettivoSec,
+      scartoSec: fatta ? s.medianDelaySec : null,
+      comeDovrebbeSec: effettivoSec != null ? effettivoSec - depDelay : null,
+      arcDeltaSec: null,
+      fatta, imputed: false,
+    };
+  });
+
+  // capolinea d'arrivo: se il GPS non lo registra, stima = penultima + percorrenza programmata
+  if (prof.length >= 2) {
+    const last = prof[prof.length - 1], pen = prof[prof.length - 2];
+    if (!last.fatta && pen.effettivoSec != null && last.scheduledSec != null && pen.scheduledSec != null && last.scheduledSec >= pen.scheduledSec) {
+      last.effettivoSec = pen.effettivoSec + (last.scheduledSec - pen.scheduledSec);
+      last.scartoSec = last.effettivoSec - last.scheduledSec;
+      last.comeDovrebbeSec = last.effettivoSec - depDelay;
+      last.imputed = true;
+    }
+  }
+
+  // scarto sull'arco (percorrenza reale − programmata) per colorare il disegno
+  for (let i = 1; i < prof.length; i++) {
+    const cur = prof[i], prev = prof[i - 1];
+    if (cur.comeDovrebbeSec != null && prev.comeDovrebbeSec != null && cur.scheduledSec != null && prev.scheduledSec != null) {
+      cur.arcDeltaSec = (cur.comeDovrebbeSec - prev.comeDovrebbeSec) - (cur.scheduledSec - prev.scheduledSec);
+    }
+  }
+  return prof;
+}
+
+// Diagramma a linea colorata: tratte colorate per scarto, pallini = fermate fatte
+function buildDiagramSVG(prof: ProfStop[]): string {
+  const n = prof.length;
   if (n < 2) return "";
   const W = 1000, mX = 40, y = 34, r = 5;
   const usable = W - 2 * mX;
   const x = (i: number) => mX + (usable * i) / (n - 1);
-
-  // scarto cumulato (quanto la corsa è dietro/avanti sull'orario) per i pallini
-  let cum = 0;
-  const cumDelta: number[] = [];
-  for (let i = 0; i < n; i++) {
-    if (i > 0) {
-      const d = stops[i].arcObsSec != null && stops[i].arcSchedSec != null
-        ? stops[i].arcObsSec! - stops[i].arcSchedSec! : 0;
-      cum += d;
-    }
-    cumDelta.push(cum);
-  }
+  const pc = "-webkit-print-color-adjust:exact;print-color-adjust:exact";
 
   let body = `<rect x="0" y="0" width="${W}" height="58" fill="#fff"/>`;
-  // tratte (archi) colorate per scarto di percorrenza
   for (let i = 1; i < n; i++) {
-    const delta = stops[i].arcObsSec != null && stops[i].arcSchedSec != null
-      ? stops[i].arcObsSec! - stops[i].arcSchedSec! : null;
-    const c = arcColor(delta);
-    body += `<line x1="${x(i - 1).toFixed(1)}" y1="${y}" x2="${x(i).toFixed(1)}" y2="${y}" stroke="${c}" stroke-width="8" stroke-linecap="round" style="-webkit-print-color-adjust:exact;print-color-adjust:exact"/>`;
-    if (delta != null && Math.abs(delta) >= 30) {
-      body += `<text x="${((x(i - 1) + x(i)) / 2).toFixed(1)}" y="${y - 11}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">${signed(delta)}</text>`;
+    const c = arcColor(prof[i].arcDeltaSec);
+    body += `<line x1="${x(i - 1).toFixed(1)}" y1="${y}" x2="${x(i).toFixed(1)}" y2="${y}" stroke="${c}" stroke-width="8" stroke-linecap="round" style="${pc}"/>`;
+    if (prof[i].arcDeltaSec != null && Math.abs(prof[i].arcDeltaSec!) >= 30) {
+      body += `<text x="${((x(i - 1) + x(i)) / 2).toFixed(1)}" y="${y - 11}" text-anchor="middle" font-size="9" font-weight="700" fill="${c}">${signed(prof[i].arcDeltaSec)}</text>`;
     }
   }
-  // fermate: pallino colorato per scarto cumulato (verde in orario → rosso in ritardo)
   for (let i = 0; i < n; i++) {
-    const c = arcColor(cumDelta[i]);
-    body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="${c}" stroke="#fff" stroke-width="1.6" style="-webkit-print-color-adjust:exact;print-color-adjust:exact"/>`;
+    const s = prof[i];
+    if (s.imputed) {
+      body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#f59e0b" stroke="#fff" stroke-width="1.6" stroke-dasharray="2 1.5" style="${pc}"/>`;
+    } else if (s.fatta) {
+      body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r}" fill="#059669" stroke="#fff" stroke-width="1.6" style="${pc}"/>`;
+    } else {
+      body += `<circle cx="${x(i).toFixed(1)}" cy="${y}" r="${r - 0.5}" fill="#fff" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="2 1.5" style="${pc}"/>`;
+    }
   }
-  const first = esc((stops[0].stopName ?? stops[0].stopId ?? "").slice(0, 28));
-  const last = esc((stops[n - 1].stopName ?? stops[n - 1].stopId ?? "").slice(0, 28));
+  const first = esc((prof[0].stopName ?? prof[0].stopId ?? "").slice(0, 28));
+  const last = esc((prof[n - 1].stopName ?? prof[n - 1].stopId ?? "").slice(0, 28));
   body += `<text x="${x(0).toFixed(1)}" y="${y + 18}" text-anchor="start" font-size="9" fill="#475569">${first}</text>`;
   body += `<text x="${x(n - 1).toFixed(1)}" y="${y + 18}" text-anchor="end" font-size="9" fill="#475569">${last}</text>`;
-  return `<svg viewBox="0 0 ${W} 58" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;margin:2px 0 8px;-webkit-print-color-adjust:exact;print-color-adjust:exact">${body}</svg>`;
+  return `<svg viewBox="0 0 ${W} 58" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;margin:2px 0 8px;${pc}">${body}</svg>`;
 }
 
 function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): string {
@@ -147,24 +193,23 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   const routeSections = data.routes.map((r) => {
     const color = r.routeColor ? `#${String(r.routeColor).replace(/^#/, "")}` : "#1f2937";
     const tripBlocks = r.trips.map((t) => {
-      // Orario corretto: STESSA partenza del programmato, poi si applicano i
-      // tempi reali di percorrenza tratta per tratta (fallback al programmato
-      // dove la tratta non è stata misurata).
-      const dep = t.startSchedSec;
-      let cum = 0;
-      const rows = t.stops.map((s, i) => {
-        const arcReal = i === 0 ? null : (s.arcObsSec ?? s.arcSchedSec ?? 0);
-        if (i > 0) cum += arcReal ?? 0;
-        const proposedSec = dep != null ? dep + cum : null;
-        const scarto = proposedSec != null && s.scheduledSec != null ? proposedSec - s.scheduledSec : null;
+      const prof = buildProfile(t);
+      const fatte = prof.filter((s) => s.fatta || s.imputed).length;
+      const rows = prof.map((s) => {
+        const stato = s.imputed
+          ? `<span class="warn" title="capolinea stimato">◐</span>`
+          : s.fatta
+            ? `<span class="ok" title="fermata fatta">●</span>`
+            : `<span class="neg" title="non rilevata">○</span>`;
         return `
         <tr>
           <td class="num">${s.seq}</td>
+          <td class="cstato">${stato}</td>
           <td>${esc(s.stopName ?? s.stopId)}</td>
           <td class="num">${clock(s.scheduledSec)}</td>
-          <td class="num proposed">${clock(proposedSec)}</td>
-          <td class="num ${deltaCls(scarto)}">${i === 0 ? "in partenza" : signed(scarto)}</td>
-          <td class="num">${i === 0 ? "—" : dur(arcReal)}</td>
+          <td class="num">${clock(s.effettivoSec)}</td>
+          <td class="num ${deltaCls(s.scartoSec)}">${signed(s.scartoSec)}</td>
+          <td class="num proposed">${clock(s.comeDovrebbeSec)}</td>
         </tr>`;
       }).join("");
       return `
@@ -172,15 +217,15 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
           <div class="trip-head">
             <span class="trip-time">${clock(t.startSchedSec)}</span>
             <span class="trip-dir">${dirLabel(t.directionId)}${t.headsign ? ` → ${esc(t.headsign)}` : ""}</span>
-            <span class="trip-meta">durata reale ${dur(t.totalObsSec)} (programmata ${dur(t.totalSchedSec)},
-              <span class="${deltaCls(t.totalDeltaSec)}">${signed(t.totalDeltaSec)}</span>) · ${t.runs} giorni rilevati</span>
+            <span class="trip-meta">${fatte}/${prof.length} fermate fatte · durata reale ${dur(t.totalObsSec)}
+              (programmata ${dur(t.totalSchedSec)}, <span class="${deltaCls(t.totalDeltaSec)}">${signed(t.totalDeltaSec)}</span>) · ${t.runs} giorni</span>
           </div>
-          ${buildDiagramSVG(t.stops)}
+          ${buildDiagramSVG(prof)}
           <table>
             <thead><tr>
-              <th class="num">#</th><th>Fermata</th>
-              <th class="num">Programmato</th><th class="num">Corretto</th>
-              <th class="num">Scarto</th><th class="num">Percorrenza tratta</th>
+              <th class="num">#</th><th class="cstato">Fatta</th><th>Fermata</th>
+              <th class="num">Programmato</th><th class="num">Effettivo</th>
+              <th class="num">Scarto</th><th class="num">Come dovrebbe essere</th>
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>
@@ -235,6 +280,8 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
   .footer img { height:20px; opacity:.8; }
   .footer .powered { font-weight:700; color:#475569; letter-spacing:.3px; }
   .legend { font-size:9px; color:#64748b; margin:0 0 16px; }
+  td.cstato, th.cstato { text-align:center; width:34px; }
+  td.cstato span { font-size:11px; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   @media print { .page { padding:14px 18px; } .hero,.proposed { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
     section.route { page-break-inside:auto; } .trip { page-break-inside:avoid; } }
 </style></head>
@@ -252,10 +299,12 @@ function buildHTML(data: ExportResp, logoUrl: string, periodLabel: string): stri
     </div>
   </div>
   <p class="legend">
-    La <b>linea colorata</b> mostra il percorso: <span class="neg">rosso</span> = tratta in ritardo,
-    <span class="fast">azzurro</span> = in anticipo, <span class="ok">verde</span> = in orario.
-    L'<b>orario corretto</b> mantiene la <b>stessa partenza</b> del programmato e applica i tempi reali di percorrenza;
-    lo <b>scarto</b> indica quanto la fermata arriva prima/dopo rispetto all'orario attuale.
+    <b>Fatta</b>: <span class="ok">●</span> rilevata · <span class="warn">◐</span> capolinea stimato · <span class="neg">○</span> non rilevata.
+    <b>Effettivo</b> = orario tipico reale (programmato + ritardo mediano). <b>Scarto</b> = effettivo − programmato.
+    <b>Come dovrebbe essere</b> = effettivo riportato alla partenza programmata (si anticipano tutti i transiti del ritardo di partenza),
+    cioè i tempi reali di percorrenza con la stessa ora di partenza.
+    Nel disegno la <b>linea</b> è colorata per scarto di percorrenza (<span class="neg">rosso</span> più lento,
+    <span class="fast">azzurro</span> più veloce, <span class="ok">verde</span> in orario) e i <b>pallini</b> indicano le fermate fatte.
   </p>
   ${routeSections || '<p style="text-align:center;color:#94a3b8;padding:40px">Nessun dato nel periodo selezionato.</p>'}
   <div class="footer">
