@@ -673,8 +673,9 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     }
     const tripId = String(req.params.tripId);
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 120);
-    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 45, 10), 200); // metri
-    const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 20, 5), 600); // secondi
+    // GPS = telefono dell'autista: jitter ampio e campioni radi → soglie morbide
+    const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 60, 10), 250); // metri
+    const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
 
     // Giornate con transiti registrati per la corsa (per lo switch nella UI)
@@ -773,26 +774,57 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       }));
     }
 
-    // Sosta per fermata: tempo massimo in cui il mezzo è rimasto entro dwellRadius
+    // Sosta per fermata: tempo massimo in cui il mezzo è rimasto entro dwellRadius.
+    // Tolleriamo brevi uscite dal raggio (gapTol) dovute al jitter del GPS del
+    // telefono, così una singola lettura sballata non spezza la sosta.
+    const gapTol = 20; // secondi di uscita tollerati senza chiudere la sosta
     function dwellAt(lat: number | null, lon: number | null): number | null {
       if (lat == null || lon == null || posRows.length === 0) return null;
       let best = 0;
       let runStart: number | null = null;
       let runEnd: number | null = null;
+      let gapStart: number | null = null;
       for (const p of posRows) {
         const pl = p.lat != null ? Number(p.lat) : null;
         const pn = p.lon != null ? Number(p.lon) : null;
         const t = new Date(p.ts).getTime();
-        if (pl != null && pn != null && distM(lat, lon, pl, pn) <= dwellRadius) {
+        const inside = pl != null && pn != null && distM(lat, lon, pl, pn) <= dwellRadius;
+        if (inside) {
           if (runStart == null) runStart = t;
           runEnd = t;
+          gapStart = null;
         } else if (runStart != null) {
-          best = Math.max(best, (runEnd! - runStart) / 1000);
-          runStart = null; runEnd = null;
+          if (gapStart == null) gapStart = t;
+          if ((t - gapStart) / 1000 > gapTol) {
+            best = Math.max(best, (runEnd! - runStart) / 1000);
+            runStart = null; runEnd = null; gapStart = null;
+          }
         }
       }
       if (runStart != null) best = Math.max(best, (runEnd! - runStart) / 1000);
       return Math.round(best);
+    }
+
+    // Errore GPS sistematico: il transito all'ultima fermata (capolinea d'arrivo)
+    // non viene quasi mai registrato. Lo stimiamo automaticamente come
+    // transito reale alla penultima + minuti programmati penultima→ultima.
+    if (base.length >= 2) {
+      const lastB = base[base.length - 1];
+      const penB = base[base.length - 2];
+      const lastObs = (lastB.seq != null && obsBySeq.get(lastB.seq)) || obsById.get(lastB.stopId) || null;
+      const penObs = (penB.seq != null && obsBySeq.get(penB.seq)) || obsById.get(penB.stopId) || null;
+      if (!lastObs && penObs?.actual_ts && lastB.schedSec != null && penB.schedSec != null && lastB.schedSec >= penB.schedSec) {
+        const impMs = new Date(penObs.actual_ts).getTime() + (lastB.schedSec - penB.schedSec) * 1000;
+        const synthetic = {
+          stop_id: lastB.stopId,
+          stop_seq: lastB.seq,
+          actual_ts: new Date(impMs).toISOString(),
+          delay_seconds: penObs.delay_seconds != null ? Number(penObs.delay_seconds) : null,
+          imputed: true,
+        };
+        if (lastB.seq != null) obsBySeq.set(lastB.seq, synthetic);
+        obsById.set(lastB.stopId, synthetic);
+      }
     }
 
     // Costruisci righe per fermata con delta, arco e sosta
@@ -803,7 +835,8 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       const actualTs = o?.actual_ts ?? null;
       const actualMs = actualTs ? new Date(actualTs).getTime() : null;
       const delaySeconds = o?.delay_seconds != null ? Number(o.delay_seconds) : null;
-      const recorded = !!o;
+      const imputed = !!o?.imputed;
+      const recorded = !!o && !imputed;
 
       // arco osservato (dal transito precedente) e programmato
       const arcObs = actualMs != null && prevActualMs != null ? Math.round((actualMs - prevActualMs) / 1000) : null;
@@ -811,7 +844,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       const arcDelta = arcObs != null && arcSched != null ? arcObs - arcSched : null;
 
       const dwell = dwellAt(b.lat, b.lon);
-      const served = recorded || (dwell != null && dwell >= dwellSeconds);
+      const served = recorded || imputed || (dwell != null && dwell >= dwellSeconds);
 
       if (actualMs != null) prevActualMs = actualMs;
       if (b.schedSec != null) prevSchedSec = b.schedSec;
@@ -826,6 +859,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
         actualTs,
         delaySeconds,
         recorded,
+        imputed,
         arcSchedSeconds: arcSched,
         arcObsSeconds: arcObs,
         arcDeltaSeconds: arcDelta,
@@ -876,6 +910,184 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       },
       stops,
       missing,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /operations/runtimes/export — dataset completo per report ────────────
+// Per ogni linea e ogni corsa: profilo dei tempi di percorrenza fermata×fermata.
+// Oltre ai tempi effettivi (mediana sui giorni) calcola i tempi "traslati"
+// rispetto alla partenza effettiva dal capolinea (offset dalla prima fermata),
+// che rappresentano l'orario corretto da riportare nel programma di esercizio.
+router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, routes: [] });
+      return;
+    }
+    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 120);
+    const routeId = String(req.query.routeId ?? "") || null;
+    const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
+    const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
+    const feedId = await resolveFeedId(req);
+
+    // Aggregati osservati per (corsa, fermata): offset traslato dalla partenza
+    // effettiva (actual_ts − primo transito del giorno) e ritardo, mediani.
+    const obsQ = await db.execute<any>(sql`
+      WITH tr AS (
+        SELECT trip_id, route_id, stop_id, stop_seq, delay_seconds, actual_ts,
+               actual_ts::date AS day,
+               MIN(actual_ts) OVER (PARTITION BY trip_id, actual_ts::date) AS run_start
+        FROM caronte.stop_transits
+        WHERE actual_ts > now() - (${days} * interval '1 day')
+          AND stop_seq IS NOT NULL
+          AND (${routeId}::text IS NULL OR route_id = ${routeId})
+          AND (${hourFrom}::int IS NULL OR EXTRACT(HOUR FROM actual_ts) >= ${hourFrom})
+          AND (${hourTo}::int IS NULL OR EXTRACT(HOUR FROM actual_ts) < ${hourTo})
+      )
+      SELECT trip_id, route_id, stop_seq,
+             MAX(stop_id) AS stop_id,
+             COUNT(*)::int AS samples,
+             COUNT(DISTINCT day)::int AS runs,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM actual_ts - run_start)) AS obs_offset_s,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds) AS median_delay
+      FROM tr
+      GROUP BY trip_id, route_id, stop_seq
+    `);
+
+    // Mappa osservati per corsa → seq
+    const obsByTrip = new Map<string, Map<number, any>>();
+    const tripRuns = new Map<string, number>();
+    for (const r of obsQ.rows) {
+      const tid = r.trip_id;
+      if (!obsByTrip.has(tid)) obsByTrip.set(tid, new Map());
+      obsByTrip.get(tid)!.set(Number(r.stop_seq), r);
+      tripRuns.set(tid, Math.max(tripRuns.get(tid) ?? 0, Number(r.runs ?? 0)));
+    }
+    const tripIds = [...obsByTrip.keys()].slice(0, 2000);
+    if (tripIds.length === 0 || !feedId) {
+      res.json({ caronteAvailable: true, days, routeId, generatedAt: new Date().toISOString(), routes: [] });
+      return;
+    }
+
+    // Sequenza programmata + metadati dal feed attivo per le corse osservate
+    const idsCsv = tripIds.join("");
+    const schedQ = await db.execute<any>(sql`
+      SELECT stt.trip_id, stt.stop_sequence AS seq, stt.stop_id,
+             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             s.stop_name,
+             t.trip_headsign, t.direction_id, t.shape_id, t.route_id,
+             r.route_short_name, r.route_long_name, r.route_color
+      FROM gtfs_stop_times stt
+      JOIN gtfs_trips t  ON t.feed_id = stt.feed_id AND t.trip_id = stt.trip_id
+      LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
+      LEFT JOIN gtfs_stops s  ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+      WHERE stt.feed_id = ${feedId}::uuid
+        AND stt.trip_id = ANY(string_to_array(${idsCsv}, chr(31)))
+      ORDER BY stt.trip_id, stt.stop_sequence
+    `);
+
+    // Raggruppa per corsa
+    interface TripAgg {
+      tripId: string; routeId: string | null; headsign: string | null;
+      directionId: number | null; shapeId: string | null;
+      routeShortName: string | null; routeLongName: string | null; routeColor: string | null;
+      rows: any[];
+    }
+    const tripsMap = new Map<string, TripAgg>();
+    for (const row of schedQ.rows) {
+      let t = tripsMap.get(row.trip_id);
+      if (!t) {
+        t = {
+          tripId: row.trip_id, routeId: row.route_id, headsign: row.trip_headsign,
+          directionId: row.direction_id, shapeId: row.shape_id,
+          routeShortName: row.route_short_name, routeLongName: row.route_long_name, routeColor: row.route_color,
+          rows: [],
+        };
+        tripsMap.set(row.trip_id, t);
+      }
+      t.rows.push(row);
+    }
+
+    // Costruisci profilo per corsa con tempi effettivi e traslati
+    type TripOut = ReturnType<typeof buildTrip>;
+    function buildTrip(t: TripAgg) {
+      const obs = obsByTrip.get(t.tripId) ?? new Map();
+      const seqs = t.rows.map((r) => ({ ...r, schedSec: hmsToSec(r.scheduled) }));
+      const firstSchedSec = seqs.find((r) => r.schedSec != null)?.schedSec ?? null;
+      const stops = seqs.map((r) => {
+        const o = obs.get(Number(r.seq));
+        const obsOffset = o?.obs_offset_s != null ? Math.round(Number(o.obs_offset_s)) : null; // traslato dalla partenza
+        const schedOffset = r.schedSec != null && firstSchedSec != null ? r.schedSec - firstSchedSec : null;
+        return {
+          seq: Number(r.seq),
+          stopId: r.stop_id,
+          stopName: r.stop_name,
+          scheduledSec: r.schedSec,
+          schedOffsetSec: schedOffset,           // cumulato programmato dalla partenza
+          obsOffsetSec: obsOffset,               // cumulato reale traslato dalla partenza
+          medianDelaySec: o?.median_delay != null ? Math.round(Number(o.median_delay)) : null,
+          samples: o?.samples ?? 0,
+          // orario corretto proposto = partenza programmata + tempo reale traslato
+          proposedSec: obsOffset != null && firstSchedSec != null ? firstSchedSec + obsOffset : null,
+        };
+      });
+      // archi
+      for (let i = 0; i < stops.length; i++) {
+        const cur = stops[i] as any;
+        const prev = i > 0 ? (stops[i - 1] as any) : null;
+        cur.arcSchedSec = prev && cur.schedOffsetSec != null && prev.schedOffsetSec != null ? cur.schedOffsetSec - prev.schedOffsetSec : null;
+        cur.arcObsSec = prev && cur.obsOffsetSec != null && prev.obsOffsetSec != null ? cur.obsOffsetSec - prev.obsOffsetSec : null;
+        cur.arcDeltaSec = cur.arcSchedSec != null && cur.arcObsSec != null ? cur.arcObsSec - cur.arcSchedSec : null;
+      }
+      const withObs = stops.filter((s) => s.obsOffsetSec != null);
+      const totalObsSec = withObs.length ? withObs[withObs.length - 1].obsOffsetSec : null;
+      const totalSchedSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
+      return {
+        tripId: t.tripId,
+        headsign: t.headsign,
+        directionId: t.directionId,
+        shapeId: t.shapeId,
+        runs: tripRuns.get(t.tripId) ?? 0,
+        startSchedSec: firstSchedSec,
+        coveredStops: withObs.length,
+        totalStops: stops.length,
+        totalSchedSec,
+        totalObsSec,
+        totalDeltaSec: totalObsSec != null && totalSchedSec != null ? totalObsSec - totalSchedSec : null,
+        stops,
+      };
+    }
+
+    // Raggruppa per linea
+    const routesMap = new Map<string, {
+      routeId: string | null; routeShortName: string | null; routeLongName: string | null; routeColor: string | null;
+      trips: TripOut[];
+    }>();
+    for (const t of tripsMap.values()) {
+      const rk = t.routeId ?? "?";
+      let r = routesMap.get(rk);
+      if (!r) {
+        r = { routeId: t.routeId, routeShortName: t.routeShortName, routeLongName: t.routeLongName, routeColor: t.routeColor, trips: [] };
+        routesMap.set(rk, r);
+      }
+      r.trips.push(buildTrip(t));
+    }
+
+    const routes = [...routesMap.values()]
+      .map((r) => ({
+        ...r,
+        trips: r.trips.sort((a, b) => (a.startSchedSec ?? 1e9) - (b.startSchedSec ?? 1e9)),
+      }))
+      .sort((a, b) => String(a.routeShortName ?? "").localeCompare(String(b.routeShortName ?? ""), "it", { numeric: true }));
+
+    res.json({
+      caronteAvailable: true,
+      days, routeId, hourFrom, hourTo,
+      generatedAt: new Date().toISOString(),
+      routes,
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });

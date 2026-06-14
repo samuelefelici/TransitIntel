@@ -14,6 +14,7 @@ import {
   MapPin, Radio, Timer, XCircle,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { RuntimesReportExport } from "@/components/RuntimesReportExport";
 
 interface RuntimeSegment {
   routeId: string | null;
@@ -67,6 +68,7 @@ interface DetailStop {
   actualTs: string | null;
   delaySeconds: number | null;
   recorded: boolean;
+  imputed: boolean;
   arcSchedSeconds: number | null;
   arcObsSeconds: number | null;
   arcDeltaSeconds: number | null;
@@ -245,12 +247,19 @@ export default function RuntimesPage() {
             archi, fermate effettivamente fatte e analisi in tempo reale
           </p>
         </div>
+        <RuntimesReportExport
+          days={days}
+          routeId={routeId || undefined}
+          hourFrom={b.hourFrom}
+          hourTo={b.hourTo}
+          periodLabel={`Ultimi ${days} giorni${band > 0 ? ` · ${b.label}` : ""}`}
+        />
         <button
           onClick={exportCsv}
           disabled={segments.length === 0}
           className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 hover:bg-white/10 disabled:opacity-40 text-xs border border-border/60"
         >
-          <Download className="w-3.5 h-3.5" /> Export CSV
+          <Download className="w-3.5 h-3.5" /> CSV tratte
         </button>
       </div>
 
@@ -474,6 +483,7 @@ export default function RuntimesPage() {
 function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
   const [date, setDate] = useState<string>("");   // "" = ultima giornata osservata
   const [live, setLive] = useState(false);
+  const [detailView, setDetailView] = useState<"tabella" | "grafico">("grafico");
 
   const qs = new URLSearchParams({ days: String(days) });
   if (date) qs.set("date", date);
@@ -518,7 +528,17 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
                 live ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-border/60 text-muted-foreground hover:bg-white/10"}`}>
               <Radio className={`w-3 h-3 ${live ? "animate-pulse" : ""}`} /> {live ? "Tempo reale (15s)" : "Aggiorna in tempo reale"}
             </button>
-            <span className="text-muted-foreground ml-auto">
+            <div className="flex rounded overflow-hidden border border-border/60 ml-auto">
+              <button onClick={() => setDetailView("grafico")}
+                className={`px-2.5 py-1 transition-colors ${detailView === "grafico" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+                Grafico
+              </button>
+              <button onClick={() => setDetailView("tabella")}
+                className={`px-2.5 py-1 transition-colors ${detailView === "tabella" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+                Tabella
+              </button>
+            </div>
+            <span className="text-muted-foreground">
               sosta ≥ {d.dwellSeconds}s entro {d.dwellRadius}m · {t?.gpsPoints ?? 0} punti GPS
             </span>
           </div>
@@ -547,7 +567,11 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
             </span>
           </div>
 
+          {/* Vista grafica della linea */}
+          {detailView === "grafico" && <LineDiagram stops={d.stops} />}
+
           {/* Tabella fermata × fermata */}
+          {detailView === "tabella" && (
           <div className="rounded-lg border border-border/50 overflow-auto max-h-[50vh]">
             <table className="min-w-full text-[11px] border-collapse">
               <thead className="sticky top-0 bg-background z-10">
@@ -588,6 +612,10 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
                         <span title="Transito registrato dal validatore" className="inline-flex items-center gap-1 text-emerald-400">
                           <CheckCircle2 className="w-3.5 h-3.5" />
                         </span>
+                      ) : s.imputed ? (
+                        <span title="Capolinea d'arrivo: transito stimato (penultima fermata + minuti programmati)" className="inline-flex items-center gap-1 text-amber-400">
+                          <Clock className="w-3.5 h-3.5" />
+                        </span>
                       ) : s.served ? (
                         <span title="Fermata fatta (sosta rilevata dal GPS) ma transito non registrato" className="inline-flex items-center gap-1 text-sky-400">
                           <MapPin className="w-3.5 h-3.5" />
@@ -603,15 +631,103 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
               </tbody>
             </table>
           </div>
+          )}
 
           <p className="text-[10px] text-muted-foreground leading-relaxed">
-            <CheckCircle2 className="inline w-3 h-3 text-emerald-400" /> transito registrato dal validatore ·
-            <MapPin className="inline w-3 h-3 text-sky-400 ml-1" /> fermata fatta (sosta GPS rilevata) ma transito non segnalato ·
-            <XCircle className="inline w-3 h-3 text-red-400 ml-1" /> fermata non rilevata.
+            <CheckCircle2 className="inline w-3 h-3 text-emerald-400" /> transito registrato ·
+            <Clock className="inline w-3 h-3 text-amber-400 ml-1" /> capolinea stimato ·
+            <MapPin className="inline w-3 h-3 text-sky-400 ml-1" /> fatta da GPS (sosta) ·
+            <XCircle className="inline w-3 h-3 text-red-400 ml-1" /> non rilevata.
             Δ orario = anticipo/ritardo sul programmato · scarto arco = tempo perso/recuperato sulla tratta dalla fermata precedente.
           </p>
         </>
       )}
+    </div>
+  );
+}
+
+/* ── Diagramma lineare della corsa: nodi=fermate, archi colorati per ritardo ── */
+function LineDiagram({ stops }: { stops: DetailStop[] }) {
+  const W = 70;                 // larghezza slot per fermata
+  const padX = 28;
+  const axisY = 70;
+  const height = axisY + 130;
+  const width = Math.max(stops.length * W + padX * 2, 360);
+  const cx = (i: number) => padX + i * W + W / 2;
+
+  function nodeStroke(s: DetailStop): string {
+    if (!s.served) return "#ef4444";
+    if (s.imputed) return "#f59e0b";
+    if (!s.recorded) return "#38bdf8";   // fatta da GPS (dwell)
+    return delayColor(s.delaySeconds);
+  }
+
+  return (
+    <div className="rounded-lg border border-border/50 bg-card/40 overflow-x-auto">
+      <svg width={width} height={height} className="block">
+        {/* Archi (tratte) colorati per scarto di percorrenza */}
+        {stops.map((s, i) => {
+          if (i === 0) return null;
+          const x1 = cx(i - 1), x2 = cx(i);
+          const color = s.arcDeltaSeconds != null ? delayColor(s.arcDeltaSeconds) : "#334155";
+          const mid = (x1 + x2) / 2;
+          return (
+            <g key={`arc-${s.seq}`}>
+              <line x1={x1} y1={axisY} x2={x2} y2={axisY} stroke={color} strokeWidth={6} strokeLinecap="round" opacity={0.85}>
+                <title>
+                  {`Tratta → ${s.stopName ?? s.stopId}\nprogrammato ${fmtSec(s.arcSchedSeconds)} · reale ${fmtSec(s.arcObsSeconds)}\nscarto ${fmtSigned(s.arcDeltaSeconds)}`}
+                </title>
+              </line>
+              {/* scarto sull'arco (sopra) */}
+              {s.arcDeltaSeconds != null && (
+                <text x={mid} y={axisY - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill={color}>
+                  {fmtSigned(s.arcDeltaSeconds)}
+                </text>
+              )}
+              {/* tempo reale proposto (sotto l'arco) */}
+              {s.arcObsSeconds != null && (
+                <text x={mid} y={axisY + 14} textAnchor="middle" fontSize={8} fill="#94a3b8">
+                  {fmtSec(s.arcObsSeconds)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Nodi (fermate) */}
+        {stops.map((s, i) => {
+          const x = cx(i);
+          const stroke = nodeStroke(s);
+          const filled = s.served && s.recorded;
+          return (
+            <g key={`node-${s.seq}`}>
+              <circle
+                cx={x} cy={axisY} r={7}
+                fill={filled ? stroke : "#0f172a"}
+                stroke={stroke}
+                strokeWidth={2}
+                strokeDasharray={!s.served || s.imputed ? "3 2" : undefined}>
+                <title>
+                  {`${s.seq}. ${s.stopName ?? s.stopId}\nprogrammato ${fmtClock(s.scheduledSec)} · reale ${fmtTime(s.actualTs)}\nΔ ${fmtSigned(s.delaySeconds)}${s.imputed ? "\n(capolinea stimato)" : !s.recorded && s.served ? "\n(fatta da GPS)" : !s.served ? "\n(non rilevata)" : ""}`}
+                </title>
+              </circle>
+              {/* ritardo/anticipo della fermata */}
+              {s.delaySeconds != null && (
+                <text x={x} y={axisY + 30} textAnchor="middle" fontSize={8.5} fontWeight={700} fill={delayColor(s.delaySeconds)}>
+                  {fmtSigned(s.delaySeconds)}
+                </text>
+              )}
+              {/* nome fermata, ruotato */}
+              <text
+                x={x} y={axisY + 42}
+                textAnchor="end" fontSize={8.5} fill="#94a3b8"
+                transform={`rotate(-40 ${x} ${axisY + 42})`}>
+                {(s.stopName ?? s.stopId ?? "").slice(0, 22)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }
