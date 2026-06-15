@@ -194,15 +194,28 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
 
     // coordinate delle fermate master (per lo schematico octolineare della locandina)
     const coordList = uuidList(masterIds);
-    const coordBy = new Map<string, { lat: number; lon: number }>();
+    const coordBy = new Map<string, any>();
     if (coordList) {
-      const cQ = await db.execute<any>(sql.raw(`SELECT id, lat, lon FROM ps_stops WHERE id IN (${coordList})`));
-      for (const r of cQ.rows as any[]) coordBy.set(r.id, { lat: r.lat, lon: r.lon });
+      const cQ = await db.execute<any>(sql.raw(`
+        SELECT s.id, s.lat, s.lon, s.cluster_id,
+               c.name AS cluster_name, c.center_lat, c.center_lon,
+               COALESCE((c.attributes->>'isLogical')::boolean, false) AS cluster_logical
+        FROM ps_stops s
+        LEFT JOIN ps_stop_clusters c ON c.id = s.cluster_id
+        WHERE s.id IN (${coordList})
+      `));
+      for (const r of cQ.rows as any[]) coordBy.set(r.id, r);
     }
-    const masterWithCoords = master.map((m: any) => ({
-      stopId: m.stopId, stopName: m.stopName,
-      lat: coordBy.get(m.stopId)?.lat ?? null, lon: coordBy.get(m.stopId)?.lon ?? null,
-    }));
+    const masterWithCoords = master.map((m: any) => {
+      const c = coordBy.get(m.stopId);
+      return {
+        stopId: m.stopId, stopName: m.stopName,
+        lat: c?.lat ?? null, lon: c?.lon ?? null,
+        clusterId: c?.cluster_id ?? null, clusterName: c?.cluster_name ?? null,
+        clusterLogical: !!c?.cluster_logical,
+        clusterLat: c?.center_lat ?? null, clusterLon: c?.center_lon ?? null,
+      };
+    });
 
     const tripList = [...trips.values()]
       .map((t) => {
@@ -334,15 +347,24 @@ router.get("/planning-studio/:projectId/timetables/network", async (req, res): P
     const stopsByVar = new Map<string, any[]>();
     if (vList) {
       const sQ = await db.execute<any>(sql.raw(`
-        SELECT vs.variant_id, vs.seq, s.id AS stop_id, s.name, s.lat, s.lon
+        SELECT vs.variant_id, vs.seq, s.id AS stop_id, s.name, s.lat, s.lon,
+               s.cluster_id,
+               c.name AS cluster_name, c.center_lat, c.center_lon,
+               COALESCE((c.attributes->>'isLogical')::boolean, false) AS cluster_logical
         FROM ps_variant_stops vs
         JOIN ps_stops s ON s.id = vs.stop_id
+        LEFT JOIN ps_stop_clusters c ON c.id = s.cluster_id
         WHERE vs.variant_id IN (${vList})
         ORDER BY vs.variant_id, vs.seq
       `));
       for (const r of sQ.rows as any[]) {
         if (!stopsByVar.has(r.variant_id)) stopsByVar.set(r.variant_id, []);
-        stopsByVar.get(r.variant_id)!.push({ stopId: r.stop_id, name: r.name, lat: r.lat, lon: r.lon });
+        stopsByVar.get(r.variant_id)!.push({
+          stopId: r.stop_id, name: r.name, lat: r.lat, lon: r.lon,
+          clusterId: r.cluster_id, clusterName: r.cluster_name,
+          clusterLogical: !!r.cluster_logical,
+          clusterLat: r.center_lat, clusterLon: r.center_lon,
+        });
       }
     }
 
