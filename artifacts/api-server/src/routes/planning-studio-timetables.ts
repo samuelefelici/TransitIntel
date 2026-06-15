@@ -228,6 +228,35 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       })
       .sort((a, b) => a.firstTime.localeCompare(b.firstTime));
 
+    // PERCORSO PER IL DISEGNO = variante più esercitata (max n. corse), per la
+    // direzione scelta. Gli orari (sopra) restano invece su TUTTE le corse.
+    const domQ = await db.execute<any>(sql`
+      SELECT t.variant_id FROM ps_trips t
+      JOIN ps_route_variants v ON v.id = t.variant_id
+      WHERE t.project_id = ${projectId}::uuid AND t.route_id = ${routeId}::uuid
+        AND (${directionId}::int IS NULL OR v.direction = ${directionId}::int)
+      GROUP BY t.variant_id
+      ORDER BY COUNT(*) DESC, t.variant_id
+      LIMIT 1`);
+    const domVariant: string | null = domQ.rows[0]?.variant_id ?? null;
+    let pathStops: any[] = [];
+    if (domVariant) {
+      const pQ = await db.execute<any>(sql`
+        SELECT s.id AS stop_id, s.name, s.lat, s.lon, s.cluster_id,
+               c.name AS cluster_name, c.center_lat, c.center_lon,
+               COALESCE((c.attributes->>'isLogical')::boolean, false) AS cluster_logical
+        FROM ps_variant_stops vs
+        JOIN ps_stops s ON s.id = vs.stop_id
+        LEFT JOIN ps_stop_clusters c ON c.id = s.cluster_id
+        WHERE vs.variant_id = ${domVariant}::uuid
+        ORDER BY vs.seq`);
+      pathStops = (pQ.rows as any[]).map((r) => ({
+        stopId: r.stop_id, stopName: r.name, lat: r.lat, lon: r.lon,
+        clusterId: r.cluster_id, clusterName: r.cluster_name, clusterLogical: !!r.cluster_logical,
+        clusterLat: r.center_lat, clusterLon: r.center_lon,
+      }));
+    }
+
     res.json({
       feedId: projectId,
       directionId,
@@ -236,6 +265,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       validityNote: note,
       route: { routeId: route.id, shortName: route.short_name, longName: route.long_name, color: route.color },
       stops: masterWithCoords,
+      pathStops,
       trips: tripList.map(({ firstTime: _f, ...t }) => t),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -334,12 +364,19 @@ router.get("/planning-studio/:projectId/timetables/network", async (req, res): P
     const list = uuidList(ids);
     if (!list) { res.json({ projectId, lines: [] }); return; }
 
+    // variante più esercitata per ciascuna linea (max numero di corse)
     const varQ = await db.execute<any>(sql.raw(`
-      SELECT DISTINCT ON (r.id) r.id AS route_id, r.short_name, r.long_name, r.color, v.id AS variant_id
-      FROM ps_routes r
-      JOIN ps_route_variants v ON v.route_id = r.id
-      WHERE r.project_id = '${projectId}' AND r.id IN (${list})
-      ORDER BY r.id, v.is_default DESC, v.direction ASC
+      SELECT q.route_id, q.short_name, q.long_name, q.color, q.variant_id
+      FROM (
+        SELECT r.id AS route_id, r.short_name, r.long_name, r.color, t.variant_id,
+               ROW_NUMBER() OVER (PARTITION BY r.id ORDER BY COUNT(*) DESC, t.variant_id) AS rn
+        FROM ps_routes r
+        JOIN ps_trips t ON t.route_id = r.id
+        WHERE r.project_id = '${projectId}' AND r.id IN (${list})
+        GROUP BY r.id, r.short_name, r.long_name, r.color, t.variant_id
+      ) q
+      WHERE q.rn = 1
+      ORDER BY q.short_name
     `));
     const variants = varQ.rows as any[];
     const vList = uuidList(variants.map((v) => v.variant_id));

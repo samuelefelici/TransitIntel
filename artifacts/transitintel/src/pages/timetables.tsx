@@ -51,6 +51,12 @@ interface RouteTimetable {
     clusterId?: string | null; clusterName?: string | null;
     clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
   }>;
+  // percorso per il DISEGNO = variante più esercitata (gli orari usano tutte le corse)
+  pathStops?: Array<{
+    stopId: string; stopName: string; lat?: number | null; lon?: number | null;
+    clusterId?: string | null; clusterName?: string | null;
+    clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
+  }>;
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
 }
 
@@ -398,7 +404,10 @@ function linePosterPage(d: RouteTimetable, nodesOnly = false): string {
 
   // percorso: schematico octolineare (se ci sono coordinate) con nomi fermate,
   // altrimenti la striscia verticale con i tempi cumulati come fallback.
-  const schemStops: SchemStop[] = d.stops
+  // disegno: usa il percorso della variante più esercitata (pathStops), gli orari
+  // restano su tutte le corse; fallback al master se pathStops è assente.
+  const pathSrc = (d.pathStops && d.pathStops.length >= 2) ? d.pathStops : d.stops;
+  const schemStops: SchemStop[] = pathSrc
     .filter((s) => s.lat != null && s.lon != null)
     .map((s) => ({
       stopId: s.stopId, name: s.stopName, lat: s.lat as number, lon: s.lon as number,
