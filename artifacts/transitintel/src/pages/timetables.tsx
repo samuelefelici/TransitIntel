@@ -46,7 +46,7 @@ interface RouteTimetable {
   dayTypeName?: string | null;
   validityNote?: string | null;
   route: { routeId: string; shortName: string | null; longName: string | null; color: string | null };
-  stops: Array<{ stopId: string; stopName: string }>;
+  stops: Array<{ stopId: string; stopName: string; lat?: number | null; lon?: number | null }>;
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
 }
 
@@ -234,6 +234,79 @@ function fmtMin(n: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+/* ── Schematizzazione octolineare (stile metro) condivisa locandina + mappa rete ──
+ * Ogni segmento è "snappato" a multipli di 45°, ma ancorato alla geografia
+ * (lunghezza = proiezione sulla direzione snappata) così le linee restano nella
+ * loro zona e gli interscambi cadono vicini. Tutte le fermate hanno il nome. */
+
+interface SchemStop { stopId: string; name: string; lat: number; lon: number }
+interface SchemLine { color: string | null; stops: SchemStop[] }
+
+function octolinearLayout(stops: SchemStop[], cosLat: number): Array<{ x: number; y: number }> {
+  if (!stops.length) return [];
+  const geo = stops.map((s) => ({ x: s.lon * cosLat, y: s.lat }));
+  const pts = [{ x: geo[0].x, y: geo[0].y }];
+  const SNAP = Math.PI / 4;
+  for (let i = 1; i < geo.length; i++) {
+    const vx = geo[i].x - pts[i - 1].x, vy = geo[i].y - pts[i - 1].y;
+    const raw = Math.hypot(vx, vy);
+    let ang = Math.round(Math.atan2(vy, vx) / SNAP) * SNAP;
+    let dist = vx * Math.cos(ang) + vy * Math.sin(ang); // proiezione sulla direzione snappata
+    if (!isFinite(dist) || dist < raw * 0.35) dist = raw || 1e-4; // evita collassi/inversioni
+    pts.push({ x: pts[i - 1].x + Math.cos(ang) * dist, y: pts[i - 1].y + Math.sin(ang) * dist });
+  }
+  return pts;
+}
+
+/** Markup interno <svg> (senza wrapper) con linee octolineari, fermate e nomi. */
+function schematicInnerSvg(lines: SchemLine[], W: number, H: number, M: number, opts?: { nameSize?: number }): string {
+  const nameSize = opts?.nameSize ?? 8;
+  const usable = lines.filter((l) => l.stops.length > 0);
+  if (!usable.length) return "";
+  const allStops = usable.flatMap((l) => l.stops);
+  const meanLat = allStops.reduce((s, p) => s + p.lat, 0) / allStops.length;
+  const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
+
+  const laid = usable.map((l) => ({ color: lineColor(l.color), stops: l.stops, pts: octolinearLayout(l.stops, cosLat) }));
+  const all = laid.flatMap((l) => l.pts);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of all) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+  const xr = (maxX - minX) || 1e-6, yr = (maxY - minY) || 1e-6;
+  const X = (x: number) => M + ((x - minX) / xr) * (W - 2 * M);
+  const Y = (y: number) => M + (1 - (y - minY) / yr) * (H - 2 * M);
+
+  // nodi unici (per stopId): posizione media + linee che vi passano
+  const nodes = new Map<string, { sx: number; sy: number; n: number; name: string; lines: Set<number> }>();
+  laid.forEach((l, li) => l.pts.forEach((p, i) => {
+    const sid = l.stops[i].stopId;
+    const e = nodes.get(sid) ?? { sx: 0, sy: 0, n: 0, name: l.stops[i].name, lines: new Set<number>() };
+    e.sx += X(p.x); e.sy += Y(p.y); e.n += 1; e.lines.add(li);
+    nodes.set(sid, e);
+  }));
+
+  const polys = laid.map((l) =>
+    `<polyline points="${l.pts.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ")}" fill="none" stroke="${l.color}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`,
+  ).join("");
+
+  let dots = "", names = "";
+  let idx = 0;
+  for (const e of nodes.values()) {
+    const x = e.sx / e.n, y = e.sy / e.n;
+    const inter = e.lines.size >= 2;
+    if (inter) {
+      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#fff" stroke="#111" stroke-width="3"/>`;
+      names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111">${esc(e.name)}</text>`;
+    } else {
+      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#fff" stroke="#111" stroke-width="1.6"/>`;
+      // alterna il lato dell'etichetta per ridurre le sovrapposizioni
+      const up = idx % 2 === 0;
+      names += `<text x="${(x + 6).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333">${esc(e.name)}</text>`;
+    }
+    idx++;
+  }
+  return polys + dots + names;
+}
+
 const POSTER_CSS = `
   ${PRINT_BASE_CSS}
   @page { size: A4 portrait; margin: 9mm; }
@@ -286,11 +359,19 @@ function linePosterPage(d: RouteTimetable): string {
     return (mm != null && refStart != null) ? mm - refStart : null;
   });
 
-  const diagram = d.stops.map((s, i) => {
+  // percorso: schematico octolineare (se ci sono coordinate) con nomi fermate,
+  // altrimenti la striscia verticale con i tempi cumulati come fallback.
+  const schemStops = d.stops
+    .filter((s) => s.lat != null && s.lon != null)
+    .map((s) => ({ stopId: s.stopId, name: s.stopName, lat: s.lat as number, lon: s.lon as number }));
+  const diagramStrip = d.stops.map((s, i) => {
     const term = i === 0 || i === d.stops.length - 1;
     const off = offsets[i];
     return `<div class="rstop${term ? " term" : ""}"><span class="dot"></span>${off != null ? `<span class="roff">${off === 0 ? "0′" : `+${off}′`}</span>` : ""}<span class="rname">${esc(s.stopName)}</span></div>`;
   }).join("");
+  const percorso = schemStops.length >= 2
+    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8 })}</svg>`
+    : `<div class="diagram">${diagramStrip}</div>`;
 
   // partenze per ora (cadenzato)
   const byHour = new Map<number, number[]>();
@@ -325,7 +406,7 @@ function linePosterPage(d: RouteTimetable): string {
     <div class="poster">
       <div class="col">
         <h2>Percorso</h2>
-        <div class="diagram">${diagram}</div>
+        ${percorso}
       </div>
       <div class="col">
         <h2>Partenze dal capolinea</h2>
@@ -353,69 +434,43 @@ interface NetworkData { projectId: string; lines: NetworkLine[] }
 
 function buildNetworkMapHtml(data: NetworkData): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
-  const all = lines.flatMap((l) => l.stops);
   const gen = new Date().toLocaleString("it-IT");
-  if (!all.length) {
+  if (!lines.length) {
     return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Mappa rete</title></head>
     <body><p style="padding:20mm;font-family:Arial">Nessuna geometria fermate per le linee selezionate.</p></body></html>`;
   }
 
-  const meanLat = all.reduce((s, p) => s + p.lat, 0) / all.length;
-  const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
-  const px = (lon: number) => lon * cosLat;
-  let minX = Infinity, maxX = -Infinity, minLat = Infinity, maxLat = -Infinity;
-  for (const p of all) {
-    const x = px(p.lon);
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (p.lat < minLat) minLat = p.lat; if (p.lat > maxLat) maxLat = p.lat;
-  }
-  const W = 1000, H = 1414, M = 80;
-  const xr = (maxX - minX) || 1e-6, yr = (maxLat - minLat) || 1e-6;
-  const X = (lon: number) => M + ((px(lon) - minX) / xr) * (W - 2 * M);
-  const Y = (lat: number) => M + (1 - (lat - minLat) / yr) * (H - 2 * M);
-
-  // interscambi: fermate (per stopId) servite da ≥2 linee selezionate
-  const byStop = new Map<string, { name: string; lat: number; lon: number; routes: Set<string> }>();
+  // interscambi (per il conteggio nell'header): stopId servito da ≥2 linee
+  const byStop = new Map<string, Set<string>>();
   for (const l of lines) for (const s of l.stops) {
-    const e = byStop.get(s.stopId) ?? { name: s.name, lat: s.lat, lon: s.lon, routes: new Set<string>() };
-    e.routes.add(l.routeId); byStop.set(s.stopId, e);
+    if (!byStop.has(s.stopId)) byStop.set(s.stopId, new Set());
+    byStop.get(s.stopId)!.add(l.routeId);
   }
-  const interchanges = [...byStop.values()].filter((e) => e.routes.size >= 2);
+  const interCount = [...byStop.values()].filter((r) => r.size >= 2).length;
 
-  const polys = lines.map((l) => {
-    const pts = l.stops.map((s) => `${X(s.lon).toFixed(1)},${Y(s.lat).toFixed(1)}`).join(" ");
-    return `<polyline points="${pts}" fill="none" stroke="${lineColor(l.color)}" stroke-width="6" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
-  }).join("");
-  const dots = lines.map((l) => l.stops.map((s) =>
-    `<circle cx="${X(s.lon).toFixed(1)}" cy="${Y(s.lat).toFixed(1)}" r="3" fill="${lineColor(l.color)}"/>`).join("")).join("");
-  const inter = interchanges.map((e) => {
-    const x = X(e.lon), y = Y(e.lat);
-    return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="#fff" stroke="#111" stroke-width="3"/>`
-      + `<text x="${(x + 12).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="11" font-weight="700" fill="#111">${esc(e.name)}</text></g>`;
-  }).join("");
-  const term = lines.map((l) => {
-    if (!l.stops.length) return "";
-    return [l.stops[0], l.stops[l.stops.length - 1]].map((s) =>
-      `<text x="${(X(s.lon) + 6).toFixed(1)}" y="${(Y(s.lat) - 8).toFixed(1)}" font-size="9" fill="#555">${esc(s.name)}</text>`).join("");
-  }).join("");
+  const W = 1000, H = 1414, M = 90;
+  const legendH = lines.length * 20 + 12;
+  const svgBody = schematicInnerSvg(
+    lines.map((l) => ({ color: l.color, stops: l.stops })),
+    W, H - legendH - 16, M, { nameSize: 9 },
+  );
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
     + `<text x="22" y="9" font-size="11" fill="#111"><tspan font-weight="800">${esc(l.shortName ?? "?")}</tspan> ${esc(l.longName ?? "")}</text></g>`).join("");
-  const legendH = lines.length * 20 + 12;
 
   return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Mappa di rete</title>
   <style>${PRINT_BASE_CSS} @page{size:A4 portrait;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head>
   <body><section class="page">
-    <header class="doc"><div class="pill" style="background:#111">🗺️</div><h1>Mappa di rete · linee selezionate</h1>
-      <div class="day">${interchanges.length} interscambi</div></header>
+    <header class="doc"><div class="pill" style="background:#111">🗺️</div><h1>Mappa di rete · schema linee</h1>
+      <div class="day">${interCount} interscambi</div></header>
     <svg viewBox="0 0 ${W} ${H}" width="100%">
-      ${polys}${dots}${term}${inter}
+      ${svgBody}
       <g transform="translate(${M}, ${H - legendH})">
         <rect x="-8" y="-8" width="${W - 2 * M + 16}" height="${legendH}" fill="#ffffffcc" stroke="#ddd"/>
         ${legendRows}
       </g>
     </svg>
-    <footer class="doc"><span>TransitIntel · mappa di rete (interscambi cerchiati)</span><span>Generato il ${gen}</span></footer>
+    <footer class="doc"><span>TransitIntel · mappa schematica (octolineare) · interscambi cerchiati</span><span>Generato il ${gen}</span></footer>
   </section></body></html>`;
 }
 
