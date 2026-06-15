@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Loader2, MapPin, Printer, Search, SignpostBig,
+  ArrowLeftRight, Loader2, Map as MapIcon, MapPin, Printer, Search, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
@@ -222,6 +222,127 @@ function buildCombinedRouteTimetableHtml(docs: RouteTimetable[]): string {
   <style>${ROUTE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
 }
 
+/* ── Locandina di linea (A4 verticale): percorso stilizzato + partenze cadenzate ── */
+
+function hhmmToMin(t: string | null | undefined): number | null {
+  if (!t) return null;
+  const m = /^(\d{1,2}):(\d{2})/.exec(t);
+  return m ? (Number(m[1]) % 48) * 60 + Number(m[2]) : null;
+}
+function fmtMin(n: number): string {
+  const h = Math.floor(n / 60) % 24, m = ((n % 60) + 60) % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+const POSTER_CSS = `
+  ${PRINT_BASE_CSS}
+  @page { size: A4 portrait; margin: 9mm; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .poster { display: grid; grid-template-columns: 46% 54%; gap: 10px; }
+  .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #555; margin: 4px 0 8px; }
+  /* diagramma percorso */
+  .diagram { }
+  .rstop { position: relative; padding: 7px 6px 7px 30px; min-height: 14px; }
+  .rstop::before { content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 5px; background: var(--c); }
+  .rstop:first-child::before { top: 50%; }
+  .rstop:last-child::before { bottom: 50%; }
+  .rstop .dot { position: absolute; left: 5px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; border-radius: 50%; background: #fff; border: 4px solid var(--c); }
+  .rstop.term .dot { width: 17px; height: 17px; left: 3px; border-width: 5px; }
+  .rstop .rname { font-size: 11px; font-weight: 500; }
+  .rstop.term .rname { font-weight: 800; font-size: 12px; }
+  .rstop .roff { float: right; font-size: 9px; color: #777; font-variant-numeric: tabular-nums; }
+  /* partenze cadenzate */
+  table.dep { width: 100%; border-collapse: collapse; }
+  table.dep th { width: 30px; background: var(--c); color: #fff; font-size: 13px; font-weight: 800; text-align: center; border: 1px solid rgba(0,0,0,.15); }
+  table.dep td { border: 1px solid #ccc; padding: 2px 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  table.dep .m { display: inline-block; margin-right: 8px; font-weight: 700; }
+  .kpis { display: flex; gap: 6px; margin: 8px 0 4px; flex-wrap: wrap; }
+  .kpi { flex: 1; min-width: 70px; border: 1px solid #ddd; border-radius: 8px; padding: 6px 8px; }
+  .kpi .v { font-size: 17px; font-weight: 800; }
+  .kpi .l { font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: #777; }
+`;
+
+function linePosterPage(d: RouteTimetable): string {
+  const col = lineColor(d.route.color);
+  const gen = new Date().toLocaleString("it-IT");
+  const dirLabel = d.directionId == null ? "Andata + Ritorno" : d.directionId === 0 ? "Andata" : "Ritorno";
+  const dayLbl = d.dayTypeName ?? "Tutte le corse";
+
+  // partenze = primo orario non nullo di ogni corsa
+  const deps: number[] = [];
+  for (const t of d.trips) {
+    const v = t.times.find((x) => x);
+    const mm = hhmmToMin(v);
+    if (mm != null) deps.push(mm);
+  }
+  deps.sort((a, b) => a - b);
+
+  // corsa di riferimento (più completa) per i tempi di percorrenza cumulati
+  let ref = d.trips[0]; let bestC = -1;
+  for (const t of d.trips) { const c = t.times.filter(Boolean).length; if (c > bestC) { bestC = c; ref = t; } }
+  const refStart = ref ? hhmmToMin(ref.times.find((x) => x)) : null;
+  const offsets = d.stops.map((_, i) => {
+    const mm = ref ? hhmmToMin(ref.times[i]) : null;
+    return (mm != null && refStart != null) ? mm - refStart : null;
+  });
+
+  const diagram = d.stops.map((s, i) => {
+    const term = i === 0 || i === d.stops.length - 1;
+    const off = offsets[i];
+    return `<div class="rstop${term ? " term" : ""}"><span class="dot"></span>${off != null ? `<span class="roff">${off === 0 ? "0′" : `+${off}′`}</span>` : ""}<span class="rname">${esc(s.stopName)}</span></div>`;
+  }).join("");
+
+  // partenze per ora (cadenzato)
+  const byHour = new Map<number, number[]>();
+  for (const m of deps) { const h = Math.floor(m / 60) % 24; if (!byHour.has(h)) byHour.set(h, []); byHour.get(h)!.push(((m % 60) + 60) % 60); }
+  const depRows = [...byHour.entries()].sort((a, b) => a[0] - b[0]).map(([h, mins]) =>
+    `<tr><th>${String(h).padStart(2, "0")}</th><td>${mins.sort((a, b) => a - b).map((mm) => `<span class="m">${String(mm).padStart(2, "0")}</span>`).join("")}</td></tr>`,
+  ).join("");
+
+  // KPI
+  const first = deps.length ? fmtMin(deps[0]) : "—";
+  const last = deps.length ? fmtMin(deps[deps.length - 1]) : "—";
+  const gaps: number[] = [];
+  for (let i = 1; i < deps.length; i++) gaps.push(deps[i] - deps[i - 1]);
+  gaps.sort((a, b) => a - b);
+  const medGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : null;
+  const lastOff = [...offsets].reverse().find((x) => x != null);
+
+  return `
+  <section class="page" style="--c:${col}">
+    <header class="doc" style="border-color:${col}">
+      <div class="pill" style="background:${col}">${esc(d.route.shortName ?? "?")}</div>
+      <h1>${esc(d.route.longName ?? "Linea")}</h1>
+      <div class="day">${esc(dayLbl)}<br><small style="font-weight:400">${dirLabel}</small></div>
+    </header>
+    <div class="kpis">
+      <div class="kpi"><div class="v">${first}</div><div class="l">Prima corsa</div></div>
+      <div class="kpi"><div class="v">${last}</div><div class="l">Ultima corsa</div></div>
+      <div class="kpi"><div class="v">${deps.length}</div><div class="l">Corse/giorno</div></div>
+      <div class="kpi"><div class="v">${medGap != null ? `~${medGap}′` : "—"}</div><div class="l">Frequenza tipica</div></div>
+      <div class="kpi"><div class="v">${lastOff != null ? `${lastOff}′` : "—"}</div><div class="l">Percorrenza</div></div>
+    </div>
+    <div class="poster">
+      <div class="col">
+        <h2>Percorso</h2>
+        <div class="diagram">${diagram}</div>
+      </div>
+      <div class="col">
+        <h2>Partenze dal capolinea</h2>
+        <table class="dep"><tbody>${depRows || "<tr><td>Nessuna corsa</td></tr>"}</tbody></table>
+      </div>
+    </div>
+    <footer class="doc"><span>TransitIntel · locandina linea ${esc(d.route.shortName ?? "")} · i minuti accanto alle fermate sono il tempo dal capolinea</span><span>Generato il ${gen}</span></footer>
+  </section>`;
+}
+
+function buildCombinedLinePostersHtml(docs: RouteTimetable[]): string {
+  const body = docs.filter((d) => d.trips.length > 0).map(linePosterPage).join("");
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
+  <title>Locandine di linea</title>
+  <style>${POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
+}
+
 /* ─── Pagina ─── */
 
 export default function TimetablesPage() {
@@ -366,6 +487,30 @@ export default function TimetablesPage() {
     } finally { setPrinting(false); }
   }
 
+  // Stampa "locandine di linea": percorso stilizzato + partenze, per linea × day-type × direzione.
+  async function printPosters() {
+    const ids = selectedIdsOrdered();
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
+    const dirs = directionId === "all" ? ["0", "1"] : [directionId];
+    setPrinting(true);
+    try {
+      const docs: RouteTimetable[] = [];
+      for (const rid of ids) {
+        for (const dt of routeDayTypeIds) {
+          for (const dir of dirs) {
+            const url = `${ptt}/route/${encodeURIComponent(rid)}?dayTypeId=${encodeURIComponent(dt)}&directionId=${dir}`;
+            docs.push(await apiFetch<RouteTimetable>(url));
+          }
+        }
+      }
+      if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
+      openPrintWindow(buildCombinedLinePostersHtml(docs));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore durante la stampa");
+    } finally { setPrinting(false); }
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -442,6 +587,15 @@ export default function TimetablesPage() {
               <option value="1">Ritorno</option>
             </select>
             <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={printPosters}
+                disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
+                title="Locandina: percorso stilizzato + partenze cadenzate, per direzione"
+              >
+                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapIcon className="w-4 h-4" />}
+                Stampa locandine
+              </button>
               <button
                 onClick={printPaline}
                 disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
