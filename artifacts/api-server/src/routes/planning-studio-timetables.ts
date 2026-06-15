@@ -191,6 +191,19 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
 
     const master = mergeStopPatterns([...trips.values()].map((t) => t.stops));
     const masterIds = master.map((m) => m.stopId);
+
+    // coordinate delle fermate master (per lo schematico octolineare della locandina)
+    const coordList = uuidList(masterIds);
+    const coordBy = new Map<string, { lat: number; lon: number }>();
+    if (coordList) {
+      const cQ = await db.execute<any>(sql.raw(`SELECT id, lat, lon FROM ps_stops WHERE id IN (${coordList})`));
+      for (const r of cQ.rows as any[]) coordBy.set(r.id, { lat: r.lat, lon: r.lon });
+    }
+    const masterWithCoords = master.map((m: any) => ({
+      stopId: m.stopId, stopName: m.stopName,
+      lat: coordBy.get(m.stopId)?.lat ?? null, lon: coordBy.get(m.stopId)?.lon ?? null,
+    }));
+
     const tripList = [...trips.values()]
       .map((t) => {
         const timeBy = new Map(t.stops.map((s2) => [s2.stopId, s2.time]));
@@ -209,7 +222,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       dayTypeName: dayTypeId ? await dayTypeName(projectId, dayTypeId) : null,
       validityNote: note,
       route: { routeId: route.id, shortName: route.short_name, longName: route.long_name, color: route.color },
-      stops: master,
+      stops: masterWithCoords,
       trips: tripList.map(({ firstTime: _f, ...t }) => t),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
