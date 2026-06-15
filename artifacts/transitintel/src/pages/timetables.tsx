@@ -272,6 +272,8 @@ function collapseToLogicalNodes(stops: SchemStop[]): SchemStop[] {
       node = {
         stopId: s.clusterId, name: s.clusterName || s.name,
         lat: s.clusterLat ?? s.lat, lon: s.clusterLon ?? s.lon,
+        clusterId: s.clusterId, clusterName: s.clusterName || s.name,
+        clusterLogical: true, clusterLat: s.clusterLat ?? s.lat, clusterLon: s.clusterLon ?? s.lon,
       };
     } else if (term) {
       key = `s:${s.stopId}`;
@@ -296,7 +298,7 @@ function elbow(ax: number, ay: number, bx: number, by: number): Array<{ x: numbe
   return [bend, { x: bx, y: by }];
 }
 
-interface SchemNode { gx: number; gy: number; n: number; name: string; lines: Set<number> }
+interface SchemNode { gx: number; gy: number; n: number; name: string; lines: Set<number>; logical: boolean }
 
 /** Markup interno <svg> (senza wrapper): linee octolineari che CONVERGONO nei
  *  nodi condivisi, fermate con nome, sfondo leggero dei punti città. */
@@ -316,12 +318,21 @@ function schematicInnerSvg(
   const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
   const gx = (lon: number) => lon * cosLat;
 
+  // CHIAVE NODO: per le fermate di un nodo logico (cluster isLogical) si usa il
+  // cluster + il suo centroide → linee diverse che toccano lo stesso nodo logico
+  // CONVERGONO nello stesso punto, anche senza "Solo nodi logici".
+  const keyOf = (s: SchemStop) => (s.clusterLogical && s.clusterId) ? `c:${s.clusterId}` : `s:${s.stopId}`;
+  const posOf = (s: SchemStop) => (s.clusterLogical)
+    ? { gx: gx(s.clusterLon ?? s.lon), gy: s.clusterLat ?? s.lat, name: s.clusterName || s.name, logical: true }
+    : { gx: gx(s.lon), gy: s.lat, name: s.name, logical: false };
+
   // posizione geografica CANONICA per nodo (media occorrenze) → condivisa tra linee
   const node = new Map<string, SchemNode>();
   usable.forEach((l, li) => l.stops.forEach((s) => {
-    let e = node.get(s.stopId);
-    if (!e) { e = { gx: 0, gy: 0, n: 0, name: s.name, lines: new Set<number>() }; node.set(s.stopId, e); }
-    e.gx += gx(s.lon); e.gy += s.lat; e.n += 1; e.lines.add(li);
+    const k = keyOf(s); const p = posOf(s);
+    let e = node.get(k);
+    if (!e) { e = { gx: 0, gy: 0, n: 0, name: p.name, lines: new Set<number>(), logical: p.logical }; node.set(k, e); }
+    e.gx += p.gx; e.gy += p.gy; e.n += 1; e.lines.add(li); if (p.logical) e.logical = true;
   }));
   for (const e of node.values()) { e.gx /= e.n; e.gy /= e.n; }
 
@@ -344,7 +355,7 @@ function schematicInnerSvg(
 
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
   const polys = usable.map((l) => {
-    const sp = l.stops.map((s) => { const e = node.get(s.stopId)!; return { x: X(e.gx), y: Y(e.gy) }; });
+    const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return { x: X(e.gx), y: Y(e.gy) }; });
     if (!sp.length) return "";
     let d = `${sp[0].x.toFixed(1)},${sp[0].y.toFixed(1)}`;
     for (let i = 1; i < sp.length; i++) {
@@ -357,8 +368,8 @@ function schematicInnerSvg(
   let dots = "", names = "", idx = 0;
   for (const e of node.values()) {
     const x = X(e.gx), y = Y(e.gy);
-    const inter = e.lines.size >= 2;
-    if (inter) {
+    const major = e.logical || e.lines.size >= 2; // nodo logico o interscambio → evidenziato
+    if (major) {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#fff" stroke="#111" stroke-width="3"/>`;
       names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111">${esc(e.name)}</text>`;
     } else {
