@@ -57,6 +57,7 @@ interface RouteTimetable {
     clusterId?: string | null; clusterName?: string | null;
     clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
   }>;
+  cityNodes?: Array<{ name: string; lat: number; lon: number }>;
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
 }
 
@@ -282,72 +283,92 @@ function collapseToLogicalNodes(stops: SchemStop[]): SchemStop[] {
   return out.length >= 2 ? out : stops; // se troppo ridotta, torna alle fermate piene
 }
 
-function octolinearLayout(stops: SchemStop[], cosLat: number): Array<{ x: number; y: number }> {
-  if (!stops.length) return [];
-  const geo = stops.map((s) => ({ x: s.lon * cosLat, y: s.lat }));
-  const pts = [{ x: geo[0].x, y: geo[0].y }];
-  const SNAP = Math.PI / 4;
-  for (let i = 1; i < geo.length; i++) {
-    const vx = geo[i].x - pts[i - 1].x, vy = geo[i].y - pts[i - 1].y;
-    const raw = Math.hypot(vx, vy);
-    let ang = Math.round(Math.atan2(vy, vx) / SNAP) * SNAP;
-    let dist = vx * Math.cos(ang) + vy * Math.sin(ang); // proiezione sulla direzione snappata
-    if (!isFinite(dist) || dist < raw * 0.35) dist = raw || 1e-4; // evita collassi/inversioni
-    pts.push({ x: pts[i - 1].x + Math.cos(ang) * dist, y: pts[i - 1].y + Math.sin(ang) * dist });
-  }
-  return pts;
+/** Connettore "a gomito" octolineare tra due punti a posizione fissa (preserva
+ *  gli estremi → i nodi condivisi convergono). Tratto assiale + diagonale 45°. */
+function elbow(ax: number, ay: number, bx: number, by: number): Array<{ x: number; y: number }> {
+  const dx = bx - ax, dy = by - ay;
+  const adx = Math.abs(dx), ady = Math.abs(dy);
+  const sx = Math.sign(dx), sy = Math.sign(dy);
+  if (adx < 1 || ady < 1 || Math.abs(adx - ady) < 1) return [{ x: bx, y: by }]; // già assiale/diagonale
+  const bend = adx >= ady
+    ? { x: bx - sx * ady, y: ay }   // orizzontale poi 45°
+    : { x: ax, y: by - sy * adx };  // verticale poi 45°
+  return [bend, { x: bx, y: by }];
 }
 
-/** Markup interno <svg> (senza wrapper) con linee octolineari, fermate e nomi. */
-function schematicInnerSvg(lines: SchemLine[], W: number, H: number, M: number, opts?: { nameSize?: number; nodesOnly?: boolean }): string {
+interface SchemNode { gx: number; gy: number; n: number; name: string; lines: Set<number> }
+
+/** Markup interno <svg> (senza wrapper): linee octolineari che CONVERGONO nei
+ *  nodi condivisi, fermate con nome, sfondo leggero dei punti città. */
+function schematicInnerSvg(
+  lines: SchemLine[], W: number, H: number, M: number,
+  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }> },
+): string {
   const nameSize = opts?.nameSize ?? 8;
   const src = opts?.nodesOnly
     ? lines.map((l) => ({ color: l.color, stops: collapseToLogicalNodes(l.stops) }))
     : lines;
   const usable = src.filter((l) => l.stops.length > 0);
   if (!usable.length) return "";
+
   const allStops = usable.flatMap((l) => l.stops);
   const meanLat = allStops.reduce((s, p) => s + p.lat, 0) / allStops.length;
   const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
+  const gx = (lon: number) => lon * cosLat;
 
-  const laid = usable.map((l) => ({ color: lineColor(l.color), stops: l.stops, pts: octolinearLayout(l.stops, cosLat) }));
-  const all = laid.flatMap((l) => l.pts);
+  // posizione geografica CANONICA per nodo (media occorrenze) → condivisa tra linee
+  const node = new Map<string, SchemNode>();
+  usable.forEach((l, li) => l.stops.forEach((s) => {
+    let e = node.get(s.stopId);
+    if (!e) { e = { gx: 0, gy: 0, n: 0, name: s.name, lines: new Set<number>() }; node.set(s.stopId, e); }
+    e.gx += gx(s.lon); e.gy += s.lat; e.n += 1; e.lines.add(li);
+  }));
+  for (const e of node.values()) { e.gx /= e.n; e.gy /= e.n; }
+
+  const cityNodes = (opts?.cityNodes ?? []).map((c) => ({ name: c.name, gx: gx(c.lon), gy: c.lat }));
+
+  // bbox su nodi + sfondo città
+  const allPts = [...[...node.values()].map((e) => ({ x: e.gx, y: e.gy })), ...cityNodes.map((c) => ({ x: c.gx, y: c.gy }))];
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of all) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+  for (const p of allPts) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
   const xr = (maxX - minX) || 1e-6, yr = (maxY - minY) || 1e-6;
   const X = (x: number) => M + ((x - minX) / xr) * (W - 2 * M);
   const Y = (y: number) => M + (1 - (y - minY) / yr) * (H - 2 * M);
 
-  // nodi unici (per stopId): posizione media + linee che vi passano
-  const nodes = new Map<string, { sx: number; sy: number; n: number; name: string; lines: Set<number> }>();
-  laid.forEach((l, li) => l.pts.forEach((p, i) => {
-    const sid = l.stops[i].stopId;
-    const e = nodes.get(sid) ?? { sx: 0, sy: 0, n: 0, name: l.stops[i].name, lines: new Set<number>() };
-    e.sx += X(p.x); e.sy += Y(p.y); e.n += 1; e.lines.add(li);
-    nodes.set(sid, e);
-  }));
+  // sfondo città (leggero, grigio)
+  const bg = cityNodes.map((c) => {
+    const x = X(c.gx), y = Y(c.gy);
+    return `<g opacity="0.4"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#94a3b8"/>`
+      + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#94a3b8">${esc(c.name)}</text></g>`;
+  }).join("");
 
-  const polys = laid.map((l) =>
-    `<polyline points="${l.pts.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ")}" fill="none" stroke="${l.color}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`,
-  ).join("");
+  // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
+  const polys = usable.map((l) => {
+    const sp = l.stops.map((s) => { const e = node.get(s.stopId)!; return { x: X(e.gx), y: Y(e.gy) }; });
+    if (!sp.length) return "";
+    let d = `${sp[0].x.toFixed(1)},${sp[0].y.toFixed(1)}`;
+    for (let i = 1; i < sp.length; i++) {
+      for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
+    }
+    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+  }).join("");
 
-  let dots = "", names = "";
-  let idx = 0;
-  for (const e of nodes.values()) {
-    const x = e.sx / e.n, y = e.sy / e.n;
+  // nodi + nomi
+  let dots = "", names = "", idx = 0;
+  for (const e of node.values()) {
+    const x = X(e.gx), y = Y(e.gy);
     const inter = e.lines.size >= 2;
     if (inter) {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#fff" stroke="#111" stroke-width="3"/>`;
       names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111">${esc(e.name)}</text>`;
     } else {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#fff" stroke="#111" stroke-width="1.6"/>`;
-      // alterna il lato dell'etichetta per ridurre le sovrapposizioni
       const up = idx % 2 === 0;
       names += `<text x="${(x + 6).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333">${esc(e.name)}</text>`;
     }
     idx++;
   }
-  return polys + dots + names;
+  return bg + polys + dots + names;
 }
 
 const POSTER_CSS = `
@@ -378,7 +399,7 @@ const POSTER_CSS = `
   .kpi .l { font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: #777; }
 `;
 
-function linePosterPage(d: RouteTimetable, nodesOnly = false): string {
+function linePosterPage(d: RouteTimetable, nodesOnly = false, cityBg = false): string {
   const col = lineColor(d.route.color);
   const gen = new Date().toLocaleString("it-IT");
   const dirLabel = d.directionId == null ? "Andata + Ritorno" : d.directionId === 0 ? "Andata" : "Ritorno";
@@ -420,7 +441,7 @@ function linePosterPage(d: RouteTimetable, nodesOnly = false): string {
     return `<div class="rstop${term ? " term" : ""}"><span class="dot"></span>${off != null ? `<span class="roff">${off === 0 ? "0′" : `+${off}′`}</span>` : ""}<span class="rname">${esc(s.stopName)}</span></div>`;
   }).join("");
   const percorso = schemStops.length >= 2
-    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly })}</svg>`
+    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? d.cityNodes : undefined })}</svg>`
     : `<div class="diagram">${diagramStrip}</div>`;
 
   // partenze per ora (cadenzato)
@@ -467,8 +488,8 @@ function linePosterPage(d: RouteTimetable, nodesOnly = false): string {
   </section>`;
 }
 
-function buildCombinedLinePostersHtml(docs: RouteTimetable[], nodesOnly = false): string {
-  const body = docs.filter((d) => d.trips.length > 0).map((d) => linePosterPage(d, nodesOnly)).join("");
+function buildCombinedLinePostersHtml(docs: RouteTimetable[], nodesOnly = false, cityBg = false): string {
+  const body = docs.filter((d) => d.trips.length > 0).map((d) => linePosterPage(d, nodesOnly, cityBg)).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Locandine di linea</title>
   <style>${POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
@@ -484,9 +505,9 @@ interface NetworkLine {
     clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
   }>;
 }
-interface NetworkData { projectId: string; lines: NetworkLine[] }
+interface NetworkData { projectId: string; lines: NetworkLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
-function buildNetworkMapHtml(data: NetworkData, nodesOnly = false): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -506,7 +527,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false): string {
   const legendH = lines.length * 20 + 12;
   const svgBody = schematicInnerSvg(
     lines.map((l) => ({ color: l.color, stops: l.stops })),
-    W, H - legendH - 16, M, { nameSize: 9, nodesOnly },
+    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined },
   );
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
@@ -550,6 +571,7 @@ export default function TimetablesPage() {
   const [routeSearch, setRouteSearch] = useState("");
   const [printing, setPrinting] = useState(false);
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
+  const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
 
@@ -691,7 +713,7 @@ export default function TimetablesPage() {
         }
       }
       if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
-      openPrintWindow(buildCombinedLinePostersHtml(docs, nodesOnly));
+      openPrintWindow(buildCombinedLinePostersHtml(docs, nodesOnly, cityBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -705,7 +727,7 @@ export default function TimetablesPage() {
     try {
       const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
-      openPrintWindow(buildNetworkMapHtml(data, nodesOnly));
+      openPrintWindow(buildNetworkMapHtml(data, nodesOnly, cityBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -789,6 +811,10 @@ export default function TimetablesPage() {
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Riduce lo schema ai soli nodi logici definiti nel Planning Studio (cluster)">
               <input type="checkbox" checked={nodesOnly} onChange={(e) => setNodesOnly(e.target.checked)} className="accent-fuchsia-500" />
               Solo nodi logici
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Sfondo schematico leggero con i punti principali (nodi logici della città)">
+              <input type="checkbox" checked={cityBg} onChange={(e) => setCityBg(e.target.checked)} className="accent-slate-400" />
+              Sfondo città
             </label>
             <div className="ml-auto flex items-center gap-2">
               <button
