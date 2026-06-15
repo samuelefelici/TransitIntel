@@ -46,7 +46,11 @@ interface RouteTimetable {
   dayTypeName?: string | null;
   validityNote?: string | null;
   route: { routeId: string; shortName: string | null; longName: string | null; color: string | null };
-  stops: Array<{ stopId: string; stopName: string; lat?: number | null; lon?: number | null }>;
+  stops: Array<{
+    stopId: string; stopName: string; lat?: number | null; lon?: number | null;
+    clusterId?: string | null; clusterName?: string | null;
+    clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
+  }>;
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
 }
 
@@ -239,8 +243,38 @@ function fmtMin(n: number): string {
  * (lunghezza = proiezione sulla direzione snappata) così le linee restano nella
  * loro zona e gli interscambi cadono vicini. Tutte le fermate hanno il nome. */
 
-interface SchemStop { stopId: string; name: string; lat: number; lon: number }
+interface SchemStop {
+  stopId: string; name: string; lat: number; lon: number;
+  clusterId?: string | null; clusterName?: string | null;
+  clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
+}
 interface SchemLine { color: string | null; stops: SchemStop[] }
+
+/** Riduce la sequenza fermate ai NODI LOGICI (cluster con isLogical):
+ *  ogni fermata in un cluster logico → quel nodo (centroide), corse consecutive
+ *  nello stesso nodo collassate; le fermate non-nodo restano solo se capolinea. */
+function collapseToLogicalNodes(stops: SchemStop[]): SchemStop[] {
+  const out: SchemStop[] = [];
+  let lastKey: string | null = null;
+  stops.forEach((s, i) => {
+    const term = i === 0 || i === stops.length - 1;
+    let key: string | null = null;
+    let node: SchemStop = s;
+    if (s.clusterLogical && s.clusterId) {
+      key = `c:${s.clusterId}`;
+      node = {
+        stopId: s.clusterId, name: s.clusterName || s.name,
+        lat: s.clusterLat ?? s.lat, lon: s.clusterLon ?? s.lon,
+      };
+    } else if (term) {
+      key = `s:${s.stopId}`;
+    } else {
+      return; // fermata intermedia non-nodo → eliminata
+    }
+    if (key !== lastKey) { out.push(node); lastKey = key; }
+  });
+  return out.length >= 2 ? out : stops; // se troppo ridotta, torna alle fermate piene
+}
 
 function octolinearLayout(stops: SchemStop[], cosLat: number): Array<{ x: number; y: number }> {
   if (!stops.length) return [];
@@ -259,9 +293,12 @@ function octolinearLayout(stops: SchemStop[], cosLat: number): Array<{ x: number
 }
 
 /** Markup interno <svg> (senza wrapper) con linee octolineari, fermate e nomi. */
-function schematicInnerSvg(lines: SchemLine[], W: number, H: number, M: number, opts?: { nameSize?: number }): string {
+function schematicInnerSvg(lines: SchemLine[], W: number, H: number, M: number, opts?: { nameSize?: number; nodesOnly?: boolean }): string {
   const nameSize = opts?.nameSize ?? 8;
-  const usable = lines.filter((l) => l.stops.length > 0);
+  const src = opts?.nodesOnly
+    ? lines.map((l) => ({ color: l.color, stops: collapseToLogicalNodes(l.stops) }))
+    : lines;
+  const usable = src.filter((l) => l.stops.length > 0);
   if (!usable.length) return "";
   const allStops = usable.flatMap((l) => l.stops);
   const meanLat = allStops.reduce((s, p) => s + p.lat, 0) / allStops.length;
@@ -335,7 +372,7 @@ const POSTER_CSS = `
   .kpi .l { font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: #777; }
 `;
 
-function linePosterPage(d: RouteTimetable): string {
+function linePosterPage(d: RouteTimetable, nodesOnly = false): string {
   const col = lineColor(d.route.color);
   const gen = new Date().toLocaleString("it-IT");
   const dirLabel = d.directionId == null ? "Andata + Ritorno" : d.directionId === 0 ? "Andata" : "Ritorno";
@@ -361,16 +398,20 @@ function linePosterPage(d: RouteTimetable): string {
 
   // percorso: schematico octolineare (se ci sono coordinate) con nomi fermate,
   // altrimenti la striscia verticale con i tempi cumulati come fallback.
-  const schemStops = d.stops
+  const schemStops: SchemStop[] = d.stops
     .filter((s) => s.lat != null && s.lon != null)
-    .map((s) => ({ stopId: s.stopId, name: s.stopName, lat: s.lat as number, lon: s.lon as number }));
+    .map((s) => ({
+      stopId: s.stopId, name: s.stopName, lat: s.lat as number, lon: s.lon as number,
+      clusterId: s.clusterId, clusterName: s.clusterName, clusterLogical: s.clusterLogical,
+      clusterLat: s.clusterLat, clusterLon: s.clusterLon,
+    }));
   const diagramStrip = d.stops.map((s, i) => {
     const term = i === 0 || i === d.stops.length - 1;
     const off = offsets[i];
     return `<div class="rstop${term ? " term" : ""}"><span class="dot"></span>${off != null ? `<span class="roff">${off === 0 ? "0′" : `+${off}′`}</span>` : ""}<span class="rname">${esc(s.stopName)}</span></div>`;
   }).join("");
   const percorso = schemStops.length >= 2
-    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8 })}</svg>`
+    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly })}</svg>`
     : `<div class="diagram">${diagramStrip}</div>`;
 
   // partenze per ora (cadenzato)
@@ -417,8 +458,8 @@ function linePosterPage(d: RouteTimetable): string {
   </section>`;
 }
 
-function buildCombinedLinePostersHtml(docs: RouteTimetable[]): string {
-  const body = docs.filter((d) => d.trips.length > 0).map(linePosterPage).join("");
+function buildCombinedLinePostersHtml(docs: RouteTimetable[], nodesOnly = false): string {
+  const body = docs.filter((d) => d.trips.length > 0).map((d) => linePosterPage(d, nodesOnly)).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Locandine di linea</title>
   <style>${POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
@@ -428,11 +469,15 @@ function buildCombinedLinePostersHtml(docs: RouteTimetable[]): string {
 
 interface NetworkLine {
   routeId: string; shortName: string | null; longName: string | null; color: string | null;
-  stops: Array<{ stopId: string; name: string; lat: number; lon: number }>;
+  stops: Array<{
+    stopId: string; name: string; lat: number; lon: number;
+    clusterId?: string | null; clusterName?: string | null;
+    clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
+  }>;
 }
 interface NetworkData { projectId: string; lines: NetworkLine[] }
 
-function buildNetworkMapHtml(data: NetworkData): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -452,7 +497,7 @@ function buildNetworkMapHtml(data: NetworkData): string {
   const legendH = lines.length * 20 + 12;
   const svgBody = schematicInnerSvg(
     lines.map((l) => ({ color: l.color, stops: l.stops })),
-    W, H - legendH - 16, M, { nameSize: 9 },
+    W, H - legendH - 16, M, { nameSize: 9, nodesOnly },
   );
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
@@ -495,6 +540,7 @@ export default function TimetablesPage() {
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
   const [routeSearch, setRouteSearch] = useState("");
   const [printing, setPrinting] = useState(false);
+  const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
 
@@ -636,7 +682,7 @@ export default function TimetablesPage() {
         }
       }
       if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
-      openPrintWindow(buildCombinedLinePostersHtml(docs));
+      openPrintWindow(buildCombinedLinePostersHtml(docs, nodesOnly));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -650,7 +696,7 @@ export default function TimetablesPage() {
     try {
       const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
-      openPrintWindow(buildNetworkMapHtml(data));
+      openPrintWindow(buildNetworkMapHtml(data, nodesOnly));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -731,6 +777,10 @@ export default function TimetablesPage() {
               <option value="0">Andata</option>
               <option value="1">Ritorno</option>
             </select>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Riduce lo schema ai soli nodi logici definiti nel Planning Studio (cluster)">
+              <input type="checkbox" checked={nodesOnly} onChange={(e) => setNodesOnly(e.target.checked)} className="accent-fuchsia-500" />
+              Solo nodi logici
+            </label>
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={printNetwork}
