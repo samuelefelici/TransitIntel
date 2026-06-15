@@ -32,6 +32,7 @@ import caronteRouter from "./caronte";
 import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
 import timetablesRouter from "./timetables";
+import planningStudioTimetablesRouter from "./planning-studio-timetables";
 import rosterRouter from "./roster";
 import serviceDbRouter from "./service-db";
 import depotsRouter from "./depots";
@@ -89,7 +90,8 @@ router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
 router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
-router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea
+router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea (feed GTFS)
+router.use(planningStudioTimetablesRouter); // Stampa Orari dal programma di esercizio Planning Studio (ps_*)
 router.use(rosterRouter); // Roster: assegnazione turni guida al personale viaggiante
 router.use(serviceDbRouter); // Database di Esercizio: vista unica della catena di pianificazione
 router.use(faresRouter);
