@@ -75,6 +75,17 @@ function parseDayTypeId(q: unknown): string | null {
   return UUID_RE.test(s) ? s : null;
 }
 
+/** Punti città per lo sfondo schematico = nodi logici (cluster isLogical) del progetto. */
+async function loadCityNodes(projectId: string): Promise<Array<{ name: string; lat: number; lon: number }>> {
+  const r = await db.execute<any>(sql`
+    SELECT name, center_lat, center_lon FROM ps_stop_clusters
+    WHERE project_id = ${projectId}::uuid
+      AND COALESCE((attributes->>'isLogical')::boolean, false) = true
+      AND center_lat IS NOT NULL AND center_lon IS NOT NULL
+    ORDER BY name`);
+  return (r.rows as any[]).map((c) => ({ name: c.name, lat: c.center_lat, lon: c.center_lon }));
+}
+
 // ── GET /timetables/routes — linee del progetto ─────────────────────────────
 router.get("/planning-studio/:projectId/timetables/routes", async (req, res): Promise<void> => {
   try {
@@ -266,6 +277,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       route: { routeId: route.id, shortName: route.short_name, longName: route.long_name, color: route.color },
       stops: masterWithCoords,
       pathStops,
+      cityNodes: await loadCityNodes(projectId),
       trips: tripList.map(({ firstTime: _f, ...t }) => t),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -410,7 +422,7 @@ router.get("/planning-studio/:projectId/timetables/network", async (req, res): P
       stops: stopsByVar.get(v.variant_id) ?? [],
     })).sort((a, b) => String(a.shortName ?? "").localeCompare(String(b.shortName ?? ""), "it", { numeric: true }));
 
-    res.json({ projectId, lines });
+    res.json({ projectId, lines, cityNodes: await loadCityNodes(projectId) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
