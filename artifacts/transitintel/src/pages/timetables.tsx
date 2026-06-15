@@ -34,6 +34,9 @@ interface StopSearchItem {
 interface StopTimetable {
   feedId: string;
   dayType: DayType;
+  validity?: Validity | null;
+  representativeDate?: string | null;
+  validityNote?: string | null;
   stop: { stopId: string; stopName: string; stopCode: string | null };
   lines: Array<{
     routeId: string; shortName: string | null; longName: string | null; color: string | null;
@@ -98,8 +101,34 @@ const PRINT_BASE_CSS = `
   footer.doc { margin-top: 8px; border-top: 1px solid #999; padding-top: 4px; font-size: 9px; color: #555; display: flex; justify-content: space-between; }
 `;
 
-/** HTML standalone del quadro di fermata (A4 verticale). */
-function buildStopPosterHtml(data: StopTimetable): string {
+const STOP_POSTER_CSS = `
+  ${PRINT_BASE_CSS}
+  @page { size: A4 portrait; margin: 8mm; }
+  .line { margin-bottom: 9px; break-inside: avoid; }
+  .l-head { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 6px 6px 0 0; }
+  .l-pill { color: #fff; font-weight: 800; border-radius: 6px; padding: 2px 10px; font-size: 16px; min-width: 44px; text-align: center; }
+  .l-info { flex: 1; min-width: 0; }
+  .l-name { font-size: 11px; font-weight: 600; }
+  .legend { font-size: 9.5px; color: #333; }
+  .legend span { margin-right: 10px; }
+  .l-count { font-size: 9px; color: #555; white-space: nowrap; }
+  table.hours { width: 100%; border-collapse: collapse; }
+  table.hours th { width: 34px; background: #111; color: #fff; font-size: 13px; font-weight: 800; text-align: center; border: 1px solid #444; padding: 2px; }
+  table.hours td { border: 1px solid #bbb; padding: 2px 6px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  table.hours .m { display: inline-block; margin-right: 7px; font-weight: 600; }
+  table.hours sup { font-size: 8px; font-weight: 700; }
+`;
+
+/** Etichetta giorno/validità per l'intestazione del quadro di fermata. */
+function stopDayHeaderLabel(d: StopTimetable): string {
+  const parts: string[] = [];
+  if (d.validity && d.dayType !== "sunday") parts.push(VALIDITY_LABEL[d.validity]);
+  parts.push(DAY_LABEL[d.dayType]);
+  return parts.join(" · ");
+}
+
+/** Sezione-pagina del quadro di una fermata (senza wrapper <html>). */
+function stopPosterPage(data: StopTimetable): string {
   const gen = new Date().toLocaleString("it-IT");
   const linesHtml = data.lines.map((l) => {
     const col = lineColor(l.color);
@@ -129,35 +158,31 @@ function buildStopPosterHtml(data: StopTimetable): string {
       </section>`;
   }).join("");
 
-  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
-  <title>Quadro orario · ${esc(data.stop.stopName)}</title>
-  <style>
-    ${PRINT_BASE_CSS}
-    @page { size: A4 portrait; margin: 8mm; }
-    .line { margin-bottom: 9px; break-inside: avoid; }
-    .l-head { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 6px 6px 0 0; }
-    .l-pill { color: #fff; font-weight: 800; border-radius: 6px; padding: 2px 10px; font-size: 16px; min-width: 44px; text-align: center; }
-    .l-info { flex: 1; min-width: 0; }
-    .l-name { font-size: 11px; font-weight: 600; }
-    .legend { font-size: 9.5px; color: #333; }
-    .legend span { margin-right: 10px; }
-    .l-count { font-size: 9px; color: #555; white-space: nowrap; }
-    table.hours { width: 100%; border-collapse: collapse; }
-    table.hours th { width: 34px; background: #111; color: #fff; font-size: 13px; font-weight: 800; text-align: center; border: 1px solid #444; padding: 2px; }
-    table.hours td { border: 1px solid #bbb; padding: 2px 6px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
-    table.hours .m { display: inline-block; margin-right: 7px; font-weight: 600; }
-    table.hours sup { font-size: 8px; font-weight: 700; }
-  </style></head><body>
+  return `
   <section class="page">
     <header class="doc">
       <div class="pill" style="background:#111">🚏</div>
       <h1>${esc(data.stop.stopName)}${data.stop.stopCode ? ` <small style="color:#666;font-size:12px">(${esc(data.stop.stopCode)})</small>` : ""}</h1>
-      <div class="day">${DAY_LABEL[data.dayType]}<br><small style="font-weight:400">Orari di partenza</small></div>
+      <div class="day">${esc(stopDayHeaderLabel(data))}<br><small style="font-weight:400">Orari di partenza</small></div>
     </header>
-    ${linesHtml || "<p style='padding:20px;color:#666'>Nessuna partenza per il tipo di giorno selezionato.</p>"}
+    ${linesHtml || "<p style='padding:20px;color:#666'>Nessuna partenza per la validità/giorno selezionati.</p>"}
     <footer class="doc"><span>TransitIntel · quadro orario di fermata</span><span>Generato il ${gen}</span></footer>
-  </section>
-  </body></html>`;
+  </section>`;
+}
+
+/** HTML standalone del quadro di fermata (A4 verticale). */
+function buildStopPosterHtml(data: StopTimetable): string {
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
+  <title>Quadro orario · ${esc(data.stop.stopName)}</title>
+  <style>${STOP_POSTER_CSS}</style></head><body>${stopPosterPage(data)}</body></html>`;
+}
+
+/** HTML standalone con i quadri di più fermate in un unico documento (una per pagina). */
+function buildCombinedStopPostersHtml(list: StopTimetable[]): string {
+  const body = list.filter((d) => d.lines.length > 0).map(stopPosterPage).join("");
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
+  <title>Quadri di palina</title>
+  <style>${STOP_POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna partenza per la selezione.</p>"}</body></html>`;
 }
 
 /** Etichetta giorno/validità per l'intestazione dell'orario di linea. */
@@ -249,9 +274,6 @@ export default function TimetablesPage() {
   const [selectedDays, setSelectedDays] = useState<DayType[]>(["weekday"]);
   const [printing, setPrinting] = useState(false);
 
-  // suffisso query per la validità (solo se progetto valorizzato)
-  const validityQS = projectId ? `&validity=${validity}&projectId=${encodeURIComponent(projectId)}` : "";
-
   const projectsQ = useQuery({
     queryKey: ["timetables", "ps-projects"],
     queryFn: () => apiFetch<any>("/api/planning-studio/projects"),
@@ -268,22 +290,25 @@ export default function TimetablesPage() {
     }
   }, [projects, projectId]);
 
+  // Base API: programma di esercizio del progetto Planning Studio (ps_*)
+  const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
+
   const stopSearchQ = useQuery({
-    queryKey: ["timetables", "stop-search", stopQuery],
-    queryFn: () => apiFetch<{ stops: StopSearchItem[] }>(`/api/timetables/stops/search?q=${encodeURIComponent(stopQuery)}`),
-    enabled: tab === "stop" && stopQuery.trim().length >= 2,
+    queryKey: ["pstt", "stop-search", projectId, stopQuery],
+    queryFn: () => apiFetch<{ stops: StopSearchItem[] }>(`${ptt}/stops/search?q=${encodeURIComponent(stopQuery)}`),
+    enabled: tab === "stop" && !!projectId && stopQuery.trim().length >= 2,
   });
 
   const stopTtQ = useQuery({
-    queryKey: ["timetables", "stop", selectedStop?.stopId, dayType, validity, projectId],
-    queryFn: () => apiFetch<StopTimetable>(`/api/timetables/stop/${encodeURIComponent(selectedStop!.stopId)}?dayType=${dayType}${validityQS}`),
-    enabled: tab === "stop" && !!selectedStop,
+    queryKey: ["pstt", "stop", projectId, selectedStop?.stopId, dayType, validity],
+    queryFn: () => apiFetch<StopTimetable>(`${ptt}/stop/${encodeURIComponent(selectedStop!.stopId)}?dayType=${dayType}&validity=${validity}`),
+    enabled: tab === "stop" && !!projectId && !!selectedStop,
   });
 
   const routesQ = useQuery({
-    queryKey: ["timetables", "routes"],
-    queryFn: () => apiFetch<{ routes: GtfsRoute[] }>("/api/timetables/routes"),
-    enabled: tab === "route",
+    queryKey: ["pstt", "routes", projectId],
+    queryFn: () => apiFetch<{ routes: GtfsRoute[] }>(`${ptt}/routes`),
+    enabled: tab === "route" && !!projectId,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -307,9 +332,13 @@ export default function TimetablesPage() {
     setSelectedDays((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
   }
 
+  function selectedIdsOrdered(): string[] {
+    return sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId);
+  }
+
   // Stampa "orari per il pubblico": per ogni linea × giorno selezionato.
   async function printPublic() {
-    const ids = sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId);
+    const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     if (!selectedDays.length) { toast.error("Seleziona almeno un tipo di giorno"); return; }
     setPrinting(true);
@@ -317,14 +346,42 @@ export default function TimetablesPage() {
       const docs: RouteTimetable[] = [];
       for (const rid of ids) {
         for (const d of selectedDays) {
-          const url = `/api/timetables/route/${encodeURIComponent(rid)}?dayType=${d}`
-            + (directionId !== "all" ? `&directionId=${directionId}` : "")
-            + validityQS;
+          const url = `${ptt}/route/${encodeURIComponent(rid)}?dayType=${d}&validity=${validity}`
+            + (directionId !== "all" ? `&directionId=${directionId}` : "");
           docs.push(await apiFetch<RouteTimetable>(url));
         }
       }
       if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
       openPrintWindow(buildCombinedRouteTimetableHtml(docs));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore durante la stampa");
+    } finally {
+      setPrinting(false);
+    }
+  }
+
+  // Stampa "orari alle fermate": quadro di palina per ogni fermata delle linee
+  // selezionate (con TUTTE le linee che vi passano) × giorno selezionato.
+  async function printPaline() {
+    const ids = selectedIdsOrdered();
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    if (!selectedDays.length) { toast.error("Seleziona almeno un tipo di giorno"); return; }
+    setPrinting(true);
+    try {
+      const rs = await apiFetch<{ stops: Array<{ stopId: string; stopName: string; stopCode: string | null }> }>(
+        `${ptt}/route-stops?routeIds=${ids.map(encodeURIComponent).join(",")}`,
+      );
+      const stops = rs.stops ?? [];
+      if (!stops.length) { toast.error("Nessuna fermata per le linee selezionate"); return; }
+      const docs: StopTimetable[] = [];
+      for (const s of stops) {
+        for (const d of selectedDays) {
+          const url = `${ptt}/stop/${encodeURIComponent(s.stopId)}?dayType=${d}&validity=${validity}`;
+          docs.push(await apiFetch<StopTimetable>(url));
+        }
+      }
+      if (!docs.some((x) => x.lines.length > 0)) { toast.error("Nessuna partenza per la selezione"); return; }
+      openPrintWindow(buildCombinedStopPostersHtml(docs));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally {
@@ -342,7 +399,7 @@ export default function TimetablesPage() {
         <div>
           <h1 className="text-xl font-bold">Stampa Orari</h1>
           <p className="text-xs text-muted-foreground">
-            Quadri di fermata e orari generali di linea dal programma di esercizio operativo (feed attivo)
+            Quadri di palina e orari generali di linea dal programma di esercizio del progetto Planning Studio
           </p>
         </div>
       </div>
@@ -526,14 +583,25 @@ export default function TimetablesPage() {
               <option value="0">Andata</option>
               <option value="1">Ritorno</option>
             </select>
-            <button
-              onClick={printPublic}
-              disabled={printing || selectedRouteIds.length === 0 || selectedDays.length === 0}
-              className="ml-auto flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-            >
-              {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
-              Stampa orari pubblico{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={printPaline}
+                disabled={printing || selectedRouteIds.length === 0 || selectedDays.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-sky-500/60 text-sky-300 hover:bg-sky-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
+                title="Quadro di palina per ogni fermata delle linee selezionate (tutte le linee che vi passano)"
+              >
+                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <SignpostBig className="w-4 h-4" />}
+                Stampa quadri palina
+              </button>
+              <button
+                onClick={printPublic}
+                disabled={printing || selectedRouteIds.length === 0 || selectedDays.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+              >
+                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+                Stampa orari pubblico{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
+              </button>
+            </div>
           </div>
 
           {/* Selezione linee */}
