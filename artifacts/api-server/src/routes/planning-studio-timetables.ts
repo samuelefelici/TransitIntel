@@ -296,4 +296,50 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /timetables/network?routeIds=a,b — fermate ordinate + coordinate per linea
+// Per ogni linea sceglie una variante rappresentativa (default, poi direzione 0) e
+// restituisce la sequenza fermate con lat/lon: base per la mappa di rete con gli
+// interscambi (fermate condivise da più linee).
+router.get("/planning-studio/:projectId/timetables/network", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    const ids = String(req.query.routeIds ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    const list = uuidList(ids);
+    if (!list) { res.json({ projectId, lines: [] }); return; }
+
+    const varQ = await db.execute<any>(sql.raw(`
+      SELECT DISTINCT ON (r.id) r.id AS route_id, r.short_name, r.long_name, r.color, v.id AS variant_id
+      FROM ps_routes r
+      JOIN ps_route_variants v ON v.route_id = r.id
+      WHERE r.project_id = '${projectId}' AND r.id IN (${list})
+      ORDER BY r.id, v.is_default DESC, v.direction ASC
+    `));
+    const variants = varQ.rows as any[];
+    const vList = uuidList(variants.map((v) => v.variant_id));
+
+    const stopsByVar = new Map<string, any[]>();
+    if (vList) {
+      const sQ = await db.execute<any>(sql.raw(`
+        SELECT vs.variant_id, vs.seq, s.id AS stop_id, s.name, s.lat, s.lon
+        FROM ps_variant_stops vs
+        JOIN ps_stops s ON s.id = vs.stop_id
+        WHERE vs.variant_id IN (${vList})
+        ORDER BY vs.variant_id, vs.seq
+      `));
+      for (const r of sQ.rows as any[]) {
+        if (!stopsByVar.has(r.variant_id)) stopsByVar.set(r.variant_id, []);
+        stopsByVar.get(r.variant_id)!.push({ stopId: r.stop_id, name: r.name, lat: r.lat, lon: r.lon });
+      }
+    }
+
+    const lines = variants.map((v) => ({
+      routeId: v.route_id, shortName: v.short_name, longName: v.long_name, color: v.color,
+      stops: stopsByVar.get(v.variant_id) ?? [],
+    })).sort((a, b) => String(a.shortName ?? "").localeCompare(String(b.shortName ?? ""), "it", { numeric: true }));
+
+    res.json({ projectId, lines });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;

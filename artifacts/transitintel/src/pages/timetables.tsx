@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Loader2, Map as MapIcon, MapPin, Printer, Search, SignpostBig,
+  ArrowLeftRight, Loader2, Map as MapIcon, MapPin, Printer, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
@@ -343,6 +343,82 @@ function buildCombinedLinePostersHtml(docs: RouteTimetable[]): string {
   <style>${POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
 }
 
+/* ── Mappa di rete (SVG): linee selezionate + interscambi (fermate condivise) ── */
+
+interface NetworkLine {
+  routeId: string; shortName: string | null; longName: string | null; color: string | null;
+  stops: Array<{ stopId: string; name: string; lat: number; lon: number }>;
+}
+interface NetworkData { projectId: string; lines: NetworkLine[] }
+
+function buildNetworkMapHtml(data: NetworkData): string {
+  const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
+  const all = lines.flatMap((l) => l.stops);
+  const gen = new Date().toLocaleString("it-IT");
+  if (!all.length) {
+    return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Mappa rete</title></head>
+    <body><p style="padding:20mm;font-family:Arial">Nessuna geometria fermate per le linee selezionate.</p></body></html>`;
+  }
+
+  const meanLat = all.reduce((s, p) => s + p.lat, 0) / all.length;
+  const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
+  const px = (lon: number) => lon * cosLat;
+  let minX = Infinity, maxX = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const p of all) {
+    const x = px(p.lon);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (p.lat < minLat) minLat = p.lat; if (p.lat > maxLat) maxLat = p.lat;
+  }
+  const W = 1000, H = 1414, M = 80;
+  const xr = (maxX - minX) || 1e-6, yr = (maxLat - minLat) || 1e-6;
+  const X = (lon: number) => M + ((px(lon) - minX) / xr) * (W - 2 * M);
+  const Y = (lat: number) => M + (1 - (lat - minLat) / yr) * (H - 2 * M);
+
+  // interscambi: fermate (per stopId) servite da ≥2 linee selezionate
+  const byStop = new Map<string, { name: string; lat: number; lon: number; routes: Set<string> }>();
+  for (const l of lines) for (const s of l.stops) {
+    const e = byStop.get(s.stopId) ?? { name: s.name, lat: s.lat, lon: s.lon, routes: new Set<string>() };
+    e.routes.add(l.routeId); byStop.set(s.stopId, e);
+  }
+  const interchanges = [...byStop.values()].filter((e) => e.routes.size >= 2);
+
+  const polys = lines.map((l) => {
+    const pts = l.stops.map((s) => `${X(s.lon).toFixed(1)},${Y(s.lat).toFixed(1)}`).join(" ");
+    return `<polyline points="${pts}" fill="none" stroke="${lineColor(l.color)}" stroke-width="6" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
+  }).join("");
+  const dots = lines.map((l) => l.stops.map((s) =>
+    `<circle cx="${X(s.lon).toFixed(1)}" cy="${Y(s.lat).toFixed(1)}" r="3" fill="${lineColor(l.color)}"/>`).join("")).join("");
+  const inter = interchanges.map((e) => {
+    const x = X(e.lon), y = Y(e.lat);
+    return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="#fff" stroke="#111" stroke-width="3"/>`
+      + `<text x="${(x + 12).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="11" font-weight="700" fill="#111">${esc(e.name)}</text></g>`;
+  }).join("");
+  const term = lines.map((l) => {
+    if (!l.stops.length) return "";
+    return [l.stops[0], l.stops[l.stops.length - 1]].map((s) =>
+      `<text x="${(X(s.lon) + 6).toFixed(1)}" y="${(Y(s.lat) - 8).toFixed(1)}" font-size="9" fill="#555">${esc(s.name)}</text>`).join("");
+  }).join("");
+  const legendRows = lines.map((l, i) =>
+    `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
+    + `<text x="22" y="9" font-size="11" fill="#111"><tspan font-weight="800">${esc(l.shortName ?? "?")}</tspan> ${esc(l.longName ?? "")}</text></g>`).join("");
+  const legendH = lines.length * 20 + 12;
+
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Mappa di rete</title>
+  <style>${PRINT_BASE_CSS} @page{size:A4 portrait;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head>
+  <body><section class="page">
+    <header class="doc"><div class="pill" style="background:#111">🗺️</div><h1>Mappa di rete · linee selezionate</h1>
+      <div class="day">${interchanges.length} interscambi</div></header>
+    <svg viewBox="0 0 ${W} ${H}" width="100%">
+      ${polys}${dots}${term}${inter}
+      <g transform="translate(${M}, ${H - legendH})">
+        <rect x="-8" y="-8" width="${W - 2 * M + 16}" height="${legendH}" fill="#ffffffcc" stroke="#ddd"/>
+        ${legendRows}
+      </g>
+    </svg>
+    <footer class="doc"><span>TransitIntel · mappa di rete (interscambi cerchiati)</span><span>Generato il ${gen}</span></footer>
+  </section></body></html>`;
+}
+
 /* ─── Pagina ─── */
 
 export default function TimetablesPage() {
@@ -511,6 +587,20 @@ export default function TimetablesPage() {
     } finally { setPrinting(false); }
   }
 
+  // Stampa "mappa di rete": linee selezionate sovrapposte, interscambi cerchiati.
+  async function printNetwork() {
+    const ids = selectedIdsOrdered();
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    setPrinting(true);
+    try {
+      const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
+      if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
+      openPrintWindow(buildNetworkMapHtml(data));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore durante la stampa");
+    } finally { setPrinting(false); }
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -587,6 +677,15 @@ export default function TimetablesPage() {
               <option value="1">Ritorno</option>
             </select>
             <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={printNetwork}
+                disabled={printing || selectedRouteIds.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
+                title="Mappa di rete: linee selezionate con gli interscambi (fermate condivise). Più evidente con 2+ linee."
+              >
+                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
+                Mappa rete
+              </button>
               <button
                 onClick={printPosters}
                 disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
