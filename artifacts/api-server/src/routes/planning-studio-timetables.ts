@@ -2,19 +2,19 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * STAMPA ORARI — sorgente: PROGRAMMA DI ESERCIZIO del progetto Planning Studio
  * ───────────────────────────────────────────────────────────────────────────
- * Legge direttamente dalle tabelle ps_* del progetto (NON dal feed GTFS):
+ * Legge dalle tabelle ps_* del progetto (NON dal feed GTFS):
  *   ps_routes / ps_route_variants / ps_variant_stops / ps_stops /
- *   ps_trips / ps_stop_times  + validità via ps_calendars / ps_calendar_dates
- *   e categorie globali ps_validity_categories / ps_validity_category_calendar.
+ *   ps_trips / ps_stop_times.
+ *
+ * Validità: il progetto classifica i giorni in DAY-TYPE (ps_day_types) e per
+ * ogni corsa definisce la validità per day-type (ps_trip_day_validity). La
+ * stampa filtra le corse per il day-type scelto (es. "Feriale Scuole Aperte").
  *
  *   GET /planning-studio/:projectId/timetables/routes
  *   GET /planning-studio/:projectId/timetables/route-stops?routeIds=a,b
  *   GET /planning-studio/:projectId/timetables/stops/search?q=
- *   GET /planning-studio/:projectId/timetables/route/:routeId?dayType=&validity=&directionId=
- *   GET /planning-studio/:projectId/timetables/stop/:stopId?dayType=&validity=
- *
- * Validità (scuole_aperte|scuole_chiuse) × giorno → "data rappresentativa"
- * (giorno tipo) → calendari attivi su quella data → corse filtrate.
+ *   GET /planning-studio/:projectId/timetables/route/:routeId?dayTypeId=&directionId=
+ *   GET /planning-studio/:projectId/timetables/stop/:stopId?dayTypeId=
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
@@ -25,101 +25,54 @@ import { mergeStopPatterns } from "../lib/timetable-merge";
 const router: IRouter = Router();
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
-type DayType = "weekday" | "saturday" | "sunday";
-type Validity = "scuole_aperte" | "scuole_chiuse";
 
-function parseDayType(q: unknown): DayType {
-  const s = String(q ?? "weekday");
-  return s === "saturday" || s === "sunday" ? s : "weekday";
-}
-function parseValidity(q: unknown): Validity {
-  return q === "scuole_chiuse" ? "scuole_chiuse" : "scuole_aperte";
-}
-/** lista SQL di uuid validati (per IN/ANY senza problemi di binding array) */
+/** lista SQL di uuid validati (per IN senza problemi di binding array) */
 function uuidList(ids: string[]): string {
   return ids.filter((x) => UUID_RE.test(x)).map((x) => `'${x}'`).join(",");
 }
-const DOW_COL = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
-/** calendar_id attivi su una data (ISO) per il progetto: settimanale ∪ +dates − −dates. */
-async function activeCalendarIdsOnDate(projectId: string, dISO: string): Promise<Set<string>> {
-  const dow = new Date(`${dISO}T00:00:00Z`).getUTCDay(); // 0=dom..6=sab
-  const col = DOW_COL[dow];
-  const weekly = await db.execute<any>(sql.raw(`
-    SELECT id FROM ps_calendars
-    WHERE project_id = '${projectId}'
-      AND start_date <= DATE '${dISO}' AND end_date >= DATE '${dISO}'
-      AND ${col} = true
-  `));
-  const add = await db.execute<any>(sql`
-    SELECT cd.calendar_id FROM ps_calendar_dates cd
-    JOIN ps_calendars c ON c.id = cd.calendar_id AND c.project_id = ${projectId}::uuid
-    WHERE cd.date = ${dISO}::date AND cd.exception_type = 1`);
-  const rem = await db.execute<any>(sql`
-    SELECT cd.calendar_id FROM ps_calendar_dates cd
-    JOIN ps_calendars c ON c.id = cd.calendar_id AND c.project_id = ${projectId}::uuid
-    WHERE cd.date = ${dISO}::date AND cd.exception_type = 2`);
-  const removed = new Set((rem.rows as any[]).map((x) => x.calendar_id));
-  const set = new Set<string>();
-  for (const x of weekly.rows as any[]) if (!removed.has(x.id)) set.add(x.id);
-  for (const x of add.rows as any[]) if (!removed.has(x.calendar_id)) set.add(x.calendar_id);
-  return set;
+/** Il progetto ha almeno una riga di validità corsa×day-type? */
+async function projectHasTripValidity(projectId: string): Promise<boolean> {
+  const r = await db.execute<any>(sql`
+    SELECT EXISTS(
+      SELECT 1 FROM ps_trip_day_validity v
+      JOIN ps_trips t ON t.id = v.trip_id
+      WHERE t.project_id = ${projectId}::uuid
+    ) AS has`);
+  return !!r.rows[0]?.has;
 }
 
-/** Sceglie la data rappresentativa (giorno tipo) per (validità, giorno). */
-async function representativeDate(
-  projectId: string, validity: Validity, dayType: DayType,
-): Promise<{ iso: string | null; note?: string }> {
-  const dows = dayType === "saturday" ? [6] : dayType === "sunday" ? [0] : [1, 2, 3, 4, 5];
-  const dowList = dows.join(",");
-  // festivo (sunday) → qualunque categoria; altrimenti la categoria scelta
-  const catWhere = dayType === "sunday" ? "" : `AND vc.code = '${validity}'`;
-  const dowCase = `CASE EXTRACT(DOW FROM d)
-      WHEN 0 THEN c.sunday WHEN 1 THEN c.monday WHEN 2 THEN c.tuesday
-      WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday WHEN 5 THEN c.friday
-      WHEN 6 THEN c.saturday END`;
+/** Nome del day-type (system globale o del progetto). */
+async function dayTypeName(projectId: string, dayTypeId: string): Promise<string | null> {
+  const r = await db.execute<any>(sql`
+    SELECT name FROM ps_day_types
+    WHERE id = ${dayTypeId}::uuid AND (project_id IS NULL OR project_id = ${projectId}::uuid)
+    LIMIT 1`);
+  return r.rows[0]?.name ?? null;
+}
 
-  // 1) candidate dal calendario delle categorie globali
-  let r = await db.execute<any>(sql.raw(`
-    SELECT vcc.date::text AS d,
-      (SELECT count(*) FROM ps_calendars c
-        WHERE c.project_id = '${projectId}'
-          AND c.start_date <= vcc.date AND c.end_date >= vcc.date
-          AND CASE EXTRACT(DOW FROM vcc.date)
-                WHEN 0 THEN c.sunday WHEN 1 THEN c.monday WHEN 2 THEN c.tuesday
-                WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday WHEN 5 THEN c.friday
-                WHEN 6 THEN c.saturday END)::int AS n
-    FROM ps_validity_category_calendar vcc
-    JOIN ps_validity_categories vc ON vc.id = vcc.category_id
-    WHERE EXTRACT(DOW FROM vcc.date) IN (${dowList}) ${catWhere}
-    ORDER BY n DESC, vcc.date DESC
-    LIMIT 1
-  `));
-  let row = r.rows[0];
-
-  // 2) fallback: nessuna categoria assegnata → enumera il range dei calendari del progetto
-  if (!row) {
-    r = await db.execute<any>(sql.raw(`
-      WITH rng AS (
-        SELECT MIN(start_date) AS a, MAX(end_date) AS b
-        FROM ps_calendars WHERE project_id = '${projectId}'
-      )
-      SELECT d::text AS d,
-        (SELECT count(*) FROM ps_calendars c
-          WHERE c.project_id = '${projectId}'
-            AND c.start_date <= d AND c.end_date >= d
-            AND ${dowCase})::int AS n
-      FROM rng, generate_series(rng.a, rng.b, INTERVAL '1 day') d
-      WHERE EXTRACT(DOW FROM d) IN (${dowList})
-      ORDER BY n DESC, d DESC
-      LIMIT 1
-    `));
-    row = r.rows[0];
+/**
+ * Clausola SQL (stringa, per sql.raw) che filtra le corse `t` per validità.
+ * - dayTypeId valido + il progetto usa la validità → EXISTS su ps_trip_day_validity.
+ * - altrimenti nessun filtro (tutte le corse attive), con nota.
+ */
+function tripValidityClause(dayTypeId: string | null, hasValidity: boolean): { clause: string; note: string | null } {
+  if (dayTypeId && hasValidity) {
+    return {
+      clause: `AND EXISTS (SELECT 1 FROM ps_trip_day_validity v
+                 WHERE v.trip_id = t.id AND v.day_type_id = '${dayTypeId}' AND v.is_valid = true)`,
+      note: null,
+    };
   }
+  if (dayTypeId && !hasValidity) {
+    return { clause: "", note: "Validità per giorno non configurata sul progetto: mostrate tutte le corse attive" };
+  }
+  return { clause: "", note: null };
+}
 
-  if (!row?.d) return { iso: null, note: "Nessuna data del calendario corrisponde alla validità/giorno scelti" };
-  if (!row.n || Number(row.n) === 0) return { iso: String(row.d), note: "Nessun servizio attivo per la combinazione scelta" };
-  return { iso: String(row.d) };
+function parseDayTypeId(q: unknown): string | null {
+  const s = String(q ?? "");
+  return UUID_RE.test(s) ? s : null;
 }
 
 // ── GET /timetables/routes — linee del progetto ─────────────────────────────
@@ -199,8 +152,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
     const projectId = String(req.params.projectId);
     const routeId = String(req.params.routeId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(routeId)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const dayType = parseDayType(req.query.dayType);
-    const validity = parseValidity(req.query.validity);
+    const dayTypeId = parseDayTypeId(req.query.dayTypeId);
     const dirRaw = req.query.directionId;
     const directionId = dirRaw === "0" || dirRaw === "1" ? Number(dirRaw) : null;
 
@@ -210,17 +162,10 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
     const route = routeQ.rows[0];
     if (!route) { res.status(404).json({ error: "Linea non trovata" }); return; }
 
-    const rep = await representativeDate(projectId, validity, dayType);
-    const activeCals = rep.iso ? await activeCalendarIdsOnDate(projectId, rep.iso) : new Set<string>();
-    const calList = uuidList([...activeCals]);
-
-    // Corse della linea attive nella data rappresentativa
+    const hasValidity = await projectHasTripValidity(projectId);
+    const { clause: valClause, note } = tripValidityClause(dayTypeId, hasValidity);
     const dirClause = directionId === null ? "" : `AND t.direction = ${directionId}`;
-    const calClause = calList
-      ? `AND (t.calendar_id IN (${calList})
-              OR (t.calendar_id IS NULL AND COALESCE(t.valid_from, DATE '${rep.iso}') <= DATE '${rep.iso}'
-                                        AND COALESCE(t.valid_to,   DATE '${rep.iso}') >= DATE '${rep.iso}'))`
-      : "AND false";
+
     const rowsQ = await db.execute<any>(sql.raw(`
       SELECT t.id AS trip_id, COALESCE(t.headsign, v.headsign) AS headsign, t.direction,
              st.stop_id, st.stop_seq, st.departure_time, st.arrival_time,
@@ -232,7 +177,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       WHERE t.project_id = '${projectId}' AND t.route_id = '${routeId}'
         AND COALESCE(t.is_active, true) = true
         ${dirClause}
-        ${calClause}
+        ${valClause}
       ORDER BY t.id, st.stop_seq
     `));
 
@@ -259,9 +204,10 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
 
     res.json({
       feedId: projectId,
-      dayType, directionId, validity,
-      representativeDate: rep.iso,
-      validityNote: rep.note ?? null,
+      directionId,
+      dayTypeId,
+      dayTypeName: dayTypeId ? await dayTypeName(projectId, dayTypeId) : null,
+      validityNote: note,
       route: { routeId: route.id, shortName: route.short_name, longName: route.long_name, color: route.color },
       stops: master,
       trips: tripList.map(({ firstTime: _f, ...t }) => t),
@@ -275,8 +221,7 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
     const projectId = String(req.params.projectId);
     const stopId = String(req.params.stopId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(stopId)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const dayType = parseDayType(req.query.dayType);
-    const validity = parseValidity(req.query.validity);
+    const dayTypeId = parseDayTypeId(req.query.dayTypeId);
 
     const stopQ = await db.execute<any>(sql`
       SELECT id, name, code FROM ps_stops
@@ -284,14 +229,8 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
     const stop = stopQ.rows[0];
     if (!stop) { res.status(404).json({ error: "Fermata non trovata" }); return; }
 
-    const rep = await representativeDate(projectId, validity, dayType);
-    const activeCals = rep.iso ? await activeCalendarIdsOnDate(projectId, rep.iso) : new Set<string>();
-    const calList = uuidList([...activeCals]);
-    const calClause = calList
-      ? `AND (t.calendar_id IN (${calList})
-              OR (t.calendar_id IS NULL AND COALESCE(t.valid_from, DATE '${rep.iso}') <= DATE '${rep.iso}'
-                                        AND COALESCE(t.valid_to,   DATE '${rep.iso}') >= DATE '${rep.iso}'))`
-      : "AND false";
+    const hasValidity = await projectHasTripValidity(projectId);
+    const { clause: valClause, note } = tripValidityClause(dayTypeId, hasValidity);
 
     // Partenze dalla fermata (escluso il capolinea d'arrivo)
     const depQ = await db.execute<any>(sql.raw(`
@@ -311,7 +250,7 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
       WHERE st.stop_id = '${stopId}'
         AND st.departure_time IS NOT NULL
         AND st.stop_seq < st.last_seq
-        ${calClause}
+        ${valClause}
       ORDER BY r.short_name, st.departure_time
     `));
 
@@ -340,9 +279,9 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
 
     res.json({
       feedId: projectId,
-      dayType, validity,
-      representativeDate: rep.iso,
-      validityNote: rep.note ?? null,
+      dayTypeId,
+      dayTypeName: dayTypeId ? await dayTypeName(projectId, dayTypeId) : null,
+      validityNote: note,
       stop: { stopId: stop.id, stopName: stop.name, stopCode: stop.code },
       lines: [...lines.values()]
         .sort((a, b) => String(a.shortName ?? "").localeCompare(String(b.shortName ?? ""), "it", { numeric: true }))
