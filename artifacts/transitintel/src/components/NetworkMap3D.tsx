@@ -91,7 +91,7 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
         mapboxAccessToken={MAPBOX_TOKEN}
         initialViewState={{ longitude: center.longitude, latitude: center.latitude, zoom: 12, pitch: 55, bearing: -18 }}
         style={{ width: "100%", height: "100%" }}
-        mapStyle="mapbox://styles/mapbox/standard"
+        mapStyle="mapbox://styles/mapbox/streets-v12"
         attributionControl={false}
         onLoad={(ev: any) => {
           const m = ev.target;
@@ -101,7 +101,35 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
           try {
             if (!m.getSource("mapbox-dem")) {
               m.addSource("mapbox-dem", { type: "raster-dem", url: "mapbox://mapbox.mapbox-terrain-dem-v1", tileSize: 512, maxzoom: 14 });
-              m.setTerrain({ source: "mapbox-dem", exaggeration: 1.15 });
+              m.setTerrain({ source: "mapbox-dem", exaggeration: 1.1 });
+            }
+          } catch { /* noop */ }
+          try {
+            if (!m.getLayer("sky")) {
+              m.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere", "sky-atmosphere-sun-intensity": 12 } });
+            }
+          } catch { /* noop */ }
+          // Palazzi 3D: estrusione colorata per altezza (i più alti risaltano),
+          // inserita sotto le etichette così i nomi restano leggibili.
+          try {
+            if (!m.getLayer("net3d-buildings")) {
+              const layers = m.getStyle().layers || [];
+              const labelLayerId = layers.find((l: any) => l.type === "symbol" && l.layout?.["text-field"])?.id;
+              m.addLayer({
+                id: "net3d-buildings",
+                source: "composite",
+                "source-layer": "building",
+                filter: ["==", ["get", "extrude"], "true"],
+                type: "fill-extrusion",
+                minzoom: 13,
+                paint: {
+                  "fill-extrusion-color": ["interpolate", ["linear"], ["get", "height"],
+                    0, "#dfe3ee", 15, "#c7cfe2", 40, "#9fb0d6", 90, "#6f87c4", 180, "#48619e"],
+                  "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.5, ["get", "height"]],
+                  "fill-extrusion-base": ["get", "min_height"],
+                  "fill-extrusion-opacity": 0.88,
+                },
+              }, labelLayerId);
             }
           } catch { /* noop */ }
         }}
@@ -112,12 +140,10 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
             <Layer
               id="net3d-line"
               type="line"
-              slot="top"
               paint={{
                 "line-color": ["get", "color"],
                 "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
                 "line-opacity": 0.95,
-                "line-emissive-strength": 1,
               }}
               layout={{ "line-cap": "round", "line-join": "round" }}
             />
