@@ -444,39 +444,28 @@ function schematicInnerSvg(
 
 const POSTER_CSS = `
   ${PRINT_BASE_CSS}
-  @page { size: A4 portrait; margin: 9mm; }
+  @page { size: A4 landscape; margin: 8mm; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .poster { display: grid; grid-template-columns: 46% 54%; gap: 10px; }
+  .poster { display: grid; grid-template-columns: 30% 70%; gap: 12px; align-items: start; }
   .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #555; margin: 4px 0 8px; }
-  /* diagramma percorso */
   .diagram { }
-  .rstop { position: relative; padding: 7px 6px 7px 30px; min-height: 14px; }
-  .rstop::before { content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 5px; background: var(--c); }
-  .rstop:first-child::before { top: 50%; }
-  .rstop:last-child::before { bottom: 50%; }
-  .rstop .dot { position: absolute; left: 5px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; border-radius: 50%; background: #fff; border: 4px solid var(--c); }
-  .rstop.term .dot { width: 17px; height: 17px; left: 3px; border-width: 5px; }
-  .rstop .rname { font-size: 11px; font-weight: 500; }
-  .rstop.term .rname { font-weight: 800; font-size: 12px; }
-  .rstop .roff { float: right; font-size: 9px; color: #777; font-variant-numeric: tabular-nums; }
-  /* orari di passaggio: per direzione, righe = nodi, colonne = tipo di giorno */
-  .dir { margin-bottom: 10px; break-inside: avoid; }
-  .dir h3 { font-size: 11px; font-weight: 800; background: var(--c); color: #fff; padding: 3px 7px; border-radius: 4px; margin-bottom: 3px; letter-spacing: .04em; }
-  table.nt { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.nt thead th { background: #111; color: #fff; font-size: 9px; padding: 2px 3px; text-align: center; }
-  table.nt thead th .dn { font-weight: 800; }
-  table.nt thead th .ds { font-size: 7px; font-weight: 500; opacity: .9; }
-  table.nt th.stop { text-align: left; background: #f1f1f1; color: #111; font-weight: 700; font-size: 9.5px; width: 30mm; border: 1px solid #bbb; padding: 1px 4px; }
-  table.nt th.stop.term { background: #e2e8f0; }
-  table.nt td { border: 1px solid #ccc; font-size: 9px; padding: 1px 3px; font-variant-numeric: tabular-nums; vertical-align: top; line-height: 1.35; }
-  table.nt td .m { display: inline-block; margin-right: 5px; }
-  table.nt tbody tr:nth-child(even) td { background: #fafafa; }
+  /* matrice orari: righe = fermate, colonne = corse (orario di partenza) */
+  .daygrp { margin-bottom: 10px; break-inside: avoid; }
+  .daygrp h4 { font-size: 11px; font-weight: 800; color: #fff; background: var(--c); padding: 3px 8px; border-radius: 4px; margin: 0 0 3px; letter-spacing: .03em; }
+  table.mx { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+  table.mx th, table.mx td { border: 1px solid #bbb; font-size: 9px; padding: 1px 3px; text-align: center; font-variant-numeric: tabular-nums; }
+  table.mx th.stop { text-align: left; background: #f1f1f1; font-weight: 700; max-width: 46mm; min-width: 30mm; }
+  table.mx th.stop.head { background: #111; color: #fff; }
+  table.mx th.stop.term { background: #e2e8f0; }
+  table.mx thead th { background: var(--c); color: #fff; font-weight: 800; }
+  table.mx tbody tr:nth-child(even) td { background: #fafafa; }
+  table.mx td.term { font-weight: 700; }
 `;
 
 interface PosterDir {
   dirLabel: string;
-  nodes: Array<{ name: string; term: boolean }>;   // nodi principali in ordine di percorso
-  days: Array<{ name: string; perNode: string[][] }>; // perNode[i] = orari di passaggio (HH:MM) al nodo i
+  nodes: Array<{ name: string; term: boolean }>;   // righe = fermate principali, in ordine
+  days: Array<{ name: string; trips: Array<{ dep: string; cells: string[] }> }>; // colonne = corse; cells[i] = transito al nodo i
 }
 interface PosterLine {
   route: RouteTimetable["route"];
@@ -488,6 +477,7 @@ interface PosterLine {
 function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): string {
   const col = lineColor(line.route.color);
   const gen = new Date().toLocaleString("it-IT");
+  const PER = 16; // corse (colonne) per blocco
 
   // PERCORSO (immagine invariata): variante più esercitata, schema octolineare.
   const schemStops: SchemStop[] = (line.pathStops ?? [])
@@ -501,22 +491,21 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
     ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: line.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? line.cityNodes : undefined })}</svg>`
     : "<div class='diagram'></div>";
 
-  // ORARI: per ogni direzione una tabella nodi × tipo di giorno con i passaggi.
-  const dirsHtml = line.directions.map((dir) => {
-    const days = dir.days;
-    const head = `<tr><th class="stop">Fermata</th>${days.map((d) => `<th><div class="dn">${esc(d.name)}</div></th>`).join("")}</tr>`;
-    const rows = dir.nodes.map((nd, i) =>
-      `<tr><th class="stop${nd.term ? " term" : ""}">${esc(nd.name)}</th>${days.map((d) => {
-        const times = d.perNode[i] ?? [];
-        return `<td>${times.map((t) => `<span class="m">${t}</span>`).join("")}</td>`;
-      }).join("")}</tr>`).join("");
-    const has = dir.nodes.length > 0 && days.some((d) => d.perNode.some((arr) => arr.length));
-    return `<div class="dir">
-        <h3>${esc(dir.dirLabel)}</h3>
-        ${has ? `<table class="nt"><thead>${head}</thead><tbody>${rows}</tbody></table>`
-              : "<p style='font-size:10px;color:#666'>Nessuna corsa.</p>"}
-      </div>`;
-  }).join("");
+  // MATRICE: righe = fermate, colonne = corse (orario di partenza), valori = transito.
+  const dirsHtml = line.directions.map((dir) =>
+    dir.days.map((day) => {
+      if (!day.trips.length) return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)}</h4><p style="font-size:10px;color:#666">Nessuna corsa.</p></div>`;
+      const chunks: Array<typeof day.trips> = [];
+      for (let i = 0; i < day.trips.length; i += PER) chunks.push(day.trips.slice(i, i + PER));
+      const tables = chunks.map((ch) => {
+        const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => `<th>${esc(t.dep)}</th>`).join("")}</tr>`;
+        const rows = dir.nodes.map((nd, i) =>
+          `<tr><th class="stop${nd.term ? " term" : ""}">${esc(nd.name)}</th>${ch.map((t) => `<td class="${nd.term ? "term" : ""}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
+        return `<table class="mx"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
+      }).join("");
+      return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)} · ${day.trips.length} corse</h4>${tables}</div>`;
+    }).join(""),
+  ).join("");
 
   return `
   <section class="page" style="--c:${col}">
@@ -531,16 +520,16 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
         ${percorso}
       </div>
       <div class="col">
-        <h2>Orari di passaggio</h2>
+        <h2>Orari (transito alle fermate)</h2>
         ${dirsHtml || "<p style='font-size:11px;color:#666'>Nessuna corsa per la selezione.</p>"}
       </div>
     </div>
-    <footer class="doc"><span>TransitIntel · linea ${esc(line.route.shortName ?? "")} · orari di passaggio alle fermate principali</span><span>Generato il ${gen}</span></footer>
+    <footer class="doc"><span>TransitIntel · linea ${esc(line.route.shortName ?? "")} · colonne = corse, valori = orario di transito</span><span>Generato il ${gen}</span></footer>
   </section>`;
 }
 
 function buildCombinedLinePostersHtml(lines: PosterLine[], nodesOnly = false, cityBg = false): string {
-  const hasTimes = (l: PosterLine) => l.directions.some((dir) => dir.days.some((d) => d.perNode.some((a) => a.length > 0)));
+  const hasTimes = (l: PosterLine) => l.directions.some((dir) => dir.days.some((d) => d.trips.length > 0));
   const body = lines.filter(hasTimes).map((l) => linePosterPage(l, nodesOnly, cityBg)).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Locandine di linea</title>
@@ -794,13 +783,21 @@ export default function TimetablesPage() {
               idxByStop.set(s.stopId, i);
               if (s.clusterId) { const a = idxByCluster.get(s.clusterId) ?? []; a.push(i); idxByCluster.set(s.clusterId, a); }
             });
-            const perNode = nodeKeys.map((nk) => {
-              const idxs = nk.kind === "cluster" ? (idxByCluster.get(nk.ref) ?? []) : (idxByStop.has(nk.ref) ? [idxByStop.get(nk.ref)!] : []);
-              const set = new Set<number>();
-              for (const t of rt.trips) for (const i of idxs) { const mm = hhmmToMin(t.times[i]); if (mm != null) set.add(mm); }
-              return [...set].sort((a, b) => a - b).map(fmtMin);
-            });
-            return { name: rt.dayTypeName ?? dtName.get(routeDayTypeIds[di]) ?? "—", perNode };
+            const idxsOf = (nk: typeof nodeKeys[number]) =>
+              nk.kind === "cluster" ? (idxByCluster.get(nk.ref) ?? []) : (idxByStop.has(nk.ref) ? [idxByStop.get(nk.ref)!] : []);
+            // una colonna per corsa: transito a ciascun nodo + orario di partenza
+            const trips = rt.trips.map((t) => {
+              const cells = nodeKeys.map((nk) => {
+                for (const i of idxsOf(nk)) { const v = t.times[i]; if (v) return v.slice(0, 5); }
+                return "";
+              });
+              const depIdx = cells.findIndex((c) => c);
+              return { dep: depIdx >= 0 ? cells[depIdx] : "", cells, sort: hhmmToMin(cells.find((c) => c)) ?? 9999 };
+            })
+              .filter((t) => t.cells.some((c) => c))
+              .sort((a, b) => a.sort - b.sort)
+              .map(({ sort: _s, ...t }) => t);
+            return { name: rt.dayTypeName ?? dtName.get(routeDayTypeIds[di]) ?? "—", trips };
           });
           directions.push({
             dirLabel: dir === "0" ? "Andata" : "Ritorno",
@@ -810,7 +807,7 @@ export default function TimetablesPage() {
         }
         if (route) lines.push({ route, pathStops, cityNodes, directions });
       }
-      const anyTimes = lines.some((l) => l.directions.some((d) => d.days.some((dd) => dd.perNode.some((a) => a.length))));
+      const anyTimes = lines.some((l) => l.directions.some((d) => d.days.some((dd) => dd.trips.length > 0)));
       if (!anyTimes) { toast.error("Nessuna corsa per la selezione"); return; }
       openPrintWindow(buildCombinedLinePostersHtml(lines, nodesOnly, cityBg));
     } catch (e: any) {
