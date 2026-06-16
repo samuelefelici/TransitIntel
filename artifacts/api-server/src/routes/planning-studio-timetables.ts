@@ -75,12 +75,12 @@ function parseDayTypeId(q: unknown): string | null {
   return UUID_RE.test(s) ? s : null;
 }
 
-/** Punti città per lo sfondo schematico = nodi logici (cluster isLogical) del progetto. */
+/** Punti città per lo sfondo schematico = TUTTI i cluster del progetto con
+ *  centroide (interscambi + nodi logici): i "punti principali" per orientarsi. */
 async function loadCityNodes(projectId: string): Promise<Array<{ name: string; lat: number; lon: number }>> {
   const r = await db.execute<any>(sql`
     SELECT name, center_lat, center_lon FROM ps_stop_clusters
     WHERE project_id = ${projectId}::uuid
-      AND COALESCE((attributes->>'isLogical')::boolean, false) = true
       AND center_lat IS NOT NULL AND center_lon IS NOT NULL
     ORDER BY name`);
   return (r.rows as any[]).map((c) => ({ name: c.name, lat: c.center_lat, lon: c.center_lon }));

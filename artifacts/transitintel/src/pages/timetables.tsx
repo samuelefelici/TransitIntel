@@ -346,12 +346,15 @@ function schematicInnerSvg(
   const X = (x: number) => M + ((x - minX) / xr) * (W - 2 * M);
   const Y = (y: number) => M + (1 - (y - minY) / yr) * (H - 2 * M);
 
-  // sfondo città (leggero, grigio)
-  const bg = cityNodes.map((c) => {
-    const x = X(c.gx), y = Y(c.gy);
-    return `<g opacity="0.4"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#94a3b8"/>`
-      + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#94a3b8">${esc(c.name)}</text></g>`;
-  }).join("");
+  // sfondo città (leggero, grigio) — salta i punti che coincidono con un nodo disegnato
+  const drawnPos = new Set([...node.values()].map((e) => `${e.gx.toFixed(5)},${e.gy.toFixed(5)}`));
+  const bg = cityNodes
+    .filter((c) => !drawnPos.has(`${c.gx.toFixed(5)},${c.gy.toFixed(5)}`))
+    .map((c) => {
+      const x = X(c.gx), y = Y(c.gy);
+      return `<g opacity="0.5"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#94a3b8"/>`
+        + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#64748b">${esc(c.name)}</text></g>`;
+    }).join("");
 
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
   const polys = usable.map((l) => {
