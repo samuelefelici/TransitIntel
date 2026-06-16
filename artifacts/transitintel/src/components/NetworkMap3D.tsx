@@ -1,0 +1,139 @@
+/**
+ * Mappa di rete 3D interattiva (Mapbox GL JS, stile Standard).
+ * Mostra le linee selezionate come tracciati colorati su edifici 3D + terreno,
+ * con i nodi logici / interscambi evidenziati. Esplorabile (ruota/inclina/zoom).
+ * Sorgente dati: /api/planning-studio/:projectId/timetables/network.
+ */
+import { useMemo, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Map as MapGL, Source, Layer, Marker, NavigationControl } from "react-map-gl/mapbox";
+import type { MapRef } from "react-map-gl/mapbox";
+import "mapbox-gl/dist/mapbox-gl.css";
+import { Loader2 } from "lucide-react";
+import { apiFetch } from "@/lib/api";
+
+const MAPBOX_TOKEN: string = import.meta.env.VITE_MAPBOX_TOKEN || "";
+
+interface NStop {
+  stopId: string; name: string; lat: number; lon: number;
+  clusterId?: string | null; clusterName?: string | null;
+  clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
+}
+interface NLine { routeId: string; shortName: string | null; longName: string | null; color: string | null; stops: NStop[] }
+interface NData { projectId: string; lines: NLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
+
+function col(c: string | null | undefined): string {
+  if (!c) return "#2563eb";
+  return c.startsWith("#") ? c : `#${c}`;
+}
+
+export default function NetworkMap3D({ projectId, routeIds }: { projectId: string; routeIds: string[] }) {
+  const mapRef = useRef<MapRef>(null);
+  const q = useQuery({
+    queryKey: ["timetables", "net3d", projectId, [...routeIds].sort().join(",")],
+    queryFn: () => apiFetch<NData>(
+      `/api/planning-studio/${encodeURIComponent(projectId)}/timetables/network?routeIds=${routeIds.map(encodeURIComponent).join(",")}`,
+    ),
+    enabled: !!projectId && routeIds.length > 0 && !!MAPBOX_TOKEN,
+  });
+  const data = q.data;
+
+  const { fc, bbox, nodes } = useMemo(() => {
+    const lines = (data?.lines ?? []).filter((l) => l.stops.length >= 2);
+    const features = lines.map((l) => ({
+      type: "Feature" as const,
+      properties: { color: col(l.color) },
+      geometry: { type: "LineString" as const, coordinates: l.stops.map((s) => [s.lon, s.lat]) },
+    }));
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const l of lines) for (const st of l.stops) {
+      if (st.lon < w) w = st.lon; if (st.lon > e) e = st.lon;
+      if (st.lat < s) s = st.lat; if (st.lat > n) n = st.lat;
+    }
+    const map = new Map<string, { lon: number; lat: number; name: string; lines: Set<string>; logical: boolean }>();
+    for (const l of lines) for (const st of l.stops) {
+      const key = (st.clusterLogical && st.clusterId) ? `c:${st.clusterId}` : `s:${st.stopId}`;
+      const lon = st.clusterLogical ? (st.clusterLon ?? st.lon) : st.lon;
+      const lat = st.clusterLogical ? (st.clusterLat ?? st.lat) : st.lat;
+      const name = st.clusterLogical ? (st.clusterName || st.name) : st.name;
+      let m = map.get(key);
+      if (!m) { m = { lon, lat, name, lines: new Set<string>(), logical: !!st.clusterLogical }; map.set(key, m); }
+      m.lines.add(l.routeId); if (st.clusterLogical) m.logical = true;
+    }
+    const nodes = [...map.values()].filter((m) => m.logical || m.lines.size >= 2);
+    return {
+      fc: { type: "FeatureCollection" as const, features },
+      bbox: (isFinite(w) ? [w, s, e, n] : null) as [number, number, number, number] | null,
+      nodes,
+    };
+  }, [data]);
+
+  if (!MAPBOX_TOKEN) {
+    return <div className="p-4 text-xs text-muted-foreground">VITE_MAPBOX_TOKEN non configurato — mappa 3D non disponibile.</div>;
+  }
+  if (!routeIds.length) {
+    return <div className="p-4 text-xs text-muted-foreground">Seleziona almeno una linea per la mappa 3D.</div>;
+  }
+
+  const center = bbox
+    ? { longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2 }
+    : { longitude: 13.5, latitude: 43.6 };
+
+  return (
+    <div className="relative rounded-xl border border-border/60 overflow-hidden" style={{ height: "70vh" }}>
+      {q.isLoading && (
+        <div className="absolute z-10 top-2 left-2 px-2 py-1 rounded bg-background/80 text-xs flex items-center gap-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico mappa…
+        </div>
+      )}
+      <MapGL
+        ref={mapRef}
+        mapboxAccessToken={MAPBOX_TOKEN}
+        initialViewState={{ longitude: center.longitude, latitude: center.latitude, zoom: 12, pitch: 55, bearing: -18 }}
+        style={{ width: "100%", height: "100%" }}
+        mapStyle="mapbox://styles/mapbox/standard"
+        attributionControl={false}
+        onLoad={(ev: any) => {
+          const m = ev.target;
+          try {
+            if (bbox) m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 70, pitch: 55, bearing: -18, duration: 0 });
+          } catch { /* noop */ }
+          try {
+            if (!m.getSource("mapbox-dem")) {
+              m.addSource("mapbox-dem", { type: "raster-dem", url: "mapbox://mapbox.mapbox-terrain-dem-v1", tileSize: 512, maxzoom: 14 });
+              m.setTerrain({ source: "mapbox-dem", exaggeration: 1.15 });
+            }
+          } catch { /* noop */ }
+        }}
+      >
+        <NavigationControl position="top-right" visualizePitch />
+        {fc.features.length > 0 && (
+          <Source id="net3d" type="geojson" data={fc as any}>
+            <Layer
+              id="net3d-line"
+              type="line"
+              slot="top"
+              paint={{
+                "line-color": ["get", "color"],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-opacity": 0.95,
+                "line-emissive-strength": 1,
+              }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+          </Source>
+        )}
+        {nodes.map((nd, i) => (
+          <Marker key={i} longitude={nd.lon} latitude={nd.lat} anchor="center">
+            <div className="flex items-center gap-1">
+              <span style={{ width: nd.logical ? 13 : 8, height: nd.logical ? 13 : 8, borderRadius: "50%", background: "#fff", border: "3px solid #111", boxShadow: "0 1px 3px rgba(0,0,0,.4)" }} />
+              {nd.logical && (
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#111", background: "rgba(255,255,255,.82)", padding: "0 4px", borderRadius: 4, whiteSpace: "nowrap" }}>{nd.name}</span>
+              )}
+            </div>
+          </Marker>
+        ))}
+      </MapGL>
+    </div>
+  );
+}

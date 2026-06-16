@@ -18,6 +18,9 @@ import {
   ArrowLeftRight, Loader2, Map as MapIcon, MapPin, Printer, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import NetworkMap3D from "@/components/NetworkMap3D";
+
+const MAPBOX_TOKEN: string = (import.meta as any).env?.VITE_MAPBOX_TOKEN || "";
 
 /* ─── Tipi (allineati a /api/planning-studio/:projectId/timetables/*) ─── */
 
@@ -336,12 +339,17 @@ function mercatorTiles(
     for (let ty = tyMin; ty <= tyMax; ty++) {
       if (tx < 0 || ty < 0 || tx > maxTile || ty > maxTile) continue;
       const sx = (tx * 256 - minPxX) * k + leftPad, sy = (ty * 256 - minPxY) * k + topPad;
-      const url = `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${tx}/${ty}.png`;
+      // Mapbox raster (stile light, @2x per nitidezza in stampa) se c'è il token,
+      // altrimenti CARTO Positron come fallback.
+      const url = MAPBOX_TOKEN
+        ? `https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/${z}/${tx}/${ty}@2x?access_token=${MAPBOX_TOKEN}`
+        : `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${tx}/${ty}.png`;
       imgs += `<image href="${url}" xlink:href="${url}" x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${(tsz + 0.5).toFixed(1)}" height="${(tsz + 0.5).toFixed(1)}" preserveAspectRatio="none"/>`;
     }
   }
+  const attrib = MAPBOX_TOKEN ? "© Mapbox · © OpenStreetMap" : "© OpenStreetMap · © CARTO";
   const tiles = `<g opacity="0.6">${imgs}</g>`
-    + `<text x="${(W - 4).toFixed(0)}" y="${(H - 3).toFixed(0)}" text-anchor="end" font-size="7" fill="#9aa">© OpenStreetMap · © CARTO</text>`;
+    + `<text x="${(W - 4).toFixed(0)}" y="${(H - 3).toFixed(0)}" text-anchor="end" font-size="7" fill="#9aa">${attrib}</text>`;
   return { tiles, P };
 }
 
@@ -636,6 +644,7 @@ export default function TimetablesPage() {
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
+  const [show3d, setShow3d] = useState(false);         // anteprima mappa 3D interattiva
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
 
@@ -886,6 +895,14 @@ export default function TimetablesPage() {
             </label>
             <div className="ml-auto flex items-center gap-2">
               <button
+                onClick={() => setShow3d((v) => !v)}
+                disabled={selectedRouteIds.length === 0}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border disabled:opacity-50 text-sm font-medium transition-colors ${show3d ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" : "border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/10"}`}
+                title="Anteprima mappa 3D interattiva (edifici + terreno) delle linee selezionate"
+              >
+                <MapIcon className="w-4 h-4" /> Mappa 3D
+              </button>
+              <button
                 onClick={printNetwork}
                 disabled={printing || selectedRouteIds.length === 0}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
@@ -953,8 +970,12 @@ export default function TimetablesPage() {
             </div>
           </div>
 
+          {show3d && (
+            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} />
+          )}
+
           <p className="text-[11px] text-muted-foreground">
-            Documento unico: una sezione per ogni linea × day-type selezionato. «Stampa quadri palina» genera invece il quadro di ogni fermata delle linee scelte (con tutte le linee che vi passano). Output → salva in PDF dal dialogo di stampa.
+            Documento unico: una sezione per ogni linea × day-type selezionato. «Stampa quadri palina» genera invece il quadro di ogni fermata delle linee scelte (con tutte le linee che vi passano). «Mappa 3D» è un'anteprima interattiva (edifici + terreno), non per la stampa. Output → salva in PDF dal dialogo di stampa.
           </p>
         </div>
       )}
