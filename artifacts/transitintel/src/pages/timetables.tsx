@@ -298,13 +298,58 @@ function elbow(ax: number, ay: number, bx: number, by: number): Array<{ x: numbe
   return [bend, { x: bx, y: by }];
 }
 
-interface SchemNode { gx: number; gy: number; n: number; name: string; lines: Set<number>; logical: boolean }
+interface SchemNode { lon: number; lat: number; n: number; name: string; lines: Set<number>; logical: boolean }
+
+/** Layer di tile cartografiche (CARTO Positron light, senza etichette) per una
+ *  bbox geografica, in Web Mercator. Ritorna { tiles, P } dove P proietta lon/lat
+ *  nello spazio schermo allineato alle tile. */
+function mercatorTiles(
+  pts: Array<{ lon: number; lat: number }>, W: number, H: number, M: number,
+): { tiles: string; P: (lon: number, lat: number) => { x: number; y: number } } {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const mX = (lon: number) => (lon + 180) / 360;
+  const mY = (lat: number) => (1 - Math.log(Math.tan(rad(lat)) + 1 / Math.cos(rad(lat))) / Math.PI) / 2;
+
+  let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (const p of pts) { const x = mX(p.lon), y = mY(p.lat); if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y; }
+  // padding 10% attorno alla rete
+  const padX = (mxx - mnx) * 0.1 || 1e-4, padY = (mxy - mny) * 0.1 || 1e-4;
+  mnx -= padX; mxx += padX; mny -= padY; mxy += padY;
+  const spanX = (mxx - mnx) || 1e-9, spanY = (mxy - mny) || 1e-9;
+  const cw = W - 2 * M, ch = H - 2 * M;
+
+  let z = Math.floor(Math.log2(Math.min(cw / (spanX * 256), ch / (spanY * 256))));
+  z = Math.max(1, Math.min(18, isFinite(z) ? z : 1));
+  const wpx = 256 * Math.pow(2, z);
+  const bpw = spanX * wpx, bph = spanY * wpx;
+  const k = Math.min(cw / bpw, ch / bph);
+  const minPxX = mnx * wpx, minPxY = mny * wpx;
+  const leftPad = M + (cw - bpw * k) / 2, topPad = M + (ch - bph * k) / 2;
+  const P = (lon: number, lat: number) => ({ x: (mX(lon) * wpx - minPxX) * k + leftPad, y: (mY(lat) * wpx - minPxY) * k + topPad });
+
+  const tsz = 256 * k;
+  const maxTile = Math.pow(2, z) - 1;
+  const txMin = Math.floor(minPxX / 256), txMax = Math.floor((minPxX + bpw) / 256);
+  const tyMin = Math.floor(minPxY / 256), tyMax = Math.floor((minPxY + bph) / 256);
+  let imgs = "";
+  for (let tx = txMin; tx <= txMax; tx++) {
+    for (let ty = tyMin; ty <= tyMax; ty++) {
+      if (tx < 0 || ty < 0 || tx > maxTile || ty > maxTile) continue;
+      const sx = (tx * 256 - minPxX) * k + leftPad, sy = (ty * 256 - minPxY) * k + topPad;
+      const url = `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${tx}/${ty}.png`;
+      imgs += `<image href="${url}" xlink:href="${url}" x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${(tsz + 0.5).toFixed(1)}" height="${(tsz + 0.5).toFixed(1)}" preserveAspectRatio="none"/>`;
+    }
+  }
+  const tiles = `<g opacity="0.6">${imgs}</g>`
+    + `<text x="${(W - 4).toFixed(0)}" y="${(H - 3).toFixed(0)}" text-anchor="end" font-size="7" fill="#9aa">© OpenStreetMap · © CARTO</text>`;
+  return { tiles, P };
+}
 
 /** Markup interno <svg> (senza wrapper): linee octolineari che CONVERGONO nei
- *  nodi condivisi, fermate con nome, sfondo leggero dei punti città. */
+ *  nodi condivisi, fermate con nome, sfondo punti città e (opz.) cartografia. */
 function schematicInnerSvg(
   lines: SchemLine[], W: number, H: number, M: number,
-  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }> },
+  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }>; basemap?: boolean },
 ): string {
   const nameSize = opts?.nameSize ?? 8;
   const src = opts?.nodesOnly
@@ -313,76 +358,80 @@ function schematicInnerSvg(
   const usable = src.filter((l) => l.stops.length > 0);
   if (!usable.length) return "";
 
-  const allStops = usable.flatMap((l) => l.stops);
-  const meanLat = allStops.reduce((s, p) => s + p.lat, 0) / allStops.length;
-  const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
-  const gx = (lon: number) => lon * cosLat;
-
   // CHIAVE NODO: per le fermate di un nodo logico (cluster isLogical) si usa il
   // cluster + il suo centroide → linee diverse che toccano lo stesso nodo logico
   // CONVERGONO nello stesso punto, anche senza "Solo nodi logici".
   const keyOf = (s: SchemStop) => (s.clusterLogical && s.clusterId) ? `c:${s.clusterId}` : `s:${s.stopId}`;
   const posOf = (s: SchemStop) => (s.clusterLogical)
-    ? { gx: gx(s.clusterLon ?? s.lon), gy: s.clusterLat ?? s.lat, name: s.clusterName || s.name, logical: true }
-    : { gx: gx(s.lon), gy: s.lat, name: s.name, logical: false };
+    ? { lon: s.clusterLon ?? s.lon, lat: s.clusterLat ?? s.lat, name: s.clusterName || s.name, logical: true }
+    : { lon: s.lon, lat: s.lat, name: s.name, logical: false };
 
-  // posizione geografica CANONICA per nodo (media occorrenze) → condivisa tra linee
+  // posizione geografica CANONICA per nodo (media occorrenze, lon/lat grezzi)
   const node = new Map<string, SchemNode>();
   usable.forEach((l, li) => l.stops.forEach((s) => {
     const k = keyOf(s); const p = posOf(s);
     let e = node.get(k);
-    if (!e) { e = { gx: 0, gy: 0, n: 0, name: p.name, lines: new Set<number>(), logical: p.logical }; node.set(k, e); }
-    e.gx += p.gx; e.gy += p.gy; e.n += 1; e.lines.add(li); if (p.logical) e.logical = true;
+    if (!e) { e = { lon: 0, lat: 0, n: 0, name: p.name, lines: new Set<number>(), logical: p.logical }; node.set(k, e); }
+    e.lon += p.lon; e.lat += p.lat; e.n += 1; e.lines.add(li); if (p.logical) e.logical = true;
   }));
-  for (const e of node.values()) { e.gx /= e.n; e.gy /= e.n; }
+  for (const e of node.values()) { e.lon /= e.n; e.lat /= e.n; }
 
-  const cityNodes = (opts?.cityNodes ?? []).map((c) => ({ name: c.name, gx: gx(c.lon), gy: c.lat }));
+  const cityNodes = (opts?.cityNodes ?? []).map((c) => ({ name: c.name, lon: c.lon, lat: c.lat }));
+  const geoPts = [...[...node.values()].map((e) => ({ lon: e.lon, lat: e.lat })), ...cityNodes.map((c) => ({ lon: c.lon, lat: c.lat }))];
 
-  // bbox su nodi + sfondo città
-  const allPts = [...[...node.values()].map((e) => ({ x: e.gx, y: e.gy })), ...cityNodes.map((c) => ({ x: c.gx, y: c.gy }))];
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of allPts) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
-  const xr = (maxX - minX) || 1e-6, yr = (maxY - minY) || 1e-6;
-  const X = (x: number) => M + ((x - minX) / xr) * (W - 2 * M);
-  const Y = (y: number) => M + (1 - (y - minY) / yr) * (H - 2 * M);
+  // Proiezione: Web Mercator + tile cartografiche (se basemap), altrimenti
+  // equirettangolare scalata a riempire la pagina.
+  let P: (lon: number, lat: number) => { x: number; y: number };
+  let tilesLayer = "";
+  if (opts?.basemap && geoPts.length) {
+    const mt = mercatorTiles(geoPts, W, H, M);
+    P = mt.P; tilesLayer = mt.tiles;
+  } else {
+    const meanLat = geoPts.reduce((s, p) => s + p.lat, 0) / (geoPts.length || 1);
+    const cosLat = Math.cos((meanLat * Math.PI) / 180) || 1;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of geoPts) { const x = p.lon * cosLat; if (x < minX) minX = x; if (x > maxX) maxX = x; if (p.lat < minY) minY = p.lat; if (p.lat > maxY) maxY = p.lat; }
+    const xr = (maxX - minX) || 1e-6, yr = (maxY - minY) || 1e-6;
+    P = (lon: number, lat: number) => ({ x: M + ((lon * cosLat - minX) / xr) * (W - 2 * M), y: M + (1 - (lat - minY) / yr) * (H - 2 * M) });
+  }
 
   // sfondo città (leggero, grigio) — salta i punti che coincidono con un nodo disegnato
-  const drawnPos = new Set([...node.values()].map((e) => `${e.gx.toFixed(5)},${e.gy.toFixed(5)}`));
+  const drawnPos = new Set([...node.values()].map((e) => `${e.lon.toFixed(5)},${e.lat.toFixed(5)}`));
   const bg = cityNodes
-    .filter((c) => !drawnPos.has(`${c.gx.toFixed(5)},${c.gy.toFixed(5)}`))
+    .filter((c) => !drawnPos.has(`${c.lon.toFixed(5)},${c.lat.toFixed(5)}`))
     .map((c) => {
-      const x = X(c.gx), y = Y(c.gy);
+      const { x, y } = P(c.lon, c.lat);
       return `<g opacity="0.5"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="#94a3b8"/>`
         + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#64748b">${esc(c.name)}</text></g>`;
     }).join("");
 
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
   const polys = usable.map((l) => {
-    const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return { x: X(e.gx), y: Y(e.gy) }; });
+    const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); });
     if (!sp.length) return "";
     let d = `${sp[0].x.toFixed(1)},${sp[0].y.toFixed(1)}`;
     for (let i = 1; i < sp.length; i++) {
       for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
     }
-    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity="0.92"/>`;
   }).join("");
 
   // nodi + nomi
   let dots = "", names = "", idx = 0;
   for (const e of node.values()) {
-    const x = X(e.gx), y = Y(e.gy);
+    const { x, y } = P(e.lon, e.lat);
     const major = e.logical || e.lines.size >= 2; // nodo logico o interscambio → evidenziato
     if (major) {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#fff" stroke="#111" stroke-width="3"/>`;
-      names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111">${esc(e.name)}</text>`;
+      names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111" stroke="#fff" stroke-width="0.6" paint-order="stroke">${esc(e.name)}</text>`;
     } else {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#fff" stroke="#111" stroke-width="1.6"/>`;
       const up = idx % 2 === 0;
-      names += `<text x="${(x + 6).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333">${esc(e.name)}</text>`;
+      names += `<text x="${(x + 6).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333" stroke="#fff" stroke-width="0.5" paint-order="stroke">${esc(e.name)}</text>`;
     }
     idx++;
   }
-  return bg + polys + dots + names;
+  return tilesLayer + bg + polys + dots + names;
 }
 
 const POSTER_CSS = `
@@ -521,7 +570,7 @@ interface NetworkLine {
 }
 interface NetworkData { projectId: string; lines: NetworkLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
-function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -541,7 +590,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   const legendH = lines.length * 20 + 12;
   const svgBody = schematicInnerSvg(
     lines.map((l) => ({ color: l.color, stops: l.stops })),
-    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined },
+    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg },
   );
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
@@ -552,7 +601,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   <body><section class="page">
     <header class="doc"><div class="pill" style="background:#111">🗺️</div><h1>Mappa di rete · schema linee</h1>
       <div class="day">${interCount} interscambi</div></header>
-    <svg viewBox="0 0 ${W} ${H}" width="100%">
+    <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${W} ${H}" width="100%">
       ${svgBody}
       <g transform="translate(${M}, ${H - legendH})">
         <rect x="-8" y="-8" width="${W - 2 * M + 16}" height="${legendH}" fill="#ffffffcc" stroke="#ddd"/>
@@ -586,6 +635,7 @@ export default function TimetablesPage() {
   const [printing, setPrinting] = useState(false);
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
+  const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
 
@@ -741,7 +791,7 @@ export default function TimetablesPage() {
     try {
       const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
-      openPrintWindow(buildNetworkMapHtml(data, nodesOnly, cityBg));
+      openPrintWindow(buildNetworkMapHtml(data, nodesOnly, cityBg, mapBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -829,6 +879,10 @@ export default function TimetablesPage() {
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Sfondo schematico leggero con i punti principali (nodi logici della città)">
               <input type="checkbox" checked={cityBg} onChange={(e) => setCityBg(e.target.checked)} className="accent-slate-400" />
               Sfondo città
+            </label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Cartografia di sfondo (mappa stilizzata leggera) solo nella Mappa rete">
+              <input type="checkbox" checked={mapBg} onChange={(e) => setMapBg(e.target.checked)} className="accent-emerald-400" />
+              Cartografia (mappa rete)
             </label>
             <div className="ml-auto flex items-center gap-2">
               <button
