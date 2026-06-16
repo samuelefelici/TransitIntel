@@ -339,10 +339,10 @@ function mercatorTiles(
     for (let ty = tyMin; ty <= tyMax; ty++) {
       if (tx < 0 || ty < 0 || tx > maxTile || ty > maxTile) continue;
       const sx = (tx * 256 - minPxX) * k + leftPad, sy = (ty * 256 - minPxY) * k + topPad;
-      // Mapbox raster (stile light, @2x per nitidezza in stampa) se c'è il token,
-      // altrimenti CARTO Positron come fallback.
+      // Mapbox raster (stile streets, colori veri: acqua/parchi; @2x per nitidezza)
+      // se c'è il token, altrimenti CARTO Positron come fallback.
       const url = MAPBOX_TOKEN
-        ? `https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/256/${z}/${tx}/${ty}@2x?access_token=${MAPBOX_TOKEN}`
+        ? `https://api.mapbox.com/styles/v1/mapbox/streets-v12/tiles/256/${z}/${tx}/${ty}@2x?access_token=${MAPBOX_TOKEN}`
         : `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${tx}/${ty}.png`;
       imgs += `<image href="${url}" xlink:href="${url}" x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${(tsz + 0.5).toFixed(1)}" height="${(tsz + 0.5).toFixed(1)}" preserveAspectRatio="none"/>`;
     }
