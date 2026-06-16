@@ -459,92 +459,74 @@ const POSTER_CSS = `
   .rstop .rname { font-size: 11px; font-weight: 500; }
   .rstop.term .rname { font-weight: 800; font-size: 12px; }
   .rstop .roff { float: right; font-size: 9px; color: #777; font-variant-numeric: tabular-nums; }
-  /* partenze cadenzate */
+  /* partenze dal capolinea — una colonna per tipo di giorno */
   table.dep { width: 100%; border-collapse: collapse; }
-  table.dep th { width: 30px; background: var(--c); color: #fff; font-size: 13px; font-weight: 800; text-align: center; border: 1px solid rgba(0,0,0,.15); }
-  table.dep td { border: 1px solid #ccc; padding: 2px 5px; font-size: 13px; font-variant-numeric: tabular-nums; }
-  table.dep .m { display: inline-block; margin-right: 8px; font-weight: 700; }
-  .kpis { display: flex; gap: 6px; margin: 8px 0 4px; flex-wrap: wrap; }
-  .kpi { flex: 1; min-width: 70px; border: 1px solid #ddd; border-radius: 8px; padding: 6px 8px; }
-  .kpi .v { font-size: 17px; font-weight: 800; }
-  .kpi .l { font-size: 8.5px; text-transform: uppercase; letter-spacing: .05em; color: #777; }
+  table.dep thead th { background: var(--c); color: #fff; border: 1px solid rgba(0,0,0,.15); padding: 3px 4px; text-align: center; }
+  table.dep thead th.hour { width: 26px; }
+  table.dep thead th .dn { font-size: 11px; font-weight: 800; line-height: 1.1; }
+  table.dep thead th .ds { font-size: 7.5px; font-weight: 500; opacity: .92; }
+  table.dep tbody th.hour { width: 26px; background: #111; color: #fff; font-size: 12px; font-weight: 800; text-align: center; border: 1px solid #444; }
+  table.dep tbody td { border: 1px solid #ccc; padding: 2px 5px; font-size: 12px; font-variant-numeric: tabular-nums; vertical-align: top; }
+  table.dep tbody tr:nth-child(even) td { background: #fafafa; }
+  table.dep .m { display: inline-block; margin-right: 6px; font-weight: 700; }
 `;
 
-function linePosterPage(d: RouteTimetable, nodesOnly = false, cityBg = false): string {
-  const col = lineColor(d.route.color);
+interface PosterLine {
+  route: RouteTimetable["route"];
+  pathStops?: RouteTimetable["pathStops"];
+  cityNodes?: RouteTimetable["cityNodes"];
+  directionId: number | null;
+  /** un blocco per ciascun tipo di giorno: solo orari di PARTENZA dal capolinea */
+  days: Array<{ name: string; deps: number[] }>;
+}
+
+function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): string {
+  const col = lineColor(line.route.color);
   const gen = new Date().toLocaleString("it-IT");
-  const dirLabel = d.directionId == null ? "Andata + Ritorno" : d.directionId === 0 ? "Andata" : "Ritorno";
-  const dayLbl = d.dayTypeName ?? "Tutte le corse";
+  const dirLabel = line.directionId == null ? "Andata + Ritorno" : line.directionId === 0 ? "Andata" : "Ritorno";
 
-  // partenze = primo orario non nullo di ogni corsa
-  const deps: number[] = [];
-  for (const t of d.trips) {
-    const v = t.times.find((x) => x);
-    const mm = hhmmToMin(v);
-    if (mm != null) deps.push(mm);
-  }
-  deps.sort((a, b) => a - b);
-
-  // corsa di riferimento (più completa) per i tempi di percorrenza cumulati
-  let ref = d.trips[0]; let bestC = -1;
-  for (const t of d.trips) { const c = t.times.filter(Boolean).length; if (c > bestC) { bestC = c; ref = t; } }
-  const refStart = ref ? hhmmToMin(ref.times.find((x) => x)) : null;
-  const offsets = d.stops.map((_, i) => {
-    const mm = ref ? hhmmToMin(ref.times[i]) : null;
-    return (mm != null && refStart != null) ? mm - refStart : null;
-  });
-
-  // percorso: schematico octolineare (se ci sono coordinate) con nomi fermate,
-  // altrimenti la striscia verticale con i tempi cumulati come fallback.
-  // disegno: usa il percorso della variante più esercitata (pathStops), gli orari
-  // restano su tutte le corse; fallback al master se pathStops è assente.
-  const pathSrc = (d.pathStops && d.pathStops.length >= 2) ? d.pathStops : d.stops;
-  const schemStops: SchemStop[] = pathSrc
+  // PERCORSO (immagine invariata): variante più esercitata, schema octolineare.
+  const schemStops: SchemStop[] = (line.pathStops ?? [])
     .filter((s) => s.lat != null && s.lon != null)
     .map((s) => ({
       stopId: s.stopId, name: s.stopName, lat: s.lat as number, lon: s.lon as number,
       clusterId: s.clusterId, clusterName: s.clusterName, clusterLogical: s.clusterLogical,
       clusterLat: s.clusterLat, clusterLon: s.clusterLon,
     }));
-  const diagramStrip = d.stops.map((s, i) => {
-    const term = i === 0 || i === d.stops.length - 1;
-    const off = offsets[i];
-    return `<div class="rstop${term ? " term" : ""}"><span class="dot"></span>${off != null ? `<span class="roff">${off === 0 ? "0′" : `+${off}′`}</span>` : ""}<span class="rname">${esc(s.stopName)}</span></div>`;
-  }).join("");
   const percorso = schemStops.length >= 2
-    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: d.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? d.cityNodes : undefined })}</svg>`
-    : `<div class="diagram">${diagramStrip}</div>`;
+    ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: line.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? line.cityNodes : undefined })}</svg>`
+    : "<div class='diagram'></div>";
 
-  // partenze per ora (cadenzato)
-  const byHour = new Map<number, number[]>();
-  for (const m of deps) { const h = Math.floor(m / 60) % 24; if (!byHour.has(h)) byHour.set(h, []); byHour.get(h)!.push(((m % 60) + 60) % 60); }
-  const depRows = [...byHour.entries()].sort((a, b) => a[0] - b[0]).map(([h, mins]) =>
-    `<tr><th>${String(h).padStart(2, "0")}</th><td>${mins.sort((a, b) => a - b).map((mm) => `<span class="m">${String(mm).padStart(2, "0")}</span>`).join("")}</td></tr>`,
-  ).join("");
-
-  // KPI
-  const first = deps.length ? fmtMin(deps[0]) : "—";
-  const last = deps.length ? fmtMin(deps[deps.length - 1]) : "—";
-  const gaps: number[] = [];
-  for (let i = 1; i < deps.length; i++) gaps.push(deps[i] - deps[i - 1]);
-  gaps.sort((a, b) => a - b);
-  const medGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : null;
-  const lastOff = [...offsets].reverse().find((x) => x != null);
+  // PARTENZE: tutte le corse, una colonna per tipo di giorno, righe = ora.
+  const perDay = line.days.map((d) => {
+    const sorted = [...d.deps].sort((a, b) => a - b);
+    const byHour = new Map<number, number[]>();
+    for (const m of sorted) { const h = Math.floor(m / 60) % 24; if (!byHour.has(h)) byHour.set(h, []); byHour.get(h)!.push(((m % 60) + 60) % 60); }
+    return {
+      name: d.name, byHour, n: sorted.length,
+      first: sorted.length ? fmtMin(sorted[0]) : "—",
+      last: sorted.length ? fmtMin(sorted[sorted.length - 1]) : "—",
+    };
+  });
+  const hours = [...new Set(perDay.flatMap((p) => [...p.byHour.keys()]))].sort((a, b) => a - b);
+  const headRow = `<tr><th class="hour">Ora</th>${perDay.map((p) =>
+    `<th><div class="dn">${esc(p.name)}</div><div class="ds">${p.first}–${p.last} · ${p.n} corse</div></th>`).join("")}</tr>`;
+  const bodyRows = hours.map((h) =>
+    `<tr><th class="hour">${String(h).padStart(2, "0")}</th>${perDay.map((p) => {
+      const mins = (p.byHour.get(h) ?? []).sort((a, b) => a - b);
+      return `<td>${mins.map((mm) => `<span class="m">${String(mm).padStart(2, "0")}</span>`).join("")}</td>`;
+    }).join("")}</tr>`).join("");
+  const depTable = hours.length
+    ? `<table class="dep"><thead>${headRow}</thead><tbody>${bodyRows}</tbody></table>`
+    : "<p style='font-size:11px;color:#666'>Nessuna corsa per i giorni selezionati.</p>";
 
   return `
   <section class="page" style="--c:${col}">
     <header class="doc" style="border-color:${col}">
-      <div class="pill" style="background:${col}">${esc(d.route.shortName ?? "?")}</div>
-      <h1>${esc(d.route.longName ?? "Linea")}</h1>
-      <div class="day">${esc(dayLbl)}<br><small style="font-weight:400">${dirLabel}</small></div>
+      <div class="pill" style="background:${col}">${esc(line.route.shortName ?? "?")}</div>
+      <h1>${esc(line.route.longName ?? "Linea")}</h1>
+      <div class="day">Orari al pubblico<br><small style="font-weight:400">${dirLabel}</small></div>
     </header>
-    <div class="kpis">
-      <div class="kpi"><div class="v">${first}</div><div class="l">Prima corsa</div></div>
-      <div class="kpi"><div class="v">${last}</div><div class="l">Ultima corsa</div></div>
-      <div class="kpi"><div class="v">${deps.length}</div><div class="l">Corse/giorno</div></div>
-      <div class="kpi"><div class="v">${medGap != null ? `~${medGap}′` : "—"}</div><div class="l">Frequenza tipica</div></div>
-      <div class="kpi"><div class="v">${lastOff != null ? `${lastOff}′` : "—"}</div><div class="l">Percorrenza</div></div>
-    </div>
     <div class="poster">
       <div class="col">
         <h2>Percorso</h2>
@@ -552,15 +534,15 @@ function linePosterPage(d: RouteTimetable, nodesOnly = false, cityBg = false): s
       </div>
       <div class="col">
         <h2>Partenze dal capolinea</h2>
-        <table class="dep"><tbody>${depRows || "<tr><td>Nessuna corsa</td></tr>"}</tbody></table>
+        ${depTable}
       </div>
     </div>
-    <footer class="doc"><span>TransitIntel · locandina linea ${esc(d.route.shortName ?? "")} · i minuti accanto alle fermate sono il tempo dal capolinea</span><span>Generato il ${gen}</span></footer>
+    <footer class="doc"><span>TransitIntel · linea ${esc(line.route.shortName ?? "")} · solo orari di partenza dal capolinea</span><span>Generato il ${gen}</span></footer>
   </section>`;
 }
 
-function buildCombinedLinePostersHtml(docs: RouteTimetable[], nodesOnly = false, cityBg = false): string {
-  const body = docs.filter((d) => d.trips.length > 0).map((d) => linePosterPage(d, nodesOnly, cityBg)).join("");
+function buildCombinedLinePostersHtml(lines: PosterLine[], nodesOnly = false, cityBg = false): string {
+  const body = lines.filter((l) => l.days.some((d) => d.deps.length > 0)).map((l) => linePosterPage(l, nodesOnly, cityBg)).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Locandine di linea</title>
   <style>${POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
@@ -768,25 +750,36 @@ export default function TimetablesPage() {
     } finally { setPrinting(false); }
   }
 
-  // Stampa "locandine di linea": percorso stilizzato + partenze, per linea × day-type × direzione.
+  // Stampa "locandine di linea": una locandina per linea × direzione, con le
+  // PARTENZE di TUTTE le corse divise per tipo di giorno (colonne).
   async function printPosters() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
+    const dtName = new Map(dayTypes.map((d) => [d.id, d.name]));
     setPrinting(true);
     try {
-      const docs: RouteTimetable[] = [];
+      const lines: PosterLine[] = [];
       for (const rid of ids) {
-        for (const dt of routeDayTypeIds) {
-          for (const dir of dirs) {
+        for (const dir of dirs) {
+          let route: RouteTimetable["route"] | null = null;
+          let pathStops: RouteTimetable["pathStops"]; let cityNodes: RouteTimetable["cityNodes"];
+          let dirId: number | null = null;
+          const days: Array<{ name: string; deps: number[] }> = [];
+          for (const dt of routeDayTypeIds) {
             const url = `${ptt}/route/${encodeURIComponent(rid)}?dayTypeId=${encodeURIComponent(dt)}&directionId=${dir}`;
-            docs.push(await apiFetch<RouteTimetable>(url));
+            const rt = await apiFetch<RouteTimetable>(url);
+            if (!route) { route = rt.route; pathStops = rt.pathStops; cityNodes = rt.cityNodes; dirId = rt.directionId; }
+            const deps: number[] = [];
+            for (const t of rt.trips) { const v = t.times.find((x) => x); const mm = hhmmToMin(v); if (mm != null) deps.push(mm); }
+            days.push({ name: rt.dayTypeName ?? dtName.get(dt) ?? "—", deps });
           }
+          if (route) lines.push({ route, pathStops, cityNodes, directionId: dirId, days });
         }
       }
-      if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
-      openPrintWindow(buildCombinedLinePostersHtml(docs, nodesOnly, cityBg));
+      if (!lines.some((l) => l.days.some((d) => d.deps.length > 0))) { toast.error("Nessuna corsa per la selezione"); return; }
+      openPrintWindow(buildCombinedLinePostersHtml(lines, nodesOnly, cityBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
