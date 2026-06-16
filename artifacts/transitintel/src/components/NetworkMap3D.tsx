@@ -6,10 +6,10 @@
  */
 import { useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Map as MapGL, Source, Layer, Marker, NavigationControl } from "react-map-gl/mapbox";
+import { Map as MapGL, Source, Layer, Marker, NavigationControl, FullscreenControl } from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { Loader2 } from "lucide-react";
+import { Camera, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 const MAPBOX_TOKEN: string = import.meta.env.VITE_MAPBOX_TOKEN || "";
@@ -79,6 +79,18 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
     ? { longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2 }
     : { longitude: 13.5, latitude: 43.6 };
 
+  function exportPng() {
+    const ref: any = mapRef.current;
+    const canvas: HTMLCanvasElement | undefined = ref?.getCanvas?.() ?? ref?.getMap?.().getCanvas?.();
+    if (!canvas) return;
+    try {
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = `mappa-rete-3d-${new Date().toISOString().slice(0, 10)}.png`;
+      a.click();
+    } catch { /* canvas tainted/non disponibile */ }
+  }
+
   return (
     <div className="relative rounded-xl border border-border/60 overflow-hidden" style={{ height: "70vh" }}>
       {q.isLoading && (
@@ -86,11 +98,19 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
           <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico mappa…
         </div>
       )}
+      <button
+        onClick={exportPng}
+        className="absolute z-10 bottom-2 left-2 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/85 hover:bg-background border border-border/60 text-xs font-medium shadow"
+        title="Esporta la vista come immagine PNG"
+      >
+        <Camera className="w-3.5 h-3.5" /> Esporta PNG
+      </button>
       <MapGL
         ref={mapRef}
         mapboxAccessToken={MAPBOX_TOKEN}
         initialViewState={{ longitude: center.longitude, latitude: center.latitude, zoom: 12, pitch: 55, bearing: -18 }}
         style={{ width: "100%", height: "100%" }}
+        preserveDrawingBuffer
         mapStyle="mapbox://styles/mapbox/streets-v12"
         attributionControl={false}
         onLoad={(ev: any) => {
@@ -130,6 +150,7 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
         }}
       >
         <NavigationControl position="top-right" visualizePitch />
+        <FullscreenControl position="top-right" />
         {fc.features.length > 0 && (
           <Source id="net3d" type="geojson" data={fc as any}>
             <Layer

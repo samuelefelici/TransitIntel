@@ -339,16 +339,16 @@ function mercatorTiles(
     for (let ty = tyMin; ty <= tyMax; ty++) {
       if (tx < 0 || ty < 0 || tx > maxTile || ty > maxTile) continue;
       const sx = (tx * 256 - minPxX) * k + leftPad, sy = (ty * 256 - minPxY) * k + topPad;
-      // Mapbox satellite-streets (foto reale: verde/mare/edifici, @2x nitido) se
-      // c'è il token, altrimenti CARTO Positron come fallback.
+      // Mapbox Outdoors: cartografia sintetica con rilievo (monti/salite-discese),
+      // acqua azzurra, verde e nomi delle località. @2x per nitidezza in stampa.
       const url = MAPBOX_TOKEN
-        ? `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/256/${z}/${tx}/${ty}@2x?access_token=${MAPBOX_TOKEN}`
+        ? `https://api.mapbox.com/styles/v1/mapbox/outdoors-v12/tiles/256/${z}/${tx}/${ty}@2x?access_token=${MAPBOX_TOKEN}`
         : `https://a.basemaps.cartocdn.com/light_nolabels/${z}/${tx}/${ty}.png`;
       imgs += `<image href="${url}" xlink:href="${url}" x="${sx.toFixed(1)}" y="${sy.toFixed(1)}" width="${(tsz + 0.5).toFixed(1)}" height="${(tsz + 0.5).toFixed(1)}" preserveAspectRatio="none"/>`;
     }
   }
-  const attrib = MAPBOX_TOKEN ? "© Mapbox · © Maxar · © OpenStreetMap" : "© OpenStreetMap · © CARTO";
-  const tiles = `<g opacity="${MAPBOX_TOKEN ? "0.85" : "0.6"}">${imgs}</g>`
+  const attrib = MAPBOX_TOKEN ? "© Mapbox · © OpenStreetMap" : "© OpenStreetMap · © CARTO";
+  const tiles = `<g opacity="${MAPBOX_TOKEN ? "0.7" : "0.6"}">${imgs}</g>`
     + `<text x="${(W - 4).toFixed(0)}" y="${(H - 3).toFixed(0)}" text-anchor="end" font-size="7" fill="#9aa">${attrib}</text>`;
   return { tiles, P };
 }
