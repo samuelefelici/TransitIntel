@@ -104,13 +104,8 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
               m.setTerrain({ source: "mapbox-dem", exaggeration: 1.1 });
             }
           } catch { /* noop */ }
-          try {
-            if (!m.getLayer("sky")) {
-              m.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere", "sky-atmosphere-sun-intensity": 12 } });
-            }
-          } catch { /* noop */ }
           // Palazzi 3D: estrusione colorata per altezza (i più alti risaltano),
-          // inserita sotto le etichette così i nomi restano leggibili.
+          // a basso zoom così si abbraccia tutta la città. Sotto le etichette.
           try {
             if (!m.getLayer("net3d-buildings")) {
               const layers = m.getStyle().layers || [];
@@ -121,13 +116,13 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
                 "source-layer": "building",
                 filter: ["==", ["get", "extrude"], "true"],
                 type: "fill-extrusion",
-                minzoom: 13,
+                minzoom: 10,
                 paint: {
                   "fill-extrusion-color": ["interpolate", ["linear"], ["get", "height"],
                     0, "#dfe3ee", 15, "#c7cfe2", 40, "#9fb0d6", 90, "#6f87c4", 180, "#48619e"],
-                  "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 13, 0, 14.5, ["get", "height"]],
+                  "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 10, ["get", "height"], 16, ["get", "height"]],
                   "fill-extrusion-base": ["get", "min_height"],
-                  "fill-extrusion-opacity": 0.88,
+                  "fill-extrusion-opacity": 0.85,
                 },
               }, labelLayerId);
             }
