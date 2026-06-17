@@ -597,7 +597,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
 
   const hero = `<div class="hero">
       ${logoUrl ? `<img src="${logoUrl}" alt="logo" />` : ""}
-      <div class="t"><h1>Mappa di Rete</h1><div class="sub">Schema linee · interscambi e nodi principali</div></div>
+      <div class="t"><h1>Mappa di Rete</h1><div class="sub">Schema linee · interscambi e nodi principali</div><div class="powered">Powered by Cerbero</div></div>
       <div class="meta"><div><b>${lines.length}</b> linee · <b>${interCount}</b> interscambi</div><div>Generato ${gen}</div></div>
     </div>`;
   const footer = `<div class="brandfoot">
@@ -611,11 +611,12 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
     ${PRINT_BASE_CSS}
     @page{size:A4 portrait;margin:8mm}
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .hero { background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%); color:#fff; padding:12px 16px; border-radius:12px; margin-bottom:8px; display:flex; align-items:center; gap:14px; }
-    .hero img { height:40px; width:auto; filter:drop-shadow(0 0 8px rgba(56,189,248,.5)); }
-    .hero .t h1 { margin:0; font-size:18px; font-weight:800; }
-    .hero .t .sub { font-size:10px; opacity:.85; }
-    .hero .meta { margin-left:auto; text-align:right; font-size:9.5px; opacity:.9; line-height:1.6; }
+    .hero { color:#0f172a; padding:4px 2px 10px; border-bottom:2px solid #e2e8f0; margin-bottom:8px; display:flex; align-items:center; gap:16px; }
+    .hero img { height:56px; width:auto; }
+    .hero .t h1 { margin:0; font-size:20px; font-weight:800; }
+    .hero .t .sub { font-size:10px; color:#64748b; }
+    .hero .t .powered { font-size:9px; font-weight:800; color:#475569; letter-spacing:.3px; margin-top:1px; }
+    .hero .meta { margin-left:auto; text-align:right; font-size:9.5px; color:#475569; line-height:1.6; }
     .brandfoot { margin-top:8px; padding-top:8px; border-top:1px solid #e2e8f0; display:flex; align-items:center; gap:10px; font-size:9px; color:#94a3b8; }
     .brandfoot img { height:18px; opacity:.85; }
     .brandfoot .powered { font-weight:800; color:#475569; letter-spacing:.3px; }
