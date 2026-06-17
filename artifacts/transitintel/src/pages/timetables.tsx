@@ -422,6 +422,11 @@ function schematicInnerSvg(
         + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#64748b">${esc(c.name)}</text></g>`;
     }).join("");
 
+  // Spessore tratto calibrato sul numero di linee disegnate: con poche linee il
+  // tratto resta pieno (7), con tante si assottiglia per non impastare la mappa.
+  const nLines = usable.length;
+  const strokeW = Math.max(2.4, Math.min(7, 7 - (nLines - 3) * 0.42));
+
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
   const polys = usable.map((l) => {
     const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); });
@@ -430,14 +435,16 @@ function schematicInnerSvg(
     for (let i = 1; i < sp.length; i++) {
       for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
     }
-    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
+    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="${strokeW.toFixed(1)}" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
   }).join("");
 
   // nodi + nomi
   let dots = "", names = "", idx = 0;
   for (const e of node.values()) {
     const { x, y } = P(e.lon, e.lat);
-    const major = e.logical || e.lines.size >= 2; // nodo logico o interscambio → evidenziato
+    // SOLO i nodi logici (cluster isLogical) sono "maggiori": le fermate dove
+    // passano più linee NON vengono ingrandite solo per questo motivo.
+    const major = e.logical;
     // In modalità "logical" mostriamo il nome solo per i nodi logici: le altre
     // fermate restano un pallino senza etichetta (meno caos).
     const showName = e.logical || labelMode === "all";
@@ -590,7 +597,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
 
   const hero = `<div class="hero">
       ${logoUrl ? `<img src="${logoUrl}" alt="logo" />` : ""}
-      <div class="t"><h1>Mappa di Rete</h1><div class="sub">Schema linee · interscambi e nodi principali</div></div>
+      <div class="t"><h1>Mappa di Rete</h1><div class="sub">Schema linee · interscambi e nodi principali</div><div class="powered">Powered by Cerbero</div></div>
       <div class="meta"><div><b>${lines.length}</b> linee · <b>${interCount}</b> interscambi</div><div>Generato ${gen}</div></div>
     </div>`;
   const footer = `<div class="brandfoot">
@@ -604,11 +611,12 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
     ${PRINT_BASE_CSS}
     @page{size:A4 portrait;margin:8mm}
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .hero { background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%); color:#fff; padding:12px 16px; border-radius:12px; margin-bottom:8px; display:flex; align-items:center; gap:14px; }
-    .hero img { height:40px; width:auto; filter:drop-shadow(0 0 8px rgba(56,189,248,.5)); }
-    .hero .t h1 { margin:0; font-size:18px; font-weight:800; }
-    .hero .t .sub { font-size:10px; opacity:.85; }
-    .hero .meta { margin-left:auto; text-align:right; font-size:9.5px; opacity:.9; line-height:1.6; }
+    .hero { color:#0f172a; padding:4px 2px 10px; border-bottom:2px solid #e2e8f0; margin-bottom:8px; display:flex; align-items:center; gap:16px; }
+    .hero img { height:56px; width:auto; }
+    .hero .t h1 { margin:0; font-size:20px; font-weight:800; }
+    .hero .t .sub { font-size:10px; color:#64748b; }
+    .hero .t .powered { font-size:9px; font-weight:800; color:#475569; letter-spacing:.3px; margin-top:1px; }
+    .hero .meta { margin-left:auto; text-align:right; font-size:9.5px; color:#475569; line-height:1.6; }
     .brandfoot { margin-top:8px; padding-top:8px; border-top:1px solid #e2e8f0; display:flex; align-items:center; gap:10px; font-size:9px; color:#94a3b8; }
     .brandfoot img { height:18px; opacity:.85; }
     .brandfoot .powered { font-weight:800; color:#475569; letter-spacing:.3px; }
