@@ -40,10 +40,10 @@ const DASH_PATTERN: Record<NetLineStyle, [number, number] | null> = {
 
 export default function NetworkMap3D({
   projectId, routeIds, colorOverrides,
-  lineStyle = "solid", nodeLabels = "logical",
+  lineStyles, nodeLabels = "logical",
 }: {
   projectId: string; routeIds: string[]; colorOverrides?: Record<string, string>;
-  lineStyle?: NetLineStyle; nodeLabels?: NetNodeLabels;
+  lineStyles?: Record<string, NetLineStyle>; nodeLabels?: NetNodeLabels;
 }) {
   const mapRef = useRef<MapRef>(null);
   const q = useQuery({
@@ -59,7 +59,10 @@ export default function NetworkMap3D({
     const lines = (data?.lines ?? []).filter((l) => l.stops.length >= 2);
     const features = lines.map((l) => ({
       type: "Feature" as const,
-      properties: { color: col(colorOverrides?.[l.routeId] ?? l.color) },
+      properties: {
+        color: col(colorOverrides?.[l.routeId] ?? l.color),
+        style: (lineStyles?.[l.routeId] ?? "solid") as NetLineStyle,
+      },
       geometry: { type: "LineString" as const, coordinates: l.stops.map((s) => [s.lon, s.lat]) },
     }));
     let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
@@ -83,7 +86,7 @@ export default function NetworkMap3D({
       bbox: (isFinite(w) ? [w, s, e, n] : null) as [number, number, number, number] | null,
       nodes,
     };
-  }, [data, colorOverrides]);
+  }, [data, colorOverrides, lineStyles]);
 
   if (!MAPBOX_TOKEN) {
     return <div className="p-4 text-xs text-muted-foreground">VITE_MAPBOX_TOKEN non configurato — mappa 3D non disponibile.</div>;
@@ -170,15 +173,41 @@ export default function NetworkMap3D({
         <FullscreenControl position="top-right" />
         {fc.features.length > 0 && (
           <Source id="net3d" type="geojson" data={fc as any}>
+            {/* Un layer per stile di tratto: lo stile è per-linea (proprietà
+                "style" della feature). Mapbox non supporta line-dasharray
+                data-driven, quindi filtriamo per stile. */}
             <Layer
-              id="net3d-line"
+              id="net3d-line-solid"
               type="line"
+              filter={["==", ["get", "style"], "solid"]}
               paint={{
                 "line-color": ["get", "color"],
                 "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
                 "line-opacity": 0.95,
-                // undefined per "solid" → Mapbox ripristina il tratto continuo
-                "line-dasharray": DASH_PATTERN[lineStyle] ?? undefined,
+              }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+            <Layer
+              id="net3d-line-dashed"
+              type="line"
+              filter={["==", ["get", "style"], "dashed"]}
+              paint={{
+                "line-color": ["get", "color"],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-opacity": 0.95,
+                "line-dasharray": DASH_PATTERN.dashed!,
+              }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+            <Layer
+              id="net3d-line-dotted"
+              type="line"
+              filter={["==", ["get", "style"], "dotted"]}
+              paint={{
+                "line-color": ["get", "color"],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-opacity": 0.95,
+                "line-dasharray": DASH_PATTERN.dotted!,
               }}
               layout={{ "line-cap": "round", "line-join": "round" }}
             />

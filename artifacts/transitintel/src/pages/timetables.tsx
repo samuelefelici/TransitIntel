@@ -258,7 +258,7 @@ interface SchemStop {
   clusterId?: string | null; clusterName?: string | null;
   clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
 }
-interface SchemLine { color: string | null; stops: SchemStop[] }
+interface SchemLine { color: string | null; stops: SchemStop[]; style?: NetLineStyle }
 
 /** Riduce la sequenza fermate ai NODI LOGICI (cluster con isLogical):
  *  ogni fermata in un cluster logico → quel nodo (centroide), corse consecutive
@@ -357,20 +357,20 @@ function mercatorTiles(
  *  nodi condivisi, fermate con nome, sfondo punti città e (opz.) cartografia. */
 function schematicInnerSvg(
   lines: SchemLine[], W: number, H: number, M: number,
-  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }>; basemap?: boolean; lineStyle?: NetLineStyle; labelMode?: NetNodeLabels },
+  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }>; basemap?: boolean; labelMode?: NetNodeLabels },
 ): string {
   const nameSize = opts?.nameSize ?? 8;
-  // Stile tratto: continuo (default), tratteggiato o puntinato. I valori sono in
-  // unità SVG; per i puntini ci affidiamo al linecap "round" già presente.
-  const lineStyle: NetLineStyle = opts?.lineStyle ?? "solid";
-  const dashAttr = lineStyle === "dashed" ? ' stroke-dasharray="16 10"'
-    : lineStyle === "dotted" ? ' stroke-dasharray="0.5 13"'
-    : "";
+  // Stile tratto PER-LINEA: continuo (default), tratteggiato o puntinato. I
+  // valori sono in unità SVG; per i puntini ci affidiamo al linecap "round".
+  const dashFor = (style: NetLineStyle | undefined): string =>
+    style === "dashed" ? ' stroke-dasharray="16 10"'
+      : style === "dotted" ? ' stroke-dasharray="0.5 13"'
+      : "";
   // Etichette: "all" mostra il nome di ogni fermata; "logical" mostra solo i nomi
   // dei nodi logici (le altre fermate restano un semplice pallino).
   const labelMode: NetNodeLabels = opts?.labelMode ?? "all";
   const src = opts?.nodesOnly
-    ? lines.map((l) => ({ color: l.color, stops: collapseToLogicalNodes(l.stops) }))
+    ? lines.map((l) => ({ color: l.color, style: l.style, stops: collapseToLogicalNodes(l.stops) }))
     : lines;
   const usable = src.filter((l) => l.stops.length > 0);
   if (!usable.length) return "";
@@ -430,7 +430,7 @@ function schematicInnerSvg(
     for (let i = 1; i < sp.length; i++) {
       for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
     }
-    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"${dashAttr} opacity="0.92"/>`;
+    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
   }).join("");
 
   // nodi + nomi
@@ -562,7 +562,7 @@ interface NetworkLine {
 }
 interface NetworkData { projectId: string; lines: NetworkLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
-function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyle: NetLineStyle = "solid", nodeLabels: NetNodeLabels = "logical"): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyles: Record<string, NetLineStyle> = {}, nodeLabels: NetNodeLabels = "logical"): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -581,8 +581,8 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   const W = 1000, H = 1414, M = 90;
   const legendH = lines.length * 20 + 12;
   const svgBody = schematicInnerSvg(
-    lines.map((l) => ({ color: l.color, stops: l.stops })),
-    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, lineStyle, labelMode: nodeLabels },
+    lines.map((l) => ({ color: l.color, stops: l.stops, style: lineStyles[l.routeId] ?? "solid" })),
+    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, labelMode: nodeLabels },
   );
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
@@ -651,7 +651,7 @@ export default function TimetablesPage() {
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
   const [show3d, setShow3d] = useState(false);         // anteprima mappa 3D interattiva
-  const [lineStyle, setLineStyle] = useState<NetLineStyle>("solid");      // stile tratto linee (mappa rete + 3D)
+  const [lineStyles, setLineStyles] = useState<Record<string, NetLineStyle>>({}); // stile tratto PER-LINEA (mappa rete + 3D)
   const [nodeLabels, setNodeLabels] = useState<NetNodeLabels>("logical"); // nomi: solo nodi logici (default) o tutte le fermate
   const [colorOverrides, setColorOverrides] = useState<Record<string, string>>({}); // colore linee (override locale + persistito)
 
@@ -661,6 +661,11 @@ export default function TimetablesPage() {
     apiFetch(`/api/planning-studio/projects/${encodeURIComponent(projectId)}/routes/${encodeURIComponent(routeId)}`, {
       method: "PATCH", body: JSON.stringify({ color }),
     }).catch(() => { /* l'override locale resta applicato anche se il salvataggio fallisce */ });
+  }
+
+  const effStyle = (routeId: string): NetLineStyle => lineStyles[routeId] ?? "solid";
+  function setRouteStyle(routeId: string, style: NetLineStyle) {
+    setLineStyles((prev) => ({ ...prev, [routeId]: style }));
   }
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
@@ -872,7 +877,7 @@ export default function TimetablesPage() {
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
       const data2 = { ...data, lines: (data.lines ?? []).map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) };
       const logoUrl = `${window.location.origin}/logo.png`;
-      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyle, nodeLabels));
+      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -965,18 +970,6 @@ export default function TimetablesPage() {
               <input type="checkbox" checked={mapBg} onChange={(e) => setMapBg(e.target.checked)} className="accent-emerald-400" />
               Cartografia (mappa rete)
             </label>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none" title="Stile del tratto delle linee nella Mappa rete e nella Mappa 3D">
-              <span>Tratto</span>
-              <select
-                value={lineStyle}
-                onChange={(e) => setLineStyle(e.target.value as NetLineStyle)}
-                className="px-2 py-1 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 cursor-pointer"
-              >
-                <option value="solid">Continua</option>
-                <option value="dashed">Tratteggiata</option>
-                <option value="dotted">Puntinata</option>
-              </select>
-            </label>
             <label className="flex items-center gap-2 text-xs text-muted-foreground select-none" title="Quali nomi mostrare sui nodi: solo i nodi logici (le altre fermate restano un pallino) o tutte le fermate">
               <span>Nomi</span>
               <select
@@ -1067,13 +1060,23 @@ export default function TimetablesPage() {
                   />
                   <span className="px-2 py-0.5 rounded text-white text-xs font-bold shrink-0" style={{ backgroundColor: lineColor(effColor(r.routeId, r.routeColor)) }}>{r.routeShortName ?? "?"}</span>
                   <span className="text-sm truncate flex-1 cursor-pointer" onClick={() => toggleRoute(r.routeId)}>{r.routeLongName ?? r.routeId}</span>
+                  <select
+                    value={effStyle(r.routeId)}
+                    onChange={(e) => setRouteStyle(r.routeId, e.target.value as NetLineStyle)}
+                    title="Stile del tratto di questa linea (Mappa rete + Mappa 3D)"
+                    className="shrink-0 px-1.5 py-1 rounded bg-card border border-border/40 text-[11px] outline-none focus:border-sky-500/60 cursor-pointer"
+                  >
+                    <option value="solid">Continua</option>
+                    <option value="dashed">Tratteggiata</option>
+                    <option value="dotted">Puntinata</option>
+                  </select>
                 </div>
               ))}
             </div>
           </div>
 
           {show3d && (
-            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} colorOverrides={colorOverrides} lineStyle={lineStyle} nodeLabels={nodeLabels} />
+            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} colorOverrides={colorOverrides} lineStyles={lineStyles} nodeLabels={nodeLabels} />
           )}
 
           <p className="text-[11px] text-muted-foreground">
