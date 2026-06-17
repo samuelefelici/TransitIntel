@@ -27,7 +27,7 @@ function col(c: string | null | undefined): string {
   return c.startsWith("#") ? c : `#${c}`;
 }
 
-export default function NetworkMap3D({ projectId, routeIds }: { projectId: string; routeIds: string[] }) {
+export default function NetworkMap3D({ projectId, routeIds, colorOverrides }: { projectId: string; routeIds: string[]; colorOverrides?: Record<string, string> }) {
   const mapRef = useRef<MapRef>(null);
   const q = useQuery({
     queryKey: ["timetables", "net3d", projectId, [...routeIds].sort().join(",")],
@@ -42,7 +42,7 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
     const lines = (data?.lines ?? []).filter((l) => l.stops.length >= 2);
     const features = lines.map((l) => ({
       type: "Feature" as const,
-      properties: { color: col(l.color) },
+      properties: { color: col(colorOverrides?.[l.routeId] ?? l.color) },
       geometry: { type: "LineString" as const, coordinates: l.stops.map((s) => [s.lon, s.lat]) },
     }));
     let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
@@ -66,7 +66,7 @@ export default function NetworkMap3D({ projectId, routeIds }: { projectId: strin
       bbox: (isFinite(w) ? [w, s, e, n] : null) as [number, number, number, number] | null,
       nodes,
     };
-  }, [data]);
+  }, [data, colorOverrides]);
 
   if (!MAPBOX_TOKEN) {
     return <div className="p-4 text-xs text-muted-foreground">VITE_MAPBOX_TOKEN non configurato — mappa 3D non disponibile.</div>;

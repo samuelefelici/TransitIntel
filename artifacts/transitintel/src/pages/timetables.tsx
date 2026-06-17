@@ -615,6 +615,15 @@ export default function TimetablesPage() {
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
   const [show3d, setShow3d] = useState(false);         // anteprima mappa 3D interattiva
+  const [colorOverrides, setColorOverrides] = useState<Record<string, string>>({}); // colore linee (override locale + persistito)
+
+  const effColor = (routeId: string, fallback: string | null | undefined): string | null => colorOverrides[routeId] ?? fallback ?? null;
+  function setRouteColor(routeId: string, color: string) {
+    setColorOverrides((prev) => ({ ...prev, [routeId]: color }));
+    apiFetch(`/api/planning-studio/projects/${encodeURIComponent(projectId)}/routes/${encodeURIComponent(routeId)}`, {
+      method: "PATCH", body: JSON.stringify({ color }),
+    }).catch(() => { /* l'override locale resta applicato anche se il salvataggio fallisce */ });
+  }
 
   const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
 
@@ -805,7 +814,7 @@ export default function TimetablesPage() {
             days,
           });
         }
-        if (route) lines.push({ route, pathStops, cityNodes, directions });
+        if (route) lines.push({ route: { ...route, color: effColor(route.routeId, route.color) }, pathStops, cityNodes, directions });
       }
       const anyTimes = lines.some((l) => l.directions.some((d) => d.days.some((dd) => dd.trips.length > 0)));
       if (!anyTimes) { toast.error("Nessuna corsa per la selezione"); return; }
@@ -823,7 +832,8 @@ export default function TimetablesPage() {
     try {
       const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
-      openPrintWindow(buildNetworkMapHtml(data, nodesOnly, cityBg, mapBg));
+      const data2 = { ...data, lines: (data.lines ?? []).map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) };
+      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -984,17 +994,24 @@ export default function TimetablesPage() {
                 <div className="p-3 text-xs text-muted-foreground">Nessuna linea nel progetto.</div>
               )}
               {filteredRoutes.map((r) => (
-                <label key={r.routeId} className="flex items-center gap-3 px-3 py-2 hover:bg-white/5 cursor-pointer">
-                  <input type="checkbox" checked={selectedRouteIds.includes(r.routeId)} onChange={() => toggleRoute(r.routeId)} className="accent-sky-500" />
-                  <span className="px-2 py-0.5 rounded text-white text-xs font-bold shrink-0" style={{ backgroundColor: lineColor(r.routeColor) }}>{r.routeShortName ?? "?"}</span>
-                  <span className="text-sm truncate">{r.routeLongName ?? r.routeId}</span>
-                </label>
+                <div key={r.routeId} className="flex items-center gap-2 px-3 py-2 hover:bg-white/5">
+                  <input type="checkbox" checked={selectedRouteIds.includes(r.routeId)} onChange={() => toggleRoute(r.routeId)} className="accent-sky-500 cursor-pointer" />
+                  <input
+                    type="color"
+                    value={lineColor(effColor(r.routeId, r.routeColor))}
+                    onChange={(e) => setRouteColor(r.routeId, e.target.value)}
+                    title="Colore linea"
+                    className="w-6 h-6 rounded cursor-pointer bg-transparent border border-border/40 p-0 shrink-0"
+                  />
+                  <span className="px-2 py-0.5 rounded text-white text-xs font-bold shrink-0" style={{ backgroundColor: lineColor(effColor(r.routeId, r.routeColor)) }}>{r.routeShortName ?? "?"}</span>
+                  <span className="text-sm truncate flex-1 cursor-pointer" onClick={() => toggleRoute(r.routeId)}>{r.routeLongName ?? r.routeId}</span>
+                </div>
               ))}
             </div>
           </div>
 
           {show3d && (
-            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} />
+            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} colorOverrides={colorOverrides} />
           )}
 
           <p className="text-[11px] text-muted-foreground">
