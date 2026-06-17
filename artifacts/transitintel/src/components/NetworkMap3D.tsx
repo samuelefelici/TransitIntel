@@ -27,7 +27,24 @@ function col(c: string | null | undefined): string {
   return c.startsWith("#") ? c : `#${c}`;
 }
 
-export default function NetworkMap3D({ projectId, routeIds, colorOverrides }: { projectId: string; routeIds: string[]; colorOverrides?: Record<string, string> }) {
+export type NetLineStyle = "solid" | "dashed" | "dotted";
+export type NetNodeLabels = "logical" | "all";
+
+// Pattern dasharray (in unità di larghezza linea). Per i puntini usiamo un dash
+// quasi nullo + line-cap "round" così ogni tratto diventa un cerchietto.
+const DASH_PATTERN: Record<NetLineStyle, [number, number] | null> = {
+  solid: null,
+  dashed: [2, 1.6],
+  dotted: [0.1, 2],
+};
+
+export default function NetworkMap3D({
+  projectId, routeIds, colorOverrides,
+  lineStyle = "solid", nodeLabels = "logical",
+}: {
+  projectId: string; routeIds: string[]; colorOverrides?: Record<string, string>;
+  lineStyle?: NetLineStyle; nodeLabels?: NetNodeLabels;
+}) {
   const mapRef = useRef<MapRef>(null);
   const q = useQuery({
     queryKey: ["timetables", "net3d", projectId, [...routeIds].sort().join(",")],
@@ -160,6 +177,8 @@ export default function NetworkMap3D({ projectId, routeIds, colorOverrides }: { 
                 "line-color": ["get", "color"],
                 "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
                 "line-opacity": 0.95,
+                // undefined per "solid" → Mapbox ripristina il tratto continuo
+                "line-dasharray": DASH_PATTERN[lineStyle] ?? undefined,
               }}
               layout={{ "line-cap": "round", "line-join": "round" }}
             />
@@ -169,7 +188,7 @@ export default function NetworkMap3D({ projectId, routeIds, colorOverrides }: { 
           <Marker key={i} longitude={nd.lon} latitude={nd.lat} anchor="center">
             <div className="flex items-center gap-1">
               <span style={{ width: nd.logical ? 13 : 8, height: nd.logical ? 13 : 8, borderRadius: "50%", background: "#fff", border: "3px solid #111", boxShadow: "0 1px 3px rgba(0,0,0,.4)" }} />
-              {nd.logical && (
+              {(nd.logical || nodeLabels === "all") && (
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#111", background: "rgba(255,255,255,.82)", padding: "0 4px", borderRadius: 4, whiteSpace: "nowrap" }}>{nd.name}</span>
               )}
             </div>
