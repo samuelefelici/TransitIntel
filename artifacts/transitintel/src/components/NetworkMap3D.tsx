@@ -55,7 +55,7 @@ export default function NetworkMap3D({
   });
   const data = q.data;
 
-  const { fc, bbox, nodes } = useMemo(() => {
+  const { fc, bbox, nodes, lineW } = useMemo(() => {
     const lines = (data?.lines ?? []).filter((l) => l.stops.length >= 2);
     const features = lines.map((l) => ({
       type: "Feature" as const,
@@ -81,10 +81,16 @@ export default function NetworkMap3D({
       m.lines.add(l.routeId); if (st.clusterLogical) m.logical = true;
     }
     const nodes = [...map.values()].filter((m) => m.logical || m.lines.size >= 2);
+    // Spessore calibrato sul numero di linee: poche → pieno, tante → sottile,
+    // così con molte linee selezionate la mappa non diventa confusionaria.
+    const nLines = lines.length;
+    const k = Math.max(0.42, Math.min(1, 1 - (nLines - 3) * 0.06));
+    const lineW: [number, number] = [3 * k, 6 * k];
     return {
       fc: { type: "FeatureCollection" as const, features },
       bbox: (isFinite(w) ? [w, s, e, n] : null) as [number, number, number, number] | null,
       nodes,
+      lineW,
     };
   }, [data, colorOverrides, lineStyles]);
 
@@ -182,7 +188,7 @@ export default function NetworkMap3D({
               filter={["==", ["get", "style"], "solid"]}
               paint={{
                 "line-color": ["get", "color"],
-                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, lineW[0], 14, lineW[1]],
                 "line-opacity": 0.95,
               }}
               layout={{ "line-cap": "round", "line-join": "round" }}
@@ -193,7 +199,7 @@ export default function NetworkMap3D({
               filter={["==", ["get", "style"], "dashed"]}
               paint={{
                 "line-color": ["get", "color"],
-                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, lineW[0], 14, lineW[1]],
                 "line-opacity": 0.95,
                 "line-dasharray": DASH_PATTERN.dashed!,
               }}
@@ -205,7 +211,7 @@ export default function NetworkMap3D({
               filter={["==", ["get", "style"], "dotted"]}
               paint={{
                 "line-color": ["get", "color"],
-                "line-width": ["interpolate", ["linear"], ["zoom"], 10, 3, 14, 6],
+                "line-width": ["interpolate", ["linear"], ["zoom"], 10, lineW[0], 14, lineW[1]],
                 "line-opacity": 0.95,
                 "line-dasharray": DASH_PATTERN.dotted!,
               }}
@@ -216,7 +222,10 @@ export default function NetworkMap3D({
         {nodes.map((nd, i) => (
           <Marker key={i} longitude={nd.lon} latitude={nd.lat} anchor="center">
             <div className="flex items-center gap-1">
-              <span style={{ width: nd.logical ? 13 : 8, height: nd.logical ? 13 : 8, borderRadius: "50%", background: "#fff", border: "3px solid #111", boxShadow: "0 1px 3px rgba(0,0,0,.4)" }} />
+              {/* Solo i nodi logici sono evidenziati (pallino grande + bordo
+                  spesso). Gli interscambi/fermate restano un puntino discreto,
+                  anche se ci passano più linee. */}
+              <span style={{ width: nd.logical ? 13 : 6, height: nd.logical ? 13 : 6, borderRadius: "50%", background: "#fff", border: nd.logical ? "3px solid #111" : "1.5px solid #555", boxShadow: "0 1px 3px rgba(0,0,0,.4)" }} />
               {(nd.logical || nodeLabels === "all") && (
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#111", background: "rgba(255,255,255,.82)", padding: "0 4px", borderRadius: 4, whiteSpace: "nowrap" }}>{nd.name}</span>
               )}

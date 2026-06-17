@@ -422,6 +422,11 @@ function schematicInnerSvg(
         + `<text x="${(x + 5).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${(nameSize - 0.5).toFixed(1)}" fill="#64748b">${esc(c.name)}</text></g>`;
     }).join("");
 
+  // Spessore tratto calibrato sul numero di linee disegnate: con poche linee il
+  // tratto resta pieno (7), con tante si assottiglia per non impastare la mappa.
+  const nLines = usable.length;
+  const strokeW = Math.max(2.4, Math.min(7, 7 - (nLines - 3) * 0.42));
+
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
   const polys = usable.map((l) => {
     const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); });
@@ -430,14 +435,16 @@ function schematicInnerSvg(
     for (let i = 1; i < sp.length; i++) {
       for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
     }
-    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
+    return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="${strokeW.toFixed(1)}" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
   }).join("");
 
   // nodi + nomi
   let dots = "", names = "", idx = 0;
   for (const e of node.values()) {
     const { x, y } = P(e.lon, e.lat);
-    const major = e.logical || e.lines.size >= 2; // nodo logico o interscambio → evidenziato
+    // SOLO i nodi logici (cluster isLogical) sono "maggiori": le fermate dove
+    // passano più linee NON vengono ingrandite solo per questo motivo.
+    const major = e.logical;
     // In modalità "logical" mostriamo il nome solo per i nodi logici: le altre
     // fermate restano un pallino senza etichetta (meno caos).
     const showName = e.logical || labelMode === "all";
