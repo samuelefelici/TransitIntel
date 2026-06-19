@@ -14,6 +14,7 @@ const LoginPage = lazy(() => import("@/pages/login"));
 const Dashboard = lazy(() => import("@/pages/dashboard"));
 const OperationsPage = lazy(() => import("@/pages/operations"));
 const TimetablesPage = lazy(() => import("@/pages/timetables"));
+const NetworkSharePage = lazy(() => import("@/pages/network-share"));
 const RuntimesPage = lazy(() => import("@/pages/runtimes"));
 const RosterPage = lazy(() => import("@/pages/roster"));
 const ServiceDbPage = lazy(() => import("@/pages/service-db"));
@@ -285,7 +286,7 @@ function Router() {
 
 function AuthGate() {
   const { isAuthenticated, loading, user } = useAuth();
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
@@ -319,6 +320,11 @@ function AuthGate() {
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);
+
+  // Rotta PUBBLICA della Mappa di Rete condivisa: nessuna autenticazione.
+  if (location.startsWith("/m/")) {
+    return <Suspense fallback={<PageLoader />}><NetworkSharePage /></Suspense>;
+  }
 
   if (loading) return <PageLoader />;
 

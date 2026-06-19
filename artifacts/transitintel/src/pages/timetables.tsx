@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Loader2, Map as MapIcon, MapPin, Printer, Search, Share2, SignpostBig,
+  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, Printer, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
@@ -655,6 +655,7 @@ export default function TimetablesPage() {
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
   const [routeSearch, setRouteSearch] = useState("");
   const [printing, setPrinting] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
@@ -891,6 +892,24 @@ export default function TimetablesPage() {
     } finally { setPrinting(false); }
   }
 
+  // Crea un link pubblico condivisibile della Mappa di Rete (selezione linee a video).
+  async function shareNetwork() {
+    const ids = selectedIdsOrdered();
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    setSharing(true);
+    try {
+      const r = await apiFetch<{ token: string }>(`/api/planning-studio/${encodeURIComponent(projectId)}/network-share`, {
+        method: "POST", body: JSON.stringify({ routeIds: ids }),
+      });
+      const url = `${window.location.origin}/m/${r.token}`;
+      try { await navigator.clipboard.writeText(url); toast.success("Link copiato negli appunti"); }
+      catch { toast.success("Link creato"); }
+      window.open(url, "_blank");
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore nella creazione del link");
+    } finally { setSharing(false); }
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -1006,6 +1025,15 @@ export default function TimetablesPage() {
               >
                 {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
                 Mappa rete
+              </button>
+              <button
+                onClick={shareNetwork}
+                disabled={sharing || selectedRouteIds.length === 0}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
+                title="Crea un link pubblico della Mappa di Rete (l'utente sceglie le linee da vedere)"
+              >
+                {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                Condividi
               </button>
               <button
                 onClick={printPosters}

@@ -4,7 +4,7 @@
  * con i nodi logici / interscambi evidenziati. Esplorabile (ruota/inclina/zoom).
  * Sorgente dati: /api/planning-studio/:projectId/timetables/network.
  */
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Map as MapGL, Source, Layer, Marker, NavigationControl, FullscreenControl } from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
@@ -19,8 +19,8 @@ interface NStop {
   clusterId?: string | null; clusterName?: string | null;
   clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
 }
-interface NLine { routeId: string; shortName: string | null; longName: string | null; color: string | null; stops: NStop[] }
-interface NData { projectId: string; lines: NLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
+export interface NLine { routeId: string; shortName: string | null; longName: string | null; color: string | null; stops: NStop[] }
+export interface NData { projectId: string; lines: NLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
 function col(c: string | null | undefined): string {
   if (!c) return "#2563eb";
@@ -40,10 +40,12 @@ const DASH_PATTERN: Record<NetLineStyle, [number, number] | null> = {
 
 export default function NetworkMap3D({
   projectId, routeIds, colorOverrides,
-  lineStyles, nodeLabels = "logical",
+  lineStyles, nodeLabels = "logical", data: dataProp, height = "70vh",
 }: {
   projectId: string; routeIds: string[]; colorOverrides?: Record<string, string>;
   lineStyles?: Record<string, NetLineStyle>; nodeLabels?: NetNodeLabels;
+  data?: NData; // dati già pronti (es. pagina pubblica condivisa) → salta la fetch
+  height?: string;
 }) {
   const mapRef = useRef<MapRef>(null);
   const q = useQuery({
@@ -51,9 +53,9 @@ export default function NetworkMap3D({
     queryFn: () => apiFetch<NData>(
       `/api/planning-studio/${encodeURIComponent(projectId)}/timetables/network?routeIds=${routeIds.map(encodeURIComponent).join(",")}`,
     ),
-    enabled: !!projectId && routeIds.length > 0 && !!MAPBOX_TOKEN,
+    enabled: !dataProp && !!projectId && routeIds.length > 0 && !!MAPBOX_TOKEN,
   });
-  const data = q.data;
+  const data = dataProp ?? q.data;
 
   const { fc, bbox, nodes, lineW } = useMemo(() => {
     const lines = (data?.lines ?? []).filter((l) => l.stops.length >= 2);
@@ -94,6 +96,12 @@ export default function NetworkMap3D({
     };
   }, [data, colorOverrides, lineStyles]);
 
+  // Re-inquadra quando cambia l'insieme delle linee (es. toggle nella pagina pubblica).
+  useEffect(() => {
+    const m: any = mapRef.current;
+    if (m && bbox) { try { m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 70, pitch: 55, bearing: -18, duration: 600 }); } catch { /* noop */ } }
+  }, [bbox]);
+
   if (!MAPBOX_TOKEN) {
     return <div className="p-4 text-xs text-muted-foreground">VITE_MAPBOX_TOKEN non configurato — mappa 3D non disponibile.</div>;
   }
@@ -118,7 +126,7 @@ export default function NetworkMap3D({
   }
 
   return (
-    <div className="relative rounded-xl border border-border/60 overflow-hidden" style={{ height: "70vh" }}>
+    <div className="relative rounded-xl border border-border/60 overflow-hidden" style={{ height }}>
       {q.isLoading && (
         <div className="absolute z-10 top-2 left-2 px-2 py-1 rounded bg-background/80 text-xs flex items-center gap-2">
           <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico mappa…
