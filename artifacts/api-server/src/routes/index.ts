@@ -32,6 +32,7 @@ import caronteRouter from "./caronte";
 import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
 import timetablesRouter from "./timetables";
+import networkShareRouter from "./network-share";
 import planningStudioTimetablesRouter from "./planning-studio-timetables";
 import rosterRouter from "./roster";
 import serviceDbRouter from "./service-db";
@@ -63,6 +64,7 @@ router.use(authRouter);
 router.use(cronRouter); // pubblico (webhook/job esterni)
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
 router.use("/gtfs-rt", gtfsRtRouter); // pubblico (aggregatori infomobilità): key opzionale GTFS_RT_API_KEY
+router.use(networkShareRouter); // pubblico: mappa di rete condivisa via link
 
 // ⛔ Tutto sotto qui richiede autenticazione + colonne tenant pronte
 router.use(requireAuth);
