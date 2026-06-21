@@ -14,6 +14,7 @@ interface ShareResp extends NData {
   token: string;
   title: string | null;
   agencyName: string | null;
+  expiresAt?: string | null;
 }
 
 function col(c: string | null | undefined): string {
@@ -69,7 +70,10 @@ export default function NetworkSharePage() {
           <div className="text-base font-extrabold tracking-wide">Cerbero Analytics</div>
           <div className="text-[11px] text-slate-300">Mappa di Rete{data.agencyName ? ` · ${data.agencyName}` : ""}{data.title ? ` · ${data.title}` : ""}</div>
         </div>
-        <div className="ml-auto text-[11px] text-slate-400">{visibleLines.length}/{lines.length} linee</div>
+        <div className="ml-auto text-right text-[11px] text-slate-400">
+          <div>{visibleLines.length}/{lines.length} linee</div>
+          {data.expiresAt && <div className="text-slate-500">valido fino al {new Date(data.expiresAt).toLocaleDateString("it-IT")}</div>}
+        </div>
       </header>
 
       <div className="flex-1 grid" style={{ gridTemplateColumns: "260px 1fr" }}>

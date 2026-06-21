@@ -433,6 +433,9 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
       ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : [];
     if (!routeIds.length) { res.status(400).json({ error: "routeIds richiesti" }); return; }
     const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 120) : null;
+    // scadenza: expiresInDays (0/assente = senza scadenza)
+    const days = Number(req.body?.expiresInDays);
+    const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_network_shares (
         token text PRIMARY KEY, project_id uuid NOT NULL,
@@ -440,13 +443,14 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
         options jsonb NOT NULL DEFAULT '{}'::jsonb, created_by uuid,
         created_at timestamptz NOT NULL DEFAULT now()
       )`);
+    await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
     const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
     const token = Array.from({ length: 10 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
     const userId = (req as any).user?.id ?? null;
     await db.execute(sql`
-      INSERT INTO ps_network_shares (token, project_id, route_ids, title, created_by)
-      VALUES (${token}, ${projectId}::uuid, ${JSON.stringify(routeIds)}::jsonb, ${title}, ${userId}::uuid)`);
-    res.json({ token });
+      INSERT INTO ps_network_shares (token, project_id, route_ids, title, created_by, expires_at)
+      VALUES (${token}, ${projectId}::uuid, ${JSON.stringify(routeIds)}::jsonb, ${title}, ${userId}::uuid, ${expiresAt}::timestamptz)`);
+    res.json({ token, expiresAt });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
