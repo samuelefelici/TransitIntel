@@ -24,6 +24,7 @@ export async function ensureNetworkShareTable(): Promise<void> {
       created_by  uuid,
       created_at  timestamptz NOT NULL DEFAULT now()
     )`);
+  await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
   booted = true;
 }
 router.use(async (_req, _res, next) => { await ensureNetworkShareTable(); next(); });
@@ -33,9 +34,13 @@ router.get("/network-share/:token", async (req, res): Promise<void> => {
     const token = String(req.params.token);
     if (!/^[a-z0-9]{6,64}$/i.test(token)) { res.status(400).json({ error: "token non valido" }); return; }
     const r = await db.execute<any>(sql`
-      SELECT project_id, route_ids, title, options FROM ps_network_shares WHERE token = ${token} LIMIT 1`);
+      SELECT project_id, route_ids, title, options, expires_at FROM ps_network_shares WHERE token = ${token} LIMIT 1`);
     const row = r.rows[0];
     if (!row) { res.status(404).json({ error: "Link non trovato o scaduto" }); return; }
+    if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
+      res.status(410).json({ error: "Link scaduto", expired: true });
+      return;
+    }
     const routeIds: string[] = Array.isArray(row.route_ids) ? row.route_ids : [];
     const net = await computeNetwork(row.project_id, routeIds);
     let agencyName: string | null = null;
@@ -48,6 +53,7 @@ router.get("/network-share/:token", async (req, res): Promise<void> => {
       projectId: row.project_id,
       title: row.title ?? null,
       agencyName,
+      expiresAt: row.expires_at ?? null,
       options: row.options ?? {},
       lines: net.lines,
       cityNodes: net.cityNodes,

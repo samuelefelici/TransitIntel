@@ -656,6 +656,7 @@ export default function TimetablesPage() {
   const [routeSearch, setRouteSearch] = useState("");
   const [printing, setPrinting] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [shareDays, setShareDays] = useState<number>(7); // durata link condiviso (0 = senza scadenza)
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
@@ -898,12 +899,13 @@ export default function TimetablesPage() {
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     setSharing(true);
     try {
-      const r = await apiFetch<{ token: string }>(`/api/planning-studio/${encodeURIComponent(projectId)}/network-share`, {
-        method: "POST", body: JSON.stringify({ routeIds: ids }),
+      const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/network-share`, {
+        method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
       });
       const url = `${window.location.origin}/m/${r.token}`;
-      try { await navigator.clipboard.writeText(url); toast.success("Link copiato negli appunti"); }
-      catch { toast.success("Link creato"); }
+      const scad = r.expiresAt ? ` (scade il ${new Date(r.expiresAt).toLocaleDateString("it-IT")})` : " (senza scadenza)";
+      try { await navigator.clipboard.writeText(url); toast.success(`Link copiato${scad}`); }
+      catch { toast.success(`Link creato${scad}`); }
       window.open(url, "_blank");
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
@@ -1026,6 +1028,18 @@ export default function TimetablesPage() {
                 {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
                 Mappa rete
               </button>
+              <select
+                value={shareDays}
+                onChange={(e) => setShareDays(Number(e.target.value))}
+                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60"
+                title="Durata del link condiviso"
+              >
+                <option value={1}>Link: 24 ore</option>
+                <option value={7}>Link: 7 giorni</option>
+                <option value={30}>Link: 30 giorni</option>
+                <option value={90}>Link: 90 giorni</option>
+                <option value={0}>Link: senza scadenza</option>
+              </select>
               <button
                 onClick={shareNetwork}
                 disabled={sharing || selectedRouteIds.length === 0}
