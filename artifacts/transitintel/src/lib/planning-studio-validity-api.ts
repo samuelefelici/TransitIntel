@@ -35,6 +35,8 @@ export interface PsValidityTrip {
   isActive: boolean;
   serviceLabel: string | null;
   firstDeparture: string | null;
+  firstStopName: string | null;   // luogo di partenza (prima fermata)
+  lastStopName: string | null;    // luogo di arrivo (ultima fermata)
 }
 
 export interface PsDayCalendarEntry {
