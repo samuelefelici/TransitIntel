@@ -419,7 +419,9 @@ function rowToProject(r: any) {
     ownerEmail: r.owner_email ?? undefined,
     ownerFullName: r.owner_full_name ?? undefined,
     memberCount: r.member_count != null ? Number(r.member_count) : undefined,
-    myRole: r.my_role ?? (r.owner_user_id ? "owner" : undefined),
+    // Se my_role è null l'accesso è di sola lettura (es. programma operativo
+    // visibile a tutti): mai assumere "owner" come fallback.
+    myRole: r.my_role ?? "viewer",
     counts: r.counts ?? undefined,
     materializedFeedId: r.materialized_feed_id ?? null,
     materializedAt: r.materialized_at ?? null,
@@ -546,7 +548,13 @@ async function loadProjectAccessible(id: string, userId: string): Promise<any | 
       LEFT JOIN ps_project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
      WHERE p.id = ${id}::uuid
-       AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+       AND (
+         p.owner_user_id = ${userId}::uuid
+         OR pm.user_id IS NOT NULL
+         OR (p.materialized_feed_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM gtfs_feeds gf
+                          WHERE gf.id = p.materialized_feed_id AND gf.is_active = true))
+       )
      LIMIT 1
   `);
   return (r as any).rows?.[0] ?? (r as any)[0] ?? null;
@@ -618,7 +626,9 @@ router.get("/planning-studio/projects", async (req, res) => {
       LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
       LEFT JOIN ps_project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
-     WHERE p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL
+     WHERE p.owner_user_id = ${userId}::uuid
+        OR pm.user_id IS NOT NULL
+        OR (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false))
      ORDER BY is_operational DESC, p.updated_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
