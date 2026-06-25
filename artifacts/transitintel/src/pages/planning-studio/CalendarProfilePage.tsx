@@ -16,7 +16,8 @@ import { ArrowLeft, CalendarRange, Loader2, Plus, Save, Trash2 } from "lucide-re
 import { apiFetch } from "@/lib/api";
 
 interface Profile {
-  schoolPeriods: Array<{ from: string; to: string }>;
+  /** periodi di SCUOLE CHIUSE; vuoto = tutto l'anno scuole aperte */
+  closedPeriods: Array<{ from: string; to: string }>;
   summerPeriod: { from: string; to: string } | null;
   extraHolidays: string[];
 }
@@ -34,7 +35,8 @@ const LEAF_COLOR: Record<string, string> = {
   "scuole_chiuse/invernale/Sabato": "#7dd3fc",
   "scuole_chiuse/estivo/Feriale": "#f59e0b",
   "scuole_chiuse/estivo/Sabato": "#fbbf24",
-  "festivo/domenica/-": "#a78bfa",
+  "festivo/domenica_aperte/-": "#a78bfa",
+  "festivo/domenica_chiuse/-": "#7c3aed",
   "festivo/rosso/-": "#ef4444",
 };
 
@@ -52,7 +54,7 @@ export default function CalendarProfilePage() {
     enabled: !!projectId,
   });
 
-  const profile: Profile = draft ?? classQ.data?.profile ?? { schoolPeriods: [], summerPeriod: null, extraHolidays: [] };
+  const profile: Profile = draft ?? classQ.data?.profile ?? { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
   const edit = (p: Profile) => setDraft(p);
 
   const saveMut = useMutation({
@@ -89,7 +91,7 @@ export default function CalendarProfilePage() {
         <div className="flex-1">
           <h1 className="text-lg font-bold">Calendario Aziendale · {year}</h1>
           <p className="text-xs text-muted-foreground">
-            Imposta periodi scolastici, estivo e festività: ogni giorno cade in una sola classe (le tue validità)
+            Di default tutto è "scuole aperte": aggiungi solo i periodi di scuole chiuse (vacanze). Ogni giorno cade in una sola classe (le tue validità)
           </p>
         </div>
         <button
@@ -102,34 +104,34 @@ export default function CalendarProfilePage() {
       </div>
 
       <div className="grid lg:grid-cols-3 gap-4">
-        {/* Periodi scolastici */}
+        {/* Periodi SCUOLE CHIUSE (vacanze) — il resto è scuole aperte */}
         <div className="rounded-xl border border-border/60 bg-card/60 p-4 space-y-2">
           <p className="text-xs font-semibold flex items-center justify-between">
-            Periodi scolastici (scuole aperte)
+            Periodi scuole chiuse (vacanze)
             <button
-              onClick={() => edit({ ...profile, schoolPeriods: [...profile.schoolPeriods, { from: `${year}-09-15`, to: `${year}-12-22` }] })}
-              className="p-1 rounded hover:bg-white/10 text-emerald-400"
+              onClick={() => edit({ ...profile, closedPeriods: [...profile.closedPeriods, { from: `${year}-06-08`, to: `${year}-09-14` }] })}
+              className="p-1 rounded hover:bg-white/10 text-amber-400"
             ><Plus className="w-3.5 h-3.5" /></button>
           </p>
-          {profile.schoolPeriods.map((p, i) => (
+          {profile.closedPeriods.map((p, i) => (
             <div key={i} className="flex items-center gap-1.5 text-xs">
               <input type="date" value={p.from}
-                onChange={(e) => edit({ ...profile, schoolPeriods: profile.schoolPeriods.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })}
+                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })}
                 className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
               <span>→</span>
               <input type="date" value={p.to}
-                onChange={(e) => edit({ ...profile, schoolPeriods: profile.schoolPeriods.map((x, j) => j === i ? { ...x, to: e.target.value } : x) })}
+                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, to: e.target.value } : x) })}
                 className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
-              <button onClick={() => edit({ ...profile, schoolPeriods: profile.schoolPeriods.filter((_, j) => j !== i) })}
+              <button onClick={() => edit({ ...profile, closedPeriods: profile.closedPeriods.filter((_, j) => j !== i) })}
                 className="p-1 rounded hover:bg-red-500/10 text-red-400"><Trash2 className="w-3 h-3" /></button>
             </div>
           ))}
-          {profile.schoolPeriods.length === 0 && <p className="text-[11px] text-muted-foreground">Nessun periodo: tutto l'anno conta come "scuole chiuse".</p>}
+          {profile.closedPeriods.length === 0 && <p className="text-[11px] text-muted-foreground">Nessun periodo: tutto l'anno conta come "scuole aperte". Aggiungi le vacanze (estate, Natale, …).</p>}
         </div>
 
         {/* Periodo estivo */}
         <div className="rounded-xl border border-border/60 bg-card/60 p-4 space-y-2">
-          <p className="text-xs font-semibold">Periodo estivo (ramo "scuole chiuse")</p>
+          <p className="text-xs font-semibold">Periodo estivo (sotto-ramo "scuole chiuse")</p>
           <div className="flex items-center gap-1.5 text-xs">
             <input type="date" value={profile.summerPeriod?.from ?? ""}
               onChange={(e) => edit({ ...profile, summerPeriod: { from: e.target.value, to: profile.summerPeriod?.to ?? `${year}-09-14` } })}
@@ -188,6 +190,14 @@ export default function CalendarProfilePage() {
           <div className="text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Classifico l'anno…</div>
         ) : (
           <table className="border-collapse">
+            <thead>
+              <tr>
+                <th className="pr-2" />
+                {Array.from({ length: 31 }, (_, i) => (
+                  <th key={i} className="w-4 pb-1 text-[8px] font-normal text-muted-foreground tabular-nums">{i + 1}</th>
+                ))}
+              </tr>
+            </thead>
             <tbody>
               {months.map((m) => (
                 <tr key={m.name}>

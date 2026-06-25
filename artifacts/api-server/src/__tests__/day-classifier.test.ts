@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { easterDate, italianHolidays, classifyDate, classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
+// Modello standardizzato: si dichiarano i periodi di SCUOLE CHIUSE (vacanze),
+// tutto il resto è scuole aperte. Equivale alle vecchie "scuole aperte" dal
+// 07/01 al 06/06 e dal 15/09 al 22/12.
 const PROFILE: CalendarProfile = {
-  schoolPeriods: [
-    { from: "2026-01-07", to: "2026-06-06" },
-    { from: "2026-09-15", to: "2026-12-22" },
+  closedPeriods: [
+    { from: "2026-01-01", to: "2026-01-06" }, // vacanze di inizio anno
+    { from: "2026-06-07", to: "2026-09-14" }, // estate (parte estivo, parte inv.)
+    { from: "2026-12-23", to: "2026-12-31" }, // vacanze di Natale
   ],
   summerPeriod: { from: "2026-06-15", to: "2026-09-14" },
   extraHolidays: ["05-04"], // patrono (es. Ancona, San Ciriaco)
@@ -34,10 +38,15 @@ describe("classifyDate — albero a 3 livelli", () => {
     expect(c.level1).toBe("festivo");
     expect(c.level2).toBe("rosso");
   });
-  it("domenica non rossa → festivo · domenica", () => {
-    const c = classifyDate("2026-03-15", PROFILE);
+  it("domenica scuole aperte → festivo · domenica_aperte", () => {
+    const c = classifyDate("2026-03-15", PROFILE); // domenica fuori dai periodi chiusi
     expect(c.level1).toBe("festivo");
-    expect(c.level2).toBe("domenica");
+    expect(c.level2).toBe("domenica_aperte");
+  });
+  it("domenica in periodo scuole chiuse → festivo · domenica_chiuse", () => {
+    const c = classifyDate("2026-07-12", PROFILE); // domenica d'estate (scuole chiuse)
+    expect(c.level1).toBe("festivo");
+    expect(c.level2).toBe("domenica_chiuse");
   });
   it("feriale in periodo scolastico → scuole aperte", () => {
     const c = classifyDate("2026-03-16", PROFILE); // lunedì
@@ -69,9 +78,9 @@ describe("classifyRange — copertura totale e riepilogo", () => {
     const { days, summary } = classifyRange("2026-01-01", "2026-12-31", PROFILE);
     expect(days).toHaveLength(365);
     expect(summary.reduce((s, x) => s + x.count, 0)).toBe(365);
-    // le foglie tipiche: ~7 classi (sc.aperte fer/sab, sc.chiuse inv fer/sab,
-    // sc.chiuse est fer/sab, dom, rossi) — mai esplosione di unità
-    expect(summary.length).toBeLessThanOrEqual(8);
+    // foglie tipiche (~9): sc.aperte fer/sab, sc.chiuse inv fer/sab, sc.chiuse
+    // est fer/sab, domenica aperte/chiuse, rossi — mai esplosione di unità
+    expect(summary.length).toBeLessThanOrEqual(10);
     expect(summary.length).toBeGreaterThanOrEqual(5);
   });
 });
