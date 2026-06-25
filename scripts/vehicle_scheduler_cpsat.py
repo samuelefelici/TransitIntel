@@ -280,6 +280,36 @@ def trips_vehicle_compatible(ti: Trip, tj: Trip) -> bool:
     return False
 
 
+def chain_servable_by_single_vehicle(chain: list[int], trips: list[Trip]) -> bool:
+    """Esiste UN SOLO veicolo che può servire l'INTERA catena?
+
+    `trips_vehicle_compatible` è pairwise ("esiste un veicolo per QUESTE due
+    corse") e la compatibilità NON è transitiva: con MAX_DOWNSIZE_LEVELS=1 una
+    catena su taglie [4,3,2] ha ogni coppia consecutiva compatibile ma nessun
+    veicolo unico le copre tutte. Le mosse di eliminazione veicoli controllano
+    solo `chain[0]`/`block[0]`, quindi senza questo guard possono produrre
+    catene che sforano il downsize. Va chiamata sull'intera catena risultante.
+    """
+    if len(chain) <= 1:
+        return True
+    if len({trips[i].category for i in chain}) > 1:
+        return False
+    forced = {trips[i].required_vehicle for i in chain if trips[i].forced}
+    if len(forced) > 1:
+        return False
+    for vt in VEHICLE_TYPES:
+        if forced and vt not in forced:
+            continue
+        vs = VEHICLE_SIZE[vt]
+        if all(
+            (trips[i].forced and vt == trips[i].required_vehicle)
+            or (not trips[i].forced and can_vehicle_serve(vs, VEHICLE_SIZE.get(trips[i].required_vehicle, 3)))
+            for i in chain
+        ):
+            return True
+    return False
+
+
 def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
     """FIX-VSP-CLUSTER: union-find geografico sui capolinea.
 
@@ -340,6 +370,12 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
     log(f"  [VSP-CLUSTER] terminals={n}, cluster_radius={radius_m}m, "
         f"distinct_clusters={n_clusters}, stops_grouped={n_grouped}")
     return cluster_of
+
+
+# True se l'ultimo build_compatible_arcs_fast ha applicato il pruning anti-OOM.
+# Serve a iterative_vehicle_reduction: un INFEASIBLE sul grafo POTATO non
+# dimostra l'infeasibilità reale, quindi `provenOptimal` non può essere True.
+_LAST_ARCS_PRUNED = False
 
 
 def build_compatible_arcs_fast(
@@ -458,8 +494,11 @@ def build_compatible_arcs_fast(
     # migliori (gap+deadhead minori) E i K predecessori migliori: l'unione
     # preserva la connettivita' (nessuna corsa resta orfana) riducendo gli
     # archi di ~4-8x. K e' dimensionato sul budget totale.
+    global _LAST_ARCS_PRUNED
+    _LAST_ARCS_PRUNED = False
     MAX_ARCS_TOTAL = 250_000
     if len(arcs) > MAX_ARCS_TOTAL:
+        _LAST_ARCS_PRUNED = True
         k_per_trip = max(25, MAX_ARCS_TOTAL // (2 * max(n, 1)))
 
         def _arc_rank(a: Arc) -> tuple:
@@ -542,7 +581,12 @@ def precompute_arc_costs(
         if mul_pair > 1.0:
             cost_euro += a.gap_min * 0.05 * (mul_pair - 1.0)
 
-        costs[(a.i, a.j)] = max(0, int(round(cost_euro * COST_SCALE)))
+        # NB: niente max(0, …). Il bonus monolinea (sottrattivo) deve poter
+        # rendere un arco "same-route" più economico di uno neutro: troncare a 0
+        # azzererebbe il segnale di preferenza. CP-SAT gestisce coefficienti
+        # negativi e nv*BIG resta dominante. Il bonus è comunque limitato
+        # (fixed_ref*0.15*(mul-1)), quindi non genera costi patologici.
+        costs[(a.i, a.j)] = int(round(cost_euro * COST_SCALE))
     return costs
 
 
@@ -873,6 +917,40 @@ def _empty_metrics(elapsed=0.0):
             "solveTimeSec": round(elapsed, 1), "status": "NO_SOLUTION", "objectiveValue": 0}
 
 
+def validate_solution(
+    chains: list[list[int]], trips: list[Trip],
+    arcs_lookup: dict[tuple[int, int], Arc], n: int, where: str = "",
+) -> bool:
+    """Insurance: verifica gli invarianti di una soluzione VSP e LOGGA (non
+    solleva) se qualcosa è rotto. Copre i requisiti fondamentali del MDVSP:
+      - copertura+partizione: ogni corsa in ESATTAMENTE una catena;
+      - feasibility d'arco: ogni transizione consecutiva è un arco valido;
+      - ordine temporale: arrivo_i ≤ partenza_{i+1};
+      - compatibilità veicolo sull'intera catena (downsize).
+    Oggi questi invarianti reggono per costruzione (grafo DAG time-forward +
+    kept-set), ma il guard blinda da regressioni future a costo ~zero.
+    """
+    ok = True
+    flat = [t for c in chains for t in c]
+    if sorted(flat) != list(range(n)):
+        ok = False
+        log(f"  [VSP-VALIDATE{(' ' + where) if where else ''}] COPERTURA ROTTA: "
+            f"{len(flat)} corse ({len(set(flat))} uniche) vs n={n}")
+    for ci, c in enumerate(chains):
+        for k in range(len(c) - 1):
+            if (c[k], c[k + 1]) not in arcs_lookup:
+                ok = False
+                log(f"  [VSP-VALIDATE] arco assente in catena {ci}: {c[k]}→{c[k+1]}")
+            elif trips[c[k]].arrival_min > trips[c[k + 1]].departure_min:
+                ok = False
+                log(f"  [VSP-VALIDATE] overlap temporale catena {ci}: "
+                    f"{c[k]}(arr {trips[c[k]].arrival_min}) > {c[k+1]}(dep {trips[c[k+1]].departure_min})")
+        if not chain_servable_by_single_vehicle(c, trips):
+            ok = False
+            log(f"  [VSP-VALIDATE] catena {ci} non servibile da un solo veicolo (downsize)")
+    return ok
+
+
 def chains_to_arc_set(chains: list[list[int]]) -> set[tuple[int, int]]:
     """Estrae il set di archi (i,j) usati da una soluzione."""
     s: set[tuple[int, int]] = set()
@@ -1007,7 +1085,15 @@ def solve_vsp_lexicographic(
     nv2 = model2.new_int_var(0, n, "nv2")
     model2.add(nv2 == sum(first2))
     # ★ vincolo lessicografico ★
-    model2.add(nv2 == best_nv)
+    # Se la fase 1 è OPTIMAL, best_nv È il minimo → blocca `==`. Se invece è solo
+    # FEASIBLE (timeout), best_nv NON è dimostrato minimo: con `==` la fase 2
+    # ottimizzerebbe il costo a parità di un n_veicoli potenzialmente riducibile.
+    # Con `<=` la fase 2 può ancora scendere, restando coerente con l'obiettivo
+    # primario "min veicoli".
+    if status1 == "OPTIMAL":
+        model2.add(nv2 == best_nv)
+    else:
+        model2.add(nv2 <= best_nv)
 
     if forbidden_arc_sets:
         for forbidden in forbidden_arc_sets:
@@ -1221,12 +1307,21 @@ def iterative_vehicle_reduction(
             label=f"target{target}",
         )
         if found is None:
-            # INFEASIBLE → abbiamo dimostrato il minimo
+            # INFEASIBLE → abbiamo dimostrato il minimo... ma SOLO se il grafo
+            # degli archi è completo. Se è stato applicato il pruning anti-OOM,
+            # l'INFEASIBLE è relativo al SOTTOGRAFO potato e NON dimostra
+            # l'infeasibilità reale: il vero minimo potrebbe essere più basso.
             if status == "INFEASIBLE":
-                proven_optimal = True
                 infeasible_at = target
-                log(f"  [VSP-ITER-RED] Provato che ≤{target} è IMPOSSIBILE: "
-                    f"{len(best)} è il minimo assoluto")
+                if _LAST_ARCS_PRUNED:
+                    proven_optimal = False
+                    log(f"  [VSP-ITER-RED] ≤{target} infeasible sul grafo POTATO "
+                        f"(pruning anti-OOM attivo): {len(best)} è best-effort, "
+                        f"NON un minimo dimostrato")
+                else:
+                    proven_optimal = True
+                    log(f"  [VSP-ITER-RED] Provato che ≤{target} è IMPOSSIBILE: "
+                        f"{len(best)} è il minimo assoluto")
             else:
                 log(f"  [VSP-ITER-RED] Timeout su target={target} ({status}): "
                     f"non posso scendere oltre {len(best)} entro il budget")
@@ -1289,6 +1384,8 @@ def chain_cost_detailed(
     rates: VehicleCostRates,
 ) -> VehicleShiftCost:
     """Compute full real-EUR cost with quadratic penalties for a chain."""
+    if not chain:  # catena vuota = nessun veicolo = costo 0
+        return VehicleShiftCost()
     vtype = assign_vehicle_type(chain, trips)
     service_km = sum(_estimate_trip_km(trips[i], rates) for i in chain)
 
@@ -1348,6 +1445,11 @@ def chain_cost_fast(
     rates: VehicleCostRates,
 ) -> float:
     """Approssimazione veloce senza penalità quadratiche."""
+    # Una catena vuota = nessun veicolo = costo 0. Senza questo, la local search
+    # vedrebbe ~fixed_daily su una catena svuotata e non valorizzerebbe il
+    # risparmio dell'eliminazione del veicolo (FIX-VSP-4).
+    if not chain:
+        return 0.0
     vtype = assign_vehicle_type(chain, trips)
     fixed = rates.fixed_daily.get(vtype, 42.0)
     service_km = sum(_estimate_trip_km(trips[i], rates) for i in chain)
@@ -1668,7 +1770,12 @@ def vehicle_elimination_pass(
             # join destro
             if pos < n and (b_last, target[pos]) not in arcs_lookup:
                 continue
-            return target[:pos] + block + target[pos:]
+            candidate = target[:pos] + block + target[pos:]
+            # La compatibilità pairwise NON è transitiva: verifica che un singolo
+            # veicolo serva l'INTERA catena fusa (no sforamento downsize).
+            if not chain_servable_by_single_vehicle(candidate, trips):
+                continue
+            return candidate
         return None
 
     for pass_idx in range(max_passes):
@@ -1702,6 +1809,9 @@ def vehicle_elimination_pass(
                     if not trips_vehicle_compatible(trips[a_chain[0]], trips[b_first]):
                         continue
                     if (a_last, b_first) not in arcs_lookup:
+                        continue
+                    # Un singolo veicolo deve servire l'intera catena fusa A+B
+                    if not chain_servable_by_single_vehicle(a_chain + b_chain, trips):
                         continue
                     best_pair = (ai, bi)
                     break
@@ -1765,6 +1875,9 @@ def vehicle_elimination_pass(
                         if pos < len(tc) and (trip_idx, tc[pos]) not in arcs_lookup:
                             continue
                         nc = tc[:pos] + [trip_idx] + tc[pos:]
+                        # Compatibilità veicolo sull'INTERA catena, non solo tc[0]
+                        if not chain_servable_by_single_vehicle(nc, trips):
+                            continue
                         other[tgt] = nc
                         relocations.append((tgt, nc))
                         placed = True
@@ -1844,6 +1957,9 @@ def vehicle_elimination_pass(
                         if pos < len(tc) and (trip_idx, tc[pos]) not in arcs_lookup:
                             continue
                         nc = tc[:pos] + [trip_idx] + tc[pos:]
+                        # Compatibilità veicolo sull'INTERA catena, non solo tc[0]
+                        if not chain_servable_by_single_vehicle(nc, trips):
+                            continue
                         other[tgt] = nc
                         relocations.append((tgt, nc))
                         placed = True
@@ -1953,7 +2069,10 @@ def vehicle_elimination_pass(
                                 continue
                             if pos < len(tc) and (trip_idx, tc[pos]) not in arcs_lookup:
                                 continue
-                            working[tgt] = tc[:pos] + [trip_idx] + tc[pos:]
+                            cand = tc[:pos] + [trip_idx] + tc[pos:]
+                            if not chain_servable_by_single_vehicle(cand, trips):
+                                continue
+                            working[tgt] = cand
                             placed = True
                             break
                         if placed:
@@ -2616,6 +2735,7 @@ def main():
             max_passes=vsp_config.vehicle_elimination_max_passes,
             time_budget_sec=elim_budget,
         )
+        validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-elim")
         # Ulteriore LS rapido per pulire archi sub-ottimali post-eliminazione
         if elim_stats.get("vehiclesEliminated", 0) > 0:
             report_progress("VSP", 92, "Re-local search dopo eliminazione...")
@@ -2647,6 +2767,7 @@ def main():
             time_budget_sec=vsp_config.iterative_reduction_time_sec,
             intensity=intensity, seed=4242,
         )
+        validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-iter-red")
         if iter_red_stats.get("vehiclesEliminated", 0) > 0:
             report_progress("VSP", 96, "Re-LS dopo riduzione iterativa...")
             improved_chains = advanced_local_search(
