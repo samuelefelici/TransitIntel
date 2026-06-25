@@ -63,7 +63,9 @@ export async function activeServiceIdsOnDate(feedId: string, date: string): Prom
 export async function pickRepresentativeDate(
   feedId: string, profile: CalendarProfile, validity: Validity, dayType: DayType,
 ): Promise<{ date: string | null; iso: string | null; note?: string }> {
-  const level1 = dayType === "sunday" ? "festivo" : validity;
+  // Domeniche: ora si dividono per stato scuole → la validità scelta filtra la
+  // foglia "domenica (scuole aperte)" vs "domenica (scuole chiuse)".
+  const wantSundayLevel2 = validity === "scuole_chiuse" ? "domenica_chiuse" : "domenica_aperte";
   const wantBand = dayType === "sunday" ? null : dayType === "saturday" ? "Sabato" : "Feriale";
 
   const cand = await db.execute<any>(sql`
@@ -77,8 +79,12 @@ export async function pickRepresentativeDate(
     const ymd = String(row.date);
     if (!/^\d{8}$/.test(ymd)) continue;
     const cls = classifyDate(dash(ymd), profile);
-    if (cls.level1 !== level1) continue;
-    if (wantBand !== null && dayBandOf(cls.weekday, cls.level1) !== wantBand) continue;
+    if (dayType === "sunday") {
+      if (cls.level1 !== "festivo" || cls.level2 !== wantSundayLevel2) continue;
+    } else {
+      if (cls.level1 !== validity) continue;
+      if (wantBand !== null && dayBandOf(cls.weekday, cls.level1) !== wantBand) continue;
+    }
     const n = Number(row.n) || 0;
     if (!best || n > best.n || (n === best.n && ymd > best.date)) best = { date: ymd, n };
   }

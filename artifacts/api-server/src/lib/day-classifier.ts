@@ -6,19 +6,22 @@
  *
  *   1° livello: SCUOLE APERTE | SCUOLE CHIUSE | FESTIVO
  *   2° livello: scuole chiuse → INVERNALE | ESTIVO
- *               festivo       → DOMENICA  | ROSSO (festività di calendario)
+ *               festivo       → DOMENICA (scuole aperte | chiuse) | ROSSO
  *   3° livello: giorno della settimana
  *
- * Precedenza: rosso > domenica > scuole aperte > estivo > invernale.
- * Funzioni pure, testabili: il profilo (periodi scolastici, periodo estivo,
+ * STANDARD: di default ogni giorno è "scuole aperte"; l'operatore aggiunge solo
+ * i periodi di SCUOLE CHIUSE (vacanze). Le domeniche si dividono in "scuole
+ * aperte" e "scuole chiuse" a seconda che cadano o meno in un periodo chiuso.
+ * Precedenza: rosso > domenica > scuole chiuse (estivo/invernale) > scuole aperte.
+ * Funzioni pure, testabili: il profilo (periodi scuole chiuse, periodo estivo,
  * festività extra) arriva dal calendario aziendale del progetto PS.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
 export interface CalendarProfile {
-  /** intervalli scuole aperte [{from:"YYYY-MM-DD", to:"YYYY-MM-DD"}] */
-  schoolPeriods: Array<{ from: string; to: string }>;
-  /** periodo estivo (per il ramo "scuole chiuse") */
+  /** intervalli SCUOLE CHIUSE [{from,to}]; vuoto = tutto l'anno scuole aperte */
+  closedPeriods: Array<{ from: string; to: string }>;
+  /** periodo estivo (sotto-ramo di "scuole chiuse") */
   summerPeriod: { from: string; to: string } | null;
   /** festività extra oltre ai rossi nazionali (es. patrono) "MM-DD" o "YYYY-MM-DD" */
   extraHolidays: string[];
@@ -28,7 +31,7 @@ export interface DayClass {
   date: string;            // YYYY-MM-DD
   weekday: number;         // 0=lun … 6=dom
   level1: "scuole_aperte" | "scuole_chiuse" | "festivo";
-  level2: "invernale" | "estivo" | "domenica" | "rosso" | null;
+  level2: "invernale" | "estivo" | "domenica_aperte" | "domenica_chiuse" | "rosso" | null;
   /** etichetta foglia, es. "Scuole Aperte · Feriale", "Scuole Chiuse · Estivo · Sabato" */
   label: string;
   /** chiave compatta della foglia (per raggruppare in unità) */
@@ -75,14 +78,19 @@ export function classifyDate(date: string, profile: CalendarProfile, holidays?: 
   const isExtra = profile.extraHolidays.some((h) => h === date || h === md);
   const isRosso = rossi.has(date) || isExtra;
   const isSunday = weekday === 6;
+  // STANDARD: scuole aperte ovunque, tranne nei periodi di "scuole chiuse".
+  const schoolsClosed = profile.closedPeriods.some((p) => inRange(date, p.from, p.to));
 
   let level1: DayClass["level1"];
   let level2: DayClass["level2"];
   if (isRosso) { level1 = "festivo"; level2 = "rosso"; }
-  else if (isSunday) { level1 = "festivo"; level2 = "domenica"; }
-  else if (profile.schoolPeriods.some((p) => inRange(date, p.from, p.to))) {
-    level1 = "scuole_aperte"; level2 = null;
-  } else if (profile.summerPeriod && inRange(date, profile.summerPeriod.from, profile.summerPeriod.to)) {
+  else if (isSunday) {
+    // Le domeniche si dividono per stato scuole (aperte vs chiuse).
+    level1 = "festivo";
+    level2 = schoolsClosed ? "domenica_chiuse" : "domenica_aperte";
+  }
+  else if (!schoolsClosed) { level1 = "scuole_aperte"; level2 = null; }
+  else if (profile.summerPeriod && inRange(date, profile.summerPeriod.from, profile.summerPeriod.to)) {
     level1 = "scuole_chiuse"; level2 = "estivo";
   } else {
     level1 = "scuole_chiuse"; level2 = "invernale";
@@ -92,7 +100,10 @@ export function classifyDate(date: string, profile: CalendarProfile, holidays?: 
   // la chiave conserva comunque il weekday esatto per chi vuole granularità piena.
   const dayBand = level1 === "festivo" ? null : weekday === 5 ? "Sabato" : "Feriale";
   const l1Label = level1 === "scuole_aperte" ? "Scuole Aperte" : level1 === "scuole_chiuse" ? "Scuole Chiuse" : "Festivo";
-  const l2Label = level2 === "invernale" ? "Invernale" : level2 === "estivo" ? "Estivo" : level2 === "domenica" ? "Domenica" : level2 === "rosso" ? "Rosso" : null;
+  const l2Label = level2 === "invernale" ? "Invernale" : level2 === "estivo" ? "Estivo"
+    : level2 === "domenica_aperte" ? "Domenica (scuole aperte)"
+    : level2 === "domenica_chiuse" ? "Domenica (scuole chiuse)"
+    : level2 === "rosso" ? "Rosso" : null;
   const label = [l1Label, l2Label, dayBand].filter(Boolean).join(" · ");
   const key = [level1, level2 ?? "-", dayBand ?? "-"].join("/");
 

@@ -276,7 +276,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     const { loadCalendarProfile } = await import("./planning-studio-calendar");
     const { classifyDate, italianHolidays } = await import("./day-classifier");
     const calProfile = await loadCalendarProfile(proj.id);
-    const calConfigured = calProfile.schoolPeriods.length > 0 || !!calProfile.summerPeriod;
+    const calConfigured = calProfile.closedPeriods.length > 0 || !!calProfile.summerPeriod;
     const holidaysByYear = new Map<number, Set<string>>();
     const leafOf = (d: string): { key: string; label: string } | null => {
       if (!calConfigured) return null;

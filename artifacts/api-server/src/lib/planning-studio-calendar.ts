@@ -29,6 +29,10 @@ async function ensureTable(): Promise<void> {
       updated_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+  // Modello standardizzato: si memorizzano i periodi di SCUOLE CHIUSE (il
+  // default — colonna vuota — significa "tutto l'anno scuole aperte"). La
+  // vecchia colonna school_periods resta per compatibilità ma non è più usata.
+  await db.execute(sql`ALTER TABLE ps_calendar_profiles ADD COLUMN IF NOT EXISTS closed_periods jsonb NOT NULL DEFAULT '[]'::jsonb`);
   bootstrapped = true;
 }
 router.use(async (_req, _res, next) => { await ensureTable(); next(); });
@@ -43,12 +47,12 @@ export async function loadCalendarProfile(projectId: string): Promise<CalendarPr
 
 async function loadProfile(projectId: string): Promise<CalendarProfile> {
   const r = await db.execute<any>(sql`
-    SELECT school_periods, summer_period, extra_holidays
+    SELECT closed_periods, summer_period, extra_holidays
     FROM ps_calendar_profiles WHERE project_id = ${projectId}::uuid LIMIT 1
   `);
   const row = r.rows[0];
   return {
-    schoolPeriods: row?.school_periods ?? [],
+    closedPeriods: row?.closed_periods ?? [],
     summerPeriod: row?.summer_period ?? null,
     extraHolidays: row?.extra_holidays ?? [],
   };
@@ -67,8 +71,8 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
     const b = req.body ?? {};
-    const schoolPeriods = Array.isArray(b.schoolPeriods)
-      ? b.schoolPeriods.filter((p: any) => DATE_RE.test(p?.from) && DATE_RE.test(p?.to) && p.from <= p.to)
+    const closedPeriods = Array.isArray(b.closedPeriods)
+      ? b.closedPeriods.filter((p: any) => DATE_RE.test(p?.from) && DATE_RE.test(p?.to) && p.from <= p.to)
       : [];
     const summerPeriod = b.summerPeriod && DATE_RE.test(b.summerPeriod.from) && DATE_RE.test(b.summerPeriod.to)
       ? { from: b.summerPeriod.from, to: b.summerPeriod.to } : null;
@@ -76,17 +80,17 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
       ? b.extraHolidays.filter((h: any) => /^(\d{4}-)?\d{2}-\d{2}$/.test(String(h)))
       : [];
     await db.execute(sql`
-      INSERT INTO ps_calendar_profiles (project_id, school_periods, summer_period, extra_holidays, updated_at)
-      VALUES (${id}::uuid, ${JSON.stringify(schoolPeriods)}::jsonb,
+      INSERT INTO ps_calendar_profiles (project_id, closed_periods, summer_period, extra_holidays, updated_at)
+      VALUES (${id}::uuid, ${JSON.stringify(closedPeriods)}::jsonb,
               ${summerPeriod ? JSON.stringify(summerPeriod) : null}::jsonb,
               ${JSON.stringify(extraHolidays)}::jsonb, now())
       ON CONFLICT (project_id) DO UPDATE SET
-        school_periods = EXCLUDED.school_periods,
+        closed_periods = EXCLUDED.closed_periods,
         summer_period = EXCLUDED.summer_period,
         extra_holidays = EXCLUDED.extra_holidays,
         updated_at = now()
     `);
-    res.json({ ok: true, profile: { schoolPeriods, summerPeriod, extraHolidays } });
+    res.json({ ok: true, profile: { closedPeriods, summerPeriod, extraHolidays } });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
