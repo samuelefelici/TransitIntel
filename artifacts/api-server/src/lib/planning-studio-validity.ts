@@ -511,7 +511,11 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
            r.short_name AS route_short_name, r.long_name AS route_long_name, r.color AS route_color,
            v.name AS variant_name,
            (SELECT departure_time FROM ps_stop_times st
-             WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS first_departure
+             WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS first_departure,
+           (SELECT s.name FROM ps_stop_times st JOIN ps_stops s ON s.id = st.stop_id
+             WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS first_stop_name,
+           (SELECT s.name FROM ps_stop_times st JOIN ps_stops s ON s.id = st.stop_id
+             WHERE st.trip_id = t.id ORDER BY st.stop_seq DESC LIMIT 1) AS last_stop_name
       FROM ps_trips t
       JOIN ps_routes r ON r.id = t.route_id
       JOIN ps_route_variants v ON v.id = t.variant_id
@@ -536,6 +540,8 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
     isActive: !!t.is_active,
     serviceLabel: t.service_label,
     firstDeparture: t.first_departure,
+    firstStopName: t.first_stop_name,
+    lastStopName: t.last_stop_name,
   }));
 
   // Day-types: system globali + custom del progetto.

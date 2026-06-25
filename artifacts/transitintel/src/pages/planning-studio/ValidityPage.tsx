@@ -35,6 +35,7 @@ import { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties, 
 import { Link, useParams, useLocation } from "wouter";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { apiFetch } from "@/lib/api";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
   Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
@@ -189,6 +190,9 @@ export default function PlanningStudioValidityPage() {
   const [to, setTo] = useState<string>(() => plusDaysISO(todayISO(), 60));
   /* ─── Filtro Linea (richiesto se trips > 2000) ─── */
   const [routeId, setRouteId] = useState<string | null>(null);
+  /* ─── Filtri vista (richiesti): ricerca linee + criterio Calendario aziendale ─── */
+  const [lineFilter, setLineFilter] = useState<string>("");
+  const [calCriterion, setCalCriterion] = useState<string>(""); // "" = tutti i giorni
 
   /* ─── Queries ─── */
   const projectQ = useQuery({
@@ -243,15 +247,50 @@ export default function PlanningStudioValidityPage() {
     enabled: !!projectId,
   });
 
+  /* ─── Classificazione giorni (Calendario aziendale) per il range visibile ─── */
+  const dayClassQ = useQuery({
+    queryKey: ["ps", projectId, "day-classification", from, to],
+    queryFn: () => apiFetch<{ days: Array<{ date: string; level1: string; level2: string | null }> }>(
+      `/api/planning-studio/projects/${projectId}/day-classification?from=${from}&to=${to}`),
+    enabled: !!projectId,
+  });
+  const leafByDate = useMemo(() => {
+    const m = new Map<string, { level1: string; level2: string | null }>();
+    for (const d of dayClassQ.data?.days ?? []) m.set(d.date, { level1: d.level1, level2: d.level2 });
+    return m;
+  }, [dayClassQ.data]);
+  // criterio → predicato sulla foglia del Calendario aziendale
+  const matchesCriterion = useCallback((date: string): boolean => {
+    if (!calCriterion) return true;
+    const l = leafByDate.get(date);
+    if (!l) return false;
+    switch (calCriterion) {
+      case "scuole_aperte": return l.level1 === "scuole_aperte";
+      case "scuole_chiuse": return l.level1 === "scuole_chiuse";
+      case "estivo": return l.level1 === "scuole_chiuse" && l.level2 === "estivo";
+      case "invernale": return l.level1 === "scuole_chiuse" && l.level2 === "invernale";
+      case "domeniche": return l.level1 === "festivo" && (l.level2 === "domenica_aperte" || l.level2 === "domenica_chiuse");
+      case "festivi": return l.level1 === "festivo";
+      default: return true;
+    }
+  }, [calCriterion, leafByDate]);
+
   /* ─── Algorithm context (memoizzato) ─── */
   const ctx = useMemo<MatrixContext | null>(() => {
     if (!matrixQ.data) return null;
     return buildAlgoContext(matrixQ.data);
   }, [matrixQ.data]);
 
-  const dates = useMemo(() => isoRange(from, to), [from, to]);
+  const allDates = useMemo(() => isoRange(from, to), [from, to]);
+  // Filtro colonne per criterio del Calendario aziendale (scuole aperte/chiuse…)
+  const dates = useMemo(
+    // mentre la classificazione carica (leafByDate vuota) non filtriamo, per
+    // non mostrare una matrice vuota a lampo.
+    () => (calCriterion && leafByDate.size > 0 ? allDates.filter(matchesCriterion) : allDates),
+    [allDates, calCriterion, matchesCriterion, leafByDate],
+  );
 
-  /* ─── Trips raggruppate per route ─── */
+  /* ─── Trips raggruppate per route (+ filtro ricerca linee) ─── */
   const groups = useMemo(() => {
     if (!matrixQ.data) return [] as { route: PsValidityTrip; trips: PsValidityTrip[] }[];
     const byRoute = new Map<string, PsValidityTrip[]>();
@@ -259,8 +298,14 @@ export default function PlanningStudioValidityPage() {
       if (!byRoute.has(t.routeId)) byRoute.set(t.routeId, []);
       byRoute.get(t.routeId)!.push(t);
     }
-    return Array.from(byRoute.values()).map((trips) => ({ route: trips[0], trips }));
-  }, [matrixQ.data]);
+    let arr = Array.from(byRoute.values()).map((trips) => ({ route: trips[0], trips }));
+    const q = lineFilter.trim().toLowerCase();
+    if (q) {
+      arr = arr.filter((g) =>
+        `${g.route.routeShortName ?? ""} ${g.route.routeLongName ?? ""}`.toLowerCase().includes(q));
+    }
+    return arr;
+  }, [matrixQ.data, lineFilter]);
 
   /** flatten: header riga di route + righe trip; ogni riga ha altezza costante. */
   const flatRows = useMemo(() => {
@@ -707,6 +752,40 @@ export default function PlanningStudioValidityPage() {
               </option>
             ))}
           </select>
+          {/* Ricerca/filtro linee visibili (lato client) */}
+          <input
+            value={lineFilter}
+            onChange={(e) => setLineFilter(e.target.value)}
+            placeholder="Filtra linee…"
+            className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 w-[120px] focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
+            title="Mostra solo le linee il cui nome/codice contiene il testo"
+          />
+        </div>
+
+        <div className="h-6 w-px bg-slate-800 mx-1" />
+
+        {/* Filtro per criterio del Calendario aziendale */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">Calendario</span>
+          <select
+            value={calCriterion}
+            onChange={(e) => setCalCriterion(e.target.value)}
+            className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500/30"
+            title="Mostra solo i giorni che corrispondono al criterio del Calendario aziendale"
+          >
+            <option value="">— Tutti i giorni —</option>
+            <option value="scuole_aperte">Scuole aperte</option>
+            <option value="scuole_chiuse">Scuole chiuse</option>
+            <option value="estivo">· Estivo</option>
+            <option value="invernale">· Invernale</option>
+            <option value="domeniche">Domeniche</option>
+            <option value="festivi">Festivi (rossi + dom.)</option>
+          </select>
+          {calCriterion && (
+            <span className="text-[10px] text-slate-500 tabular-nums" title="Giorni che corrispondono al criterio nel range visibile">
+              {dates.length} gg
+            </span>
+          )}
         </div>
 
         <div className="h-6 w-px bg-slate-800 mx-1" />
@@ -944,17 +1023,19 @@ export default function PlanningStudioValidityPage() {
                         style={{ width: STICKY_W, minWidth: STICKY_W, height: ROW_H }}
                         title={`Click: evidenzia riga in tutto il calendario · ${t.shortName ?? ""} · ${t.headsign ?? ""}`}
                       >
-                        <span className="text-slate-500 tabular-nums w-12 shrink-0">
+                        <span className="text-slate-400 tabular-nums w-11 shrink-0" title="Orario di partenza">
                           {t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}
                         </span>
-                        <span className="font-mono text-[10px] text-slate-300 bg-slate-800/80 rounded px-1 py-0.5 shrink-0 max-w-[80px] truncate">
+                        <span className="font-mono text-[10px] text-slate-300 bg-slate-800/80 rounded px-1 py-0.5 shrink-0 max-w-[72px] truncate" title="Codice corsa">
                           {t.shortName ?? t.id.slice(0, 6)}
                         </span>
-                        <span className="text-slate-200 truncate flex-1">
-                          {t.headsign || t.variantName || "—"}
-                        </span>
-                        <span className="text-slate-500 truncate text-[10px]" style={{ maxWidth: 70 }}>
-                          {t.variantName}
+                        <span
+                          className="text-slate-200 truncate flex-1 flex items-center gap-1"
+                          title={`Partenza: ${t.firstStopName ?? "—"}  →  Arrivo: ${t.lastStopName ?? t.headsign ?? "—"}`}
+                        >
+                          <span className="truncate">{t.firstStopName || "—"}</span>
+                          <span className="text-slate-500 shrink-0">→</span>
+                          <span className="truncate">{t.lastStopName || t.headsign || "—"}</span>
                         </span>
                       </button>
                       <CellsRow
