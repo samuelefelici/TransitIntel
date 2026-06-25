@@ -34,7 +34,13 @@ async function loadProject(projectId: string, userId: string): Promise<any | nul
       LEFT JOIN ps_project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
      WHERE p.id = ${projectId}::uuid
-       AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+       AND (
+         p.owner_user_id = ${userId}::uuid
+         OR pm.user_id IS NOT NULL
+         OR (p.materialized_feed_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM gtfs_feeds gf
+                          WHERE gf.id = p.materialized_feed_id AND gf.is_active = true))
+       )
      LIMIT 1
   `);
   return (r as any).rows?.[0] ?? null;
