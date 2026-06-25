@@ -357,6 +357,33 @@ def pre_turno_for(transfer_min: int) -> int:
     return PRE_TURNO_AUTO_MIN if transfer_min > 0 else PRE_TURNO_MIN
 
 
+def single_nastro_work(s: "Segment", bds: "BDSConfig", clusters: list) -> tuple[int, int]:
+    """(nastro, work) di un turno mono-segmento. FONTE UNICA usata sia
+    nell'obiettivo CP-SAT sia nell'estrazione: prima divergevano (il modello
+    usava pre_turno_deposito=12 e trasferimenti fissi, l'estrazione pre_turno_for
+    e i cluster reali), così il solver ottimizzava un nastro/work diverso da
+    quello poi classificato/validato con RD 131/1938."""
+    t = depot_transfer_min(s.first_stop, clusters)
+    tb = depot_transfer_min(s.last_stop, clusters)
+    pt = pre_turno_for(t)
+    nastro = s.work_min + pt + t + tb
+    work = s.work_min + pt + tb
+    return nastro, work
+
+
+def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: list) -> tuple[int, int]:
+    """(nastro, work) di un turno bi-ripresa (semiunico/spezzato). FONTE UNICA
+    condivisa fra obiettivo CP-SAT ed estrazione (vedi single_nastro_work)."""
+    if s1.start_min > s2.start_min:
+        s1, s2 = s2, s1
+    t = depot_transfer_min(s1.first_stop, clusters)
+    tb = depot_transfer_min(s2.last_stop, clusters)
+    pt = pre_turno_for(t)
+    nastro = s2.end_min - s1.start_min + pt + t + tb
+    work = s1.work_min + s2.work_min + pt + tb + bds.pre_post.pre_ripresa
+    return nastro, work
+
+
 def compute_pre_post_total(
     duty: DriverDutyV3,
     pp: PrePostRules,
@@ -1470,8 +1497,12 @@ def compute_duty_cost_v4(
         c.interruption_cost = duty.interruption_min * per_min * rates.interruption_rate_fraction
 
     # 10. Penalità sbilanciamento
-    dev = abs(lavoro_retribuito - target_mid)
-    c.work_imbalance_penalty = dev * rates.work_imbalance_per_min
+    # FIX doppio-conteggio: la deviazione dal target è GIÀ addebitata da
+    # undertime_cost (sotto target, stesso coefficiente work_imbalance_per_min)
+    # e overtime_cost (sopra target). Ri-applicare qui `dev * work_imbalance_per_min`
+    # contava la stessa deviazione due volte, gonfiando il costo riportato e lo
+    # score del portfolio. La fascia [target-30, target+12] resta gratuita.
+    c.work_imbalance_penalty = 0.0
 
     c.compute()
     return c
@@ -1706,15 +1737,9 @@ def _build_cpsat_model(
     obj_terms: list[Any] = []
 
     for s in segments:
-        _t = depot_transfer_min(s.first_stop, clusters)
-        _tb = depot_transfer_min(s.last_stop, clusters)
-        _pt = pre_turno_for(_t)
-        nastro_s = s.work_min + _pt + _t + _tb
-
-        pp = bds.pre_post
-        pre_post_val = pp.pre_turno_deposito if _t > 0 else pp.pre_turno_cambio
-
-        work_with_overhead = s.work_min + pre_post_val + _tb
+        # FONTE UNICA: stessi nastro/work dell'estrazione (no più 12 vs 5 e
+        # trasferimenti fissi vs cluster reali).
+        nastro_s, work_with_overhead = single_nastro_work(s, bds, clusters)
         dev_from_target = abs(work_with_overhead - TARGET_WORK_MID)
 
         if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
@@ -1743,11 +1768,8 @@ def _build_cpsat_model(
         s1, s2 = seg_by_idx[s1_idx], seg_by_idx[s2_idx]
         ptype = pair_types[key]
 
-        pp = bds.pre_post
-        combined_work = (s1.work_min + s2.work_min
-                        + pp.pre_turno_deposito
-                        + pp.pre_ripresa
-                        + DEPOT_TRANSFER_CENTRAL * 2)
+        # FONTE UNICA: stesso work dell'estrazione (cluster reali + pre_turno_for)
+        _nastro_pair, combined_work = pair_nastro_work(s1, s2, bds, clusters)
         hours = combined_work / 60.0
         dev = abs(combined_work - TARGET_WORK_MID)
 
@@ -1798,7 +1820,8 @@ def _extract_duties_from_solution(
             transfer = depot_transfer_min(s.first_stop, clusters)
             transfer_back = depot_transfer_min(s.last_stop, clusters)
             pt = pre_turno_for(transfer)
-            nastro_s = s.work_min + pt + transfer + transfer_back
+            # FONTE UNICA: identico all'obiettivo CP-SAT
+            nastro_s, work_s = single_nastro_work(s, bds, clusters)
 
             dtype = "supplemento" if nastro_s <= SUPPLEMENTO_NASTRO_MAX else "intero"
 
@@ -1810,7 +1833,7 @@ def _extract_duties_from_solution(
                 nastro_start=s.start_min - pt - transfer,
                 nastro_end=s.end_min + transfer_back,
                 nastro_min=nastro_s,
-                work_min=s.work_min + pt + transfer_back,
+                work_min=work_s,
                 driving_min=s.driving_min,
                 interruption_min=0,
                 pre_turno_min=pt,
@@ -1832,11 +1855,8 @@ def _extract_duties_from_solution(
             transfer = depot_transfer_min(s1.first_stop, clusters)
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
-            nastro = s2.end_min - s1.start_min + pt + transfer + transfer_back
-            # Bugfix: includere pre_ripresa nel work_min coerentemente con la
-            # cost function di _build_cpsat_model (combined_work).
-            work = (s1.work_min + s2.work_min + pt + transfer_back
-                    + bds.pre_post.pre_ripresa)
+            # FONTE UNICA: identico all'obiettivo CP-SAT (pair_nastro_work)
+            nastro, work = pair_nastro_work(s1, s2, bds, clusters)
 
             duties.append(DriverDutyV3(
                 idx=duty_idx,
@@ -1900,10 +1920,16 @@ def _score_solution(
 
     n_total = len(duties)
 
-    # FIX-CSP-2: termine esplicito n_turni × SCORE_PER_DUTY
-    # Permette al portfolio di preferire scenari con meno turni anche se
-    # marginalmente piu' costosi sul costo orario.
-    score += n_total * SCORE_PER_DUTY
+    # FIX-CSP-2 + coerenza obiettivo: il CP-SAT pesa OGNI turno con
+    # WEIGHT_DUTY_COUNT*COST_SCALE (≈20.000 €-equivalenti) → il numero di turni
+    # domina. Lo score del portfolio invece confronta scenari fra loro: con un
+    # peso di soli 100 €/turno il conteggio veniva quasi ignorato e si potevano
+    # scartare scenari con MENO autisti perché marginalmente più cari sul costo
+    # orario — l'opposto dell'intento. Pesiamo ogni turno con il costo reale di
+    # un turno-tipo (≈ ore target × tariffa oraria), con SCORE_PER_DUTY come
+    # pavimento/override.
+    per_duty_weight = max(SCORE_PER_DUTY, rates.hourly_rate * (rates.target_work_min / 60.0))
+    score += n_total * per_duty_weight
 
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
     suppl_pct = n_suppl / max(n_total, 1)
@@ -2412,6 +2438,19 @@ def greedy_fallback(
     used: set[int] = set()
     duty_idx = 0
 
+    # Cap HARD vetture aziendali: il CP-SAT lo impone con add_cumulative, ma il
+    # greedy accoppiava senza vincolo → poteva sforare un limite "inviolabile".
+    # Qui lo rendiamo hard anche nel fallback: ogni pair occupa una vettura
+    # durante la finestra di interruzione [s1.end, s2.start]; rifiutiamo il pair
+    # se il picco di vetture simultanee supererebbe il cap (i due segmenti
+    # restano singoli, sempre feasibile).
+    car_intervals: list[tuple[int, int]] = []
+
+    def _car_peak_if_added(new: tuple[int, int]) -> int:
+        allint = car_intervals + [new]
+        pts = sorted({p for iv in allint for p in iv})
+        return max((sum(1 for x, y in allint if x <= t < y) for t in pts), default=0)
+
     sorted_segs = sorted(segments, key=lambda s: s.start_min)
 
     # Pass 1: pairing greedy
@@ -2443,12 +2482,19 @@ def greedy_fallback(
             if s1.start_min > s2.start_min:
                 s1, s2 = s2, s1
 
+            # Cap HARD vetture aziendali: se questo pair sforerebbe il picco,
+            # NON accoppiare (i due segmenti diventano singoli al Pass 2).
+            car_iv = (s1.end_min, s2.start_min)
+            if MAX_COMPANY_CARS > 0 and _car_peak_if_added(car_iv) > MAX_COMPANY_CARS:
+                continue
+            car_intervals.append(car_iv)
+
             interruption = s2.start_min - s1.end_min
             transfer = depot_transfer_min(s1.first_stop, clusters)
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
-            nastro = s2.end_min - s1.start_min + pt + transfer + transfer_back
-            work = s1.work_min + s2.work_min + pt + transfer_back + bds.pre_post.pre_ripresa
+            # FONTE UNICA: stesso nastro/work di modello ed estrazione
+            nastro, work = pair_nastro_work(s1, s2, bds, clusters)
 
             d = DriverDutyV3(
                 idx=duty_idx,
@@ -2479,7 +2525,8 @@ def greedy_fallback(
         transfer = depot_transfer_min(s.first_stop, clusters)
         transfer_back = depot_transfer_min(s.last_stop, clusters)
         pt = pre_turno_for(transfer)
-        nastro_s = s.work_min + pt + transfer + transfer_back
+        # FONTE UNICA: stesso nastro/work di modello ed estrazione
+        nastro_s, work_s = single_nastro_work(s, bds, clusters)
 
         d = DriverDutyV3(
             idx=duty_idx,
@@ -2489,7 +2536,7 @@ def greedy_fallback(
             nastro_start=s.start_min - pt - transfer,
             nastro_end=s.end_min + transfer_back,
             nastro_min=nastro_s,
-            work_min=s.work_min + pt + transfer_back,
+            work_min=work_s,
             driving_min=s.driving_min,
             interruption_min=0,
             pre_turno_min=pt,

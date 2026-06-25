@@ -869,7 +869,9 @@ def estimate_deadhead(
 
 
 def is_peak_hour(departure_min: int) -> bool:
-    h = departure_min // 60
+    # GTFS ammette orari oltre le 24h (corse a cavallo di mezzanotte): senza il
+    # modulo, una corsa "25:30" darebbe h=25 e non verrebbe mai vista come picco.
+    h = (departure_min // 60) % 24
     return (7 <= h <= 9) or (17 <= h <= 19)
 
 
@@ -947,13 +949,9 @@ def report_progress(phase: str, percentage: float, detail: str, extra: dict | No
 
 # Pesi default (scala 0-10, frontend li normalizza)
 DEFAULT_OPERATOR_CONFIG: dict[str, Any] = {
-    # shiftRules — sovrascrivibili dall'operatore
-    "shiftRules": {
-        "intero":      {"maxNastro": 435, "maxLavoro": 435, "intMin": 0,   "intMax": 0,   "maxPct": 100, "sostaMinCapolinea": 15},
-        "semiunico":   {"maxNastro": 555, "maxLavoro": 480, "intMin": 75,  "intMax": 179, "maxPct": 12},
-        "spezzato":    {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13},
-        "supplemento": {"maxNastro": 150, "maxLavoro": 150, "intMin": 0,   "intMax": 0,   "maxPct": 100},
-    },
+    # shiftRules — sovrascrivibili dall'operatore. Fonte unica = SHIFT_RULES
+    # (evita la deriva tra due copie hardcoded degli stessi limiti RD 131/1938).
+    "shiftRules": {k: dict(v) for k, v in SHIFT_RULES.items()},
     # Pesi obiettivo (0-10)
     "weights": {
         "minDrivers": 8,          # quanto minimizzare il numero conducenti
