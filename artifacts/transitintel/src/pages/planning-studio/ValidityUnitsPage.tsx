@@ -86,21 +86,21 @@ export default function PlanningStudioValidityUnitsPage() {
   if (!projectId) return <div className="p-6">ID progetto mancante</div>;
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50">
+    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
       {/* TopBar */}
-      <div className="border-b bg-white shadow-sm">
+      <div className="border-b border-slate-800 bg-slate-900 shadow-sm">
         <div className="flex items-center gap-3 px-4 py-3">
           <Link href={`/planning-studio/${projectId}`}>
-            <button className="p-2 rounded hover:bg-slate-100" title="Torna al progetto">
+            <button className="p-2 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors" title="Torna al progetto">
               <ArrowLeft className="h-4 w-4" />
             </button>
           </Link>
-          <Layers className="h-5 w-5 text-indigo-600" />
-          <h1 className="font-semibold text-slate-900 shrink-0">
+          <Layers className="h-5 w-5 text-indigo-400" />
+          <h1 className="font-semibold text-slate-100 shrink-0">
             {projectQ.data?.name ?? "…"}
           </h1>
           <div className="ml-auto">
-            <ValiditySectionNav projectId={projectId} active="units" theme="light" />
+            <ValiditySectionNav projectId={projectId} active="units" />
           </div>
         </div>
       </div>
@@ -108,18 +108,18 @@ export default function PlanningStudioValidityUnitsPage() {
       <div className="flex-1 overflow-auto p-6">
         {unitsQ.isLoading && (
           <div className="flex items-center justify-center py-20">
-            <Loader2 className="h-6 w-6 animate-spin text-indigo-600" />
+            <Loader2 className="h-6 w-6 animate-spin text-indigo-400" />
           </div>
         )}
 
         {unitsQ.isError && (
-          <div className="text-sm text-red-600">Errore: {(unitsQ.error as Error).message}</div>
+          <div className="text-sm text-rose-400">Errore: {(unitsQ.error as Error).message}</div>
         )}
 
         {!unitsQ.isLoading && sorted.length === 0 && (
-          <div className="border-2 border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-500">
-            <Layers className="h-12 w-12 mx-auto text-slate-300 mb-3" />
-            <p className="font-medium text-slate-700 mb-1">Nessuna unità salvata</p>
+          <div className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center text-slate-400">
+            <Layers className="h-12 w-12 mx-auto text-slate-600 mb-3" />
+            <p className="font-medium text-slate-200 mb-1">Nessuna unità salvata</p>
             <p className="text-xs">
               Vai alla matrice di validità, clicca "Calcola Unità" per generare i gruppi
               dal range corrente, scegli quali salvare.
@@ -129,7 +129,7 @@ export default function PlanningStudioValidityUnitsPage() {
 
         {sorted.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs text-slate-500 mb-2">
+            <div className="text-xs text-slate-400 mb-2">
               {sorted.length} unità · totale {sorted.reduce((s, u) => s + u.dayCount, 0)} giorni
             </div>
             {sorted.map((u) => (
@@ -206,7 +206,7 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
   }, [unit.representativeDates]);
 
   return (
-    <div className="bg-white border rounded-lg shadow-sm p-4">
+    <div className="bg-slate-900 border border-slate-800 rounded-lg shadow-sm p-4">
       <div className="flex items-start gap-3">
         {/* Pillole categoria + day-type */}
         <div className="flex flex-col gap-1.5 shrink-0 min-w-[150px]">
@@ -248,23 +248,23 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
               <input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full border rounded px-2 py-1 text-sm font-semibold"
+                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm font-semibold text-slate-100 focus:border-indigo-500 focus:outline-none"
               />
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={2}
                 placeholder="Descrizione opzionale"
-                className="w-full border rounded px-2 py-1 text-xs"
+                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
               />
             </div>
           ) : (
             <>
-              <div className="font-semibold text-slate-900 truncate">{unit.name}</div>
+              <div className="font-semibold text-slate-100 truncate">{unit.name}</div>
               {unit.description && (
-                <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{unit.description}</div>
+                <div className="text-xs text-slate-400 mt-0.5 line-clamp-2">{unit.description}</div>
               )}
-              <div className="text-[11px] text-slate-400 font-mono mt-1 truncate">
+              <div className="text-[11px] text-slate-500 font-mono mt-1 truncate">
                 validityId: {unit.validityId.slice(0, 16)}…
               </div>
             </>
@@ -273,9 +273,9 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
 
         {/* Stats */}
         <div className="text-right shrink-0">
-          <div className="text-2xl font-bold text-indigo-700 tabular-nums">{unit.dayCount}</div>
+          <div className="text-2xl font-bold text-indigo-300 tabular-nums">{unit.dayCount}</div>
           <div className="text-[10px] uppercase tracking-wide text-slate-500">giorni</div>
-          <div className="text-sm text-slate-700 mt-1 tabular-nums">{unit.tripCount}</div>
+          <div className="text-sm text-slate-300 mt-1 tabular-nums">{unit.tripCount}</div>
           <div className="text-[10px] uppercase tracking-wide text-slate-500">corse</div>
         </div>
 
@@ -286,7 +286,7 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
               <button
                 onClick={() => renameMut.mutate()}
                 disabled={!name.trim() || renameMut.isPending}
-                className="p-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                className="p-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50"
                 title="Salva"
               >
                 {renameMut.isPending
@@ -295,7 +295,7 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
               </button>
               <button
                 onClick={() => { setEditing(false); setName(unit.name); setDescription(unit.description ?? ""); }}
-                className="p-1.5 rounded border border-slate-300 hover:bg-slate-100"
+                className="p-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800"
                 title="Annulla"
               >
                 <X className="h-3.5 w-3.5" />
@@ -305,31 +305,31 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
             <>
               <button
                 onClick={() => setExpanded((v) => !v)}
-                className={`p-1.5 rounded border ${expanded ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "border-slate-300 hover:bg-slate-100 text-slate-600"}`}
+                className={`p-1.5 rounded border ${expanded ? "bg-indigo-500/15 border-indigo-500/40 text-indigo-300" : "border-slate-700 hover:bg-slate-800 text-slate-400"}`}
                 title="Consulta il dataset (corse) e modifica l'unità"
               >
                 {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <Database className="h-3.5 w-3.5" />}
               </button>
               <button
                 onClick={onPipeline}
-                className="p-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                className="p-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-500"
                 title="Vai alla pipeline scheduling"
               >
                 <Rocket className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setEditing(true)}
-                className="p-1.5 rounded border border-slate-300 hover:bg-slate-100"
+                className="p-1.5 rounded border border-slate-700 hover:bg-slate-800 text-slate-400"
                 title="Rinomina"
               >
-                <Pencil className="h-3.5 w-3.5 text-slate-600" />
+                <Pencil className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={onDelete}
-                className="p-1.5 rounded border border-red-300 hover:bg-red-50"
+                className="p-1.5 rounded border border-rose-500/40 text-rose-400 hover:bg-rose-500/10"
                 title="Elimina"
               >
-                <Trash2 className="h-3.5 w-3.5 text-red-600" />
+                <Trash2 className="h-3.5 w-3.5" />
               </button>
             </>
           )}
@@ -337,7 +337,7 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
       </div>
 
       {/* Footer date */}
-      <div className="mt-3 pt-2 border-t border-slate-100 flex items-center gap-2 text-[11px] text-slate-500">
+      <div className="mt-3 pt-2 border-t border-slate-800 flex items-center gap-2 text-[11px] text-slate-500">
         <CalendarIcon className="h-3 w-3" />
         <span>Range giorni: {dateRangeLabel}</span>
         {unit.representativeDates.length > 1 && (
@@ -349,32 +349,32 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
 
       {/* Dataset consultabile: corse dell'UDP (con modifica) */}
       {expanded && (
-        <div className="mt-3 border-t border-slate-100 pt-3">
+        <div className="mt-3 border-t border-slate-800 pt-3">
           {detailQ.isLoading && (
-            <div className="flex items-center gap-2 text-xs text-slate-500 py-3">
+            <div className="flex items-center gap-2 text-xs text-slate-400 py-3">
               <Loader2 className="h-4 w-4 animate-spin" /> Carico il dataset…
             </div>
           )}
           {detailQ.isError && (
-            <div className="text-xs text-red-600 py-2">Errore: {(detailQ.error as Error).message}</div>
+            <div className="text-xs text-rose-400 py-2">Errore: {(detailQ.error as Error).message}</div>
           )}
           {detailQ.data && (
             <>
               <div className="flex items-center justify-between mb-2">
-                <div className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                  <Database className="h-3.5 w-3.5 text-indigo-600" />
+                <div className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+                  <Database className="h-3.5 w-3.5 text-indigo-400" />
                   Corse nell'unità: {detailQ.data.trips.length - removed.size}/{detailQ.data.trips.length}
                 </div>
                 {removed.size > 0 && (
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setRemoved(new Set())}
-                      className="text-[11px] text-slate-500 hover:underline"
+                      className="text-[11px] text-slate-400 hover:underline"
                     >Annulla</button>
                     <button
                       onClick={() => tripsMut.mutate(detailQ.data!.trips.filter((t) => !removed.has(t.id)).map((t) => t.id))}
                       disabled={tripsMut.isPending}
-                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50"
                       title="Salva la nuova composizione corse dell'unità"
                     >
                       {tripsMut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
@@ -384,11 +384,11 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
                 )}
               </div>
               {detailQ.data.trips.length === 0 ? (
-                <div className="text-xs text-slate-400 py-3">Nessuna corsa in questa unità.</div>
+                <div className="text-xs text-slate-500 py-3">Nessuna corsa in questa unità.</div>
               ) : (
-                <div className="max-h-72 overflow-auto border border-slate-200 rounded">
+                <div className="max-h-72 overflow-auto border border-slate-800 rounded">
                   <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+                    <thead className="sticky top-0 bg-slate-950 text-[10px] uppercase tracking-wide text-slate-500">
                       <tr>
                         <th className="px-2 py-1.5 text-left">Linea</th>
                         <th className="px-2 py-1.5 text-left">Cod.</th>
@@ -401,22 +401,22 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
                       {detailQ.data.trips.map((t) => {
                         const isRemoved = removed.has(t.id);
                         return (
-                          <tr key={t.id} className={`border-t border-slate-100 ${isRemoved ? "opacity-40" : "hover:bg-slate-50"}`}>
+                          <tr key={t.id} className={`border-t border-slate-800/70 ${isRemoved ? "opacity-40" : "hover:bg-slate-800/40"}`}>
                             <td className="px-2 py-1">
                               <span
                                 className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-white text-[10px] font-semibold"
                                 style={{ backgroundColor: t.routeColor ?? "#64748b" }}
                               >{t.routeShortName ?? "?"}</span>
                             </td>
-                            <td className="px-2 py-1 font-mono text-slate-600">{t.shortName ?? "—"}</td>
-                            <td className="px-2 py-1 tabular-nums text-slate-600">{t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}</td>
-                            <td className={`px-2 py-1 text-slate-700 ${isRemoved ? "line-through" : ""}`}>
-                              {(t.firstStopName || "—")} <span className="text-slate-400">→</span> {(t.lastStopName || t.headsign || "—")}
+                            <td className="px-2 py-1 font-mono text-slate-400">{t.shortName ?? "—"}</td>
+                            <td className="px-2 py-1 tabular-nums text-slate-400">{t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}</td>
+                            <td className={`px-2 py-1 text-slate-300 ${isRemoved ? "line-through" : ""}`}>
+                              {(t.firstStopName || "—")} <span className="text-slate-500">→</span> {(t.lastStopName || t.headsign || "—")}
                             </td>
                             <td className="px-2 py-1 text-right">
                               <button
                                 onClick={() => toggleRemoved(t.id)}
-                                className={`p-1 rounded ${isRemoved ? "text-emerald-600 hover:bg-emerald-50" : "text-red-500 hover:bg-red-50"}`}
+                                className={`p-1 rounded ${isRemoved ? "text-emerald-400 hover:bg-emerald-500/10" : "text-rose-400 hover:bg-rose-500/10"}`}
                                 title={isRemoved ? "Reintegra la corsa" : "Rimuovi la corsa dall'unità"}
                               >
                                 {isRemoved ? <Check className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
