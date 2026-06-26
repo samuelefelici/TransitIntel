@@ -117,19 +117,65 @@ export interface PsValidityUnit {
   updatedAt: string;
 }
 
+export interface PsValidityUnitsCoverage {
+  activeTrips: number;
+  coveredTrips: number;
+  excludedByFilter: number;
+  excludedRoutes: string[];
+  neverActive: number;
+  neverActiveRoutes: string[];
+}
+
 export function computePsValidityUnits(projectId: string, input: {
   from: string; to: string;
   /** tolleranza Jaccard 0–0.1: fonde i giorni quasi-uguali nella stessa foglia */
   tolerance?: number;
+  /** linee scelte per l'UDP (vuoto/omesso = tutte le linee) */
+  routeIds?: string[];
 }): Promise<{
   from: string; to: string; totalDays: number; totalGroups: number;
   exactGroups?: number; tolerance?: number; calendarConfigured?: boolean;
+  coverage?: PsValidityUnitsCoverage;
   units: PsValidityUnitComputed[];
 }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/validity-units/compute`, {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export interface PsValidityUnitTrip {
+  id: string;
+  shortName: string | null;
+  headsign: string | null;
+  direction: number | null;
+  routeShortName: string | null;
+  routeLongName: string | null;
+  routeColor: string | null;
+  firstDeparture: string | null;
+  firstStopName: string | null;
+  lastStopName: string | null;
+}
+
+export interface PsValidityUnitDetail {
+  id: string;
+  validityId: string;
+  name: string;
+  description: string | null;
+  categoryName: string | null;
+  categoryColor: string | null;
+  dayTypeName: string | null;
+  dayTypeColor: string | null;
+  tripCount: number;
+  dayCount: number;
+  representativeDates: string[];
+  trips: PsValidityUnitTrip[];
+}
+
+export function getPsValidityUnitDetail(projectId: string, unitId: string): Promise<PsValidityUnitDetail> {
+  return apiFetch<PsValidityUnitDetail>(
+    `/api/planning-studio/projects/${projectId}/validity-units/${unitId}/detail`,
+  );
 }
 
 export function savePsValidityUnits(projectId: string, units: Array<{
@@ -161,7 +207,7 @@ export function deletePsValidityUnit(projectId: string, unitId: string): Promise
 }
 
 export function renamePsValidityUnit(projectId: string, unitId: string, patch: {
-  name?: string; description?: string;
+  name?: string; description?: string; tripIds?: string[];
 }): Promise<{ id: string; name: string; description: string | null; updated_at: string }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/validity-units/${unitId}`, {
     method: "PATCH",

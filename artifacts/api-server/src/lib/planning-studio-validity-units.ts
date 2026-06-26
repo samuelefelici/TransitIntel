@@ -239,6 +239,13 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
   }
   // tolleranza Jaccard 0–10%: 0 = solo gruppi esatti (comportamento storico)
   const tolerance = Math.min(Math.max(Number(req.body?.tolerance) || 0, 0), 0.1);
+  // Filtro linee scelte dall'utente (vuoto = tutte). Le corse delle linee NON
+  // selezionate restano fuori dall'UDP (segnalate in `coverage`).
+  const routeFilter = new Set<string>(
+    Array.isArray(req.body?.routeIds)
+      ? req.body.routeIds.filter((x: unknown) => typeof x === "string" && x).map(String)
+      : [],
+  );
   const dates = isoRange(from, to);
   if (dates.length > 731) { // max ~2 anni
     res.status(400).json({ error: "range_too_large", maxDays: 731 }); return;
@@ -300,14 +307,18 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
 
     // Trips del progetto + matrice validità
     const tripsR = await db.execute(sql`
-      SELECT t.id, t.is_active,
+      SELECT t.id, t.is_active, t.route_id,
+             r.short_name AS route_short_name, r.long_name AS route_long_name,
              to_char(t.valid_from, 'YYYY-MM-DD') AS valid_from,
              to_char(t.valid_to,   'YYYY-MM-DD') AS valid_to
         FROM ps_trips t
+        JOIN ps_routes r ON r.id = t.route_id
        WHERE t.project_id = ${proj.id}::uuid
     `);
     const trips = ((tripsR as any).rows ?? []) as Array<{
-      id: string; is_active: boolean; valid_from: string | null; valid_to: string | null;
+      id: string; is_active: boolean; route_id: string;
+      route_short_name: string | null; route_long_name: string | null;
+      valid_from: string | null; valid_to: string | null;
     }>;
     const tripIds = trips.map((t) => t.id);
 
@@ -340,7 +351,10 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       }
     }
 
-    // Compute active trips per date
+    // Compute active trips per date.
+    // activeAnywhere = corse attive in almeno un giorno del range (a prescindere
+    // dal filtro linee), serve per segnalare le corse che restano FUORI dall'UDP.
+    const activeAnywhere = new Set<string>();
     const groups = new Map<string, ComputedUnit>();
     for (const d of dates) {
       const cat = catByDate.get(d) ?? null;
@@ -350,14 +364,18 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       const active: string[] = [];
       for (const t of trips) {
         const ex = excMap.get(t.id)?.get(d);
-        if (ex === 2) continue;          // forced invalid
-        if (ex === 1) { active.push(t.id); continue; } // forced valid
-        if (!t.is_active) continue;
-        if (t.valid_from && d < t.valid_from) continue;
-        if (t.valid_to   && d > t.valid_to)   continue;
-        if (!dtId) continue;
-        const v = tdvMap.get(t.id)?.get(dtId);
-        if (v) active.push(t.id);
+        let isActiveToday = false;
+        if (ex === 2) isActiveToday = false;          // forced invalid
+        else if (ex === 1) isActiveToday = true;      // forced valid
+        else if (!t.is_active) isActiveToday = false;
+        else if (t.valid_from && d < t.valid_from) isActiveToday = false;
+        else if (t.valid_to && d > t.valid_to) isActiveToday = false;
+        else if (!dtId) isActiveToday = false;
+        else isActiveToday = !!tdvMap.get(t.id)?.get(dtId);
+        if (!isActiveToday) continue;
+        activeAnywhere.add(t.id);
+        // applica il filtro linee: solo le corse delle linee scelte entrano nell'UDP
+        if (routeFilter.size === 0 || routeFilter.has(t.route_id)) active.push(t.id);
       }
       active.sort();
 
@@ -400,10 +418,38 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       .sort((a, b) => b.dayCount - a.dayCount)
       .map((u) => ({ ...u, alreadySaved: savedSet.has(u.validityId) }));
 
+    // ── COPERTURA: alert se delle corse restano fuori dall'UDP ──
+    const coveredTrips = new Set<string>();
+    for (const u of list) for (const tid of u.tripIds) coveredTrips.add(tid);
+    const labelOf = (t: { route_short_name: string | null; route_long_name: string | null }) =>
+      t.route_short_name ?? t.route_long_name ?? "?";
+    // Corse attive nel periodo ma escluse dal filtro linee.
+    const excludedByFilter = [...activeAnywhere].filter((id) => !coveredTrips.has(id));
+    const excludedSet = new Set(excludedByFilter);
+    const excludedRoutes = new Set<string>();
+    for (const t of trips) if (excludedSet.has(t.id)) excludedRoutes.add(labelOf(t));
+    // Corse "anomale": attive nel progetto e che intersecano il range, ma MAI
+    // attive in nessun giorno (di norma = bollini di validità non impostati).
+    const neverActive = trips.filter((t) =>
+      t.is_active
+      && !(t.valid_to && t.valid_to < from)
+      && !(t.valid_from && t.valid_from > to)
+      && !activeAnywhere.has(t.id));
+    const neverActiveRoutes = new Set<string>();
+    for (const t of neverActive) neverActiveRoutes.add(labelOf(t));
+
     res.json({
       from, to, totalDays: dates.length,
       totalGroups: list.length, exactGroups: exactCount, tolerance,
       calendarConfigured: calConfigured,
+      coverage: {
+        activeTrips: activeAnywhere.size,
+        coveredTrips: coveredTrips.size,
+        excludedByFilter: excludedByFilter.length,
+        excludedRoutes: [...excludedRoutes].sort(),
+        neverActive: neverActive.length,
+        neverActiveRoutes: [...neverActiveRoutes].sort(),
+      },
       units: list,
     });
   } catch (e: any) {
@@ -534,10 +580,16 @@ router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req,
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
   if (!proj) { res.status(404).json({ error: "not_found_or_no_write" }); return; }
-  const { name, description } = req.body ?? {};
+  const { name, description, tripIds } = req.body ?? {};
   const sets: any[] = [];
   if (typeof name === "string" && name.trim()) sets.push(sql`name = ${name.trim()}`);
   if (typeof description === "string") sets.push(sql`description = ${description}`);
+  // Modifica della composizione corse dell'UDP (rimozione/aggiunta corse).
+  if (Array.isArray(tripIds)) {
+    const ids = tripIds.filter((x: unknown) => typeof x === "string" && x).map(String);
+    sets.push(sql`trip_ids = ${JSON.stringify(ids)}::jsonb`);
+    sets.push(sql`trip_count = ${ids.length}`);
+  }
   if (sets.length === 0) { res.status(400).json({ error: "no_changes" }); return; }
   sets.push(sql`updated_at = now()`);
   try {
@@ -550,6 +602,78 @@ router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req,
     const row = (r as any).rows?.[0];
     if (!row) { res.status(404).json({ error: "not_found" }); return; }
     res.json(row);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "internal_error" });
+  }
+});
+
+/* ────────── GET /:unitId/detail (dataset consultabile) ──────────
+ * Un'UDP è un dataset: oltre ai metadati restituisce le corse risolte
+ * (linea, codice, orario di partenza, luogo di partenza/arrivo) e le date. */
+router.get("/planning-studio/projects/:id/validity-units/:unitId/detail", async (req, res): Promise<void> => {
+  await ensureTables();
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "unauth" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(404).json({ error: "not_found_or_no_access" }); return; }
+  try {
+    const ur = await db.execute(sql`
+      SELECT u.*, cat.name AS category_name, cat.color AS category_color,
+             dt.name AS day_type_name, dt.color AS day_type_color
+        FROM ps_validity_units u
+        LEFT JOIN ps_validity_categories cat ON cat.id = u.category_id
+        LEFT JOIN ps_day_types dt ON dt.id = u.day_type_id
+       WHERE u.id = ${req.params.unitId}::uuid AND u.project_id = ${proj.id}::uuid
+       LIMIT 1
+    `);
+    const row = (ur as any).rows?.[0];
+    if (!row) { res.status(404).json({ error: "not_found" }); return; }
+    const tripIds: string[] = Array.isArray(row.trip_ids) ? row.trip_ids : [];
+
+    let trips: any[] = [];
+    if (tripIds.length > 0) {
+      const tr = await db.execute(sql`
+        SELECT t.id, t.short_name, t.headsign, t.direction,
+               r.short_name AS route_short_name, r.long_name AS route_long_name, r.color AS route_color,
+               (SELECT departure_time FROM ps_stop_times st
+                 WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS first_departure,
+               (SELECT s.name FROM ps_stop_times st JOIN ps_stops s ON s.id = st.stop_id
+                 WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS first_stop_name,
+               (SELECT s.name FROM ps_stop_times st JOIN ps_stops s ON s.id = st.stop_id
+                 WHERE st.trip_id = t.id ORDER BY st.stop_seq DESC LIMIT 1) AS last_stop_name
+          FROM ps_trips t
+          JOIN ps_routes r ON r.id = t.route_id
+         WHERE t.id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+         ORDER BY r.short_name ASC NULLS LAST, first_departure ASC NULLS LAST
+      `);
+      trips = ((tr as any).rows ?? []).map((t: any) => ({
+        id: t.id,
+        shortName: t.short_name,
+        headsign: t.headsign,
+        direction: t.direction,
+        routeShortName: t.route_short_name,
+        routeLongName: t.route_long_name,
+        routeColor: t.route_color,
+        firstDeparture: t.first_departure,
+        firstStopName: t.first_stop_name,
+        lastStopName: t.last_stop_name,
+      }));
+    }
+
+    res.json({
+      id: row.id,
+      validityId: row.validity_id,
+      name: row.name,
+      description: row.description,
+      categoryName: row.category_name,
+      categoryColor: row.category_color,
+      dayTypeName: row.day_type_name,
+      dayTypeColor: row.day_type_color,
+      tripCount: row.trip_count,
+      dayCount: row.day_count,
+      representativeDates: row.representative_dates ?? [],
+      trips,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "internal_error" });
   }
