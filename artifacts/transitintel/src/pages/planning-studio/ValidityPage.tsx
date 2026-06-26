@@ -66,6 +66,7 @@ import {
   getCellValidity, inferDefaultDayType,
   type DayType as AlgoDayType, type Trip as AlgoTrip, type MatrixContext,
 } from "@/lib/planning-studio/validity-matrix";
+import ValiditySectionNav from "./ValiditySectionNav";
 
 /* ════════════════════════════════════════════════════════════
  *  Helpers data
@@ -691,6 +692,10 @@ export default function PlanningStudioValidityPage() {
               Definisci quando circolano le corse, prima dello scheduling
             </span>
           </div>
+        </div>
+
+        <div className="hidden lg:block ml-4">
+          <ValiditySectionNav projectId={projectId} active="validity" />
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
@@ -2237,10 +2242,21 @@ function ComputeUnitsDialog(props: {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Record<string, string>>({});
   const [coverage, setCoverage] = useState<PsValidityUnitsCoverage | null>(null);
-  // Linee scelte per l'UDP (vuoto = tutte). Flessibilità richiesta: l'automatismo
-  // propone tutte le linee, ma l'utente può restringere.
-  const [selectedRoutes, setSelectedRoutes] = useState<Set<string>>(new Set());
+  // Linee INCLUSE nell'UDP (default = tutte). L'automatismo propone tutte le
+  // linee, ma l'utente può cercare/selezionare/deselezionare a piacere.
+  const allRouteIds = useMemo(() => props.routes.map((r) => r.id), [props.routes]);
+  const [selectedRoutes, setSelectedRoutes] = useState<Set<string>>(() => new Set(allRouteIds));
+  const [routesInit, setRoutesInit] = useState(false);
   const [routesPanelOpen, setRoutesPanelOpen] = useState(false);
+  const [routeSearch, setRouteSearch] = useState("");
+
+  // Inizializza a "tutte" appena le linee sono caricate (props.routes arriva async)
+  useEffect(() => {
+    if (!routesInit && props.routes.length > 0) {
+      setSelectedRoutes(new Set(allRouteIds));
+      setRoutesInit(true);
+    }
+  }, [props.routes.length, routesInit, allRouteIds]);
 
   useEffect(() => {
     setFrom(props.range.from);
@@ -2249,23 +2265,29 @@ function ComputeUnitsDialog(props: {
     setSelected(new Set());
     setNames({});
     setCoverage(null);
-    setSelectedRoutes(new Set());
-  }, [props.range.from, props.range.to]);
+    setSelectedRoutes(new Set(allRouteIds));
+    setRouteSearch("");
+  }, [props.range.from, props.range.to, allRouteIds]);
 
   const toggleRoute = (id: string) => {
     setSelectedRoutes((prev) => {
-      // empty = "tutte": al primo uncheck partiamo dall'insieme completo
-      const base = prev.size === 0 ? new Set(props.routes.map((r) => r.id)) : new Set(prev);
-      base.has(id) ? base.delete(id) : base.add(id);
-      // se sono di nuovo tutte selezionate, normalizza a vuoto (= tutte)
-      return base.size === props.routes.length ? new Set() : base;
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
     });
   };
+  const filteredRoutes = useMemo(() => {
+    const q = routeSearch.trim().toLowerCase();
+    return q ? props.routes.filter((r) => r.label.toLowerCase().includes(q)) : props.routes;
+  }, [props.routes, routeSearch]);
+  const allSelected = selectedRoutes.size === props.routes.length;
 
   const computeMut = useMutation({
     mutationFn: () => computePsValidityUnits(props.projectId, {
       from, to, tolerance: tolerancePct / 100,
-      routeIds: selectedRoutes.size > 0 ? Array.from(selectedRoutes) : undefined,
+      // tutte → ometti (= tutte lato server); altrimenti invia la lista esatta
+      // (anche vuota = nessuna linea).
+      routeIds: allSelected ? undefined : Array.from(selectedRoutes),
     }),
     onSuccess: (res) => {
       setGroups(res.units);
@@ -2393,28 +2415,40 @@ function ComputeUnitsDialog(props: {
               title="Scegli quali linee includere nell'UDP. Vuoto = tutte le linee."
             >
               <Layers className="h-3.5 w-3.5" />
-              Linee: {selectedRoutes.size === 0 ? "tutte" : `${selectedRoutes.size}/${props.routes.length}`}
+              Linee: {allSelected ? "tutte" : `${selectedRoutes.size}/${props.routes.length}`}
             </button>
             {routesPanelOpen && (
-              <div className="absolute z-20 mt-1 w-64 max-h-64 overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-xl p-2">
+              <div className="absolute z-20 mt-1 w-72 rounded-lg border border-slate-700 bg-slate-900 shadow-xl p-2">
+                {/* Ricerca + seleziona/deseleziona tutto */}
+                <input
+                  value={routeSearch}
+                  onChange={(e) => setRouteSearch(e.target.value)}
+                  placeholder="Cerca linea…"
+                  className="w-full mb-2 px-2 py-1 text-xs rounded bg-slate-950 border border-slate-700 text-slate-200 focus:border-indigo-500 focus:outline-none"
+                />
                 <div className="flex items-center gap-3 px-1 pb-2 mb-1 border-b border-slate-800 text-[11px]">
-                  <button className="text-indigo-300 hover:underline" onClick={() => setSelectedRoutes(new Set())}>Tutte</button>
+                  <button className="text-indigo-300 hover:underline" onClick={() => setSelectedRoutes(new Set(allRouteIds))}>Seleziona tutto</button>
                   <span className="text-slate-600">·</span>
-                  <span className="text-slate-500">deseleziona per escludere</span>
+                  <button className="text-slate-300 hover:underline" onClick={() => setSelectedRoutes(new Set())}>Deseleziona tutto</button>
                 </div>
-                {props.routes.map((r) => (
-                  <label key={r.id} className="flex items-center gap-2 px-1 py-1 text-xs hover:bg-white/5 rounded cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="accent-indigo-500"
-                      checked={selectedRoutes.size === 0 || selectedRoutes.has(r.id)}
-                      onChange={() => toggleRoute(r.id)}
-                    />
-                    <span className="truncate flex-1 text-slate-200">{r.label}</span>
-                    <span className="text-slate-500 tabular-nums">{r.tripCount}</span>
-                  </label>
-                ))}
-                {props.routes.length === 0 && <div className="px-1 py-2 text-[11px] text-slate-500">Nessuna linea</div>}
+                <div className="max-h-56 overflow-auto">
+                  {filteredRoutes.map((r) => (
+                    <label key={r.id} className="flex items-center gap-2 px-1 py-1 text-xs hover:bg-white/5 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="accent-indigo-500"
+                        checked={selectedRoutes.has(r.id)}
+                        onChange={() => toggleRoute(r.id)}
+                      />
+                      <span className="truncate flex-1 text-slate-200">{r.label}</span>
+                      <span className="text-slate-500 tabular-nums">{r.tripCount}</span>
+                    </label>
+                  ))}
+                  {props.routes.length === 0 && <div className="px-1 py-2 text-[11px] text-slate-500">Nessuna linea</div>}
+                  {props.routes.length > 0 && filteredRoutes.length === 0 && (
+                    <div className="px-1 py-2 text-[11px] text-slate-500">Nessuna linea per "{routeSearch}"</div>
+                  )}
+                </div>
               </div>
             )}
           </div>

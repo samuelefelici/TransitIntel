@@ -21,6 +21,7 @@ import {
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
 import { apiFetch } from "@/lib/api";
+import ValiditySectionNav from "./ValiditySectionNav";
 
 export default function PlanningStudioValidityUnitsPage() {
   const params = useParams<{ id: string }>();
@@ -95,23 +96,11 @@ export default function PlanningStudioValidityUnitsPage() {
             </button>
           </Link>
           <Layers className="h-5 w-5 text-indigo-600" />
-          <h1 className="font-semibold text-slate-900">
-            Unità di Progettazione · {projectQ.data?.name ?? "…"}
+          <h1 className="font-semibold text-slate-900 shrink-0">
+            {projectQ.data?.name ?? "…"}
           </h1>
-          <span className="ml-2 text-xs text-slate-500">
-            Insiemi univoci di (categoria · day-type · corse attive) raggruppati per giorni equivalenti.
-          </span>
-          <div className="ml-auto flex items-center gap-2">
-            <Link href={`/planning-studio/${projectId}/calendar`}>
-              <button className="px-3 py-1.5 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1.5">
-                <CalendarIcon className="h-4 w-4" /> Calendario aziendale
-              </button>
-            </Link>
-            <Link href={`/planning-studio/${projectId}/validity`}>
-              <button className="px-3 py-1.5 text-sm rounded border border-slate-300 bg-white hover:bg-slate-50 flex items-center gap-1.5">
-                <CalendarIcon className="h-4 w-4" /> Vai alla matrice di validità
-              </button>
-            </Link>
+          <div className="ml-auto">
+            <ValiditySectionNav projectId={projectId} active="units" theme="light" />
           </div>
         </div>
       </div>
