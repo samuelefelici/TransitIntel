@@ -239,10 +239,12 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
   }
   // tolleranza Jaccard 0–10%: 0 = solo gruppi esatti (comportamento storico)
   const tolerance = Math.min(Math.max(Number(req.body?.tolerance) || 0, 0), 0.1);
-  // Filtro linee scelte dall'utente (vuoto = tutte). Le corse delle linee NON
-  // selezionate restano fuori dall'UDP (segnalate in `coverage`).
+  // Filtro linee scelte dall'utente. `routeIds` ASSENTE = tutte le linee;
+  // `routeIds` PRESENTE (anche vuoto) = solo quelle elencate (vuoto = nessuna).
+  // Le corse delle linee non selezionate restano fuori dall'UDP (vedi `coverage`).
+  const hasRouteFilter = Array.isArray(req.body?.routeIds);
   const routeFilter = new Set<string>(
-    Array.isArray(req.body?.routeIds)
+    hasRouteFilter
       ? req.body.routeIds.filter((x: unknown) => typeof x === "string" && x).map(String)
       : [],
   );
@@ -375,7 +377,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
         if (!isActiveToday) continue;
         activeAnywhere.add(t.id);
         // applica il filtro linee: solo le corse delle linee scelte entrano nell'UDP
-        if (routeFilter.size === 0 || routeFilter.has(t.route_id)) active.push(t.id);
+        if (!hasRouteFilter || routeFilter.has(t.route_id)) active.push(t.id);
       }
       active.sort();
 

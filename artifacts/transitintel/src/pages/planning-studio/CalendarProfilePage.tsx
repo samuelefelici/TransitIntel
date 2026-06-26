@@ -14,6 +14,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { ArrowLeft, CalendarRange, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import ValiditySectionNav from "./ValiditySectionNav";
 
 interface Profile {
   /** periodi di SCUOLE CHIUSE; vuoto = tutto l'anno scuole aperte */
@@ -102,6 +103,8 @@ export default function CalendarProfilePage() {
           {saveMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Salva
         </button>
       </div>
+
+      <ValiditySectionNav projectId={projectId} active="calendar" />
 
       <div className="grid lg:grid-cols-3 gap-4">
         {/* Periodi SCUOLE CHIUSE (vacanze) — il resto è scuole aperte */}
