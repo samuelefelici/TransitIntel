@@ -205,13 +205,12 @@ export function validateGenerateUnitInput(body: unknown): ValidationResult<Gener
 
 /**
  * Valida payload POST /validity/bulk (PR3).
- * 4 op: trip-row-set, date-column-set, period-fill, clear-exceptions.
+ * 3 op: trip-row-set, date-column-set, clear-exceptions.
  * Pure function.
  */
 export type BulkOp =
   | { op: "trip-row-set"; tripId: string; dayTypeIds: string[]; isValid: boolean }
   | { op: "date-column-set"; date: string; isValid: boolean }
-  | { op: "period-fill"; periodId: string; dayTypeIds: string[]; isValid: boolean }
   | { op: "clear-exceptions"; from: string; to: string };
 
 export function validateBulkOpInput(body: unknown): ValidationResult<BulkOp> {
@@ -229,13 +228,6 @@ export function validateBulkOpInput(body: unknown): ValidationResult<BulkOp> {
       if (!isISODate(b.date)) return { ok: false, error: "date YYYY-MM-DD required" };
       if (typeof b.isValid !== "boolean") return { ok: false, error: "isValid bool required" };
       return { ok: true, value: { op: "date-column-set", date: b.date as string, isValid: b.isValid } };
-    case "period-fill":
-      if (!isUUID(b.periodId)) return { ok: false, error: "periodId UUID required" };
-      if (!Array.isArray(b.dayTypeIds) || b.dayTypeIds.length === 0 || !b.dayTypeIds.every(isUUID)) {
-        return { ok: false, error: "dayTypeIds UUID[] non vuoto required" };
-      }
-      if (typeof b.isValid !== "boolean") return { ok: false, error: "isValid bool required" };
-      return { ok: true, value: { op: "period-fill", periodId: b.periodId as string, dayTypeIds: b.dayTypeIds as string[], isValid: b.isValid } };
     case "clear-exceptions":
       if (!isISODate(b.from) || !isISODate(b.to) || (b.from as string) > (b.to as string)) {
         return { ok: false, error: "from/to required (YYYY-MM-DD, from<=to)" };

@@ -60,7 +60,6 @@ import {
 } from "@/lib/planning-studio-validity-units-api";
 import {
   getPsProject, type PsProject,
-  listPsServicePeriods, type PsServicePeriod,
 } from "@/lib/planning-studio-api";
 import {
   getCellValidity, inferDefaultDayType,
@@ -239,12 +238,6 @@ export default function PlanningStudioValidityPage() {
   const dayTypesQ = useQuery({
     queryKey: ["ps", projectId, "day-types"],
     queryFn: () => listPsDayTypes(projectId),
-    enabled: !!projectId,
-  });
-
-  const periodsQ = useQuery({
-    queryKey: ["ps", projectId, "service-periods"],
-    queryFn: () => listPsServicePeriods(projectId),
     enabled: !!projectId,
   });
 
@@ -890,14 +883,6 @@ export default function PlanningStudioValidityPage() {
             </div>
           </div>
         </div>
-      )}
-
-      {/* Banda Service Periods (PR3) — mostra i periodi che intersecano il range visibile */}
-      {(periodsQ.data?.length ?? 0) > 0 && (
-        <ServicePeriodsBand
-          periods={periodsQ.data!}
-          dates={dates}
-        />
       )}
 
       {/* Stato caricamento */}
@@ -1589,64 +1574,6 @@ function DayTypeRow({ dt, canEdit, onSave, onDelete }: DayTypeRowProps) {
           </button>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════
- *  Service Periods Band (PR3)
- * ════════════════════════════════════════════════════════════
- *
- * Banda orizzontale che mostra i Service Periods (es. Estivo / Invernale)
- * mappati sulla stessa griglia delle date della matrice.
- * Allineata visivamente con la sticky-left + header date.
- */
-interface ServicePeriodsBandProps {
-  periods: PsServicePeriod[];
-  dates: string[];
-}
-function ServicePeriodsBand({ periods, dates }: ServicePeriodsBandProps) {
-  if (dates.length === 0) return null;
-  const from = dates[0];
-  const to = dates[dates.length - 1];
-  // Filtra solo i periodi che si sovrappongono al range visibile
-  const visible = periods.filter((p) => p.startDate <= to && p.endDate >= from);
-
-  return (
-    <div className="border-b border-slate-800 bg-slate-900/60 flex shrink-0" style={{ height: 28 }}>
-      <div
-        className="border-r border-slate-800 bg-slate-900 flex items-center px-3 text-[11px] font-medium text-slate-400"
-        style={{ width: STICKY_W, minWidth: STICKY_W }}
-      >
-        Service Periods ({visible.length})
-      </div>
-      <div className="relative flex-1 overflow-hidden" style={{ height: 28 }}>
-        {visible.map((p) => {
-          const realStart = p.startDate >= from
-            ? dates.indexOf(p.startDate)
-            : 0;
-          const realEnd = p.endDate <= to
-            ? dates.indexOf(p.endDate)
-            : dates.length - 1;
-          if (realStart < 0 || realEnd < 0) return null;
-          const left = realStart * COL_W;
-          const width = (realEnd - realStart + 1) * COL_W;
-          return (
-            <div
-              key={p.id}
-              className="absolute top-1 bottom-1 rounded text-[10px] flex items-center justify-center px-2 text-white font-semibold truncate cursor-default shadow-sm"
-              style={{
-                left, width,
-                backgroundColor: p.color || "#64748b",
-                opacity: 0.9,
-              }}
-              title={`${p.name} · ${p.startDate} → ${p.endDate}`}
-            >
-              {width > 60 ? p.name : ""}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

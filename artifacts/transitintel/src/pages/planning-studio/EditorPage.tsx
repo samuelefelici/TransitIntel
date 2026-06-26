@@ -1247,8 +1247,6 @@ export default function PlanningStudioEditorPage() {
               desc="quando circolano le corse: pattern settimanali"
               count={calendars.length} accent="indigo"
               active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
-            <MenuItem icon={CalendarIcon} label="Periodi di esercizio" note="pagina" accent="indigo"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/service-periods`); }} />
           </MenuGroup>
 
           {/* Validità: calendario aziendale → matrice → unità di progettazione */}
