@@ -785,10 +785,6 @@ router.delete("/planning-studio/projects/:id/validity/exception", async (req, re
  *   { op: "date-column-set", date, isValid }
  *     → forza eccezione (1=add, 2=remove) su tutti i trip del progetto per quella data
  *
- *   { op: "period-fill", periodId, dayTypeIds[], isValid }
- *     → upsert ps_trip_day_validity per ogni trip nel range del periodo
- *       (filtro: trip.valid_from/to si sovrappone al periodo)
- *
  *   { op: "clear-exceptions", from, to, tripIds? }
  *     → DELETE ps_trip_exceptions per tutti i trip nel range
  *       (opzionale filtro tripIds)
@@ -849,49 +845,6 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       await logActivity(req.params.id, userId, "validity.bulk.date-column", null, null, { date, isValid, count });
       telemetry("bulk.date-column", req.params.id, { date, isValid, count });
       res.json({ ok: true, count });
-      return;
-    }
-
-    if (op === "period-fill") {
-      const { periodId, dayTypeIds, isValid } = body;
-      if (typeof periodId !== "string" || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
-        res.status(400).json({ error: "periodId, dayTypeIds[], isValid required" }); return;
-      }
-      const periodR = await db.execute(sql`
-        SELECT start_date::text AS s, end_date::text AS e
-          FROM ps_service_periods
-         WHERE id = ${periodId}::uuid AND project_id = ${req.params.id}::uuid LIMIT 1
-      `);
-      const period: any = (periodR as any).rows?.[0];
-      if (!period) { res.status(404).json({ error: "service period not found" }); return; }
-
-      // Trip che si sovrappongono al periodo (default = tutti se trip non ha range)
-      const tripsR = await db.execute(sql`
-        SELECT id FROM ps_trips
-         WHERE project_id = ${req.params.id}::uuid
-           AND (valid_from IS NULL OR valid_from <= ${period.e}::date)
-           AND (valid_to   IS NULL OR valid_to   >= ${period.s}::date)
-      `);
-      const tripIds: string[] = ((tripsR as any).rows ?? []).map((r: any) => r.id);
-
-      let count = 0;
-      for (const tid of tripIds) {
-        for (const dtId of dayTypeIds) {
-          if (typeof dtId !== "string") continue;
-          await db.execute(sql`
-            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-            VALUES (${tid}::uuid, ${dtId}::uuid, ${isValid}, now())
-            ON CONFLICT (trip_id, day_type_id) DO UPDATE
-              SET is_valid = EXCLUDED.is_valid, updated_at = now()
-          `);
-          count++;
-        }
-      }
-      await logActivity(req.params.id, userId, "validity.bulk.period-fill", "service_period", periodId, {
-        tripCount: tripIds.length, dayTypeCount: dayTypeIds.length, count, isValid,
-      });
-      telemetry("bulk.period-fill", req.params.id, { periodId, count });
-      res.json({ ok: true, count, tripCount: tripIds.length });
       return;
     }
 

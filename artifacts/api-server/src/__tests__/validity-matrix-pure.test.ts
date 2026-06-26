@@ -161,13 +161,6 @@ describe("validateBulkOpInput (PR3)", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("period-fill valido", () => {
-    const r = validateBulkOpInput({
-      op: "period-fill", periodId: UUID_A, dayTypeIds: [UUID_B], isValid: true,
-    });
-    expect(r.ok).toBe(true);
-  });
-
   it("clear-exceptions valido", () => {
     const r = validateBulkOpInput({
       op: "clear-exceptions", from: "2026-01-01", to: "2026-12-31",
@@ -205,12 +198,6 @@ describe("validateBulkOpInput (PR3)", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("rifiuta period-fill senza periodId UUID", () => {
-    const r = validateBulkOpInput({
-      op: "period-fill", periodId: "x", dayTypeIds: [UUID_A], isValid: true,
-    });
-    expect(r.ok).toBe(false);
-  });
 
   it("rifiuta clear-exceptions con range invertito", () => {
     const r = validateBulkOpInput({

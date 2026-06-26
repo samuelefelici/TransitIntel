@@ -169,7 +169,6 @@ export async function deletePsTripExceptionMatrix(
 export type BulkOp =
   | { op: "trip-row-set"; tripId: string; dayTypeIds: string[]; isValid: boolean }
   | { op: "date-column-set"; date: string; isValid: boolean }
-  | { op: "period-fill"; periodId: string; dayTypeIds: string[]; isValid: boolean }
   | { op: "clear-exceptions"; from: string; to: string; tripIds?: string[] };
 
 export async function postPsValidityBulk(
