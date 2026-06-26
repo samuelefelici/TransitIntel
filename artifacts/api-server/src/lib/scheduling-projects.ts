@@ -54,6 +54,12 @@ async function ensureSchedulingTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS planning_studio_project_id uuid
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sched_proj_ps ON scheduling_projects(planning_studio_project_id)`);
+    // Scoping a una specifica Unità di Progettazione (UDP): se valorizzato, lo
+    // scheduling lavora solo sulle linee/corse di quell'UDP, non su tutto il PS.
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS scheduling_projects
+        ADD COLUMN IF NOT EXISTS validity_unit_id uuid
+    `);
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS scheduling_runs (
@@ -199,6 +205,10 @@ function rowToProject(r: any) {
     feedLabel: r.feed_label,
     planningStudioProjectId: r.planning_studio_project_id ?? null,
     planningStudioProjectName: r.ps_name ?? undefined,
+    validityUnitId: r.validity_unit_id ?? null,
+    // route_id (= ps_routes.id::text, combaciano con gtfs_routes.route_id) coperti
+    // dall'UDP: presente solo nel GET singolo (vedi handler). Filtra le linee.
+    validityUnitRouteIds: r.validity_unit_route_ids ?? undefined,
     depotConfig: r.depot_config ?? {},
     clusterConfig: r.cluster_config ?? {},
     deadheadConfig: r.deadhead_config ?? {},
@@ -343,7 +353,8 @@ router.get("/scheduling/projects", async (req: Request, res: Response) => {
 /* POST /api/scheduling/projects — crea progetto (richiede planningStudioProjectId) */
 router.post("/scheduling/projects", async (req: Request, res: Response): Promise<void> => {
   const userId = req.user!.id;
-  const { name, description, feedId, feedLabel, planningStudioProjectId } = req.body || {};
+  const { name, description, feedId, feedLabel, planningStudioProjectId, validityUnitId } = req.body || {};
+  const validityUnitIdClean = typeof validityUnitId === "string" && UUID_RE.test(validityUnitId) ? validityUnitId : null;
   if (typeof name !== "string" || name.trim().length === 0) {
     res.status(400).json({ error: "Il nome del progetto è obbligatorio" });
     return;
@@ -367,14 +378,15 @@ router.post("/scheduling/projects", async (req: Request, res: Response): Promise
     return;
   }
   const r = await db.execute(sql`
-    INSERT INTO scheduling_projects (owner_user_id, name, description, feed_id, feed_label, planning_studio_project_id)
+    INSERT INTO scheduling_projects (owner_user_id, name, description, feed_id, feed_label, planning_studio_project_id, validity_unit_id)
     VALUES (
       ${userId}::uuid,
       ${name.trim()},
       ${description ?? null},
       ${feedId && UUID_RE.test(String(feedId)) ? sql`${feedId}::uuid` : null},
       ${feedLabel ?? null},
-      ${planningStudioProjectId}::uuid
+      ${planningStudioProjectId}::uuid,
+      ${validityUnitIdClean ? sql`${validityUnitIdClean}::uuid` : null}
     )
     RETURNING *
   `);
@@ -417,7 +429,22 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
       FROM users u WHERE u.id = ${row.owner_user_id}::uuid
   `);
   const ext: any = (enrich as any).rows?.[0] ?? (enrich as any)[0] ?? {};
-  res.json({ project: rowToProject({ ...row, ...ext }) });
+  // Se il progetto è agganciato a un'UDP, calcola le linee coperte (route_id =
+  // ps_routes.id::text, combaciano con gtfs_routes.route_id) per filtrare la
+  // selezione linee nella pipeline scheduling.
+  let validityUnitRouteIds: string[] | undefined;
+  if (row.validity_unit_id) {
+    const ur = await db.execute(sql`
+      SELECT DISTINCT t.route_id::text AS route_id
+        FROM ps_trips t
+       WHERE t.id IN (
+         SELECT jsonb_array_elements_text(trip_ids)::uuid
+           FROM ps_validity_units WHERE id = ${row.validity_unit_id}::uuid
+       )
+    `);
+    validityUnitRouteIds = ((ur as any).rows ?? []).map((x: any) => x.route_id).filter(Boolean);
+  }
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */
