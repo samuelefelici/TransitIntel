@@ -39,7 +39,7 @@ import { apiFetch } from "@/lib/api";
 import {
   ArrowLeft, Calendar as CalendarIcon, Loader2, Undo2, Redo2,
   Palette, Plus, Trash2, Check, X, Settings2, Wand2, Eraser, Layers, Rocket,
-  Sparkles, Save, Tags,
+  Sparkles, Save, Tags, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import {
   getPsValidityMatrix, upsertPsTripException, deletePsTripExceptionMatrix,
@@ -56,7 +56,7 @@ import {
   updatePsValidityCategory, deletePsValidityCategory,
   listPsValidityCategoryCalendar, setPsValidityCategoryCalendar,
   computePsValidityUnits, savePsValidityUnits,
-  type PsValidityCategory, type PsValidityUnitComputed,
+  type PsValidityCategory, type PsValidityUnitComputed, type PsValidityUnitsCoverage,
 } from "@/lib/planning-studio-validity-units-api";
 import {
   getPsProject, type PsProject,
@@ -328,6 +328,13 @@ export default function PlanningStudioValidityPage() {
 
   /* ─── Virtualizzazione verticale ─── */
   const scrollerRef = useRef<HTMLDivElement>(null);
+  /* ─── Scroll orizzontale della matrice (◀ ▶) ─── */
+  const scrollH = useCallback((dir: -1 | 1) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    // scorre di ~80% della larghezza visibile (oltre la colonna sticky)
+    el.scrollBy({ left: dir * Math.max(200, (el.clientWidth - STICKY_W) * 0.8), behavior: "smooth" });
+  }, []);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
 
@@ -790,6 +797,26 @@ export default function PlanningStudioValidityPage() {
 
         <div className="h-6 w-px bg-slate-800 mx-1" />
 
+        {/* Scroll orizzontale della matrice */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => scrollH(-1)}
+            className="p-1 rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:text-sky-300 hover:border-sky-500/40 hover:bg-slate-900 transition-colors"
+            title="Scorri la matrice verso sinistra (giorni precedenti)"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => scrollH(1)}
+            className="p-1 rounded-md border border-slate-700 bg-slate-950 text-slate-300 hover:text-sky-300 hover:border-sky-500/40 hover:bg-slate-900 transition-colors"
+            title="Scorri la matrice verso destra (giorni successivi)"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="h-6 w-px bg-slate-800 mx-1" />
+
         {/* Gruppo: configura */}
         <button
           onClick={() => setDtEditorOpen(true)}
@@ -1126,6 +1153,11 @@ export default function PlanningStudioValidityPage() {
         <ComputeUnitsDialog
           projectId={projectId}
           range={{ from, to }}
+          routes={(routesQ.data ?? []).map((r) => ({
+            id: r.id,
+            label: r.shortName ?? r.longName ?? "?",
+            tripCount: r.tripCount,
+          }))}
           onClose={() => setComputeUnitsOpen(false)}
           onSaved={() => {
             setComputeUnitsOpen(false);
@@ -2193,6 +2225,7 @@ function ComputeUnitsDialog(props: {
   onSaved: () => void;
   projectId: string;
   range: { from: string; to: string };
+  routes: Array<{ id: string; label: string; tripCount: number }>;
 }) {
   const [from, setFrom] = useState(props.range.from);
   const [to, setTo] = useState(props.range.to);
@@ -2203,6 +2236,11 @@ function ComputeUnitsDialog(props: {
   const [groups, setGroups] = useState<PsValidityUnitComputed[] | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Record<string, string>>({});
+  const [coverage, setCoverage] = useState<PsValidityUnitsCoverage | null>(null);
+  // Linee scelte per l'UDP (vuoto = tutte). Flessibilità richiesta: l'automatismo
+  // propone tutte le linee, ma l'utente può restringere.
+  const [selectedRoutes, setSelectedRoutes] = useState<Set<string>>(new Set());
+  const [routesPanelOpen, setRoutesPanelOpen] = useState(false);
 
   useEffect(() => {
     setFrom(props.range.from);
@@ -2210,12 +2248,28 @@ function ComputeUnitsDialog(props: {
     setGroups(null);
     setSelected(new Set());
     setNames({});
+    setCoverage(null);
+    setSelectedRoutes(new Set());
   }, [props.range.from, props.range.to]);
 
+  const toggleRoute = (id: string) => {
+    setSelectedRoutes((prev) => {
+      // empty = "tutte": al primo uncheck partiamo dall'insieme completo
+      const base = prev.size === 0 ? new Set(props.routes.map((r) => r.id)) : new Set(prev);
+      base.has(id) ? base.delete(id) : base.add(id);
+      // se sono di nuovo tutte selezionate, normalizza a vuoto (= tutte)
+      return base.size === props.routes.length ? new Set() : base;
+    });
+  };
+
   const computeMut = useMutation({
-    mutationFn: () => computePsValidityUnits(props.projectId, { from, to, tolerance: tolerancePct / 100 }),
+    mutationFn: () => computePsValidityUnits(props.projectId, {
+      from, to, tolerance: tolerancePct / 100,
+      routeIds: selectedRoutes.size > 0 ? Array.from(selectedRoutes) : undefined,
+    }),
     onSuccess: (res) => {
       setGroups(res.units);
+      setCoverage(res.coverage ?? null);
       setExactGroups(res.exactGroups ?? null);
       const all = new Set<string>(res.units.map((g) => g.validityId));
       setSelected(all);
@@ -2261,6 +2315,28 @@ function ComputeUnitsDialog(props: {
     else next.add(id);
     setSelected(next);
   };
+
+  // Corse coperte dalle unità SELEZIONATE vs da tutte le unità calcolate:
+  // se deselezioni un'unità, le sue corse potrebbero restare fuori dall'UDP.
+  const deselectionLeftover = useMemo(() => {
+    if (!groups) return 0;
+    const all = new Set<string>();
+    const sel = new Set<string>();
+    for (const g of groups) {
+      for (const t of g.tripIds) {
+        all.add(t);
+        if (selected.has(g.validityId)) sel.add(t);
+      }
+    }
+    let n = 0;
+    for (const t of all) if (!sel.has(t)) n++;
+    return n;
+  }, [groups, selected]);
+
+  const hasCoverageWarning = !!groups && (
+    (coverage != null && (coverage.excludedByFilter > 0 || coverage.neverActive > 0)) ||
+    deselectionLeftover > 0
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
@@ -2308,6 +2384,40 @@ function ComputeUnitsDialog(props: {
               className="block mt-2 w-full accent-indigo-500"
             />
           </label>
+          {/* Selezione linee da includere nell'UDP (vuoto = tutte) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setRoutesPanelOpen((o) => !o)}
+              className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 bg-slate-950 text-slate-200 hover:border-indigo-500/40 flex items-center gap-1.5"
+              title="Scegli quali linee includere nell'UDP. Vuoto = tutte le linee."
+            >
+              <Layers className="h-3.5 w-3.5" />
+              Linee: {selectedRoutes.size === 0 ? "tutte" : `${selectedRoutes.size}/${props.routes.length}`}
+            </button>
+            {routesPanelOpen && (
+              <div className="absolute z-20 mt-1 w-64 max-h-64 overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-xl p-2">
+                <div className="flex items-center gap-3 px-1 pb-2 mb-1 border-b border-slate-800 text-[11px]">
+                  <button className="text-indigo-300 hover:underline" onClick={() => setSelectedRoutes(new Set())}>Tutte</button>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-500">deseleziona per escludere</span>
+                </div>
+                {props.routes.map((r) => (
+                  <label key={r.id} className="flex items-center gap-2 px-1 py-1 text-xs hover:bg-white/5 rounded cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-indigo-500"
+                      checked={selectedRoutes.size === 0 || selectedRoutes.has(r.id)}
+                      onChange={() => toggleRoute(r.id)}
+                    />
+                    <span className="truncate flex-1 text-slate-200">{r.label}</span>
+                    <span className="text-slate-500 tabular-nums">{r.tripCount}</span>
+                  </label>
+                ))}
+                {props.routes.length === 0 && <div className="px-1 py-2 text-[11px] text-slate-500">Nessuna linea</div>}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => computeMut.mutate()}
             disabled={!from || !to || computeMut.isPending}
@@ -2326,6 +2436,28 @@ function ComputeUnitsDialog(props: {
           )}
         </div>
         <div className="flex-1 overflow-auto p-3">
+          {hasCoverageWarning && (
+            <div className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 space-y-1">
+              <div className="font-semibold flex items-center gap-1.5">⚠ Alcune corse restano fuori dall'UDP</div>
+              {coverage && coverage.neverActive > 0 && (
+                <div>
+                  <strong>{coverage.neverActive}</strong> corse attive nel progetto non hanno validità in nessun giorno del periodo (controlla i bollini nella matrice)
+                  {coverage.neverActiveRoutes.length > 0 ? ` — linee: ${coverage.neverActiveRoutes.join(", ")}` : ""}.
+                </div>
+              )}
+              {coverage && coverage.excludedByFilter > 0 && (
+                <div>
+                  <strong>{coverage.excludedByFilter}</strong> corse escluse dal filtro linee
+                  {coverage.excludedRoutes.length > 0 ? ` (${coverage.excludedRoutes.join(", ")})` : ""} — riattiva le linee se le vuoi includere.
+                </div>
+              )}
+              {deselectionLeftover > 0 && (
+                <div>
+                  <strong>{deselectionLeftover}</strong> corse non rientrerebbero in nessuna unità selezionata: spunta le unità mancanti prima di salvare.
+                </div>
+              )}
+            </div>
+          )}
           {!groups && !computeMut.isPending && (
             <div className="text-sm text-slate-400 px-2 py-10 text-center">
               <Sparkles className="h-8 w-8 mx-auto mb-2 text-indigo-400/50" />

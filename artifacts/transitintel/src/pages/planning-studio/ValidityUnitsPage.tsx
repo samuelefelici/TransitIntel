@@ -13,9 +13,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Layers, Loader2, Pencil, Trash2, Check, X, Rocket, Calendar as CalendarIcon,
+  ChevronDown, Database, Save,
 } from "lucide-react";
 import {
-  listPsValidityUnits, deletePsValidityUnit, renamePsValidityUnit,
+  listPsValidityUnits, deletePsValidityUnit, renamePsValidityUnit, getPsValidityUnitDetail,
   type PsValidityUnit,
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
@@ -187,6 +188,27 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // ── Dataset consultabile + modifica corse dell'UDP ──
+  const [expanded, setExpanded] = useState(false);
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const detailQ = useQuery({
+    queryKey: ["ps", projectId, "validity-unit-detail", unit.id],
+    queryFn: () => getPsValidityUnitDetail(projectId, unit.id),
+    enabled: expanded,
+  });
+  const tripsMut = useMutation({
+    mutationFn: (tripIds: string[]) => renamePsValidityUnit(projectId, unit.id, { tripIds }),
+    onSuccess: () => {
+      toast.success("Corse dell'unità aggiornate");
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity-units"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity-unit-detail", unit.id] });
+      setRemoved(new Set());
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const toggleRemoved = (id: string) =>
+    setRemoved((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
   const dateRangeLabel = useMemo(() => {
     const ds = [...unit.representativeDates].sort();
     if (ds.length === 0) return "—";
@@ -293,6 +315,13 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
           ) : (
             <>
               <button
+                onClick={() => setExpanded((v) => !v)}
+                className={`p-1.5 rounded border ${expanded ? "bg-indigo-50 border-indigo-300 text-indigo-700" : "border-slate-300 hover:bg-slate-100 text-slate-600"}`}
+                title="Consulta il dataset (corse) e modifica l'unità"
+              >
+                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <Database className="h-3.5 w-3.5" />}
+              </button>
+              <button
                 onClick={onPipeline}
                 className="p-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-700"
                 title="Vai alla pipeline scheduling"
@@ -328,6 +357,93 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
           </span>
         )}
       </div>
+
+      {/* Dataset consultabile: corse dell'UDP (con modifica) */}
+      {expanded && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          {detailQ.isLoading && (
+            <div className="flex items-center gap-2 text-xs text-slate-500 py-3">
+              <Loader2 className="h-4 w-4 animate-spin" /> Carico il dataset…
+            </div>
+          )}
+          {detailQ.isError && (
+            <div className="text-xs text-red-600 py-2">Errore: {(detailQ.error as Error).message}</div>
+          )}
+          {detailQ.data && (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                  <Database className="h-3.5 w-3.5 text-indigo-600" />
+                  Corse nell'unità: {detailQ.data.trips.length - removed.size}/{detailQ.data.trips.length}
+                </div>
+                {removed.size > 0 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setRemoved(new Set())}
+                      className="text-[11px] text-slate-500 hover:underline"
+                    >Annulla</button>
+                    <button
+                      onClick={() => tripsMut.mutate(detailQ.data!.trips.filter((t) => !removed.has(t.id)).map((t) => t.id))}
+                      disabled={tripsMut.isPending}
+                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                      title="Salva la nuova composizione corse dell'unità"
+                    >
+                      {tripsMut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                      Salva ({removed.size} rimosse)
+                    </button>
+                  </div>
+                )}
+              </div>
+              {detailQ.data.trips.length === 0 ? (
+                <div className="text-xs text-slate-400 py-3">Nessuna corsa in questa unità.</div>
+              ) : (
+                <div className="max-h-72 overflow-auto border border-slate-200 rounded">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
+                      <tr>
+                        <th className="px-2 py-1.5 text-left">Linea</th>
+                        <th className="px-2 py-1.5 text-left">Cod.</th>
+                        <th className="px-2 py-1.5 text-left">Part.</th>
+                        <th className="px-2 py-1.5 text-left">Partenza → Arrivo</th>
+                        <th className="px-2 py-1.5" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detailQ.data.trips.map((t) => {
+                        const isRemoved = removed.has(t.id);
+                        return (
+                          <tr key={t.id} className={`border-t border-slate-100 ${isRemoved ? "opacity-40" : "hover:bg-slate-50"}`}>
+                            <td className="px-2 py-1">
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-white text-[10px] font-semibold"
+                                style={{ backgroundColor: t.routeColor ?? "#64748b" }}
+                              >{t.routeShortName ?? "?"}</span>
+                            </td>
+                            <td className="px-2 py-1 font-mono text-slate-600">{t.shortName ?? "—"}</td>
+                            <td className="px-2 py-1 tabular-nums text-slate-600">{t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}</td>
+                            <td className={`px-2 py-1 text-slate-700 ${isRemoved ? "line-through" : ""}`}>
+                              {(t.firstStopName || "—")} <span className="text-slate-400">→</span> {(t.lastStopName || t.headsign || "—")}
+                            </td>
+                            <td className="px-2 py-1 text-right">
+                              <button
+                                onClick={() => toggleRemoved(t.id)}
+                                className={`p-1 rounded ${isRemoved ? "text-emerald-600 hover:bg-emerald-50" : "text-red-500 hover:bg-red-50"}`}
+                                title={isRemoved ? "Reintegra la corsa" : "Rimuovi la corsa dall'unità"}
+                              >
+                                {isRemoved ? <Check className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
