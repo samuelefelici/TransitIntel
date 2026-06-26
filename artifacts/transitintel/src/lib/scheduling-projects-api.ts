@@ -28,6 +28,10 @@ export interface SchedulingProject {
   /** PsProject di origine (obbligatorio dal Step 7) */
   planningStudioProjectId: string | null;
   planningStudioProjectName?: string;
+  /** UDP di origine: se valorizzata, lo scheduling è ristretto alle sue linee */
+  validityUnitId?: string | null;
+  /** route_id coperti dall'UDP (solo nel GET singolo): filtra le linee in pipeline */
+  validityUnitRouteIds?: string[];
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */
   isShared?: boolean;
   /** info arricchite dalla list/get */

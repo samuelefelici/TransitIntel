@@ -54,19 +54,23 @@ export default function PlanningStudioValidityUnitsPage() {
   // questo progetto PS (se esiste), altrimenti lo crea (la creazione avvia in
   // automatico la materializzazione PS → feed GTFS) e apre la pipeline Fucina.
   const pipelineMut = useMutation({
-    mutationFn: async () => {
-      const found = await apiFetch<{ projects: Array<{ id: string }> }>(
+    // Un progetto scheduling PER UDP: così la pipeline vede solo le linee di
+    // quell'unità. Riusa quello già creato per la stessa UDP, altrimenti lo crea.
+    mutationFn: async (unit: { id: string; name: string }) => {
+      const found = await apiFetch<{ projects: Array<{ id: string; validityUnitId?: string | null }> }>(
         `/api/scheduling/projects?planningStudioProjectId=${projectId}`,
       );
-      if (found.projects.length > 0) return found.projects[0].id;
+      const forThisUnit = found.projects.find((p) => p.validityUnitId === unit.id);
+      if (forThisUnit) return forThisUnit.id;
       const created = await apiFetch<{ project: { id: string } }>(
         "/api/scheduling/projects",
         {
           method: "POST",
           body: JSON.stringify({
-            name: `${projectQ.data?.name ?? "Progetto"} · Esercizio`,
+            name: `${projectQ.data?.name ?? "Progetto"} · ${unit.name}`,
             description: "Creato dalle Unità di Progettazione (Planner Studio)",
             planningStudioProjectId: projectId,
+            validityUnitId: unit.id,
           }),
         },
       );
@@ -143,7 +147,7 @@ export default function PlanningStudioValidityUnitsPage() {
                 onPipeline={() => {
                   if (pipelineMut.isPending) return;
                   toast.info("Apro la pipeline scheduling…");
-                  pipelineMut.mutate();
+                  pipelineMut.mutate({ id: u.id, name: u.name });
                 }}
               />
             ))}

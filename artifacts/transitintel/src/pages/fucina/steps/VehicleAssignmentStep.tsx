@@ -19,11 +19,13 @@ import { CATEGORY_COLORS, ymdToIso, ymdToDisplay } from "@/pages/optimizer-route
 interface Props {
   gtfsSelection: GtfsSelection;
   initial?: VehicleAssignment;
+  /** Se valorizzato (progetto agganciato a un'UDP), mostra SOLO queste linee. */
+  allowedRouteIds?: string[] | null;
   onBack: () => void;
   onComplete: (assignment: VehicleAssignment) => void;
 }
 
-export default function VehicleAssignmentStep({ gtfsSelection, initial, onBack, onComplete }: Props) {
+export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, onBack, onComplete }: Props) {
   /* ── Date state ── */
   const [availableDates, setAvailableDates] = useState<{ date: string; services: number }[]>([]);
   const [datesMode, setDatesMode] = useState<"calendar" | "calendar_dates" | null>(null);
@@ -76,7 +78,18 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, onBack, 
           }
         }
       }
-      if (routesData) setAllRoutes(routesData.routes || []);
+      if (routesData) {
+        let routes: RouteItem[] = routesData.routes || [];
+        // Progetto agganciato a un'UDP → mostra solo le sue linee e pre-selezionale
+        if (allowedRouteIds && allowedRouteIds.length > 0) {
+          const allow = new Set(allowedRouteIds);
+          routes = routes.filter((r) => allow.has(r.routeId));
+          if (!initial?.selectedRoutes || initial.selectedRoutes.size === 0) {
+            setSelectedRoutes(new Map(routes.map((r) => [r.routeId, "12m" as VehicleType])));
+          }
+        }
+        setAllRoutes(routes);
+      }
       setLoadingDates(false);
       setLoadingRoutes(false);
     });

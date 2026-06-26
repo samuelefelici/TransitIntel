@@ -300,6 +300,8 @@ export default function FucinaPage() {
   const [psLocked, setPsLocked] = useState(false);
   const [psSyncing, setPsSyncing] = useState(false);
   const [psNeedsSync, setPsNeedsSync] = useState(false);
+  // Se il progetto è agganciato a un'UDP, queste sono le sole linee da mostrare.
+  const [udpRouteIds, setUdpRouteIds] = useState<string[] | null>(null);
   const [psProjectId, setPsProjectId] = useState<string | null>(null);
   // Lista completa dei cluster del Network Engine (per UI di selezione nel DeadheadStep)
   const [availableClusters, setAvailableClusters] = useState<{ id: string; name: string; color?: string | null }[]>([]);
@@ -355,6 +357,7 @@ export default function FucinaPage() {
         }
         setPsLocked(true);
         setPsProjectId(String(proj.planningStudioProjectId));
+        setUdpRouteIds(Array.isArray(proj.validityUnitRouteIds) ? proj.validityUnitRouteIds : null);
 
         const buildSelection = async (feedIdToUse: string, label: string): Promise<GtfsSelection | null> => {
           // Recupera feedStartDate dal feed
@@ -705,6 +708,7 @@ export default function FucinaPage() {
                     <VehicleAssignmentStep
                       gtfsSelection={gtfsSelection!}
                       initial={vehicleAssignment ?? undefined}
+                      allowedRouteIds={udpRouteIds}
                       onBack={() => projectId ? navigate(`/fucina/${projectId}`) : setStep(0)}
                       onComplete={(a) => {
                         setVehicleAssignment(a);
