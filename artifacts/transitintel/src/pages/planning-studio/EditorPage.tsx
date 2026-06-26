@@ -1249,18 +1249,18 @@ export default function PlanningStudioEditorPage() {
               active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
             <MenuItem icon={CalendarIcon} label="Periodi di esercizio" note="pagina" accent="indigo"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/service-periods`); }} />
-            <MenuItem icon={CalendarRange} label="Calendario Aziendale" note="pagina" accent="indigo"
-              desc="scolastico · estivo · festività"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/calendar`); }} />
           </MenuGroup>
 
-          {/* Validità: matrice + unità di progettazione */}
+          {/* Validità: calendario aziendale → matrice → unità di progettazione */}
           <MenuGroup
             label="Validità" icon={CalendarCheck} accent="emerald"
             active={false}
             open={openMenu === "validita"}
             onToggle={() => setOpenMenu(m => m === "validita" ? null : "validita")}
           >
+            <MenuItem icon={CalendarRange} label="Calendario Aziendale" note="pagina" accent="emerald"
+              desc="scolastico · estivo · festività"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/calendar`); }} />
             <MenuItem icon={CalendarCheck} label="Matrice di validità" note="pagina" accent="emerald"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
             <MenuItem icon={Boxes} label="Unità di Progettazione" note="pagina" accent="indigo"
