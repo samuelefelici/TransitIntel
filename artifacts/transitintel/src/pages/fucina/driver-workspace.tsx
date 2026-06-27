@@ -23,13 +23,16 @@ import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
-  MapPin, Minus, Plus,
+  MapPin, Minus, Plus, SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
+import { OptimizerRulesPanel } from "@/components/OptimizerRulesPanel";
+import { buildDefaultConfig, SERVICE_PROFILES, type ServiceType } from "@/lib/optimizer-rules";
+import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
 import { SummaryCard } from "@/pages/driver-shifts/components";
@@ -66,61 +69,9 @@ interface DriverWorkspaceProps {
   scenarioLabel?: string;
 }
 
-/* Default config con i nuovi parametri optimizer attivi */
-const DEFAULT_CONFIG: OperatorConfig = {
-  solverIntensity: 2,
-  maxRounds: 5,
-  weights: {
-    minDrivers: 8, workBalance: 6, minCambi: 5,
-    preferIntero: 7, minSupplementi: 4, qualityTarget: 5,
-  },
-  bds: {
-    optimizer: {
-      minWorkPerDuty: 360,
-      maxCompanyCars: 5,
-      weightDutyCount: 20000,
-      weightIdlePenalty: 30,
-      idlePenaltyMaxMin: 60,
-      scorePerDuty: 100,
-    },
-  },
-};
-
-/* Profili regole per tipo di servizio (normativa). I cap % sono SOFT lato solver. */
-type ServiceType = "urbano" | "extraurbano" | "misto";
-const SERVICE_PROFILES: Record<ServiceType, { shiftRules: NonNullable<NonNullable<OperatorConfig["bds"]>["shiftRules"]>; targetWork: { low: number; high: number; mid: number } }> = {
-  urbano: {
-    shiftRules: {
-      intero:      { maxNastro: 435, maxLavoro: 435, sostaMinCapolinea: 15 },
-      semiunico:   { maxNastro: 555, maxLavoro: 480, intMin: 75,  intMax: 179, maxPct: 12 },
-      spezzato:    { maxNastro: 630, maxLavoro: 450, intMin: 180, intMax: 999, maxPct: 13 },
-      supplemento: { maxNastro: 150, maxLavoro: 150 },
-    },
-    targetWork: { low: 390, high: 435, mid: 408 },
-  },
-  // Extraurbano (Accordo Quadro 18/05/2012): unico 8h, semiunico 40'–2h59'/9h,
-  // spezzato ≥3h/10h30 cap 9%, semiunici cap 39% (soft).
-  extraurbano: {
-    shiftRules: {
-      intero:      { maxNastro: 480, maxLavoro: 480, sostaMinCapolinea: 15 },
-      semiunico:   { maxNastro: 540, maxLavoro: 540, intMin: 40,  intMax: 179, maxPct: 39 },
-      spezzato:    { maxNastro: 630, maxLavoro: 630, intMin: 180, intMax: 999, maxPct: 9 },
-      supplemento: { maxNastro: 150, maxLavoro: 150 },
-    },
-    targetWork: { low: 372, high: 402, mid: 402 }, // ~6h30–6h42 medio
-  },
-  // Misto: superset permissivo (v1) — copre entrambi i regimi; logica mista
-  // dettagliata (cambi vettura, doppia normativa per turno) in fase successiva.
-  misto: {
-    shiftRules: {
-      intero:      { maxNastro: 480, maxLavoro: 480, sostaMinCapolinea: 15 },
-      semiunico:   { maxNastro: 555, maxLavoro: 540, intMin: 40,  intMax: 179, maxPct: 39 },
-      spezzato:    { maxNastro: 630, maxLavoro: 630, intMin: 180, intMax: 999, maxPct: 13 },
-      supplemento: { maxNastro: 150, maxLavoro: 150 },
-    },
-    targetWork: { low: 390, high: 435, mid: 408 },
-  },
-};
+/* Default config COMPLETO (tutti i parametri letti da crew_scheduler_v4).
+ * Fonte unica: lib/optimizer-rules (default = regole attuali, editabili). */
+const DEFAULT_CONFIG: OperatorConfig = buildDefaultConfig("urbano");
 
 export default function DriverWorkspace({
   vehicleScenarioId,
@@ -140,15 +91,17 @@ export default function DriverWorkspace({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [operatorConfig, setOperatorConfig] = useState<OperatorConfig>(DEFAULT_CONFIG);
   const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
-  // Cambiando tipo servizio si applica il profilo regole (cap % soft lato solver)
+  // Cambiando tipo servizio si re-applica il preset dei gruppi service-scoped
+  // (regole turno + target), preservando gli altri parametri già modificati.
   const setServiceType = useCallback((t: ServiceType) => {
     setServiceTypeState(t);
     const p = SERVICE_PROFILES[t];
     setOperatorConfig((c) => ({
       ...c,
-      bds: { ...c.bds, serviceType: t, shiftRules: p.shiftRules, targetWork: p.targetWork },
+      bds: { ...c.bds, serviceType: t, shiftRules: structuredClone(p.shiftRules), targetWork: { ...p.targetWork } },
     }));
   }, []);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -248,6 +201,23 @@ export default function DriverWorkspace({
   }, []);
 
   const cpsat = useCrewOptimization();
+
+  // ── Carica il profilo-regole di default (azienda ⊕ progetto) come config di
+  //    partenza. Una sola volta: non sovrascrive le modifiche live dell'operatore.
+  const profileLoadedRef = useRef(false);
+  useEffect(() => {
+    if (profileLoadedRef.current) return;
+    profileLoadedRef.current = true;
+    resolveRuleProfile(projectIdFromUrl)
+      .then((r) => {
+        if (!r?.config) return;
+        const st = (r.config.bds?.serviceType as ServiceType) ?? serviceType;
+        const base = buildDefaultConfig(st);
+        setServiceTypeState(st);
+        setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
+      })
+      .catch(() => { /* nessun profilo salvato → resta sui default */ });
+  }, [projectIdFromUrl, serviceType]);
 
   // Ricezione risultati CP-SAT
   useEffect(() => {
@@ -590,6 +560,12 @@ export default function DriverWorkspace({
               <span title="Score per duty">+{optimizerCfg.scorePerDuty ?? 100}/duty</span>
             </div>
           )}
+          <button
+            onClick={() => setRulesOpen(true)}
+            className="flex items-center gap-1.5 text-[11px] text-indigo-300 px-2.5 py-1 rounded border border-indigo-500/30 bg-indigo-500/8 hover:bg-indigo-500/15 transition"
+          >
+            <SlidersHorizontal className="w-3 h-3" /> Parametri & Regole
+          </button>
           <button
             onClick={() => setConfigOpen(true)}
             className="flex items-center gap-1.5 text-[11px] text-purple-300 px-2.5 py-1 rounded border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition"
@@ -1215,7 +1191,18 @@ export default function DriverWorkspace({
         )}
       </div>
 
-      {/* ── Operator Config Drawer (con i 6 nuovi campi optimizer) ── */}
+      {/* ── Parametri & Regole: pannello completo pre-ottimizzazione ── */}
+      <OptimizerRulesPanel
+        isOpen={rulesOpen}
+        onClose={() => setRulesOpen(false)}
+        config={operatorConfig}
+        onChange={setOperatorConfig}
+        serviceType={serviceType}
+        onServiceTypeChange={setServiceType}
+        projectId={projectIdFromUrl}
+      />
+
+      {/* ── Operator Config Drawer (legacy: pesi/intensità) ── */}
       <OperatorConfigPanel
         isOpen={configOpen}
         onClose={() => setConfigOpen(false)}

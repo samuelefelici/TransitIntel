@@ -21,18 +21,33 @@ export interface OptimizationProgress {
 export type OptimizationState = "idle" | "starting" | "running" | "completed" | "failed" | "stopped";
 
 export interface CostRates {
-  hourlyRate?: number;
-  overtimeMultiplier?: number;
+  /* legacy (non più letti da crew_scheduler_v4) */
   undertimeDeduction?: number;
   drivingPremium?: number;
   idlePenalty?: number;
   companyCar?: number;
   taxiTransfer?: number;
-  cambioOverhead?: number;
-  extraDriverDaily?: number;
-  supplementoFixed?: number;
   fragmentationPenalty?: number;
   imbalancePenalty?: number;
+  /* chiavi allineate a cost_model.py CostRates.from_config (v4) */
+  hourlyRate?: number;
+  overtimeMultiplier?: number;
+  supplementoFixed?: number;
+  supplementoDaily?: number;
+  idleRateFraction?: number;
+  interruptionRateFraction?: number;
+  preTurnoRateFraction?: number;
+  transferRateFraction?: number;
+  companyCarPerUse?: number;
+  taxiBase?: number;
+  taxiPerKm?: number;
+  taxiPerMinWait?: number;
+  cambioOverhead?: number;
+  cambioRiskPerMinShort?: number;
+  fragmentationPerGap?: number;
+  workImbalancePerMin?: number;
+  longIdlePenaltyPerMin?: number;
+  extraDriverDaily?: number;
   companyCars?: number;
 }
 
@@ -65,6 +80,8 @@ export interface OperatorConfig {
     targetWork?: { low?: number; high?: number; mid?: number };
     serviceType?: "urbano" | "extraurbano" | "misto";
     prePost?: Record<string, number>;
+    /** RD 131/1938 — guida continuativa (Python legge bds.rd131 con fallback cee561) */
+    rd131?: Record<string, any>;
     cee561?: Record<string, any>;
     pasto?: Record<string, any>;
     stacco?: Record<string, number>;
