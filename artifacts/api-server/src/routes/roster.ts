@@ -58,6 +58,7 @@ async function ensureRosterTables(): Promise<void> {
 router.use(async (_req, _res, next) => { await ensureRosterTables(); next(); });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 /** Estrae i turni guida dal result JSON di un DSS (formato crew_scheduler_v4). */
 function extractDuties(result: any): Array<{
@@ -133,20 +134,36 @@ router.delete("/roster/drivers/:id", async (req, res): Promise<void> => {
 
 // ── Fonti turni (DSS salvati) ────────────────────────────────────────────────
 
-router.get("/roster/duty-sources", async (_req, res): Promise<void> => {
+router.get("/roster/duty-sources", async (req, res): Promise<void> => {
   try {
+    // Filtri opzionali:
+    //   ?operationalOnly=1   → solo i turni-guida marcati "in esercizio"
+    //   ?psProjectId=<uuid>  → solo quelli del servizio (progetto PS) indicato
+    const operationalOnly = String(req.query.operationalOnly ?? "") === "1";
+    const psProjectId = String(req.query.psProjectId ?? "").trim();
+    const opWhere = operationalOnly ? sql`AND COALESCE(d.is_operational, false) = true` : sql``;
+    const psWhere = psProjectId && UUID_RE.test(psProjectId)
+      ? sql`AND sp.planning_studio_project_id = ${psProjectId}::uuid`
+      : sql``;
     const r = await db.execute<any>(sql`
       SELECT d.id, d.name, d.created_at,
+             COALESCE(d.is_operational, false) AS is_operational,
              s.name AS scenario_name, s.date AS scenario_date,
+             sp.validity_unit_id AS validity_unit_id, vu.name AS unit_name,
              jsonb_array_length(COALESCE(d.result->'driverShifts', '[]'::jsonb)) AS duty_count
       FROM driver_shift_scenarios d
       LEFT JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
-      ORDER BY d.created_at DESC
+      LEFT JOIN scheduling_projects sp ON sp.id = s.project_id
+      LEFT JOIN ps_validity_units vu ON vu.id = sp.validity_unit_id
+      WHERE 1=1 ${opWhere} ${psWhere}
+      ORDER BY d.is_operational DESC, d.created_at DESC
       LIMIT 50
     `);
     res.json({ sources: r.rows.map((x: any) => ({
       dssId: x.id, name: x.name, scenarioName: x.scenario_name,
       scenarioDate: x.scenario_date, dutyCount: Number(x.duty_count ?? 0),
+      isOperational: !!x.is_operational,
+      validityUnitId: x.validity_unit_id ?? null, validityUnitName: x.unit_name ?? null,
       createdAt: x.created_at,
     })) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }

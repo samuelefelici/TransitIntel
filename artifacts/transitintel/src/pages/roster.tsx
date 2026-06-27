@@ -30,6 +30,7 @@ interface RosterAssignment { id: string; driverId: string; day: string; dutyCode
 interface DutySource {
   dssId: string; name: string; scenarioName: string | null;
   scenarioDate: string | null; dutyCount: number; createdAt: string;
+  isOperational?: boolean; validityUnitName?: string | null;
 }
 interface Board {
   from: string; days: string[]; drivers: RosterDriver[];
@@ -62,14 +63,24 @@ function dayLabel(iso: string): { dow: string; dm: string } {
 
 export default function RosterPage() {
   const qc = useQueryClient();
+  // Parametri opzionali dal Quadro d'esercizio (?psProjectId=&operational=1)
+  const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const psProjectId = urlParams.get("psProjectId") ?? "";
   const [from, setFrom] = useState(() => mondayOf(new Date()));
   const [dssId, setDssId] = useState("");
+  const [operationalOnly, setOperationalOnly] = useState(urlParams.get("operational") === "1");
   // cella selezionata per l'assegnazione: scheda turni scoperti del giorno
   const [picker, setPicker] = useState<{ driverId: string; driverName: string; day: string } | null>(null);
 
   const sourcesQ = useQuery({
-    queryKey: ["roster", "sources"],
-    queryFn: () => apiFetch<{ sources: DutySource[] }>("/api/roster/duty-sources"),
+    queryKey: ["roster", "sources", operationalOnly, psProjectId],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (operationalOnly) qs.set("operationalOnly", "1");
+      if (psProjectId) qs.set("psProjectId", psProjectId);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      return apiFetch<{ sources: DutySource[] }>(`/api/roster/duty-sources${suffix}`);
+    },
   });
 
   const boardQ = useQuery({
@@ -155,10 +166,14 @@ export default function RosterPage() {
           <option value="">— Scegli i turni guida da assegnare (DSS salvato) —</option>
           {sourcesQ.data?.sources.map((s) => (
             <option key={s.dssId} value={s.dssId}>
-              {s.name} · {s.dutyCount} turni {s.scenarioName ? `· ${s.scenarioName}` : ""}
+              {s.isOperational ? "● " : ""}{s.validityUnitName ? `${s.validityUnitName} · ` : ""}{s.name} · {s.dutyCount} turni {s.scenarioName ? `· ${s.scenarioName}` : ""}
             </option>
           ))}
         </select>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer" title="Mostra solo i turni guida marcati 'in esercizio'">
+          <input type="checkbox" checked={operationalOnly} onChange={(e) => { setOperationalOnly(e.target.checked); setDssId(""); }} className="accent-emerald-500" />
+          Solo in esercizio
+        </label>
         <div className="flex items-center gap-1 rounded-lg border border-border/60 px-1 py-1">
           <button onClick={() => setFrom(shiftDate(from, -7))} className="p-1.5 rounded hover:bg-white/10"><ChevronLeft className="w-4 h-4" /></button>
           <span className="text-xs font-mono px-2 flex items-center gap-1.5">

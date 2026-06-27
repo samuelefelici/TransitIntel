@@ -55,6 +55,7 @@ const PlanningStudioNetworkPage = lazy(() => import("@/pages/planning-studio/Net
 const PlanningStudioValidityPage = lazy(() => import("@/pages/planning-studio/ValidityPage"));
 const PlanningStudioValidityUnitsPage = lazy(() => import("@/pages/planning-studio/ValidityUnitsPage"));
 const PlanningStudioCalendarProfilePage = lazy(() => import("@/pages/planning-studio/CalendarProfilePage"));
+const PlanningStudioOperationalBoardPage = lazy(() => import("@/pages/planning-studio/OperationalBoardPage"));
 const PlanningStudioTtdPage = lazy(() => import("@/pages/planning-studio/TtdPage"));
 const PlanningStudioZonesPage = lazy(() => import("@/pages/planning-studio/ZonesPage"));
 const NetworkEngineHub = lazy(() => import("@/pages/network-engine"));
@@ -188,6 +189,9 @@ function Router() {
             </Route>
             <Route path="/planning-studio/:id/calendar">
               <Gated perm="network"><PlanningStudioCalendarProfilePage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/esercizio">
+              <Gated perm="network"><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/ttd">
               <Gated perm="network"><PlanningStudioTtdPage /></Gated>
