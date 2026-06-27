@@ -233,6 +233,64 @@ def apply_optimizer_overrides(cfg: dict) -> None:
         f"scorePerDuty={SCORE_PER_DUTY}")
 
 
+def apply_fase2_overrides(cfg: dict) -> None:
+    """Override parametri AVANZATI (Fase 2): soglie taglio, scoring tagli,
+    penalità cap %, frazioni di tempo multi-scenario. Globali mutate IN-PLACE.
+
+    Schema atteso:
+      config.bds.cuts = {drivingBassoThreshold, minCutGap, collassaMinGap}
+      config.bds.cutScoring = {gapBase, gapBonusPerMin, clusterBonus,
+        noClusterPenalty, capolineaBonus, balanceMax, nastroPenaltyPerMin, sameRoutePenalty}
+      config.bds.optimizer.pctOverPenalty
+      config.bds.scenari = {timeFraction, polishFraction}   # count gestito a runtime
+
+    NB: solo costanti effettivamente lette a runtime dal v4 (verificate).
+    """
+    global DRIVING_BASSO_THRESHOLD, MIN_CUT_GAP, COLLASSA_MIN_GAP
+    global CUT_SCORE_GAP_BASE, CUT_SCORE_GAP_BONUS_PER_MIN, CUT_SCORE_CLUSTER_BONUS
+    global CUT_NO_CLUSTER_PENALTY, CUT_SCORE_CAPOLINEA_BONUS, CUT_SCORE_BALANCE_MAX
+    global CUT_NASTRO_PENALTY_PER_MIN, CUT_SAME_ROUTE_PENALTY
+    global PCT_OVER_PENALTY
+    global SCENARIO_TIME_FRACTION, POLISH_TIME_FRACTION
+
+    bds = cfg.get("bds", {}) if cfg else {}
+
+    def _num(d: dict, key: str, cur, typ):
+        if key in d:
+            try:
+                return typ(d[key])
+            except (ValueError, TypeError):
+                return cur
+        return cur
+
+    cuts = bds.get("cuts") or {}
+    DRIVING_BASSO_THRESHOLD = _num(cuts, "drivingBassoThreshold", DRIVING_BASSO_THRESHOLD, int)
+    MIN_CUT_GAP             = _num(cuts, "minCutGap", MIN_CUT_GAP, int)
+    COLLASSA_MIN_GAP        = _num(cuts, "collassaMinGap", COLLASSA_MIN_GAP, int)
+
+    cs = bds.get("cutScoring") or {}
+    CUT_SCORE_GAP_BASE          = _num(cs, "gapBase", CUT_SCORE_GAP_BASE, float)
+    CUT_SCORE_GAP_BONUS_PER_MIN = _num(cs, "gapBonusPerMin", CUT_SCORE_GAP_BONUS_PER_MIN, float)
+    CUT_SCORE_CLUSTER_BONUS     = _num(cs, "clusterBonus", CUT_SCORE_CLUSTER_BONUS, float)
+    CUT_NO_CLUSTER_PENALTY      = _num(cs, "noClusterPenalty", CUT_NO_CLUSTER_PENALTY, float)
+    CUT_SCORE_CAPOLINEA_BONUS   = _num(cs, "capolineaBonus", CUT_SCORE_CAPOLINEA_BONUS, float)
+    CUT_SCORE_BALANCE_MAX       = _num(cs, "balanceMax", CUT_SCORE_BALANCE_MAX, float)
+    CUT_NASTRO_PENALTY_PER_MIN  = _num(cs, "nastroPenaltyPerMin", CUT_NASTRO_PENALTY_PER_MIN, float)
+    CUT_SAME_ROUTE_PENALTY      = _num(cs, "sameRoutePenalty", CUT_SAME_ROUTE_PENALTY, float)
+
+    opt = bds.get("optimizer") or {}
+    PCT_OVER_PENALTY = _num(opt, "pctOverPenalty", PCT_OVER_PENALTY, int)
+
+    scen = bds.get("scenari") or {}
+    SCENARIO_TIME_FRACTION = _num(scen, "timeFraction", SCENARIO_TIME_FRACTION, float)
+    POLISH_TIME_FRACTION   = _num(scen, "polishFraction", POLISH_TIME_FRACTION, float)
+
+    if cuts or cs or opt.get("pctOverPenalty") is not None or scen:
+        log(f"[V4] Fase2 overrides: minCutGap={MIN_CUT_GAP}, collassa={COLLASSA_MIN_GAP}, "
+            f"clusterBonus={CUT_SCORE_CLUSTER_BONUS}, noCluster={CUT_NO_CLUSTER_PENALTY}, "
+            f"pctOverPenalty={PCT_OVER_PENALTY}, scenTimeFrac={SCENARIO_TIME_FRACTION}")
+
+
 # ----------------------------------------------------------------
 # Multi-scenario
 # ----------------------------------------------------------------
@@ -276,6 +334,10 @@ CUT_NASTRO_PENALTY_PER_MIN = 0.05
 CUT_SAME_ROUTE_PENALTY = 15.0
 CUT_NO_CLUSTER_PENALTY = 8.0
 CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 15min
+
+# Penalità (cost-cents) per punto-percentuale-corsa oltre i cap soft dei tipi
+# turno (semiunico/spezzato). Override-abile da config.bds.optimizer.pctOverPenalty.
+PCT_OVER_PENALTY = 150
 
 # ----------------------------------------------------------------
 # Costi cambio conducente
@@ -1716,8 +1778,8 @@ def _build_cpsat_model(
 
     # Limiti percentuali SOFT (flessibili): l'eccesso sopra il cap è penalizzato
     # nell'obiettivo, non vietato. excess >= 100*count - maxPct*total (>=0 dal dominio).
-    # Penalità per "punto-percentuale-corsa" oltre soglia (in cost-cents).
-    PCT_OVER_PENALTY = 150
+    # Penalità per "punto-percentuale-corsa" oltre soglia: globale PCT_OVER_PENALTY
+    # (override config.bds.optimizer.pctOverPenalty).
     pct_excess: list[Any] = []
     if n_supplemento:
         suppl_count = model.new_int_var(0, n_seg, "suppl_count")
@@ -2062,6 +2124,13 @@ def optimize_multi_scenario(
         intensity_map = {"fast": 1, "normal": 2, "deep": 3, "extreme": 4}
         intensity = intensity_map.get(intensity, 2)
     n_scenarios = {1: MIN_SCENARIOS, 2: DEFAULT_SCENARIOS, 3: MAX_SCENARIOS, 4: MAX_SCENARIOS + 12}.get(intensity, DEFAULT_SCENARIOS)
+    # Override esplicito del numero scenari da config.bds.scenari.count (0/assente = auto da intensità)
+    _scen_count = ((config.get("bds", {}) or {}).get("scenari", {}) or {}).get("count")
+    if _scen_count:
+        try:
+            n_scenarios = max(1, int(_scen_count))
+        except (ValueError, TypeError):
+            pass
 
     # Tempo: frazione agli scenari, frazione alla polish phase
     scenario_time_total = time_limit_sec * SCENARIO_TIME_FRACTION
@@ -2930,6 +2999,8 @@ def main() -> None:
     apply_shift_rules_override(config)
     # Override iperparametri ottimizzatore (saturazione, vetture, pesi)
     apply_optimizer_overrides(config)
+    # Override avanzati Fase 2 (soglie/scoring tagli, cap %, multi-scenario)
+    apply_fase2_overrides(config)
 
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
@@ -2957,7 +3028,7 @@ def main() -> None:
     classify_blocks(blocks, clusters)
 
     # Collassa tagli troppo vicini (BDS)
-    collassa_cambi(blocks)
+    collassa_cambi(blocks, COLLASSA_MIN_GAP)  # global (override-abile) anziché il default-arg catturato all'import
 
     # Filtra tagli solo su cluster
     filter_cuts_by_cluster(blocks, config)

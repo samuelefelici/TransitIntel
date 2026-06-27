@@ -123,7 +123,15 @@ export const DEFAULT_BDS: Record<string, any> = {
   optimizer: {
     minWorkPerDuty: 360, maxCompanyCars: 5, weightDutyCount: 20000,
     weightIdlePenalty: 30, idlePenaltyMaxMin: 60, scorePerDuty: 100,
+    pctOverPenalty: 150,
   },
+  // Fase 2 — avanzate (solo costanti realmente lette a runtime dal v4)
+  cuts: { drivingBassoThreshold: 120, minCutGap: 3, collassaMinGap: 45 },
+  cutScoring: {
+    gapBase: 1.0, gapBonusPerMin: 0.1, clusterBonus: 3.0, noClusterPenalty: 8.0,
+    capolineaBonus: 5.0, balanceMax: 5.0, nastroPenaltyPerMin: 0.05, sameRoutePenalty: 15.0,
+  },
+  scenari: { count: 0, timeFraction: 0.78, polishFraction: 0.20 },
 };
 
 export const DEFAULT_COST_RATES: Record<string, number> = {
@@ -166,6 +174,9 @@ export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
       copertura: { ...DEFAULT_BDS.copertura },
       collegamento: { ...DEFAULT_BDS.collegamento },
       optimizer: { ...DEFAULT_BDS.optimizer },
+      cuts: { ...DEFAULT_BDS.cuts },
+      cutScoring: { ...DEFAULT_BDS.cutScoring },
+      scenari: { ...DEFAULT_BDS.scenari },
     },
   } as OperatorConfig;
 }
@@ -347,6 +358,45 @@ export const RULE_GROUPS: GroupDef[] = [
       { path: "bds.optimizer.weightIdlePenalty", label: "Peso penalità idle", type: "int", unit: "/min", min: 0, max: 500 },
       { path: "bds.optimizer.idlePenaltyMaxMin", label: "Cap idle penalizzato", type: "int", unit: "min", min: 0, max: 240 },
       { path: "bds.optimizer.scorePerDuty", label: "Score bonus per turno", type: "int", unit: "", min: 0, max: 1000 },
+      { path: "bds.optimizer.pctOverPenalty", label: "Penalità oltre cap % (soft)", type: "int", unit: "", min: 0, max: 1000 },
+    ],
+  },
+  {
+    id: "cuts",
+    title: "Soglie tagli e classificazione (avanzate)",
+    description: "Soglie che governano dove e come spezzare i blocchi vettura.",
+    advanced: true,
+    fields: [
+      { path: "bds.cuts.drivingBassoThreshold", label: "Soglia guida bassa (CORTO_BASSO)", type: "int", unit: "min", min: 0, max: 480 },
+      { path: "bds.cuts.minCutGap", label: "Gap minimo per un taglio", type: "int", unit: "min", min: 0, max: 60 },
+      { path: "bds.cuts.collassaMinGap", label: "Gap minimo tra tagli (collasso)", type: "int", unit: "min", min: 0, max: 180 },
+    ],
+  },
+  {
+    id: "cutScoring",
+    title: "Scoring tagli (avanzate)",
+    description: "Pesi euristici che orientano la scelta del punto di taglio.",
+    advanced: true,
+    fields: [
+      { path: "bds.cutScoring.gapBase", label: "Score base (taglio con gap)", type: "float", min: 0, max: 50, step: 0.1 },
+      { path: "bds.cutScoring.gapBonusPerMin", label: "Bonus per min di gap (oltre 5')", type: "float", min: 0, max: 5, step: 0.05 },
+      { path: "bds.cutScoring.clusterBonus", label: "Bonus taglio su cluster", type: "float", min: 0, max: 50, step: 0.5 },
+      { path: "bds.cutScoring.noClusterPenalty", label: "Penalità taglio non-cluster", type: "float", min: 0, max: 50, step: 0.5 },
+      { path: "bds.cutScoring.capolineaBonus", label: "Bonus taglio al capolinea", type: "float", min: 0, max: 50, step: 0.5 },
+      { path: "bds.cutScoring.balanceMax", label: "Bonus max bilanciamento guida", type: "float", min: 0, max: 50, step: 0.5 },
+      { path: "bds.cutScoring.nastroPenaltyPerMin", label: "Penalità nastro over-limit/min", type: "float", min: 0, max: 5, step: 0.01 },
+      { path: "bds.cutScoring.sameRoutePenalty", label: "Penalità taglio stessa linea", type: "float", min: 0, max: 50, step: 0.5 },
+    ],
+  },
+  {
+    id: "scenari",
+    title: "Multi-scenario (avanzate)",
+    description: "Numero di scenari esplorati e ripartizione del tempo. count=0 ⇒ auto da intensità.",
+    advanced: true,
+    fields: [
+      { path: "bds.scenari.count", label: "Numero scenari (0 = auto)", type: "int", unit: "n", min: 0, max: 200 },
+      { path: "bds.scenari.timeFraction", label: "Frazione tempo agli scenari", type: "float", unit: "×", min: 0.1, max: 1, step: 0.01 },
+      { path: "bds.scenari.polishFraction", label: "Frazione tempo alla rifinitura", type: "float", unit: "×", min: 0, max: 0.9, step: 0.01 },
     ],
   },
   {
