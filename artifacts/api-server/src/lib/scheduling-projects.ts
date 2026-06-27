@@ -94,6 +94,17 @@ async function ensureSchedulingTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS project_id uuid
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_dss_project ON driver_shift_scenarios(project_id)`);
+    // "In esercizio": marca lo scenario scelto (turni macchina / turni guida).
+    // Esclusività: 1 turni-macchina operativo per progetto-scheduling (= per UDP);
+    // 1 turni-guida operativo per ciascun turni-macchina.
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS service_program_scenarios
+        ADD COLUMN IF NOT EXISTS is_operational boolean NOT NULL DEFAULT false
+    `);
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS driver_shift_scenarios
+        ADD COLUMN IF NOT EXISTS is_operational boolean NOT NULL DEFAULT false
+    `);
 
     /* ─── Condivisione progetti + log attività ─── */
     // Flag esplicito di condivisione (utile anche per owner solitari "in pausa").
@@ -657,12 +668,12 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
   if (!owned) { res.status(404).json({ error: "Progetto non trovato" }); return; }
 
   const r = await db.execute(sql`
-    SELECT id, name, date, created_at,
+    SELECT id, name, date, created_at, COALESCE(is_operational, false) AS is_operational,
            (result->'summary'->>'numVehicles')::int AS num_vehicles,
            (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km
       FROM service_program_scenarios
      WHERE project_id = ${id}::uuid
-     ORDER BY created_at DESC
+     ORDER BY is_operational DESC, created_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
   res.json({
@@ -671,6 +682,7 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
       name: s.name,
       date: s.date,
       createdAt: s.created_at,
+      isOperational: !!s.is_operational,
       numVehicles: s.num_vehicles,
       totalDeadheadKm: s.total_deadhead_km,
     })),
@@ -710,11 +722,13 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
   // (sia agganciati direttamente al progetto, sia tramite vehicle scenario.project_id)
   const r = await db.execute(sql`
     SELECT dss.id, dss.name, dss.created_at, dss.service_program_scenario_id,
+           COALESCE(dss.is_operational, false) AS is_operational,
+           COALESCE(sps.is_operational, false) AS vehicle_is_operational,
            sps.name AS vehicle_scenario_name, sps.date AS vehicle_date
       FROM driver_shift_scenarios dss
       JOIN service_program_scenarios sps ON sps.id = dss.service_program_scenario_id
      WHERE sps.project_id = ${id}::uuid OR dss.project_id = ${id}::uuid
-     ORDER BY dss.created_at DESC
+     ORDER BY dss.is_operational DESC, dss.created_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
   res.json({
@@ -722,10 +736,156 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
       id: s.id,
       name: s.name,
       createdAt: s.created_at,
+      isOperational: !!s.is_operational,
       vehicleScenarioId: s.service_program_scenario_id,
       vehicleScenarioName: s.vehicle_scenario_name,
       vehicleScenarioDate: s.vehicle_date,
+      vehicleIsOperational: !!s.vehicle_is_operational,
     })),
+  });
+});
+
+/* POST /api/scheduling/projects/:id/vehicle-scenarios/:scenarioId/operational { operational }
+   Marca/smarca un turni-macchina come "in esercizio". Esclusivo per progetto:
+   metterne uno operativo azzera gli altri del progetto. Smarcando, smarca anche
+   i suoi turni-guida figli (non può esserci TG operativo sotto un TM non operativo). */
+router.post("/scheduling/projects/:id/vehicle-scenarios/:scenarioId/operational", async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params.id || "");
+  const scenarioId = String(req.params.scenarioId || "");
+  if (!UUID_RE.test(id) || !UUID_RE.test(scenarioId)) { res.status(400).json({ error: "ID non validi" }); return; }
+  const operational = req.body?.operational !== false; // default true
+  const owned = await loadProjectAccessible(id, req.user!.id);
+  if (!owned) { res.status(404).json({ error: "Progetto non trovato" }); return; }
+  if (owned.my_role === "viewer") { res.status(403).json({ error: "Permesso insufficiente" }); return; }
+  // lo scenario deve appartenere al progetto
+  const chk = await db.execute(sql`
+    SELECT 1 FROM service_program_scenarios WHERE id = ${scenarioId}::uuid AND project_id = ${id}::uuid LIMIT 1`);
+  if (!((chk as any).rows?.length)) { res.status(404).json({ error: "Scenario non nel progetto" }); return; }
+
+  if (operational) {
+    // esclusività: azzera gli altri turni-macchina del progetto (e i loro TG)
+    await db.execute(sql`
+      UPDATE driver_shift_scenarios SET is_operational = false
+       WHERE service_program_scenario_id IN (
+         SELECT id FROM service_program_scenarios WHERE project_id = ${id}::uuid AND id <> ${scenarioId}::uuid
+       )`);
+    await db.execute(sql`
+      UPDATE service_program_scenarios SET is_operational = (id = ${scenarioId}::uuid)
+       WHERE project_id = ${id}::uuid`);
+  } else {
+    await db.execute(sql`UPDATE service_program_scenarios SET is_operational = false WHERE id = ${scenarioId}::uuid`);
+    await db.execute(sql`UPDATE driver_shift_scenarios SET is_operational = false WHERE service_program_scenario_id = ${scenarioId}::uuid`);
+  }
+  await logActivity(id, req.user!.id, "scenario.operational.vehicle", {
+    targetType: "vehicle_scenario", targetId: scenarioId, payload: { operational },
+  });
+  res.json({ ok: true, operational });
+});
+
+/* POST /api/scheduling/projects/:id/driver-scenarios/:scenarioId/operational { operational }
+   Marca/smarca un turni-guida come "in esercizio". Esclusivo per turni-macchina
+   genitore; mettendolo operativo promuove anche il TM genitore (esclusivo nel progetto). */
+router.post("/scheduling/projects/:id/driver-scenarios/:scenarioId/operational", async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params.id || "");
+  const scenarioId = String(req.params.scenarioId || "");
+  if (!UUID_RE.test(id) || !UUID_RE.test(scenarioId)) { res.status(400).json({ error: "ID non validi" }); return; }
+  const operational = req.body?.operational !== false; // default true
+  const owned = await loadProjectAccessible(id, req.user!.id);
+  if (!owned) { res.status(404).json({ error: "Progetto non trovato" }); return; }
+  if (owned.my_role === "viewer") { res.status(403).json({ error: "Permesso insufficiente" }); return; }
+  // il DSS deve appartenere (via TM) al progetto; recupera il TM genitore
+  const chk = await db.execute(sql`
+    SELECT dss.service_program_scenario_id AS sps_id
+      FROM driver_shift_scenarios dss
+      JOIN service_program_scenarios sps ON sps.id = dss.service_program_scenario_id
+     WHERE dss.id = ${scenarioId}::uuid AND sps.project_id = ${id}::uuid LIMIT 1`);
+  const spsId = (chk as any).rows?.[0]?.sps_id;
+  if (!spsId) { res.status(404).json({ error: "Turni guida non nel progetto" }); return; }
+
+  if (operational) {
+    // promuovi il TM genitore (esclusivo nel progetto) + azzera i TG degli altri TM
+    await db.execute(sql`
+      UPDATE driver_shift_scenarios SET is_operational = false
+       WHERE service_program_scenario_id IN (
+         SELECT id FROM service_program_scenarios WHERE project_id = ${id}::uuid AND id <> ${spsId}::uuid
+       )`);
+    await db.execute(sql`
+      UPDATE service_program_scenarios SET is_operational = (id = ${spsId}::uuid)
+       WHERE project_id = ${id}::uuid`);
+    // esclusività TG dentro lo stesso TM
+    await db.execute(sql`
+      UPDATE driver_shift_scenarios SET is_operational = (id = ${scenarioId}::uuid)
+       WHERE service_program_scenario_id = ${spsId}::uuid`);
+  } else {
+    await db.execute(sql`UPDATE driver_shift_scenarios SET is_operational = false WHERE id = ${scenarioId}::uuid`);
+  }
+  await logActivity(id, req.user!.id, "scenario.operational.driver", {
+    targetType: "driver_scenario", targetId: scenarioId, payload: { operational },
+  });
+  res.json({ ok: true, operational });
+});
+
+/* GET /api/scheduling/ps-projects/:psProjectId/operational
+   Quadro d'esercizio: per ogni UDP (progetto-scheduling) del progetto PS, lo
+   scenario turni-macchina e turni-guida in esercizio, con stato di completezza. */
+router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Request, res: Response): Promise<void> => {
+  const psId = String(req.params.psProjectId || "");
+  if (!UUID_RE.test(psId)) { res.status(400).json({ error: "ID non valido" }); return; }
+  const userId = req.user!.id;
+  // accesso al progetto PS (owner o membro)
+  const acc = await db.execute(sql`
+    SELECT p.id, p.name FROM ps_projects p
+      LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
+     WHERE p.id = ${psId}::uuid AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL) LIMIT 1`);
+  if (!((acc as any).rows?.length)) { res.status(404).json({ error: "Progetto PS non accessibile" }); return; }
+
+  // progetti-scheduling (UDP) del progetto PS accessibili all'utente
+  const projR = await db.execute(sql`
+    SELECT sp.id, sp.name, sp.validity_unit_id, vu.name AS unit_name
+      FROM scheduling_projects sp
+      LEFT JOIN project_members pm ON pm.project_id = sp.id AND pm.user_id = ${userId}::uuid
+      LEFT JOIN ps_validity_units vu ON vu.id = sp.validity_unit_id
+     WHERE sp.planning_studio_project_id = ${psId}::uuid
+       AND (sp.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+     ORDER BY vu.name ASC NULLS LAST, sp.created_at ASC`);
+  const projects: any[] = (projR as any).rows ?? [];
+
+  const out: any[] = [];
+  for (const p of projects) {
+    const vR = await db.execute(sql`
+      SELECT id, name, date,
+             (result->'summary'->>'numVehicles')::int AS num_vehicles
+        FROM service_program_scenarios
+       WHERE project_id = ${p.id}::uuid AND is_operational = true LIMIT 1`);
+    const v = (vR as any).rows?.[0] ?? null;
+    let d: any = null;
+    if (v) {
+      const dR = await db.execute(sql`
+        SELECT id, name,
+               jsonb_array_length(COALESCE(result->'driverShifts', '[]'::jsonb)) AS duty_count
+          FROM driver_shift_scenarios
+         WHERE service_program_scenario_id = ${v.id}::uuid AND is_operational = true LIMIT 1`);
+      d = (dR as any).rows?.[0] ?? null;
+    }
+    out.push({
+      projectId: p.id,
+      projectName: p.name,
+      validityUnitId: p.validity_unit_id ?? null,
+      validityUnitName: p.unit_name ?? null,
+      vehicleScenario: v ? { id: v.id, name: v.name, date: v.date, numVehicles: v.num_vehicles } : null,
+      driverScenario: d ? { id: d.id, name: d.name, dutyCount: Number(d.duty_count) || 0 } : null,
+      status: !v ? "missing_vehicle" : !d ? "missing_driver" : "complete",
+    });
+  }
+  res.json({
+    psProjectId: psId,
+    projects: out,
+    totals: {
+      udp: out.length,
+      complete: out.filter(x => x.status === "complete").length,
+      vehicles: out.reduce((s, x) => s + (x.vehicleScenario?.numVehicles ?? 0), 0),
+      duties: out.reduce((s, x) => s + (x.driverScenario?.dutyCount ?? 0), 0),
+    },
   });
 });
 

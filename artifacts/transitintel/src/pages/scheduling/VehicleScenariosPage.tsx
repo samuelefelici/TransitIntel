@@ -12,10 +12,11 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   ArrowLeft, Truck, Plus, Loader2, Calendar, FolderOpen, ChevronRight,
-  Share2, Users as UsersIcon, Lock,
+  Share2, Users as UsersIcon, Lock, Power,
 } from "lucide-react";
 import {
   getProject, listProjectVehicleScenarios, attachVehicleScenarioToProject,
+  setVehicleScenarioOperational,
   type SchedulingProject, type ProjectVehicleScenario,
 } from "@/lib/scheduling-projects-api";
 import {
@@ -71,6 +72,15 @@ export default function VehicleScenariosPage() {
   function openScenario(s: ProjectVehicleScenario) {
     // Riusa il deep-link esistente di FucinaPage (?scenario=ID → step 6)
     navigate(`/fucina/${projectId}/vehicles/${s.id}`);
+  }
+
+  async function toggleOperational(s: ProjectVehicleScenario) {
+    if (!projectId) return;
+    try {
+      await setVehicleScenarioOperational(projectId, s.id, !s.isOperational);
+      toast.success(s.isOperational ? "Rimosso dall'esercizio" : "Turni macchina messi in esercizio");
+      await reload();
+    } catch (e: any) { toast.error(e?.message ?? "Errore"); }
   }
 
   return (
@@ -150,6 +160,11 @@ export default function VehicleScenariosPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-semibold text-zinc-100 text-sm truncate">{s.name}</h3>
+                    {s.isOperational && (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500 text-black border border-emerald-400">
+                        <Power className="w-2.5 h-2.5" /> in esercizio
+                      </span>
+                    )}
                     {sh && (
                       sh.isShared ? (
                         <span className="inline-flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
@@ -199,6 +214,18 @@ export default function VehicleScenariosPage() {
                 </div>
                 </button>
                 <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void toggleOperational(s); }}
+                    title={s.isOperational ? "Togli dall'esercizio" : "Metti in esercizio (turni macchina ufficiali per questa UDP)"}
+                    className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors ${
+                      s.isOperational
+                        ? "border-emerald-400 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                        : "border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40"
+                    }`}
+                  >
+                    <Power className="w-3 h-3" />
+                    {s.isOperational ? "In esercizio" : "Metti in esercizio"}
+                  </button>
                   {sh && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setShareDialog({ id: s.id, name: s.name, canManage: isOwner }); }}

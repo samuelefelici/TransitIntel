@@ -189,6 +189,7 @@ export interface ProjectVehicleScenario {
   name: string;
   date: string;
   createdAt: string;
+  isOperational?: boolean;
   numVehicles?: number | null;
   totalDeadheadKm?: number | null;
 }
@@ -197,9 +198,11 @@ export interface ProjectDriverScenario {
   id: string;
   name: string;
   createdAt: string;
+  isOperational?: boolean;
   vehicleScenarioId: string;
   vehicleScenarioName: string;
   vehicleScenarioDate: string;
+  vehicleIsOperational?: boolean;
 }
 
 export async function listProjectVehicleScenarios(projectId: string): Promise<ProjectVehicleScenario[]> {
@@ -227,6 +230,48 @@ export async function attachVehicleScenarioToProject(
       body: JSON.stringify({ scenarioId }),
     },
   );
+}
+
+/* ───── "In esercizio": marca lo scenario scelto (turni macchina / turni guida) ───── */
+
+export async function setVehicleScenarioOperational(
+  projectId: string, scenarioId: string, operational: boolean,
+): Promise<void> {
+  await apiFetch(
+    `/api/scheduling/projects/${projectId}/vehicle-scenarios/${scenarioId}/operational`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational }) },
+  );
+}
+
+export async function setDriverScenarioOperational(
+  projectId: string, scenarioId: string, operational: boolean,
+): Promise<void> {
+  await apiFetch(
+    `/api/scheduling/projects/${projectId}/driver-scenarios/${scenarioId}/operational`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational }) },
+  );
+}
+
+/* ───── Quadro d'esercizio: consolidamento per progetto PS ───── */
+
+export interface OperationalUnit {
+  projectId: string;
+  projectName: string;
+  validityUnitId: string | null;
+  validityUnitName: string | null;
+  vehicleScenario: { id: string; name: string; date: string; numVehicles: number | null } | null;
+  driverScenario: { id: string; name: string; dutyCount: number } | null;
+  status: "complete" | "missing_vehicle" | "missing_driver";
+}
+
+export interface OperationalBoard {
+  psProjectId: string;
+  projects: OperationalUnit[];
+  totals: { udp: number; complete: number; vehicles: number; duties: number };
+}
+
+export async function getPsOperationalBoard(psProjectId: string): Promise<OperationalBoard> {
+  return apiFetch<OperationalBoard>(`/api/scheduling/ps-projects/${psProjectId}/operational`);
 }
 
 /* ───── Sincronizzazione PS → gtfs_feed ───── */
