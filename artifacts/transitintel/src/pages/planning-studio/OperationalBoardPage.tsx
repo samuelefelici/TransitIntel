@@ -8,29 +8,55 @@
  *
  * Rotte: /fucina/esercizio (scelta programma) · /fucina/esercizio/:id (quadro).
  */
-import { useState } from "react";
+import { useEffect } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Loader2, Truck, Users, CheckCircle2, AlertTriangle, XCircle,
-  ClipboardList, ChevronRight, Layers,
+  ClipboardList, ChevronRight, Layers, Power,
 } from "lucide-react";
 import { getPsOperationalBoard, listProjects, type OperationalUnit } from "@/lib/scheduling-projects-api";
+import { listPsProjects, getPsProject } from "@/lib/planning-studio-api";
 
-/* ─── Picker: scegli il programma di esercizio ─── */
+/* ─── Picker: scegli il programma di esercizio (default = quello attivo) ─── */
 function ProgramPicker() {
   const [, navigate] = useLocation();
-  const q = useQuery({ queryKey: ["scheduling", "projects", "all"], queryFn: () => listProjects() });
+  // ?pick=1 → forza la scelta (evita il redirect automatico al programma attivo)
+  const forcePick = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("pick") === "1";
+
+  const schedQ = useQuery({ queryKey: ["scheduling", "projects", "all"], queryFn: () => listProjects() });
+  const psQ = useQuery({ queryKey: ["ps", "projects"], queryFn: () => listPsProjects() });
+  const loading = schedQ.isLoading || psQ.isLoading;
+
+  // programma "attivo" = progetto PS operativo (feed in esercizio)
+  const active = (psQ.data ?? []).find((p) => p.isOperational) ?? null;
+
+  // gruppi: tutti i programmi PS con UDP avviate allo scheduling + sempre l'attivo
   const groups = (() => {
-    const m = new Map<string, { psId: string; name: string; udp: number }>();
-    for (const p of q.data ?? []) {
+    const udpCount = new Map<string, number>();
+    const nameById = new Map<string, string>();
+    for (const p of schedQ.data ?? []) {
       if (!p.planningStudioProjectId) continue;
-      const g = m.get(p.planningStudioProjectId) ?? { psId: p.planningStudioProjectId, name: p.planningStudioProjectName ?? "Programma", udp: 0 };
-      g.udp += 1;
-      m.set(p.planningStudioProjectId, g);
+      udpCount.set(p.planningStudioProjectId, (udpCount.get(p.planningStudioProjectId) ?? 0) + 1);
+      if (p.planningStudioProjectName) nameById.set(p.planningStudioProjectId, p.planningStudioProjectName);
     }
-    return [...m.values()];
+    const ids = new Set<string>([...udpCount.keys()]);
+    if (active) ids.add(active.id);
+    const list = [...ids].map((psId) => ({
+      psId,
+      name: nameById.get(psId) ?? (active?.id === psId ? active.name : "Programma"),
+      udp: udpCount.get(psId) ?? 0,
+      isActive: active?.id === psId,
+    }));
+    list.sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)); // attivo in cima
+    return list;
   })();
+
+  // Default: apri direttamente il programma attivo (se non si è forzata la scelta)
+  useEffect(() => {
+    if (loading || forcePick || !active) return;
+    navigate(`/fucina/esercizio/${active.id}`, { replace: true });
+  }, [loading, forcePick, active, navigate]);
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
@@ -40,8 +66,8 @@ function ProgramPicker() {
         <span className="text-[11px] text-slate-500">scegli il programma di esercizio</span>
       </div>
       <div className="flex-1 overflow-auto p-6">
-        {q.isLoading && <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-emerald-400" /></div>}
-        {!q.isLoading && groups.length === 0 && (
+        {loading && <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-emerald-400" /></div>}
+        {!loading && groups.length === 0 && (
           <div className="max-w-xl mx-auto border-2 border-dashed border-slate-700 rounded-lg p-10 text-center text-slate-400">
             <Layers className="h-12 w-12 mx-auto text-slate-600 mb-3" />
             <p className="font-medium text-slate-200 mb-1">Nessun programma avviato allo scheduling</p>
@@ -51,10 +77,17 @@ function ProgramPicker() {
         <div className="max-w-2xl mx-auto space-y-2">
           {groups.map((g) => (
             <button key={g.psId} onClick={() => navigate(`/fucina/esercizio/${g.psId}`)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-800 bg-slate-900 hover:border-emerald-500/40 hover:bg-slate-900/60 transition-colors text-left">
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-colors text-left ${
+                g.isActive ? "border-emerald-500/60 bg-emerald-500/10 ring-1 ring-emerald-500/30" : "border-slate-800 bg-slate-900 hover:border-emerald-500/40 hover:bg-slate-900/60"
+              }`}>
               <ClipboardList className="h-5 w-5 text-emerald-400 shrink-0" />
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-slate-100 truncate">{g.name}</div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-slate-100 truncate">{g.name}</span>
+                  {g.isActive && (
+                    <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500 text-black"><Power className="w-2.5 h-2.5" /> Attivo</span>
+                  )}
+                </div>
                 <div className="text-[11px] text-slate-500">{g.udp} UDP avviate</div>
               </div>
               <ChevronRight className="h-4 w-4 text-slate-600" />
@@ -85,7 +118,13 @@ function Board({ psId }: { psId: string }) {
     queryFn: () => getPsOperationalBoard(psId),
     enabled: !!psId,
   });
+  const projectQ = useQuery({
+    queryKey: ["ps", "project", psId],
+    queryFn: () => getPsProject(psId),
+    enabled: !!psId,
+  });
   const board = boardQ.data;
+  const isActive = !!projectQ.data?.isOperational;
 
   const linkVehicles = (u: OperationalUnit) => u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : `/planning-studio/${psId}/validity-units`;
   const linkDrivers = (u: OperationalUnit) => u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
@@ -100,12 +139,18 @@ function Board({ psId }: { psId: string }) {
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
       <div className="border-b border-slate-800 bg-slate-900 shadow-sm">
         <div className="flex items-center gap-3 px-4 py-3">
-          <Link href="/fucina/esercizio">
+          <Link href="/fucina/esercizio?pick=1">
             <button className="p-2 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors" title="Cambia programma"><ArrowLeft className="h-4 w-4" /></button>
           </Link>
           <ClipboardList className="h-5 w-5 text-emerald-400" />
           <div>
-            <h1 className="font-semibold text-slate-100 leading-tight">Quadro d'esercizio</h1>
+            <h1 className="font-semibold text-slate-100 leading-tight flex items-center gap-2">
+              Quadro d'esercizio
+              {projectQ.data?.name && <span className="text-slate-400 font-normal">· {projectQ.data.name}</span>}
+              {isActive && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500 text-black"><Power className="w-2.5 h-2.5" /> Attivo</span>
+              )}
+            </h1>
             <p className="text-[11px] text-slate-500 leading-tight">tutte le UDP del programma · stato turni macchina/guida · corse scoperte</p>
           </div>
           {board && (
