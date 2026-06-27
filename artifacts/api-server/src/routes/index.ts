@@ -21,6 +21,7 @@ import optimizerRouteRouter from "./optimizer-route";
 import optimizerScheduleRouter from "./optimizer-schedule";
 import serviceProgramRouter from "./service-program";
 import driverShiftsRouter from "./driver-shifts";
+import optimizerRuleProfilesRouter from "./optimizer-rule-profiles";
 import clustersRouter from "./clusters";
 import coincidenceZonesRouter from "./coincidence-zones";
 import weatherRouter from "./weather";
@@ -88,6 +89,7 @@ router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);
 router.use(driverShiftsRouter);
+router.use(optimizerRuleProfilesRouter); // profili-regole riusabili ottimizzatore turni guida
 router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
