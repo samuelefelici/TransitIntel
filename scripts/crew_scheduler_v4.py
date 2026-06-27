@@ -2881,6 +2881,10 @@ def serialize_output(
                 "MEDIO": sum(1 for b in blocks if b.classification == "MEDIO"),
                 "LUNGO": sum(1 for b in blocks if b.classification == "LUNGO"),
             },
+            # Nodi di sosta (kind='rest') disponibili per le soste inoperose
+            # extraurbane. Echo dei dati ricevuti dal backend: il consumo nella
+            # generazione del duty-type "sosta inoperosa" è un follow-up.
+            "restPoints": len(config.get("restPoints") or []),
         },
         "bdsConfig": bds.to_dict(),
         "clusters": [
@@ -2930,8 +2934,13 @@ def main() -> None:
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
 
+    rest_points = config.get("restPoints") or []
     log(f"=== Crew Scheduler V4 (BDS) ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")
+    if rest_points:
+        n_fac = sum(1 for r in rest_points if (r or {}).get("hasFacilities"))
+        log(f"Nodi di sosta: {len(rest_points)} ({n_fac} con strutture). "
+            f"Uso nelle soste inoperose: follow-up.")
     log(f"BDS config: pre/post={bds.pre_post.pre_turno_deposito}/{bds.pre_post.post_turno_deposito}, "
         f"RD131={'ON' if bds.rd131.attivo else 'OFF'}, "
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")

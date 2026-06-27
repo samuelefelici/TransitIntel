@@ -480,4 +480,45 @@ router.get("/planning-studio/projects/:id/change-points", async (req, res): Prom
   });
 });
 
+/* ─── GET rest-points (cluster di tipo "rest"/sosta) per scheduler turni guida ── */
+
+router.get("/planning-studio/projects/:id/rest-points", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(404).json({ error: "project not found" }); return; }
+
+  const r = await db.execute(sql`
+    SELECT
+      c.id, c.code, c.name, c.attributes,
+      c.center_lat::float8 AS center_lat,
+      c.center_lon::float8 AS center_lon,
+      c.radius_m,
+      COALESCE(json_agg(
+        json_build_object('id', s.id, 'name', s.name, 'code', s.code,
+                          'lat', s.lat::float8, 'lon', s.lon::float8)
+        ORDER BY s.name
+      ) FILTER (WHERE s.id IS NOT NULL), '[]'::json) AS stops
+    FROM ps_stop_clusters c
+    LEFT JOIN ps_stops s ON s.cluster_id = c.id
+    WHERE c.project_id = ${req.params.id}::uuid
+      AND c.kind = 'rest'
+    GROUP BY c.id
+    ORDER BY c.name ASC
+  `);
+  const rows: any[] = (r as any).rows ?? [];
+  res.json({
+    restPoints: rows.map(c => ({
+      id: c.id,
+      code: c.code,
+      name: c.name,
+      hasFacilities: !!(c.attributes ?? {}).hasFacilities,
+      centerLat: c.center_lat == null ? null : Number(c.center_lat),
+      centerLon: c.center_lon == null ? null : Number(c.center_lon),
+      radiusM: Number(c.radius_m),
+      stops: c.stops ?? [],
+    })),
+  });
+});
+
 export default router;

@@ -32,14 +32,17 @@ const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 };
 
 const KIND_LABEL: Record<PsClusterKind, string> = {
   interchange: "Punto di cambio",
+  rest: "Nodo di sosta",
   none: "Nodo logico",
 };
 const KIND_COLOR: Record<PsClusterKind, string> = {
   interchange: "#0ea5e9",
+  rest: "#f59e0b",
   none: "#64748b",
 };
 const KIND_DESC: Record<PsClusterKind, string> = {
   interchange: "Usato da Scheduling Engine come change point (cambio vettura nei turni macchina)",
+  rest: "Luogo idoneo alla sosta inoperosa extraurbana (deposito o capolinea). Usato dallo scheduler turni guida.",
   none: "Solo raggruppamento logico (intermodalità, interscambio passeggeri, ecc.)",
 };
 
@@ -353,7 +356,7 @@ export default function PlanningStudioClustersPage() {
         </Link>
         <div className="flex items-center gap-2">
           <Layers className="w-5 h-5 text-cyan-400" />
-          <h1 className="font-semibold text-sm">Nodi di scambio</h1>
+          <h1 className="font-semibold text-sm">Nodi</h1>
         </div>
         {project && (
           <span className="text-xs text-slate-500 ml-2">
@@ -569,7 +572,7 @@ export default function PlanningStudioClustersPage() {
               <div className="px-3 py-2 border-b border-slate-800 bg-slate-900/40">
                 <div className="text-[11px] text-slate-500 mb-1.5">Tipo cluster</div>
                 <div className="flex gap-1.5">
-                  {(["interchange", "none"] as PsClusterKind[]).map(k => (
+                  {(["interchange", "rest", "none"] as PsClusterKind[]).map(k => (
                     <button
                       key={k}
                       onClick={() => updateMut.mutate({ id: selected.id, patch: { kind: k } })}
@@ -589,32 +592,24 @@ export default function PlanningStudioClustersPage() {
                 </div>
               </div>
 
-              {/* Sosta inoperosa (extraurbano): luogo idoneo + strutture (12% vs 25%) */}
-              <div className="px-3 py-2 border-b border-slate-800 bg-slate-900/40 space-y-1.5">
-                <div className="text-[11px] text-slate-500">Sosta inoperosa (extraurbano)</div>
-                <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-amber-500"
-                    checked={!!(selected.attributes as any)?.inoperoso}
-                    onChange={(e) => updateMut.mutate({ id: selected.id, patch: { attributes: { ...(selected.attributes ?? {}), inoperoso: e.target.checked } } })}
-                  />
-                  Idoneo a sosta inoperosa
-                </label>
-                <label className={`flex items-center gap-2 text-xs cursor-pointer ${(selected.attributes as any)?.inoperoso ? "text-slate-300" : "text-slate-600"}`}>
-                  <input
-                    type="checkbox"
-                    className="accent-amber-500"
-                    disabled={!(selected.attributes as any)?.inoperoso}
-                    checked={!!(selected.attributes as any)?.hasFacilities}
-                    onChange={(e) => updateMut.mutate({ id: selected.id, patch: { attributes: { ...(selected.attributes ?? {}), hasFacilities: e.target.checked } } })}
-                  />
-                  Con servizi igienici / strutture
-                </label>
-                <div className="text-[10px] text-slate-600 leading-tight">
-                  La sosta conta al {(selected.attributes as any)?.hasFacilities ? "12%" : "25%"} dell'orario (strutture adeguate = 12%). I depositi sono già luoghi idonei.
+              {/* Sosta inoperosa (extraurbano): mostrato solo per i nodi di sosta */}
+              {selected.kind === "rest" && (
+                <div className="px-3 py-2 border-b border-slate-800 bg-amber-500/5 space-y-1.5">
+                  <div className="text-[11px] text-amber-500/80">Sosta inoperosa (extraurbano)</div>
+                  <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-amber-500"
+                      checked={!!(selected.attributes as any)?.hasFacilities}
+                      onChange={(e) => updateMut.mutate({ id: selected.id, patch: { attributes: { ...(selected.attributes ?? {}), hasFacilities: e.target.checked } } })}
+                    />
+                    Con servizi igienici / strutture
+                  </label>
+                  <div className="text-[10px] text-slate-600 leading-tight">
+                    La sosta conta al {(selected.attributes as any)?.hasFacilities ? "12%" : "25%"} dell'orario (strutture adeguate = 12%). I depositi sono già luoghi idonei.
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Search + counter */}
               <div className="p-2 border-b border-slate-800 space-y-2">

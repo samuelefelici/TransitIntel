@@ -2770,10 +2770,12 @@ function ClustersPanel({
 
   const KIND_LABEL: Record<PsClusterKind, string> = {
     interchange: "Punto di cambio",
+    rest: "Nodo di sosta",
     none: "Nodo logico",
   };
   const KIND_COLOR: Record<PsClusterKind, string> = {
     interchange: "#0ea5e9",
+    rest: "#f59e0b",
     none: "#64748b",
   };
 

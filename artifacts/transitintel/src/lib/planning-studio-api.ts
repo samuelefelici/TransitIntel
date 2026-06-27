@@ -543,9 +543,12 @@ export async function importPsGtfs(
  * Tipo di cluster (= nodo logico che raggruppa più fermate fisiche):
  *   - "interchange": punto di cambio conducente. Usato da Scheduling Engine
  *     come change point nei turni macchina (driver block changes).
+ *   - "rest": nodo di sosta. Luogo idoneo alla sosta inoperosa extraurbana
+ *     (deposito o capolinea con servizi igienici/strutture). Usato dallo
+ *     scheduler turni guida per piazzare le soste inoperose.
  *   - "none": solo nodo logico (raggruppamento, intermodalità, ecc.).
  */
-export type PsClusterKind = "interchange" | "none";
+export type PsClusterKind = "interchange" | "rest" | "none";
 
 export interface PsCluster {
   id: string;
@@ -668,6 +671,20 @@ export async function listPsChangePoints(projectId: string): Promise<PsChangePoi
     `/api/planning-studio/projects/${projectId}/change-points`,
   );
   return r.changePoints;
+}
+
+/* ─── Rest-points (cluster di sosta esposti per lo scheduler turni guida) ─── */
+
+export interface PsRestPoint extends PsChangePoint {
+  /** strutture adeguate (servizi igienici): la sosta conta al 12% invece che al 25% */
+  hasFacilities: boolean;
+}
+
+export async function listPsRestPoints(projectId: string): Promise<PsRestPoint[]> {
+  const r = await apiFetch<{ restPoints: PsRestPoint[] }>(
+    `/api/planning-studio/projects/${projectId}/rest-points`,
+  );
+  return r.restPoints;
 }
 
 /* ─── Network Inspector (vista relazionale aggregata) ─── */
