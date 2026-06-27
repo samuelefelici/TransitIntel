@@ -6,38 +6,47 @@ import { apiFetch } from "@/lib/api";
 import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 
 export type RuleProfileScope = "company" | "project";
+export type RuleProfileDomain = "crew" | "vsp";
 
 export interface RuleProfile {
   id: string;
   scope: RuleProfileScope;
+  domain: RuleProfileDomain;
   projectId: string | null;
   name: string;
   serviceType: string | null;
-  config: OperatorConfig;
+  config: any;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export async function listRuleProfiles(projectId?: string | null): Promise<RuleProfile[]> {
-  const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
-  const r = await apiFetch<{ profiles: RuleProfile[] }>(`/api/optimizer-rule-profiles${qs}`);
+function qs(params: Record<string, string | null | undefined>): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) p.set(k, v);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+export async function listRuleProfiles(projectId?: string | null, domain: RuleProfileDomain = "crew"): Promise<RuleProfile[]> {
+  const r = await apiFetch<{ profiles: RuleProfile[] }>(`/api/optimizer-rule-profiles${qs({ projectId, domain })}`);
   return r.profiles;
 }
 
 export async function resolveRuleProfile(
   projectId?: string | null,
-): Promise<{ config: OperatorConfig | null; sources: { company: boolean; project: boolean } }> {
-  const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
-  return apiFetch(`/api/optimizer-rule-profiles/resolve${qs}`);
+  domain: RuleProfileDomain = "crew",
+): Promise<{ config: any | null; sources: { company: boolean; project: boolean } }> {
+  return apiFetch(`/api/optimizer-rule-profiles/resolve${qs({ projectId, domain })}`);
 }
 
 export async function createRuleProfile(input: {
   name: string;
   scope: RuleProfileScope;
+  domain?: RuleProfileDomain;
   projectId?: string | null;
   serviceType?: string | null;
-  config: OperatorConfig;
+  config: any;
   isDefault?: boolean;
 }): Promise<RuleProfile> {
   const r = await apiFetch<{ profile: RuleProfile }>(`/api/optimizer-rule-profiles`, {
