@@ -44,12 +44,19 @@ import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
  * ═══════════════════════════════════════════════════════════════ */
 
 function shiftsToRows(shifts: VehicleShift[], customLabels: Record<string, string> = {}): GanttRow[] {
-  return shifts.map(s => ({
-    id: s.vehicleId,
-    label: customLabels[s.vehicleId] ?? s.vehicleId,
-    sublabel: VEHICLE_SHORT[s.vehicleType] || s.vehicleType,
-    dotColor: CATEGORY_COLORS[s.category] || "#6b7280",
-  }));
+  return shifts.map(s => {
+    // Residenza di servizio (deposito) assegnata dal backend: dot + nome nel sublabel.
+    const resColor = (s as any).residenzaColor as string | undefined;
+    const resName = (s as any).residenzaName as string | undefined;
+    return {
+      id: s.vehicleId,
+      label: customLabels[s.vehicleId] ?? s.vehicleId,
+      sublabel: resName
+        ? `${VEHICLE_SHORT[s.vehicleType] || s.vehicleType} · ${resName}`
+        : (VEHICLE_SHORT[s.vehicleType] || s.vehicleType),
+      dotColor: resColor || CATEGORY_COLORS[s.category] || "#6b7280",
+    };
+  });
 }
 
 function shiftsToBars(

@@ -14,7 +14,7 @@ import { db } from "@workspace/db";
 import {
   gtfsTrips, gtfsStopTimes, gtfsRoutes,
   gtfsCalendar, gtfsCalendarDates, gtfsStops,
-  serviceProgramScenarios,
+  serviceProgramScenarios, depots,
 } from "@workspace/db/schema";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
@@ -255,6 +255,13 @@ interface VehicleShift {
   lastIn: number;         // last arrival (minutes from midnight)
   shiftDuration: number;  // total shift length in minutes
   downsizedTrips: number; // count of trips running on smaller-than-assigned vehicle
+  // Residenza di servizio (deposito) — assegnata geometricamente: uscita = deposito
+  // più vicino alla prima fermata, rientro = più vicino all'ultima. Per il roster.
+  depotOut?: { id: string; name: string; color: string } | null;
+  depotIn?: { id: string; name: string; color: string } | null;
+  residenzaDepotId?: string | null;
+  residenzaName?: string | null;
+  residenzaColor?: string | null;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1376,6 +1383,9 @@ router.post("/service-program", async (req, res) => {
       downsizedTrips: allShifts.reduce((s, v) => s + v.downsizedTrips, 0),
     };
 
+    // 8b. Residenza di servizio per turno (deposito uscita/rientro, geometrico)
+    assignResidenzaToShifts(allShifts, tripBlocks, await loadDepotPoints());
+
     // 9. Calculate costs & score
     const costs = calculateCosts(allShifts, tripBlocks.length, totalServiceHours);
     const score = calculateScore(allShifts, tripBlocks.length, totalServiceMin, totalDeadheadMin, totalDeadheadKm, costs);
@@ -1476,6 +1486,57 @@ async function runCPSATVehicleScheduler(
   });
 
   return JSON.parse(result);
+}
+
+type DepotPoint = { id: string; name: string; color: string; lat: number; lon: number };
+
+async function loadDepotPoints(): Promise<DepotPoint[]> {
+  try {
+    const rows = await db.select().from(depots);
+    return rows
+      .filter((d: any) => d.lat != null && d.lon != null)
+      .map((d: any) => ({ id: d.id, name: d.name, color: d.color || "#3b82f6", lat: Number(d.lat), lon: Number(d.lon) }));
+  } catch { return []; }
+}
+
+function nearestDepot(lat: number | null | undefined, lon: number | null | undefined, dps: DepotPoint[]): DepotPoint | null {
+  if (lat == null || lon == null || dps.length === 0) return null;
+  let best: DepotPoint | null = null;
+  let bestD = Infinity;
+  for (const d of dps) {
+    const km = haversineKm(lat, lon, d.lat, d.lon);
+    if (km < bestD) { bestD = km; best = d; }
+  }
+  return best;
+}
+
+/**
+ * Assegna a ogni turno macchina la RESIDENZA DI SERVIZIO (deposito), in base alla
+ * geografia: deposito di uscita = il più vicino alla prima fermata del turno,
+ * deposito di rientro = il più vicino all'ultima. In servizio mono-deposito tutti
+ * i turni ricadono sullo stesso; in multi-deposito (extraurbano) ognuno prende il
+ * proprio. È il legame deposito→turno che il roster usa per la colorazione.
+ */
+function assignResidenzaToShifts(shifts: VehicleShift[], tripBlocks: TripBlock[], dps: DepotPoint[]): void {
+  if (dps.length === 0) return;
+  const coord = new Map<string, { fLat: number; fLon: number; lLat: number; lLon: number }>();
+  for (const t of tripBlocks) {
+    coord.set(t.tripId, { fLat: t.firstStopLat, fLon: t.firstStopLon, lLat: t.lastStopLat, lLon: t.lastStopLon });
+  }
+  for (const s of shifts) {
+    const tripEntries = s.trips.filter((t) => t.type === "trip" && coord.has(t.tripId));
+    if (tripEntries.length === 0) { s.depotOut = null; s.depotIn = null; s.residenzaDepotId = null; continue; }
+    const first = coord.get(tripEntries[0].tripId)!;
+    const last = coord.get(tripEntries[tripEntries.length - 1].tripId)!;
+    const dOut = nearestDepot(first.fLat, first.fLon, dps);
+    const dIn = nearestDepot(last.lLat, last.lLon, dps);
+    s.depotOut = dOut ? { id: dOut.id, name: dOut.name, color: dOut.color } : null;
+    s.depotIn = dIn ? { id: dIn.id, name: dIn.name, color: dIn.color } : null;
+    const res = dOut || dIn;
+    s.residenzaDepotId = res?.id ?? null;
+    s.residenzaName = res?.name ?? null;
+    s.residenzaColor = res?.color ?? null;
+  }
 }
 
 router.post("/service-program/cpsat", async (req, res) => {
@@ -1741,6 +1802,10 @@ router.post("/service-program/cpsat", async (req, res) => {
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
     const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
+
+    // 7b. Residenza di servizio per turno (deposito di uscita/rientro, geometrico)
+    const depotPoints = await loadDepotPoints();
+    assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints);
 
     const totalServiceMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalServiceMin, 0);
     const totalDeadheadMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalDeadheadMin, 0);
