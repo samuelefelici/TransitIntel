@@ -842,50 +842,74 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
      WHERE p.id = ${psId}::uuid AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL) LIMIT 1`);
   if (!((acc as any).rows?.length)) { res.status(404).json({ error: "Progetto PS non accessibile" }); return; }
 
-  // progetti-scheduling (UDP) del progetto PS accessibili all'utente
-  const projR = await db.execute(sql`
-    SELECT sp.id, sp.name, sp.validity_unit_id, vu.name AS unit_name
-      FROM scheduling_projects sp
-      LEFT JOIN project_members pm ON pm.project_id = sp.id AND pm.user_id = ${userId}::uuid
-      LEFT JOIN ps_validity_units vu ON vu.id = sp.validity_unit_id
-     WHERE sp.planning_studio_project_id = ${psId}::uuid
-       AND (sp.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
-     ORDER BY vu.name ASC NULLS LAST, sp.created_at ASC`);
-  const projects: any[] = (projR as any).rows ?? [];
+  // TUTTE le UDP create per il programma (anche quelle non ancora avviate allo
+  // scheduling): il Quadro deve mostrarle tutte a fine processo.
+  const unitsR = await db.execute(sql`
+    SELECT id, name, COALESCE(jsonb_array_length(trip_ids), 0) AS trip_count
+      FROM ps_validity_units
+     WHERE project_id = ${psId}::uuid
+     ORDER BY name ASC NULLS LAST, created_at ASC`);
+  const units: any[] = (unitsR as any).rows ?? [];
 
   const out: any[] = [];
-  for (const p of projects) {
-    const vR = await db.execute(sql`
-      SELECT id, name, date,
-             (result->'summary'->>'numVehicles')::int AS num_vehicles
-        FROM service_program_scenarios
-       WHERE project_id = ${p.id}::uuid AND is_operational = true LIMIT 1`);
-    const v = (vR as any).rows?.[0] ?? null;
-    let d: any = null;
-    if (v) {
-      const dR = await db.execute(sql`
-        SELECT id, name,
-               jsonb_array_length(COALESCE(result->'driverShifts', '[]'::jsonb)) AS duty_count
-          FROM driver_shift_scenarios
-         WHERE service_program_scenario_id = ${v.id}::uuid AND is_operational = true LIMIT 1`);
-      d = (dR as any).rows?.[0] ?? null;
+  for (const u of units) {
+    // progetto-scheduling agganciato a questa UDP (se è stata avviata)
+    const spR = await db.execute(sql`
+      SELECT sp.id, sp.name FROM scheduling_projects sp
+        LEFT JOIN project_members pm ON pm.project_id = sp.id AND pm.user_id = ${userId}::uuid
+       WHERE sp.validity_unit_id = ${u.id}::uuid
+         AND (sp.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+       ORDER BY sp.created_at DESC LIMIT 1`);
+    const sp = (spR as any).rows?.[0] ?? null;
+    let v: any = null, d: any = null, uncoveredInTm = 0;
+    if (sp) {
+      const vR = await db.execute(sql`
+        SELECT id, name, date,
+               (result->'summary'->>'numVehicles')::int AS num_vehicles,
+               COALESCE(jsonb_array_length(result->'unassigned'), 0) AS uncovered
+          FROM service_program_scenarios
+         WHERE project_id = ${sp.id}::uuid AND is_operational = true LIMIT 1`);
+      v = (vR as any).rows?.[0] ?? null;
+      if (v) {
+        uncoveredInTm = Number(v.uncovered) || 0;
+        const dR = await db.execute(sql`
+          SELECT id, name,
+                 jsonb_array_length(COALESCE(result->'driverShifts', '[]'::jsonb)) AS duty_count
+            FROM driver_shift_scenarios
+           WHERE service_program_scenario_id = ${v.id}::uuid AND is_operational = true LIMIT 1`);
+        d = (dR as any).rows?.[0] ?? null;
+      }
     }
+    const status = !sp ? "not_started" : !v ? "missing_vehicle" : !d ? "missing_driver" : "complete";
     out.push({
-      projectId: p.id,
-      projectName: p.name,
-      validityUnitId: p.validity_unit_id ?? null,
-      validityUnitName: p.unit_name ?? null,
+      validityUnitId: u.id,
+      validityUnitName: u.name,
+      tripCount: Number(u.trip_count) || 0,
+      schedulingProjectId: sp?.id ?? null,
       vehicleScenario: v ? { id: v.id, name: v.name, date: v.date, numVehicles: v.num_vehicles } : null,
       driverScenario: d ? { id: d.id, name: d.name, dutyCount: Number(d.duty_count) || 0 } : null,
-      status: !v ? "missing_vehicle" : !d ? "missing_driver" : "complete",
+      vehicleUncovered: uncoveredInTm,
+      status,
     });
   }
+
+  // Corse del programma NON incluse in nessuna UDP ("corse scoperte" a monte).
+  const progUncR = await db.execute(sql`
+    SELECT COUNT(*)::int AS c FROM ps_trips t
+     WHERE t.project_id = ${psId}::uuid AND COALESCE(t.is_active, true) = true
+       AND NOT (t.id::text = ANY (
+         SELECT jsonb_array_elements_text(trip_ids) FROM ps_validity_units WHERE project_id = ${psId}::uuid
+       ))`);
+  const programUncovered = Number((progUncR as any).rows?.[0]?.c) || 0;
+
   res.json({
     psProjectId: psId,
+    programUncoveredTrips: programUncovered,
     projects: out,
     totals: {
       udp: out.length,
       complete: out.filter(x => x.status === "complete").length,
+      withIssues: out.filter(x => x.status !== "complete").length + (programUncovered > 0 ? 1 : 0),
       vehicles: out.reduce((s, x) => s + (x.vehicleScenario?.numVehicles ?? 0), 0),
       duties: out.reduce((s, x) => s + (x.driverScenario?.dutyCount ?? 0), 0),
     },

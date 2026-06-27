@@ -278,11 +278,11 @@ function ProjectCard({
             Validità
           </button>
         </Link>
-        <Link href={`/planning-studio/${p.id}/esercizio`}>
+        <Link href={`/fucina/esercizio/${p.id}`}>
           <button
             onClick={(e) => e.stopPropagation()}
             className="px-2 py-1 rounded-md text-[11px] border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10 transition"
-            title="Quadro d'esercizio: turni macchina e guida in esercizio per UDP"
+            title="Quadro d'esercizio (Scheduling Engine): turni macchina/guida e corse scoperte per UDP"
           >
             Esercizio
           </button>

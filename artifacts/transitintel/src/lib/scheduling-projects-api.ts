@@ -256,19 +256,23 @@ export async function setDriverScenarioOperational(
 /* ───── Quadro d'esercizio: consolidamento per progetto PS ───── */
 
 export interface OperationalUnit {
-  projectId: string;
-  projectName: string;
-  validityUnitId: string | null;
+  validityUnitId: string;
   validityUnitName: string | null;
+  tripCount: number;
+  schedulingProjectId: string | null;
   vehicleScenario: { id: string; name: string; date: string; numVehicles: number | null } | null;
   driverScenario: { id: string; name: string; dutyCount: number } | null;
-  status: "complete" | "missing_vehicle" | "missing_driver";
+  /** corse della UDP non coperte dai turni macchina (result.unassigned) */
+  vehicleUncovered: number;
+  status: "not_started" | "complete" | "missing_vehicle" | "missing_driver";
 }
 
 export interface OperationalBoard {
   psProjectId: string;
+  /** corse del programma non incluse in NESSUNA UDP */
+  programUncoveredTrips: number;
   projects: OperationalUnit[];
-  totals: { udp: number; complete: number; vehicles: number; duties: number };
+  totals: { udp: number; complete: number; withIssues: number; vehicles: number; duties: number };
 }
 
 export async function getPsOperationalBoard(psProjectId: string): Promise<OperationalBoard> {
