@@ -174,11 +174,13 @@ interface Props {
    *  cluster come "stesso punto" (deadhead 0). I cluster di interscambio
    *  arrivano comunque tramite mirror legacy. */
   psProjectId?: string | null;
+  /** deposito scelto (residenza di servizio dello scenario) — salvato con lo scenario */
+  depotId?: string | null;
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -410,7 +412,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: scenarioName.trim(), date: assignment.selectedDate, input, result, projectId: projectId ?? undefined }),
+        body: JSON.stringify({ name: scenarioName.trim(), date: assignment.selectedDate, input, result, projectId: projectId ?? undefined, depotId: depotId ?? undefined }),
       });
       if (!resp.ok) throw new Error("Errore nel salvataggio");
       const data = await resp.json();
@@ -423,7 +425,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment, projectId]);
+  }, [result, scenarioName, assignment, projectId, depotId]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {

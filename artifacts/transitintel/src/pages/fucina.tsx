@@ -761,6 +761,7 @@ export default function FucinaPage() {
                         initialResult={optimizationResult ?? undefined}
                         projectId={projectId}
                         psProjectId={psProjectId}
+                        depotId={selectedDepotId}
                         onBack={() => setStep(4)}
                         onComplete={(r, id) => {
                           setOptimizationResult(r);

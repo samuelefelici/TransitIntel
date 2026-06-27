@@ -34,6 +34,8 @@ interface DutySource {
 interface Board {
   from: string; days: string[]; drivers: RosterDriver[];
   duties: RosterDuty[]; assignments: RosterAssignment[];
+  /** residenza di servizio (deposito) dello scenario → colore dei turni */
+  residenza?: { name: string; color: string } | null;
 }
 
 const DUTY_TYPE_COLOR: Record<string, string> = {
@@ -149,6 +151,8 @@ export default function RosterPage() {
   }, [selDuty, selDriver, cut, assignByCell]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selDutyDetail = selDuty ? dutyByCode.get(selDuty.code) : undefined;
+  // colore turno: residenza (deposito) se disponibile, altrimenti per tipo
+  const resColor = (type: string | null) => board?.residenza?.color ?? dutyColor(type);
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
@@ -174,6 +178,12 @@ export default function RosterPage() {
           <input type="checkbox" checked={operationalOnly} onChange={(e) => { setOperationalOnly(e.target.checked); setDssId(""); }} className="accent-emerald-500" />
           Solo in esercizio
         </label>
+        {board?.residenza && (
+          <span className="flex items-center gap-1.5 text-[11px] text-slate-300 whitespace-nowrap" title="Residenza di servizio (deposito) — colore dei turni">
+            <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: board.residenza.color }} />
+            {board.residenza.name}
+          </span>
+        )}
         <div className="flex items-center gap-1 rounded-lg border border-slate-700 px-1 py-0.5">
           <button onClick={() => setFrom(shiftDate(from, -7))} className="p-1.5 rounded hover:bg-white/10"><ChevronLeft className="w-4 h-4" /></button>
           <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, 6)).dm}</span>
@@ -247,7 +257,7 @@ export default function RosterPage() {
                                 onClick={() => { if (confirm(`Rimuovere ${a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a.id); }}
                                 title={duty ? `${a.dutyCode} · ${duty.start ?? ""}–${duty.end ?? ""} (click per rimuovere)` : a.dutyCode}
                                 className="w-full px-1.5 py-1 rounded text-white text-[10px] font-bold leading-tight hover:opacity-80"
-                                style={{ backgroundColor: dutyColor(duty?.type ?? null) }}
+                                style={{ backgroundColor: resColor(duty?.type ?? null) }}
                               >
                                 {a.dutyCode}
                                 {duty?.start && <span className="block font-normal opacity-90">{duty.start}–{duty.end}</span>}
@@ -297,7 +307,7 @@ export default function RosterPage() {
                           className={`w-full text-left px-2 py-1.5 rounded-lg border mb-1 flex items-center gap-2 transition-colors ${
                             isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
                           }`}>
-                          <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: dutyColor(d.type) }}>{d.code}</span>
+                          <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: resColor(d.type) }}>{d.code}</span>
                           <span className="min-w-0 flex-1">
                             <span className="block text-[11px] text-slate-200">{d.start ?? "?"}–{d.end ?? "?"}</span>
                             <span className="block text-[9px] text-slate-500">{d.type ?? "turno"}{d.tripsCount ? ` · ${d.tripsCount} corse` : ""}</span>

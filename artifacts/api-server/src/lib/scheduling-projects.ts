@@ -101,6 +101,11 @@ async function ensureSchedulingTables(): Promise<void> {
       ALTER TABLE IF EXISTS service_program_scenarios
         ADD COLUMN IF NOT EXISTS is_operational boolean NOT NULL DEFAULT false
     `);
+    // Residenza di servizio dello scenario turni-macchina = deposito scelto
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS service_program_scenarios
+        ADD COLUMN IF NOT EXISTS depot_id uuid
+    `);
     await db.execute(sql`
       ALTER TABLE IF EXISTS driver_shift_scenarios
         ADD COLUMN IF NOT EXISTS is_operational boolean NOT NULL DEFAULT false
