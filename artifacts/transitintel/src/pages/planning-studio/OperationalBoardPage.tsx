@@ -6,6 +6,7 @@
  * dove l'utente verifica, a colpo d'occhio, cosa è pronto per il Roster e cosa
  * manca ancora — senza perdere il filo tra le tante UDP/scenari.
  */
+import { useState } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -40,8 +41,17 @@ export default function OperationalBoardPage() {
     enabled: !!psProjectId,
   });
 
+  // Flusso spezzato: prima TUTTI i turni macchina, poi TUTTI i turni guida.
+  const [phase, setPhase] = useState<"vehicle" | "driver">("vehicle");
+
   const board = boardQ.data;
-  const incomplete = (board?.projects ?? []).filter((p) => p.status !== "complete");
+  const projects = board?.projects ?? [];
+  const withVehicle = projects.filter((p) => p.vehicleScenario).length;
+  const withDriver = projects.filter((p) => p.driverScenario).length;
+  // "manca" nella fase corrente: TM assente (fase vetture) o TG assente con TM presente (fase guida)
+  const incomplete = phase === "vehicle"
+    ? projects.filter((p) => !p.vehicleScenario)
+    : projects.filter((p) => p.vehicleScenario && !p.driverScenario);
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
@@ -102,10 +112,35 @@ export default function OperationalBoardPage() {
 
         {board && board.projects.length > 0 && (
           <div className="max-w-5xl mx-auto space-y-4">
+            {/* Fasi: prima TUTTI i turni macchina, poi TUTTI i turni guida */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPhase("vehicle")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  phase === "vehicle" ? "border-amber-400 bg-amber-500/15 text-amber-200" : "border-slate-700 text-slate-400 hover:text-amber-200"
+                }`}
+              >
+                <Truck className="h-3.5 w-3.5" /> Fase 1 · Turni macchina
+                <span className="text-[10px] font-mono opacity-80">{withVehicle}/{board.totals.udp}</span>
+              </button>
+              <button
+                onClick={() => setPhase("driver")}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  phase === "driver" ? "border-purple-400 bg-purple-500/15 text-purple-200" : "border-slate-700 text-slate-400 hover:text-purple-200"
+                }`}
+              >
+                <Users className="h-3.5 w-3.5" /> Fase 2 · Turni guida
+                <span className="text-[10px] font-mono opacity-80">{withDriver}/{board.totals.udp}</span>
+              </button>
+            </div>
+
             {incomplete.length > 0 && (
               <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span><strong>{incomplete.length}</strong> UDP non ancora complete: mancano turni macchina o turni guida in esercizio. Vanno chiuse prima di mandare tutto al Roster.</span>
+                <span>
+                  <strong>{incomplete.length}</strong> UDP senza {phase === "vehicle" ? "turni macchina" : "turni guida"} in esercizio.
+                  {phase === "driver" && " (Servono i turni macchina prima.)"}
+                </span>
               </div>
             )}
 
@@ -114,8 +149,7 @@ export default function OperationalBoardPage() {
                 <thead className="bg-slate-900 text-[10px] uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-3 py-2 text-left">Unità di Progettazione</th>
-                    <th className="px-3 py-2 text-left">Turni macchina (in esercizio)</th>
-                    <th className="px-3 py-2 text-left">Turni guida (in esercizio)</th>
+                    <th className="px-3 py-2 text-left">{phase === "vehicle" ? "Turni macchina (in esercizio)" : "Turni guida (in esercizio)"}</th>
                     <th className="px-3 py-2 text-left">Stato</th>
                   </tr>
                 </thead>
@@ -125,46 +159,61 @@ export default function OperationalBoardPage() {
                       <td className="px-3 py-2">
                         <div className="font-medium text-slate-100">{p.validityUnitName ?? p.projectName}</div>
                       </td>
+                      {phase === "vehicle" ? (
+                        <td className="px-3 py-2">
+                          {p.vehicleScenario ? (
+                            <Link href={`/fucina/${p.projectId}/vehicles`}>
+                              <button className="inline-flex items-center gap-1.5 text-left hover:underline">
+                                <Truck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                                <span className="text-slate-200">{p.vehicleScenario.name}</span>
+                                {p.vehicleScenario.numVehicles != null && (
+                                  <span className="text-[11px] text-amber-400/80 font-mono">· {p.vehicleScenario.numVehicles} vetture</span>
+                                )}
+                              </button>
+                            </Link>
+                          ) : (
+                            <Link href={`/fucina/${p.projectId}/vehicles`}>
+                              <button className="text-[11px] text-rose-300/80 hover:underline">— nessuno · genera/scegli turni macchina</button>
+                            </Link>
+                          )}
+                        </td>
+                      ) : (
+                        <td className="px-3 py-2">
+                          {p.driverScenario ? (
+                            <Link href={`/fucina/${p.projectId}/drivers`}>
+                              <button className="inline-flex items-center gap-1.5 text-left hover:underline">
+                                <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                <span className="text-slate-200">{p.driverScenario.name}</span>
+                                <span className="text-[11px] text-purple-300/80 font-mono">· {p.driverScenario.dutyCount} turni</span>
+                              </button>
+                            </Link>
+                          ) : p.vehicleScenario ? (
+                            <Link href={`/fucina/${p.projectId}/drivers`}>
+                              <button className="text-[11px] text-amber-300/80 hover:underline">— nessuno · genera/scegli turni guida</button>
+                            </Link>
+                          ) : (
+                            <span className="text-[11px] text-slate-500">prima i turni macchina</span>
+                          )}
+                        </td>
+                      )}
                       <td className="px-3 py-2">
-                        {p.vehicleScenario ? (
-                          <Link href={`/fucina/${p.projectId}/vehicles`}>
-                            <button className="inline-flex items-center gap-1.5 text-left hover:underline">
-                              <Truck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                              <span className="text-slate-200">{p.vehicleScenario.name}</span>
-                              {p.vehicleScenario.numVehicles != null && (
-                                <span className="text-[11px] text-amber-400/80 font-mono">· {p.vehicleScenario.numVehicles} vetture</span>
-                              )}
-                            </button>
-                          </Link>
-                        ) : (
-                          <Link href={`/fucina/${p.projectId}/vehicles`}>
-                            <button className="text-[11px] text-rose-300/80 hover:underline">— nessuno · scegline uno</button>
-                          </Link>
-                        )}
+                        {phase === "vehicle"
+                          ? (p.vehicleScenario
+                              ? <StatusBadge status="complete" />
+                              : <StatusBadge status="missing_vehicle" />)
+                          : (p.driverScenario
+                              ? <StatusBadge status="complete" />
+                              : <StatusBadge status={p.vehicleScenario ? "missing_driver" : "missing_vehicle"} />)}
                       </td>
-                      <td className="px-3 py-2">
-                        {p.driverScenario ? (
-                          <Link href={`/fucina/${p.projectId}/drivers`}>
-                            <button className="inline-flex items-center gap-1.5 text-left hover:underline">
-                              <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                              <span className="text-slate-200">{p.driverScenario.name}</span>
-                              <span className="text-[11px] text-purple-300/80 font-mono">· {p.driverScenario.dutyCount} turni</span>
-                            </button>
-                          </Link>
-                        ) : (
-                          <Link href={`/fucina/${p.projectId}/drivers`}>
-                            <button className="text-[11px] text-amber-300/80 hover:underline">— nessuno · scegline uno</button>
-                          </Link>
-                        )}
-                      </td>
-                      <td className="px-3 py-2"><StatusBadge status={p.status} /></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p className="text-[11px] text-slate-500">
-              Suggerimento: marca "in esercizio" un turni-macchina e il relativo turni-guida in ogni UDP. Quando tutte sono <span className="text-emerald-300">Complete</span>, apri il Roster per assegnare il personale.
+              {phase === "vehicle"
+                ? "Fase 1: per ogni UDP genera o scegli il turni-macchina e marcalo “in esercizio”. Poi passa alla Fase 2."
+                : "Fase 2: sui turni-macchina in esercizio, genera/scegli i turni-guida e marcali “in esercizio”. Quando tutte le UDP sono complete, apri il Roster."}
             </p>
           </div>
         )}
