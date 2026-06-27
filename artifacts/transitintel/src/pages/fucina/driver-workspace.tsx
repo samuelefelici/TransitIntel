@@ -784,6 +784,23 @@ export default function DriverWorkspace({
                   {serviceType === "extraurbano" && "Unico 8h · semiunico interr. 40'–2h59'/9h · spezzato ≥3h/10h30 (max 9%) · semiunici max 39%."}
                   {serviceType === "misto" && "Profilo combinato (urbano+extraurbano). Logica mista dettagliata in arrivo."}
                 </p>
+                {/* Media oraria giornaliera scelta dall'operatore (per deposito) */}
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-[11px] text-zinc-400">Media oraria giornaliera</span>
+                  <input
+                    type="number" min={300} max={540} step={1}
+                    value={operatorConfig.bds?.targetWork?.mid ?? 408}
+                    onChange={(e) => {
+                      const mid = Math.max(300, Math.min(540, Number(e.target.value) || 408));
+                      setOperatorConfig((c) => ({ ...c, bds: { ...c.bds, targetWork: { low: mid, high: mid, mid } } }));
+                    }}
+                    className="w-20 px-2 py-1 text-xs rounded bg-black/40 border border-zinc-700 text-zinc-100"
+                    title="Orario medio di riferimento per le rotazioni (es. 402 = 6h42, 390 = 6h30)"
+                  />
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    min = {Math.floor((operatorConfig.bds?.targetWork?.mid ?? 408) / 60)}h{String((operatorConfig.bds?.targetWork?.mid ?? 408) % 60).padStart(2, "0")}
+                  </span>
+                </div>
               </div>
 
               {/* Numero auto aziendali */}
