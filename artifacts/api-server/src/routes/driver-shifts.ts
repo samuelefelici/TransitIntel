@@ -181,7 +181,9 @@ async function loadRestPointsForScenario(scenarioProjectId: string | null | unde
         COALESCE(NULLIF(c.name, ''), 'Sosta') AS name,
         COALESCE((c.attributes->>'hasFacilities')::boolean, false) AS has_facilities,
         COALESCE(json_agg(s.id::text ORDER BY s.id)
-                 FILTER (WHERE s.id IS NOT NULL), '[]'::json) AS stop_ids
+                 FILTER (WHERE s.id IS NOT NULL), '[]'::json) AS stop_ids,
+        COALESCE(json_agg(s.name ORDER BY s.id)
+                 FILTER (WHERE s.id IS NOT NULL AND s.name IS NOT NULL), '[]'::json) AS stop_names
       FROM scheduling_projects sp
       JOIN ps_stop_clusters c ON c.project_id = sp.planning_studio_project_id
       LEFT JOIN ps_stops s ON s.cluster_id = c.id
@@ -196,6 +198,8 @@ async function loadRestPointsForScenario(scenarioProjectId: string | null | unde
       name: c.name,
       hasFacilities: !!c.has_facilities,
       stopIds: Array.isArray(c.stop_ids) ? c.stop_ids : [],
+      // i nomi servono al crew scheduler: i VShiftTrip identificano i capolinea per nome
+      stopNames: Array.isArray(c.stop_names) ? c.stop_names : [],
     }));
   } catch (err: any) {
     console.warn("[driver-shifts] loadRestPointsForScenario error:", err?.message || err);

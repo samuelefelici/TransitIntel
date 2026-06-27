@@ -94,6 +94,8 @@ export interface OperatorConfig {
     cuts?: Record<string, number>;
     cutScoring?: Record<string, number>;
     scenari?: Record<string, number>;
+    /* Sosta inoperosa (extraurbano): durata minima + contributo all'orario */
+    sostaInoperosa?: Record<string, number>;
     /* CSP optimizer overrides — saturazione & cap vetture */
     optimizer?: {
       minWorkPerDuty?: number;     // min lavoro/turno (min) — default 360
