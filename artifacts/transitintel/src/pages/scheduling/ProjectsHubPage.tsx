@@ -298,9 +298,18 @@ function NewProjectDialog({
 }
 
 /* ───────────────────── Hub principale ───────────────────── */
+const SPLASH_SEEN_KEY = "fucina_splash_seen";
+
 export default function ProjectsHubPage() {
   const [, navigate] = useLocation();
-  const [showSplash, setShowSplash] = useState(true);
+  // Lo splash "Entra nel Motore" si mostra SOLO la prima volta (poi è solo
+  // rumore). Saltato anche quando si arriva da un contesto esplicito (?ps/?new).
+  const [showSplash, setShowSplash] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const u = new URLSearchParams(window.location.search);
+    if (u.get("ps") || u.get("new") === "1") return false;
+    try { return localStorage.getItem(SPLASH_SEEN_KEY) !== "1"; } catch { return true; }
+  });
   const [projects, setProjects] = useState<SchedulingProject[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [showNewDialog, setShowNewDialog] = useState(false);
@@ -363,7 +372,7 @@ export default function ProjectsHubPage() {
       <AnimatePresence>
         {showSplash && (
           <SplashScreen
-            onEnter={() => setShowSplash(false)}
+            onEnter={() => { try { localStorage.setItem(SPLASH_SEEN_KEY, "1"); } catch { /* ignore */ } setShowSplash(false); }}
             onBack={() => navigate("/")}
           />
         )}
