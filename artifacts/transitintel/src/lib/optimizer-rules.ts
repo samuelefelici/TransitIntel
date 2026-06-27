@@ -132,6 +132,8 @@ export const DEFAULT_BDS: Record<string, any> = {
     capolineaBonus: 5.0, balanceMax: 5.0, nastroPenaltyPerMin: 0.05, sameRoutePenalty: 15.0,
   },
   scenari: { count: 0, timeFraction: 0.78, polishFraction: 0.20 },
+  // Sosta inoperosa (extraurbano): durata minima + contributo all'orario (frazioni)
+  sostaInoperosa: { minInterruption: 31, coeffFacilities: 0.12, coeffNoFacilities: 0.25 },
 };
 
 export const DEFAULT_COST_RATES: Record<string, number> = {
@@ -177,6 +179,7 @@ export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
       cuts: { ...DEFAULT_BDS.cuts },
       cutScoring: { ...DEFAULT_BDS.cutScoring },
       scenari: { ...DEFAULT_BDS.scenari },
+      sostaInoperosa: { ...DEFAULT_BDS.sostaInoperosa },
     },
   } as OperatorConfig;
 }
@@ -319,6 +322,16 @@ export const RULE_GROUPS: GroupDef[] = [
       { path: "bds.collegamento.durataMassimaRaggiungimento", label: "Durata max raggiungimento", type: "int", unit: "min", min: 0, max: 180 },
       { path: "bds.collegamento.durataMassimaTrasferimento", label: "Durata max trasferimento", type: "int", unit: "min", min: 0, max: 180 },
       { path: "bds.collegamento.ammettiDoppi", label: "Ammetti forfettizzato + vettura", type: "bool" },
+    ],
+  },
+  {
+    id: "sostaInoperosa",
+    title: "Sosta inoperosa (extraurbano)",
+    description: "Quando l'interruzione avviene a un Nodo di sosta (Planning Studio), una quota del tempo è retribuita: con strutture 0.12 (=12%), senza 0.25 (=25%).",
+    fields: [
+      { path: "bds.sostaInoperosa.minInterruption", label: "Durata minima sosta inoperosa", type: "int", unit: "min", min: 0, max: 240 },
+      { path: "bds.sostaInoperosa.coeffFacilities", label: "Contributo con strutture", type: "float", unit: "×", min: 0, max: 1, step: 0.01 },
+      { path: "bds.sostaInoperosa.coeffNoFacilities", label: "Contributo senza strutture", type: "float", unit: "×", min: 0, max: 1, step: 0.01 },
     ],
   },
   {

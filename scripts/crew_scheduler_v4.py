@@ -340,6 +340,65 @@ CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 1
 PCT_OVER_PENALTY = 150
 
 # ----------------------------------------------------------------
+# Sosta inoperosa (extraurbano)
+# ----------------------------------------------------------------
+# Quando l'interruzione di un turno a 2 riprese avviene a un NODO DI SOSTA
+# (cluster Planning Studio kind='rest', passato in config.restPoints), parte
+# del tempo di sosta è retribuita: 12% se il luogo ha strutture/servizi
+# igienici, 25% altrimenti. La sosta inoperosa è per definizione fuori
+# residenza e si attiva solo oltre una durata minima.
+REST_STOP_FACILITIES: dict[str, bool] = {}   # UPPER(stop_name) -> hasFacilities
+SOSTA_INOP_MIN_MIN = 31                       # durata minima (min) perché conti come sosta inoperosa
+SOSTA_INOP_COEFF_FACILITIES = 0.12            # contributo all'orario con strutture
+SOSTA_INOP_COEFF_NO_FACILITIES = 0.25         # contributo all'orario senza strutture
+
+
+def sosta_inoperosa_coeff(stop_name: str | None, interruption_min: int) -> float | None:
+    """Coefficiente di retribuzione della sosta inoperosa se l'interruzione
+    avviene a un nodo di sosta e dura abbastanza, altrimenti None.
+    Match per NOME fermata (i VShiftTrip non portano lo stop_id)."""
+    if not stop_name or interruption_min < SOSTA_INOP_MIN_MIN or not REST_STOP_FACILITIES:
+        return None
+    fac = REST_STOP_FACILITIES.get(stop_name.strip().upper())
+    if fac is None:
+        return None
+    return SOSTA_INOP_COEFF_FACILITIES if fac else SOSTA_INOP_COEFF_NO_FACILITIES
+
+
+def apply_sosta_inoperosa_config(cfg: dict) -> None:
+    """Popola REST_STOP_FACILITIES dai nodi di sosta (config.restPoints, match per
+    nome fermata) e applica eventuali override da config.bds.sostaInoperosa
+    (minInterruption, coeffFacilities, coeffNoFacilities). Muta i global IN-PLACE."""
+    global REST_STOP_FACILITIES, SOSTA_INOP_MIN_MIN
+    global SOSTA_INOP_COEFF_FACILITIES, SOSTA_INOP_COEFF_NO_FACILITIES
+
+    REST_STOP_FACILITIES = {}
+    for rp in (cfg.get("restPoints") or []):
+        if not rp:
+            continue
+        fac = bool(rp.get("hasFacilities"))
+        for nm in (rp.get("stopNames") or []):
+            if nm:
+                REST_STOP_FACILITIES[str(nm).strip().upper()] = fac
+
+    si = (cfg.get("bds", {}) or {}).get("sostaInoperosa", {}) or {}
+    if "minInterruption" in si:
+        try:
+            SOSTA_INOP_MIN_MIN = int(si["minInterruption"])
+        except (ValueError, TypeError):
+            pass
+    if "coeffFacilities" in si:
+        try:
+            SOSTA_INOP_COEFF_FACILITIES = float(si["coeffFacilities"])
+        except (ValueError, TypeError):
+            pass
+    if "coeffNoFacilities" in si:
+        try:
+            SOSTA_INOP_COEFF_NO_FACILITIES = float(si["coeffNoFacilities"])
+        except (ValueError, TypeError):
+            pass
+
+# ----------------------------------------------------------------
 # Costi cambio conducente
 # ----------------------------------------------------------------
 INTER_CAMBIO_COST_EUR = 5.0    # cambio al capolinea (tra corse)
@@ -443,6 +502,12 @@ def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: l
     pt = pre_turno_for(t)
     nastro = s2.end_min - s1.start_min + pt + t + tb
     work = s1.work_min + s2.work_min + pt + tb + bds.pre_post.pre_ripresa
+    # Sosta inoperosa: se l'interruzione avviene a un nodo di sosta, una quota
+    # del tempo è retribuita (conta nell'orario di lavoro → cap maxLavoro + costo).
+    interruption = s2.start_min - s1.end_min
+    coeff = sosta_inoperosa_coeff(s1.last_stop, interruption)
+    if coeff:
+        work += int(interruption * coeff)
     return nastro, work
 
 
@@ -1481,16 +1546,24 @@ def compute_work_bds(
 
     # Soste fra riprese (per semiunico/spezzato)
     if len(duty.segments) >= 2 and duty.interruption_min > 0:
-        # Determina se la sosta è in residenza (deposito) o fuori residenza
-        first_seg_last_cluster = duty.segments[0].last_cluster
-        if first_seg_last_cluster:
-            # Fuori residenza: il conducente aspetta al cluster
+        boundary_stop = duty.segments[0].last_stop
+        sosta_coeff = sosta_inoperosa_coeff(boundary_stop, duty.interruption_min)
+        if sosta_coeff is not None:
+            # Sosta inoperosa a un nodo di sosta (fuori residenza): quota retribuita
             wc.soste_fra_riprese_fr_min = duty.interruption_min
-            wc.coeff_fr = 0.0  # non retribuita
+            wc.coeff_fr = sosta_coeff
+            duty.is_sosta_inoperosa = True  # type: ignore[attr-defined]
         else:
-            # In residenza: il conducente torna al deposito
-            wc.soste_fra_riprese_ir_min = duty.interruption_min
-            wc.coeff_ir = 0.0  # non retribuita
+            # Determina se la sosta è in residenza (deposito) o fuori residenza
+            first_seg_last_cluster = duty.segments[0].last_cluster
+            if first_seg_last_cluster:
+                # Fuori residenza: il conducente aspetta al cluster
+                wc.soste_fra_riprese_fr_min = duty.interruption_min
+                wc.coeff_fr = 0.0  # non retribuita
+            else:
+                # In residenza: il conducente torna al deposito
+                wc.soste_fra_riprese_ir_min = duty.interruption_min
+                wc.coeff_ir = 0.0  # non retribuita
 
     return wc
 
@@ -2908,6 +2981,7 @@ def serialize_output(
             "totalSupplementi": n_suppl,
             "totalShifts": n_total,
             "byType": type_counts,
+            "sostaInoperosaCount": sum(1 for d in duties if getattr(d, "is_sosta_inoperosa", False)),
             "totalWorkHours": round(total_work_hours, 1),
             "avgWorkMin": round(avg_work, 0),
             "totalNastroHours": round(total_nastro_hours, 1),
@@ -3005,13 +3079,15 @@ def main() -> None:
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
 
+    apply_sosta_inoperosa_config(config)
     rest_points = config.get("restPoints") or []
     log(f"=== Crew Scheduler V4 (BDS) ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")
-    if rest_points:
-        n_fac = sum(1 for r in rest_points if (r or {}).get("hasFacilities"))
-        log(f"Nodi di sosta: {len(rest_points)} ({n_fac} con strutture). "
-            f"Uso nelle soste inoperose: follow-up.")
+    if REST_STOP_FACILITIES:
+        n_fac = sum(1 for v in REST_STOP_FACILITIES.values() if v)
+        log(f"Nodi di sosta: {len(rest_points)} cluster, {len(REST_STOP_FACILITIES)} fermate "
+            f"({n_fac} con strutture). Sosta inoperosa ≥{SOSTA_INOP_MIN_MIN}': "
+            f"contributo {int(SOSTA_INOP_COEFF_FACILITIES*100)}%/{int(SOSTA_INOP_COEFF_NO_FACILITIES*100)}%.")
     log(f"BDS config: pre/post={bds.pre_post.pre_turno_deposito}/{bds.pre_post.post_turno_deposito}, "
         f"RD131={'ON' if bds.rd131.attivo else 'OFF'}, "
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")
