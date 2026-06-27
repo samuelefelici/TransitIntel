@@ -5,7 +5,7 @@
  * (fermate, linee, varianti, percorsi, orari, calendari).
  */
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, Link } from "wouter";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
@@ -266,6 +266,28 @@ function ProjectCard({
       {p.description && (
         <p className="text-xs text-slate-400 line-clamp-2 mb-4 min-h-[2rem]">{p.description}</p>
       )}
+
+      {/* Step di mezzo: accessi diretti a Validità (UDP) ed Esercizio */}
+      <div className="flex items-center gap-2 mb-3">
+        <Link href={`/planning-studio/${p.id}/validity-units`}>
+          <button
+            onClick={(e) => e.stopPropagation()}
+            className="px-2 py-1 rounded-md text-[11px] border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 transition"
+            title="Vai alla Validità (Calendario · Matrice · Unità di Progettazione)"
+          >
+            Validità
+          </button>
+        </Link>
+        <Link href={`/planning-studio/${p.id}/esercizio`}>
+          <button
+            onClick={(e) => e.stopPropagation()}
+            className="px-2 py-1 rounded-md text-[11px] border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10 transition"
+            title="Quadro d'esercizio: turni macchina e guida in esercizio per UDP"
+          >
+            Esercizio
+          </button>
+        </Link>
+      </div>
 
       <div className="flex items-center justify-between text-xs text-slate-500 pt-3 border-t border-slate-800">
         <span className="flex items-center gap-1">
