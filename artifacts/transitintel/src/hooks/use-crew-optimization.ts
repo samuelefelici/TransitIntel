@@ -60,6 +60,10 @@ export interface OperatorConfig {
   companyCars?: number;
   /* v4 BDS normativa */
   bds?: {
+    /** profilo regole per tipo servizio (urbano/extraurbano/misto) */
+    shiftRules?: Record<string, { maxNastro?: number; maxLavoro?: number; intMin?: number; intMax?: number; maxPct?: number; sostaMinCapolinea?: number }>;
+    targetWork?: { low?: number; high?: number; mid?: number };
+    serviceType?: "urbano" | "extraurbano" | "misto";
     prePost?: Record<string, number>;
     cee561?: Record<string, any>;
     pasto?: Record<string, any>;

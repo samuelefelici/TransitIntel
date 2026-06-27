@@ -86,6 +86,42 @@ const DEFAULT_CONFIG: OperatorConfig = {
   },
 };
 
+/* Profili regole per tipo di servizio (normativa). I cap % sono SOFT lato solver. */
+type ServiceType = "urbano" | "extraurbano" | "misto";
+const SERVICE_PROFILES: Record<ServiceType, { shiftRules: NonNullable<NonNullable<OperatorConfig["bds"]>["shiftRules"]>; targetWork: { low: number; high: number; mid: number } }> = {
+  urbano: {
+    shiftRules: {
+      intero:      { maxNastro: 435, maxLavoro: 435, sostaMinCapolinea: 15 },
+      semiunico:   { maxNastro: 555, maxLavoro: 480, intMin: 75,  intMax: 179, maxPct: 12 },
+      spezzato:    { maxNastro: 630, maxLavoro: 450, intMin: 180, intMax: 999, maxPct: 13 },
+      supplemento: { maxNastro: 150, maxLavoro: 150 },
+    },
+    targetWork: { low: 390, high: 435, mid: 408 },
+  },
+  // Extraurbano (Accordo Quadro 18/05/2012): unico 8h, semiunico 40'–2h59'/9h,
+  // spezzato ≥3h/10h30 cap 9%, semiunici cap 39% (soft).
+  extraurbano: {
+    shiftRules: {
+      intero:      { maxNastro: 480, maxLavoro: 480, sostaMinCapolinea: 15 },
+      semiunico:   { maxNastro: 540, maxLavoro: 540, intMin: 40,  intMax: 179, maxPct: 39 },
+      spezzato:    { maxNastro: 630, maxLavoro: 630, intMin: 180, intMax: 999, maxPct: 9 },
+      supplemento: { maxNastro: 150, maxLavoro: 150 },
+    },
+    targetWork: { low: 372, high: 402, mid: 402 }, // ~6h30–6h42 medio
+  },
+  // Misto: superset permissivo (v1) — copre entrambi i regimi; logica mista
+  // dettagliata (cambi vettura, doppia normativa per turno) in fase successiva.
+  misto: {
+    shiftRules: {
+      intero:      { maxNastro: 480, maxLavoro: 480, sostaMinCapolinea: 15 },
+      semiunico:   { maxNastro: 555, maxLavoro: 540, intMin: 40,  intMax: 179, maxPct: 39 },
+      spezzato:    { maxNastro: 630, maxLavoro: 630, intMin: 180, intMax: 999, maxPct: 13 },
+      supplemento: { maxNastro: 150, maxLavoro: 150 },
+    },
+    targetWork: { low: 390, high: 435, mid: 408 },
+  },
+};
+
 export default function DriverWorkspace({
   vehicleScenarioId,
   initialResult,
@@ -105,6 +141,16 @@ export default function DriverWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [operatorConfig, setOperatorConfig] = useState<OperatorConfig>(DEFAULT_CONFIG);
+  const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
+  // Cambiando tipo servizio si applica il profilo regole (cap % soft lato solver)
+  const setServiceType = useCallback((t: ServiceType) => {
+    setServiceTypeState(t);
+    const p = SERVICE_PROFILES[t];
+    setOperatorConfig((c) => ({
+      ...c,
+      bds: { ...c.bds, serviceType: t, shiftRules: p.shiftRules, targetWork: p.targetWork },
+    }));
+  }, []);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [dssName, setDssName] = useState("");
   const [savingDss, setSavingDss] = useState(false);
@@ -703,6 +749,41 @@ export default function DriverWorkspace({
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* Tipo di ottimizzazione (profilo normativo) */}
+              <div className="rounded-xl border border-zinc-800 bg-black/40 p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-zinc-200">Tipo di ottimizzazione</span>
+                </div>
+                <p className="text-[11px] text-zinc-500 mb-3 leading-relaxed">
+                  Profilo regole turni guida. I limiti percentuali sono flessibili (soft): il solver li rispetta se possibile.
+                </p>
+                <div className="flex gap-2">
+                  {([
+                    { key: "urbano", label: "Urbano" },
+                    { key: "extraurbano", label: "Extraurbano" },
+                    { key: "misto", label: "Misto" },
+                  ] as const).map((o) => (
+                    <button
+                      key={o.key}
+                      type="button"
+                      onClick={() => setServiceType(o.key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                        serviceType === o.key
+                          ? "border-purple-400 bg-purple-500/15 text-purple-200"
+                          : "border-zinc-700 text-zinc-400 hover:text-purple-200 hover:border-purple-500/40"
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-zinc-600 mt-2">
+                  {serviceType === "urbano" && "Unico 7h15 · semiunico interr. 75'–179' · spezzato max 13%."}
+                  {serviceType === "extraurbano" && "Unico 8h · semiunico interr. 40'–2h59'/9h · spezzato ≥3h/10h30 (max 9%) · semiunici max 39%."}
+                  {serviceType === "misto" && "Profilo combinato (urbano+extraurbano). Logica mista dettagliata in arrivo."}
+                </p>
               </div>
 
               {/* Numero auto aziendali */}

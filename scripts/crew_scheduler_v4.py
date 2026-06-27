@@ -1714,23 +1714,33 @@ def _build_cpsat_model(
 
     model.add(total_duties == sum(single.values()) + sum(pair_vars.values()))
 
-    # Vincoli percentuali
+    # Limiti percentuali SOFT (flessibili): l'eccesso sopra il cap è penalizzato
+    # nell'obiettivo, non vietato. excess >= 100*count - maxPct*total (>=0 dal dominio).
+    # Penalità per "punto-percentuale-corsa" oltre soglia (in cost-cents).
+    PCT_OVER_PENALTY = 150
+    pct_excess: list[Any] = []
     if n_supplemento:
         suppl_count = model.new_int_var(0, n_seg, "suppl_count")
         model.add(suppl_count == sum(n_supplemento))
-        model.add(10 * suppl_count <= total_duties)
+        ex = model.new_int_var(0, 100 * n_seg, "suppl_excess")
+        model.add(ex >= 100 * suppl_count - 10 * total_duties)
+        pct_excess.append(ex)
 
     if n_semi:
         semi_count = model.new_int_var(0, n_seg, "semi_count")
         model.add(semi_count == sum(n_semi))
         semi_max_pct = rules.get("semiunico", SHIFT_RULES["semiunico"]).get("maxPct", 12)
-        model.add(100 * semi_count <= semi_max_pct * total_duties)
+        ex = model.new_int_var(0, 100 * n_seg, "semi_excess")
+        model.add(ex >= 100 * semi_count - semi_max_pct * total_duties)
+        pct_excess.append(ex)
 
     if n_spezzato:
         spez_count = model.new_int_var(0, n_seg, "spez_count")
         model.add(spez_count == sum(n_spezzato))
         spez_max_pct = rules.get("spezzato", SHIFT_RULES["spezzato"]).get("maxPct", 13)
-        model.add(100 * spez_count <= spez_max_pct * total_duties)
+        ex = model.new_int_var(0, 100 * n_seg, "spez_excess")
+        model.add(ex >= 100 * spez_count - spez_max_pct * total_duties)
+        pct_excess.append(ex)
 
     # -- Obiettivo (con noise per multi-scenario) --
     rng = random.Random(scenario_seed)
@@ -1795,6 +1805,10 @@ def _build_cpsat_model(
     # a 2 single, anche quando l'aritmetica oraria sarebbe quasi pari.
     if WEIGHT_DUTY_COUNT > 0:
         obj_terms.append(WEIGHT_DUTY_COUNT * COST_SCALE * total_duties)
+
+    # Penalità SOFT per superamento dei limiti percentuali (flessibili)
+    for ex in pct_excess:
+        obj_terms.append(PCT_OVER_PENALTY * ex)
 
     model.minimize(sum(obj_terms))
 
