@@ -52,6 +52,18 @@ async function ensureRosterTables(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
+  // Anagrafica conducente ricca (colonne additive, idempotenti)
+  for (const col of [
+    "matricola text", "cognome text", "nome text", "cf text", "cellulare text",
+    "residenza_anagrafica text", "residenza_servizio text",
+    "ore_settimanali integer", "categoria text",
+    "data_nascita date", "data_assunzione date", "data_fine_servizio date",
+    "patente text", "patente_validita date",
+    "cqc_numero text", "cqc_validita date",
+    "visita_medica_validita date", "note text",
+  ]) {
+    await db.execute(sql.raw(`ALTER TABLE roster_drivers ADD COLUMN IF NOT EXISTS ${col}`));
+  }
   bootstrapped = true;
 }
 
@@ -64,44 +76,118 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
 function extractDuties(result: any): Array<{
   code: string; type: string | null; start: string | null; end: string | null;
   nastro: string | null; work: string | null;
+  interruption: string | null; ripreseCount: number; tripsCount: number; costEuro: number | null;
 }> {
   const list = result?.driverShifts ?? result?.duties ?? [];
   if (!Array.isArray(list)) return [];
-  return list.map((d: any, i: number) => ({
-    code: String(d.driverId ?? d.dutyId ?? d.id ?? `T${i + 1}`),
-    type: d.type ?? d.dutyType ?? null,
-    start: d.nastroStart ?? d.startTime ?? null,
-    end: d.nastroEnd ?? d.endTime ?? null,
-    nastro: d.nastro ?? null,
-    work: d.work ?? null,
-  }));
+  return list.map((d: any, i: number) => {
+    const riprese = Array.isArray(d.riprese) ? d.riprese : [];
+    const tripsCount = riprese.reduce(
+      (s: number, r: any) => s + (Array.isArray(r?.trips) ? r.trips.filter((t: any) => (t?.type ?? "trip") === "trip").length : 0),
+      0,
+    );
+    return {
+      code: String(d.driverId ?? d.dutyId ?? d.id ?? `T${i + 1}`),
+      type: d.type ?? d.dutyType ?? null,
+      start: d.nastroStart ?? d.startTime ?? null,
+      end: d.nastroEnd ?? d.endTime ?? null,
+      nastro: d.nastro ?? null,
+      work: d.work ?? null,
+      interruption: d.interruption ?? null,
+      ripreseCount: riprese.length,
+      tripsCount,
+      costEuro: typeof d.costEuro === "number" ? d.costEuro : null,
+    };
+  });
 }
 
 // ── Operatori ────────────────────────────────────────────────────────────────
 
+function rowToDriver(d: any) {
+  return {
+    id: d.id, name: d.name, badge: d.badge, isFictitious: d.is_fictitious,
+    matricola: d.matricola ?? null, cognome: d.cognome ?? null, nome: d.nome ?? null,
+    cf: d.cf ?? null, cellulare: d.cellulare ?? null,
+    residenzaAnagrafica: d.residenza_anagrafica ?? null, residenzaServizio: d.residenza_servizio ?? null,
+    oreSettimanali: d.ore_settimanali ?? null, categoria: d.categoria ?? null,
+    dataNascita: d.data_nascita ?? null, dataAssunzione: d.data_assunzione ?? null,
+    dataFineServizio: d.data_fine_servizio ?? null,
+    patente: d.patente ?? null, patenteValidita: d.patente_validita ?? null,
+    cqcNumero: d.cqc_numero ?? null, cqcValidita: d.cqc_validita ?? null,
+    visitaMedicaValidita: d.visita_medica_validita ?? null, note: d.note ?? null,
+  };
+}
+
+// mappa body camelCase → coppie colonna/valore per INSERT/UPDATE
+function driverFieldPairs(b: any): Array<{ col: string; val: any }> {
+  const m: Record<string, any> = {
+    matricola: b.matricola, cognome: b.cognome, nome: b.nome, cf: b.cf, cellulare: b.cellulare,
+    residenza_anagrafica: b.residenzaAnagrafica, residenza_servizio: b.residenzaServizio,
+    ore_settimanali: b.oreSettimanali, categoria: b.categoria,
+    data_nascita: b.dataNascita, data_assunzione: b.dataAssunzione, data_fine_servizio: b.dataFineServizio,
+    patente: b.patente, patente_validita: b.patenteValidita,
+    cqc_numero: b.cqcNumero, cqc_validita: b.cqcValidita,
+    visita_medica_validita: b.visitaMedicaValidita, note: b.note, badge: b.badge,
+  };
+  const dateCols = new Set(["data_nascita", "data_assunzione", "data_fine_servizio", "patente_validita", "cqc_validita", "visita_medica_validita"]);
+  const out: Array<{ col: string; val: any }> = [];
+  for (const [col, raw] of Object.entries(m)) {
+    if (raw === undefined) continue;
+    let val = raw === "" ? null : raw;
+    if (col === "ore_settimanali" && val != null) val = Number(val) || null;
+    if (dateCols.has(col) && val != null && !DATE_RE.test(String(val))) val = null;
+    out.push({ col, val });
+  }
+  return out;
+}
+
 router.get("/roster/drivers", async (_req, res): Promise<void> => {
   try {
     const r = await db.execute<any>(sql`
-      SELECT id, name, badge, is_fictitious, is_active, created_at
-      FROM roster_drivers WHERE is_active = true
-      ORDER BY name
+      SELECT * FROM roster_drivers WHERE is_active = true
+      ORDER BY cognome NULLS LAST, nome NULLS LAST, name
     `);
-    res.json({ drivers: r.rows.map((d: any) => ({
-      id: d.id, name: d.name, badge: d.badge, isFictitious: d.is_fictitious,
-    })) });
+    res.json({ drivers: r.rows.map(rowToDriver) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.post("/roster/drivers", async (req, res): Promise<void> => {
   try {
-    const name = String(req.body?.name ?? "").trim();
-    if (!name) { res.status(400).json({ error: "Nome obbligatorio" }); return; }
+    const b = req.body ?? {};
+    // name = "Cognome Nome" se non passato esplicitamente
+    const name = String(b.name ?? [b.cognome, b.nome].filter(Boolean).join(" ")).trim();
+    if (!name) { res.status(400).json({ error: "Cognome/Nome obbligatori" }); return; }
+    const pairs = driverFieldPairs(b);
+    const cols = ["name", "is_fictitious", ...pairs.map((p) => p.col)];
+    const vals = [name, !!b.isFictitious, ...pairs.map((p) => p.val)];
+    const colSql = sql.raw(cols.join(", "));
+    const valSql = sql.join(vals.map((v) => sql`${v}`), sql`, `);
     const r = await db.execute<any>(sql`
-      INSERT INTO roster_drivers (name, badge, is_fictitious)
-      VALUES (${name}, ${req.body?.badge ?? null}, ${!!req.body?.isFictitious})
-      RETURNING id, name, badge, is_fictitious
+      INSERT INTO roster_drivers (${colSql}) VALUES (${valSql}) RETURNING *
     `);
-    res.status(201).json(r.rows[0]);
+    res.status(201).json(rowToDriver(r.rows[0]));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const b = req.body ?? {};
+    const sets: any[] = [];
+    if (typeof b.name === "string" && b.name.trim()) sets.push(sql`name = ${b.name.trim()}`);
+    else if (b.cognome !== undefined || b.nome !== undefined) {
+      const nm = [b.cognome, b.nome].filter(Boolean).join(" ").trim();
+      if (nm) sets.push(sql`name = ${nm}`);
+    }
+    for (const { col, val } of driverFieldPairs(b)) sets.push(sql`${sql.raw(col)} = ${val}`);
+    if (sets.length === 0) { res.status(400).json({ error: "Nessun campo da aggiornare" }); return; }
+    const r = await db.execute<any>(sql`
+      UPDATE roster_drivers SET ${sql.join(sets, sql`, `)}
+       WHERE id = ${id}::uuid RETURNING *
+    `);
+    if (!r.rows[0]) { res.status(404).json({ error: "Conducente non trovato" }); return; }
+    res.json(rowToDriver(r.rows[0]));
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -185,8 +271,8 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     }
 
     const driversQ = await db.execute<any>(sql`
-      SELECT id, name, badge, is_fictitious FROM roster_drivers
-      WHERE is_active = true ORDER BY name
+      SELECT * FROM roster_drivers
+      WHERE is_active = true ORDER BY cognome NULLS LAST, nome NULLS LAST, name
     `);
 
     let duties: ReturnType<typeof extractDuties> = [];
@@ -206,9 +292,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
 
     res.json({
       from, days: dayList,
-      drivers: driversQ.rows.map((d: any) => ({
-        id: d.id, name: d.name, badge: d.badge, isFictitious: d.is_fictitious,
-      })),
+      drivers: driversQ.rows.map(rowToDriver),
       duties,
       assignments: assignQ.rows.map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
