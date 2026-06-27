@@ -348,6 +348,21 @@ PCT_OVER_PENALTY = 150
 # igienici, 25% altrimenti. La sosta inoperosa è per definizione fuori
 # residenza e si attiva solo oltre una durata minima.
 REST_STOP_FACILITIES: dict[str, bool] = {}   # UPPER(stop_name) -> hasFacilities
+
+# Residenza di servizio per veicolo (vehicleId -> {id,name,color}), dal turno
+# macchina (assegnata geometricamente dal backend). Il turno guida eredita la
+# residenza del veicolo del suo primo segmento (deposito di uscita).
+RESIDENZA_BY_VEHICLE: dict[str, dict] = {}
+
+
+def duty_residenza(duty) -> dict:
+    """Residenza del turno guida = residenza del veicolo del primo segmento con
+    una residenza nota (deposito di uscita)."""
+    for seg in duty.segments:
+        r = RESIDENZA_BY_VEHICLE.get(getattr(seg, "vehicle_id", None))
+        if r:
+            return r
+    return {}
 SOSTA_INOP_MIN_MIN = 31                       # durata minima (min) perché conti come sosta inoperosa
 SOSTA_INOP_COEFF_FACILITIES = 0.12            # contributo all'orario con strutture
 SOSTA_INOP_COEFF_NO_FACILITIES = 0.25         # contributo all'orario senza strutture
@@ -2943,9 +2958,13 @@ def serialize_output(
         cb_obj = getattr(d, 'cost_breakdown_obj', None)
         cb_dict = cb_obj.to_dict() if cb_obj else None
 
+        _res = duty_residenza(d)
         driver_shifts.append({
             "driverId": d.driver_id,
             "type": d.duty_type,
+            "residenzaDepotId": _res.get("id"),
+            "residenzaName": _res.get("name"),
+            "residenzaColor": _res.get("color"),
             "nastroStart": min_to_time(max(0, d.nastro_start)),
             "nastroEnd": min_to_time(d.nastro_end),
             "nastroStartMin": d.nastro_start,
@@ -3068,6 +3087,18 @@ def main() -> None:
     vehicle_shifts_raw = raw.get("vehicleShifts", [])
     user_config = raw.get("config", {})
     config = merge_config(user_config)
+
+    # Residenza di servizio per veicolo (dal turno macchina) → ereditata dai turni guida
+    global RESIDENZA_BY_VEHICLE
+    RESIDENZA_BY_VEHICLE = {}
+    for _sh in vehicle_shifts_raw:
+        _vid = _sh.get("vehicleId")
+        if _vid and _sh.get("residenzaDepotId"):
+            RESIDENZA_BY_VEHICLE[_vid] = {
+                "id": _sh.get("residenzaDepotId"),
+                "name": _sh.get("residenzaName"),
+                "color": _sh.get("residenzaColor"),
+            }
 
     # Permetti override delle SHIFT_RULES da config.bds.shiftRules
     apply_shift_rules_override(config)
