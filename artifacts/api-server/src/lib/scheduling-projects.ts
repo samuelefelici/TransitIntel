@@ -217,6 +217,7 @@ function rowToProject(r: any) {
     planningStudioProjectId: r.planning_studio_project_id ?? null,
     planningStudioProjectName: r.ps_name ?? undefined,
     validityUnitId: r.validity_unit_id ?? null,
+    validityUnitName: r.validity_unit_name ?? null,
     // route_id (= ps_routes.id::text, combaciano con gtfs_routes.route_id) coperti
     // dall'UDP: presente solo nel GET singolo (vedi handler). Filtra le linee.
     validityUnitRouteIds: r.validity_unit_route_ids ?? undefined,
@@ -346,12 +347,14 @@ router.get("/scheduling/projects", async (req: Request, res: Response) => {
            u.email AS owner_email,
            u.full_name AS owner_full_name,
            ps.name AS ps_name,
+           vu.name AS validity_unit_name,
            (SELECT count(*)::int FROM project_members pm2 WHERE pm2.project_id = p.id) AS member_count,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
                 ELSE pm.role END AS my_role
       FROM scheduling_projects p
       LEFT JOIN users u ON u.id = p.owner_user_id
       LEFT JOIN ps_projects ps ON ps.id = p.planning_studio_project_id
+      LEFT JOIN ps_validity_units vu ON vu.id = p.validity_unit_id
       LEFT JOIN project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
      WHERE ${accessWhere} ${psWhere}

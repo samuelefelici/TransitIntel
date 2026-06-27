@@ -109,6 +109,7 @@ export interface MaterializeResult {
 export async function materializePsToFeed(
   psProjectId: string,
   ownerUserId: string,
+  opts?: { tripIds?: string[] | null },
 ): Promise<MaterializeResult> {
   await ensureMaterializedColumn();
 
@@ -116,6 +117,19 @@ export async function materializePsToFeed(
   if (!project) {
     throw new Error("PsProject non trovato o senza permessi di lettura");
   }
+
+  // Scoping per UDP: se passiamo un sottoinsieme di corse, il feed materializzato
+  // contiene SOLO quelle (e le linee/calendari/shape che usano) — così "mandare
+  // una UDP" non porta tutto il progetto nello scheduling.
+  const scoped = Array.isArray(opts?.tripIds) && opts!.tripIds!.length > 0;
+  const tripIdsLit = scoped ? `{${opts!.tripIds!.join(",")}}` : "";
+  // frammenti riusabili: alias `t`, senza alias, e sottoinsiemi route/calendar/variant
+  const fT = scoped ? sql`AND t.id = ANY(${tripIdsLit}::uuid[])` : sql``;
+  const fBare = scoped ? sql`AND id = ANY(${tripIdsLit}::uuid[])` : sql``;
+  const fRoute = scoped ? sql`AND r.id IN (SELECT DISTINCT route_id FROM ps_trips WHERE id = ANY(${tripIdsLit}::uuid[]))` : sql``;
+  const fCalProj = scoped ? sql`AND id IN (SELECT DISTINCT calendar_id FROM ps_trips WHERE id = ANY(${tripIdsLit}::uuid[]) AND calendar_id IS NOT NULL)` : sql``;
+  const fCalC = scoped ? sql`AND c.id IN (SELECT DISTINCT calendar_id FROM ps_trips WHERE id = ANY(${tripIdsLit}::uuid[]) AND calendar_id IS NOT NULL)` : sql``;
+  const fShape = scoped ? sql`AND s.variant_id IN (SELECT DISTINCT variant_id FROM ps_trips WHERE id = ANY(${tripIdsLit}::uuid[]))` : sql``;
 
   /* ────────────────────────────────────────────────────────────
    * STRATEGIA "ALL-IN-POSTGRES":
@@ -197,9 +211,9 @@ export async function materializePsToFeed(
            COALESCE(r.route_type, 3), r.color, r.text_color,
            COALESCE((SELECT count(*) FROM ps_trips t
                       WHERE t.route_id = r.id
-                        AND COALESCE(t.is_active, true) = true), 0)
+                        AND COALESCE(t.is_active, true) = true ${fT}), 0)
       FROM ps_routes r
-     WHERE r.project_id = ${psProjectId}::uuid
+     WHERE r.project_id = ${psProjectId}::uuid ${fRoute}
   `);
 
   // 4c. gtfs_calendar
@@ -218,7 +232,7 @@ export async function materializePsToFeed(
            COALESCE(to_char(start_date, 'YYYYMMDD'), ${minStart}),
            COALESCE(to_char(end_date,   'YYYYMMDD'), ${maxEnd})
       FROM ps_calendars
-     WHERE project_id = ${psProjectId}::uuid
+     WHERE project_id = ${psProjectId}::uuid ${fCalProj}
   `);
 
   // 4d. gtfs_calendar_dates
@@ -230,7 +244,7 @@ export async function materializePsToFeed(
            COALESCE(cd.exception_type, 1)
       FROM ps_calendar_dates cd
       JOIN ps_calendars c ON c.id = cd.calendar_id
-     WHERE c.project_id = ${psProjectId}::uuid
+     WHERE c.project_id = ${psProjectId}::uuid ${fCalC}
   `);
 
   // 4e. gtfs_trips — uso fallback service_id se calendar_id null
@@ -240,7 +254,7 @@ export async function materializePsToFeed(
       SELECT 1 FROM ps_trips
        WHERE project_id = ${psProjectId}::uuid
          AND COALESCE(is_active, true) = true
-         AND calendar_id IS NULL
+         AND calendar_id IS NULL ${fBare}
     ) AS need
   `);
   const needFallback = !!(needFallbackR.rows?.[0]?.need ?? needFallbackR[0]?.need);
@@ -263,7 +277,7 @@ export async function materializePsToFeed(
            t.headsign, COALESCE(t.direction, 0), t.variant_id::text
       FROM ps_trips t
      WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true
+       AND COALESCE(t.is_active, true) = true ${fT}
   `);
 
   // 4f. gtfs_stop_times — la query più pesante (300k+ righe per Conerobus).
@@ -278,7 +292,7 @@ export async function materializePsToFeed(
       FROM ps_stop_times st
       JOIN ps_trips t ON t.id = st.trip_id
      WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true
+       AND COALESCE(t.is_active, true) = true ${fT}
   `);
 
   // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)
@@ -291,7 +305,7 @@ export async function materializePsToFeed(
       FROM ps_shapes s
       LEFT JOIN ps_route_variants v ON v.id = s.variant_id
       LEFT JOIN ps_routes r ON r.id = v.route_id
-     WHERE s.project_id = ${psProjectId}::uuid
+     WHERE s.project_id = ${psProjectId}::uuid ${fShape}
   `);
 
   /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ──────
@@ -471,7 +485,21 @@ export function startSyncJob(
 
   void (async () => {
     try {
-      const result = await materializePsToFeed(psProjectId, ownerUserId);
+      // Se il progetto-scheduling è agganciato a una UDP, materializza SOLO le
+      // sue corse (feed = pacchetto della UDP, niente corse di altre UDP).
+      let tripIds: string[] | null = null;
+      try {
+        const vuR: any = await db.execute(sql`SELECT validity_unit_id FROM scheduling_projects WHERE id = ${projectId}::uuid LIMIT 1`);
+        const vuId = vuR.rows?.[0]?.validity_unit_id;
+        if (vuId) {
+          const tR: any = await db.execute(sql`SELECT trip_ids FROM ps_validity_units WHERE id = ${vuId}::uuid LIMIT 1`);
+          const arr = tR.rows?.[0]?.trip_ids;
+          if (Array.isArray(arr) && arr.length > 0) tripIds = arr.map((x: any) => String(x));
+        }
+      } catch (scopeErr: any) {
+        logger?.warn?.({ err: scopeErr, projectId }, "UDP scope lookup failed, materializzo tutto il progetto");
+      }
+      const result = await materializePsToFeed(psProjectId, ownerUserId, { tripIds });
       await db.execute(sql`
         UPDATE scheduling_projects
            SET feed_id = ${result.feedId}::uuid,
