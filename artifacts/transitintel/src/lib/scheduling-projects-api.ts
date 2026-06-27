@@ -30,6 +30,7 @@ export interface SchedulingProject {
   planningStudioProjectName?: string;
   /** UDP di origine: se valorizzata, lo scheduling è ristretto alle sue linee */
   validityUnitId?: string | null;
+  validityUnitName?: string | null;
   /** route_id coperti dall'UDP (solo nel GET singolo): filtra le linee in pipeline */
   validityUnitRouteIds?: string[];
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */

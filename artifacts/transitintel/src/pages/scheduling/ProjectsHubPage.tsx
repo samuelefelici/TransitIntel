@@ -126,7 +126,11 @@ function ProjectCard({
           </div>
           <div className="flex-1 min-w-0 pr-6">
             <h3 className="font-semibold text-zinc-100 text-sm truncate">{project.name}</h3>
-            {project.planningStudioProjectName && (
+            {project.validityUnitName ? (
+              <p className="text-[10px] text-indigo-300/90 font-mono uppercase tracking-wider mt-0.5 truncate" title="Unità di Progettazione">
+                ◈ UDP · {project.validityUnitName}
+              </p>
+            ) : project.planningStudioProjectName && (
               <p className="text-[10px] text-violet-300/80 font-mono uppercase tracking-wider mt-0.5 truncate">
                 ◇ {project.planningStudioProjectName}
               </p>
@@ -353,6 +357,19 @@ export default function ProjectsHubPage() {
     return projects[0];
   }, [projects]);
 
+  // Raggruppa per Servizio (progetto PS) → le sue UDP. Così "ritrovi tutte le
+  // UDP che hai creato" sotto il rispettivo servizio.
+  const grouped = useMemo(() => {
+    const m = new Map<string, { key: string; service: string; projects: SchedulingProject[] }>();
+    for (const p of projects ?? []) {
+      const key = p.planningStudioProjectId ?? "_none";
+      const service = p.planningStudioProjectName ?? "Senza progetto PS";
+      if (!m.has(key)) m.set(key, { key, service, projects: [] });
+      m.get(key)!.projects.push(p);
+    }
+    return [...m.values()];
+  }, [projects]);
+
   function openProject(p: SchedulingProject) {
     navigate(`/fucina/${p.id}`);
   }
@@ -455,13 +472,24 @@ export default function ProjectsHubPage() {
                 <Loader2 className="w-5 h-5 animate-spin mr-2" /> Caricamento…
               </div>
             ) : projects && projects.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {projects.map((p) => (
-                  <ProjectCard
-                    key={p.id} project={p}
-                    onOpen={() => openProject(p)}
-                    onDelete={() => handleDelete(p.id)}
-                  />
+              <div className="space-y-6">
+                {grouped.map((g) => (
+                  <div key={g.key}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[11px] font-mono uppercase tracking-widest text-violet-300/80">Servizio</span>
+                      <h4 className="text-sm font-semibold text-zinc-200 truncate">{g.service}</h4>
+                      <span className="text-[10px] text-zinc-500">· {g.projects.length} UDP</span>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {g.projects.map((p) => (
+                        <ProjectCard
+                          key={p.id} project={p}
+                          onOpen={() => openProject(p)}
+                          onDelete={() => handleDelete(p.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : (
