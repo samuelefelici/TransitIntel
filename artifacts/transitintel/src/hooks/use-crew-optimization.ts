@@ -90,6 +90,10 @@ export interface OperatorConfig {
     riprese?: Record<string, any>;
     copertura?: Record<string, any>;
     collegamento?: Record<string, any>;
+    /* Fase 2 — avanzate: soglie/scoring tagli e multi-scenario */
+    cuts?: Record<string, number>;
+    cutScoring?: Record<string, number>;
+    scenari?: Record<string, number>;
     /* CSP optimizer overrides — saturazione & cap vetture */
     optimizer?: {
       minWorkPerDuty?: number;     // min lavoro/turno (min) — default 360
@@ -98,6 +102,7 @@ export interface OperatorConfig {
       weightIdlePenalty?: number;  // peso penalizzazione idle time — default 30
       idlePenaltyMaxMin?: number;  // soglia max idle penalizzato — default 60
       scorePerDuty?: number;       // bonus score per duty (FIX-CSP-2) — default 100
+      pctOverPenalty?: number;     // penalità per punto-% oltre cap soft — default 150
     };
   };
 }
