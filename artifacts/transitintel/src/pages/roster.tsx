@@ -3,8 +3,8 @@
  * ROSTER — assegnazione turni guida al personale viaggiante (2 finestre)
  * ───────────────────────────────────────────────────────────────────────────
  * A sinistra il tabellone (operatori × giorni). A destra i turni SCOPERTI per
- * giorno. Per assegnare: seleziona un turno a destra → F1 (taglia), seleziona
- * un conducente a sinistra → F2 (incolla): il turno va nel giorno giusto perché
+ * giorno. Per assegnare: seleziona un turno a destra → Q (taglia), seleziona
+ * un conducente a sinistra → W (incolla): il turno va nel giorno giusto perché
  * la tabella ha una colonna per ogni giorno. Click su un turno assegnato per
  * rimuoverlo. Anagrafica conducente completa via la matita.
  * ═══════════════════════════════════════════════════════════════════════════
@@ -128,9 +128,9 @@ export default function RosterPage() {
     return m;
   }, [board]);
 
-  // ── Taglia/incolla via tastiera: F1 = taglia turno selezionato, F2 = incolla sul conducente ──
+  // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   function doPaste() {
-    if (!cut) { toast.info("Prima seleziona un turno e premi F1 (taglia)"); return; }
+    if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!selDriver) { toast.info("Seleziona un conducente a sinistra"); return; }
     if (assignByCell.has(`${selDriver}|${cut.day}`)) { toast.error("Il conducente ha già un turno quel giorno"); return; }
     assignMut.mutate({ driverId: selDriver, day: cut.day, dutyCode: cut.code });
@@ -139,8 +139,9 @@ export default function RosterPage() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "F1") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi F2`); } }
-      else if (e.key === "F2") { e.preventDefault(); doPaste(); }
+      const k = e.key.toLowerCase();
+      if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
+      else if (k === "w") { e.preventDefault(); doPaste(); }
       else if (e.key === "Escape") { setCut(null); }
     };
     window.addEventListener("keydown", onKey);
@@ -179,7 +180,7 @@ export default function RosterPage() {
           <button onClick={() => setFrom(shiftDate(from, 7))} className="p-1.5 rounded hover:bg-white/10"><ChevronRight className="w-4 h-4" /></button>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> F1 taglia · <ClipboardPaste className="w-3 h-3" /> F2 incolla</span>
+          <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla</span>
           <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium">
             <UserPlus className="w-3.5 h-3.5" /> Conducente
           </button>
@@ -192,7 +193,7 @@ export default function RosterPage() {
       {/* appunti attivo */}
       {cut && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-[11px] text-amber-200 flex items-center gap-2 shrink-0">
-          <Scissors className="w-3.5 h-3.5" /> In taglio: <b>{cut.code}</b> · {dayLabel(cut.day).dow} {dayLabel(cut.day).dm} — seleziona un conducente e premi <b>F2</b> (Esc per annullare)
+          <Scissors className="w-3.5 h-3.5" /> In taglio: <b>{cut.code}</b> · {dayLabel(cut.day).dow} {dayLabel(cut.day).dm} — seleziona un conducente e premi <b>W</b> (Esc per annullare)
         </div>
       )}
 
@@ -255,7 +256,7 @@ export default function RosterPage() {
                               <button
                                 onClick={() => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); }}
                                 className={`w-full h-8 rounded border border-dashed transition-colors ${cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300" : "border-slate-700/60 hover:border-violet-500/60 hover:bg-violet-500/5 text-slate-600 hover:text-violet-400"}`}
-                                title={cut && cut.day === day ? "Incolla qui (F2)" : "Seleziona conducente"}
+                                title={cut && cut.day === day ? "Incolla qui (W)" : "Seleziona conducente"}
                               >
                                 {cut && cut.day === day ? "↵" : "+"}
                               </button>
@@ -323,7 +324,7 @@ export default function RosterPage() {
                 <span>Corse: <span className="text-slate-200">{selDutyDetail.tripsCount}</span></span>
                 {selDutyDetail.costEuro != null && <span>Costo: <span className="text-slate-200">€{selDutyDetail.costEuro.toFixed(0)}</span></span>}
               </div>
-              <div className="pt-1 text-[10px] text-slate-500">F1 per tagliare · poi seleziona conducente · F2 per incollare</div>
+              <div className="pt-1 text-[10px] text-slate-500">Q per tagliare · poi seleziona conducente · W per incollare</div>
             </div>
           )}
         </div>
