@@ -31,7 +31,7 @@ import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 import { OptimizerRulesPanel } from "@/components/OptimizerRulesPanel";
-import { buildDefaultConfig, SERVICE_PROFILES, type ServiceType } from "@/lib/optimizer-rules";
+import { buildDefaultConfig, deepClone, SERVICE_PROFILES, type ServiceType } from "@/lib/optimizer-rules";
 import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
@@ -101,7 +101,7 @@ export default function DriverWorkspace({
     const p = SERVICE_PROFILES[t];
     setOperatorConfig((c) => ({
       ...c,
-      bds: { ...c.bds, serviceType: t, shiftRules: structuredClone(p.shiftRules), targetWork: { ...p.targetWork } },
+      bds: { ...c.bds, serviceType: t, shiftRules: deepClone(p.shiftRules), targetWork: { ...p.targetWork } },
     }));
   }, []);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -207,17 +207,18 @@ export default function DriverWorkspace({
   const profileLoadedRef = useRef(false);
   useEffect(() => {
     if (profileLoadedRef.current) return;
-    profileLoadedRef.current = true;
+    profileLoadedRef.current = true; // guard PRIMA del fetch: niente race con le modifiche live
     resolveRuleProfile(projectIdFromUrl)
       .then((r) => {
         if (!r?.config) return;
-        const st = (r.config.bds?.serviceType as ServiceType) ?? serviceType;
+        const st = (r.config.bds?.serviceType as ServiceType) ?? "urbano";
         const base = buildDefaultConfig(st);
         setServiceTypeState(st);
         setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
       })
       .catch(() => { /* nessun profilo salvato → resta sui default */ });
-  }, [projectIdFromUrl, serviceType]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectIdFromUrl]);
 
   // Ricezione risultati CP-SAT
   useEffect(() => {
@@ -266,11 +267,15 @@ export default function DriverWorkspace({
     cpsat.reset();
     setResult(null);
     setError(null);
-    const intensity = operatorConfig.solverIntensity ?? 2;
-    const timeLimit =
+    // timeLimit: se l'operatore lo ha impostato nel pannello usa quello,
+    // altrimenti scala con l'intensità (compat. comportamento precedente).
+    const intensity = Number(operatorConfig.solverIntensity ?? 2);
+    const computed =
       intensity === 1 ? 90 :
       intensity === 3 ? 480 :
       intensity === 4 ? 900 : 240;
+    const panelTL = Number(operatorConfig.timeLimit);
+    const timeLimit = panelTL > 0 ? panelTL : computed;
     cpsat.start(vehicleScenarioId, timeLimit, operatorConfig);
     toast.info(`CP-SAT avviato (timeLimit ${timeLimit}s)`, {
       description: "I parametri optimizer (saturazione · cap vetture · idle) sono attivi",

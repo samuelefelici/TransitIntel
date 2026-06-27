@@ -39,7 +39,8 @@ async function ensureSchema(): Promise<void> {
       config_json jsonb NOT NULL DEFAULT '{}'::jsonb,
       is_default boolean NOT NULL DEFAULT false,
       created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now()
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT ck_orp_project_scope CHECK (NOT (scope = 'project' AND project_id IS NULL))
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_orp_owner ON optimizer_rule_profiles(owner_user_id)`);
@@ -139,15 +140,16 @@ router.post("/optimizer-rule-profiles", async (req, res): Promise<void> => {
   if (scope !== "company" && scope !== "project") { res.status(400).json({ error: "invalid scope" }); return; }
   if (scope === "project" && !projectId) { res.status(400).json({ error: "projectId required for project scope" }); return; }
 
-  // un solo default per scope (azienda globale oppure per-progetto)
-  if (isDefault) await clearDefaults(userId, scope, scope === "project" ? projectId : null);
-
-  const r = await db.execute(sql`
-    INSERT INTO optimizer_rule_profiles (owner_user_id, scope, project_id, name, service_type, config_json, is_default)
-    VALUES (${userId}::uuid, ${scope}, ${scope === "project" ? projectId : null}, ${name},
-            ${serviceType}, ${JSON.stringify(config)}::jsonb, ${!!isDefault})
-    RETURNING *
-  `);
+  // un solo default per scope: clearDefaults + insert ATOMICI (no race)
+  const r = await db.transaction(async (tx) => {
+    if (isDefault) await clearDefaults(tx, userId, scope, scope === "project" ? projectId : null);
+    return tx.execute(sql`
+      INSERT INTO optimizer_rule_profiles (owner_user_id, scope, project_id, name, service_type, config_json, is_default)
+      VALUES (${userId}::uuid, ${scope}, ${scope === "project" ? projectId : null}, ${name},
+              ${serviceType}, ${JSON.stringify(config)}::jsonb, ${!!isDefault})
+      RETURNING *
+    `);
+  });
   res.status(201).json({ profile: rowToProfile((r as any).rows[0]) });
 });
 
@@ -168,17 +170,21 @@ router.patch("/optimizer-rule-profiles/:id", async (req, res): Promise<void> => 
   if ("serviceType" in req.body) sets.push(sql`service_type = ${req.body.serviceType}`);
   if ("config" in req.body) sets.push(sql`config_json = ${JSON.stringify(req.body.config)}::jsonb`);
   if ("isDefault" in req.body) {
-    if (req.body.isDefault) await clearDefaults(userId, cur.scope, cur.scope === "project" ? cur.project_id : null);
     sets.push(sql`is_default = ${!!req.body.isDefault}`);
   }
   if (sets.length === 0) { res.status(400).json({ error: "no fields" }); return; }
 
-  const r = await db.execute(sql`
-    UPDATE optimizer_rule_profiles SET ${sql.join(sets, sql`, `)}, updated_at = now()
-     WHERE id = ${req.params.id}::uuid AND owner_user_id = ${userId}::uuid
-     RETURNING *
-  `);
-  res.json({ profile: rowToProfile((r as any).rows[0]) });
+  const r = await db.transaction(async (tx) => {
+    if (req.body.isDefault) await clearDefaults(tx, userId, cur.scope, cur.scope === "project" ? cur.project_id : null);
+    return tx.execute(sql`
+      UPDATE optimizer_rule_profiles SET ${sql.join(sets, sql`, `)}, updated_at = now()
+       WHERE id = ${req.params.id}::uuid AND owner_user_id = ${userId}::uuid
+       RETURNING *
+    `);
+  });
+  const updated = (r as any).rows?.[0];
+  if (!updated) { res.status(409).json({ error: "profile modified or deleted" }); return; }
+  res.json({ profile: rowToProfile(updated) });
 });
 
 /* ─── DELETE profilo ──────────────────────────────────────────────────────── */
@@ -193,8 +199,11 @@ router.delete("/optimizer-rule-profiles/:id", async (req, res): Promise<void> =>
   res.json({ ok: true });
 });
 
-async function clearDefaults(userId: string, scope: string, projectId: string | null): Promise<void> {
-  await db.execute(sql`
+async function clearDefaults(
+  exec: { execute: (q: any) => Promise<any> },
+  userId: string, scope: string, projectId: string | null,
+): Promise<void> {
+  await exec.execute(sql`
     UPDATE optimizer_rule_profiles SET is_default = false, updated_at = now()
      WHERE owner_user_id = ${userId}::uuid AND scope = ${scope} AND is_default = true
        ${scope === "project" && projectId ? sql`AND project_id = ${projectId}::uuid` : sql``}

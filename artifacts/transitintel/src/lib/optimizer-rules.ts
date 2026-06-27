@@ -137,9 +137,16 @@ export const DEFAULT_COST_RATES: Record<string, number> = {
 
 export const DEFAULT_SOLVER: Record<string, any> = {
   solverIntensity: 2,
-  timeLimit: 120,
+  timeLimit: 240, // allineato al default Maior-style del solver v4
   cutOnlyAtClusters: true,
 };
+
+/** Clona in profondità (structuredClone se disponibile, fallback JSON). */
+export function deepClone<T>(obj: T): T {
+  return typeof structuredClone === "function"
+    ? structuredClone(obj)
+    : JSON.parse(JSON.stringify(obj));
+}
 
 /** Costruisce la config di default completa per un tipo servizio. */
 export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
@@ -149,7 +156,7 @@ export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
     costRates: { ...DEFAULT_COST_RATES },
     bds: {
       serviceType,
-      shiftRules: structuredClone(p.shiftRules),
+      shiftRules: deepClone(p.shiftRules),
       targetWork: { ...p.targetWork },
       rd131: { ...DEFAULT_BDS.rd131 },
       prePost: { ...DEFAULT_BDS.prePost },

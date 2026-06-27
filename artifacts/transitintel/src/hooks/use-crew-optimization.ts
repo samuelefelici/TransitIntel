@@ -55,6 +55,8 @@ export interface OperatorConfig {
   shiftRules?: Record<string, { maxNastro?: number; intMin?: number; intMax?: number; maxPct?: number }>;
   weights?: Record<string, number>;
   solverIntensity?: number;
+  /** budget di tempo del solver in secondi (pannello Parametri & Regole) */
+  timeLimit?: number;
   maxRounds?: number;
   pinnedConstraints?: {
     lockedDuties?: string[];

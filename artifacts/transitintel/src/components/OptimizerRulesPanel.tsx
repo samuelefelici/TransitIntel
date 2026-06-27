@@ -295,7 +295,12 @@ function FieldRow({
         ) : field.type === "enum" ? (
           <select
             value={String(value ?? "")}
-            onChange={(e) => onChange(e.target.value)}
+            onChange={(e) => {
+              // enum numerici (es. solverIntensity "2") → int, così la chiave
+              // arriva al Python col tipo atteso; enum stringa restano stringa.
+              const v = e.target.value;
+              onChange(/^-?\d+$/.test(v) ? Number(v) : v);
+            }}
             className="px-1.5 py-1 text-xs rounded bg-zinc-950 border border-zinc-700 text-zinc-100 max-w-[200px]"
           >
             {field.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
