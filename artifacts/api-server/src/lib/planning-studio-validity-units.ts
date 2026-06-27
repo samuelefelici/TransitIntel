@@ -287,12 +287,31 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     const calProfile = await loadCalendarProfile(proj.id);
     const calConfigured = calProfile.closedPeriods.length > 0 || !!calProfile.summerPeriod;
     const holidaysByYear = new Map<number, Set<string>>();
-    const leafOf = (d: string): { key: string; label: string } | null => {
-      if (!calConfigured) return null;
+    const classOf = (d: string) => {
       const y = Number(d.slice(0, 4));
       if (!holidaysByYear.has(y)) holidaysByYear.set(y, italianHolidays(y));
-      const c = classifyDate(d, calProfile, holidaysByYear.get(y));
+      return classifyDate(d, calProfile, holidaysByYear.get(y));
+    };
+    const leafOf = (d: string): { key: string; label: string } | null => {
+      if (!calConfigured) return null;
+      const c = classOf(d);
       return { key: c.key, label: c.label };
+    };
+    // Filtro opzionale per criterio del Calendario aziendale: limita le UDP ai
+    // soli giorni della classe scelta (scuole aperte/chiuse/estivo/invernale/…).
+    const calendarCriterion = typeof req.body?.calendarCriterion === "string" ? req.body.calendarCriterion : "";
+    const matchesCriterion = (d: string): boolean => {
+      if (!calendarCriterion || !calConfigured) return true;
+      const c = classOf(d);
+      switch (calendarCriterion) {
+        case "scuole_aperte": return c.level1 === "scuole_aperte";
+        case "scuole_chiuse": return c.level1 === "scuole_chiuse";
+        case "estivo": return c.level1 === "scuole_chiuse" && c.level2 === "estivo";
+        case "invernale": return c.level1 === "scuole_chiuse" && c.level2 === "invernale";
+        case "domeniche": return c.level1 === "festivo" && (c.level2 === "domenica_aperte" || c.level2 === "domenica_chiuse");
+        case "festivi": return c.level1 === "festivo";
+        default: return true;
+      }
     };
 
     // Day-type metadata
@@ -359,6 +378,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     const activeAnywhere = new Set<string>();
     const groups = new Map<string, ComputedUnit>();
     for (const d of dates) {
+      if (!matchesCriterion(d)) continue; // criterio Calendario aziendale
       const cat = catByDate.get(d) ?? null;
       const dtId = dtMap.get(d) ?? null;
       const dtM = dtId ? dtMeta.get(dtId) : undefined;

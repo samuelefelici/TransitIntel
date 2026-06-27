@@ -2176,6 +2176,9 @@ function ComputeUnitsDialog(props: {
   const [routesInit, setRoutesInit] = useState(false);
   const [routesPanelOpen, setRoutesPanelOpen] = useState(false);
   const [routeSearch, setRouteSearch] = useState("");
+  // Criterio Calendario aziendale (limita ai giorni di quella classe) + prefisso nome
+  const [calCriterion, setCalCriterion] = useState("");
+  const [namePrefix, setNamePrefix] = useState("");
 
   // Inizializza a "tutte" appena le linee sono caricate (props.routes arriva async)
   useEffect(() => {
@@ -2215,6 +2218,7 @@ function ComputeUnitsDialog(props: {
       // tutte → ometti (= tutte lato server); altrimenti invia la lista esatta
       // (anche vuota = nessuna linea).
       routeIds: allSelected ? undefined : Array.from(selectedRoutes),
+      calendarCriterion: calCriterion || undefined,
     }),
     onSuccess: (res) => {
       setGroups(res.units);
@@ -2234,11 +2238,12 @@ function ComputeUnitsDialog(props: {
 
   const saveMut = useMutation({
     mutationFn: () => {
+      const pfx = namePrefix.trim();
       const items = (groups ?? [])
         .filter((g) => selected.has(g.validityId))
         .map((g) => ({
           validityId: g.validityId,
-          name: names[g.validityId] || `Unità ${g.validityId.slice(0, 8)}`,
+          name: [pfx, names[g.validityId] || `Unità ${g.validityId.slice(0, 8)}`].filter(Boolean).join(" · "),
           categoryId: g.categoryId,
           dayTypeId: g.dayTypeId,
           tripIds: g.tripIds,
@@ -2323,13 +2328,40 @@ function ComputeUnitsDialog(props: {
               className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 [color-scheme:dark]"
             />
           </label>
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            Calendario
+            <select
+              value={calCriterion}
+              onChange={(e) => setCalCriterion(e.target.value)}
+              title="Limita le unità ai giorni di una classe del Calendario aziendale"
+              className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 [color-scheme:dark]"
+            >
+              <option value="">Tutti i giorni</option>
+              <option value="scuole_aperte">Scuole aperte</option>
+              <option value="scuole_chiuse">Scuole chiuse</option>
+              <option value="estivo">· Estivo</option>
+              <option value="invernale">· Invernale</option>
+              <option value="domeniche">Domeniche</option>
+              <option value="festivi">Festivi</option>
+            </select>
+          </label>
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            Nome (prefisso)
+            <input
+              value={namePrefix}
+              onChange={(e) => setNamePrefix(e.target.value)}
+              placeholder="es. Jesi"
+              title="Prefisso aggiunto all'inizio del nome di ogni unità salvata (es. «Jesi · Scuole Aperte · Feriale»)"
+              className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 w-32"
+            />
+          </label>
           <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 min-w-36">
-            Tolleranza fusione <span className="text-indigo-300 font-mono normal-case">{tolerancePct}%</span>
+            Fusione giorni simili <span className="text-indigo-300 font-mono normal-case">{tolerancePct}%</span>
             <input
               type="range" min={0} max={10} step={1}
               value={tolerancePct}
               onChange={(e) => setTolerancePct(Number(e.target.value))}
-              title="0% = solo giorni identici. Con 2–5% i giorni quasi-uguali della stessa classe (es. feriale scolastico) si fondono in un'unica unità."
+              title="Quanto «arrotondare»: 0% tiene separati i giorni con composizione corse anche solo leggermente diversa (più unità). Alzandola, giorni quasi-uguali della stessa classe si fondono in un'unica unità, marcando le differenze come eccezioni (meno unità). Tienila a 0 se vuoi unità esatte."
               className="block mt-2 w-full accent-indigo-500"
             />
           </label>

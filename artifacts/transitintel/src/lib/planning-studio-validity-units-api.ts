@@ -132,6 +132,8 @@ export function computePsValidityUnits(projectId: string, input: {
   tolerance?: number;
   /** linee scelte per l'UDP (vuoto/omesso = tutte le linee) */
   routeIds?: string[];
+  /** criterio Calendario aziendale: limita ai giorni di quella classe */
+  calendarCriterion?: string;
 }): Promise<{
   from: string; to: string; totalDays: number; totalGroups: number;
   exactGroups?: number; tolerance?: number; calendarConfigured?: boolean;
