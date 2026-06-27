@@ -43,6 +43,8 @@ async function ensureSchema(): Promise<void> {
       CONSTRAINT ck_orp_project_scope CHECK (NOT (scope = 'project' AND project_id IS NULL))
     )
   `);
+  // domain distingue i profili turni guida ('crew') da turni macchina ('vsp')
+  await db.execute(sql`ALTER TABLE optimizer_rule_profiles ADD COLUMN IF NOT EXISTS domain text NOT NULL DEFAULT 'crew'`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_orp_owner ON optimizer_rule_profiles(owner_user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_orp_project ON optimizer_rule_profiles(project_id)`);
   schemaReady = true;
@@ -56,6 +58,7 @@ function rowToProfile(r: any) {
   return {
     id: r.id,
     scope: r.scope,
+    domain: r.domain ?? "crew",
     projectId: r.project_id ?? null,
     name: r.name,
     serviceType: r.service_type ?? null,
@@ -64,6 +67,11 @@ function rowToProfile(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function domainOf(req: Request): string {
+  const d = String((req.query.domain ?? (req.body && req.body.domain) ?? "crew")).toLowerCase();
+  return d === "vsp" ? "vsp" : "crew";
 }
 
 /** Deep-merge: override sovrascrive base (oggetti uniti ricorsivamente, scalari/array rimpiazzati). */
@@ -86,10 +94,12 @@ router.get("/optimizer-rule-profiles", async (req, res): Promise<void> => {
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   await ensureSchema();
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  const domain = domainOf(req);
 
   const r = await db.execute(sql`
     SELECT * FROM optimizer_rule_profiles
      WHERE owner_user_id = ${userId}::uuid
+       AND domain = ${domain}
        AND (scope = 'company'
             ${projectId ? sql`OR (scope = 'project' AND project_id = ${projectId}::uuid)` : sql``})
      ORDER BY scope ASC, is_default DESC, name ASC
@@ -103,10 +113,11 @@ router.get("/optimizer-rule-profiles/resolve", async (req, res): Promise<void> =
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   await ensureSchema();
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
+  const domain = domainOf(req);
 
   const companyR = await db.execute(sql`
     SELECT config_json FROM optimizer_rule_profiles
-     WHERE owner_user_id = ${userId}::uuid AND scope = 'company' AND is_default = true
+     WHERE owner_user_id = ${userId}::uuid AND domain = ${domain} AND scope = 'company' AND is_default = true
      ORDER BY updated_at DESC LIMIT 1
   `);
   const companyCfg = (companyR as any).rows?.[0]?.config_json ?? null;
@@ -115,7 +126,7 @@ router.get("/optimizer-rule-profiles/resolve", async (req, res): Promise<void> =
   if (projectId) {
     const projR = await db.execute(sql`
       SELECT config_json FROM optimizer_rule_profiles
-       WHERE owner_user_id = ${userId}::uuid AND scope = 'project'
+       WHERE owner_user_id = ${userId}::uuid AND domain = ${domain} AND scope = 'project'
          AND project_id = ${projectId}::uuid AND is_default = true
        ORDER BY updated_at DESC LIMIT 1
     `);
@@ -139,13 +150,14 @@ router.post("/optimizer-rule-profiles", async (req, res): Promise<void> => {
   if (!name || typeof name !== "string") { res.status(400).json({ error: "name required" }); return; }
   if (scope !== "company" && scope !== "project") { res.status(400).json({ error: "invalid scope" }); return; }
   if (scope === "project" && !projectId) { res.status(400).json({ error: "projectId required for project scope" }); return; }
+  const domain = domainOf(req);
 
-  // un solo default per scope: clearDefaults + insert ATOMICI (no race)
+  // un solo default per (domain, scope): clearDefaults + insert ATOMICI (no race)
   const r = await db.transaction(async (tx) => {
-    if (isDefault) await clearDefaults(tx, userId, scope, scope === "project" ? projectId : null);
+    if (isDefault) await clearDefaults(tx, userId, domain, scope, scope === "project" ? projectId : null);
     return tx.execute(sql`
-      INSERT INTO optimizer_rule_profiles (owner_user_id, scope, project_id, name, service_type, config_json, is_default)
-      VALUES (${userId}::uuid, ${scope}, ${scope === "project" ? projectId : null}, ${name},
+      INSERT INTO optimizer_rule_profiles (owner_user_id, domain, scope, project_id, name, service_type, config_json, is_default)
+      VALUES (${userId}::uuid, ${domain}, ${scope}, ${scope === "project" ? projectId : null}, ${name},
               ${serviceType}, ${JSON.stringify(config)}::jsonb, ${!!isDefault})
       RETURNING *
     `);
@@ -175,7 +187,7 @@ router.patch("/optimizer-rule-profiles/:id", async (req, res): Promise<void> => 
   if (sets.length === 0) { res.status(400).json({ error: "no fields" }); return; }
 
   const r = await db.transaction(async (tx) => {
-    if (req.body.isDefault) await clearDefaults(tx, userId, cur.scope, cur.scope === "project" ? cur.project_id : null);
+    if (req.body.isDefault) await clearDefaults(tx, userId, cur.domain ?? "crew", cur.scope, cur.scope === "project" ? cur.project_id : null);
     return tx.execute(sql`
       UPDATE optimizer_rule_profiles SET ${sql.join(sets, sql`, `)}, updated_at = now()
        WHERE id = ${req.params.id}::uuid AND owner_user_id = ${userId}::uuid
@@ -201,11 +213,11 @@ router.delete("/optimizer-rule-profiles/:id", async (req, res): Promise<void> =>
 
 async function clearDefaults(
   exec: { execute: (q: any) => Promise<any> },
-  userId: string, scope: string, projectId: string | null,
+  userId: string, domain: string, scope: string, projectId: string | null,
 ): Promise<void> {
   await exec.execute(sql`
     UPDATE optimizer_rule_profiles SET is_default = false, updated_at = now()
-     WHERE owner_user_id = ${userId}::uuid AND scope = ${scope} AND is_default = true
+     WHERE owner_user_id = ${userId}::uuid AND domain = ${domain} AND scope = ${scope} AND is_default = true
        ${scope === "project" && projectId ? sql`AND project_id = ${projectId}::uuid` : sql``}
   `);
 }

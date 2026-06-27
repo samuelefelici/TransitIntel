@@ -16,7 +16,12 @@ import {
   Truck, Bus, Clock, MapPin, Home, Fuel, TrendingUp, Zap, BarChart3,
   Timer, Navigation, CheckCircle2, AlertTriangle, RefreshCw, X, Users,
   Flame, ArrowRightLeft, TrainFront, Building2, GraduationCap, Pencil,
+  SlidersHorizontal,
 } from "lucide-react";
+import { VspRulesPanel } from "@/components/VspRulesPanel";
+import { buildDefaultVspConfig, type VspConfig } from "@/lib/vsp-rules";
+import { getByPath, setByPath } from "@/lib/optimizer-rules";
+import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -190,48 +195,63 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("greedy");
   const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep" | "extreme">("normal");
 
-  /* ── REGOLA #1: priorità minimizzazione turni macchina ── */
-  const [minVehiclesPriority, setMinVehiclesPriority] =
-    useState<"off" | "soft" | "strict" | "lexicographic">("strict");
+  /* ── Config VSP unificata (fonte unica). I nomi storici qui sotto sono viste
+   *    derivate su vspConfig, così JSX/preset esistenti restano invariati e il
+   *    pannello "Parametri & Regole" (turni macchina) edita lo stesso oggetto. */
+  const [vspConfig, setVspConfig] = useState<VspConfig>(buildDefaultVspConfig());
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const setVsp = useCallback((path: string, v: any) => setVspConfig((c) => setByPath(c, path, v)), []);
 
-  /* ── Preferenza monolinea (stessa linea sullo stesso veicolo) ── */
-  const [preferMonolinea, setPreferMonolinea] = useState<boolean>(false);
-
-  /* ── Parametri costi (override) — utente può fissare le tariffe ── */
   const [showCostPanel, setShowCostPanel] = useState(false);
-  const [costFixed12m, setCostFixed12m] = useState<number>(42);
-  const [costFixedSnod, setCostFixedSnod] = useState<number>(55);
-  const [costFixed10m, setCostFixed10m] = useState<number>(32);
-  const [costIdlePerMin, setCostIdlePerMin] = useState<number>(0.08);
-  const [costPerDepotReturn, setCostPerDepotReturn] = useState<number>(15);
-  const [targetShiftDuration, setTargetShiftDuration] = useState<number>(600);
-  const [maxIdleAtTerminal, setMaxIdleAtTerminal] = useState<number>(90);
-  // FIX-VSP-7: finestra arc-creation separata da max idle.
-  // Permette al solver di considerare archi con gap fino a 600 min anche
-  // se max_idle_at_terminal=90, senza penalizzarli con costo proibitivo.
-  // Critico per regola#1 strict/lexicographic: senza questa, un veicolo
-  // che attende 4h al capolinea NON è raggiungibile dal solver.
-  const [maxIdleForArcMin, setMaxIdleForArcMin] = useState<number>(600);
 
-  // FIX-VSP-CLUSTER: raggio (metri) entro cui due capolinea con stop_id
-  // diversi vengono trattati come stesso punto (deadhead=0). Critico per
-  // minimizzazione veicoli su reti con stazioni/piazze codificate come
-  // più stop_id GTFS distinti (es. "Stazione FS A/B/C", "Ugo Bassi nord/sud").
-  const [terminalClusterRadiusM, setTerminalClusterRadiusM] = useState<number>(250);
+  const minVehiclesPriority = getByPath(vspConfig, "vspAdvanced.minVehiclesPriority") as "off" | "soft" | "strict" | "lexicographic";
+  const setMinVehiclesPriority = (v: any) => setVsp("vspAdvanced.minVehiclesPriority", v);
+  const preferMonolinea = !!getByPath(vspConfig, "vspAdvanced.preferMonolinea");
+  const setPreferMonolinea = (v: boolean) => setVsp("vspAdvanced.preferMonolinea", v);
+  const costFixed12m = getByPath(vspConfig, "vehicleCosts.fixedDaily.12m") as number;
+  const setCostFixed12m = (v: number) => setVsp("vehicleCosts.fixedDaily.12m", v);
+  const costFixedSnod = getByPath(vspConfig, "vehicleCosts.fixedDaily.autosnodato") as number;
+  const setCostFixedSnod = (v: number) => setVsp("vehicleCosts.fixedDaily.autosnodato", v);
+  const costFixed10m = getByPath(vspConfig, "vehicleCosts.fixedDaily.10m") as number;
+  const setCostFixed10m = (v: number) => setVsp("vehicleCosts.fixedDaily.10m", v);
+  const costIdlePerMin = getByPath(vspConfig, "vehicleCosts.idlePerMin") as number;
+  const setCostIdlePerMin = (v: number) => setVsp("vehicleCosts.idlePerMin", v);
+  const costPerDepotReturn = getByPath(vspConfig, "vehicleCosts.perDepotReturn") as number;
+  const setCostPerDepotReturn = (v: number) => setVsp("vehicleCosts.perDepotReturn", v);
+  const targetShiftDuration = getByPath(vspConfig, "vehicleCosts.targetShiftDuration") as number;
+  const setTargetShiftDuration = (v: number) => setVsp("vehicleCosts.targetShiftDuration", v);
+  const maxIdleAtTerminal = getByPath(vspConfig, "vehicleCosts.maxIdleAtTerminal") as number;
+  const setMaxIdleAtTerminal = (v: number) => setVsp("vehicleCosts.maxIdleAtTerminal", v);
+  const maxIdleForArcMin = getByPath(vspConfig, "vehicleCosts.maxIdleForArcMin") as number;
+  const setMaxIdleForArcMin = (v: number) => setVsp("vehicleCosts.maxIdleForArcMin", v);
+  const terminalClusterRadiusM = getByPath(vspConfig, "vehicleCosts.terminalClusterRadiusM") as number;
+  const setTerminalClusterRadiusM = (v: number) => setVsp("vehicleCosts.terminalClusterRadiusM", v);
+  const vehicleEliminationMaxPasses = getByPath(vspConfig, "vspAdvanced.vehicleEliminationMaxPasses") as number;
+  const setVehicleEliminationMaxPasses = (v: number) => setVsp("vspAdvanced.vehicleEliminationMaxPasses", v);
+  const vehicleEliminationTimeSec = getByPath(vspConfig, "vspAdvanced.vehicleEliminationTimeSec") as number;
+  const setVehicleEliminationTimeSec = (v: number) => setVsp("vspAdvanced.vehicleEliminationTimeSec", v);
+  const enableIterativeReduction = !!getByPath(vspConfig, "vspAdvanced.enableIterativeReduction");
+  const setEnableIterativeReduction = (v: boolean) => setVsp("vspAdvanced.enableIterativeReduction", v);
+  const iterativeReductionTimeSec = getByPath(vspConfig, "vspAdvanced.iterativeReductionTimeSec") as number;
+  const setIterativeReductionTimeSec = (v: number) => setVsp("vspAdvanced.iterativeReductionTimeSec", v);
 
-  // FIX-VSP-RUIN: post-ottimizzazione che dissolve ricorsivamente le catene
-  // più scariche e reinserisce i loro trip nelle altre. Più passate +
-  // più tempo = più tentativi (l'utente preferisce attendere piuttosto che
-  // vedere turni in eccesso). Default Python: 10 passi, ~45-60s.
-  const [vehicleEliminationMaxPasses, setVehicleEliminationMaxPasses] = useState<number>(10);
-  const [vehicleEliminationTimeSec, setVehicleEliminationTimeSec] = useState<number>(60);
-
-  // FIX-VSP-ITER-RED: dopo la pipeline standard, rilancia CP-SAT con vincolo
-  // HARD `nv ≤ N-1`, `N-2`, ... finché trova feasibility o dimostra
-  // infeasibility. È la mossa "valuta ogni combinazione possibile" — può
-  // dimostrare matematicamente che N è il minimo assoluto.
-  const [enableIterativeReduction, setEnableIterativeReduction] = useState<boolean>(true);
-  const [iterativeReductionTimeSec, setIterativeReductionTimeSec] = useState<number>(180);
+  // Carica il profilo-regole VSP di default (azienda ⊕ progetto) una sola volta.
+  const vspProfileLoadedRef = React.useRef(false);
+  useEffect(() => {
+    if (vspProfileLoadedRef.current) return;
+    vspProfileLoadedRef.current = true;
+    resolveRuleProfile(psProjectId, "vsp")
+      .then((r) => {
+        if (!r?.config) return;
+        const base = buildDefaultVspConfig();
+        setVspConfig({
+          vehicleCosts: { ...base.vehicleCosts, ...(r.config.vehicleCosts ?? {}) },
+          vspAdvanced: { ...base.vspAdvanced, ...(r.config.vspAdvanced ?? {}) },
+        });
+      })
+      .catch(() => { /* nessun profilo → default */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [psProjectId]);
 
   /* ── Profilo preset: scelta "umana" che imposta più parametri insieme ── */
   type OptProfile = "min_vehicles" | "balanced" | "min_cost" | "custom";
@@ -346,29 +366,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         // Planning Studio project (se collegato): backend leggera anche i
         // cluster PS logici come hint di transfer 0 al CP-SAT.
         if (psProjectId) bodyPayload.psProjectId = psProjectId;
-        // REGOLA #1 + parametri costi utente
-        bodyPayload.vspAdvanced = {
-          minVehiclesPriority,
-          preferMonolinea,
-          enableVehicleElimination: true,
-          vehicleEliminationMaxPasses,
-          vehicleEliminationTimeSec,
-          enableIterativeReduction,
-          iterativeReductionTimeSec,
-          costRatesOverride: {
-            fixedDaily: {
-              "12m": costFixed12m,
-              "autosnodato": costFixedSnod,
-              "10m": costFixed10m,
-            },
-            idlePerMin: costIdlePerMin,
-            perDepotReturn: costPerDepotReturn,
-            targetShiftDuration: targetShiftDuration,
-            maxIdleAtTerminal: maxIdleAtTerminal,
-            maxIdleForArcMin: maxIdleForArcMin,
-            terminalClusterRadiusM: terminalClusterRadiusM,
-          },
-        };
+        // Parametri turni macchina: fonte unica vspConfig (pannello + quick controls).
+        // vehicleCosts top-level (VehicleCostRates.from_config) + vspAdvanced (VSPConfig).
+        bodyPayload.vehicleCosts = vspConfig.vehicleCosts;
+        const adv: Record<string, any> = { ...vspConfig.vspAdvanced };
+        if (!adv.scenariosOverride || Number(adv.scenariosOverride) <= 0) delete adv.scenariosOverride; // 0 = auto
+        bodyPayload.vspAdvanced = adv;
       }
 
       // NB: l'analisi intermodale (treni/navi/aerei) NON viene più passata
@@ -392,11 +395,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, minVehiclesPriority, preferMonolinea,
-      costFixed12m, costFixedSnod, costFixed10m, costIdlePerMin,
-      costPerDepotReturn, targetShiftDuration, maxIdleAtTerminal, maxIdleForArcMin,
-      terminalClusterRadiusM, vehicleEliminationMaxPasses, vehicleEliminationTimeSec,
-      enableIterativeReduction, iterativeReductionTimeSec, psProjectId, gtfsSelection.tempFeedId]);
+  }, [assignment, solverMode, solverIntensity, vspConfig, psProjectId, gtfsSelection.tempFeedId]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
@@ -575,11 +574,19 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
               {solverMode === "cpsat" && (
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
                   className="bg-card/40 border border-border/30 rounded-xl">
+                  <button onClick={() => setRulesOpen(true)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-indigo-500/10 transition-colors rounded-t-xl border-b border-border/20">
+                    <div className="flex items-center gap-2">
+                      <SlidersHorizontal className="w-4 h-4 text-indigo-400" />
+                      <span className="text-xs font-semibold text-indigo-300">Parametri & Regole (tutti · profili)</span>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </button>
                   <button onClick={() => setShowCostPanel(v => !v)}
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/20 transition-colors rounded-xl">
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/20 transition-colors">
                     <div className="flex items-center gap-2">
                       <Pencil className="w-4 h-4 text-muted-foreground" />
-                      <span className="text-xs font-semibold text-foreground">Personalizzazione avanzata</span>
+                      <span className="text-xs font-semibold text-foreground">Personalizzazione rapida</span>
                       {profile === "custom" && (
                         <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">modificato</span>
                       )}
@@ -1169,6 +1176,15 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
         </AnimatePresence>
       </div>
+
+      {/* Pannello completo Parametri & Regole turni macchina */}
+      <VspRulesPanel
+        isOpen={rulesOpen}
+        onClose={() => setRulesOpen(false)}
+        config={vspConfig}
+        onChange={setVspConfig}
+        projectId={psProjectId}
+      />
     </div>
   );
 }
