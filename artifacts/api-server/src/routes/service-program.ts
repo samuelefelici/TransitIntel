@@ -1834,10 +1834,10 @@ router.post("/service-program/cpsat", async (req, res) => {
 /** POST /api/service-program/scenarios — save a scenario */
 router.post("/service-program/scenarios", async (req, res) => {
   try {
-    const { name, date, input, result: scenarioResult, projectId } = req.body as {
+    const { name, date, input, result: scenarioResult, projectId, depotId } = req.body as {
       name?: string; date?: string;
       input?: unknown; result?: unknown;
-      projectId?: string;
+      projectId?: string; depotId?: string;
     };
     if (!name || !date || !input || !scenarioResult) {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
@@ -1860,6 +1860,15 @@ router.post("/service-program/scenarios", async (req, res) => {
       req.log.warn({ err: e?.message }, "stamp owner_user_id failed (non-fatal)");
     }
     // Aggancia al progetto se passato (colonna nullable aggiunta da scheduling-projects)
+    // Residenza di servizio = deposito scelto (colonna additiva depot_id)
+    if (depotId && /^[0-9a-f-]{36}$/i.test(depotId)) {
+      try {
+        await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depot_id uuid`);
+        await db.execute(sql`UPDATE service_program_scenarios SET depot_id = ${depotId}::uuid WHERE id = ${row.id}::uuid`);
+      } catch (e: any) {
+        req.log.warn({ err: e?.message }, "attach depot_id failed (non-fatal)");
+      }
+    }
     if (projectId && /^[0-9a-f-]{36}$/i.test(projectId)) {
       try {
         await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${projectId}::uuid WHERE id = ${row.id}::uuid`);

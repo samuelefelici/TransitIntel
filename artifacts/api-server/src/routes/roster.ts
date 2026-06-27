@@ -290,10 +290,27 @@ router.get("/roster/board", async (req, res): Promise<void> => {
         AND (${dssId}::text = '' OR a.dss_id = ${dssId || "00000000-0000-0000-0000-000000000000"}::uuid)
     `);
 
+    // Residenza di servizio = deposito dello scenario turni-macchina collegato al
+    // DSS. I turni del Roster vengono colorati con il colore del deposito.
+    let residenza: { name: string; color: string } | null = null;
+    if (dssId) {
+      try {
+        const depR = await db.execute<any>(sql`
+          SELECT dep.name, dep.color
+            FROM driver_shift_scenarios d
+            JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+            JOIN depots dep ON dep.id = s.depot_id
+           WHERE d.id = ${dssId}::uuid LIMIT 1`);
+        const dep = depR.rows?.[0];
+        if (dep) residenza = { name: dep.name, color: dep.color || "#3b82f6" };
+      } catch { /* depot_id può non esistere su scenari vecchi */ }
+    }
+
     res.json({
       from, days: dayList,
       drivers: driversQ.rows.map(rowToDriver),
       duties,
+      residenza,
       assignments: assignQ.rows.map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
       })),
