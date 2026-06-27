@@ -162,6 +162,47 @@ async function loadClustersForPython(): Promise<any[]> {
   }
 }
 
+/**
+ * Carica i nodi di sosta (kind='rest') del progetto Planning Studio collegato
+ * allo scenario, per piazzare le soste inoperose extraurbane.
+ *
+ * Catena: service_program_scenarios.project_id → scheduling_projects
+ *         → planning_studio_project_id → ps_stop_clusters (kind='rest').
+ * Lo stop_id GTFS usato dallo scheduler corrisponde a ps_stops.id::text
+ * (cfr planning-studio-materialize). hasFacilities determina il contributo
+ * della sosta all'orario (12% con strutture, 25% senza).
+ */
+async function loadRestPointsForScenario(scenarioProjectId: string | null | undefined): Promise<any[]> {
+  if (!scenarioProjectId) return [];
+  try {
+    const r = await db.execute(sql`
+      SELECT
+        c.id::text AS id,
+        COALESCE(NULLIF(c.name, ''), 'Sosta') AS name,
+        COALESCE((c.attributes->>'hasFacilities')::boolean, false) AS has_facilities,
+        COALESCE(json_agg(s.id::text ORDER BY s.id)
+                 FILTER (WHERE s.id IS NOT NULL), '[]'::json) AS stop_ids
+      FROM scheduling_projects sp
+      JOIN ps_stop_clusters c ON c.project_id = sp.planning_studio_project_id
+      LEFT JOIN ps_stops s ON s.cluster_id = c.id
+      WHERE sp.id = ${scenarioProjectId}::uuid
+        AND c.kind = 'rest'
+      GROUP BY c.id
+      ORDER BY c.name ASC
+    `);
+    const rows: any[] = (r as any).rows ?? [];
+    return rows.map(c => ({
+      id: c.id,
+      name: c.name,
+      hasFacilities: !!c.has_facilities,
+      stopIds: Array.isArray(c.stop_ids) ? c.stop_ids : [],
+    }));
+  } catch (err: any) {
+    console.warn("[driver-shifts] loadRestPointsForScenario error:", err?.message || err);
+    return [];
+  }
+}
+
 /** Carica il numero di autovetture aziendali dal DB */
 async function loadCompanyCars(): Promise<number> {
   try {
@@ -1045,10 +1086,11 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
 
     const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
-    // Carica cluster e autovetture dal DB
-    const [allDbClusters, dbCompanyCars] = await Promise.all([
+    // Carica cluster, autovetture e nodi di sosta dal DB
+    const [allDbClusters, dbCompanyCars, restPoints] = await Promise.all([
       loadClustersForPython(),
       loadCompanyCars(),
+      loadRestPointsForScenario((scenario as any).projectId),
     ]);
 
     // Applica filtro cluster / override companyCars se presenti nel config dell'operatore
@@ -1070,6 +1112,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
           ...restOperatorConfig,
           clusters: dbClusters,
           companyCars: companyCarsEffective,
+          restPoints,
         },
       },
       logger: req.log,
