@@ -190,9 +190,6 @@ function Router() {
             <Route path="/planning-studio/:id/calendar">
               <Gated perm="network"><PlanningStudioCalendarProfilePage /></Gated>
             </Route>
-            <Route path="/planning-studio/:id/esercizio">
-              <Gated perm="network"><PlanningStudioOperationalBoardPage /></Gated>
-            </Route>
             <Route path="/planning-studio/:id/ttd">
               <Gated perm="network"><PlanningStudioTtdPage /></Gated>
             </Route>
@@ -229,6 +226,12 @@ function Router() {
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
             <Route path="/fucina">
               <Gated perm="scheduling"><SchedulingProjectsHubPage /></Gated>
+            </Route>
+            <Route path="/fucina/esercizio/:id">
+              <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
+            </Route>
+            <Route path="/fucina/esercizio">
+              <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/pipeline">
               <Gated perm="scheduling"><FucinaPage /></Gated>

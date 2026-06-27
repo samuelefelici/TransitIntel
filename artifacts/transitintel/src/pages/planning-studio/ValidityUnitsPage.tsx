@@ -103,15 +103,7 @@ export default function PlanningStudioValidityUnitsPage() {
           <h1 className="font-semibold text-slate-100 shrink-0">
             {projectQ.data?.name ?? "…"}
           </h1>
-          <Link href={`/planning-studio/${projectId}/esercizio`}>
-            <button
-              className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors"
-              title="Quadro d'esercizio: turni macchina e guida in esercizio per tutte le UDP"
-            >
-              <Rocket className="h-3.5 w-3.5" /> Quadro d'esercizio
-            </button>
-          </Link>
-          <div className="ml-3">
+          <div className="ml-auto">
             <ValiditySectionNav projectId={projectId} active="units" />
           </div>
         </div>

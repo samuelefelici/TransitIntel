@@ -319,6 +319,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             </Link>
 
+            {/* Quadro d'esercizio: cockpit di fine processo (tutte le UDP del programma) */}
+            <Link href="/fucina/esercizio">
+              <div
+                onClick={() => setIsMobileOpen(false)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
+                  location.startsWith("/fucina/esercizio")
+                    ? "bg-emerald-500/15 text-emerald-300"
+                    : "text-emerald-300/60 hover:text-emerald-200 hover:bg-emerald-500/10"
+                }`}
+              >
+                <ClipboardList className={`w-4 h-4 shrink-0 transition-colors ${location.startsWith("/fucina/esercizio") ? "text-emerald-400" : "text-emerald-500/60 group-hover:text-emerald-400"}`} />
+                <div className="min-w-0">
+                  <p className="text-[12px] font-medium leading-tight">Quadro d'esercizio</p>
+                  <p className="text-[9px] text-emerald-400/30 font-mono">UDP · turni macchina/guida · scoperte</p>
+                </div>
+              </div>
+            </Link>
+
             {/* ─ Separatore ─ */}
             <div className="my-3 border-t border-orange-900/25" />
 
