@@ -77,6 +77,7 @@ function extractDuties(result: any): Array<{
   code: string; type: string | null; start: string | null; end: string | null;
   nastro: string | null; work: string | null;
   interruption: string | null; ripreseCount: number; tripsCount: number; costEuro: number | null;
+  residenzaName: string | null; residenzaColor: string | null;
 }> {
   const list = result?.driverShifts ?? result?.duties ?? [];
   if (!Array.isArray(list)) return [];
@@ -97,6 +98,9 @@ function extractDuties(result: any): Array<{
       ripreseCount: riprese.length,
       tripsCount,
       costEuro: typeof d.costEuro === "number" ? d.costEuro : null,
+      // Residenza per-turno (dal turno macchina, propagata dal crew scheduler)
+      residenzaName: d.residenzaName ?? null,
+      residenzaColor: d.residenzaColor ?? null,
     };
   });
 }
