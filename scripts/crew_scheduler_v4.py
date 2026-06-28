@@ -372,24 +372,32 @@ SOSTA_INOP_MORNING_END_MAX = 915              # 15:15
 SOSTA_INOP_AFTERNOON_START_MIN = 710          # 11:50
 # Cap soft combinato sosta inoperosa + semiunici (% sul totale turni principali).
 SOSTA_INOP_MAX_PCT_WITH_SEMI = 39
+# Nastro massimo del turno con sosta inoperosa (9h15). Oltre, non è una sosta inoperosa.
+SOSTA_INOP_MAX_NASTRO = 555
+# Tempi pre/post specifici della sosta inoperosa: 5' post (fine ripresa 1) + 5' pre
+# (inizio ripresa 2) = 10', in sostituzione del pre_ripresa standard.
+SOSTA_INOP_PREPOST_MIN = 10
 
 
 def sosta_inoperosa_coeff(
     stop_name: str | None, interruption_min: int,
     r1_end: int | None = None, r2_start: int | None = None,
+    nastro_min: int | None = None,
 ) -> float | None:
     """Coefficiente di retribuzione della sosta inoperosa se l'interruzione avviene
-    a un nodo di sosta (fuori residenza) e rispetta durata minima e finestre orarie;
-    altrimenti None. Match per NOME fermata (i VShiftTrip non portano lo stop_id).
+    a un nodo di sosta (fuori residenza) e rispetta durata minima, finestre orarie e
+    nastro massimo (9h15); altrimenti None. Match per NOME fermata (i VShiftTrip non
+    portano lo stop_id).
 
-    Le finestre orarie sono verificate solo se r1_end/r2_start sono forniti:
-    ripresa mattino entro morning_end, ripresa pomeriggio dopo afternoon_start.
+    finestre/nastro verificati solo se i rispettivi parametri sono forniti.
     """
     if not stop_name or interruption_min < SOSTA_INOP_MIN_MIN or not REST_STOP_FACILITIES:
         return None
     if r1_end is not None and r1_end > SOSTA_INOP_MORNING_END_MAX:
         return None
     if r2_start is not None and r2_start < SOSTA_INOP_AFTERNOON_START_MIN:
+        return None
+    if nastro_min is not None and nastro_min > SOSTA_INOP_MAX_NASTRO:
         return None
     fac = REST_STOP_FACILITIES.get(stop_name.strip().upper())
     if fac is None:
@@ -404,6 +412,7 @@ def apply_sosta_inoperosa_config(cfg: dict) -> None:
     global REST_STOP_FACILITIES, SOSTA_INOP_MIN_MIN
     global SOSTA_INOP_COEFF_FACILITIES, SOSTA_INOP_COEFF_NO_FACILITIES
     global SOSTA_INOP_MORNING_END_MAX, SOSTA_INOP_AFTERNOON_START_MIN, SOSTA_INOP_MAX_PCT_WITH_SEMI
+    global SOSTA_INOP_MAX_NASTRO, SOSTA_INOP_PREPOST_MIN
 
     REST_STOP_FACILITIES = {}
     for rp in (cfg.get("restPoints") or []):
@@ -443,6 +452,16 @@ def apply_sosta_inoperosa_config(cfg: dict) -> None:
     if "maxPctWithSemi" in si:
         try:
             SOSTA_INOP_MAX_PCT_WITH_SEMI = int(si["maxPctWithSemi"])
+        except (ValueError, TypeError):
+            pass
+    if "maxNastro" in si:
+        try:
+            SOSTA_INOP_MAX_NASTRO = int(si["maxNastro"])
+        except (ValueError, TypeError):
+            pass
+    if "prePostMin" in si:
+        try:
+            SOSTA_INOP_PREPOST_MIN = int(si["prePostMin"])
         except (ValueError, TypeError):
             pass
 
@@ -553,9 +572,11 @@ def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: l
     # Sosta inoperosa: se l'interruzione avviene a un nodo di sosta, una quota
     # del tempo è retribuita (conta nell'orario di lavoro → cap maxLavoro + costo).
     interruption = s2.start_min - s1.end_min
-    coeff = sosta_inoperosa_coeff(s1.last_stop, interruption, s1.end_min, s2.start_min)
+    coeff = sosta_inoperosa_coeff(s1.last_stop, interruption, s1.end_min, s2.start_min, nastro)
     if coeff:
+        # contributo sosta + pre/post sosta inoperosa (5'+5') in luogo del pre_ripresa
         work += int(interruption * coeff)
+        work += SOSTA_INOP_PREPOST_MIN - bds.pre_post.pre_ripresa
     return nastro, work
 
 
@@ -1597,11 +1618,13 @@ def compute_work_bds(
         boundary_stop = duty.segments[0].last_stop
         _r1_end = duty.segments[0].end_min
         _r2_start = duty.segments[1].start_min
-        sosta_coeff = sosta_inoperosa_coeff(boundary_stop, duty.interruption_min, _r1_end, _r2_start)
+        sosta_coeff = sosta_inoperosa_coeff(boundary_stop, duty.interruption_min, _r1_end, _r2_start, duty.nastro_min)
         if sosta_coeff is not None:
             # Sosta inoperosa a un nodo di sosta (fuori residenza): quota retribuita
             wc.soste_fra_riprese_fr_min = duty.interruption_min
             wc.coeff_fr = sosta_coeff
+            # pre/post sosta inoperosa (5'+5') in luogo del pre_ripresa standard
+            wc.pre_post_min += SOSTA_INOP_PREPOST_MIN - bds.pre_post.pre_ripresa
             duty.is_sosta_inoperosa = True  # type: ignore[attr-defined]
         else:
             # Determina se la sosta è in residenza (deposito) o fuori residenza
@@ -1905,7 +1928,8 @@ def _build_cpsat_model(
         if a is not None and b is not None:
             if a.start_min > b.start_min:
                 a, b = b, a
-            if sosta_inoperosa_coeff(a.last_stop, b.start_min - a.end_min, a.end_min, b.start_min) is not None:
+            _nastro_ab = pair_nastro_work(a, b, bds, clusters)[0]
+            if sosta_inoperosa_coeff(a.last_stop, b.start_min - a.end_min, a.end_min, b.start_min, _nastro_ab) is not None:
                 if ptype != "semiunico":
                     n_sosta_inop.append(pv)
 
