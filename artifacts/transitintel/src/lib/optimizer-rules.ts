@@ -137,6 +137,7 @@ export const DEFAULT_BDS: Record<string, any> = {
   sostaInoperosa: {
     minInterruption: 31, coeffFacilities: 0.12, coeffNoFacilities: 0.25,
     morningEndMax: 915, afternoonStartMin: 710, maxPctWithSemi: 39,
+    maxNastro: 555, prePostMin: 10,
   },
 };
 
@@ -339,6 +340,8 @@ export const RULE_GROUPS: GroupDef[] = [
       { path: "bds.sostaInoperosa.morningEndMax", label: "Fine ripresa mattino entro", type: "time" },
       { path: "bds.sostaInoperosa.afternoonStartMin", label: "Inizio ripresa pomeriggio dopo", type: "time" },
       { path: "bds.sostaInoperosa.maxPctWithSemi", label: "% max (con semiunici, cap soft)", type: "int", unit: "%", min: 0, max: 100 },
+      { path: "bds.sostaInoperosa.maxNastro", label: "Nastro massimo (9h15)", type: "int", unit: "min", min: 0, max: 900 },
+      { path: "bds.sostaInoperosa.prePostMin", label: "Pre/post sosta (5'+5')", type: "int", unit: "min", min: 0, max: 60 },
     ],
   },
   {
