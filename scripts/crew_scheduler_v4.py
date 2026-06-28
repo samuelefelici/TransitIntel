@@ -366,13 +366,30 @@ def duty_residenza(duty) -> dict:
 SOSTA_INOP_MIN_MIN = 31                       # durata minima (min) perché conti come sosta inoperosa
 SOSTA_INOP_COEFF_FACILITIES = 0.12            # contributo all'orario con strutture
 SOSTA_INOP_COEFF_NO_FACILITIES = 0.25         # contributo all'orario senza strutture
+# Finestre orarie (minuti da mezzanotte): la ripresa del mattino deve FINIRE entro
+# morning_end (15:15) e quella del pomeriggio deve INIZIARE dopo afternoon_start (11:50).
+SOSTA_INOP_MORNING_END_MAX = 915              # 15:15
+SOSTA_INOP_AFTERNOON_START_MIN = 710          # 11:50
+# Cap soft combinato sosta inoperosa + semiunici (% sul totale turni principali).
+SOSTA_INOP_MAX_PCT_WITH_SEMI = 39
 
 
-def sosta_inoperosa_coeff(stop_name: str | None, interruption_min: int) -> float | None:
-    """Coefficiente di retribuzione della sosta inoperosa se l'interruzione
-    avviene a un nodo di sosta e dura abbastanza, altrimenti None.
-    Match per NOME fermata (i VShiftTrip non portano lo stop_id)."""
+def sosta_inoperosa_coeff(
+    stop_name: str | None, interruption_min: int,
+    r1_end: int | None = None, r2_start: int | None = None,
+) -> float | None:
+    """Coefficiente di retribuzione della sosta inoperosa se l'interruzione avviene
+    a un nodo di sosta (fuori residenza) e rispetta durata minima e finestre orarie;
+    altrimenti None. Match per NOME fermata (i VShiftTrip non portano lo stop_id).
+
+    Le finestre orarie sono verificate solo se r1_end/r2_start sono forniti:
+    ripresa mattino entro morning_end, ripresa pomeriggio dopo afternoon_start.
+    """
     if not stop_name or interruption_min < SOSTA_INOP_MIN_MIN or not REST_STOP_FACILITIES:
+        return None
+    if r1_end is not None and r1_end > SOSTA_INOP_MORNING_END_MAX:
+        return None
+    if r2_start is not None and r2_start < SOSTA_INOP_AFTERNOON_START_MIN:
         return None
     fac = REST_STOP_FACILITIES.get(stop_name.strip().upper())
     if fac is None:
@@ -386,6 +403,7 @@ def apply_sosta_inoperosa_config(cfg: dict) -> None:
     (minInterruption, coeffFacilities, coeffNoFacilities). Muta i global IN-PLACE."""
     global REST_STOP_FACILITIES, SOSTA_INOP_MIN_MIN
     global SOSTA_INOP_COEFF_FACILITIES, SOSTA_INOP_COEFF_NO_FACILITIES
+    global SOSTA_INOP_MORNING_END_MAX, SOSTA_INOP_AFTERNOON_START_MIN, SOSTA_INOP_MAX_PCT_WITH_SEMI
 
     REST_STOP_FACILITIES = {}
     for rp in (cfg.get("restPoints") or []):
@@ -410,6 +428,21 @@ def apply_sosta_inoperosa_config(cfg: dict) -> None:
     if "coeffNoFacilities" in si:
         try:
             SOSTA_INOP_COEFF_NO_FACILITIES = float(si["coeffNoFacilities"])
+        except (ValueError, TypeError):
+            pass
+    if "morningEndMax" in si:
+        try:
+            SOSTA_INOP_MORNING_END_MAX = int(si["morningEndMax"])
+        except (ValueError, TypeError):
+            pass
+    if "afternoonStartMin" in si:
+        try:
+            SOSTA_INOP_AFTERNOON_START_MIN = int(si["afternoonStartMin"])
+        except (ValueError, TypeError):
+            pass
+    if "maxPctWithSemi" in si:
+        try:
+            SOSTA_INOP_MAX_PCT_WITH_SEMI = int(si["maxPctWithSemi"])
         except (ValueError, TypeError):
             pass
 
@@ -520,7 +553,7 @@ def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: l
     # Sosta inoperosa: se l'interruzione avviene a un nodo di sosta, una quota
     # del tempo è retribuita (conta nell'orario di lavoro → cap maxLavoro + costo).
     interruption = s2.start_min - s1.end_min
-    coeff = sosta_inoperosa_coeff(s1.last_stop, interruption)
+    coeff = sosta_inoperosa_coeff(s1.last_stop, interruption, s1.end_min, s2.start_min)
     if coeff:
         work += int(interruption * coeff)
     return nastro, work
@@ -1562,7 +1595,9 @@ def compute_work_bds(
     # Soste fra riprese (per semiunico/spezzato)
     if len(duty.segments) >= 2 and duty.interruption_min > 0:
         boundary_stop = duty.segments[0].last_stop
-        sosta_coeff = sosta_inoperosa_coeff(boundary_stop, duty.interruption_min)
+        _r1_end = duty.segments[0].end_min
+        _r2_start = duty.segments[1].start_min
+        sosta_coeff = sosta_inoperosa_coeff(boundary_stop, duty.interruption_min, _r1_end, _r2_start)
         if sosta_coeff is not None:
             # Sosta inoperosa a un nodo di sosta (fuori residenza): quota retribuita
             wc.soste_fra_riprese_fr_min = duty.interruption_min
@@ -1855,12 +1890,24 @@ def _build_cpsat_model(
         if nastro_single <= SUPPLEMENTO_NASTRO_MAX:
             n_supplemento.append(single[s.idx])
 
+    # Sosta inoperosa: pair la cui interruzione cade su un nodo di sosta (fuori
+    # residenza) rispettando durata minima e finestre orarie. Quelli NON semiunici
+    # vanno conteggiati a parte per il cap combinato (evita doppio conteggio).
+    seg_by_idx = {s.idx: s for s in segments}
+    n_sosta_inop = []
     for key, pv in pair_vars.items():
         ptype = pair_types[key]
         if ptype == "semiunico":
             n_semi.append(pv)
         else:
             n_spezzato.append(pv)
+        a = seg_by_idx.get(key[0]); b = seg_by_idx.get(key[1])
+        if a is not None and b is not None:
+            if a.start_min > b.start_min:
+                a, b = b, a
+            if sosta_inoperosa_coeff(a.last_stop, b.start_min - a.end_min, a.end_min, b.start_min) is not None:
+                if ptype != "semiunico":
+                    n_sosta_inop.append(pv)
 
     model.add(total_duties == sum(single.values()) + sum(pair_vars.values()))
 
@@ -1890,6 +1937,14 @@ def _build_cpsat_model(
         spez_max_pct = rules.get("spezzato", SHIFT_RULES["spezzato"]).get("maxPct", 13)
         ex = model.new_int_var(0, 100 * n_seg, "spez_excess")
         model.add(ex >= 100 * spez_count - spez_max_pct * total_duties)
+        pct_excess.append(ex)
+
+    # Cap soft combinato: semiunici + sosta inoperosa ≤ SOSTA_INOP_MAX_PCT_WITH_SEMI%
+    if n_semi or n_sosta_inop:
+        semi_sosta_count = model.new_int_var(0, n_seg, "semi_sosta_count")
+        model.add(semi_sosta_count == sum(n_semi) + sum(n_sosta_inop))
+        ex = model.new_int_var(0, 100 * n_seg, "semi_sosta_excess")
+        model.add(ex >= 100 * semi_sosta_count - SOSTA_INOP_MAX_PCT_WITH_SEMI * total_duties)
         pct_excess.append(ex)
 
     # -- Obiettivo (con noise per multi-scenario) --

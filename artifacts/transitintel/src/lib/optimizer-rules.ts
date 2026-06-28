@@ -133,7 +133,11 @@ export const DEFAULT_BDS: Record<string, any> = {
   },
   scenari: { count: 0, timeFraction: 0.78, polishFraction: 0.20 },
   // Sosta inoperosa (extraurbano): durata minima + contributo all'orario (frazioni)
-  sostaInoperosa: { minInterruption: 31, coeffFacilities: 0.12, coeffNoFacilities: 0.25 },
+  // + finestre orarie (min da mezzanotte) + cap soft combinato con i semiunici (%)
+  sostaInoperosa: {
+    minInterruption: 31, coeffFacilities: 0.12, coeffNoFacilities: 0.25,
+    morningEndMax: 915, afternoonStartMin: 710, maxPctWithSemi: 39,
+  },
 };
 
 export const DEFAULT_COST_RATES: Record<string, number> = {
@@ -327,11 +331,14 @@ export const RULE_GROUPS: GroupDef[] = [
   {
     id: "sostaInoperosa",
     title: "Sosta inoperosa (extraurbano)",
-    description: "Quando l'interruzione avviene a un Nodo di sosta (Planning Studio), una quota del tempo è retribuita: con strutture 0.12 (=12%), senza 0.25 (=25%).",
+    description: "Quando l'interruzione avviene a un Nodo di sosta (Planning Studio), fuori residenza, una quota del tempo è retribuita: con strutture 0.12 (=12%), senza 0.25 (=25%). Valida solo entro le finestre orarie.",
     fields: [
       { path: "bds.sostaInoperosa.minInterruption", label: "Durata minima sosta inoperosa", type: "int", unit: "min", min: 0, max: 240 },
       { path: "bds.sostaInoperosa.coeffFacilities", label: "Contributo con strutture", type: "float", unit: "×", min: 0, max: 1, step: 0.01 },
       { path: "bds.sostaInoperosa.coeffNoFacilities", label: "Contributo senza strutture", type: "float", unit: "×", min: 0, max: 1, step: 0.01 },
+      { path: "bds.sostaInoperosa.morningEndMax", label: "Fine ripresa mattino entro", type: "time" },
+      { path: "bds.sostaInoperosa.afternoonStartMin", label: "Inizio ripresa pomeriggio dopo", type: "time" },
+      { path: "bds.sostaInoperosa.maxPctWithSemi", label: "% max (con semiunici, cap soft)", type: "int", unit: "%", min: 0, max: 100 },
     ],
   },
   {
