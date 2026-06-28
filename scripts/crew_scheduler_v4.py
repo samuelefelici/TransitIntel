@@ -354,6 +354,11 @@ REST_STOP_FACILITIES: dict[str, bool] = {}   # UPPER(stop_name) -> hasFacilities
 # residenza del veicolo del suo primo segmento (deposito di uscita).
 RESIDENZA_BY_VEHICLE: dict[str, dict] = {}
 
+# Prefisso codice turno guida per categoria/servizio (U/E/M), così urbano ed
+# extraurbano hanno CODIFICHE DISTINTE e non collidono quando il processo misto
+# li combina (es. U001 / E001 anziché due D001).
+DUTY_CODE_PREFIX = "D"
+
 
 def duty_residenza(duty) -> dict:
     """Residenza del turno guida = residenza del veicolo del primo segmento con
@@ -2070,7 +2075,7 @@ def _extract_duties_from_solution(
 
             duties.append(DriverDutyV3(
                 idx=duty_idx,
-                driver_id=f"D{duty_idx + 1:03d}",
+                driver_id=f"{DUTY_CODE_PREFIX}{duty_idx + 1:03d}",
                 duty_type=dtype,
                 segments=[s],
                 nastro_start=s.start_min - pt - transfer,
@@ -2103,7 +2108,7 @@ def _extract_duties_from_solution(
 
             duties.append(DriverDutyV3(
                 idx=duty_idx,
-                driver_id=f"D{duty_idx + 1:03d}",
+                driver_id=f"{DUTY_CODE_PREFIX}{duty_idx + 1:03d}",
                 duty_type=ptype,
                 segments=[s1, s2],
                 nastro_start=s1.start_min - pt - transfer,
@@ -2748,7 +2753,7 @@ def greedy_fallback(
 
             d = DriverDutyV3(
                 idx=duty_idx,
-                driver_id=f"D{duty_idx + 1:03d}",
+                driver_id=f"{DUTY_CODE_PREFIX}{duty_idx + 1:03d}",
                 duty_type=best_type,
                 segments=[s1, s2],
                 nastro_start=s1.start_min - pt - transfer,
@@ -2780,7 +2785,7 @@ def greedy_fallback(
 
         d = DriverDutyV3(
             idx=duty_idx,
-            driver_id=f"D{duty_idx + 1:03d}",
+            driver_id=f"{DUTY_CODE_PREFIX}{duty_idx + 1:03d}",
             duty_type="supplemento" if nastro_s <= SUPPLEMENTO_NASTRO_MAX else "intero",
             segments=[s],
             nastro_start=s.start_min - pt - transfer,
@@ -3166,6 +3171,11 @@ def main() -> None:
     vehicle_shifts_raw = raw.get("vehicleShifts", [])
     user_config = raw.get("config", {})
     config = merge_config(user_config)
+
+    # Codifica turni distinta per categoria (U/E/M) — evita collisioni nel misto
+    global DUTY_CODE_PREFIX
+    _stype = (user_config.get("bds", {}) or {}).get("serviceType")
+    DUTY_CODE_PREFIX = {"urbano": "U", "extraurbano": "E", "misto": "M"}.get(_stype, "D")
 
     # Residenza di servizio per veicolo (dal turno macchina) → ereditata dai turni guida
     global RESIDENZA_BY_VEHICLE
