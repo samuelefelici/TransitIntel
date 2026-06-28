@@ -17,6 +17,7 @@ const TimetablesPage = lazy(() => import("@/pages/timetables"));
 const NetworkSharePage = lazy(() => import("@/pages/network-share"));
 const RuntimesPage = lazy(() => import("@/pages/runtimes"));
 const RosterPage = lazy(() => import("@/pages/roster"));
+const MistoPage = lazy(() => import("@/pages/misto"));
 const ServiceDbPage = lazy(() => import("@/pages/service-db"));
 const Traffic = lazy(() => import("@/pages/traffic"));
 const Territory = lazy(() => import("@/pages/territory"));
@@ -256,6 +257,9 @@ function Router() {
             </Route>
             <Route path="/roster">
               <Gated perm="scheduling"><RosterPage /></Gated>
+            </Route>
+            <Route path="/misto">
+              <Gated perm="scheduling"><MistoPage /></Gated>
             </Route>
             <Route path="/service-db">
               <Gated perm="scheduling"><ServiceDbPage /></Gated>

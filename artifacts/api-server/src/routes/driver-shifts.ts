@@ -33,7 +33,7 @@
 
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes, driverShiftScenarios } from "@workspace/db/schema";
+import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes, driverShiftScenarios, depots, gtfsStops } from "@workspace/db/schema";
 import { eq, inArray, and, desc, sql } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -1434,6 +1434,233 @@ router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) =>
     res.json({ ok: true });
   } catch (err: any) {
     req.log.error(err, "Error deleting driver-shift scenario");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /driver-shifts/dss/:dssId/duties — elenco turni di un DSS (per selezione misto). */
+router.get("/driver-shifts/dss/:dssId/duties", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT result FROM driver_shift_scenarios
+       WHERE id = ${req.params.dssId}::uuid
+         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL) LIMIT 1
+    `);
+    const result = r.rows?.[0]?.result;
+    if (!result) { res.status(404).json({ error: "DSS non trovato" }); return; }
+    const duties = (result.driverShifts ?? []).map((d: any) => ({
+      code: d.driverId,
+      type: d.type ?? d.dutyType ?? null,
+      start: d.nastroStart ?? null,
+      end: d.nastroEnd ?? null,
+      isSupplemento: String(d.type ?? "").toLowerCase() === "supplemento",
+      residenzaName: d.residenzaName ?? null,
+    }));
+    res.json({ duties });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+/* ─── Completamento / Turni MISTI (3° processo di ottimizzazione) ───────────── */
+
+function _catFromCode(code: string | null | undefined): "urbano" | "extraurbano" | "misto" {
+  const c = String(code ?? "").trim().toUpperCase();
+  if (c.startsWith("E")) return "extraurbano";
+  if (c.startsWith("M")) return "misto";
+  return "urbano";
+}
+
+/** Spacchetta un turno guida nelle sue corse di servizio (drop fuorilinea). */
+function _flattenDutyTrips(duty: any, category: string): any[] {
+  const out: any[] = [];
+  for (const rip of (duty?.riprese ?? [])) {
+    for (const t of (rip?.trips ?? [])) {
+      if ((t?.type ?? "trip") !== "trip" || !t?.tripId) continue;
+      out.push({
+        tripId: t.tripId, category,
+        departureMin: t.departureMin, arrivalMin: t.arrivalMin,
+        firstStopName: t.firstStopName, lastStopName: t.lastStopName,
+        vehicleType: t.vehicleType,
+      });
+    }
+  }
+  return out;
+}
+
+/** tripId → coordinate prima/ultima fermata. trip_id è univoco (ps_trips.id::text),
+ *  quindi il feed si ricava dal trip stesso (nessuna dipendenza esplicita dal feed). */
+async function _enrichTripCoords(tripIds: string[]): Promise<Map<string, any>> {
+  const m = new Map<string, any>();
+  const ids = Array.from(new Set(tripIds.filter(Boolean).map(String)));
+  if (ids.length === 0) return m;
+  const lit = `{${ids.map((id) => `"${id}"`).join(",")}}`;
+  const r = await db.execute<any>(sql`
+    SELECT x.trip_id,
+           fs.stop_lat AS f_lat, fs.stop_lon AS f_lon,
+           ls.stop_lat AS l_lat, ls.stop_lon AS l_lon
+      FROM (
+        SELECT stt.trip_id,
+               (array_agg(stt.stop_id ORDER BY stt.stop_sequence))[1] AS first_stop_id,
+               (array_agg(stt.stop_id ORDER BY stt.stop_sequence DESC))[1] AS last_stop_id,
+               (array_agg(stt.feed_id ORDER BY stt.stop_sequence))[1] AS feed_id
+          FROM gtfs_stop_times stt
+         WHERE stt.trip_id = ANY(${lit}::text[])
+         GROUP BY stt.trip_id
+      ) x
+      LEFT JOIN gtfs_stops fs ON fs.feed_id = x.feed_id AND fs.stop_id = x.first_stop_id
+      LEFT JOIN gtfs_stops ls ON ls.feed_id = x.feed_id AND ls.stop_id = x.last_stop_id
+  `);
+  for (const row of (r.rows ?? [])) {
+    m.set(String(row.trip_id), {
+      fLat: row.f_lat == null ? null : Number(row.f_lat),
+      fLon: row.f_lon == null ? null : Number(row.f_lon),
+      lLat: row.l_lat == null ? null : Number(row.l_lat),
+      lLon: row.l_lon == null ? null : Number(row.l_lon),
+    });
+  }
+  return m;
+}
+
+function _applyCoords(trip: any, coords: Map<string, any>): void {
+  const c = coords.get(String(trip.tripId));
+  if (!c) return;
+  trip.firstStopLat = c.fLat; trip.firstStopLon = c.fLon;
+  trip.lastStopLat = c.lLat; trip.lastStopLon = c.lLon;
+}
+
+function runMistoEngine(input: any): Promise<any> {
+  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_misto.py");
+  return new Promise((resolve, reject) => {
+    const py = spawn("python3", [scriptPath], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+    let stdout = "", stderr = "";
+    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    py.on("error", (err) => reject(err));
+    py.on("close", (code) => {
+      if (code !== 0) reject(new Error(`crew_misto exit ${code}: ${stderr}`));
+      else { try { resolve(JSON.parse(stdout)); } catch (e: any) { reject(new Error(`parse misto: ${e.message}`)); } }
+    });
+    py.stdin.on("error", () => { /* EPIPE guard */ });
+    py.stdin.write(JSON.stringify(input)); py.stdin.end();
+  });
+}
+
+const _hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
+
+/** Converte un turno del motore (trips piatti) in driverShift per roster/visualizzazione. */
+function _engineShiftToDriverShift(s: any): any {
+  const trips = [...(s.trips ?? [])].sort((a: any, b: any) => a.departureMin - b.departureMin);
+  const riprese: any[][] = [];
+  let cur: any[] = [];
+  for (const t of trips) {
+    if (cur.length && t.departureMin - cur[cur.length - 1].arrivalMin > 40) { riprese.push(cur); cur = []; }
+    cur.push(t);
+  }
+  if (cur.length) riprese.push(cur);
+  const startMin = trips.length ? Math.min(...trips.map((t: any) => t.departureMin)) : 0;
+  const endMin = trips.length ? Math.max(...trips.map((t: any) => t.arrivalMin)) : 0;
+  return {
+    driverId: s.driverId,
+    type: s.isMisto ? "misto" : (s.type ?? "misto"),
+    residenzaDepotId: s.residenzaDepotId ?? null,
+    residenzaName: s.residenzaName ?? null,
+    residenzaColor: s.residenzaColor ?? null,
+    isMisto: !!s.isMisto,
+    nastroStart: _hhmm(startMin), nastroEnd: _hhmm(endMin),
+    nastroStartMin: startMin, nastroEndMin: endMin,
+    nastroMin: s.nastroMin ?? (endMin - startMin),
+    workMin: s.workMin ?? null,
+    riprese: riprese.map((g) => ({
+      startTime: _hhmm(g[0].departureMin), endTime: _hhmm(g[g.length - 1].arrivalMin),
+      trips: g.map((t: any) => ({ ...t, type: "trip" })),
+    })),
+  };
+}
+
+/**
+ * POST /driver-shifts/misto — completamento turni misti.
+ * Body: { targetDssId, sources: [{dssId, dutyCodes?: string[]}], name?, config? }
+ * Spacchetta i turni/supplementi sorgente in corse e prova a incastrarle nei turni
+ * del DSS target. Salva un NUOVO scenario misto (non distruttivo).
+ */
+router.post("/driver-shifts/misto", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+    const { targetDssId, sources, name, config } = req.body ?? {};
+    if (!targetDssId || !Array.isArray(sources)) { res.status(400).json({ error: "targetDssId e sources richiesti" }); return; }
+
+    const dssIds = Array.from(new Set([String(targetDssId), ...sources.map((s: any) => String(s.dssId))].filter(Boolean)));
+    const idsLit = `{${dssIds.map((id) => `"${id}"`).join(",")}}`;
+    const dssRows = await db.execute<any>(sql`
+      SELECT id, name, service_program_scenario_id, result, owner_user_id
+        FROM driver_shift_scenarios
+       WHERE id = ANY(${idsLit}::uuid[])
+         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL)
+    `);
+    const byId = new Map<string, any>((dssRows.rows ?? []).map((r: any) => [String(r.id), r]));
+    const target = byId.get(String(targetDssId));
+    if (!target) { res.status(404).json({ error: "target DSS non trovato o non accessibile" }); return; }
+
+    const targetDuties: any[] = target.result?.driverShifts ?? [];
+    const shifts = targetDuties.map((d: any) => {
+      const cat = _catFromCode(d.driverId);
+      return {
+        driverId: d.driverId, category: cat,
+        residenzaDepotId: d.residenzaDepotId ?? null, residenzaName: d.residenzaName ?? null, residenzaColor: d.residenzaColor ?? null,
+        trips: _flattenDutyTrips(d, cat),
+      };
+    });
+
+    const uncovered: any[] = [];
+    for (const src of sources) {
+      const dss = byId.get(String(src.dssId));
+      if (!dss) continue;
+      const codes: Set<string> = new Set((src.dutyCodes ?? []).map(String));
+      for (const d of (dss.result?.driverShifts ?? [])) {
+        if (codes.size && !codes.has(String(d.driverId))) continue;
+        uncovered.push(..._flattenDutyTrips(d, _catFromCode(d.driverId)));
+      }
+    }
+
+    // arricchimento coordinate (corse target + corse loose)
+    const coords = await _enrichTripCoords([...shifts.flatMap((s: any) => s.trips), ...uncovered].map((t: any) => t.tripId));
+    for (const s of shifts) s.trips.forEach((t: any) => _applyCoords(t, coords));
+    uncovered.forEach((t: any) => _applyCoords(t, coords));
+
+    // coordinate deposito residenza per turno
+    const depotIds = Array.from(new Set(shifts.map((s: any) => s.residenzaDepotId).filter(Boolean)));
+    if (depotIds.length) {
+      const dLit = `{${depotIds.map((id) => `"${id}"`).join(",")}}`;
+      const dr = await db.execute<any>(sql`SELECT id, lat, lon FROM depots WHERE id = ANY(${dLit}::uuid[])`);
+      const dmap = new Map<string, any>((dr.rows ?? []).map((r: any) => [String(r.id), r]));
+      for (const s of shifts) {
+        const d = s.residenzaDepotId ? dmap.get(String(s.residenzaDepotId)) : null;
+        if (d && d.lat != null && d.lon != null) { (s as any).depotLat = Number(d.lat); (s as any).depotLon = Number(d.lon); }
+      }
+    }
+
+    const engineOut = await runMistoEngine({ shifts, uncovered, config: config ?? {} });
+    const driverShifts = (engineOut.shifts ?? []).map(_engineShiftToDriverShift);
+    const dssResult = {
+      driverShifts,
+      unassignedTrips: engineOut.uncovered ?? [],
+      misto: true,
+      stats: engineOut.stats ?? {},
+    };
+
+    const [row] = await db.insert(driverShiftScenarios).values({
+      serviceProgramScenarioId: target.service_program_scenario_id,
+      name: name || `Misto ${new Date().toISOString().slice(0, 10)}`,
+      result: dssResult as any,
+      config: { misto: true } as any,
+    }).returning();
+    try { await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`); } catch { /* non-fatal */ }
+
+    res.json({ dssId: row.id, stats: engineOut.stats, preview: dssResult });
+  } catch (err: any) {
+    req.log.error(err, "Error in misto completamento");
     res.status(500).json({ error: err.message });
   }
 });
