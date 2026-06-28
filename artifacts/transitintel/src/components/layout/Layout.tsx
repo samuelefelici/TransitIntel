@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio, Printer,
+  Milestone, Radio, Printer, Shuffle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -48,6 +48,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: "/fucina", label: "Scheduling Engine", icon: Flame },
       { href: "/roster", label: "Roster Personale", icon: Users },
+      { href: "/misto", label: "Completamento / Misti", icon: Shuffle },
       { href: "/service-db", label: "Database di Esercizio", icon: Database },
     ],
   },
