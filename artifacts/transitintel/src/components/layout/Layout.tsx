@@ -46,7 +46,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Ottimizzazione Servizio",
     permission: "scheduling",
     items: [
-      { href: "/fucina", label: "Scheduling Engine", icon: Flame },
+      { href: "/fucina/esercizio", label: "Scheduling Engine", icon: Flame },
       { href: "/roster", label: "Roster Personale", icon: Users },
       { href: "/misto", label: "Completamento / Misti", icon: Shuffle },
       { href: "/service-db", label: "Database di Esercizio", icon: Database },

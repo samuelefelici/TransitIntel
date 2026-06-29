@@ -27,7 +27,6 @@ const ScenariosPage = lazy(() => import("@/pages/scenarios"));
 const IntermodalPage = lazy(() => import("@/pages/intermodal"));
 const OptimizationPage = lazy(() => import("@/pages/optimization"));
 const FucinaPage = lazy(() => import("@/pages/fucina"));
-const SchedulingProjectsHubPage = lazy(() => import("@/pages/scheduling/ProjectsHubPage"));
 const SchedulingProjectDashboardPage = lazy(() => import("@/pages/scheduling/ProjectDashboardPage"));
 const VehicleScenariosPage = lazy(() => import("@/pages/scheduling/VehicleScenariosPage"));
 const DriverScenariosPage = lazy(() => import("@/pages/scheduling/DriverScenariosPage"));
@@ -225,9 +224,7 @@ function Router() {
             </Route>
 
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
-            <Route path="/fucina">
-              <Gated perm="scheduling"><SchedulingProjectsHubPage /></Gated>
-            </Route>
+            <Route path="/fucina"><Redirect to="/fucina/esercizio" /></Route>
             <Route path="/fucina/esercizio/:id">
               <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
