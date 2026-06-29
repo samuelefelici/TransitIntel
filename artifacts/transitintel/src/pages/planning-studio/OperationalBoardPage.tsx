@@ -13,7 +13,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Loader2, Truck, Users, CheckCircle2, AlertTriangle, XCircle,
-  ClipboardList, ChevronRight, Layers, Power,
+  ClipboardList, ChevronRight, Layers, Power, Plus, ArrowRight, Sparkles,
 } from "lucide-react";
 import { getPsOperationalBoard, listProjects, type OperationalUnit } from "@/lib/scheduling-projects-api";
 import { listPsProjects, getPsProject } from "@/lib/planning-studio-api";
@@ -62,8 +62,8 @@ function ProgramPicker() {
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
       <div className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center gap-3">
         <ClipboardList className="h-5 w-5 text-emerald-400" />
-        <h1 className="font-semibold text-slate-100">Quadro d'esercizio</h1>
-        <span className="text-[11px] text-slate-500">scegli il programma di esercizio</span>
+        <h1 className="font-semibold text-slate-100">Progetti di esercizio</h1>
+        <span className="text-[11px] text-slate-500">scegli il progetto da gestire</span>
       </div>
       <div className="flex-1 overflow-auto p-6">
         {loading && <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-emerald-400" /></div>}
@@ -110,7 +110,99 @@ function UnitStatus({ u }: { u: OperationalUnit }) {
   return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"><CheckCircle2 className="w-3 h-3" /> Completa</span>;
 }
 
-/* ─── Quadro per un programma ─── */
+/* ─── Card di una UDP: stepper Turni Macchina → Turni Guida → Operativo ─── */
+function UdpCard({ u, psId }: { u: OperationalUnit; psId: string }) {
+  const linkVehicles = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : `/planning-studio/${psId}/validity-units`;
+  const linkDrivers = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
+  const tmDone = !!u.vehicleScenario;
+  const tgDone = !!u.driverScenario;
+  const operative = u.status === "complete" && u.vehicleUncovered === 0;
+  const accent = operative ? "border-l-emerald-500" : u.status === "missing_vehicle" || u.status === "not_started" ? "border-l-rose-500/70" : "border-l-amber-500/70";
+
+  return (
+    <div className={`rounded-xl border border-slate-800 border-l-[3px] ${accent} bg-slate-900/40 p-3.5`}>
+      {/* riga 1: nome UDP + stato */}
+      <div className="flex items-center gap-2 mb-3">
+        <Layers className="w-4 h-4 text-slate-500 shrink-0" />
+        <div className="min-w-0">
+          <div className="font-semibold text-slate-100 truncate">{u.validityUnitName ?? "UDP"}</div>
+          <div className="text-[10px] text-slate-500">{u.tripCount} corse</div>
+        </div>
+        <div className="ml-auto"><UnitStatus u={u} /></div>
+      </div>
+
+      {/* stepper */}
+      <div className="grid grid-cols-[1fr_auto_1fr_auto_auto] items-center gap-2">
+        {/* Step 1 — Turni macchina */}
+        <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+            <Truck className="w-3 h-3 text-amber-400" /> Turni macchina
+          </div>
+          {tmDone ? (
+            <Link href={linkVehicles}>
+              <button className="group inline-flex items-center gap-1.5 text-xs text-slate-200 hover:text-amber-200">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="truncate max-w-[150px]">{u.vehicleScenario!.name}</span>
+                {u.vehicleScenario!.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{u.vehicleScenario!.numVehicles} vett.</span>}
+                <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
+              </button>
+            </Link>
+          ) : (
+            <Link href={linkVehicles}>
+              <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition">
+                <Plus className="w-3.5 h-3.5" /> Genera
+              </button>
+            </Link>
+          )}
+          {u.vehicleUncovered > 0 && (
+            <div className="text-[10px] text-amber-300 mt-1 flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> {u.vehicleUncovered} corse scoperte</div>
+          )}
+        </div>
+
+        <ChevronRight className="w-4 h-4 text-slate-600 shrink-0" />
+
+        {/* Step 2 — Turni guida */}
+        <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+            <Users className="w-3 h-3 text-purple-400" /> Turni guida
+          </div>
+          {tgDone ? (
+            <Link href={linkDrivers}>
+              <button className="group inline-flex items-center gap-1.5 text-xs text-slate-200 hover:text-purple-200">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span className="truncate max-w-[150px]">{u.driverScenario!.name}</span>
+                <span className="text-[10px] text-purple-300/80 font-mono shrink-0">{u.driverScenario!.dutyCount} turni</span>
+                <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
+              </button>
+            </Link>
+          ) : tmDone ? (
+            <Link href={linkDrivers}>
+              <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-purple-600/90 hover:bg-purple-500 text-white transition">
+                <Plus className="w-3.5 h-3.5" /> Genera
+              </button>
+            </Link>
+          ) : (
+            <span className="text-[11px] text-slate-600">prima i turni macchina</span>
+          )}
+        </div>
+
+        <ChevronRight className="w-4 h-4 text-slate-600 shrink-0" />
+
+        {/* Step 3 — Operativo */}
+        <div className={`rounded-lg border px-3 py-2 text-center ${operative ? "border-emerald-500/40 bg-emerald-500/10" : "border-slate-800 bg-slate-950/40"}`}>
+          <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-slate-500 mb-1">
+            <Power className={`w-3 h-3 ${operative ? "text-emerald-400" : "text-slate-600"}`} /> Operativo
+          </div>
+          {operative
+            ? <span className="inline-flex items-center gap-1 text-xs text-emerald-300"><CheckCircle2 className="w-3.5 h-3.5" /> Pronto</span>
+            : <span className="text-[11px] text-slate-600">—</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Contenitore: Progetto di esercizio ─── */
 function Board({ psId }: { psId: string }) {
   const [, navigate] = useLocation();
   const boardQ = useQuery({
@@ -125,46 +217,54 @@ function Board({ psId }: { psId: string }) {
   });
   const board = boardQ.data;
   const isActive = !!projectQ.data?.isOperational;
-
-  const linkVehicles = (u: OperationalUnit) => u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : `/planning-studio/${psId}/validity-units`;
-  const linkDrivers = (u: OperationalUnit) => u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
-  // bordo sinistro per severità (segnalazione visiva)
-  const rowAccent = (u: OperationalUnit) =>
-    u.status === "complete" && u.vehicleUncovered === 0 ? "border-l-2 border-l-emerald-500/60"
-    : u.status === "not_started" ? "border-l-2 border-l-slate-600"
-    : u.status === "missing_vehicle" ? "border-l-2 border-l-rose-500/70"
-    : "border-l-2 border-l-amber-500/70";
+  const pct = board && board.totals.udp > 0 ? Math.round((board.totals.complete / board.totals.udp) * 100) : 0;
+  const valleUncovered = board ? board.projects.reduce((s, u) => s + u.vehicleUncovered, 0) : 0;
+  const totUncovered = (board?.programUncoveredTrips ?? 0) + valleUncovered;
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+      {/* Header contenitore */}
       <div className="border-b border-slate-800 bg-slate-900 shadow-sm">
         <div className="flex items-center gap-3 px-4 py-3">
           <Link href="/fucina/esercizio?pick=1">
-            <button className="p-2 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors" title="Cambia programma"><ArrowLeft className="h-4 w-4" /></button>
+            <button className="p-2 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition-colors" title="Cambia progetto"><ArrowLeft className="h-4 w-4" /></button>
           </Link>
           <ClipboardList className="h-5 w-5 text-emerald-400" />
-          <div>
-            <h1 className="font-semibold text-slate-100 leading-tight flex items-center gap-2">
-              Quadro d'esercizio
-              {projectQ.data?.name && <span className="text-slate-400 font-normal">· {projectQ.data.name}</span>}
+          <div className="min-w-0">
+            <h1 className="font-semibold text-slate-100 leading-tight flex items-center gap-2 truncate">
+              {projectQ.data?.name ?? "Progetto di esercizio"}
               {isActive && (
-                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500 text-black"><Power className="w-2.5 h-2.5" /> Attivo</span>
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500 text-black shrink-0"><Power className="w-2.5 h-2.5" /> Attivo</span>
               )}
             </h1>
-            <p className="text-[11px] text-slate-500 leading-tight">tutte le UDP del programma · stato turni macchina/guida · corse scoperte</p>
+            <p className="text-[11px] text-slate-500 leading-tight">Progetto di esercizio · UDP, scheduling per unità, corse scoperte</p>
           </div>
           {board && (
-            <div className="ml-auto flex items-center gap-4 text-xs">
-              <div className="text-right"><div className="text-slate-200 font-semibold tabular-nums">{board.totals.complete}/{board.totals.udp}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">UDP complete</div></div>
-              <div className="text-right"><div className="text-amber-300 font-semibold tabular-nums">{board.totals.vehicles}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">vetture</div></div>
-              <div className="text-right"><div className="text-purple-300 font-semibold tabular-nums">{board.totals.duties}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">turni guida</div></div>
-              <button onClick={() => navigate(`/roster?psProjectId=${psId}&operational=1`)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors">
-                <Users className="h-3.5 w-3.5" /> Apri nel Roster
-              </button>
-            </div>
+            <button onClick={() => navigate(`/roster?psProjectId=${psId}&operational=1`)}
+              className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors shrink-0">
+              <Users className="h-3.5 w-3.5" /> Apri nel Roster
+            </button>
           )}
         </div>
+        {/* Strip avanzamento processo */}
+        {board && (
+          <div className="px-4 pb-3 flex items-center gap-4">
+            <div className="flex-1 max-w-md">
+              <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+                <span>Avanzamento UDP</span>
+                <span className="tabular-nums">{board.totals.complete}/{board.totals.udp} complete · {pct}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+              </div>
+            </div>
+            <div className="flex items-center gap-4 text-xs ml-auto">
+              <div className="text-right"><div className="text-amber-300 font-semibold tabular-nums">{board.totals.vehicles}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">vetture</div></div>
+              <div className="text-right"><div className="text-purple-300 font-semibold tabular-nums">{board.totals.duties}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">turni guida</div></div>
+              <div className="text-right"><div className={`font-semibold tabular-nums ${totUncovered > 0 ? "text-rose-300" : "text-slate-300"}`}>{totUncovered}</div><div className="text-[10px] uppercase tracking-wide text-slate-500">corse scoperte</div></div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-auto p-6">
@@ -172,80 +272,40 @@ function Board({ psId }: { psId: string }) {
         {boardQ.isError && <div className="text-sm text-rose-400">Errore: {(boardQ.error as Error).message}</div>}
 
         {board && (
-          <div className="max-w-5xl mx-auto space-y-4">
+          <div className="max-w-4xl mx-auto space-y-3">
+            {/* Corse scoperte a monte (fuori da ogni UDP) */}
             {board.programUncoveredTrips > 0 && (
-              <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200 flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span><strong>{board.programUncoveredTrips}</strong> corse del programma non sono in nessuna UDP (corse scoperte a monte). Aggiungile a una UDP nella Matrice di validità.</span>
-              </div>
-            )}
-            {board.projects.length === 0 && (
-              <div className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center text-slate-400">
-                <Layers className="h-12 w-12 mx-auto text-slate-600 mb-3" />
-                <p className="font-medium text-slate-200 mb-1">Nessuna UDP per questo programma</p>
-                <p className="text-xs">Crea le Unità di Progettazione nella Matrice di validità.</p>
+              <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200 flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <div>
+                  <strong>{board.programUncoveredTrips} corse non sono in nessuna UDP</strong> (scoperte a monte).
+                  <Link href={`/planning-studio/${psId}/validity-units`}>
+                    <button className="ml-1 underline hover:text-rose-100">Assegnale nella Matrice di validità →</button>
+                  </Link>
+                </div>
               </div>
             )}
 
-            {board.projects.length > 0 && (
-              <div className="rounded-xl border border-slate-800 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-900 text-[10px] uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Unità di Progettazione</th>
-                      <th className="px-3 py-2 text-left">Turni macchina</th>
-                      <th className="px-3 py-2 text-left">Turni guida</th>
-                      <th className="px-3 py-2 text-left">Stato</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {board.projects.map((u) => (
-                      <tr key={u.validityUnitId} className={`border-t border-slate-800/70 hover:bg-slate-900/40 ${rowAccent(u)}`}>
-                        <td className="px-3 py-2">
-                          <div className="font-medium text-slate-100">{u.validityUnitName ?? "UDP"}</div>
-                          <div className="text-[10px] text-slate-500">{u.tripCount} corse</div>
-                        </td>
-                        <td className="px-3 py-2">
-                          {u.vehicleScenario ? (
-                            <Link href={linkVehicles(u)}>
-                              <button className="inline-flex items-center gap-1.5 hover:underline">
-                                <Truck className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                                <span className="text-slate-200">{u.vehicleScenario.name}</span>
-                                {u.vehicleScenario.numVehicles != null && <span className="text-[11px] text-amber-400/80 font-mono">· {u.vehicleScenario.numVehicles} vetture</span>}
-                              </button>
-                            </Link>
-                          ) : (
-                            <Link href={linkVehicles(u)}><button className="text-[11px] text-rose-300/80 hover:underline">— {u.status === "not_started" ? "avvia / genera" : "scegline uno"}</button></Link>
-                          )}
-                          {u.vehicleUncovered > 0 && (
-                            <div className="text-[10px] text-amber-300 mt-0.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> {u.vehicleUncovered} corse scoperte nei turni</div>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          {u.driverScenario ? (
-                            <Link href={linkDrivers(u)}>
-                              <button className="inline-flex items-center gap-1.5 hover:underline">
-                                <Users className="w-3.5 h-3.5 text-purple-400 shrink-0" />
-                                <span className="text-slate-200">{u.driverScenario.name}</span>
-                                <span className="text-[11px] text-purple-300/80 font-mono">· {u.driverScenario.dutyCount} turni</span>
-                              </button>
-                            </Link>
-                          ) : u.vehicleScenario ? (
-                            <Link href={linkDrivers(u)}><button className="text-[11px] text-amber-300/80 hover:underline">— genera/scegli</button></Link>
-                          ) : (
-                            <span className="text-[11px] text-slate-500">prima i turni macchina</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2"><UnitStatus u={u} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {board.projects.length === 0 && (
+              <div className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center text-slate-400">
+                <Layers className="h-12 w-12 mx-auto text-slate-600 mb-3" />
+                <p className="font-medium text-slate-200 mb-1">Nessuna UDP in questo progetto</p>
+                <p className="text-xs mb-3">Crea le Unità di Progettazione nella Matrice di validità.</p>
+                <Link href={`/planning-studio/${psId}/validity-units`}>
+                  <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"><Plus className="w-3.5 h-3.5" /> Crea UDP</button>
+                </Link>
               </div>
             )}
-            <p className="text-[11px] text-slate-500">
-              Verde = UDP completa (turni macchina + guida in esercizio, nessuna corsa scoperta). Rosso/ambra = manca un passo o ci sono corse scoperte.
-            </p>
+
+            {/* Lista UDP — scheduling step-by-step per unità */}
+            {board.projects.map((u) => <UdpCard key={u.validityUnitId} u={u} psId={psId} />)}
+
+            {board.projects.length > 0 && (
+              <p className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
+                <Sparkles className="w-3 h-3 text-emerald-400/70" />
+                Per ogni UDP: ① genera i turni macchina, poi ② i turni guida. Verde = unità operativa (entrambi fatti, nessuna corsa scoperta).
+              </p>
+            )}
           </div>
         )}
       </div>
