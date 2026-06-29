@@ -118,9 +118,11 @@ function UdpCard({ u, psId, onGenerateTM, generating }: {
   onGenerateTM: (u: OperationalUnit) => void;
   generating: boolean;
 }) {
-  // Con scheduling project esistente: link diretto allo step. Senza: il bottone
-  // crea il progetto di scheduling per la UDP e parte con l'ottimizzazione.
+  // "Apri" → lista scenari (vehicles/drivers). "Genera" → pipeline di ottimizzazione
+  // (feed materializzato dal PS, niente lista vuota). Senza scheduling project,
+  // il bottone lo crea e poi parte con la pipeline.
   const linkVehicles = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : null;
+  const linkPipeline = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/pipeline` : null;
   const linkDrivers = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
   const tmDone = !!u.vehicleScenario;
   const tgDone = !!u.driverScenario;
@@ -155,8 +157,8 @@ function UdpCard({ u, psId, onGenerateTM, generating }: {
                 <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
               </button>
             </Link>
-          ) : linkVehicles ? (
-            <Link href={linkVehicles}>
+          ) : linkPipeline ? (
+            <Link href={linkPipeline}>
               <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition">
                 <Plus className="w-3.5 h-3.5" /> Genera
               </button>
@@ -256,7 +258,7 @@ function Board({ psId }: { psId: string }) {
     },
     onSuccess: (schedulingProjectId) => {
       toast.info("Avvio ottimizzazione turni macchina…");
-      navigate(`/fucina/${schedulingProjectId}/vehicles`);
+      navigate(`/fucina/${schedulingProjectId}/pipeline`);
     },
     onError: (e: Error) => toast.error(`Scheduling: ${e.message}`),
   });
