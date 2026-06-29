@@ -204,21 +204,37 @@ export default function DriverWorkspace({
 
   // ── Carica il profilo-regole di default (azienda ⊕ progetto) come config di
   //    partenza. Una sola volta: non sovrascrive le modifiche live dell'operatore.
+  //    1) tipo servizio ereditato dallo scenario turni macchina (input.serviceType);
+  //    2) un profilo-regole salvato (azienda ⊕ progetto), se presente, vince.
+  //    Sequenziale per evitare race; una sola volta.
   const profileLoadedRef = useRef(false);
   useEffect(() => {
     if (profileLoadedRef.current) return;
-    profileLoadedRef.current = true; // guard PRIMA del fetch: niente race con le modifiche live
-    resolveRuleProfile(projectIdFromUrl)
-      .then((r) => {
-        if (!r?.config) return;
-        const st = (r.config.bds?.serviceType as ServiceType) ?? "urbano";
-        const base = buildDefaultConfig(st);
-        setServiceTypeState(st);
-        setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
-      })
-      .catch(() => { /* nessun profilo salvato → resta sui default */ });
+    profileLoadedRef.current = true; // guard PRIMA dei fetch: niente race con le modifiche live
+    (async () => {
+      // base: tipo servizio scelto sullo step turni macchina
+      let baseSt: ServiceType = "urbano";
+      try {
+        if (vehicleScenarioId) {
+          const sc = await fetch(`${getApiBase()}/api/service-program/scenarios/${vehicleScenarioId}`).then((r) => (r.ok ? r.json() : null));
+          const st = sc?.input?.serviceType as ServiceType | undefined;
+          if (st === "urbano" || st === "extraurbano" || st === "misto") baseSt = st;
+        }
+      } catch { /* best-effort */ }
+      setServiceType(baseSt); // applica preset regole del tipo servizio
+      // profilo-regole salvato → vince
+      try {
+        const r = await resolveRuleProfile(projectIdFromUrl);
+        if (r?.config) {
+          const st = (r.config.bds?.serviceType as ServiceType) ?? baseSt;
+          const base = buildDefaultConfig(st);
+          setServiceTypeState(st);
+          setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
+        }
+      } catch { /* nessun profilo → resta sul tipo servizio ereditato */ }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectIdFromUrl]);
+  }, [projectIdFromUrl, vehicleScenarioId]);
 
   // Ricezione risultati CP-SAT
   useEffect(() => {
