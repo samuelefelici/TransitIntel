@@ -15,7 +15,10 @@ from typing import Any
 #  COSTANTI
 # ═══════════════════════════════════════════════════════════════
 
-VEHICLE_SIZE = {"autosnodato": 4, "12m": 3, "10m": 2, "pollicino": 1}
+# filobus: classe 12m (capienza), tipicamente assegnato esplicitamente alle
+# linee elettrificate. Non viene scelto come downsize automatico perché a parità
+# di taglia col 12m ha costo fisso superiore.
+VEHICLE_SIZE = {"autosnodato": 4, "filobus": 3, "12m": 3, "10m": 2, "pollicino": 1}
 VEHICLE_TYPES = list(VEHICLE_SIZE.keys())
 
 MAX_DOWNSIZE_LEVELS = 1
@@ -29,9 +32,9 @@ DEADHEAD_SPEED = {"urbano": 20, "extraurbano": 40}   # km/h
 ROAD_CIRCUITY = 1.3            # fattore rettilinea → stradale
 
 # Costi (€)
-COST_VEHICLE_FIXED_DAY = {"autosnodato": 55, "12m": 42, "10m": 32, "pollicino": 18}
-COST_VEHICLE_PER_SERVICE_KM = {"autosnodato": 1.20, "12m": 0.95, "10m": 0.75, "pollicino": 0.45}
-COST_VEHICLE_PER_DEADHEAD_KM = {"autosnodato": 1.00, "12m": 0.80, "10m": 0.65, "pollicino": 0.40}
+COST_VEHICLE_FIXED_DAY = {"autosnodato": 55, "filobus": 48, "12m": 42, "10m": 32, "pollicino": 18}
+COST_VEHICLE_PER_SERVICE_KM = {"autosnodato": 1.20, "filobus": 0.70, "12m": 0.95, "10m": 0.75, "pollicino": 0.45}
+COST_VEHICLE_PER_DEADHEAD_KM = {"autosnodato": 1.00, "filobus": 0.60, "12m": 0.80, "10m": 0.65, "pollicino": 0.40}
 AVG_SERVICE_SPEED = {"urbano": 18, "extraurbano": 32}  # km/h
 COST_PER_DRIVING_HOUR = 28
 COST_PER_DEPOT_RETURN = 15
@@ -52,17 +55,17 @@ class VehicleCostRates:
 
     # A. Costo fisso giornaliero per tipo veicolo (assicurazione, bollo, manutenzione)
     fixed_daily: dict = field(default_factory=lambda: {
-        "autosnodato": 55.0, "12m": 42.0, "10m": 32.0, "pollicino": 18.0,
+        "autosnodato": 55.0, "filobus": 48.0, "12m": 42.0, "10m": 32.0, "pollicino": 18.0,
     })
 
     # B. Costo per km in servizio per tipo veicolo (carburante, gomme, usura)
     per_service_km: dict = field(default_factory=lambda: {
-        "autosnodato": 1.20, "12m": 0.95, "10m": 0.75, "pollicino": 0.45,
+        "autosnodato": 1.20, "filobus": 0.70, "12m": 0.95, "10m": 0.75, "pollicino": 0.45,
     })
 
     # C. Costo per km fuori linea (deadhead) per tipo veicolo
     per_deadhead_km: dict = field(default_factory=lambda: {
-        "autosnodato": 1.00, "12m": 0.80, "10m": 0.65, "pollicino": 0.40,
+        "autosnodato": 1.00, "filobus": 0.60, "12m": 0.80, "10m": 0.65, "pollicino": 0.40,
     })
 
     # Velocità media per stima km da ore (km/h)

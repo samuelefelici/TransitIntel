@@ -21,11 +21,18 @@ interface Props {
   initial?: VehicleAssignment;
   /** Se valorizzato (progetto agganciato a un'UDP), mostra SOLO queste linee. */
   allowedRouteIds?: string[] | null;
+  /** Dettaglio UDP: se presente, la validità è definita dall'UDP → niente scelta data. */
+  udpInfo?: {
+    name?: string; dayTypeName?: string | null; dayTypeColor?: string | null;
+    categoryName?: string | null; categoryColor?: string | null;
+    tripCount?: number; dayCount?: number; representativeDates?: string[];
+  } | null;
   onBack: () => void;
   onComplete: (assignment: VehicleAssignment) => void;
 }
 
-export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, onBack, onComplete }: Props) {
+export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, udpInfo, onBack, onComplete }: Props) {
+  const fromUdp = !!udpInfo;
   /* ── Date state ── */
   const [availableDates, setAvailableDates] = useState<{ date: string; services: number }[]>([]);
   const [datesMode, setDatesMode] = useState<"calendar" | "calendar_dates" | null>(null);
@@ -94,6 +101,13 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
       setLoadingRoutes(false);
     });
   }, []);
+
+  /* ── Da UDP: la validità definisce la data → auto-selezione data rappresentativa ── */
+  useEffect(() => {
+    if (!fromUdp || selectedDate) return;
+    const rep = udpInfo?.representativeDates?.[0];
+    if (rep) setSelectedDate(rep.includes("-") ? rep : ymdToIso(rep));
+  }, [fromUdp, udpInfo, selectedDate]);
 
   /* ── Derived ── */
   const filteredRoutes = useMemo(() => {
@@ -175,38 +189,75 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
       <div className="flex-1 overflow-y-auto p-4 space-y-4 max-w-5xl mx-auto w-full">
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
 
-          {/* ── 1. Data ── */}
-          <section className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
-            <h3 className="text-sm font-semibold flex items-center gap-2 text-foreground">
-              <div className="w-5 h-5 rounded-full bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-[10px] font-bold text-orange-300">1</div>
-              <Calendar className="w-4 h-4 text-orange-400/60" />
-              Data di esercizio
-            </h3>
-            {loadingDates ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
-                <Loader2 className="w-3 h-3 animate-spin text-orange-400" /> Caricamento date…
+          {/* ── 1. Validità ── */}
+          {fromUdp ? (
+            /* Da UDP: la validità è già definita dall'unità di programmazione → niente scelta data */
+            <section className="bg-card/40 border border-indigo-500/30 rounded-xl p-4 space-y-2">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                <div className="w-5 h-5 rounded-full bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-[10px] font-bold text-indigo-300">1</div>
+                <Calendar className="w-4 h-4 text-indigo-400/60" />
+                Validità (UDP)
+              </h3>
+              <div className="text-sm font-medium text-foreground">{udpInfo?.name ?? "Unità di programmazione"}</div>
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                {udpInfo?.dayTypeName && (
+                  <span className="px-2 py-0.5 rounded-full border" style={{ borderColor: (udpInfo.dayTypeColor || "#6366f1") + "66", color: udpInfo.dayTypeColor || "#a5b4fc" }}>
+                    {udpInfo.dayTypeName}
+                  </span>
+                )}
+                {udpInfo?.categoryName && (
+                  <span className="px-2 py-0.5 rounded-full border" style={{ borderColor: (udpInfo.categoryColor || "#64748b") + "66", color: udpInfo.categoryColor || "#94a3b8" }}>
+                    {udpInfo.categoryName}
+                  </span>
+                )}
+                <span className="px-2 py-0.5 rounded-full bg-muted/40 text-muted-foreground">{udpInfo?.tripCount ?? 0} corse</span>
+                <span className="px-2 py-0.5 rounded-full bg-muted/40 text-muted-foreground">{udpInfo?.dayCount ?? 0} giorni</span>
               </div>
-            ) : datesMode === "calendar_dates" && availableDates.length > 0 ? (
-              <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
-                className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-500/50">
-                <option value="">— Seleziona data —</option>
-                {availableDates.map(d => {
-                  const iso = ymdToIso(d.date);
-                  const day = new Date(iso + "T12:00:00").toLocaleDateString("it-IT", { weekday: "short" });
-                  return <option key={d.date} value={iso}>{ymdToDisplay(d.date)} ({day}) — {d.services} servizi</option>;
-                })}
-              </select>
-            ) : (
-              <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
-                min={dateRange?.min} max={dateRange?.max}
-                className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-500/50" />
-            )}
-            {selectedDate && (
-              <p className="text-xs text-muted-foreground">
-                📅 <strong>{new Date(selectedDate + "T12:00:00").toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</strong>
+              {udpInfo?.representativeDates && udpInfo.representativeDates.length > 0 && (
+                <p className="text-[11px] text-muted-foreground">
+                  Giorni rappresentativi: {udpInfo.representativeDates.slice(0, 5).map((d) => {
+                    const iso = d.includes("-") ? d : ymdToIso(d);
+                    return new Date(iso + "T12:00:00").toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" });
+                  }).join(", ")}{udpInfo.representativeDates.length > 5 ? "…" : ""}
+                </p>
+              )}
+              <p className="text-[10px] text-muted-foreground/70">
+                La data di esercizio non va scelta: è determinata dalla validità dell'UDP.
               </p>
-            )}
-          </section>
+            </section>
+          ) : (
+            <section className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                <div className="w-5 h-5 rounded-full bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-[10px] font-bold text-orange-300">1</div>
+                <Calendar className="w-4 h-4 text-orange-400/60" />
+                Data di esercizio
+              </h3>
+              {loadingDates ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground py-2">
+                  <Loader2 className="w-3 h-3 animate-spin text-orange-400" /> Caricamento date…
+                </div>
+              ) : datesMode === "calendar_dates" && availableDates.length > 0 ? (
+                <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+                  className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-500/50">
+                  <option value="">— Seleziona data —</option>
+                  {availableDates.map(d => {
+                    const iso = ymdToIso(d.date);
+                    const day = new Date(iso + "T12:00:00").toLocaleDateString("it-IT", { weekday: "short" });
+                    return <option key={d.date} value={iso}>{ymdToDisplay(d.date)} ({day}) — {d.services} servizi</option>;
+                  })}
+                </select>
+              ) : (
+                <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)}
+                  min={dateRange?.min} max={dateRange?.max}
+                  className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-orange-500/50" />
+              )}
+              {selectedDate && (
+                <p className="text-xs text-muted-foreground">
+                  📅 <strong>{new Date(selectedDate + "T12:00:00").toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</strong>
+                </p>
+              )}
+            </section>
+          )}
 
           {/* ── 2. Linee + Vetture ── */}
           <section className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
@@ -300,6 +351,7 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                                 onClick={e => e.stopPropagation()}
                                 className="ml-1 text-xs bg-background border border-border/50 rounded-lg px-1.5 py-0.5 shrink-0 focus:outline-none focus:border-orange-500/50">
                                 <option value="autosnodato">Autosnodato</option>
+                                <option value="filobus">Filobus</option>
                                 <option value="12m">12 metri</option>
                                 <option value="10m">10 metri</option>
                                 <option value="pollicino">Pollicino</option>
@@ -359,6 +411,7 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                                       <select value={tripVt} onChange={e => setTripVehicle(trip.tripId, e.target.value as VehicleType)}
                                         className={`text-[10px] bg-background border rounded px-1 py-0.5 shrink-0 focus:outline-none ${isOverridden ? "border-orange-500/40 text-orange-300" : "border-border/50"}`}>
                                         <option value="autosnodato">Autosnodato</option>
+                                        <option value="filobus">Filobus</option>
                                         <option value="12m">12 metri</option>
                                         <option value="10m">10 metri</option>
                                         <option value="pollicino">Pollicino</option>
