@@ -118,6 +118,7 @@ export interface CrewOptimizationResult {
   clusters: any[];
   companyCars: number;
   solverMetrics: any;
+  optimizationAnalysis?: any;
 }
 
 export interface UseCrewOptimizationReturn {

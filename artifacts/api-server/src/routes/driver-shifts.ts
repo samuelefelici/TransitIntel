@@ -1058,6 +1058,7 @@ router.post("/driver-shifts/:scenarioId/cpsat", strictLimiter, async (req, res) 
       clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
       companyCars: cpResult.companyCars || COMPANY_CARS,
       solverMetrics: cpResult.metrics || {},
+          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
     });
   } catch (err: any) {
     req.log.error(err, "Error in CP-SAT crew scheduling");
@@ -1181,6 +1182,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
           clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
           companyCars: cpResult.companyCars || COMPANY_CARS,
           solverMetrics: cpResult.metrics || {},
+          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
         },
       });
     } else {
@@ -1216,6 +1218,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
           clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
           companyCars: cpResult.companyCars || COMPANY_CARS,
           solverMetrics: cpResult.metrics || {},
+          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
         },
       });
     } else if (finalJob) {
@@ -1264,6 +1267,7 @@ router.get("/driver-shifts/jobs/:jobId", (req, res) => {
       clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
       companyCars: cpResult.companyCars || COMPANY_CARS,
       solverMetrics: cpResult.metrics || {},
+          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
     };
   } else if (job.status === "failed" || job.status === "stopped") {
     response.error = job.error;
@@ -1319,6 +1323,7 @@ router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
       driverShifts: cpsatResult.driverShifts || [],
       summary: cpsatResult.summary || {},
       solverMetrics: cpsatResult.metrics || {},
+      optimizationAnalysis: cpsatResult.optimizationAnalysis ?? null,
     } : null;
 
     // Delta

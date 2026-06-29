@@ -2580,6 +2580,19 @@ def optimize_multi_scenario(
         s["isBest"] = (rank == 1)
     ranked = feasible + infeasible
 
+    # ── Verifica solver: distingue "veloce perché ottimo dimostrato" (corretto)
+    #    da "veloce perché taglia corto" (budget non applicato → da indagare). ──
+    _non_polish = [s for s in scenario_results if not s.get("isPolish")]
+    n_optimal = sum(1 for s in _non_polish if s.get("status") == "OPTIMAL")
+    n_feasible_only = sum(1 for s in _non_polish if s.get("status") == "FEASIBLE")
+    n_other = len(_non_polish) - n_optimal - n_feasible_only
+    log(f"[V4] Verifica solver: {n_optimal}/{len(_non_polish)} scenari OPTIMAL (ottimo DIMOSTRATO), "
+        f"{n_feasible_only} FEASIBLE (budget {scenario_budget}s esaurito), {n_other} altri. "
+        f"Modello: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili. "
+        f"Tempo scenari usato {round(total_scenario_elapsed, 1)}s / {round(scenario_time_total, 1)}s di budget. "
+        f"NB: se quasi tutti OPTIMAL, la rapidità è corretta (problema risolto all'ottimo); "
+        f"per esplorare di più aumenta gli scenari (intensità).")
+
     # Salva in container globale per il main()
     global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS
     LAST_SCENARIO_RESULTS = ranked
@@ -2654,6 +2667,11 @@ def optimize_multi_scenario(
         "polishBudgetSec": polish_time_total,
         "nSegments": n_seg,
         "nFeasiblePairs": len(feasible_pairs),
+        # Verifica: quanti scenari hanno raggiunto l'OTTIMO DIMOSTRATO vs solo feasible.
+        "nOptimal": n_optimal,
+        "nFeasibleOnly": n_feasible_only,
+        "nOtherStatus": n_other,
+        "optimalProvenAllScenarios": (n_optimal == len(_non_polish) and len(_non_polish) > 0),
     }
 
     if best_duties is None:
