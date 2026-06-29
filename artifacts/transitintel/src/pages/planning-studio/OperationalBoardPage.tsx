@@ -10,7 +10,9 @@
  */
 import { useEffect } from "react";
 import { Link, useParams, useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
+import { toast } from "sonner";
 import {
   ArrowLeft, Loader2, Truck, Users, CheckCircle2, AlertTriangle, XCircle,
   ClipboardList, ChevronRight, Layers, Power, Plus, ArrowRight, Sparkles,
@@ -111,8 +113,14 @@ function UnitStatus({ u }: { u: OperationalUnit }) {
 }
 
 /* ─── Card di una UDP: stepper Turni Macchina → Turni Guida → Operativo ─── */
-function UdpCard({ u, psId }: { u: OperationalUnit; psId: string }) {
-  const linkVehicles = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : `/planning-studio/${psId}/validity-units`;
+function UdpCard({ u, psId, onGenerateTM, generating }: {
+  u: OperationalUnit; psId: string;
+  onGenerateTM: (u: OperationalUnit) => void;
+  generating: boolean;
+}) {
+  // Con scheduling project esistente: link diretto allo step. Senza: il bottone
+  // crea il progetto di scheduling per la UDP e parte con l'ottimizzazione.
+  const linkVehicles = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : null;
   const linkDrivers = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
   const tmDone = !!u.vehicleScenario;
   const tgDone = !!u.driverScenario;
@@ -139,7 +147,7 @@ function UdpCard({ u, psId }: { u: OperationalUnit; psId: string }) {
             <Truck className="w-3 h-3 text-amber-400" /> Turni macchina
           </div>
           {tmDone ? (
-            <Link href={linkVehicles}>
+            <Link href={linkVehicles ?? "#"}>
               <button className="group inline-flex items-center gap-1.5 text-xs text-slate-200 hover:text-amber-200">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                 <span className="truncate max-w-[150px]">{u.vehicleScenario!.name}</span>
@@ -147,12 +155,20 @@ function UdpCard({ u, psId }: { u: OperationalUnit; psId: string }) {
                 <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
               </button>
             </Link>
-          ) : (
+          ) : linkVehicles ? (
             <Link href={linkVehicles}>
               <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition">
                 <Plus className="w-3.5 h-3.5" /> Genera
               </button>
             </Link>
+          ) : (
+            <button
+              onClick={() => onGenerateTM(u)}
+              disabled={generating}
+              className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition disabled:opacity-50"
+            >
+              {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Genera
+            </button>
           )}
           {u.vehicleUncovered > 0 && (
             <div className="text-[10px] text-amber-300 mt-1 flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> {u.vehicleUncovered} corse scoperte</div>
@@ -217,6 +233,34 @@ function Board({ psId }: { psId: string }) {
   });
   const board = boardQ.data;
   const isActive = !!projectQ.data?.isOperational;
+
+  // Avvio scheduling per una UDP: riusa/crea il progetto di scheduling dell'unità
+  // (la creazione avvia la materializzazione PS→feed) e parte con l'ottimizzazione.
+  const startMut = useMutation({
+    mutationFn: async (u: OperationalUnit) => {
+      const found = await apiFetch<{ projects: Array<{ id: string; validityUnitId?: string | null }> }>(
+        `/api/scheduling/projects?planningStudioProjectId=${psId}`,
+      );
+      const forUnit = found.projects.find((p) => p.validityUnitId === u.validityUnitId);
+      if (forUnit) return forUnit.id;
+      const created = await apiFetch<{ project: { id: string } }>("/api/scheduling/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          name: `${projectQ.data?.name ?? "Progetto"} · ${u.validityUnitName ?? "UDP"}`,
+          description: "Creato da Progetti di Esercizio",
+          planningStudioProjectId: psId,
+          validityUnitId: u.validityUnitId,
+        }),
+      });
+      return created.project.id;
+    },
+    onSuccess: (schedulingProjectId) => {
+      toast.info("Avvio ottimizzazione turni macchina…");
+      navigate(`/fucina/${schedulingProjectId}/vehicles`);
+    },
+    onError: (e: Error) => toast.error(`Scheduling: ${e.message}`),
+  });
+
   const pct = board && board.totals.udp > 0 ? Math.round((board.totals.complete / board.totals.udp) * 100) : 0;
   const valleUncovered = board ? board.projects.reduce((s, u) => s + u.vehicleUncovered, 0) : 0;
   const totUncovered = (board?.programUncoveredTrips ?? 0) + valleUncovered;
@@ -298,7 +342,15 @@ function Board({ psId }: { psId: string }) {
             )}
 
             {/* Lista UDP — scheduling step-by-step per unità */}
-            {board.projects.map((u) => <UdpCard key={u.validityUnitId} u={u} psId={psId} />)}
+            {board.projects.map((u) => (
+              <UdpCard
+                key={u.validityUnitId}
+                u={u}
+                psId={psId}
+                onGenerateTM={(unit) => startMut.mutate(unit)}
+                generating={startMut.isPending && startMut.variables?.validityUnitId === u.validityUnitId}
+              />
+            ))}
 
             {board.projects.length > 0 && (
               <p className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
