@@ -249,9 +249,16 @@ export default function DriverWorkspace({
       setLoading(false);
       setError(null);
       setHistory([]); setHistoryIdx(-1); setModifiedCount(0);
-      toast.success("Ottimizzazione completata", {
-        description: `${(cpsat.result as any).summary?.totalDriverShifts ?? "?"} turni guida generati`,
-      });
+      {
+        const an = (cpsat.result as any).optimizationAnalysis;
+        const nT = (cpsat.result as any).summary?.totalDriverShifts ?? "?";
+        const verify = an
+          ? ` · ${an.nOptimal}/${an.nScenariosRun} scenari all'ottimo · ${an.nSegments} segmenti, ${an.nFeasiblePairs} coppie · ${an.totalElapsedSec}s`
+          : "";
+        toast.success("Ottimizzazione completata", {
+          description: `${nT} turni guida generati${verify}`,
+        });
+      }
     } else if (cpsat.state === "failed") {
       setError(cpsat.error || "Errore ottimizzazione CP-SAT");
       setLoading(false);
