@@ -192,8 +192,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [solverMetrics, setSolverMetrics] = useState<any>(null);
 
   /* ── Solver config (spostato qui da VehicleAssignmentStep) ── */
-  const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("greedy");
+  // CP-SAT è il vero motore di ottimizzazione → default. Greedy resta come
+  // alternativa rapida.
+  const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("cpsat");
   const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep" | "extreme">("normal");
+  // Tipo di servizio del run: imposta il contesto normativo (RD131 urbano /
+  // Accordo Quadro extraurbano) e fa da preset per i turni guida.
+  const [serviceType, setServiceType] = useState<"urbano" | "extraurbano" | "misto">("urbano");
 
   /* ── Config VSP unificata (fonte unica). I nomi storici qui sotto sono viste
    *    derivate su vspConfig, così JSX/preset esistenti restano invariati e il
@@ -347,6 +352,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
       const bodyPayload: any = {
         date: assignment.selectedDate,
+        serviceType,
         // Pinpoint sul feed scelto nello step GTFS — evita che il backend
         // ricada sul feed "attivo" globale del tenant.
         ...(gtfsSelection.tempFeedId ? { feedId: gtfsSelection.tempFeedId } : {}),
@@ -395,7 +401,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, vspConfig, psProjectId, gtfsSelection.tempFeedId]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
@@ -404,6 +410,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const base = getApiBase();
       const input = {
         date: assignment.selectedDate,
+        serviceType,
         routes: Array.from(assignment.selectedRoutes.entries()).map(([routeId, vehicleType]) => ({
           routeId, vehicleType, forced: assignment.forcedRoutes.has(routeId),
         })),
@@ -424,7 +431,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment, projectId, depotId]);
+  }, [result, scenarioName, assignment, projectId, depotId, serviceType]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {
@@ -505,27 +512,49 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 </p>
               </div>
 
-              {/* Scelta algoritmo */}
+              {/* Tipo di servizio (contesto normativo + preset turni guida) */}
+              <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
+                <p className="text-xs font-semibold text-foreground">Tipo di servizio</p>
+                <div className="flex items-center gap-2">
+                  {([
+                    { key: "urbano" as const, label: "Urbano", desc: "RD 131/1938" },
+                    { key: "extraurbano" as const, label: "Extraurbano", desc: "Accordo Quadro" },
+                    { key: "misto" as const, label: "Misto", desc: "urbano + extraurbano" },
+                  ]).map(o => (
+                    <button key={o.key} onClick={() => setServiceType(o.key)}
+                      className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 rounded-xl border text-xs font-medium transition-all ${serviceType === o.key ? "bg-indigo-500/15 border-indigo-500/50 text-indigo-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                      <span className="font-bold">{o.label}</span>
+                      <span className="text-[9px] opacity-70">{o.desc}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Imposta il regime normativo del servizio e fa da preset per i turni guida.
+                </p>
+              </div>
+
+              {/* Scelta algoritmo — CP-SAT è il motore principale (consigliato) */}
               <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
                 <p className="text-xs font-semibold text-foreground">Algoritmo</p>
                 <div className="flex items-center gap-2">
+                  <button onClick={() => setSolverMode("cpsat")}
+                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                    <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">CONSIGLIATO</span>
+                    <span className="text-xl">🧠</span>
+                    <span className="font-bold">CP-SAT</span>
+                    <span className="text-[10px] opacity-70">il vero ottimizzatore</span>
+                  </button>
                   <button onClick={() => setSolverMode("greedy")}
                     className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "greedy" ? "bg-orange-500/15 border-orange-500/50 text-orange-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                     <span className="text-xl">⚡</span>
                     <span className="font-bold">Greedy</span>
-                    <span className="text-[10px] opacity-70">~1s · buona qualità</span>
-                  </button>
-                  <button onClick={() => setSolverMode("cpsat")}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
-                    <span className="text-xl">🧠</span>
-                    <span className="font-bold">CP-SAT</span>
-                    <span className="text-[10px] opacity-70">30–120s · ottimale</span>
+                    <span className="text-[10px] opacity-70">anteprima rapida (~1s)</span>
                   </button>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
                   {solverMode === "greedy"
-                    ? "Algoritmo greedy: velocissimo, buona qualità per la maggior parte dei casi."
-                    : "CP-SAT: ottimizzazione combinatoria reale, minimizza veicoli e km a vuoto."}
+                    ? "Greedy: velocissimo, utile per un'anteprima. Per il risultato finale usa CP-SAT."
+                    : "CP-SAT: ottimizzazione combinatoria reale, minimizza veicoli e km a vuoto. È il motore principale."}
                 </p>
               </div>
 
