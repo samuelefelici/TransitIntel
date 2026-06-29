@@ -299,41 +299,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               Procedura Scheduling
             </p>
 
-            {/* Hub progetti di esercizio (la lista turni macchina è dentro al singolo progetto) */}
-            <Link href="/fucina">
-              <div
-                onClick={() => setIsMobileOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
-                  location === "/fucina"
-                    ? "bg-orange-500/15 text-orange-300"
-                    : "text-orange-300/60 hover:text-orange-200 hover:bg-orange-500/10"
-                }`}
-              >
-                {location === "/fucina" && (
-                  <motion.div layoutId="active-sched" className="absolute left-0 w-0.5 h-5 bg-orange-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
-                )}
-                <FolderOpen className={`w-4 h-4 shrink-0 transition-colors ${location === "/fucina" ? "text-orange-400" : "text-orange-500/60 group-hover:text-orange-400"}`} />
-                <div className="min-w-0">
-                  <p className="text-[12px] font-medium leading-tight">Progetti di Esercizio</p>
-                  <p className="text-[9px] text-orange-400/30 font-mono">Hub · pipeline · scenari</p>
-                </div>
-              </div>
-            </Link>
-
-            {/* Quadro d'esercizio: cockpit di fine processo (tutte le UDP del programma) */}
+            {/* Progetti di Esercizio = contenitore: UDP + corse scoperte + scheduling
+                step-by-step (TM→TG) per ogni UDP. Punta al picker→board operativo. */}
             <Link href="/fucina/esercizio">
               <div
                 onClick={() => setIsMobileOpen(false)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
-                  location.startsWith("/fucina/esercizio")
+                  location.startsWith("/fucina")
                     ? "bg-emerald-500/15 text-emerald-300"
                     : "text-emerald-300/60 hover:text-emerald-200 hover:bg-emerald-500/10"
                 }`}
               >
-                <ClipboardList className={`w-4 h-4 shrink-0 transition-colors ${location.startsWith("/fucina/esercizio") ? "text-emerald-400" : "text-emerald-500/60 group-hover:text-emerald-400"}`} />
+                {location.startsWith("/fucina") && (
+                  <motion.div layoutId="active-sched" className="absolute left-0 w-0.5 h-5 bg-emerald-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
+                )}
+                <ClipboardList className={`w-4 h-4 shrink-0 transition-colors ${location.startsWith("/fucina") ? "text-emerald-400" : "text-emerald-500/60 group-hover:text-emerald-400"}`} />
                 <div className="min-w-0">
-                  <p className="text-[12px] font-medium leading-tight">Quadro d'esercizio</p>
-                  <p className="text-[9px] text-emerald-400/30 font-mono">UDP · turni macchina/guida · scoperte</p>
+                  <p className="text-[12px] font-medium leading-tight">Progetti di Esercizio</p>
+                  <p className="text-[9px] text-emerald-400/30 font-mono">UDP · scheduling per unità · scoperte</p>
                 </div>
               </div>
             </Link>
