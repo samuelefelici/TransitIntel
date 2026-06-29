@@ -24,9 +24,9 @@ export interface VspConfig {
 
 export const DEFAULT_VSP: VspConfig = {
   vehicleCosts: {
-    fixedDaily: { autosnodato: 55, "12m": 42, "10m": 32, pollicino: 18 },
-    perServiceKm: { autosnodato: 1.2, "12m": 0.95, "10m": 0.75, pollicino: 0.45 },
-    perDeadheadKm: { autosnodato: 1.0, "12m": 0.8, "10m": 0.65, pollicino: 0.4 },
+    fixedDaily: { autosnodato: 55, filobus: 48, "12m": 42, "10m": 32, pollicino: 18 },
+    perServiceKm: { autosnodato: 1.2, filobus: 0.7, "12m": 0.95, "10m": 0.75, pollicino: 0.45 },
+    perDeadheadKm: { autosnodato: 1.0, filobus: 0.6, "12m": 0.8, "10m": 0.65, pollicino: 0.4 },
     avgServiceSpeed: { urbano: 18, extraurbano: 32 },
     idlePerMin: 0.08,
     longIdlePerMin: 0.15,
@@ -85,6 +85,7 @@ const PRIORITY_OPTS = [
 
 const VTYPE = [
   { key: "autosnodato", label: "Autosnodato" },
+  { key: "filobus", label: "Filobus" },
   { key: "12m", label: "12m" },
   { key: "10m", label: "10m" },
   { key: "pollicino", label: "Pollicino" },

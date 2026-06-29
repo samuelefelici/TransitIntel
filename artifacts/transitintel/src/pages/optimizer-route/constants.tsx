@@ -8,6 +8,7 @@ import type { VehicleType, ServiceCategory } from "./types";
 
 export const VEHICLE_LABELS: Record<VehicleType, string> = {
   autosnodato: "Autosnodato (18m)",
+  filobus: "Filobus",
   "12m": "12 metri",
   "10m": "10 metri",
   pollicino: "Pollicino (6m)",
@@ -15,6 +16,7 @@ export const VEHICLE_LABELS: Record<VehicleType, string> = {
 
 export const VEHICLE_COLORS: Record<VehicleType, string> = {
   autosnodato: "#ef4444",
+  filobus: "#a855f7",
   "12m": "#3b82f6",
   "10m": "#f59e0b",
   pollicino: "#22c55e",
@@ -22,6 +24,7 @@ export const VEHICLE_COLORS: Record<VehicleType, string> = {
 
 export const VEHICLE_SHORT: Record<VehicleType, string> = {
   autosnodato: "18m",
+  filobus: "Filo",
   "12m": "12m",
   "10m": "10m",
   pollicino: "6m",

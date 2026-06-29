@@ -2,7 +2,7 @@
  *  Optimizer Route – Type definitions
  * ═══════════════════════════════════════════════════════════════ */
 
-export type VehicleType = "autosnodato" | "12m" | "10m" | "pollicino";
+export type VehicleType = "autosnodato" | "filobus" | "12m" | "10m" | "pollicino";
 export type ServiceCategory = "urbano" | "extraurbano";
 
 export interface RouteItem {
