@@ -362,6 +362,7 @@ async function ensureFeedActiveColumn(): Promise<void> {
   if (feedActiveColumnEnsured) return;
   try {
     await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false`);
+    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_active ON gtfs_feeds(is_active) WHERE is_active = true`);
     feedActiveColumnEnsured = true;
   } catch (e: any) {
@@ -392,9 +393,15 @@ router.post("/gtfs/feeds/:id/activate", async (req, res) => {
       res.status(404).json({ error: "Feed non trovato" });
       return;
     }
-    // Disattiva tutti, attiva quello selezionato (atomico)
-    await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
-    await db.execute(sql`UPDATE gtfs_feeds SET is_active = true WHERE id = ${id}::uuid`);
+    // Programma di esercizio UNICO: il feed selezionato diventa l'unico attivo
+    // E l'unico di default, così non resta un is_default "orfano" su un feed
+    // vecchio (es. una vecchia messa in esercizio da Planner Studio) che
+    // confonderebbe il tie-break di Caronte. is_active + is_default coerenti.
+    await db.execute(sql`
+      UPDATE gtfs_feeds
+         SET is_active = (id = ${id}::uuid),
+             is_default = (id = ${id}::uuid)
+    `);
     // Invalida cache che dipende dal feed corrente
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");
