@@ -805,6 +805,40 @@ export default function DriverWorkspace({
                     min = {Math.floor((operatorConfig.bds?.targetWork?.mid ?? 408) / 60)}h{String((operatorConfig.bds?.targetWork?.mid ?? 408) % 60).padStart(2, "0")}
                   </span>
                 </div>
+
+                {/* Intensità ottimizzazione = quanti scenari il portfolio CP-SAT esplora.
+                    Più scenari = più esplorazione (non più tempo: l'ottimo per scenario è già dimostrato). */}
+                <div className="mt-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-zinc-400">Intensità (scenari esplorati)</span>
+                    <span className="text-[10px] text-zinc-600">più scenari = più esplorazione</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {([
+                      { lvl: 1, label: "Rapida", n: 14, t: 90 },
+                      { lvl: 2, label: "Media", n: 24, t: 240 },
+                      { lvl: 3, label: "Alta", n: 36, t: 480 },
+                      { lvl: 4, label: "Massima", n: 48, t: 900 },
+                    ]).map((o) => {
+                      const active = Number(operatorConfig.solverIntensity ?? 2) === o.lvl;
+                      return (
+                        <button
+                          key={o.lvl}
+                          type="button"
+                          onClick={() => setOperatorConfig((c) => ({ ...c, solverIntensity: o.lvl, timeLimit: o.t }))}
+                          className={`flex flex-col items-center gap-0.5 py-1.5 rounded-lg border text-[11px] font-medium transition ${
+                            active
+                              ? "bg-indigo-500/20 border-indigo-500 text-indigo-200"
+                              : "bg-zinc-900 border-zinc-700 text-zinc-400 hover:bg-zinc-800"
+                          }`}
+                        >
+                          <span className="font-semibold">{o.label}</span>
+                          <span className="text-[9px] opacity-70">{o.n} scenari</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
 
               {/* Numero auto aziendali */}
