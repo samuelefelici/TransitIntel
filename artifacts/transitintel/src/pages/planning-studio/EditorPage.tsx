@@ -257,6 +257,8 @@ export default function PlanningStudioEditorPage() {
     kind: PsClusterKind;
     isLogical: boolean;
     isInterchange: boolean;
+    isRest: boolean;
+    hasFacilities: boolean;
     radiusM: number;
     color: string;
     polygon: [number, number][]; // [lon, lat]
@@ -349,7 +351,7 @@ export default function PlanningStudioEditorPage() {
         const custom = (c.attributes && typeof (c.attributes as any).color === "string")
           ? (c.attributes as any).color : null;
         nodeByClusterId[c.id] = {
-          color: custom || (c.kind === "interchange" ? "#0ea5e9" : "#64748b"),
+          color: custom || (c.kind === "interchange" ? "#0ea5e9" : c.kind === "rest" ? "#f59e0b" : "#64748b"),
           interchange: isInterchangeOf(c),
         };
       }
@@ -1526,7 +1528,7 @@ export default function PlanningStudioEditorPage() {
                       name: c.name,
                       color: (c.attributes && typeof (c.attributes as any).color === "string"
                               ? (c.attributes as any).color
-                              : (c.kind === "interchange" ? "#0ea5e9" : "#64748b")),
+                              : (c.kind === "interchange" ? "#0ea5e9" : c.kind === "rest" ? "#f59e0b" : "#64748b")),
                       radius: c.radiusM,
                     },
                     geometry: { type: "Point", coordinates: [Number(c.centerLon), Number(c.centerLat)] },
@@ -2735,6 +2737,8 @@ type ClusterDrawState = {
   kind: PsClusterKind;
   isLogical: boolean;
   isInterchange: boolean;
+  isRest: boolean;          // nodo di sosta (sosta inoperosa extraurbana)
+  hasFacilities: boolean;   // con servizi igienici/strutture → contributo 12% vs 25%
   radiusM: number;
   color: string;
   polygon: [number, number][];
@@ -2809,6 +2813,7 @@ function ClustersPanel({
   // sempre kind='interchange', altrimenti kind='none'.
   function clusterTypeLabel(c: PsCluster): string {
     const i = isInterchangeOf(c), l = isLogicalOf(c);
+    if (c.kind === "rest") return l ? "Logico + Sosta" : "Nodo di sosta";
     if (i && l) return "Logico + Cambio";
     if (i) return "Punto di cambio";
     if (l) return "Nodo logico";
@@ -2845,6 +2850,8 @@ function ClustersPanel({
       kind: "interchange",
       isLogical: false,
       isInterchange: true,
+      isRest: false,
+      hasFacilities: false,
       radiusM: 150,
       color: COLOR_PALETTE[0],
       polygon: [],
@@ -2863,6 +2870,8 @@ function ClustersPanel({
       kind: c.kind,
       isLogical: isLogicalOf(c),
       isInterchange: isInterchangeOf(c),
+      isRest: c.kind === "rest",
+      hasFacilities: !!(c.attributes as any)?.hasFacilities,
       radiusM: c.radiusM ?? 150,
       color: clusterColor(c),
       polygon: [],
@@ -2922,14 +2931,17 @@ function ClustersPanel({
     setSaving(true);
     try {
       let id = clusterDraw.clusterId;
-      // kind enum derivato dai flag: lo Scheduling Engine riconosce solo
-      // 'interchange' per il mirror legacy, quindi se l'utente ha selezionato
-      // "Cambio" (anche insieme a "Logico") -> kind='interchange', altrimenti 'none'.
-      const derivedKind: PsClusterKind = clusterDraw.isInterchange ? "interchange" : "none";
+      // kind enum derivato dai flag. Priorità: Cambio (interchange, per il mirror
+      // legacy dello Scheduling Engine) → Sosta (rest) → logico/none.
+      const derivedKind: PsClusterKind = clusterDraw.isInterchange
+        ? "interchange"
+        : clusterDraw.isRest ? "rest" : "none";
       const attrPatch = {
         color: clusterDraw.color,
         isLogical: clusterDraw.isLogical,
         isInterchange: clusterDraw.isInterchange,
+        isRest: clusterDraw.isRest,
+        hasFacilities: clusterDraw.isRest ? clusterDraw.hasFacilities : false,
       };
       if (id) {
         // Preserva eventuali altri attributes esistenti
@@ -3011,7 +3023,7 @@ function ClustersPanel({
               className="w-full px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700 text-slate-100 mb-2"
             />
             <div className="flex gap-2 mb-2">
-              <div className="flex-1 grid grid-cols-2 gap-1">
+              <div className="flex-1 grid grid-cols-3 gap-1">
                 <label
                   className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[11px] cursor-pointer transition ${
                     clusterDraw.isLogical
@@ -3044,6 +3056,22 @@ function ClustersPanel({
                   />
                   Di Cambio
                 </label>
+                <label
+                  className={`flex items-center gap-1.5 px-2 py-1.5 rounded border text-[11px] cursor-pointer transition ${
+                    clusterDraw.isRest
+                      ? "bg-amber-600/30 border-amber-400 text-amber-100"
+                      : "bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600"
+                  }`}
+                  title="Sosta: nodo idoneo alla sosta inoperosa extraurbana (deposito/posto con servizi)."
+                >
+                  <input
+                    type="checkbox"
+                    checked={clusterDraw.isRest}
+                    onChange={e => setClusterDraw({ ...clusterDraw, isRest: e.target.checked })}
+                    className="w-3 h-3 accent-amber-500"
+                  />
+                  Sosta
+                </label>
               </div>
               <input
                 type="number" min={20} max={2000} step={10}
@@ -3053,9 +3081,20 @@ function ClustersPanel({
                 className="w-20 px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700 text-slate-100"
               />
             </div>
-            {!clusterDraw.isLogical && !clusterDraw.isInterchange && (
+            {clusterDraw.isRest && (
+              <label className="flex items-center gap-1.5 text-[11px] text-amber-200/90 mb-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={clusterDraw.hasFacilities}
+                  onChange={e => setClusterDraw({ ...clusterDraw, hasFacilities: e.target.checked })}
+                  className="w-3 h-3 accent-amber-500"
+                />
+                Con servizi igienici / strutture (sosta al 12% anziché 25%)
+              </label>
+            )}
+            {!clusterDraw.isLogical && !clusterDraw.isInterchange && !clusterDraw.isRest && (
               <p className="text-[10px] text-amber-400 -mt-1 mb-2">
-                ⚠ Seleziona almeno un tipo (Logico o Cambio).
+                ⚠ Seleziona almeno un tipo (Logico, Cambio o Sosta).
               </p>
             )}
             {/* Color picker */}
@@ -3174,7 +3213,7 @@ function ClustersPanel({
             </button>
             <button
               onClick={handleSaveDraw}
-              disabled={saving || !clusterDraw.name.trim() || (!clusterDraw.isLogical && !clusterDraw.isInterchange)}
+              disabled={saving || !clusterDraw.name.trim() || (!clusterDraw.isLogical && !clusterDraw.isInterchange && !clusterDraw.isRest)}
               className="flex-1 px-2 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium inline-flex items-center justify-center gap-1 disabled:opacity-50"
             >
               {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
