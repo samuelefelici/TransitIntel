@@ -33,6 +33,9 @@ export interface SchedulingProject {
   validityUnitName?: string | null;
   /** route_id coperti dall'UDP (solo nel GET singolo): filtra le linee in pipeline */
   validityUnitRouteIds?: string[];
+  /** nomi/short-name delle linee dell'UDP: fallback di match quando il feed usa
+   *  route_id diversi (es. GTFS importato) anziché ps_routes.id */
+  validityUnitRouteNames?: string[];
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */
   isShared?: boolean;
   /** info arricchite dalla list/get */

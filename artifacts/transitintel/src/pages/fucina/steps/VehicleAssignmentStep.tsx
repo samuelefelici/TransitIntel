@@ -21,6 +21,9 @@ interface Props {
   initial?: VehicleAssignment;
   /** Se valorizzato (progetto agganciato a un'UDP), mostra SOLO queste linee. */
   allowedRouteIds?: string[] | null;
+  /** Nomi/short-name delle linee UDP: match di fallback quando il feed usa
+   *  route_id diversi (es. GTFS importato) anziché ps_routes.id. */
+  allowedRouteNames?: string[] | null;
   /** Dettaglio UDP: se presente, la validità è definita dall'UDP → niente scelta data. */
   udpInfo?: {
     name?: string; dayTypeName?: string | null; dayTypeColor?: string | null;
@@ -31,7 +34,7 @@ interface Props {
   onComplete: (assignment: VehicleAssignment) => void;
 }
 
-export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, udpInfo, onBack, onComplete }: Props) {
+export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, allowedRouteNames, udpInfo, onBack, onComplete }: Props) {
   const fromUdp = !!udpInfo;
   /* ── Date state ── */
   const [availableDates, setAvailableDates] = useState<{ date: string; services: number }[]>([]);
@@ -92,15 +95,19 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
       if (routesData) {
         const feedRoutes: RouteItem[] = routesData.routes || [];
         let routes = feedRoutes;
-        // Progetto agganciato a un'UDP: il feed è già il "pacchetto" della UDP
-        // (materializzazione scoped sui trip dell'unità), quindi le linee del feed
-        // SONO le linee dell'unità. Usiamo allowedRouteIds solo per restringere
-        // se il feed fosse non-scoped (whole-project); se non combacia nulla,
-        // mostriamo comunque le linee del feed (sono quelle dell'UDP).
-        if (fromUdp && allowedRouteIds && allowedRouteIds.length > 0) {
-          const allow = new Set(allowedRouteIds);
-          const scoped = feedRoutes.filter((r) => allow.has(r.routeId));
-          routes = scoped.length > 0 ? scoped : feedRoutes;
+        // Progetto agganciato a un'UDP → restringi alle SOLE linee dell'unità.
+        // Match per route_id (feed materializzato dal PS) OPPURE per nome/short-name
+        // (feed importato con route_id reali diversi da ps_routes.id). Così si vedono
+        // solo le poche linee della UDP, non tutta la rete.
+        if (fromUdp && ((allowedRouteIds?.length ?? 0) > 0 || (allowedRouteNames?.length ?? 0) > 0)) {
+          const allowId = new Set(allowedRouteIds ?? []);
+          const allowName = new Set((allowedRouteNames ?? []).map((n) => n.trim().toLowerCase()));
+          const scoped = feedRoutes.filter(
+            (r) => allowId.has(r.routeId) || allowName.has((r.name ?? "").trim().toLowerCase()),
+          );
+          // Se qualcosa combacia usiamo il sottoinsieme; se nulla combacia
+          // lasciamo l'intero feed (il feed potrebbe essere già scoped sulla UDP).
+          if (scoped.length > 0) routes = scoped;
         }
         // Pre-seleziona tutte le linee mostrate quando si parte da un'UDP.
         if (fromUdp && (!initial?.selectedRoutes || initial.selectedRoutes.size === 0)) {

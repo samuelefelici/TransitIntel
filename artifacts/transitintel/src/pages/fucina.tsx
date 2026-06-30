@@ -302,6 +302,8 @@ export default function FucinaPage() {
   const [psNeedsSync, setPsNeedsSync] = useState(false);
   // Se il progetto è agganciato a un'UDP, queste sono le sole linee da mostrare.
   const [udpRouteIds, setUdpRouteIds] = useState<string[] | null>(null);
+  // Nomi/short-name delle linee UDP: fallback di match se il feed usa route_id diversi.
+  const [udpRouteNames, setUdpRouteNames] = useState<string[] | null>(null);
   // Dettaglio UDP (validità) per il riepilogo nello step assegnazione mezzi
   const [udpInfo, setUdpInfo] = useState<any | null>(null);
   const [psProjectId, setPsProjectId] = useState<string | null>(null);
@@ -360,6 +362,7 @@ export default function FucinaPage() {
         setPsLocked(true);
         setPsProjectId(String(proj.planningStudioProjectId));
         setUdpRouteIds(Array.isArray(proj.validityUnitRouteIds) ? proj.validityUnitRouteIds : null);
+        setUdpRouteNames(Array.isArray(proj.validityUnitRouteNames) ? proj.validityUnitRouteNames : null);
         // Carica il dettaglio dell'UDP (validità) per il riepilogo nello step mezzi
         if (proj.validityUnitId && proj.planningStudioProjectId) {
           fetch(`${getApiBase()}/api/planning-studio/projects/${proj.planningStudioProjectId}/validity-units/${proj.validityUnitId}/detail`, { credentials: "include" })
@@ -718,6 +721,7 @@ export default function FucinaPage() {
                       gtfsSelection={gtfsSelection!}
                       initial={vehicleAssignment ?? undefined}
                       allowedRouteIds={udpRouteIds}
+                      allowedRouteNames={udpRouteNames}
                       udpInfo={udpInfo}
                       onBack={() => projectId ? navigate(`/fucina/${projectId}`) : setStep(0)}
                       onComplete={(a) => {
