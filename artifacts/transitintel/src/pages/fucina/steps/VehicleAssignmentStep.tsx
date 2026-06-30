@@ -74,21 +74,32 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
       fetch(`${base}/api/service-program/routes${fid}`).then(r => r.json()).catch(() => null),
     ]).then(([datesData, routesData]) => {
       if (datesData) {
+        // Da UDP: la data di esercizio è quella RAPPRESENTATIVA dell'unità (es. la
+        // domenica festiva), così le corse mostrate sono quelle della UDP e non un
+        // giorno qualsiasi del feed. La data UDP ha priorità sul default del feed.
+        const repRaw = fromUdp ? udpInfo?.representativeDates?.[0] : undefined;
+        const udpDate = repRaw ? (repRaw.includes("-") ? repRaw : ymdToIso(repRaw)) : "";
         if (datesData.mode === "calendar") {
           setDatesMode("calendar");
           const minD = ymdToIso(datesData.minDate);
           const maxD = ymdToIso(datesData.maxDate);
           setDateRange({ min: minD, max: maxD });
           if (!initial?.selectedDate) {
-            const today = new Date().toISOString().slice(0, 10);
-            setSelectedDate(today >= minD && today <= maxD ? today : minD);
+            if (udpDate) setSelectedDate(udpDate);
+            else {
+              const today = new Date().toISOString().slice(0, 10);
+              setSelectedDate(today >= minD && today <= maxD ? today : minD);
+            }
           }
         } else {
           setDatesMode("calendar_dates");
           setAvailableDates(datesData.dates || []);
           if (!initial?.selectedDate) {
-            const best = (datesData.dates || []).sort((a: any, b: any) => b.services - a.services)[0];
-            if (best) setSelectedDate(ymdToIso(best.date));
+            if (udpDate) setSelectedDate(udpDate);
+            else {
+              const best = (datesData.dates || []).sort((a: any, b: any) => b.services - a.services)[0];
+              if (best) setSelectedDate(ymdToIso(best.date));
+            }
           }
         }
       }
