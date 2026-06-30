@@ -95,15 +95,33 @@ function ProgramPicker() {
   );
 }
 
-/* ─── Badge stato UDP ─── */
+/* ─── Badge stato UDP: un alert per OGNI combinazione (TM/TG creati · in esercizio · scoperte) ─── */
+function statusBadge(tone: "slate" | "rose" | "amber" | "emerald", Icon: typeof XCircle, text: string) {
+  const cls =
+    tone === "slate" ? "bg-slate-700/60 text-slate-300 border-slate-600"
+    : tone === "rose" ? "bg-rose-500/15 text-rose-300 border-rose-500/40"
+    : tone === "amber" ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+    : "bg-emerald-500/15 text-emerald-300 border-emerald-500/40";
+  return <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${cls}`}><Icon className="w-3 h-3" /> {text}</span>;
+}
+
 function UnitStatus({ u }: { u: OperationalUnit }) {
-  if (u.status === "not_started")
-    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-300 border border-slate-600"><XCircle className="w-3 h-3" /> Non avviata</span>;
-  if (u.status === "missing_vehicle")
-    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/40"><XCircle className="w-3 h-3" /> Manca turni macchina</span>;
-  if (u.status === "missing_driver")
-    return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/40"><AlertTriangle className="w-3 h-3" /> Manca turni guida</span>;
-  return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"><CheckCircle2 className="w-3 h-3" /> Completa</span>;
+  const started = !!u.schedulingProjectId;
+  const tmOp = !!u.vehicleScenario;            // TM in esercizio
+  const tgOp = !!u.driverScenario;             // TG in esercizio
+  // operativo ⇒ creato (i contatori potrebbero mancare prima del deploy backend)
+  const tmCreated = (u.vehicleScenarioCount ?? 0) > 0 || tmOp;
+  const tgCreated = (u.driverScenarioCount ?? 0) > 0 || tgOp;
+  const uncovered = u.vehicleUncovered > 0;
+
+  // Combinazioni, in ordine di priorità (dalla più "indietro" alla completa):
+  if (!started)   return statusBadge("slate", XCircle, "Non avviata");
+  if (!tmCreated) return statusBadge("rose", XCircle, "Manca turni macchina");
+  if (!tmOp)      return statusBadge("amber", AlertTriangle, "TM da mettere in esercizio");
+  if (!tgCreated) return statusBadge("amber", AlertTriangle, "Manca turni guida");
+  if (!tgOp)      return statusBadge("amber", AlertTriangle, "TG da mettere in esercizio");
+  if (uncovered)  return statusBadge("amber", AlertTriangle, "Operativa · corse scoperte");
+  return statusBadge("emerald", CheckCircle2, "Operativa");
 }
 
 /* ─── Card di una UDP: cliccabile → entra nel progetto (dashboard). Lo stepper
