@@ -1803,7 +1803,7 @@ export default function VehicleWorkspace({
                 {overwriteSaving
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
                   : <Save className="w-3.5 h-3.5 mr-1" />}
-                Salva
+                Salva modifiche
               </Button>
             )}
 
@@ -1811,6 +1811,9 @@ export default function VehicleWorkspace({
               size="sm"
               onClick={() => setSaveDialogOpen(true)}
               disabled={saving || !result}
+              title={savedId
+                ? "Crea un nuovo scenario separato (variante) senza toccare quello corrente"
+                : "Salva questo scenario di turni macchina con un nome"}
               className={savedId
                 ? "bg-green-600/70 hover:bg-green-700 text-white"
                 : "bg-orange-500 hover:bg-orange-600 text-white"
@@ -1823,7 +1826,7 @@ export default function VehicleWorkspace({
               ) : (
                 <Save className="w-3.5 h-3.5 mr-1" />
               )}
-              {savedId ? "Salva come…" : "Salva con nome…"}
+              {savedId ? "Salva come nuovo…" : "Salva con nome…"}
             </Button>
           </div>
         </div>

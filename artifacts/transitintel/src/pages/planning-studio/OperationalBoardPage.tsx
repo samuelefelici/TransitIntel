@@ -147,8 +147,13 @@ function UdpCard({ u, onEnter, entering }: {
           {tmDone ? (
             <span className="inline-flex items-center gap-1.5 text-xs text-slate-200">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span className="truncate max-w-[150px]">{u.vehicleScenario!.name}</span>
+              <span className="truncate max-w-[130px]">{u.vehicleScenario!.name}</span>
               {u.vehicleScenario!.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{u.vehicleScenario!.numVehicles} vett.</span>}
+              <span className="text-[9px] font-bold uppercase px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">in esercizio</span>
+            </span>
+          ) : u.vehicleScenarioCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-300">
+              <AlertTriangle className="w-3 h-3 shrink-0" /> {u.vehicleScenarioCount} {u.vehicleScenarioCount === 1 ? "scenario creato" : "scenari creati"} · nessuno in esercizio
             </span>
           ) : (
             <span className="text-[11px] text-slate-500">da generare</span>
@@ -168,10 +173,15 @@ function UdpCard({ u, onEnter, entering }: {
           {tgDone ? (
             <span className="inline-flex items-center gap-1.5 text-xs text-slate-200">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span className="truncate max-w-[150px]">{u.driverScenario!.name}</span>
+              <span className="truncate max-w-[110px]">{u.driverScenario!.name}</span>
               <span className="text-[10px] text-purple-300/80 font-mono shrink-0">{u.driverScenario!.dutyCount} turni</span>
+              <span className="text-[9px] font-bold uppercase px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 shrink-0">in esercizio</span>
             </span>
-          ) : tmDone ? (
+          ) : u.driverScenarioCount > 0 ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-amber-300">
+              <AlertTriangle className="w-3 h-3 shrink-0" /> {u.driverScenarioCount} {u.driverScenarioCount === 1 ? "scenario creato" : "scenari creati"} · nessuno in esercizio
+            </span>
+          ) : u.vehicleScenarioCount > 0 ? (
             <span className="text-[11px] text-slate-500">da generare</span>
           ) : (
             <span className="text-[11px] text-slate-600">prima i turni macchina</span>

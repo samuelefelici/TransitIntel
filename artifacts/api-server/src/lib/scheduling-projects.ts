@@ -879,7 +879,20 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
        ORDER BY sp.created_at DESC LIMIT 1`);
     const sp = (spR as any).rows?.[0] ?? null;
     let v: any = null, d: any = null, uncoveredInTm = 0;
+    // Conteggio scenari CREATI (a prescindere dall'esercizio): serve all'anteprima
+    // sull'UDP per distinguere "nessuno creato" da "creati ma nessuno in esercizio".
+    let vehicleScenarioCount = 0, driverScenarioCount = 0;
     if (sp) {
+      const vcR = await db.execute(sql`
+        SELECT COUNT(*)::int AS c FROM service_program_scenarios WHERE project_id = ${sp.id}::uuid`);
+      vehicleScenarioCount = Number((vcR as any).rows?.[0]?.c) || 0;
+      const dcR = await db.execute(sql`
+        SELECT COUNT(*)::int AS c
+          FROM driver_shift_scenarios dss
+          JOIN service_program_scenarios sps ON sps.id = dss.service_program_scenario_id
+         WHERE sps.project_id = ${sp.id}::uuid`);
+      driverScenarioCount = Number((dcR as any).rows?.[0]?.c) || 0;
+
       const vR = await db.execute(sql`
         SELECT id, name, date,
                (result->'summary'->>'numVehicles')::int AS num_vehicles,
@@ -905,6 +918,8 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
       schedulingProjectId: sp?.id ?? null,
       vehicleScenario: v ? { id: v.id, name: v.name, date: v.date, numVehicles: v.num_vehicles } : null,
       driverScenario: d ? { id: d.id, name: d.name, dutyCount: Number(d.duty_count) || 0 } : null,
+      vehicleScenarioCount,
+      driverScenarioCount,
       vehicleUncovered: uncoveredInTm,
       status,
     });
