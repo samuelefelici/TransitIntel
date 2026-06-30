@@ -4,6 +4,16 @@
 
 export type DriverShiftType = "intero" | "semiunico" | "spezzato" | "supplemento" | "invalido";
 
+/* Attività NON di guida inseribili manualmente in un turno (lavoro ma non guida). */
+export type DriverActivityType = "riserva" | "presidio" | "verifica";
+export interface DriverActivity {
+  id: string;
+  type: DriverActivityType;
+  startMin: number;
+  endMin: number;
+  note?: string;
+}
+
 export interface RipresaTrip {
   tripId: string;
   routeId: string;
@@ -93,6 +103,8 @@ export interface DriverShiftData {
   preTurnoMin: number;
   cambiCount: number;
   riprese: Ripresa[];
+  /** attività non di guida (riserva/presidio/verifica) aggiunte manualmente */
+  activities?: DriverActivity[];
   handovers?: HandoverInfo[];
   vehicleHandoverLabels?: string[];
   /* v2 cost fields */

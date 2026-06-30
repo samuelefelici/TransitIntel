@@ -1,6 +1,6 @@
 import React from "react";
 import { Clock, Coffee, Timer, Zap, AlertTriangle } from "lucide-react";
-import type { DriverShiftType } from "./types";
+import type { DriverShiftType, DriverActivityType } from "./types";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Driver Shifts – Constants & utilities
@@ -44,6 +44,32 @@ export function ymdToDisplay(ymd: string): string {
   if (!ymd) return "";
   const y = ymd.slice(0, 4), m = ymd.slice(4, 6), d = ymd.slice(6, 8);
   return `${d}/${m}/${y}`;
+}
+
+/* Attività non di guida (riserva/presidio/verifica) */
+export const ACTIVITY_LABELS: Record<DriverActivityType, string> = {
+  riserva: "Riserva",
+  presidio: "Presidio",
+  verifica: "Verifica",
+};
+export const ACTIVITY_SHORT: Record<DriverActivityType, string> = {
+  riserva: "RIS",
+  presidio: "PRE",
+  verifica: "VER",
+};
+export const ACTIVITY_COLORS: Record<DriverActivityType, string> = {
+  riserva: "#14b8a6",  // teal
+  presidio: "#6366f1", // indigo
+  verifica: "#d97706", // amber-700
+};
+
+/** Converte "HH:MM" → minuti dalla mezzanotte (null se non valido). */
+export function timeToMin(hhmm: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) return null;
+  const h = Number(m[1]); const mm = Number(m[2]);
+  if (h < 0 || h > 27 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
 }
 
 export function minToTime(min: number): string {

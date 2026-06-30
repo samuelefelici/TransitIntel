@@ -56,9 +56,10 @@ import {
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
-import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType } from "@/pages/driver-shifts/types";
-import { TYPE_LABELS } from "@/pages/driver-shifts/constants";
+import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType } from "@/pages/driver-shifts/types";
+import { TYPE_LABELS, ACTIVITY_LABELS } from "@/pages/driver-shifts/constants";
 import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
+import { AddActivityDialog } from "@/pages/driver-shifts/AddActivityDialog";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
@@ -134,6 +135,8 @@ export default function DriverWorkspace({
   const [showCompatGlow, setShowCompatGlow] = useState(false);
   // ── Aggiungi turno guida manuale (#NEW) ──
   const [showAddDriverDialog, setShowAddDriverDialog] = useState(false);
+  // ── Aggiungi attività non di guida (Riserva/Presidio/Verifica) ──
+  const [showAddActivityDialog, setShowAddActivityDialog] = useState(false);
 
   /* ── Cluster di cambio (interchange) per il setup banner ──
    * Sono i nodi dove gli autisti possono cambiare bus in linea senza tornare
@@ -457,6 +460,45 @@ export default function DriverWorkspace({
     pushHistory(newResult, `➕ Nuovo turno ${opts.driverId} (${TYPE_LABELS[opts.type]})`);
     setShowAddDriverDialog(false);
     toast.success("Turno creato", { description: `${opts.driverId} aggiunto al piano (vuoto)` });
+  }, [result, pushHistory]);
+
+  /** Aggiunge un'attività non di guida (riserva/presidio/verifica) a un turno. */
+  const handleAddActivity = useCallback((opts: {
+    driverId: string; type: DriverActivityType; startMin: number; endMin: number; note?: string;
+  }) => {
+    if (!result) return;
+    const dur = Math.max(0, opts.endMin - opts.startMin);
+    const activity: DriverActivity = {
+      id: `act_${Date.now().toString(36)}`,
+      type: opts.type, startMin: opts.startMin, endMin: opts.endMin, note: opts.note,
+    };
+    const newShifts = result.driverShifts.map(s => {
+      if (s.driverId !== opts.driverId) return s;
+      const activities = [...(s.activities ?? []), activity];
+      // estende il nastro per includere l'attività e la conta come lavoro
+      const nastroStartMin = Math.min(s.nastroStartMin, opts.startMin);
+      const nastroEndMin = Math.max(s.nastroEndMin, opts.endMin);
+      const workMin = s.workMin + dur;
+      return {
+        ...s,
+        activities,
+        nastroStartMin, nastroEndMin,
+        nastroStart: minToTime(nastroStartMin),
+        nastroEnd: minToTime(nastroEndMin),
+        nastroMin: nastroEndMin - nastroStartMin,
+        workMin,
+        work: formatDuration(workMin),
+      };
+    });
+    const newResult: DriverShiftsResult = {
+      ...result,
+      driverShifts: newShifts,
+      summary: recomputeSummary(newShifts, result.summary),
+    };
+    setResult(newResult);
+    pushHistory(newResult, `➕ ${ACTIVITY_LABELS[opts.type]} → ${opts.driverId}`);
+    setShowAddActivityDialog(false);
+    toast.success("Attività aggiunta", { description: `${ACTIVITY_LABELS[opts.type]} su ${opts.driverId}` });
   }, [result, pushHistory]);
 
   const handleBarChange = useCallback((change: GanttChange) => {
@@ -1169,6 +1211,16 @@ export default function DriverWorkspace({
                     ➕ Turno guida
                   </button>
                 )}
+                {/* Aggiungi attività non di guida (Riserva/Presidio/Verifica) */}
+                {result && result.driverShifts.length > 0 && (
+                  <button
+                    onClick={() => setShowAddActivityDialog(true)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-teal-500/40 bg-teal-500/10 text-teal-300 hover:bg-teal-500/20 transition"
+                    title="Inserisci un'attività non di guida (Riserva, Presidio, Verifica) in un turno"
+                  >
+                    ➕ Attività
+                  </button>
+                )}
                 <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
                   {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
                 </span>
@@ -1312,6 +1364,15 @@ export default function DriverWorkspace({
           existingDriverIds={result.driverShifts.map(s => s.driverId)}
           onClose={() => setShowAddDriverDialog(false)}
           onConfirm={handleAddDriverShift}
+        />
+      )}
+
+      {/* Aggiungi attività non di guida */}
+      {showAddActivityDialog && result && (
+        <AddActivityDialog
+          driverIds={result.driverShifts.map(s => s.driverId)}
+          onClose={() => setShowAddActivityDialog(false)}
+          onConfirm={handleAddActivity}
         />
       )}
     </div>
