@@ -9,7 +9,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
   Bus, Calendar, ChevronRight, Loader2, Search, ArrowLeft, ArrowRight,
-  CheckSquare, Square, Lock, Unlock, ChevronDown, ChevronUp, X,
+  CheckSquare, Square, Lock, Unlock, ChevronDown, ChevronUp, X, AlertTriangle,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import type { GtfsSelection, VehicleAssignment } from "@/pages/fucina";
@@ -359,6 +359,16 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                   {forcedRoutes.size > 0 && <span className="text-amber-400"><Lock className="w-2.5 h-2.5 inline" /> {forcedRoutes.size} forzate</span>}
                   <span className="text-muted-foreground/40">🔒 solo quel mezzo · 🔓 flessibile (±1 taglia)</span>
                 </div>
+                {/* Alert: selezione parziale delle linee della UDP */}
+                {fromUdp && allRoutes.length > 0 && selectedRoutes.size < allRoutes.length && (
+                  <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 flex items-start gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Attenzione:</strong> hai lasciato fuori {allRoutes.length - selectedRoutes.size} di {allRoutes.length} linee di questa UDP.
+                      Le loro corse <strong>non saranno pianificate</strong> in questo scenario di turni macchina (potrai coprirle con un altro scenario complementare).
+                    </span>
+                  </div>
+                )}
                 <div className="max-h-[380px] overflow-y-auto space-y-0.5 pr-1">
                   {filteredRoutes.map(route => {
                     const isSelected = selectedRoutes.has(route.routeId);
