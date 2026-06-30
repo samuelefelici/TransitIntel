@@ -8,11 +8,11 @@
  * Le unità vengono CREATE dalla ValidityPage (dialog "Calcola Unità").
  */
 import { useMemo, useState } from "react";
-import { Link, useParams, useLocation } from "wouter";
+import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Layers, Loader2, Pencil, Trash2, Check, X, Rocket, Calendar as CalendarIcon,
+  ArrowLeft, Layers, Loader2, Pencil, Trash2, Check, X, Calendar as CalendarIcon,
   ChevronDown, Database, Save,
 } from "lucide-react";
 import {
@@ -20,14 +20,12 @@ import {
   type PsValidityUnit,
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
-import { apiFetch } from "@/lib/api";
 import ValiditySectionNav from "./ValiditySectionNav";
 
 export default function PlanningStudioValidityUnitsPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
-  const [, setLocation] = useLocation();
 
   const projectQ = useQuery({
     queryKey: ["ps", "project", projectId],
@@ -48,38 +46,6 @@ export default function PlanningStudioValidityUnitsPage() {
     mutationFn: (id: string) => deletePsValidityUnit(projectId, id),
     onSuccess: () => { toast.success("Unità eliminata"); invalidate(); },
     onError: (e: Error) => toast.error(e.message),
-  });
-
-  // Ponte PS → Scheduling Engine: riusa il progetto di esercizio agganciato a
-  // questo progetto PS (se esiste), altrimenti lo crea (la creazione avvia in
-  // automatico la materializzazione PS → feed GTFS) e apre la pipeline Fucina.
-  const pipelineMut = useMutation({
-    // Un progetto scheduling PER UDP: così la pipeline vede solo le linee di
-    // quell'unità. Riusa quello già creato per la stessa UDP, altrimenti lo crea.
-    mutationFn: async (unit: { id: string; name: string }) => {
-      const found = await apiFetch<{ projects: Array<{ id: string; validityUnitId?: string | null }> }>(
-        `/api/scheduling/projects?planningStudioProjectId=${projectId}`,
-      );
-      const forThisUnit = found.projects.find((p) => p.validityUnitId === unit.id);
-      if (forThisUnit) return forThisUnit.id;
-      const created = await apiFetch<{ project: { id: string } }>(
-        "/api/scheduling/projects",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            name: `${projectQ.data?.name ?? "Progetto"} · ${unit.name}`,
-            description: "Creato dalle Unità di Progettazione (Planner Studio)",
-            planningStudioProjectId: projectId,
-            validityUnitId: unit.id,
-          }),
-        },
-      );
-      return created.project.id;
-    },
-    onSuccess: (schedulingProjectId) => {
-      setLocation(`/fucina/${schedulingProjectId}/pipeline`);
-    },
-    onError: (e: Error) => toast.error(`Pipeline scheduling: ${e.message}`),
   });
 
   const sorted = useMemo(() => {
@@ -144,11 +110,6 @@ export default function PlanningStudioValidityUnitsPage() {
                 onDelete={() => {
                   if (confirm(`Eliminare l'unità "${u.name}"?`)) delMut.mutate(u.id);
                 }}
-                onPipeline={() => {
-                  if (pipelineMut.isPending) return;
-                  toast.info("Apro la pipeline scheduling…");
-                  pipelineMut.mutate({ id: u.id, name: u.name });
-                }}
               />
             ))}
           </div>
@@ -162,10 +123,9 @@ interface UnitCardProps {
   unit: PsValidityUnit;
   projectId: string;
   onDelete: () => void;
-  onPipeline: () => void;
 }
 
-function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
+function UnitCard({ unit, projectId, onDelete }: UnitCardProps) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(unit.name);
@@ -313,13 +273,6 @@ function UnitCard({ unit, projectId, onDelete, onPipeline }: UnitCardProps) {
                 title="Consulta il dataset (corse) e modifica l'unità"
               >
                 {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <Database className="h-3.5 w-3.5" />}
-              </button>
-              <button
-                onClick={onPipeline}
-                className="p-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-500"
-                title="Vai alla pipeline scheduling"
-              >
-                <Rocket className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setEditing(true)}
