@@ -263,8 +263,14 @@ export interface OperationalUnit {
   validityUnitName: string | null;
   tripCount: number;
   schedulingProjectId: string | null;
+  /** scenario TM IN ESERCIZIO (null se nessuno operativo) */
   vehicleScenario: { id: string; name: string; date: string; numVehicles: number | null } | null;
+  /** scenario TG IN ESERCIZIO (null se nessuno operativo) */
   driverScenario: { id: string; name: string; dutyCount: number } | null;
+  /** n. scenari TM creati (a prescindere dall'esercizio) */
+  vehicleScenarioCount: number;
+  /** n. scenari TG creati (a prescindere dall'esercizio) */
+  driverScenarioCount: number;
   /** corse della UDP non coperte dai turni macchina (result.unassigned) */
   vehicleUncovered: number;
   status: "not_started" | "complete" | "missing_vehicle" | "missing_driver";
