@@ -20,8 +20,11 @@ import {
 import {
   getProject, STAGE_META, stageProgress,
   listProjectMembers, listProjectActivity,
+  listProjectVehicleScenarios, listProjectDriverScenarios,
   type SchedulingProject, type ProjectMember, type ProjectActivity,
+  type ProjectVehicleScenario, type ProjectDriverScenario,
 } from "@/lib/scheduling-projects-api";
+import { Power } from "lucide-react";
 import ShareProjectDialog from "@/components/scheduling/ShareProjectDialog";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -74,6 +77,8 @@ export default function ProjectDashboardPage() {
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [activity, setActivity] = useState<ProjectActivity[]>([]);
   const [shareOpen, setShareOpen] = useState(false);
+  const [vehScenarios, setVehScenarios] = useState<ProjectVehicleScenario[]>([]);
+  const [drvScenarios, setDrvScenarios] = useState<ProjectDriverScenario[]>([]);
 
   // Carica progetto
   useEffect(() => {
@@ -98,12 +103,16 @@ export default function ProjectDashboardPage() {
   const refreshShared = React.useCallback(async () => {
     if (!projectId) return;
     try {
-      const [m, a] = await Promise.all([
+      const [m, a, vs, ds] = await Promise.all([
         listProjectMembers(projectId),
         listProjectActivity(projectId, 50),
+        listProjectVehicleScenarios(projectId).catch(() => []),
+        listProjectDriverScenarios(projectId).catch(() => []),
       ]);
       setMembers(m);
       setActivity(a);
+      setVehScenarios(vs);
+      setDrvScenarios(ds);
     } catch {
       // silenzioso (potrebbe essere un progetto appena creato)
     }
@@ -281,6 +290,54 @@ export default function ProjectDashboardPage() {
                 Suggerimento: i workspace richiedono uno scenario in memoria. Se non hai mai eseguito la pipeline,
                 parti da <span className="text-orange-400">Pipeline / Riottimizza</span>.
               </p>
+            </div>
+
+            {/* ─── Scenari salvati (turni macchina / turni guida) ─── */}
+            <div className="mt-10 grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {/* Turni macchina */}
+              <div className="rounded-xl border border-amber-500/15 bg-gradient-to-br from-amber-950/10 to-black p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[11px] font-semibold text-amber-300 flex items-center gap-1.5"><Truck className="w-3.5 h-3.5" /> Turni macchina · {vehScenarios.length}</p>
+                  <button onClick={() => navigate(`/fucina/${projectId}/vehicles`)} className="text-[10px] text-amber-400/80 hover:underline inline-flex items-center gap-1">Gestisci <ArrowRight className="w-3 h-3" /></button>
+                </div>
+                {vehScenarios.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500">Nessuno scenario salvato. Avvia la pipeline per generarne uno.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {vehScenarios.map((s) => (
+                      <button key={s.id} onClick={() => navigate(`/fucina/${projectId}/vehicles`)}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-zinc-800 bg-black/30 hover:border-amber-500/40 transition-colors text-left">
+                        <Truck className="w-3.5 h-3.5 text-amber-400/70 shrink-0" />
+                        <span className="text-xs text-zinc-200 truncate flex-1">{s.name}</span>
+                        {s.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{s.numVehicles} vett.</span>}
+                        {s.isOperational && <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 shrink-0"><Power className="w-2.5 h-2.5" /> esercizio</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Turni guida */}
+              <div className="rounded-xl border border-purple-500/15 bg-gradient-to-br from-purple-950/10 to-black p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[11px] font-semibold text-purple-300 flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Turni guida · {drvScenarios.length}</p>
+                  <button onClick={() => navigate(`/fucina/${projectId}/drivers`)} className="text-[10px] text-purple-400/80 hover:underline inline-flex items-center gap-1">Gestisci <ArrowRight className="w-3 h-3" /></button>
+                </div>
+                {drvScenarios.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500">Nessuno scenario salvato. Serve prima uno scenario turni macchina.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {drvScenarios.map((s) => (
+                      <button key={s.id} onClick={() => navigate(`/fucina/${projectId}/drivers`)}
+                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border border-zinc-800 bg-black/30 hover:border-purple-500/40 transition-colors text-left">
+                        <Users className="w-3.5 h-3.5 text-purple-400/70 shrink-0" />
+                        <span className="text-xs text-zinc-200 truncate flex-1">{s.name}</span>
+                        <span className="text-[10px] text-zinc-500 truncate shrink-0 max-w-[90px]">← {s.vehicleScenarioName}</span>
+                        {s.isOperational && <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 shrink-0"><Power className="w-2.5 h-2.5" /> esercizio</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* ─── Collaborazione: Membri + Attività ─── */}

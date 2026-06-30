@@ -106,36 +106,38 @@ function UnitStatus({ u }: { u: OperationalUnit }) {
   return <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40"><CheckCircle2 className="w-3 h-3" /> Completa</span>;
 }
 
-/* ─── Card di una UDP: stepper Turni Macchina → Turni Guida → Operativo ─── */
-function UdpCard({ u, psId, onGenerateTM, generating }: {
-  u: OperationalUnit; psId: string;
-  onGenerateTM: (u: OperationalUnit) => void;
-  generating: boolean;
+/* ─── Card di una UDP: cliccabile → entra nel progetto (dashboard). Lo stepper
+       TM → TG → Operativo è solo stato visivo; generazione/scenari stanno dentro. ─── */
+function UdpCard({ u, onEnter, entering }: {
+  u: OperationalUnit;
+  onEnter: (u: OperationalUnit) => void;
+  entering: boolean;
 }) {
-  // "Apri" → lista scenari (vehicles/drivers). "Genera" → pipeline di ottimizzazione
-  // (feed materializzato dal PS, niente lista vuota). Senza scheduling project,
-  // il bottone lo crea e poi parte con la pipeline.
-  const linkVehicles = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/vehicles` : null;
-  const linkPipeline = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/pipeline` : null;
-  const linkDrivers = u.schedulingProjectId ? `/fucina/${u.schedulingProjectId}/drivers` : `/planning-studio/${psId}/validity-units`;
   const tmDone = !!u.vehicleScenario;
   const tgDone = !!u.driverScenario;
   const operative = u.status === "complete" && u.vehicleUncovered === 0;
   const accent = operative ? "border-l-emerald-500" : u.status === "missing_vehicle" || u.status === "not_started" ? "border-l-rose-500/70" : "border-l-amber-500/70";
 
   return (
-    <div className={`rounded-xl border border-slate-800 border-l-[3px] ${accent} bg-slate-900/40 p-3.5`}>
-      {/* riga 1: nome UDP + stato */}
+    <button
+      onClick={() => onEnter(u)}
+      disabled={entering}
+      className={`w-full text-left rounded-xl border border-slate-800 border-l-[3px] ${accent} bg-slate-900/40 p-3.5 hover:border-slate-600 hover:bg-slate-900/70 transition-colors disabled:opacity-60`}
+    >
+      {/* riga 1: nome UDP + stato + entra */}
       <div className="flex items-center gap-2 mb-3">
         <Layers className="w-4 h-4 text-slate-500 shrink-0" />
         <div className="min-w-0">
           <div className="font-semibold text-slate-100 truncate">{u.validityUnitName ?? "UDP"}</div>
           <div className="text-[10px] text-slate-500">{u.tripCount} corse</div>
         </div>
-        <div className="ml-auto"><UnitStatus u={u} /></div>
+        <div className="ml-auto flex items-center gap-2">
+          <UnitStatus u={u} />
+          {entering ? <Loader2 className="w-4 h-4 animate-spin text-emerald-400" /> : <ArrowRight className="w-4 h-4 text-slate-500" />}
+        </div>
       </div>
 
-      {/* stepper */}
+      {/* stepper (solo stato) */}
       <div className="grid grid-cols-[1fr_auto_1fr_auto_auto] items-center gap-2">
         {/* Step 1 — Turni macchina */}
         <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
@@ -143,28 +145,13 @@ function UdpCard({ u, psId, onGenerateTM, generating }: {
             <Truck className="w-3 h-3 text-amber-400" /> Turni macchina
           </div>
           {tmDone ? (
-            <Link href={linkVehicles ?? "#"}>
-              <button className="group inline-flex items-center gap-1.5 text-xs text-slate-200 hover:text-amber-200">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span className="truncate max-w-[150px]">{u.vehicleScenario!.name}</span>
-                {u.vehicleScenario!.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{u.vehicleScenario!.numVehicles} vett.</span>}
-                <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
-              </button>
-            </Link>
-          ) : linkPipeline ? (
-            <Link href={linkPipeline}>
-              <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition">
-                <Plus className="w-3.5 h-3.5" /> Genera
-              </button>
-            </Link>
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-200">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span className="truncate max-w-[150px]">{u.vehicleScenario!.name}</span>
+              {u.vehicleScenario!.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{u.vehicleScenario!.numVehicles} vett.</span>}
+            </span>
           ) : (
-            <button
-              onClick={() => onGenerateTM(u)}
-              disabled={generating}
-              className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-amber-600/90 hover:bg-amber-500 text-white transition disabled:opacity-50"
-            >
-              {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Genera
-            </button>
+            <span className="text-[11px] text-slate-500">da generare</span>
           )}
           {u.vehicleUncovered > 0 && (
             <div className="text-[10px] text-amber-300 mt-1 flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> {u.vehicleUncovered} corse scoperte</div>
@@ -179,20 +166,13 @@ function UdpCard({ u, psId, onGenerateTM, generating }: {
             <Users className="w-3 h-3 text-purple-400" /> Turni guida
           </div>
           {tgDone ? (
-            <Link href={linkDrivers}>
-              <button className="group inline-flex items-center gap-1.5 text-xs text-slate-200 hover:text-purple-200">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span className="truncate max-w-[150px]">{u.driverScenario!.name}</span>
-                <span className="text-[10px] text-purple-300/80 font-mono shrink-0">{u.driverScenario!.dutyCount} turni</span>
-                <ArrowRight className="w-3 h-3 opacity-0 group-hover:opacity-100 transition" />
-              </button>
-            </Link>
+            <span className="inline-flex items-center gap-1.5 text-xs text-slate-200">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              <span className="truncate max-w-[150px]">{u.driverScenario!.name}</span>
+              <span className="text-[10px] text-purple-300/80 font-mono shrink-0">{u.driverScenario!.dutyCount} turni</span>
+            </span>
           ) : tmDone ? (
-            <Link href={linkDrivers}>
-              <button className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md bg-purple-600/90 hover:bg-purple-500 text-white transition">
-                <Plus className="w-3.5 h-3.5" /> Genera
-              </button>
-            </Link>
+            <span className="text-[11px] text-slate-500">da generare</span>
           ) : (
             <span className="text-[11px] text-slate-600">prima i turni macchina</span>
           )}
@@ -210,7 +190,7 @@ function UdpCard({ u, psId, onGenerateTM, generating }: {
             : <span className="text-[11px] text-slate-600">—</span>}
         </div>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -253,8 +233,7 @@ function Board({ psId }: { psId: string }) {
       return created.project.id;
     },
     onSuccess: (schedulingProjectId) => {
-      toast.info("Avvio ottimizzazione turni macchina…");
-      navigate(`/fucina/${schedulingProjectId}/pipeline`);
+      navigate(`/fucina/${schedulingProjectId}`);
     },
     onError: (e: Error) => toast.error(`Scheduling: ${e.message}`),
   });
@@ -351,21 +330,23 @@ function Board({ psId }: { psId: string }) {
               </div>
             )}
 
-            {/* Lista UDP — scheduling step-by-step per unità */}
+            {/* Lista UDP — clic su una UDP = entra nel suo progetto (dashboard) */}
             {board.projects.map((u) => (
               <UdpCard
                 key={u.validityUnitId}
                 u={u}
-                psId={psId}
-                onGenerateTM={(unit) => startMut.mutate(unit)}
-                generating={startMut.isPending && startMut.variables?.validityUnitId === u.validityUnitId}
+                onEnter={(unit) => {
+                  if (unit.schedulingProjectId) navigate(`/fucina/${unit.schedulingProjectId}`);
+                  else startMut.mutate(unit);
+                }}
+                entering={startMut.isPending && startMut.variables?.validityUnitId === u.validityUnitId}
               />
             ))}
 
             {board.projects.length > 0 && (
               <p className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
                 <Sparkles className="w-3 h-3 text-emerald-400/70" />
-                Per ogni UDP: ① genera i turni macchina, poi ② i turni guida. Verde = unità operativa (entrambi fatti, nessuna corsa scoperta).
+                Clicca una UDP per entrare nel suo progetto: lì generi e gestisci gli scenari di turni macchina e turni guida. Verde = unità operativa.
               </p>
             )}
           </div>
