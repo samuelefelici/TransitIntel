@@ -313,6 +313,8 @@ export default function FucinaPage() {
   const [gtfsSelection, setGtfsSelection] = useState<GtfsSelection | null>(null);
   const [vehicleAssignment, setVehicleAssignment] = useState<VehicleAssignment | null>(null);
   const [selectedDepotId, setSelectedDepotId] = useState<string | null>(null);
+  // Selezione multi-deposito (id + max veicoli) per l'ottimizzazione TM.
+  const [selectedDepots, setSelectedDepots] = useState<Array<{ id: string; maxVehicles: number | null }>>([]);
   const [selectedClusterIds, setSelectedClusterIds] = useState<string[]>([]);
   const [deadheadMatrix, setDeadheadMatrix] = useState<DeadheadMatrix | null>(null);
   const [optimizationResult, setOptimizationResult] = useState<ServiceProgramResult | null>(null);
@@ -756,10 +758,11 @@ export default function FucinaPage() {
                   )}
                   {step === 2 && (
                     <DepotStep
-                      initial={selectedDepotId}
+                      initial={selectedDepots.length > 0 ? selectedDepots : (selectedDepotId ? [{ id: selectedDepotId, maxVehicles: null }] : null)}
                       onBack={() => setStep(1)}
-                      onComplete={(depotId) => {
-                        setSelectedDepotId(depotId);
+                      onComplete={(deps) => {
+                        setSelectedDepots(deps);
+                        setSelectedDepotId(deps[0]?.id ?? null); // primario per il calcolo fuori linea
                         // Salta lo step 3 (Cluster di Cambio): i cluster sono
                         // gestiti nel Network Engine e auto-caricati come
                         // selectedClusterIds via useEffect.
@@ -800,6 +803,7 @@ export default function FucinaPage() {
                         projectId={projectId}
                         psProjectId={psProjectId}
                         depotId={selectedDepotId}
+                        depots={selectedDepots}
                         onBack={() => setStep(4)}
                         onComplete={(r, id) => {
                           setOptimizationResult(r);

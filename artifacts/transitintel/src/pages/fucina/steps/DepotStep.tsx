@@ -36,17 +36,22 @@ interface Depot {
   notes: string | null;
 }
 
+export interface SelectedDepot { id: string; maxVehicles: number | null }
+
 interface Props {
-  initial?: string | null;   // depotId preselezionato (rientro dallo step successivo)
+  initial?: SelectedDepot[] | null;  // depositi preselezionati (rientro dallo step successivo)
   onBack: () => void;
-  onComplete: (depotId: string) => void;
+  onComplete: (depots: SelectedDepot[]) => void;
 }
 
 export default function DepotStep({ initial, onBack, onComplete }: Props) {
   const [depots, setDepots] = useState<Depot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(initial ?? null);
+  // Selezione MULTIPLA: depotId → max veicoli (capacità). null = nessun limite.
+  const [selected, setSelected] = useState<Map<string, number | null>>(
+    () => new globalThis.Map((initial ?? []).map(d => [d.id, d.maxVehicles])),
+  );
   const [popupId, setPopupId] = useState<string | null>(null);
   const mapRef = useRef<MapRef>(null);
 
@@ -58,8 +63,10 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
       .then((data: unknown) => {
         const list: Depot[] = Array.isArray(data) ? data : (data as any)?.data ?? [];
         setDepots(list);
-        // pre-seleziona il primo se ce n'è solo uno
-        if (!initial && list.length === 1) setSelectedId(list[0].id);
+        // pre-seleziona il primo se ce n'è solo uno e non c'è già una selezione
+        if ((!initial || initial.length === 0) && list.length === 1) {
+          setSelected(new globalThis.Map([[list[0].id, list[0].capacity ?? null]]));
+        }
       })
       .catch(() => setError("Impossibile caricare i depositi"))
       .finally(() => setLoading(false));
@@ -81,12 +88,22 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
     setPopupId(d.id);
   };
 
-  const select = (d: Depot) => {
-    setSelectedId(d.id);
-    flyTo(d);
+  // Aggiunge/rimuove un deposito dalla selezione (default capacità = quella del deposito).
+  const toggle = (d: Depot) => {
+    setSelected(prev => {
+      const n = new globalThis.Map(prev);
+      if (n.has(d.id)) n.delete(d.id);
+      else { n.set(d.id, d.capacity ?? null); flyTo(d); }
+      return n;
+    });
   };
-
-  const selected = depots.find(d => d.id === selectedId) ?? null;
+  const setCap = (id: string, v: number | null) => {
+    setSelected(prev => { const n = new globalThis.Map(prev); if (n.has(id)) n.set(id, v); return n; });
+  };
+  const confirm = () => {
+    if (selected.size === 0) return;
+    onComplete([...selected].map(([id, maxVehicles]) => ({ id, maxVehicles })));
+  };
 
   /* ── Render ── */
   return (
@@ -114,8 +131,8 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
             Indietro
           </button>
           <button
-            disabled={!selectedId}
-            onClick={() => selectedId && onComplete(selectedId)}
+            disabled={selected.size === 0}
+            onClick={confirm}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed transition-all bg-orange-500 text-black hover:bg-orange-400 shadow-[0_0_12px_rgba(249,115,22,0.3)]"
           >
             Avanti — Cluster
@@ -145,10 +162,10 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                     longitude={d.lon!}
                     latitude={d.lat!}
                     anchor="center"
-                    onClick={e => { e.originalEvent.stopPropagation(); select(d); }}
+                    onClick={e => { e.originalEvent.stopPropagation(); toggle(d); }}
                   >
                     <motion.div
-                      animate={{ scale: selectedId === d.id ? 1.35 : 1 }}
+                      animate={{ scale: selected.has(d.id) ? 1.35 : 1 }}
                       transition={{ type: "spring", stiffness: 400, damping: 20 }}
                       className="cursor-pointer flex flex-col items-center"
                     >
@@ -156,8 +173,8 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                         className="w-10 h-10 rounded-full border-2 flex items-center justify-center shadow-lg"
                         style={{
                           background: d.color,
-                          borderColor: selectedId === d.id ? "white" : `${d.color}70`,
-                          boxShadow: selectedId === d.id
+                          borderColor: selected.has(d.id) ? "white" : `${d.color}70`,
+                          boxShadow: selected.has(d.id)
                             ? `0 0 0 4px ${d.color}40, 0 4px 14px ${d.color}70`
                             : `0 2px 8px ${d.color}50`,
                         }}
@@ -191,7 +208,7 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                         <div className="flex items-center gap-2 mb-1">
                           <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.color }} />
                           <p className="text-xs font-bold text-foreground">{d.name}</p>
-                          {selectedId === d.id && (
+                          {selected.has(d.id) && (
                             <CheckCircle2 className="w-3 h-3 text-green-400 ml-auto" />
                           )}
                         </div>
@@ -206,9 +223,9 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                           {d.hasMethane  && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-blue-500/20  text-blue-400  border border-blue-500/30">Metano</span>}
                           {d.hasElectric && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/20 text-green-400 border border-green-500/30">Elettrico</span>}
                         </div>
-                        {selectedId !== d.id && (
+                        {!selected.has(d.id) && (
                           <button
-                            onClick={() => select(d)}
+                            onClick={() => toggle(d)}
                             className="mt-2 w-full text-[10px] font-semibold py-1 rounded-lg bg-orange-500 text-black hover:bg-orange-400 transition-all"
                           >
                             Seleziona questo deposito
@@ -227,21 +244,19 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
             </div>
           )}
 
-          {/* badge deposito selezionato in overlay */}
+          {/* badge depositi selezionati in overlay */}
           <AnimatePresence>
-            {selected && (
+            {selected.size > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 8 }}
                 className="absolute bottom-4 left-4 flex items-center gap-2 px-3 py-2 rounded-xl bg-black/70 backdrop-blur-sm border border-white/10 shadow-xl"
               >
-                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: selected.color }} />
-                <div>
-                  <p className="text-xs font-bold text-white leading-tight">{selected.name}</p>
-                  {selected.address && <p className="text-[9px] text-white/50">{selected.address}</p>}
-                </div>
-                <CheckCircle2 className="w-4 h-4 text-green-400 ml-1" />
+                <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                <p className="text-xs font-bold text-white leading-tight">
+                  {selected.size} deposit{selected.size === 1 ? "o" : "i"} selezionat{selected.size === 1 ? "o" : "i"}
+                </p>
               </motion.div>
             )}
           </AnimatePresence>
@@ -287,14 +302,14 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                   {depots.length} deposit{depots.length === 1 ? "o" : "i"} disponibil{depots.length === 1 ? "e" : "i"}
                 </p>
                 <p className="text-[9px] text-muted-foreground/50 mt-0.5">
-                  Seleziona il punto di partenza per i veicoli
+                  Seleziona uno o più depositi e indica i veicoli max per ciascuno
                 </p>
               </div>
 
               <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
                 <AnimatePresence>
                   {depots.map(d => {
-                    const isSelected = selectedId === d.id;
+                    const isSelected = selected.has(d.id);
                     const hasCoords = d.lat != null && d.lon != null;
                     return (
                       <motion.div
@@ -304,11 +319,11 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                         animate={{ opacity: 1, y: 0 }}
                         role="button"
                         tabIndex={0}
-                        onClick={() => select(d)}
+                        onClick={() => toggle(d)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
-                            select(d);
+                            toggle(d);
                           }
                         }}
                         className="w-full text-left rounded-xl border px-3 py-2.5 transition-all group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-500/40"
@@ -366,6 +381,21 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
                               )}
                             </div>
 
+                            {/* Capacità max veicoli per questo deposito (solo se selezionato) */}
+                            {selected.has(d.id) && (
+                              <div className="flex items-center gap-1.5 mt-1.5" onClick={e => e.stopPropagation()}>
+                                <Truck className="w-3 h-3 text-orange-400/70 shrink-0" />
+                                <span className="text-[9px] text-muted-foreground">Max veicoli:</span>
+                                <input
+                                  type="number" min={0} inputMode="numeric"
+                                  value={selected.get(d.id) ?? ""}
+                                  placeholder="∞"
+                                  onChange={e => { const v = e.target.value; setCap(d.id, v === "" ? null : Math.max(0, Number(v))); }}
+                                  className="w-16 text-[11px] bg-background border border-border/50 rounded px-1.5 py-0.5 focus:outline-none focus:border-orange-500/50"
+                                />
+                              </div>
+                            )}
+
                             <div className="flex gap-1 mt-1.5 flex-wrap">
                               {d.hasDiesel   && <span className="text-[8px] px-1 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">Gasolio</span>}
                               {d.hasMethane  && <span className="text-[8px] px-1 py-0.5 rounded-full bg-blue-500/15  text-blue-400  border border-blue-500/25">Metano</span>}
@@ -398,13 +428,13 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
               {/* CTA bottom */}
               <div className="p-3 border-t border-border/20 shrink-0">
                 <button
-                  disabled={!selectedId}
-                  onClick={() => selectedId && onComplete(selectedId)}
+                  disabled={selected.size === 0}
+                  onClick={confirm}
                   className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all bg-orange-500 text-black hover:bg-orange-400 shadow-[0_0_15px_rgba(249,115,22,0.25)]"
                 >
-                  {selectedId
-                    ? <>Procedi con «{depots.find(d => d.id === selectedId)?.name}» <ChevronRight className="w-3.5 h-3.5" /></>
-                    : <>Seleziona un deposito per continuare</>
+                  {selected.size > 0
+                    ? <>Procedi con {selected.size} deposit{selected.size === 1 ? "o" : "i"} <ChevronRight className="w-3.5 h-3.5" /></>
+                    : <>Seleziona uno o più depositi per continuare</>
                   }
                 </button>
               </div>

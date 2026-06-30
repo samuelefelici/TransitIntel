@@ -1383,8 +1383,12 @@ router.post("/service-program", async (req, res) => {
       downsizedTrips: allShifts.reduce((s, v) => s + v.downsizedTrips, 0),
     };
 
-    // 8b. Residenza di servizio per turno (deposito uscita/rientro, geometrico)
-    assignResidenzaToShifts(allShifts, tripBlocks, await loadDepotPoints());
+    // 8b. Residenza di servizio per turno (deposito uscita/rientro, geometrico).
+    // Depositi scelti dall'utente → assegnazione ristretta + cap morbido.
+    const depotSel = parseDepotSelection((body as any).depots);
+    const allDepots = await loadDepotPoints();
+    const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
+    const depotCounts = assignResidenzaToShifts(allShifts, tripBlocks, depotPoints, depotSel?.caps);
 
     // 9. Calculate costs & score
     const costs = calculateCosts(allShifts, tripBlocks.length, totalServiceHours);
@@ -1392,6 +1396,10 @@ router.post("/service-program", async (req, res) => {
 
     // 10. Generate advisories
     const advisories = generateAdvisories(allShifts, tripBlocks, costs, score, hourlyDist);
+    if (depotSel?.caps.size) {
+      const capAdv = depotCapacityAdvisory(depotCounts, depotSel.caps, depotPoints);
+      if (capAdv) advisories.unshift(capAdv);
+    }
 
     res.json({ shifts: allShifts, unassigned: allUnassigned, routeStats, hourlyDist, summary, costs, score, advisories });
   } catch (err: any) {
@@ -1517,18 +1525,34 @@ function nearestDepot(lat: number | null | undefined, lon: number | null | undef
  * i turni ricadono sullo stesso; in multi-deposito (extraurbano) ognuno prende il
  * proprio. È il legame deposito→turno che il roster usa per la colorazione.
  */
-function assignResidenzaToShifts(shifts: VehicleShift[], tripBlocks: TripBlock[], dps: DepotPoint[]): void {
-  if (dps.length === 0) return;
+function assignResidenzaToShifts(
+  shifts: VehicleShift[],
+  tripBlocks: TripBlock[],
+  dps: DepotPoint[],
+  caps?: Map<string, number>,
+): Map<string, number> {
+  // counts = veicoli assegnati per deposito (residenza). Ritornato per l'advisory capacità.
+  const counts = new Map<string, number>();
+  if (dps.length === 0) return counts;
   const coord = new Map<string, { fLat: number; fLon: number; lLat: number; lLon: number }>();
   for (const t of tripBlocks) {
     coord.set(t.tripId, { fLat: t.firstStopLat, fLon: t.firstStopLon, lLat: t.lastStopLat, lLon: t.lastStopLon });
   }
+  // Cap morbido: preferisci il deposito più vicino tra quelli NON ancora pieni;
+  // se sono tutti pieni, ricadi sul più vicino in assoluto (overflow consentito).
+  const pickOut = (lat: number, lon: number): DepotPoint | null => {
+    if (caps && caps.size > 0) {
+      const avail = dps.filter(d => (counts.get(d.id) ?? 0) < (caps.get(d.id) ?? Infinity));
+      return nearestDepot(lat, lon, avail.length > 0 ? avail : dps);
+    }
+    return nearestDepot(lat, lon, dps);
+  };
   for (const s of shifts) {
     const tripEntries = s.trips.filter((t) => t.type === "trip" && coord.has(t.tripId));
     if (tripEntries.length === 0) { s.depotOut = null; s.depotIn = null; s.residenzaDepotId = null; continue; }
     const first = coord.get(tripEntries[0].tripId)!;
     const last = coord.get(tripEntries[tripEntries.length - 1].tripId)!;
-    const dOut = nearestDepot(first.fLat, first.fLon, dps);
+    const dOut = pickOut(first.fLat, first.fLon);
     const dIn = nearestDepot(last.lLat, last.lLon, dps);
     s.depotOut = dOut ? { id: dOut.id, name: dOut.name, color: dOut.color } : null;
     s.depotIn = dIn ? { id: dIn.id, name: dIn.name, color: dIn.color } : null;
@@ -1536,7 +1560,49 @@ function assignResidenzaToShifts(shifts: VehicleShift[], tripBlocks: TripBlock[]
     s.residenzaDepotId = res?.id ?? null;
     s.residenzaName = res?.name ?? null;
     s.residenzaColor = res?.color ?? null;
+    if (res) counts.set(res.id, (counts.get(res.id) ?? 0) + 1);
   }
+  return counts;
+}
+
+/** Selezione depositi dall'input ottimizzatore: ids consentiti + capacità (max veicoli). */
+function parseDepotSelection(raw: any): { ids: Set<string>; caps: Map<string, number> } | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const ids = new Set<string>();
+  const caps = new Map<string, number>();
+  for (const d of raw) {
+    if (d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id)) {
+      ids.add(d.id);
+      const mv = Number(d.maxVehicles);
+      if (Number.isFinite(mv) && mv > 0) caps.set(d.id, mv);
+    }
+  }
+  return ids.size > 0 ? { ids, caps } : null;
+}
+
+/** Advisory "cap morbido": segnala i depositi che superano la capacità indicata. */
+function depotCapacityAdvisory(counts: Map<string, number>, caps: Map<string, number>, points: DepotPoint[]): Advisory | null {
+  const over: string[] = [];
+  let maxOver = 0;
+  for (const [id, cap] of caps) {
+    const used = counts.get(id) ?? 0;
+    if (used > cap) {
+      const nm = points.find(p => p.id === id)?.name ?? "deposito";
+      over.push(`${nm} ${used}/${cap}`);
+      maxOver = Math.max(maxOver, used - cap);
+    }
+  }
+  if (over.length === 0) return null;
+  return {
+    id: "depot-capacity",
+    severity: "warning",
+    category: "fleet",
+    title: "Capacità deposito superata",
+    description: `Alcuni depositi hanno più veicoli della capacità indicata: ${over.join(", ")}.`,
+    impact: `${maxOver} veicol${maxOver === 1 ? "o" : "i"} oltre capacità`,
+    action: "Aumenta la capacità del deposito, aggiungine un altro o riduci le linee in questo scenario.",
+    metric: maxOver,
+  };
 }
 
 router.post("/service-program/cpsat", async (req, res) => {
@@ -1803,9 +1869,13 @@ router.post("/service-program/cpsat", async (req, res) => {
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
     const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
 
-    // 7b. Residenza di servizio per turno (deposito di uscita/rientro, geometrico)
-    const depotPoints = await loadDepotPoints();
-    assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints);
+    // 7b. Residenza di servizio per turno (deposito di uscita/rientro, geometrico).
+    // Se l'utente ha scelto depositi specifici, l'assegnazione usa SOLO quelli
+    // (cap morbido: preferisce i non pieni, overflow consentito).
+    const depotSel = parseDepotSelection((body as any).depots);
+    const allDepots = await loadDepotPoints();
+    const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
+    const depotCounts = assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints, depotSel?.caps);
 
     const totalServiceMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalServiceMin, 0);
     const totalDeadheadMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalDeadheadMin, 0);
@@ -1822,6 +1892,10 @@ router.post("/service-program/cpsat", async (req, res) => {
     }
 
     const advisories = generateAdvisories(cpShifts, tripBlocks, costs, score, hourlyDist);
+    if (depotSel?.caps.size) {
+      const capAdv = depotCapacityAdvisory(depotCounts, depotSel.caps, depotPoints);
+      if (capAdv) advisories.unshift(capAdv);
+    }
 
     // Summary
     const byType: Record<string, number> = {};

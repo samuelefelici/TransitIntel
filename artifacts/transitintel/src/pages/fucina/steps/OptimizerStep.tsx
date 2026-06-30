@@ -181,11 +181,13 @@ interface Props {
   psProjectId?: string | null;
   /** deposito scelto (residenza di servizio dello scenario) — salvato con lo scenario */
   depotId?: string | null;
+  /** depositi selezionati (multi) con capacità max veicoli — passati al solver */
+  depots?: Array<{ id: string; maxVehicles: number | null }>;
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, depots, onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -362,6 +364,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           forced: assignment.forcedRoutes.has(routeId),
         })),
         ...(Object.keys(tripOverridesObj).length > 0 ? { tripVehicleOverrides: tripOverridesObj } : {}),
+        // Depositi selezionati (multi) + capacità → residenza per turno + advisory capacità
+        ...(depots && depots.length > 0 ? { depots } : {}),
       };
       if (solverMode === "cpsat") {
         bodyPayload.timeLimit = solverIntensity === "fast" ? 60
@@ -416,7 +420,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
