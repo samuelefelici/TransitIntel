@@ -226,6 +226,7 @@ function rowToProject(r: any) {
     // route_id (= ps_routes.id::text, combaciano con gtfs_routes.route_id) coperti
     // dall'UDP: presente solo nel GET singolo (vedi handler). Filtra le linee.
     validityUnitRouteIds: r.validity_unit_route_ids ?? undefined,
+    validityUnitRouteNames: r.validity_unit_route_names ?? undefined,
     depotConfig: r.depot_config ?? {},
     clusterConfig: r.cluster_config ?? {},
     deadheadConfig: r.deadhead_config ?? {},
@@ -452,18 +453,29 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
   // ps_routes.id::text, combaciano con gtfs_routes.route_id) per filtrare la
   // selezione linee nella pipeline scheduling.
   let validityUnitRouteIds: string[] | undefined;
+  let validityUnitRouteNames: string[] | undefined;
   if (row.validity_unit_id) {
+    // route_id (= ps_routes.id::text) E nome/short-name delle linee dell'UDP. Il
+    // nome serve da fallback di match quando il feed letto usa route_id diversi
+    // (es. GTFS importato con codici reali) anziché ps_routes.id.
     const ur = await db.execute(sql`
-      SELECT DISTINCT t.route_id::text AS route_id
-        FROM ps_trips t
-       WHERE t.id IN (
-         SELECT jsonb_array_elements_text(trip_ids)::uuid
-           FROM ps_validity_units WHERE id = ${row.validity_unit_id}::uuid
+      SELECT DISTINCT r.id::text AS route_id,
+             COALESCE(NULLIF(r.short_name, ''), r.code, r.long_name, r.id::text) AS name
+        FROM ps_routes r
+       WHERE r.id IN (
+         SELECT DISTINCT t.route_id
+           FROM ps_trips t
+          WHERE t.id IN (
+            SELECT jsonb_array_elements_text(trip_ids)::uuid
+              FROM ps_validity_units WHERE id = ${row.validity_unit_id}::uuid
+          )
        )
     `);
-    validityUnitRouteIds = ((ur as any).rows ?? []).map((x: any) => x.route_id).filter(Boolean);
+    const urRows = (ur as any).rows ?? [];
+    validityUnitRouteIds = urRows.map((x: any) => x.route_id).filter(Boolean);
+    validityUnitRouteNames = urRows.map((x: any) => x.name).filter(Boolean);
   }
-  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds }) });
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */
