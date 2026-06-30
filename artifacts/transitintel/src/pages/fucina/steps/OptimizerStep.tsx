@@ -394,6 +394,21 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         throw new Error(err.error || `Errore ${resp.status}`);
       }
       const data = await resp.json();
+      // Risposta 200 ma senza summary = ottimizzazione senza risultati (es.
+      // nessuna corsa per data/linee selezionate). Trattala come errore gestito
+      // invece di far crashare il render (che legge result.summary.*).
+      if (!data || !data.summary) {
+        // Il solver CP-SAT, senza corse in input, risponde { status: "NO_INPUT" }
+        // (niente summary). Greedy invece torna sempre summary. In entrambi i casi
+        // qui gestiamo l'assenza di risultati come errore, senza crashare il render.
+        const noInput = data?.status === "NO_INPUT";
+        throw new Error(
+          data?.error || data?.message ||
+          (noInput
+            ? "Nessuna corsa trovata per la data e le linee selezionate. Controlla la data di esercizio dell'UDP (deve essere un giorno con servizio attivo) e che le linee siano quelle dell'unità."
+            : "L'ottimizzazione non ha prodotto risultati."),
+        );
+      }
       setResult(data);
       if (data.solverMetrics) setSolverMetrics(data.solverMetrics);
     } catch (e: any) {
