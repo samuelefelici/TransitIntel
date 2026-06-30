@@ -10,7 +10,38 @@
  */
 import type { GanttRow, GanttBar } from "@/components/InteractiveGantt";
 import type { DriverShiftData, Ripresa, RipresaTrip, DriverShiftSummary, DriverShiftType } from "./types";
-import { TYPE_COLORS, TYPE_LABELS, minToTime } from "./constants";
+import { TYPE_COLORS, TYPE_LABELS, ACTIVITY_COLORS, ACTIVITY_SHORT, ACTIVITY_LABELS, minToTime } from "./constants";
+
+/* Segmenti extra comuni alle due viste: taxi/auto aziendale (carpool) e attività
+ * non di guida (riserva/presidio/verifica). Tutti locked (non trascinabili). */
+function extraSegmentBars(shift: DriverShiftData): GanttBar[] {
+  const out: GanttBar[] = [];
+  shift.riprese.forEach((rip, ri) => {
+    [rip.carPoolOut, rip.carPoolReturn].forEach((cp, idx) => {
+      if (cp && cp.departMin != null && cp.arriveMin != null && cp.arriveMin > cp.departMin) {
+        out.push({
+          id: `${shift.driverId}__r${ri}_cp${idx}`, rowId: shift.driverId,
+          startMin: cp.departMin, endMin: cp.arriveMin,
+          label: "🚕", color: "#0ea5e9", style: "dashed",
+          tooltip: [cp.description || "Auto aziendale / taxi", `${minToTime(cp.departMin)} → ${minToTime(cp.arriveMin)}`],
+          locked: true,
+          meta: { type: "carpool", driverId: shift.driverId, ripreseIdx: ri },
+        });
+      }
+    });
+  });
+  for (const a of shift.activities ?? []) {
+    out.push({
+      id: `${shift.driverId}__act_${a.id}`, rowId: shift.driverId,
+      startMin: a.startMin, endMin: a.endMin,
+      label: ACTIVITY_SHORT[a.type], color: ACTIVITY_COLORS[a.type], style: "solid",
+      tooltip: [ACTIVITY_LABELS[a.type], `${minToTime(a.startMin)} → ${minToTime(a.endMin)}`, ...(a.note ? [a.note] : [])],
+      locked: true,
+      meta: { type: "activity", driverId: shift.driverId, activityId: a.id, activityType: a.type },
+    });
+  }
+  return out;
+}
 
 export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
   return shifts.map(s => {
@@ -115,6 +146,7 @@ export function driverShiftsToBars(shifts: DriverShiftData[]): GanttBar[] {
         meta: { type: "interruption", driverId: shift.driverId },
       });
     }
+    out.push(...extraSegmentBars(shift));
   }
   return out;
 }
@@ -209,6 +241,7 @@ export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] { 
         meta: { type: "interruption", driverId: shift.driverId },
       });
     }
+    out.push(...extraSegmentBars(shift));
   }
   return out;
 }
