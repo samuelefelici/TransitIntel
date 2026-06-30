@@ -62,11 +62,14 @@ const STEPS = [
   { id: 7, label: "Turni Guida",         icon: Users,    desc: "CSP · saturazione · cap vetture · idle" },
 ] as const;
 
-// Step effettivamente visibili nella stepper:
+// Step della pipeline TURNI MACCHINA (visibili nella stepper):
 //   - step 0 "Dati GTFS" rimosso (feed sempre dal Network Engine)
 //   - step 3 "Cluster di Cambio" rimosso (la gestione cluster vive solo nel
 //     Network Engine; qui i PsCluster interchange vengono caricati in automatico)
-const STEPS_VISIBLE = STEPS.filter((s) => s.id !== 0 && s.id !== 3);
+//   - step 7 "Turni Guida" rimosso: è una PIPELINE SEPARATA (vedi step 7 →
+//     header dedicato in StepperBar). I turni macchina e i turni guida sono due
+//     processi distinti, non un unico flusso.
+const STEPS_VISIBLE = STEPS.filter((s) => s.id !== 0 && s.id !== 3 && s.id !== 7);
 
 /* ── Stato mancante: render-guard per step che richiedono vehicleAssignment ── */
 function MissingStateNotice({ onRestart, onForward }: { onRestart: () => void; onForward?: () => void }) {
@@ -204,6 +207,27 @@ function StepperBar({
   completed: Set<number>;
   onStepClick: (s: number) => void;
 }) {
+  // Pipeline TURNI GUIDA (step 7): processo separato → header dedicato, NON la
+  // stepper dei turni macchina.
+  if (current === 7) {
+    return (
+      <div className="flex items-center px-4 py-2.5 border-b border-purple-500/15 shrink-0 bg-gradient-to-r from-purple-950/30 via-transparent to-transparent">
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-purple-500/15">
+          <div className="w-5 h-5 rounded-full bg-purple-500/20 border border-purple-500/60 text-purple-300 flex items-center justify-center">
+            <Users className="w-3 h-3" />
+          </div>
+          <div>
+            <p className="text-[11px] font-semibold leading-tight text-purple-300">Pipeline Turni Guida</p>
+            <p className="text-[9px] text-purple-400/40 font-mono">CSP · saturazione · cap vetture · idle</p>
+          </div>
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Zap className="w-3 h-3 text-purple-400/50" />
+          <span className="text-[9px] text-muted-foreground/40 font-mono hidden sm:inline">crew · CP-SAT</span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex items-center px-4 py-2.5 border-b border-orange-500/15 shrink-0 bg-gradient-to-r from-orange-950/30 via-transparent to-transparent">
       {STEPS_VISIBLE.map((step, i) => {
