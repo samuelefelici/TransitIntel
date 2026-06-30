@@ -55,9 +55,15 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
   const [loadingTrips, setLoadingTrips] = useState<Set<string>>(new Set());
   const [routeSearch, setRouteSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<ServiceCategory | "all">("all");
+  /** Gli id-linea dell'UDP non combaciano col feed → fallback: mostra tutte le linee. */
+  const [udpScopeUnmatched, setUdpScopeUnmatched] = useState(false);
+  /** Incrementato dal pulsante "Ricarica" per rieseguire il fetch di date+linee. */
+  const [reloadKey, setReloadKey] = useState(0);
 
-  /* ── Load dates + routes on mount ── */
+  /* ── Load dates + routes on mount (e su "Ricarica") ── */
   useEffect(() => {
+    setLoadingDates(true);
+    setLoadingRoutes(true);
     const base = getApiBase();
     // Pinpoint sul feed scelto nello step precedente (se presente),
     // altrimenti il backend usa il feed "attivo" del tenant.
@@ -86,13 +92,26 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
         }
       }
       if (routesData) {
-        let routes: RouteItem[] = routesData.routes || [];
+        const feedRoutes: RouteItem[] = routesData.routes || [];
+        let routes = feedRoutes;
         // Progetto agganciato a un'UDP → mostra solo le sue linee e pre-selezionale
         if (allowedRouteIds && allowedRouteIds.length > 0) {
           const allow = new Set(allowedRouteIds);
-          routes = routes.filter((r) => allow.has(r.routeId));
-          if (!initial?.selectedRoutes || initial.selectedRoutes.size === 0) {
-            setSelectedRoutes(new Map(routes.map((r) => [r.routeId, "12m" as VehicleType])));
+          const scoped = feedRoutes.filter((r) => allow.has(r.routeId));
+          if (scoped.length > 0) {
+            routes = scoped;
+            setUdpScopeUnmatched(false);
+            if (!initial?.selectedRoutes || initial.selectedRoutes.size === 0) {
+              setSelectedRoutes(new Map(routes.map((r) => [r.routeId, "12m" as VehicleType])));
+            }
+          } else if (feedRoutes.length > 0) {
+            // Gli id-linea salvati sull'UDP non combaciano con quelli del feed
+            // materializzato (es. feed rigenerato): invece di lasciare la lista
+            // vuota — vicolo cieco — mostriamo tutte le linee del feed così
+            // l'utente può selezionarle e avviare comunque l'ottimizzazione.
+            console.warn("[VehicleAssignment] allowedRouteIds non combaciano col feed → mostro tutte le linee del feed");
+            routes = feedRoutes;
+            setUdpScopeUnmatched(true);
           }
         }
         setAllRoutes(routes);
@@ -100,7 +119,8 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
       setLoadingDates(false);
       setLoadingRoutes(false);
     });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadKey]);
 
   /* ── Da UDP: la validità definisce la data → auto-selezione data rappresentativa ── */
   useEffect(() => {
@@ -267,6 +287,11 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                 <Bus className="w-4 h-4 text-orange-400/60" />
                 Abbina linee e tipo vettura
               </h3>
+              {udpScopeUnmatched && (
+                <p className="text-[10px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-1 max-w-[60%]">
+                  ⚠ Le linee dell'UDP non sono state riconosciute nel feed: mostro tutte le linee del feed, seleziona quelle dell'unità.
+                </p>
+              )}
               <div className="flex gap-2 text-[10px]">
                 <button onClick={selectAllVisible} className="text-orange-400 hover:underline">Sel. visibili</button>
                 <button onClick={deselectAllVisible} className="text-muted-foreground hover:underline">Desel. visibili</button>
@@ -313,6 +338,14 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
             {loadingRoutes ? (
               <div className="flex items-center gap-2 text-xs text-muted-foreground py-4">
                 <Loader2 className="w-3 h-3 animate-spin text-orange-400" /> Caricamento linee…
+              </div>
+            ) : allRoutes.length === 0 ? (
+              <div className="text-xs text-muted-foreground bg-background/40 border border-border/30 rounded-lg p-5 text-center space-y-2">
+                <p>Nessuna linea trovata nel feed di questa unità. Il feed potrebbe non essere ancora pronto (materializzazione in corso).</p>
+                <button onClick={() => setReloadKey(k => k + 1)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-orange-600/90 hover:bg-orange-500 text-white text-[11px] font-medium">
+                  <Loader2 className="w-3 h-3" /> Ricarica
+                </button>
               </div>
             ) : (
               <>
