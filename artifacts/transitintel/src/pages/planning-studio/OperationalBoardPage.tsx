@@ -33,25 +33,19 @@ function ProgramPicker() {
   // programma "attivo" = progetto PS operativo (feed in esercizio)
   const active = (psQ.data ?? []).find((p) => p.isOperational) ?? null;
 
-  // gruppi: tutti i programmi PS con UDP avviate allo scheduling + sempre l'attivo
+  // gruppi: SOLO progetti PS accessibili (psQ) con UDP avviate o attivi. Costruire
+  // dalle sole liste accessibili evita voci "orfane" (scheduling project che punta
+  // a un PS cancellato/non accessibile) che davano 404 al click.
   const groups = (() => {
     const udpCount = new Map<string, number>();
-    const nameById = new Map<string, string>();
     for (const p of schedQ.data ?? []) {
-      if (!p.planningStudioProjectId) continue;
-      udpCount.set(p.planningStudioProjectId, (udpCount.get(p.planningStudioProjectId) ?? 0) + 1);
-      if (p.planningStudioProjectName) nameById.set(p.planningStudioProjectId, p.planningStudioProjectName);
+      if (p.planningStudioProjectId)
+        udpCount.set(p.planningStudioProjectId, (udpCount.get(p.planningStudioProjectId) ?? 0) + 1);
     }
-    const ids = new Set<string>([...udpCount.keys()]);
-    if (active) ids.add(active.id);
-    const list = [...ids].map((psId) => ({
-      psId,
-      name: nameById.get(psId) ?? (active?.id === psId ? active.name : "Programma"),
-      udp: udpCount.get(psId) ?? 0,
-      isActive: active?.id === psId,
-    }));
-    list.sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)); // attivo in cima
-    return list;
+    return (psQ.data ?? [])
+      .map((p) => ({ psId: p.id, name: p.name, udp: udpCount.get(p.id) ?? 0, isActive: !!p.isOperational }))
+      .filter((g) => g.udp > 0 || g.isActive)
+      .sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)); // attivo in cima
   })();
 
   // Default: apri direttamente il programma attivo (se non si è forzata la scelta)
@@ -227,11 +221,13 @@ function Board({ psId }: { psId: string }) {
     queryKey: ["scheduling", "operational-board", psId],
     queryFn: () => getPsOperationalBoard(psId),
     enabled: !!psId,
+    retry: false, // 404 "non accessibile" → niente retry storm
   });
   const projectQ = useQuery({
     queryKey: ["ps", "project", psId],
     queryFn: () => getPsProject(psId),
     enabled: !!psId,
+    retry: false,
   });
   const board = boardQ.data;
   const isActive = !!projectQ.data?.isOperational;
@@ -315,7 +311,19 @@ function Board({ psId }: { psId: string }) {
 
       <div className="flex-1 overflow-auto p-6">
         {boardQ.isLoading && <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-emerald-400" /></div>}
-        {boardQ.isError && <div className="text-sm text-rose-400">Errore: {(boardQ.error as Error).message}</div>}
+        {(boardQ.isError || projectQ.isError) && (
+          <div className="max-w-lg mx-auto border border-rose-500/40 bg-rose-500/10 rounded-xl p-6 text-center">
+            <AlertTriangle className="h-8 w-8 mx-auto text-rose-400 mb-2" />
+            <p className="font-medium text-rose-200 mb-1">Progetto non disponibile</p>
+            <p className="text-xs text-rose-300/80 mb-4">
+              {((boardQ.error ?? projectQ.error) as Error)?.message ?? "Impossibile caricare il progetto."}
+              {" "}Potrebbe essere stato eliminato o non è accessibile da questo account.
+            </p>
+            <Link href="/fucina/esercizio?pick=1">
+              <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-100 hover:bg-slate-700"><ArrowLeft className="w-3.5 h-3.5" /> Torna ai progetti</button>
+            </Link>
+          </div>
+        )}
 
         {board && (
           <div className="max-w-4xl mx-auto space-y-3">
