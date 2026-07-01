@@ -14,7 +14,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   ArrowLeft, Users, Truck, Loader2, Calendar, FolderOpen, ChevronRight, ChevronDown,
-  Share2, Lock, Users as UsersIcon, Power,
+  Share2, Lock, Users as UsersIcon, Power, Trash2, X, AlertTriangle,
 } from "lucide-react";
 import {
   getProject, listProjectVehicleScenarios, listProjectDriverScenarios,
@@ -24,6 +24,7 @@ import {
 import {
   listDriverSchedules, type DriverScheduleProject,
 } from "@/lib/schedule-shares-api";
+import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import ShareScheduleDialog from "@/components/scheduling/ShareScheduleDialog";
 
@@ -40,6 +41,10 @@ export default function DriverScenariosPage() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [shareDialog, setShareDialog] = useState<{ id: string; name: string; canManage: boolean } | null>(null);
+  // Eliminazione con doppia conferma (modale + checkbox obbligatoria)
+  const [deleteTarget, setDeleteTarget] = useState<ProjectDriverScenario | null>(null);
+  const [deleteAck, setDeleteAck] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function reload() {
     if (!projectId) return;
@@ -72,6 +77,18 @@ export default function DriverScenariosPage() {
       toast.success(d.isOperational ? "Rimosso dall'esercizio" : "Turni guida messi in esercizio");
       await reload();
     } catch (e: any) { toast.error(e?.message ?? "Errore"); }
+  }
+
+  async function doDelete() {
+    if (!deleteTarget || !deleteAck) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/api/driver-shifts/${deleteTarget.vehicleScenarioId}/scenarios/${deleteTarget.id}`, { method: "DELETE" });
+      toast.success("Scenario eliminato", { description: deleteTarget.name });
+      setDeleteTarget(null); setDeleteAck(false);
+      await reload();
+    } catch (e: any) { toast.error(e?.message ?? "Errore eliminazione"); }
+    finally { setDeleting(false); }
   }
 
   // Index DSS per vehicle scenario
@@ -272,6 +289,15 @@ export default function DriverScenariosPage() {
                                 {isOwner ? "Condividi" : "Membri"}
                               </button>
                             )}
+                            {isOwner && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setDeleteTarget(d); setDeleteAck(false); }}
+                                title="Elimina scenario"
+                                className="inline-flex items-center justify-center w-6 h-6 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
                             <ChevronRight className="w-3.5 h-3.5 text-zinc-600 group-hover:text-purple-400 transition-colors" />
                           </div>
                           );
@@ -301,6 +327,32 @@ export default function DriverScenariosPage() {
           onClose={() => setShareDialog(null)}
           onChange={() => void reload()}
         />
+      )}
+
+      {/* Doppia conferma eliminazione scenario TG */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !deleting && setDeleteTarget(null)}>
+          <div className="w-full max-w-md mx-4 rounded-lg border border-rose-500/30 bg-zinc-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2"><Trash2 className="w-4 h-4 text-rose-400" /><h3 className="text-sm font-semibold text-zinc-100">Elimina scenario turni guida</h3></div>
+              <button onClick={() => !deleting && setDeleteTarget(null)} className="text-zinc-500 hover:text-zinc-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="text-sm text-zinc-300">Stai per eliminare <strong className="text-zinc-100">«{deleteTarget.name}»</strong>.</p>
+              <p className="text-xs text-rose-300/90 flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> Azione irreversibile: lo scenario di turni guida non sarà più recuperabile.</p>
+              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
+                <input type="checkbox" checked={deleteAck} onChange={e => setDeleteAck(e.target.checked)} className="accent-rose-500" />
+                Confermo di voler eliminare definitivamente questo scenario
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-zinc-800 bg-black/30">
+              <button onClick={() => setDeleteTarget(null)} disabled={deleting} className="text-xs px-3 py-1.5 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800 disabled:opacity-40">Annulla</button>
+              <button onClick={doDelete} disabled={!deleteAck || deleting} className="text-xs px-3 py-1.5 rounded bg-rose-600 text-white hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />} Elimina definitivamente
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
