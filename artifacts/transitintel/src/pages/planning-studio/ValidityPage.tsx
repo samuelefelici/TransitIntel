@@ -295,13 +295,11 @@ export default function PlanningStudioValidityPage() {
   const { groups, mergeMembers } = useMemo(() => {
     const members = new Map<string, string[]>(); // repId → [memberIds]
     if (!matrixQ.data) return { groups: [] as { route: PsValidityTrip; trips: PsValidityTrip[] }[], mergeMembers: members };
-    const sig = (t: PsValidityTrip) => {
-      const dv = ctx?.tripDayValidity.get(t.id);
-      const dvSig = dv ? [...dv.entries()].filter(([, v]) => v).map(([k]) => k).sort().join(",") : "";
-      const exx = ctx?.tripExceptions.get(t.id);
-      const exSig = exx ? [...exx.entries()].map(([d, e]) => `${d}:${e}`).sort().join(",") : "";
-      return [t.routeId, t.variantId, t.direction, t.firstDeparture, t.headsign, t.firstStopName, t.lastStopName, t.validFrom, t.validTo, dvSig, exSig].join("§");
-    };
+    // Corse IDENTICHE = stessa linea + stessa variante/direzione + stesso orario di
+    // partenza. La validità NON conta: le corse duplicate diventano 1 riga e i
+    // bollini verdi accendono l'UNIONE dei giorni attivi dei GTFS fusi.
+    const sig = (t: PsValidityTrip) =>
+      [t.routeId, t.variantId, t.direction, t.firstDeparture].join("§");
     const byRoute = new Map<string, PsValidityTrip[]>();
     for (const t of matrixQ.data.trips) {
       if (!byRoute.has(t.routeId)) byRoute.set(t.routeId, []);
@@ -454,17 +452,10 @@ export default function PlanningStudioValidityPage() {
       cellMut.mutate({ kind: "exception", tripId, tripIds, date, prev: cur, next: undefined });
       return;
     }
-    // Altrimenti calcolo il default e applico l'eccezione opposta.
-    const trip = ctx.trips.get(tripId);
-    if (!trip) return;
-    let defaultValue = false;
-    if (trip.is_active
-        && (!trip.valid_from || date >= trip.valid_from)
-        && (!trip.valid_to || date <= trip.valid_to)) {
-      const dtId = ctx.dayCalendar.get(date) ?? inferDefaultDayType(date, ctx);
-      if (dtId) defaultValue = ctx.tripDayValidity.get(tripId)?.get(dtId) ?? false;
-    }
-    const target: 1 | 2 = defaultValue ? 2 : 1;
+    // Stato mostrato = UNIONE delle corse fuse: se almeno una è attiva quel
+    // giorno la cella è verde → il toggle la spegne (e viceversa) su TUTTE.
+    const unionValid = tripIds.some((id) => getCellValidity(ctx, id, date));
+    const target: 1 | 2 = unionValid ? 2 : 1;
     cellMut.mutate({ kind: "exception", tripId, tripIds, date, prev: undefined, next: target });
   }, [ctx, cellMut, projectQ.data, mergeMembers]);
 
@@ -1095,6 +1086,7 @@ export default function PlanningStudioValidityPage() {
                       <CellsRow
                         ctx={ctx}
                         tripId={t.id}
+                        memberIds={mergeMembers.get(t.id)}
                         dates={dates}
                         onClick={onCellClick}
                         onSelect={handleCellSelect}
@@ -1270,15 +1262,18 @@ interface CellsRowProps {
   selectedCells: Set<string>;
   highlighted?: boolean;
   categoryByDate?: Map<string, PsValidityCategory>;
+  /** Corse fuse identiche: la validità della cella è l'UNIONE (OR) di queste. */
+  memberIds?: string[];
 }
 
-function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, highlighted, categoryByDate }: CellsRowProps) {
+function CellsRow({ ctx, tripId, dates, onSelect, selectedDates, selectedCells, highlighted, categoryByDate, memberIds }: CellsRowProps) {
+  const ids = memberIds && memberIds.length > 0 ? memberIds : [tripId];
   return (
     <>
       {dates.map((d) => {
-        const valid = getCellValidity(ctx, tripId, d);
-        const exMap = ctx.tripExceptions.get(tripId);
-        const ex = exMap?.get(d);
+        // UNIONE: la cella è valida se ALMENO UNA delle corse fuse è attiva quel giorno.
+        const valid = ids.some((id) => getCellValidity(ctx, id, d));
+        const ex = ctx.tripExceptions.get(tripId)?.get(d);
         const fill = cellFillColor(valid, ex);
         const isFirstOfMonth = d.slice(8, 10) === "01";
         const isMonday = (() => {
