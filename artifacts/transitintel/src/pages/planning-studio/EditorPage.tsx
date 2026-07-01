@@ -29,7 +29,7 @@ import {
   CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
-import { getApiBase } from "@/lib/api";
+import { getApiBase, apiFetch } from "@/lib/api";
 import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
@@ -229,6 +229,10 @@ export default function PlanningStudioEditorPage() {
 
   // Import GTFS dialog
   const [importOpen, setImportOpen] = useState(false);
+  // Creazione MANUALE: nasconde l'onboarding-overlay per poter lavorare a mano.
+  const [manualMode, setManualMode] = useState(false);
+  const [importingStops, setImportingStops] = useState(false);
+  const stopsTxtRef = useRef<HTMLInputElement>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<PsImportCounts | null>(null);
@@ -330,6 +334,57 @@ export default function PlanningStudioEditorPage() {
     } catch (e: any) { toast.error("Errore caricamento depositi", { description: e?.message }); }
     finally { setOverlayLoading(s => ({ ...s, depots: false })); }
   }, []);
+
+  /** Import fermate da un file stops.txt (GTFS) → bulk insert. Per creazione manuale. */
+  const importStopsTxt = useCallback(async (file: File) => {
+    setImportingStops(true);
+    try {
+      const text = await file.text();
+      // CSV parser che gestisce virgolette e virgole dentro i campi.
+      const parseLine = (line: string): string[] => {
+        const out: string[] = []; let cur = ""; let inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const c = line[i];
+          if (inQ) { if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQ = false; } else cur += c; }
+          else { if (c === '"') inQ = true; else if (c === ",") { out.push(cur); cur = ""; } else cur += c; }
+        }
+        out.push(cur); return out;
+      };
+      const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+      if (lines.length < 2) { toast.error("File vuoto o senza righe fermata"); return; }
+      const header = parseLine(lines[0]).map(h => h.trim().toLowerCase());
+      const col = (r: string[], name: string) => { const i = header.indexOf(name); return i >= 0 ? (r[i] ?? "").trim() : ""; };
+      const stopsPayload = lines.slice(1).map(parseLine).map(r => {
+        const lat = Number(col(r, "stop_lat")); const lon = Number(col(r, "stop_lon"));
+        return {
+          code: col(r, "stop_code") || col(r, "stop_id") || null,
+          name: col(r, "stop_name"),
+          lat, lon,
+          locationType: col(r, "location_type") ? Number(col(r, "location_type")) : 0,
+          attributes: {
+            gtfsStopId: col(r, "stop_id") || undefined,
+            parentStation: col(r, "parent_station") || undefined,
+            wheelchairBoarding: col(r, "wheelchair_boarding") || undefined,
+          },
+        };
+      }).filter(s => s.name && Number.isFinite(s.lat) && Number.isFinite(s.lon));
+      if (stopsPayload.length === 0) { toast.error("Nessuna fermata valida", { description: "Attese colonne stop_name, stop_lat, stop_lon" }); return; }
+      const r = await apiFetch<{ inserted: number }>(`/api/planning-studio/projects/${projectId}/stops/bulk`, {
+        method: "POST", body: JSON.stringify({ stops: stopsPayload }),
+      });
+      toast.success(`${r.inserted} fermate importate`, { description: "Ora crea linee, varianti e orari." });
+      const s = await listPsStops(projectId);
+      setStops(s);
+      setManualMode(true);
+      setActivePanel("stops");
+      if (s.length > 0) setTimeout(() => fitToCoords(s.map(x => [x.lon, x.lat] as [number, number])), 200);
+    } catch (e: any) {
+      toast.error("Import fermate fallito", { description: e?.message });
+    } finally {
+      setImportingStops(false);
+      if (stopsTxtRef.current) stopsTxtRef.current.value = "";
+    }
+  }, [projectId]);
 
   // Lazy fetch quando si attivano
   useEffect(() => {
@@ -2271,7 +2326,7 @@ export default function PlanningStudioEditorPage() {
         )}
 
         {/* ─── Empty state / onboarding GTFS ─── */}
-        {isEmpty && !importOpen && (
+        {isEmpty && !importOpen && !manualMode && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
@@ -2282,26 +2337,38 @@ export default function PlanningStudioEditorPage() {
               </div>
               <h2 className="text-lg font-semibold mb-1">Database vuoto</h2>
               <p className="text-sm text-slate-400 mb-6">
-                Per iniziare, importa un file GTFS standard. <br />
-                Successivamente potrai modificare fermate, linee, varianti e orari direttamente sulla mappa.
+                Importa un GTFS completo, oppure carica solo le fermate (stops.txt) e costruisci il resto a mano.
               </p>
-              <div className="space-y-2">
-                {(project.myRole === "owner" || project.myRole === "editor") ? (
+              {(project.myRole === "owner" || project.myRole === "editor") ? (
+                <div className="space-y-2">
                   <button onClick={() => setImportOpen(true)}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium">
                     <Upload className="w-4 h-4" /> Importa GTFS (.zip)
                   </button>
-                ) : (
-                  <p className="text-xs text-slate-500">Solo owner/editor possono importare dati.</p>
-                )}
-                <button onClick={() => setActivePanel("stops")}
-                  className="w-full px-4 py-2 rounded-lg text-xs text-slate-400 hover:text-slate-200">
-                  Oppure inizia da zero creando manualmente
-                </button>
-              </div>
+                  <button onClick={() => stopsTxtRef.current?.click()} disabled={importingStops}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 hover:bg-cyan-500/20 text-sm font-medium disabled:opacity-50">
+                    <Upload className="w-4 h-4" /> {importingStops ? "Importazione fermate…" : "Importa fermate (stops.txt)"}
+                  </button>
+                  <button onClick={() => { setManualMode(true); setActivePanel("stops"); }}
+                    className="w-full px-4 py-2 rounded-lg text-xs text-slate-400 hover:text-slate-200">
+                    Oppure inizia completamente da zero (a mano)
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">Solo owner/editor possono importare dati.</p>
+              )}
             </motion.div>
           </div>
         )}
+
+        {/* Input nascosto per l'import fermate da stops.txt (GTFS) */}
+        <input
+          ref={stopsTxtRef}
+          type="file"
+          accept=".txt,.csv,text/plain,text/csv"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void importStopsTxt(f); }}
+        />
       </div>
 
       {/* ─── Dialog Import GTFS ─── */}
