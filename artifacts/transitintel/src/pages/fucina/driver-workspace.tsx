@@ -137,6 +137,12 @@ export default function DriverWorkspace({
   const [showAddDriverDialog, setShowAddDriverDialog] = useState(false);
   // ── Aggiungi attività non di guida (Riserva/Presidio/Verifica) ──
   const [showAddActivityDialog, setShowAddActivityDialog] = useState(false);
+  const [activityPrefill, setActivityPrefill] = useState<{ driverId?: string; startMin?: number } | null>(null);
+  // ── Filtro turni: null = tutti; altrimenti solo i driverId selezionati ──
+  const [visibleDrivers, setVisibleDrivers] = useState<Set<string> | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  // ── Menu contestuale (click destro sul Gantt) ──
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; bar: GanttBar } | null>(null);
 
   /* ── Cluster di cambio (interchange) per il setup banner ──
    * Sono i nodi dove gli autisti possono cambiare bus in linea senza tornare
@@ -428,6 +434,16 @@ export default function DriverWorkspace({
     });
   }, [ganttBars, showDiff, ganttMode, tripCompatMap]);
 
+  /* ── Filtro turni: mostra solo i driver selezionati (null = tutti) ── */
+  const shownRows = useMemo(
+    () => visibleDrivers ? ganttRows.filter(r => visibleDrivers.has(r.id)) : ganttRows,
+    [ganttRows, visibleDrivers],
+  );
+  const shownBars = useMemo(
+    () => visibleDrivers ? displayBars.filter(b => visibleDrivers.has(b.rowId)) : displayBars,
+    [displayBars, visibleDrivers],
+  );
+
   /* ── History + drag handler ─────────────────────────── */
   const pushHistory = useCallback((newRes: DriverShiftsResult, description: string) => {
     setHistory(prev => {
@@ -498,7 +514,43 @@ export default function DriverWorkspace({
     setResult(newResult);
     pushHistory(newResult, `➕ ${ACTIVITY_LABELS[opts.type]} → ${opts.driverId}`);
     setShowAddActivityDialog(false);
+    setActivityPrefill(null);
     toast.success("Attività aggiunta", { description: `${ACTIVITY_LABELS[opts.type]} su ${opts.driverId}` });
+  }, [result, pushHistory]);
+
+  // Tipi di segmento eliminabili cliccando sul Gantt (fuori linea / taxi / attività).
+  const DELETABLE = new Set(["transfer", "transferBack", "carpool", "activity"]);
+  /** Elimina un segmento non-corsa dal turno (fuori linea, taxi/auto aziendale, attività). */
+  const deleteSegment = useCallback((bar: GanttBar) => {
+    if (!result) return;
+    const meta: any = bar.meta || {};
+    if (!DELETABLE.has(meta.type)) return;
+    const driverId = meta.driverId ?? bar.rowId;
+    const ri = meta.ripreseIdx;
+    let label = "";
+    const newShifts = result.driverShifts.map(s => {
+      if (s.driverId !== driverId) return s;
+      if (meta.type === "activity") {
+        const act = (s.activities ?? []).find(a => a.id === meta.activityId);
+        const dur = act ? Math.max(0, act.endMin - act.startMin) : 0;
+        const workMin = Math.max(0, s.workMin - dur);
+        label = "attività";
+        return { ...s, activities: (s.activities ?? []).filter(a => a.id !== meta.activityId), workMin, work: formatDuration(workMin) };
+      }
+      const riprese = s.riprese.map((r, i) => {
+        if (i !== ri) return r;
+        if (meta.type === "carpool") { label = "taxi / auto aziendale"; return { ...r, ...(meta.cpIndex === 1 ? { carPoolReturn: null } : { carPoolOut: null }) }; }
+        if (meta.type === "transfer") { label = "fuori linea (andata)"; return { ...r, transferMin: 0 }; }
+        if (meta.type === "transferBack") { label = "fuori linea (rientro)"; return { ...r, transferBackMin: 0 }; }
+        return r;
+      });
+      return { ...s, riprese };
+    });
+    if (!label) return;
+    const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts, summary: recomputeSummary(newShifts, result.summary) };
+    setResult(newResult);
+    pushHistory(newResult, `🗑 Rimosso ${label} · ${driverId}`);
+    toast.success(`Rimosso: ${label}`, { description: "Annullabile con Undo" });
   }, [result, pushHistory]);
 
   const handleBarChange = useCallback((change: GanttChange) => {
@@ -1201,6 +1253,45 @@ export default function DriverWorkspace({
                     💡 Compat
                   </button>
                 )}
+                {/* Filtra turni: mostra solo alcuni autisti */}
+                {result && result.driverShifts.length > 0 && (
+                  <div className="relative">
+                    <button
+                      onClick={() => setFilterOpen(o => !o)}
+                      className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border transition ${visibleDrivers ? "border-amber-500/50 bg-amber-500/10 text-amber-300" : "border-zinc-700 text-zinc-400 hover:text-zinc-200"}`}
+                      title="Mostra solo i turni selezionati"
+                    >
+                      🔎 Filtra turni{visibleDrivers ? ` (${visibleDrivers.size})` : ""}
+                    </button>
+                    {filterOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setFilterOpen(false)} />
+                        <div className="absolute z-50 mt-1 right-0 w-56 max-h-72 overflow-y-auto rounded-lg border border-border/60 bg-popover shadow-2xl p-2">
+                          <div className="flex items-center justify-between mb-1.5 text-[10px]">
+                            <button onClick={() => setVisibleDrivers(null)} className="text-emerald-300 hover:underline">Tutti</button>
+                            <button onClick={() => setVisibleDrivers(new Set())} className="text-zinc-400 hover:underline">Nessuno</button>
+                          </div>
+                          {result.driverShifts.map(s => {
+                            const checked = !visibleDrivers || visibleDrivers.has(s.driverId);
+                            return (
+                              <label key={s.driverId} className="flex items-center gap-2 px-1 py-0.5 text-[11px] text-zinc-300 cursor-pointer hover:bg-white/5 rounded">
+                                <input type="checkbox" checked={checked} className="accent-purple-500"
+                                  onChange={() => setVisibleDrivers(prev => {
+                                    const base = prev ?? new Set(result.driverShifts.map(x => x.driverId));
+                                    const n = new Set(base);
+                                    if (n.has(s.driverId)) n.delete(s.driverId); else n.add(s.driverId);
+                                    return n.size === result.driverShifts.length ? null : n;
+                                  })}
+                                />
+                                {s.driverId}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
                 {/* Aggiungi turno guida manuale (#NEW) */}
                 {ganttMode === "exploded" && (
                   <button
@@ -1214,9 +1305,9 @@ export default function DriverWorkspace({
                 {/* Aggiungi attività non di guida (Riserva/Presidio/Verifica) */}
                 {result && result.driverShifts.length > 0 && (
                   <button
-                    onClick={() => setShowAddActivityDialog(true)}
+                    onClick={() => { setActivityPrefill(null); setShowAddActivityDialog(true); }}
                     className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-teal-500/40 bg-teal-500/10 text-teal-300 hover:bg-teal-500/20 transition"
-                    title="Inserisci un'attività non di guida (Riserva, Presidio, Verifica) in un turno"
+                    title="Inserisci un'attività non di guida (Riserva, Presidio, Verifica). Suggerimento: click destro sul Gantt per inserirla in un punto preciso."
                   >
                     ➕ Attività
                   </button>
@@ -1273,18 +1364,21 @@ export default function DriverWorkspace({
                 </div>
               )}
               <InteractiveGantt
-                rows={ganttRows}
-                bars={displayBars}
+                rows={shownRows}
+                bars={shownBars}
                 minHour={ganttBounds.min}
                 maxHour={ganttBounds.max}
                 editable={ganttMode === "exploded"}
                 onBarChange={ganttMode === "exploded" ? handleBarChange : undefined}
                 onBarClick={(bar) => {
                   const meta: any = bar.meta || {};
+                  // Click su fuori linea / taxi / attività → eliminazione diretta (undo disponibile).
+                  if (ganttMode === "exploded" && DELETABLE.has(meta.type)) { deleteSegment(bar); return; }
                   toast.info(`${meta.type ?? "elemento"} · ${meta.driverId ?? bar.rowId}`, {
                     description: bar.tooltip?.join(" · "),
                   });
                 }}
+                onBarContextMenu={ganttMode === "exploded" ? (bar, anchor) => setCtxMenu({ x: anchor.x, y: anchor.y, bar }) : undefined}
                 getSuggestions={ganttMode === "exploded" && result ? (bar) => {
                   const meta: any = bar.meta || {};
                   if (meta.type !== "trip" || !meta.tripId) return [];
@@ -1371,9 +1465,40 @@ export default function DriverWorkspace({
       {showAddActivityDialog && result && (
         <AddActivityDialog
           driverIds={result.driverShifts.map(s => s.driverId)}
-          onClose={() => setShowAddActivityDialog(false)}
+          suggestedDriverId={activityPrefill?.driverId}
+          suggestedStartMin={activityPrefill?.startMin}
+          onClose={() => { setShowAddActivityDialog(false); setActivityPrefill(null); }}
           onConfirm={handleAddActivity}
         />
+      )}
+
+      {/* Menu contestuale (click destro sul Gantt) */}
+      {ctxMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setCtxMenu(null)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }} />
+          <div className="fixed z-50 min-w-[190px] rounded-lg border border-border/60 bg-popover shadow-2xl py-1 text-xs"
+               style={{ left: Math.min(ctxMenu.x, window.innerWidth - 210), top: Math.min(ctxMenu.y, window.innerHeight - 120) }}>
+            <button
+              className="w-full text-left px-3 py-1.5 hover:bg-teal-500/10 text-teal-300 flex items-center gap-2"
+              onClick={() => {
+                const meta: any = ctxMenu.bar.meta || {};
+                setActivityPrefill({ driverId: meta.driverId ?? ctxMenu.bar.rowId, startMin: ctxMenu.bar.startMin });
+                setShowAddActivityDialog(true);
+                setCtxMenu(null);
+              }}
+            >
+              ➕ Aggiungi attività qui
+            </button>
+            {DELETABLE.has((ctxMenu.bar.meta as any)?.type) && (
+              <button
+                className="w-full text-left px-3 py-1.5 hover:bg-rose-500/10 text-rose-300 flex items-center gap-2"
+                onClick={() => { deleteSegment(ctxMenu.bar); setCtxMenu(null); }}
+              >
+                🗑 Elimina questo segmento
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
