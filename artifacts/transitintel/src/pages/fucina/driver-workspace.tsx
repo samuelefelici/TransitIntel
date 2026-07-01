@@ -23,7 +23,7 @@ import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
-  MapPin, Minus, Plus, SlidersHorizontal,
+  MapPin, Minus, Plus, SlidersHorizontal, Trash2, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -146,6 +146,8 @@ export default function DriverWorkspace({
   const [filterOpen, setFilterOpen] = useState(false);
   // ── Menu contestuale (click destro sul Gantt) ──
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; bar: GanttBar } | null>(null);
+  // ── Card di dettaglio segmento (click sinistro su un elemento non-corsa) ──
+  const [segmentCard, setSegmentCard] = useState<{ x: number; y: number; bar: GanttBar } | null>(null);
 
   /* ── Cluster di cambio (interchange) per il setup banner ──
    * Sono i nodi dove gli autisti possono cambiare bus in linea senza tornare
@@ -544,8 +546,9 @@ export default function DriverWorkspace({
     toast.success("Attività aggiunta", { description: `${ACTIVITY_LABELS[opts.type]} su ${opts.driverId}` });
   }, [result, pushHistory]);
 
-  // Tipi di segmento eliminabili cliccando sul Gantt (fuori linea / taxi / attività).
-  const DELETABLE = new Set(["transfer", "transferBack", "carpool", "activity"]);
+  // Tipi di segmento eliminabili dal Gantt (tutto tranne le corse: fuori linea,
+  // taxi/auto aziendale, pre-turno, attività).
+  const DELETABLE = new Set(["transfer", "transferBack", "carpool", "activity", "preTurno"]);
   /** Elimina un segmento non-corsa dal turno (fuori linea, taxi/auto aziendale, attività). */
   const deleteSegment = useCallback((bar: GanttBar) => {
     if (!result) return;
@@ -568,6 +571,7 @@ export default function DriverWorkspace({
         if (meta.type === "carpool") { label = "taxi / auto aziendale"; return { ...r, ...(meta.cpIndex === 1 ? { carPoolReturn: null } : { carPoolOut: null }) }; }
         if (meta.type === "transfer") { label = "fuori linea (andata)"; return { ...r, transferMin: 0 }; }
         if (meta.type === "transferBack") { label = "fuori linea (rientro)"; return { ...r, transferBackMin: 0 }; }
+        if (meta.type === "preTurno") { label = "pre-turno"; return { ...r, preTurnoMin: 0 }; }
         return r;
       });
       return { ...s, riprese };
@@ -1396,13 +1400,12 @@ export default function DriverWorkspace({
                 maxHour={ganttBounds.max}
                 editable={ganttMode === "exploded"}
                 onBarChange={ganttMode === "exploded" ? handleBarChange : undefined}
-                onBarClick={(bar) => {
+                onBarClick={(bar, anchor) => {
                   const meta: any = bar.meta || {};
-                  // Click su fuori linea / taxi / attività → eliminazione diretta (undo disponibile).
-                  if (ganttMode === "exploded" && DELETABLE.has(meta.type)) { deleteSegment(bar); return; }
-                  toast.info(`${meta.type ?? "elemento"} · ${meta.driverId ?? bar.rowId}`, {
-                    description: bar.tooltip?.join(" · "),
-                  });
+                  // Corse (trip/service): nessuna card di eliminazione.
+                  if (meta.type === "trip" || meta.type === "service") return;
+                  // Ogni altro elemento → apre una card con dettagli + eliminazione.
+                  setSegmentCard({ x: anchor?.x ?? window.innerWidth / 2, y: anchor?.y ?? window.innerHeight / 2, bar });
                 }}
                 onBarContextMenu={ganttMode === "exploded" ? (bar, anchor) => setCtxMenu({ x: anchor.x, y: anchor.y, bar }) : undefined}
                 getSuggestions={ganttMode === "exploded" && result ? (bar) => {
@@ -1526,6 +1529,47 @@ export default function DriverWorkspace({
           </div>
         </>
       )}
+
+      {/* Card dettaglio segmento (click sinistro) con eliminazione */}
+      {segmentCard && (() => {
+        const meta: any = segmentCard.bar.meta || {};
+        const TYPE_IT: Record<string, string> = {
+          transfer: "Fuori linea (andata)", transferBack: "Fuori linea (rientro)",
+          carpool: "Taxi / auto aziendale", preTurno: "Pre-turno",
+          interruption: "Sosta / interruzione", activity: "Attività non di guida",
+        };
+        const title = TYPE_IT[meta.type] ?? "Elemento";
+        const canDelete = DELETABLE.has(meta.type);
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setSegmentCard(null)} />
+            <div className="fixed z-50 w-64 rounded-lg border border-border/60 bg-popover shadow-2xl text-xs"
+                 style={{ left: Math.min(segmentCard.x, window.innerWidth - 270), top: Math.min(segmentCard.y, window.innerHeight - 170) }}>
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border/40">
+                <span className="font-semibold text-foreground">{title}</span>
+                <button onClick={() => setSegmentCard(null)} className="text-muted-foreground hover:text-foreground"><X className="w-3.5 h-3.5" /></button>
+              </div>
+              <div className="px-3 py-2 space-y-1 text-muted-foreground">
+                <div className="text-[11px]">Autista: <span className="text-foreground font-medium">{meta.driverId ?? segmentCard.bar.rowId}</span></div>
+                <div className="text-[11px]">Orario: <span className="text-foreground font-mono">{minToTime(segmentCard.bar.startMin)}–{minToTime(segmentCard.bar.endMin)}</span></div>
+                {(segmentCard.bar.tooltip ?? []).map((t, i) => <div key={i} className="text-[10px] text-muted-foreground/80">{t}</div>)}
+              </div>
+              <div className="px-3 py-2 border-t border-border/40 flex justify-end">
+                {canDelete ? (
+                  <button
+                    onClick={() => { deleteSegment(segmentCard.bar); setSegmentCard(null); }}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-600 text-white hover:bg-rose-500 transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Elimina
+                  </button>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground/60 italic">Elemento non eliminabile</span>
+                )}
+              </div>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }

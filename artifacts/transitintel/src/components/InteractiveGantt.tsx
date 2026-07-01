@@ -88,8 +88,8 @@ export interface InteractiveGanttProps {
   onRowRename?: (rowId: string, newLabel: string) => void;
   /** Compute suggestions of compatible rows where the given bar could be moved */
   getSuggestions?: (bar: GanttBar) => GanttSuggestion[];
-  /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). */
-  onBarClick?: (bar: GanttBar) => void;
+  /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). Riceve anche le coordinate viewport del click. */
+  onBarClick?: (bar: GanttBar, anchor?: { x: number; y: number }) => void;
   /** Called on right click (or shift+click passthrough) over a bar with viewport anchor. */
   onBarContextMenu?: (bar: GanttBar, anchor: { x: number; y: number; side?: "left" | "right" }) => void;
   /** Selected bar id for inline actions (controlled from parent). */
@@ -630,7 +630,7 @@ export default function InteractiveGantt({
           // Click su QUALSIASI bar (anche locked): invoca callback custom — il parent
           // decide se gestire (es. apre dialog deadhead per bar locked).
           if (onBarClick && !dragState.current) {
-            onBarClick(bar);
+            onBarClick(bar, { x: e.clientX, y: e.clientY });
           }
           // Pin tooltip on click for deadhead/depot entries and for trip suggestions.
           const canPin = canInlineActions || (editable && !bar.locked && !!getSuggestions);
