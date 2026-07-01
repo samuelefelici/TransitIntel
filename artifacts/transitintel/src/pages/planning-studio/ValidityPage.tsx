@@ -143,7 +143,9 @@ function buildAlgoContext(matrix: PsValidityMatrix): MatrixContext {
 
 interface CellAction {
   kind: "exception";
-  tripId: string;
+  tripId: string;              // rappresentante (per stato/undo)
+  /** Tutte le corse a cui applicare (corse fuse identiche). Default: [tripId]. */
+  tripIds?: string[];
   date: string;
   /** Stato precedente: undefined = nessuna eccezione | 1 = add | 2 = remove */
   prev: 1 | 2 | undefined;
@@ -284,22 +286,45 @@ export default function PlanningStudioValidityPage() {
     [allDates, calCriterion, matchesCriterion, leafByDate],
   );
 
-  /* ─── Trips raggruppate per route (+ filtro ricerca linee) ─── */
-  const groups = useMemo(() => {
-    if (!matrixQ.data) return [] as { route: PsValidityTrip; trips: PsValidityTrip[] }[];
+  /* ─── Trips raggruppate per route + FUSIONE corse identiche (+ filtro ricerca) ───
+   * Fondiamo in una sola riga le corse DAVVERO identiche: stessa linea/variante/
+   * direzione/orario/percorso E stessa validità (day-type + eccezioni). Così le
+   * corse duplicate (stesso 05:14 ripetuto) diventano 1 riga; le modifiche sulla
+   * riga si applicano a tutte le corse fuse (mergeMembers). Corse che differiscono
+   * per giorni di servizio NON vengono fuse (restano righe distinte). */
+  const { groups, mergeMembers } = useMemo(() => {
+    const members = new Map<string, string[]>(); // repId → [memberIds]
+    if (!matrixQ.data) return { groups: [] as { route: PsValidityTrip; trips: PsValidityTrip[] }[], mergeMembers: members };
+    const sig = (t: PsValidityTrip) => {
+      const dv = ctx?.tripDayValidity.get(t.id);
+      const dvSig = dv ? [...dv.entries()].filter(([, v]) => v).map(([k]) => k).sort().join(",") : "";
+      const exx = ctx?.tripExceptions.get(t.id);
+      const exSig = exx ? [...exx.entries()].map(([d, e]) => `${d}:${e}`).sort().join(",") : "";
+      return [t.routeId, t.variantId, t.direction, t.firstDeparture, t.headsign, t.firstStopName, t.lastStopName, t.validFrom, t.validTo, dvSig, exSig].join("§");
+    };
     const byRoute = new Map<string, PsValidityTrip[]>();
     for (const t of matrixQ.data.trips) {
       if (!byRoute.has(t.routeId)) byRoute.set(t.routeId, []);
       byRoute.get(t.routeId)!.push(t);
     }
-    let arr = Array.from(byRoute.values()).map((trips) => ({ route: trips[0], trips }));
+    let arr = Array.from(byRoute.values()).map((trips) => {
+      const repBySig = new Map<string, PsValidityTrip>();
+      const merged: PsValidityTrip[] = [];
+      for (const t of trips) {
+        const k = sig(t);
+        const rep = repBySig.get(k);
+        if (rep) { members.get(rep.id)!.push(t.id); }
+        else { repBySig.set(k, t); merged.push(t); members.set(t.id, [t.id]); }
+      }
+      return { route: merged[0], trips: merged };
+    });
     const q = lineFilter.trim().toLowerCase();
     if (q) {
       arr = arr.filter((g) =>
         `${g.route.routeShortName ?? ""} ${g.route.routeLongName ?? ""}`.toLowerCase().includes(q));
     }
-    return arr;
-  }, [matrixQ.data, lineFilter]);
+    return { groups: arr, mergeMembers: members };
+  }, [matrixQ.data, lineFilter, ctx]);
 
   /** flatten: header riga di route + righe trip; ogni riga ha altezza costante. */
   const flatRows = useMemo(() => {
@@ -357,12 +382,13 @@ export default function PlanningStudioValidityPage() {
   }, [qc, projectId, from, to]);
 
   const applyExceptionAction = useCallback(async (a: CellAction): Promise<void> => {
-    if (a.next === undefined) {
-      await deletePsTripExceptionMatrix(projectId, { trip_id: a.tripId, date: a.date });
-    } else {
-      await upsertPsTripException(projectId, {
-        trip_id: a.tripId, date: a.date, exception_type: a.next,
-      });
+    const ids = a.tripIds && a.tripIds.length > 0 ? a.tripIds : [a.tripId];
+    for (const id of ids) {
+      if (a.next === undefined) {
+        await deletePsTripExceptionMatrix(projectId, { trip_id: id, date: a.date });
+      } else {
+        await upsertPsTripException(projectId, { trip_id: id, date: a.date, exception_type: a.next });
+      }
     }
   }, [projectId]);
 
@@ -418,12 +444,14 @@ export default function PlanningStudioValidityPage() {
       toast.error("Modalità sola lettura");
       return;
     }
+    // Corse fuse identiche: la modifica si applica a tutte.
+    const tripIds = mergeMembers.get(tripId) ?? [tripId];
     const exMap = ctx.tripExceptions.get(tripId);
     const cur = exMap?.get(date);
 
     // Se c'è già un'eccezione, la rimuovo (ripristino default).
     if (cur !== undefined) {
-      cellMut.mutate({ kind: "exception", tripId, date, prev: cur, next: undefined });
+      cellMut.mutate({ kind: "exception", tripId, tripIds, date, prev: cur, next: undefined });
       return;
     }
     // Altrimenti calcolo il default e applico l'eccezione opposta.
@@ -437,8 +465,8 @@ export default function PlanningStudioValidityPage() {
       if (dtId) defaultValue = ctx.tripDayValidity.get(tripId)?.get(dtId) ?? false;
     }
     const target: 1 | 2 = defaultValue ? 2 : 1;
-    cellMut.mutate({ kind: "exception", tripId, date, prev: undefined, next: target });
-  }, [ctx, cellMut, projectQ.data]);
+    cellMut.mutate({ kind: "exception", tripId, tripIds, date, prev: undefined, next: target });
+  }, [ctx, cellMut, projectQ.data, mergeMembers]);
 
   /* ─── Day-Type Editor side panel ─── */
   const [dtEditorOpen, setDtEditorOpen] = useState(false);
@@ -600,12 +628,15 @@ export default function PlanningStudioValidityPage() {
       let count = 0;
       for (const k of items) {
         const [tripId, date] = k.split("::");
-        if (target === "clear") {
-          await deletePsTripExceptionMatrix(projectId, { trip_id: tripId, date });
-        } else {
-          await upsertPsTripException(projectId, {
-            trip_id: tripId, date, exception_type: target === "valid" ? 1 : 2,
-          });
+        // applica a tutte le corse fuse identiche
+        for (const id of (mergeMembers.get(tripId) ?? [tripId])) {
+          if (target === "clear") {
+            await deletePsTripExceptionMatrix(projectId, { trip_id: id, date });
+          } else {
+            await upsertPsTripException(projectId, {
+              trip_id: id, date, exception_type: target === "valid" ? 1 : 2,
+            });
+          }
         }
         count++;
       }
@@ -1043,6 +1074,12 @@ export default function PlanningStudioValidityPage() {
                         <span className="text-slate-400 tabular-nums w-11 shrink-0" title="Orario di partenza">
                           {t.firstDeparture ? t.firstDeparture.slice(0, 5) : "—"}
                         </span>
+                        {(mergeMembers.get(t.id)?.length ?? 1) > 1 && (
+                          <span className="font-mono text-[9px] text-amber-300 bg-amber-500/15 border border-amber-500/30 rounded px-1 py-0.5 shrink-0"
+                            title={`${mergeMembers.get(t.id)!.length} corse identiche fuse in questa riga — le modifiche si applicano a tutte`}>
+                            ×{mergeMembers.get(t.id)!.length}
+                          </span>
+                        )}
                         <span className="font-mono text-[10px] text-slate-300 bg-slate-800/80 rounded px-1 py-0.5 shrink-0 max-w-[72px] truncate" title="Codice corsa">
                           {t.shortName ?? t.id.slice(0, 6)}
                         </span>
