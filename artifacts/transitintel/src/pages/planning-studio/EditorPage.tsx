@@ -65,6 +65,11 @@ interface GlobalDepot {
   lat: number | null; lon: number | null;
   address?: string | null;
   capacity?: number | null;
+  operatingHoursStart?: string | null;
+  operatingHoursEnd?: string | null;
+  hasDiesel?: boolean; hasMethane?: boolean; hasElectric?: boolean;
+  chargingPoints?: number | null; cngPoints?: number | null;
+  notes?: string | null;
 }
 
 /* ─── Nodi (ps_stop_clusters): tipo Logico vs Di cambio ───
@@ -282,6 +287,8 @@ export default function PlanningStudioEditorPage() {
   const [showGlobalClusters, setShowGlobalClusters] = useState(false);
   const [showDepots, setShowDepots] = useState(false);
   const [editingDepot, setEditingDepot] = useState<GlobalDepot | null>(null);
+  // Dettaglio deposito in sola lettura (click sul marker)
+  const [depotInfo, setDepotInfo] = useState<GlobalDepot | null>(null);
   const [creatingDepotAt, setCreatingDepotAt] = useState<{ lat: number; lon: number } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
@@ -1267,10 +1274,12 @@ export default function PlanningStudioEditorPage() {
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity-units`); }} />
           </MenuGroup>
 
-          {/* Territorio: nodi, depositi, zonizzazione (km per comune) */}
+          {/* Territorio: nodi, zonizzazione (km per comune).
+              I depositi NON stanno più qui: sono strutturali → si vedono solo in
+              "Vista → Overlay depositi" e si gestiscono in Infrastruttura. */}
           <MenuGroup
             label="Territorio" icon={Building2} accent="orange"
-            active={activePanel === "clusters" || activePanel === "ne-clusters" || activePanel === "ne-depots"}
+            active={activePanel === "clusters" || activePanel === "ne-clusters"}
             open={openMenu === "infrastruttura"}
             onToggle={() => setOpenMenu(m => m === "infrastruttura" ? null : "infrastruttura")}
           >
@@ -1281,8 +1290,6 @@ export default function PlanningStudioEditorPage() {
               count={(clusters.length + globalClusters.length) || undefined} accent="cyan"
               active={activePanel === "clusters" || activePanel === "ne-clusters"}
               onClick={toggleNodesPanel} />
-            <MenuItem icon={Building2} label="Depositi aziendali" count={depots.length || undefined} accent="orange"
-              active={activePanel === "ne-depots"} onClick={() => togglePanel("ne-depots")} />
             <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Landmark} label="Zonizzazione" note="pagina" accent="amber"
               desc="confini comunali · km per comune"
@@ -1629,10 +1636,10 @@ export default function PlanningStudioEditorPage() {
           {/* ─── Layer Depositi (Network Engine) ─── */}
           {showDepots && depots.filter(d => d.lat != null && d.lon != null).map(d => (
             <Marker key={`depot-${d.id}`} longitude={Number(d.lon)} latitude={Number(d.lat)} anchor="bottom"
-              onClick={(e) => { e.originalEvent.stopPropagation(); mapRef.current?.flyTo({ center: [Number(d.lon), Number(d.lat)], zoom: 14, duration: 600 }); }}
+              onClick={(e) => { e.originalEvent.stopPropagation(); setDepotInfo(d); }}
             >
               <div
-                title={`Deposito · ${d.name}${d.capacity ? ` · ${d.capacity} mezzi` : ""} — clic per modificare`}
+                title={`Deposito · ${d.name}${d.capacity ? ` · ${d.capacity} mezzi` : ""} — clic per i dettagli`}
                 className="flex flex-col items-center pointer-events-auto cursor-pointer hover:scale-110 transition-transform"
               >
                 <div
@@ -1654,6 +1661,36 @@ export default function PlanningStudioEditorPage() {
               </div>
             </Marker>
           ))}
+
+          {/* Dettaglio deposito in SOLA LETTURA (clic sul marker) */}
+          {showDepots && depotInfo && depotInfo.lat != null && depotInfo.lon != null && (
+            <Popup longitude={Number(depotInfo.lon)} latitude={Number(depotInfo.lat)} anchor="bottom" offset={34}
+              closeOnClick={false} onClose={() => setDepotInfo(null)} maxWidth="260px">
+              <div className="p-1 space-y-1.5 text-slate-800">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded flex items-center justify-center shrink-0" style={{ backgroundColor: depotInfo.color || "#f97316" }}>
+                    <Building2 className="w-3.5 h-3.5 text-white" />
+                  </span>
+                  <span className="text-sm font-bold">{depotInfo.name}</span>
+                </div>
+                <div className="text-[11px] space-y-0.5">
+                  {depotInfo.address && <div><span className="text-slate-500">Indirizzo:</span> {depotInfo.address}</div>}
+                  <div><span className="text-slate-500">Coordinate:</span> {Number(depotInfo.lat).toFixed(5)}, {Number(depotInfo.lon).toFixed(5)}</div>
+                  <div><span className="text-slate-500">Capacità:</span> {depotInfo.capacity != null ? `${depotInfo.capacity} mezzi` : "—"}</div>
+                  {(depotInfo.operatingHoursStart || depotInfo.operatingHoursEnd) && (
+                    <div><span className="text-slate-500">Orari:</span> {depotInfo.operatingHoursStart || "—"}–{depotInfo.operatingHoursEnd || "—"}</div>
+                  )}
+                  <div><span className="text-slate-500">Alimentazioni:</span> {[
+                    depotInfo.hasDiesel && "Gasolio", depotInfo.hasMethane && "Metano", depotInfo.hasElectric && "Elettrico",
+                  ].filter(Boolean).join(", ") || "—"}</div>
+                  {depotInfo.chargingPoints != null && depotInfo.chargingPoints > 0 && <div><span className="text-slate-500">Punti ricarica:</span> {depotInfo.chargingPoints}</div>}
+                  {depotInfo.cngPoints != null && depotInfo.cngPoints > 0 && <div><span className="text-slate-500">Punti metano:</span> {depotInfo.cngPoints}</div>}
+                  {depotInfo.notes && <div className="text-slate-600 italic pt-0.5">{depotInfo.notes}</div>}
+                </div>
+                <div className="text-[9px] text-slate-400 pt-0.5">Sola lettura · gestione in Infrastruttura</div>
+              </div>
+            </Popup>
+          )}
 
           {/* Tutte le fermate del progetto — render via GeoJSON Layer (GPU,
               molto più veloce di N <Marker> React quando N è migliaia).
