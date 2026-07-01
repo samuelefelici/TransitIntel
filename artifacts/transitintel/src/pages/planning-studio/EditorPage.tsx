@@ -1629,7 +1629,7 @@ export default function PlanningStudioEditorPage() {
           {/* ─── Layer Depositi (Network Engine) ─── */}
           {showDepots && depots.filter(d => d.lat != null && d.lon != null).map(d => (
             <Marker key={`depot-${d.id}`} longitude={Number(d.lon)} latitude={Number(d.lat)} anchor="bottom"
-              onClick={(e) => { e.originalEvent.stopPropagation(); setEditingDepot(d); }}
+              onClick={(e) => { e.originalEvent.stopPropagation(); mapRef.current?.flyTo({ center: [Number(d.lon), Number(d.lat)], zoom: 14, duration: 600 }); }}
             >
               <div
                 title={`Deposito · ${d.name}${d.capacity ? ` · ${d.capacity} mezzi` : ""} — clic per modificare`}
@@ -2086,8 +2086,7 @@ export default function PlanningStudioEditorPage() {
                     depots={depots}
                     loading={overlayLoading.depots}
                     onReload={reloadDepots}
-                    onEdit={(d) => setEditingDepot(d)}
-                    onCreate={() => setEditingDepot({ id: "", name: "", color: "#f97316", lat: null, lon: null } as GlobalDepot)}
+                    onManage={() => navigate("/depots")}
                     onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 600 })}
                   />
                 )}
@@ -4068,31 +4067,29 @@ function NeClustersPanel({
  *  Pannello Depositi (Network Engine) — lista + crea + edita
  * ════════════════════════════════════════════════════════════ */
 function NeDepotsPanel({
-  depots, loading, onReload, onEdit, onCreate, onFlyTo,
+  depots, loading, onReload, onManage, onFlyTo,
 }: {
   depots: GlobalDepot[];
   loading?: boolean;
   onReload: () => Promise<void> | void;
-  onEdit: (d: GlobalDepot) => void;
-  onCreate: () => void;
+  onManage: () => void;
   onFlyTo: (lat: number, lon: number) => void;
 }) {
   return (
     <div className="p-3 space-y-2">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1">
         <p className="text-[11px] text-slate-500">{depots.length} depositi</p>
-        <div className="flex gap-1">
-          <button onClick={() => onReload()} title="Ricarica"
-            className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
-          <button onClick={onCreate}
-            className="text-[11px] px-2 py-1 rounded bg-orange-600 hover:bg-orange-500 text-white inline-flex items-center gap-1">
-            <Plus className="w-3 h-3" /> Nuovo
-          </button>
-        </div>
+        <button onClick={() => onReload()} title="Ricarica"
+          className="text-[11px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">↻</button>
+      </div>
+      {/* Sola lettura: i depositi sono strutturali e si gestiscono in Infrastruttura. */}
+      <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-2.5 py-2 text-[10px] text-slate-400 flex items-start gap-1.5">
+        <Building2 className="w-3 h-3 shrink-0 mt-0.5 text-orange-400/70" />
+        <span>Sola visualizzazione. I depositi sono condivisi tra tutti i progetti e si gestiscono in <button onClick={onManage} className="text-orange-300 hover:underline font-medium">Infrastruttura →</button></span>
       </div>
       {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
       {!loading && depots.length === 0 && (
-        <p className="text-[11px] text-slate-500">Nessun deposito. Crea il primo con "Nuovo".</p>
+        <p className="text-[11px] text-slate-500">Nessun deposito. Aggiungili in Infrastruttura.</p>
       )}
       {depots.map(d => (
         <div key={d.id} className="rounded-lg border border-slate-800 bg-slate-900/60 p-2.5">
@@ -4109,16 +4106,12 @@ function NeDepotsPanel({
               </p>
             </div>
           </div>
-          <div className="flex gap-1 mt-1.5">
-            {d.lat != null && d.lon != null && (
+          {d.lat != null && d.lon != null && (
+            <div className="flex gap-1 mt-1.5">
               <button onClick={() => onFlyTo(Number(d.lat), Number(d.lon))}
-                className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Centra</button>
-            )}
-            <button onClick={() => onEdit(d)}
-              className="flex-1 text-[10px] px-2 py-1 rounded bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 inline-flex items-center justify-center gap-1">
-              <Pencil className="w-3 h-3" /> Modifica
-            </button>
-          </div>
+                className="flex-1 text-[10px] px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Centra sulla mappa</button>
+            </div>
+          )}
         </div>
       ))}
     </div>
