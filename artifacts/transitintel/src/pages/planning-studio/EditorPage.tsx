@@ -274,6 +274,8 @@ export default function PlanningStudioEditorPage() {
     pendingStopIds: Set<string>;
   };
   const [clusterDraw, setClusterDraw] = useState<ClusterDraw | null>(null);
+  // Tooltip nome fermata al passaggio del cursore (utile disegnando i percorsi).
+  const [hoverStop, setHoverStop] = useState<{ name: string; lon: number; lat: number } | null>(null);
   // ── Mappa: stile + 3D toggle ───────────────────────────────
   // Stile "standard" Mapbox: chiaro, dettagliato, supporta nativamente edifici 3D
   // e landmark via setConfigProperty('basemap', 'show3dObjects', …).
@@ -1466,11 +1468,31 @@ export default function PlanningStudioEditorPage() {
             }
           }}
           onLoad={() => setMapReady(true)}
+          onMouseMove={(e) => {
+            // Nome fermata al passaggio del cursore (hover sui layer fermata).
+            const f = e.features?.find(ft => ft.layer?.id === "ps-stops-circle" || ft.layer?.id === "ps-stops-circle-hit");
+            if (f && (f.geometry as any)?.type === "Point") {
+              const [lon, lat] = (f.geometry as any).coordinates as [number, number];
+              const name = String((f.properties as any)?.name ?? "");
+              if (!hoverStop || hoverStop.lon !== lon || hoverStop.lat !== lat) setHoverStop({ name, lon, lat });
+            } else if (hoverStop) {
+              setHoverStop(null);
+            }
+          }}
+          onMouseLeave={() => hoverStop && setHoverStop(null)}
           cursor={mapCursor}
           interactiveLayerIds={["ps-stops-circle", "ps-stops-circle-hit"]}
           style={{ width: "100%", height: "100%" }}
         >
           <NavigationControl position="bottom-right" />
+
+          {/* Tooltip nome fermata (hover) — piccolo, non interattivo */}
+          {hoverStop && hoverStop.name && (
+            <Popup longitude={hoverStop.lon} latitude={hoverStop.lat} anchor="bottom" offset={12}
+              closeButton={false} closeOnClick={false} className="ps-stop-hover">
+              <span className="text-[10px] font-medium text-slate-800 whitespace-nowrap">{hoverStop.name}</span>
+            </Popup>
+          )}
 
           {/* Toggle 2D / 3D ─ overlay in alto a destra */}
           <div className="absolute top-3 right-3 z-10 flex rounded-lg overflow-hidden border border-slate-300 shadow-lg bg-white/95 backdrop-blur">
