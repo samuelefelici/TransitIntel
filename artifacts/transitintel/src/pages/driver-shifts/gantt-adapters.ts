@@ -25,7 +25,7 @@ function extraSegmentBars(shift: DriverShiftData): GanttBar[] {
           label: "🚕", color: "#0ea5e9", style: "dashed",
           tooltip: [cp.description || "Auto aziendale / taxi", `${minToTime(cp.departMin)} → ${minToTime(cp.arriveMin)}`],
           locked: true,
-          meta: { type: "carpool", driverId: shift.driverId, ripreseIdx: ri },
+          meta: { type: "carpool", driverId: shift.driverId, ripreseIdx: ri, cpIndex: idx },
         });
       }
     });

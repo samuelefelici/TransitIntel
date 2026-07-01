@@ -5,13 +5,15 @@
  */
 import { useState } from "react";
 import { X, ClipboardCheck } from "lucide-react";
-import { ACTIVITY_LABELS, timeToMin } from "./constants";
+import { ACTIVITY_LABELS, timeToMin, minToTime } from "./constants";
 import type { DriverActivityType } from "./types";
 
 interface Props {
   /** Autisti esistenti nel piano (la lista da cui scegliere). */
   driverIds: string[];
   suggestedDriverId?: string;
+  /** Minuto d'inizio suggerito (es. dal click destro sul Gantt). */
+  suggestedStartMin?: number;
   onClose: () => void;
   onConfirm: (opts: {
     driverId: string;
@@ -24,11 +26,11 @@ interface Props {
 
 const TYPE_OPTIONS: DriverActivityType[] = ["riserva", "presidio", "verifica"];
 
-export function AddActivityDialog({ driverIds, suggestedDriverId, onClose, onConfirm }: Props) {
+export function AddActivityDialog({ driverIds, suggestedDriverId, suggestedStartMin, onClose, onConfirm }: Props) {
   const [driverId, setDriverId] = useState(suggestedDriverId ?? driverIds[0] ?? "");
   const [type, setType] = useState<DriverActivityType>("riserva");
-  const [startTime, setStartTime] = useState("06:00");
-  const [endTime, setEndTime] = useState("08:00");
+  const [startTime, setStartTime] = useState(suggestedStartMin != null ? minToTime(suggestedStartMin) : "06:00");
+  const [endTime, setEndTime] = useState(suggestedStartMin != null ? minToTime(suggestedStartMin + 120) : "08:00");
   const [note, setNote] = useState("");
 
   const startMin = timeToMin(startTime);
