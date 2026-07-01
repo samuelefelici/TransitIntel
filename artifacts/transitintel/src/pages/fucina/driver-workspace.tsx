@@ -66,6 +66,8 @@ interface DriverWorkspaceProps {
   vehicleScenarioId: string;
   /** Risultato precaricato (es. da DSS salvato), opzionale */
   initialResult?: DriverShiftsResult | null;
+  /** Se valorizzato, apre lo scenario turni guida SALVATO (niente ri-ottimizzazione). */
+  dssId?: string | null;
   /** Etichetta GTFS/scenario per display */
   scenarioLabel?: string;
 }
@@ -77,6 +79,7 @@ const DEFAULT_CONFIG: OperatorConfig = buildDefaultConfig("urbano");
 export default function DriverWorkspace({
   vehicleScenarioId,
   initialResult,
+  dssId,
   scenarioLabel,
 }: DriverWorkspaceProps) {
   // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
@@ -244,6 +247,29 @@ export default function DriverWorkspace({
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectIdFromUrl, vehicleScenarioId]);
+
+  // Apri uno scenario turni guida SALVATO (dssId): carica il result, niente ottimizzazione.
+  const dssLoadedRef = useRef(false);
+  useEffect(() => {
+    if (dssLoadedRef.current || !dssId || !vehicleScenarioId) return;
+    dssLoadedRef.current = true;
+    setLoading(true);
+    fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios/${dssId}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((row: any) => {
+        const res = row?.result as DriverShiftsResult | undefined;
+        if (!res || !Array.isArray(res.driverShifts)) throw new Error("Scenario turni guida senza risultato");
+        setResult(res);
+        baselineSummaryRef.current = res.summary ? { ...res.summary } : null;
+        baselineBarsRef.current = res.driverShifts
+          ? new Map(driverShiftsToTripBars(res.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
+          : null;
+        if (row?.name) setDssName(row.name);
+      })
+      .catch((e: any) => toast.error("Impossibile aprire lo scenario turni guida", { description: e?.message }))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dssId, vehicleScenarioId]);
 
   // Ricezione risultati CP-SAT
   useEffect(() => {

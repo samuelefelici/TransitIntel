@@ -17,6 +17,10 @@ interface Props {
 }
 
 export default function DriverWorkspaceStep({ gtfsSelection, vehicleScenarioId, onBack }: Props) {
+  // ?dss=<id> → apre uno scenario turni guida SALVATO invece di ri-ottimizzare.
+  const dssId = typeof window !== "undefined"
+    ? new URLSearchParams(window.location.search).get("dss")
+    : null;
   React.useEffect(() => {
     if (!vehicleScenarioId) {
       toast.error("Manca lo scenario turni macchina", {
@@ -56,6 +60,7 @@ export default function DriverWorkspaceStep({ gtfsSelection, vehicleScenarioId, 
         {vehicleScenarioId ? (
           <DriverWorkspace
             vehicleScenarioId={vehicleScenarioId}
+            dssId={dssId}
             scenarioLabel={gtfsSelection.label}
           />
         ) : (

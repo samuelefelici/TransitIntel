@@ -226,7 +226,8 @@ export default function DriverScenariosPage() {
                           <div key={d.id}
                             className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-purple-500/8 transition-colors group"
                           >
-                            <button onClick={() => openVehicleWorkspace(v.id)}
+                            <button onClick={() => navigate(`/fucina/${projectId}/drivers/${d.vehicleScenarioId}?dss=${d.id}`)}
+                              title="Apri questo scenario turni guida salvato"
                               className="flex items-center gap-3 flex-1 min-w-0 text-left">
                             <div className="w-7 h-7 rounded bg-purple-500/15 border border-purple-500/30 flex items-center justify-center shrink-0">
                               <Users className="w-3.5 h-3.5 text-purple-400" />
