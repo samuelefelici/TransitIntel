@@ -25,7 +25,7 @@ import {
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
-  ChevronDown, Pencil, Search, Flame, Building2, Grip, Share2,
+  ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2,
   CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
@@ -940,6 +940,27 @@ export default function PlanningStudioEditorPage() {
     if (!editor) return;
     const list = editor.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setEditor({ ...editor, stops: list, dirty: true });
+  }
+
+  /** Rimuove più fermate dalla sequenza in un colpo solo (selezione multipla). */
+  function removeStopsFromSequence(idxs: number[]) {
+    if (!editor || idxs.length === 0) return;
+    const drop = new Set(idxs);
+    const list = editor.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
+    setEditor({ ...editor, stops: list, dirty: true });
+  }
+
+  /** Inverte l'ordine della sequenza (per creare il percorso di ritorno). */
+  function reverseSequence() {
+    if (!editor || editor.stops.length < 2) return;
+    const list = [...editor.stops].reverse().map((s, i) => ({ ...s, seq: i + 1 }));
+    setEditor({ ...editor, stops: list, dirty: true });
+  }
+
+  /** Svuota completamente la sequenza fermate. */
+  function clearSequence() {
+    if (!editor) return;
+    setEditor({ ...editor, stops: [], dirty: true });
   }
 
   /* ─── Salvataggio variante ─── */
@@ -2258,6 +2279,9 @@ export default function PlanningStudioEditorPage() {
                 onAddStop={addStopToSequence}
                 onMoveStop={moveStopInSequence}
                 onRemoveStop={removeStopFromSequence}
+                onRemoveStops={removeStopsFromSequence}
+                onReverse={reverseSequence}
+                onClear={clearSequence}
                 onChangeMode={changeShapeMode}
                 onSave={saveVariant}
                 onExit={exitEditor}
@@ -3552,7 +3576,7 @@ function ClustersPanel({
  * ════════════════════════════════════════════════════════════ */
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
-  onAddStop, onMoveStop, onRemoveStop, onChangeMode, onSave, onExit,
+  onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear, onChangeMode, onSave, onExit,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -3561,12 +3585,22 @@ function VariantEditorPanel({
   onAddStop: (s: PsStop) => void;
   onMoveStop: (from: number, to: number) => void;
   onRemoveStop: (idx: number) => void;
+  onRemoveStops: (idxs: number[]) => void;
+  onReverse: () => void;
+  onClear: () => void;
   onChangeMode: (m: "driving" | "manual") => void;
   onSave: () => void;
   onExit: () => void;
 }) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [stopPicker, setStopPicker] = useState("");
+  // Selezione multipla di righe della sequenza (per eliminazione in blocco).
+  const [selIdx, setSelIdx] = useState<Set<number>>(new Set());
+  // Se la sequenza cambia lunghezza, la selezione per indice non è più affidabile.
+  useEffect(() => { setSelIdx(new Set()); }, [editor.stops.length]);
+  const toggleSel = (idx: number) => setSelIdx(prev => {
+    const n = new Set(prev); n.has(idx) ? n.delete(idx) : n.add(idx); return n;
+  });
 
   const filteredStops = useMemo(() => {
     const qq = stopPicker.trim().toLowerCase();
@@ -3636,7 +3670,23 @@ function VariantEditorPanel({
 
       {/* Sequenza fermate */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        <p className="text-[10px] uppercase tracking-wider text-slate-500">Sequenza fermate ({editor.stops.length})</p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] uppercase tracking-wider text-slate-500">Sequenza fermate ({editor.stops.length})</p>
+          {editor.stops.length > 0 && (
+            <div className="flex items-center gap-1">
+              <button onClick={onReverse} title="Inverti l'ordine della sequenza (utile per il percorso di ritorno)"
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">⇅ Inverti</button>
+              <button onClick={() => { if (confirm("Svuotare tutta la sequenza fermate?")) onClear(); }} title="Rimuovi tutte le fermate dalla sequenza"
+                className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-rose-900/60 text-slate-300 hover:text-rose-300">Svuota</button>
+            </div>
+          )}
+        </div>
+        {selIdx.size > 0 && (
+          <button onClick={() => { onRemoveStops([...selIdx]); setSelIdx(new Set()); }}
+            className="w-full flex items-center justify-center gap-1.5 text-[11px] font-medium px-2 py-1.5 rounded bg-rose-600 hover:bg-rose-500 text-white">
+            <Trash2 className="w-3 h-3" /> Elimina {selIdx.size} fermat{selIdx.size === 1 ? "a" : "e"} selezionat{selIdx.size === 1 ? "a" : "e"}
+          </button>
+        )}
         {editor.stops.length === 0 && (
           <p className="text-xs text-slate-500 text-center py-4 italic">
             Aggiungi le fermate cliccandole sulla mappa o cercandole qui sotto.
@@ -3650,20 +3700,34 @@ function VariantEditorPanel({
               onDragStart={() => setDragIdx(idx)}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => { if (dragIdx !== null && dragIdx !== idx) onMoveStop(dragIdx, idx); setDragIdx(null); }}
-              className={`group flex items-center gap-2 rounded px-2 py-1.5 border cursor-move transition ${
-                dragIdx === idx ? "border-emerald-500 bg-emerald-500/10" : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
+              className={`group flex items-center gap-1.5 rounded px-2 py-1.5 border cursor-move transition ${
+                dragIdx === idx ? "border-emerald-500 bg-emerald-500/10"
+                : selIdx.has(idx) ? "border-rose-500/50 bg-rose-500/10"
+                : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
               }`}
             >
-              <GripVertical className="w-3 h-3 text-slate-600" />
-              <span className="text-[10px] font-mono text-slate-500 w-5 text-right">{vs.seq}</span>
+              <input type="checkbox" checked={selIdx.has(idx)} onChange={() => toggleSel(idx)}
+                onClick={(e) => e.stopPropagation()} className="accent-rose-500 shrink-0" title="Seleziona per eliminazione multipla" />
+              <GripVertical className="w-3 h-3 text-slate-600 shrink-0" />
+              <span className="text-[10px] font-mono text-slate-500 w-5 text-right shrink-0">{vs.seq}</span>
               <span className="text-xs flex-1 truncate" title={vs.stopName}>{vs.stopName}</span>
               <span className="text-[9px] font-mono text-emerald-400/80 shrink-0 tabular-nums" title="Distanza progressiva (in linea d'aria fermata→fermata)">
                 {idx === 0 ? "0 m" : cumDistM[idx] >= 1000 ? `${(cumDistM[idx] / 1000).toFixed(1)} km` : `${Math.round(cumDistM[idx])} m`}
               </span>
-              <button onClick={() => onRemoveStop(idx)}
-                className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-500 hover:text-red-400">
-                <X className="w-3 h-3" />
-              </button>
+              <span className="hidden group-hover:flex items-center shrink-0">
+                <button onClick={() => idx > 0 && onMoveStop(idx, idx - 1)} disabled={idx === 0}
+                  className="p-0.5 text-slate-500 hover:text-emerald-300 disabled:opacity-30" title="Sposta su">
+                  <ChevronUp className="w-3 h-3" />
+                </button>
+                <button onClick={() => idx < editor.stops.length - 1 && onMoveStop(idx, idx + 1)} disabled={idx === editor.stops.length - 1}
+                  className="p-0.5 text-slate-500 hover:text-emerald-300 disabled:opacity-30" title="Sposta giù">
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+                <button onClick={() => onRemoveStop(idx)}
+                  className="p-0.5 text-slate-500 hover:text-red-400" title="Rimuovi dalla sequenza">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
             </div>
           ))}
         </div>
@@ -3724,6 +3788,15 @@ function RouteViewPanel({
   // Distanza mostrata: dallo snap OSRM se appena ricalcolata, altrimenti dallo shape salvato
   const distanceM = shapeEdit?.distanceM ?? view.shape?.distanceM ?? null;
   const canEdit = view.stops.length >= 2 || (view.shape?.geometry?.coordinates?.length ?? 0) >= 2;
+  // Distanza progressiva per fermata (haversine fermata→fermata)
+  const cumDistM = useMemo(() => {
+    const out: number[] = []; let acc = 0;
+    view.stops.forEach((s, i) => {
+      if (i > 0) { const p = view.stops[i - 1]; acc += lineLengthM([[p.lon, p.lat], [s.lon, s.lat]]); }
+      out.push(acc);
+    });
+    return out;
+  }, [view.stops]);
 
   return (
     <div className="flex flex-col h-full">
@@ -3830,7 +3903,7 @@ function RouteViewPanel({
           </p>
         )}
         <div className="space-y-0.5">
-          {view.stops.map(s => (
+          {view.stops.map((s, idx) => (
             <button
               key={`${s.stopId}-${s.seq}`}
               onClick={() => onFlyToStop(s)}
@@ -3847,6 +3920,9 @@ function RouteViewPanel({
                 <p className="text-xs truncate text-slate-200">{s.stopName}</p>
                 {s.stopCode && <p className="text-[10px] text-slate-500">{s.stopCode}</p>}
               </div>
+              <span className="text-[9px] font-mono text-emerald-400/80 shrink-0 tabular-nums" title="Distanza progressiva (in linea d'aria fermata→fermata)">
+                {idx === 0 ? "0 m" : cumDistM[idx] >= 1000 ? `${(cumDistM[idx] / 1000).toFixed(1)} km` : `${Math.round(cumDistM[idx])} m`}
+              </span>
               <MapPin className="w-3 h-3 text-slate-600 group-hover:text-slate-400 shrink-0" />
             </button>
           ))}
