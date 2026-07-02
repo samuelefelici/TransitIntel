@@ -163,6 +163,37 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   res.json({ ok: true, count });
 });
 
+/* ─── DELETE bulk (elimina N corse selezionate; stop_times/validità in cascata) ─── */
+
+router.post("/planning-studio/projects/:id/trips/bulk-delete", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+
+  const tripIds: string[] = Array.isArray(req.body?.tripIds) ? req.body.tripIds : [];
+  if (tripIds.length === 0) { res.status(400).json({ error: "tripIds required" }); return; }
+  if (tripIds.length > 500) { res.status(400).json({ error: "max 500 corse per richiesta" }); return; }
+  if (tripIds.some(id => !UUID_RE.test(String(id)))) { res.status(400).json({ error: "tripIds invalid" }); return; }
+
+  const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
+  const r = await db.execute(sql`
+    DELETE FROM ps_trips
+     WHERE project_id = ${req.params.id}::uuid
+       AND id IN (${idsSql})
+     RETURNING id
+  `);
+  const deleted: string[] = ((r as any).rows ?? []).map((row: any) => row.id);
+  // ps_trip_category_validity non ha FK con cascata: pulizia esplicita
+  if (deleted.length > 0) {
+    const delSql = sql.join(deleted.map(id => sql`${id}::uuid`), sql`, `);
+    await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id IN (${delSql})`);
+  }
+  const count = deleted.length;
+  await logActivity(req.params.id, userId, "trip.bulk_delete", "trip", null, { count });
+  res.json({ ok: true, count });
+});
+
 /* ─── Helper orari HH:MM:SS (consente >24:00 per corse dopo mezzanotte) ─── */
 
 const HHMMSS_RE = /^\d{1,2}:[0-5]\d:[0-5]\d$/;

@@ -23,7 +23,7 @@ import {
   listPsRoutes, type PsRoute,
   listPsVariants, type PsVariant,
   listPsCalendars, type PsCalendar,
-  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, type PsTrip,
+  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, type PsTrip,
   getPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
   getPsVariant, type PsVariantStop,
@@ -473,6 +473,20 @@ export default function PlanningStudioTripsPage() {
     },
     onError: (e: any) => toast.error(e?.message || "Errore bulk"),
   });
+  // Eliminazione in blocco delle corse selezionate (doppia conferma via modal)
+  const [bulkDelOpen, setBulkDelOpen] = useState(false);
+  const [bulkDelArmed, setBulkDelArmed] = useState(false);
+  useEffect(() => { if (!bulkDelOpen) setBulkDelArmed(false); }, [bulkDelOpen]);
+  const bulkDeleteMut = useMutation({
+    mutationFn: () => bulkDeletePsTrips(projectId, Array.from(selected)),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      toast.success(`🗑 ${r.count} corse eliminate`);
+      setSelected(new Set());
+      setBulkDelOpen(false);
+    },
+    onError: (e: any) => toast.error(e?.message || "Errore eliminazione"),
+  });
 
   /* ─── Drawer dettaglio corsa ─── */
   const [detailTripId, setDetailTripId] = useState<string | null>(null);
@@ -604,6 +618,14 @@ export default function PlanningStudioTripsPage() {
               onApply={(cid) => bulkMut.mutate({ patch: { calendarId: cid || null } })}
               disabled={bulkMut.isPending}
             />
+            <button
+              onClick={() => setBulkDelOpen(true)}
+              disabled={bulkDeleteMut.isPending}
+              className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1"
+              title="Elimina le corse selezionate"
+            >
+              <Trash2 className="w-3 h-3" /> Elimina
+            </button>
             <button
               onClick={() => setSelected(new Set())}
               className="p-1 rounded hover:bg-slate-700 text-slate-400"
@@ -877,6 +899,41 @@ export default function PlanningStudioTripsPage() {
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
                 {newBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
                 Crea corsa prototipo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Dialog: elimina corse selezionate (doppia conferma) ─── */}
+      {bulkDelOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !bulkDeleteMut.isPending && setBulkDelOpen(false)}>
+          <div className="w-full max-w-sm mx-4 rounded-xl border border-rose-500/40 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-rose-300 flex items-center gap-2">
+                <Trash2 className="w-4 h-4" /> Elimina {selected.size} corse
+              </h3>
+              <button onClick={() => !bulkDeleteMut.isPending && setBulkDelOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-4 space-y-3 text-sm">
+              <p className="text-slate-300">
+                Stai per eliminare <strong className="text-rose-300">{selected.size} corse</strong> in modo <strong>definitivo</strong>.
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Vengono rimossi anche gli orari alle fermate, la riga nella Matrice di validità, le eccezioni e le categorie di calendario aziendale collegate. L'azione non è annullabile.
+              </p>
+              <label className="flex items-center gap-2 text-[11px] text-slate-300 cursor-pointer select-none rounded border border-rose-500/30 bg-rose-500/10 px-3 py-2">
+                <input type="checkbox" checked={bulkDelArmed} onChange={e => setBulkDelArmed(e.target.checked)} className="accent-rose-500" />
+                Confermo di voler eliminare queste {selected.size} corse
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+              <button onClick={() => setBulkDelOpen(false)} disabled={bulkDeleteMut.isPending}
+                className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
+              <button onClick={() => bulkDeleteMut.mutate()} disabled={!bulkDelArmed || bulkDeleteMut.isPending}
+                className="text-xs px-3 py-1.5 rounded bg-rose-600 text-white hover:bg-rose-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                {bulkDeleteMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                Elimina definitivamente
               </button>
             </div>
           </div>

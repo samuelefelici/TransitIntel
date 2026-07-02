@@ -459,6 +459,15 @@ export async function bulkUpdatePsTrips(
     { method: "POST", body: JSON.stringify({ tripIds, patch }) },
   );
 }
+export async function bulkDeletePsTrips(
+  projectId: string,
+  tripIds: string[],
+): Promise<{ ok: boolean; count: number }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/bulk-delete`,
+    { method: "POST", body: JSON.stringify({ tripIds }) },
+  );
+}
 export async function listPsTripExceptions(projectId: string, tripId: string): Promise<PsTripException[]> {
   const r = await apiFetch<{ exceptions: PsTripException[] }>(
     `/api/planning-studio/projects/${projectId}/trips/${tripId}/exceptions`,
