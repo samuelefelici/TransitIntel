@@ -25,7 +25,7 @@ import {
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
-  ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2,
+  ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2, Ban,
   CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
@@ -38,6 +38,7 @@ import {
   setPsVariantStops, setPsVariantShape, type PsVariant, type PsVariantStop,
   type PsWaypoint, type PsShape,
   routeSnap,
+  listPsNoGoZones, createPsNoGoZone, deletePsNoGoZone, type PsNoGoZone,
   listPsCalendars, createPsCalendar, deletePsCalendar, type PsCalendar,
   importPsGtfs, type PsImportCounts,
   listPsClusters, createPsCluster, updatePsCluster, deletePsCluster,
@@ -169,6 +170,12 @@ interface VariantEditorState {
   geometry: { type: "LineString"; coordinates: [number, number][] } | null;
   distanceM: number | null;
   durationS: number | null;
+  /** arrivo lato marciapiede alle fermate (OSRM approaches=curb) */
+  curb: boolean;
+  /** km per tratta waypoint→waypoint (su strada, dalle legs OSRM) */
+  legDistances: number[] | null;
+  /** zone vietate attraversate dal tracciato corrente */
+  violations: { zoneId: string; name: string }[];
   dirty: boolean;
 }
 
@@ -300,6 +307,11 @@ export default function PlanningStudioEditorPage() {
   const [editingDepot, setEditingDepot] = useState<GlobalDepot | null>(null);
   // Dettaglio deposito in sola lettura (click sul marker)
   const [depotInfo, setDepotInfo] = useState<GlobalDepot | null>(null);
+  // ── Zone vietate bus (poligoni per progetto) ──
+  const [noGoZones, setNoGoZones] = useState<PsNoGoZone[]>([]);
+  const [showNoGo, setShowNoGo] = useState(false);
+  const [zoneDraw, setZoneDraw] = useState<{ polygon: [number, number][] } | null>(null);
+  const [zoneInfo, setZoneInfo] = useState<{ id: string; name: string; lng: number; lat: number } | null>(null);
   const [creatingDepotAt, setCreatingDepotAt] = useState<{ lat: number; lon: number } | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [pickingDepotLocation, setPickingDepotLocation] = useState(false);
@@ -341,6 +353,23 @@ export default function PlanningStudioEditorPage() {
     } catch (e: any) { toast.error("Errore caricamento depositi", { description: e?.message }); }
     finally { setOverlayLoading(s => ({ ...s, depots: false })); }
   }, []);
+
+  /* ─── Zone vietate: load + geojson ─── */
+  const reloadNoGoZones = useCallback(async () => {
+    if (!projectId) return;
+    try { setNoGoZones(await listPsNoGoZones(projectId)); }
+    catch { /* endpoint assente su backend vecchio: silenzioso */ }
+  }, [projectId]);
+  useEffect(() => { void reloadNoGoZones(); }, [reloadNoGoZones]);
+
+  const noGoZonesGeoJSON = useMemo(() => ({
+    type: "FeatureCollection" as const,
+    features: noGoZones.filter(z => z.active && z.polygon.length >= 3).map(z => ({
+      type: "Feature" as const,
+      properties: { id: z.id, name: z.name },
+      geometry: { type: "Polygon" as const, coordinates: [[...z.polygon, z.polygon[0]]] },
+    })),
+  }), [noGoZones]);
 
   /** Import fermate da un file stops.txt (GTFS) → bulk insert. Per creazione manuale. */
   const importStopsTxt = useCallback(async (file: File) => {
@@ -634,6 +663,13 @@ export default function PlanningStudioEditorPage() {
   const handleMapClick = useCallback((e: MapMouseEvent) => {
     const { lng, lat } = e.lngLat;
 
+    // Modalità "disegna zona vietata": ogni clic aggiunge un vertice.
+    // Doppio click chiude e salva (gestito in onDblClick).
+    if (zoneDraw) {
+      setZoneDraw(prev => prev ? { polygon: [...prev.polygon, [lng, lat]] } : prev);
+      return;
+    }
+
     // Modalità "disegna area cluster": ogni clic aggiunge un vertice al poligono.
     // Doppio click chiude il poligono (gestito da onDblClick separatamente).
     if (clusterDraw && clusterDraw.mode === "draw") {
@@ -669,6 +705,15 @@ export default function PlanningStudioEditorPage() {
       }
     }
 
+    // Click su una zona vietata → card info con eliminazione.
+    // SOLO in modalità selezione: durante l'editing variante il click dentro la
+    // zona deve continuare ad aggiungere waypoint (serve proprio per aggirarla).
+    const zoneFeat = features?.find(f => f?.layer?.id === "ps-nogo-fill");
+    if (zoneFeat?.properties?.id && tool === "select" && !editor) {
+      setZoneInfo({ id: String(zoneFeat.properties.id), name: String(zoneFeat.properties.name ?? "Zona vietata"), lng, lat });
+      return;
+    }
+
     // Modalità "scegli posizione deposito": cattura il click e ripristina il modale
     if (pickingDepotLocation && editingDepot) {
       setEditingDepot({ ...editingDepot, lat, lon: lng });
@@ -691,7 +736,7 @@ export default function PlanningStudioEditorPage() {
     }
     // select: deseleziona
     setSelectedStopId(null);
-  }, [tool, editor, pickingDepotLocation, editingDepot, stops, clusterDraw]);
+  }, [tool, editor, pickingDepotLocation, editingDepot, stops, clusterDraw, zoneDraw]);
 
   /* ─── Stops CRUD ─── */
   async function handleSaveStop(stopOrCreate: { name: string; code?: string; lat: number; lon: number }, existingId?: string) {
@@ -778,6 +823,9 @@ export default function PlanningStudioEditorPage() {
         geometry: data.shape?.geometry || null,
         distanceM: data.shape?.distanceM ?? null,
         durationS: data.shape?.durationS ?? null,
+        curb: true,
+        legDistances: null,
+        violations: [],
         dirty: false,
       });
       setTool("editVariant");
@@ -861,26 +909,70 @@ export default function PlanningStudioEditorPage() {
   }, [mapReady, stops]);
 
 
-  /* ─── Variant editor: snap routing ─── */
-  async function recomputeShape(wpts: PsWaypoint[], mode: "driving" | "manual") {
+  /* ─── Variant editor: snap routing ───
+   * Il percorso passa sull'ASSE STRADA: chiamata OSRM multi-punto (niente
+   * inversioni a U alle fermate intermedie), arrivo lato marciapiede (curb)
+   * SOLO sui waypoint-fermata, km per tratta dalle legs (distanza su strada).
+   * Tratti forzati: un waypoint "manuale" rende retti i segmenti adiacenti
+   * (corsie riservate/varchi che OSRM non conosce). Le zone vietate del
+   * progetto vengono verificate server-side → violazioni segnalate. */
+  async function recomputeShape(wpts: PsWaypoint[], mode: "driving" | "manual", curbOverride?: boolean) {
     if (wpts.length < 2) {
-      setEditor(prev => prev ? { ...prev, geometry: null, distanceM: 0, durationS: 0, dirty: true } : prev);
+      setEditor(prev => prev ? { ...prev, geometry: null, distanceM: 0, durationS: 0, legDistances: null, violations: [], dirty: true } : prev);
       return;
     }
     setSnapBusy(true);
     try {
       const points: [number, number][] = wpts.map(w => [w.lng, w.lat]);
-      const r = await routeSnap(points, mode);
+      // Segmento i (tra waypoint i e i+1) manuale se uno dei due estremi è manuale.
+      const modes = wpts.slice(0, -1).map((w, i) =>
+        (mode === "manual" || w.mode === "manual" || wpts[i + 1].mode === "manual") ? "manual" as const : "driving" as const);
+      const curb = curbOverride ?? editor?.curb ?? true;
+      const r = await routeSnap(points, mode, {
+        modes,
+        curb,
+        curbMask: wpts.map(w => !!w.stopId), // curb solo alle fermate, i via liberi restano liberi
+        projectId,
+      });
       setEditor(prev => prev ? {
         ...prev,
         geometry: r.geometry,
         distanceM: r.distanceM,
         durationS: r.durationS,
+        legDistances: r.legDistances ?? null,
+        violations: r.violations ?? [],
         dirty: true,
       } : prev);
+      if (r.violations && r.violations.length > 0) {
+        toast.warning(`Il percorso attraversa ${r.violations.length} zona/e vietata/e`, {
+          description: `${r.violations.map(v => v.name).join(", ")} — forza il tracciato con un waypoint (clic mappa) o un tratto manuale (clic sul waypoint).`,
+        });
+      }
+      if (r.legModes?.includes("manual_fallback")) {
+        toast.warning("OSRM non raggiungibile su alcuni tratti", {
+          description: "I tratti evidenziati sono in linea retta (fallback): riprova lo snap più tardi.",
+        });
+      }
     } catch (e: any) {
       toast.error("Errore snap routing", { description: e?.message });
     } finally { setSnapBusy(false); }
+  }
+
+  /** Alterna il modo di un waypoint: snap ↔ manuale (forza i tratti adiacenti). */
+  function toggleWaypointMode(idx: number) {
+    if (!editor) return;
+    const wpts = editor.waypoints.map((w, i) =>
+      i === idx ? { ...w, mode: (w.mode === "manual" ? "snap" : "manual") as PsWaypoint["mode"] } : w);
+    setEditor({ ...editor, waypoints: wpts, dirty: true });
+    recomputeShape(wpts, editor.shapeMode);
+  }
+
+  /** Attiva/disattiva l'arrivo lato marciapiede e ricalcola. */
+  function toggleCurb() {
+    if (!editor) return;
+    const next = !editor.curb;
+    setEditor({ ...editor, curb: next, dirty: true });
+    recomputeShape(editor.waypoints, editor.shapeMode, next);
   }
 
   function addWaypoint(lngLat: [number, number], stopId: string | null) {
@@ -1124,20 +1216,21 @@ export default function PlanningStudioEditorPage() {
     }
     setShapeEditBusy(true);
     try {
-      const merged: [number, number][] = [];
-      let dist = 0, dur = 0;
-      for (let i = 0; i < routeView.stops.length - 1; i++) {
-        const a = routeView.stops[i];
-        const b = routeView.stops[i + 1];
-        const r = await routeSnap(
-          [[Number(a.lon), Number(a.lat)], [Number(b.lon), Number(b.lat)]],
-          "driving",
-        );
-        const seg = r.geometry?.coordinates || [];
-        // Salta il primo punto del segmento (coincide con l'ultimo già inserito)
-        for (let k = merged.length > 0 ? 1 : 0; k < seg.length; k++) merged.push(seg[k]);
-        dist += r.distanceM || 0;
-        dur += r.durationS || 0;
+      // UNA chiamata multi-punto: percorso sull'asse strada senza inversioni a U
+      // alle fermate intermedie, arrivo lato marciapiede, km dalle legs OSRM.
+      const pts: [number, number][] = routeView.stops.map(s => [Number(s.lon), Number(s.lat)]);
+      const r = await routeSnap(pts, "driving", {
+        curb: true,
+        curbMask: pts.map(() => true), // sono tutte fermate
+        projectId,
+      });
+      const merged: [number, number][] = (r.geometry?.coordinates ?? []) as [number, number][];
+      const dist = r.distanceM || 0;
+      const dur = r.durationS || 0;
+      if (r.violations && r.violations.length > 0) {
+        toast.warning(`Il percorso attraversa ${r.violations.length} zona/e vietata/e`, {
+          description: r.violations.map(v => v.name).join(", "),
+        });
       }
       if (merged.length < 2) throw new Error("Nessuna geometria restituita da OSRM");
       setShapeEdit(prev => prev ? {
@@ -1427,6 +1520,16 @@ export default function PlanningStudioEditorPage() {
               active={showGlobalClusters} onClick={() => setShowGlobalClusters(v => !v)} />
             <MenuItem icon={Building2} label="Overlay depositi" accent="orange"
               active={showDepots} onClick={() => setShowDepots(v => !v)} />
+            <div className="my-1 h-px bg-slate-800" />
+            <MenuItem icon={Ban} label="Zone vietate bus" accent="amber"
+              desc="mostra i poligoni off-limits"
+              count={noGoZones.filter(z => z.active).length || undefined}
+              active={showNoGo} onClick={() => setShowNoGo(v => !v)} />
+            {(project.myRole === "owner" || project.myRole === "editor") && (
+              <MenuItem icon={PenLine} label="Disegna zona vietata" accent="amber"
+                desc="clic vertici · doppio clic chiude"
+                onClick={() => { setOpenMenu(null); setShowNoGo(true); setZoneDraw({ polygon: [] }); }} />
+            )}
           </MenuGroup>
 
           {/* Progetto: import, condivisione, scheduling collegato */}
@@ -1478,6 +1581,16 @@ export default function PlanningStudioEditorPage() {
         )}
 
         {/* Banner istruzioni durante draw/stops cluster */}
+        {/* Banner disegno zona vietata */}
+        {zoneDraw && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-red-600/95 text-white px-4 py-2 rounded-lg shadow-xl text-xs font-medium flex items-center gap-3 backdrop-blur">
+            <Ban className="w-4 h-4" />
+            <span><b>Zona vietata bus</b>: clicca i vertici sulla mappa. <b>Doppio click</b> per chiudere e salvare.</span>
+            <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">{zoneDraw.polygon.length} vertici</span>
+            <button onClick={() => setZoneDraw(null)} className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 text-[11px]">Annulla</button>
+          </div>
+        )}
+
         {clusterDraw && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-violet-600/95 text-white px-4 py-2 rounded-lg shadow-xl text-xs font-medium flex items-center gap-3 backdrop-blur">
             {clusterDraw.mode === "draw" ? (
@@ -1508,6 +1621,31 @@ export default function PlanningStudioEditorPage() {
           mapStyle="mapbox://styles/mapbox/standard"
           onClick={handleMapClick}
           onDblClick={(e) => {
+            // Chiusura poligono zona vietata → nome + salvataggio
+            if (zoneDraw) {
+              e.preventDefault();
+              const poly = zoneDraw.polygon;
+              if (poly.length < 3) {
+                toast.error("Servono almeno 3 vertici per chiudere la zona");
+                return;
+              }
+              const name = prompt("Nome della zona vietata (es. ZTL centro storico):");
+              setZoneDraw(null);
+              if (name && name.trim()) {
+                void (async () => {
+                  try {
+                    await createPsNoGoZone(projectId, { name: name.trim(), polygon: poly });
+                    toast.success("Zona vietata creata", { description: "I percorsi che la attraversano verranno segnalati." });
+                    await reloadNoGoZones();
+                    // se c'è un editor attivo, ricalcola per evidenziare subito eventuali violazioni
+                    if (editor && editor.waypoints.length >= 2) recomputeShape(editor.waypoints, editor.shapeMode);
+                  } catch (err: any) {
+                    toast.error("Errore creazione zona", { description: err?.message });
+                  }
+                })();
+              }
+              return;
+            }
             // Chiusura poligono in modalità draw cluster
             if (clusterDraw && clusterDraw.mode === "draw") {
               e.preventDefault();
@@ -1551,6 +1689,7 @@ export default function PlanningStudioEditorPage() {
           interactiveLayerIds={[
             "ps-stops-circle", "ps-stops-circle-hit",
             "route-view-stops-circle", "route-view-other-stops-circle",
+            "ps-nogo-fill",
           ]}
           style={{ width: "100%", height: "100%" }}
         >
@@ -1587,6 +1726,71 @@ export default function PlanningStudioEditorPage() {
               lancia "Style is not done loading" e fa crashare la pagina. */}
           {mapReady && (
           <>
+          {/* ─── Zone vietate bus: poligoni rossi (visibili in editor/toggle/disegno) ─── */}
+          {(showNoGo || !!editor || !!zoneDraw) && noGoZonesGeoJSON.features.length > 0 && (
+            <Source id="ps-nogo-src" type="geojson" data={noGoZonesGeoJSON}>
+              <Layer id="ps-nogo-fill" type="fill"
+                paint={{ "fill-color": "#ef4444", "fill-opacity": 0.16 }} />
+              <Layer id="ps-nogo-outline" type="line"
+                paint={{ "line-color": "#ef4444", "line-width": 2, "line-dasharray": [2, 1.4] }} />
+              <Layer id="ps-nogo-label" type="symbol"
+                layout={{ "text-field": ["get", "name"], "text-size": 11, "text-allow-overlap": false }}
+                paint={{ "text-color": "#b91c1c", "text-halo-color": "#ffffff", "text-halo-width": 1.5 }} />
+            </Source>
+          )}
+
+          {/* Zona vietata in costruzione (vertici cliccati) */}
+          {zoneDraw && zoneDraw.polygon.length >= 2 && (
+            <Source id="ps-nogo-draw-src" type="geojson" data={{
+              type: "Feature", properties: {},
+              geometry: zoneDraw.polygon.length >= 3
+                ? { type: "Polygon", coordinates: [[...zoneDraw.polygon, zoneDraw.polygon[0]]] }
+                : { type: "LineString", coordinates: zoneDraw.polygon },
+            } as any}>
+              <Layer id="ps-nogo-draw-fill" type={zoneDraw.polygon.length >= 3 ? "fill" : "line"}
+                paint={zoneDraw.polygon.length >= 3
+                  ? { "fill-color": "#ef4444", "fill-opacity": 0.25 } as any
+                  : { "line-color": "#ef4444", "line-width": 2 } as any} />
+            </Source>
+          )}
+          {zoneDraw && zoneDraw.polygon.map((p, i) => (
+            <Marker key={`ngv-${i}`} longitude={p[0]} latitude={p[1]} anchor="center">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500 border border-white shadow" />
+            </Marker>
+          ))}
+
+          {/* Card info zona vietata (click sul poligono) */}
+          {zoneInfo && (
+            <Popup longitude={zoneInfo.lng} latitude={zoneInfo.lat} anchor="bottom" offset={8}
+              closeOnClick={false} onClose={() => setZoneInfo(null)} maxWidth="240px">
+              <div className="p-1 space-y-1.5">
+                <p className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <Ban className="w-3.5 h-3.5 text-red-500" /> {zoneInfo.name}
+                </p>
+                <p className="text-[10px] text-slate-500">Zona vietata bus: i percorsi che la attraversano vengono segnalati.</p>
+                {(project?.myRole === "owner" || project?.myRole === "editor") && (
+                  <button
+                    onClick={() => {
+                      if (!confirm(`Eliminare la zona vietata "${zoneInfo.name}"?`)) return;
+                      void (async () => {
+                        try {
+                          await deletePsNoGoZone(projectId, zoneInfo.id);
+                          setZoneInfo(null);
+                          toast.success("Zona eliminata");
+                          await reloadNoGoZones();
+                          if (editor && editor.waypoints.length >= 2) recomputeShape(editor.waypoints, editor.shapeMode);
+                        } catch (err: any) { toast.error("Errore", { description: err?.message }); }
+                      })();
+                    }}
+                    className="w-full text-[11px] px-2 py-1 rounded bg-red-600 hover:bg-red-500 text-white font-medium"
+                  >
+                    Elimina zona
+                  </button>
+                )}
+              </div>
+            </Popup>
+          )}
+
           {/* ─── Cluster draw: poligono in costruzione (modalità draw) ─── */}
           {clusterDraw && clusterDraw.polygon.length > 0 && (
             <>
@@ -1925,9 +2129,9 @@ export default function PlanningStudioEditorPage() {
               anchor="center"
             >
               <div
-                onClick={(e) => { e.stopPropagation(); }}
+                onClick={(e) => { e.stopPropagation(); toggleWaypointMode(idx); }}
                 onContextMenu={(e) => { e.preventDefault(); removeWaypoint(idx); }}
-                title={`Waypoint ${idx + 1} · ${w.mode === "manual" ? "manuale" : "snap"} · click destro per rimuovere`}
+                title={`Waypoint ${idx + 1} · ${w.mode === "manual" ? "MANUALE (tratti adiacenti forzati in linea retta)" : "snap su strada"}\nClick: alterna snap/manuale (forza corsie riservate) · Click destro: rimuovi`}
               >
                 <div className={`w-4 h-4 rounded-full border-2 border-white shadow-lg ${
                   w.stopId ? "bg-emerald-500" : w.mode === "manual" ? "bg-amber-400" : "bg-indigo-500"
@@ -2326,6 +2530,7 @@ export default function PlanningStudioEditorPage() {
                 insertAfterIdx={insertAfterIdx}
                 onSetInsertAfter={setInsertAfterIdx}
                 onFlyToStop={(s) => mapRef.current?.flyTo({ center: [s.lon, s.lat], zoom: 16, duration: 600 })}
+                onToggleCurb={toggleCurb}
                 onChangeMode={changeShapeMode}
                 onSave={saveVariant}
                 onExit={exitEditor}
@@ -3621,7 +3826,7 @@ function ClustersPanel({
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
-  insertAfterIdx, onSetInsertAfter, onFlyToStop, onChangeMode, onSave, onExit,
+  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onChangeMode, onSave, onExit,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -3636,6 +3841,7 @@ function VariantEditorPanel({
   insertAfterIdx: number | null;
   onSetInsertAfter: (idx: number | null) => void;
   onFlyToStop: (s: PsVariantStop) => void;
+  onToggleCurb: () => void;
   onChangeMode: (m: "driving" | "manual") => void;
   onSave: () => void;
   onExit: () => void;
@@ -3656,8 +3862,27 @@ function VariantEditorPanel({
     return stopsAll.filter(s => s.name.toLowerCase().includes(qq) || (s.code || "").toLowerCase().includes(qq)).slice(0, 8);
   }, [stopsAll, stopPicker]);
 
-  // Distanza progressiva (m) per fermata: cumulata fermata→fermata (haversine).
+  // Distanza progressiva (m) per fermata. Se disponibili, usa i km SU STRADA
+  // delle legs OSRM (allineate ai waypoint); fallback: linea d'aria.
   const cumDistM = useMemo(() => {
+    const legs = editor.legDistances;
+    if (legs && editor.waypoints.length >= 2 && legs.length === editor.waypoints.length - 1) {
+      // cumulata per waypoint, poi mappata sulle fermate (match per stopId, in ordine)
+      const wCum: number[] = [0];
+      for (let i = 0; i < legs.length; i++) wCum.push(wCum[i] + (legs[i] || 0));
+      const res: number[] = [];
+      let w = 0, ok = true;
+      for (const s of editor.stops) {
+        while (w < editor.waypoints.length && editor.waypoints[w].stopId !== s.stopId) w++;
+        if (w >= editor.waypoints.length) { ok = false; break; }
+        res.push(wCum[w]); w++;
+      }
+      if (ok && res.length === editor.stops.length) {
+        const base = res[0] ?? 0; // normalizza: prima fermata = 0 (via liberi prima non contano)
+        return res.map(v => Math.max(0, v - base));
+      }
+    }
+    // Fallback: cumulata fermata→fermata in linea d'aria.
     const out: number[] = [];
     let acc = 0;
     editor.stops.forEach((s, i) => {
@@ -3668,7 +3893,7 @@ function VariantEditorPanel({
       out.push(acc);
     });
     return out;
-  }, [editor.stops]);
+  }, [editor.stops, editor.waypoints, editor.legDistances]);
 
   return (
     <div className="flex flex-col h-full">
@@ -3713,7 +3938,22 @@ function VariantEditorPanel({
             ✏️ Manuale
           </button>
         </div>
+        {/* Arrivo lato marciapiede: il percorso passa sull'asse strada dal lato
+            giusto anche per fermate laterali (OSRM approaches=curb) */}
+        <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-300 cursor-pointer select-none"
+          title="Il bus arriva con la fermata sul lato marciapiede (guida a destra): il tracciato segue la carreggiata corretta anche per fermate laterali alla strada.">
+          <input type="checkbox" checked={editor.curb} onChange={onToggleCurb} className="accent-emerald-500" />
+          🚏 Arrivo lato fermata (curb)
+        </label>
         {snapBusy && <p className="text-[10px] text-indigo-300 mt-1.5 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Calcolo percorso…</p>}
+        {/* Violazioni zone vietate */}
+        {editor.violations.length > 0 && (
+          <div className="mt-2 rounded border border-red-500/50 bg-red-500/10 px-2 py-1.5 text-[10px] text-red-300">
+            ⛔ Il percorso attraversa: <strong>{editor.violations.map(v => v.name).join(", ")}</strong>.
+            Forza il tracciato: aggiungi un waypoint (clic sulla mappa) e trascinalo fuori dalla zona,
+            oppure rendi manuale un tratto (clic sul waypoint).
+          </div>
+        )}
       </div>
 
       {/* Sequenza fermate */}
