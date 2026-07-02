@@ -19,6 +19,7 @@
  */
 import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
+import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 
@@ -260,6 +261,31 @@ async function ensurePsTables(): Promise<void> {
     await db.execute(sql`
       CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_snap_key
         ON ps_route_snap_cache (mode, from_lon, from_lat, to_lon, to_lat)
+    `);
+
+    /* ─── Cache routing OSRM multi-punto (intera sequenza in una chiamata) ─── */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_route_snap_multi_cache (
+        key text PRIMARY KEY,
+        payload jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+
+    /* ─── Zone vietate bus (poligoni per progetto): il route-snap segnala i
+       percorsi che le attraversano; la forzatura si fa con waypoint/tratti manuali ─── */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_no_go_zones (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id uuid NOT NULL,
+        name text NOT NULL,
+        polygon jsonb NOT NULL,
+        active boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_ps_nogo_project ON ps_no_go_zones (project_id)
     `);
 
     /* ════════════════════════════════════════════════════════════
@@ -1521,11 +1547,109 @@ async function snapSegment(
   }
 }
 
+/** Snap dell'INTERA sequenza in una sola chiamata OSRM (chunk da 25 coordinate).
+ *  Vantaggi vs per-coppia: continue_straight=true evita inversioni a U ai punti
+ *  intermedi (il bus "prosegue" alla fermata) e le legs danno i km SU STRADA per
+ *  ogni tratta fermata→fermata. curbMask[i]=true forza l'arrivo lato marciapiede
+ *  (approaches=curb) su quel punto: il percorso passa sull'asse strada dal lato
+ *  giusto anche per fermate laterali. */
+async function snapSequenceOSRM(
+  coords: [number, number][],
+  curbMask: boolean[] | null,
+): Promise<{ geometry: [number, number][]; legs: { distanceM: number; durationS: number }[]; distanceM: number; durationS: number } | null> {
+  const rounded = coords.map(c => [roundCoord(c[0]), roundCoord(c[1])] as [number, number]);
+  const key = createHash("sha1")
+    .update(JSON.stringify({ v: 2, curb: curbMask ?? false, rounded }))
+    .digest("hex");
+  try {
+    const hit = await db.execute(sql`SELECT payload FROM ps_route_snap_multi_cache WHERE key = ${key} LIMIT 1`);
+    const row: any = (hit as any).rows?.[0] ?? (hit as any)[0];
+    if (row?.payload) return row.payload;
+  } catch { /* cache best-effort */ }
+
+  const CHUNK = 25; // prudente per l'OSRM pubblico (limite coordinate per richiesta)
+  const allLegs: { distanceM: number; durationS: number }[] = [];
+  const line: [number, number][] = [];
+  for (let start = 0; start < rounded.length - 1; start += CHUNK - 1) {
+    const part = rounded.slice(start, Math.min(start + CHUNK, rounded.length));
+    if (part.length < 2) break;
+    const coordStr = part.map(c => `${c[0]},${c[1]}`).join(";");
+    const approaches = curbMask
+      ? `&approaches=${curbMask.slice(start, start + part.length).map(f => (f ? "curb" : "unrestricted")).join(";")}`
+      : "";
+    const url = `${OSRM_BASE}/route/v1/driving/${coordStr}`
+              + `?overview=full&geometries=geojson&continue_straight=true&snapping=any${approaches}`;
+    let route: any = null;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) return null;
+      const j: any = await r.json();
+      route = j?.routes?.[0];
+    } catch (e: any) {
+      console.warn("[osrm-multi] fetch failed:", e?.message || e);
+      return null;
+    }
+    const cs: [number, number][] = route?.geometry?.coordinates ?? [];
+    const legs: any[] = route?.legs ?? [];
+    if (cs.length < 2 || legs.length !== part.length - 1) return null;
+    for (const c of cs) {
+      if (line.length && line[line.length - 1][0] === c[0] && line[line.length - 1][1] === c[1]) continue;
+      line.push([c[0], c[1]]);
+    }
+    for (const l of legs) allLegs.push({ distanceM: Number(l.distance) || 0, durationS: Number(l.duration) || 0 });
+  }
+  if (line.length < 2 || allLegs.length !== rounded.length - 1) return null;
+  const out = {
+    geometry: line,
+    legs: allLegs,
+    distanceM: allLegs.reduce((s, l) => s + l.distanceM, 0),
+    durationS: allLegs.reduce((s, l) => s + l.durationS, 0),
+  };
+  try {
+    await db.execute(sql`
+      INSERT INTO ps_route_snap_multi_cache (key, payload)
+      VALUES (${key}, ${JSON.stringify(out)}::jsonb)
+      ON CONFLICT (key) DO NOTHING
+    `);
+  } catch { /* cache best-effort */ }
+  return out;
+}
+
+/* ─── Geometria zone vietate: test attraversamento polyline × poligono ─── */
+function pointInPolygon(p: [number, number], poly: [number, number][]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if (((yi > p[1]) !== (yj > p[1]))
+        && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+function segsIntersect(a: [number, number], b: [number, number], c: [number, number], d: [number, number]): boolean {
+  const o = (p: [number, number], q: [number, number], r: [number, number]) =>
+    Math.sign((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+  const o1 = o(a, b, c), o2 = o(a, b, d), o3 = o(c, d, a), o4 = o(c, d, b);
+  return o1 !== o2 && o3 !== o4;
+}
+function lineCrossesPolygon(line: [number, number][], poly: [number, number][]): boolean {
+  if (poly.length < 3) return false;
+  for (const v of line) if (pointInPolygon(v, poly)) return true;
+  for (let i = 0; i < line.length - 1; i++) {
+    for (let j = 0; j < poly.length; j++) {
+      if (segsIntersect(line[i], line[i + 1], poly[j], poly[(j + 1) % poly.length])) return true;
+    }
+  }
+  return false;
+}
+
 /** POST /planning-studio/route-snap
- *  body: { mode?: 'driving'|'manual', points: [[lng,lat], [lng,lat], ...] }
- *  Calcola la polyline che passa per i punti dati. Per ogni coppia consecutiva
- *  fa un OSRM call (con cache). Modalità 'manual' = ritorna la polyline dei
- *  punti tale e quale (linea retta), utile per zone fuori rete stradale. */
+ *  body: { mode?: 'driving'|'manual', points: [[lng,lat], ...],
+ *          modes?: ('driving'|'manual')[]   — modo PER SEGMENTO (forza tratti manuali),
+ *          curb?: boolean (default true)    — arrivo lato marciapiede alle fermate,
+ *          curbMask?: boolean[]             — quali punti sono fermate (curb) vs via liberi,
+ *          projectId?: uuid                 — abilita il check zone vietate }
+ *  Percorso sull'asse strada via OSRM multi-punto (fallback per-coppia, poi linea
+ *  retta), km per tratta dalle legs, violazioni zone vietate nel risultato. */
 router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
   const b = req.body || {};
   const mode = typeof b.mode === "string" ? b.mode : "driving";
@@ -1539,49 +1663,176 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     res.status(400).json({ error: "coordinate non valide" }); return;
   }
 
-  const segments: { geometry: any; distanceM: number; durationS: number; mode: string }[] = [];
+  const nSeg = coords.length - 1;
+  // Modo per segmento: 'manual' globale vince; altrimenti b.modes[i] per-tratta.
+  const modesIn: any[] = Array.isArray(b.modes) ? b.modes : [];
+  const segModes: ("driving" | "manual")[] = Array.from({ length: nSeg }, (_, i) =>
+    mode === "manual" || modesIn[i] === "manual" ? "manual" : "driving");
+  // Curb: default ON. curbMask dice quali punti sono FERMATE (arrivo lato
+  // marciapiede); i via liberi restano unrestricted per non sovra-vincolare.
+  const curbOn = b.curb !== false;
+  const curbMaskIn: boolean[] | null =
+    Array.isArray(b.curbMask) && b.curbMask.length === coords.length
+      ? b.curbMask.map(Boolean) : null;
+
+  const segments: { geometry: any; distanceM: number; durationS: number; mode: string }[] =
+    new Array(nSeg);
   let totalDist = 0, totalDur = 0;
-
-  for (let i = 0; i < coords.length - 1; i++) {
-    const a = coords[i], c = coords[i + 1];
-    let seg: { geometry: any; distanceM: number; durationS: number } | null = null;
-
-    if (mode === "driving") {
-      seg = await snapSegment("driving", a, c);
-    }
-    if (!seg) {
-      // Fallback / mode === 'manual' — linea retta + euristica distanza haversine
-      const distanceM = haversine(a, c);
-      seg = {
-        geometry: { type: "LineString", coordinates: [a, c] },
-        distanceM,
-        durationS: distanceM / 8.33, // ~30 km/h fallback
-      };
-      segments.push({ ...seg, mode: "manual" });
-    } else {
-      segments.push({ ...seg, mode: "driving" });
-    }
-    totalDist += seg.distanceM;
-    totalDur  += seg.durationS;
-  }
-
-  // Geometria unificata: concatena coordinate evitando duplicati di giunzione
   const unified: [number, number][] = [];
-  for (const s of segments) {
-    const cs = s.geometry?.coordinates ?? [];
-    for (let i = 0; i < cs.length; i++) {
-      const c = cs[i];
+  const pushCoords = (cs: [number, number][]) => {
+    for (const c of cs) {
       if (unified.length && unified[unified.length - 1][0] === c[0] && unified[unified.length - 1][1] === c[1]) continue;
       unified.push([c[0], c[1]]);
+    }
+  };
+  const straightSeg = (a: [number, number], c: [number, number], m: string) => {
+    const distanceM = haversine(a, c);
+    return { geometry: { type: "LineString", coordinates: [a, c] }, distanceM, durationS: distanceM / 8.33, mode: m };
+  };
+
+  // Run di segmenti driving consecutivi → UNA chiamata OSRM multi-punto
+  // (continue_straight: niente inversioni a U alle fermate intermedie).
+  let i = 0;
+  while (i < nSeg) {
+    if (segModes[i] === "manual") {
+      const s = straightSeg(coords[i], coords[i + 1], "manual");
+      segments[i] = s; totalDist += s.distanceM; totalDur += s.durationS;
+      pushCoords(s.geometry.coordinates as [number, number][]);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < nSeg && segModes[j] === "driving") j++;
+    const run = coords.slice(i, j + 1);
+    const mask = curbOn ? (curbMaskIn ? curbMaskIn.slice(i, j + 1) : run.map(() => true)) : null;
+    // 1° tentativo con curb; se OSRM non risolve (vincolo troppo stretto), ritenta senza.
+    let multi = await snapSequenceOSRM(run, mask);
+    if (!multi && mask) multi = await snapSequenceOSRM(run, null);
+    if (multi) {
+      pushCoords(multi.geometry);
+      for (let k = 0; k < multi.legs.length; k++) {
+        const l = multi.legs[k];
+        segments[i + k] = { geometry: null, distanceM: l.distanceM, durationS: l.durationS, mode: "driving" };
+        totalDist += l.distanceM; totalDur += l.durationS;
+      }
+    } else {
+      // Fallback storico: per-coppia con cache; ultima spiaggia linea retta.
+      for (let k = i; k < j; k++) {
+        const seg = await snapSegment("driving", coords[k], coords[k + 1]);
+        if (seg) {
+          segments[k] = { ...seg, mode: "driving" };
+          pushCoords((seg.geometry?.coordinates ?? []) as [number, number][]);
+        } else {
+          const s = straightSeg(coords[k], coords[k + 1], "manual_fallback");
+          segments[k] = s;
+          pushCoords(s.geometry.coordinates as [number, number][]);
+        }
+        totalDist += segments[k].distanceM; totalDur += segments[k].durationS;
+      }
+    }
+    i = j;
+  }
+
+  // Zone vietate: se il percorso attraversa un poligono attivo del progetto → violazione.
+  const violations: { zoneId: string; name: string }[] = [];
+  const projectId = typeof b.projectId === "string" && UUID_RE.test(b.projectId) ? b.projectId : null;
+  if (projectId) {
+    try {
+      const zr = await db.execute(sql`
+        SELECT id, name, polygon FROM ps_no_go_zones
+         WHERE project_id = ${projectId}::uuid AND active = true
+      `);
+      const zones: any[] = (zr as any).rows ?? (zr as any) ?? [];
+      for (const z of zones) {
+        const poly: [number, number][] = Array.isArray(z.polygon) ? z.polygon : [];
+        if (lineCrossesPolygon(unified, poly)) violations.push({ zoneId: z.id, name: z.name });
+      }
+    } catch (e: any) {
+      console.warn("[route-snap] check zone vietate fallito:", e?.message || e);
     }
   }
 
   res.json({
     geometry: { type: "LineString", coordinates: unified },
     segments,
+    // km per tratta (dalle legs OSRM = distanza SU STRADA) allineati ai punti
+    legDistances: segments.map(s => s?.distanceM ?? 0),
+    legModes: segments.map(s => s?.mode ?? "driving"),
     distanceM: totalDist,
     durationS: totalDur,
+    violations,
   });
+});
+
+/* ════════════════════════════════════════════════════════════
+ *  ZONE VIETATE BUS (poligoni per progetto)
+ * ════════════════════════════════════════════════════════════ */
+
+function rowToNoGoZone(r: any) {
+  return { id: r.id, name: r.name, polygon: r.polygon ?? [], active: !!r.active };
+}
+
+router.get("/planning-studio/projects/:id/no-go-zones", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  const r = await db.execute(sql`
+    SELECT id, name, polygon, active FROM ps_no_go_zones
+     WHERE project_id = ${proj.id}::uuid ORDER BY created_at ASC
+  `);
+  const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  res.json({ zones: rows.map(rowToNoGoZone) });
+});
+
+router.post("/planning-studio/projects/:id/no-go-zones", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const b = req.body || {};
+  const name = String(b.name ?? "").trim();
+  const poly: any[] = Array.isArray(b.polygon) ? b.polygon : [];
+  const coords = poly.map((p: any) => [Number(p?.[0]), Number(p?.[1])] as [number, number]);
+  if (!name) { res.status(400).json({ error: "name obbligatorio" }); return; }
+  if (coords.length < 3 || coords.some(c => !isFinite(c[0]) || !isFinite(c[1]))) {
+    res.status(400).json({ error: "polygon: almeno 3 vertici [lng,lat] validi" }); return;
+  }
+  const r = await db.execute(sql`
+    INSERT INTO ps_no_go_zones (project_id, name, polygon)
+    VALUES (${proj.id}::uuid, ${name}, ${JSON.stringify(coords)}::jsonb)
+    RETURNING id, name, polygon, active
+  `);
+  const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+  await logActivity(proj.id, req.user!.id, "ps.nogo_zone.create", { targetId: row.id, payload: { name } });
+  res.json({ zone: rowToNoGoZone(row) });
+});
+
+router.patch("/planning-studio/projects/:id/no-go-zones/:zoneId", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const zoneId = String(req.params.zoneId);
+  if (!UUID_RE.test(zoneId)) { res.status(400).json({ error: "zoneId non valido" }); return; }
+  const b = req.body || {};
+  const name = typeof b.name === "string" && b.name.trim() ? b.name.trim() : null;
+  const active = typeof b.active === "boolean" ? b.active : null;
+  const r = await db.execute(sql`
+    UPDATE ps_no_go_zones
+       SET name = COALESCE(${name}, name),
+           active = COALESCE(${active}, active)
+     WHERE id = ${zoneId}::uuid AND project_id = ${proj.id}::uuid
+    RETURNING id, name, polygon, active
+  `);
+  const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+  if (!row) { res.status(404).json({ error: "Zona non trovata" }); return; }
+  res.json({ zone: rowToNoGoZone(row) });
+});
+
+router.delete("/planning-studio/projects/:id/no-go-zones/:zoneId", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const zoneId = String(req.params.zoneId);
+  if (!UUID_RE.test(zoneId)) { res.status(400).json({ error: "zoneId non valido" }); return; }
+  await db.execute(sql`
+    DELETE FROM ps_no_go_zones WHERE id = ${zoneId}::uuid AND project_id = ${proj.id}::uuid
+  `);
+  await logActivity(proj.id, req.user!.id, "ps.nogo_zone.delete", { targetId: zoneId });
+  res.json({ ok: true });
 });
 
 function haversine(a: [number, number], b: [number, number]): number {

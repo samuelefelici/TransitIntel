@@ -343,17 +343,60 @@ export async function setPsVariantShape(
 
 export async function routeSnap(
   points: [number, number][],
-  mode: "driving" | "manual" = "driving"
+  mode: "driving" | "manual" = "driving",
+  opts?: {
+    /** modo per SEGMENTO (forza tratti manuali, es. corsie riservate) */
+    modes?: ("driving" | "manual")[];
+    /** arrivo lato marciapiede alle fermate (default true) */
+    curb?: boolean;
+    /** quali punti sono fermate (curb) vs waypoint liberi */
+    curbMask?: boolean[];
+    /** abilita il check zone vietate del progetto */
+    projectId?: string;
+  },
 ): Promise<{
   geometry: { type: "LineString"; coordinates: [number, number][] };
   segments: { geometry: any; distanceM: number; durationS: number; mode: string }[];
+  /** km per tratta (su strada, dalle legs OSRM) allineati ai punti */
+  legDistances?: number[];
+  legModes?: string[];
   distanceM: number;
   durationS: number;
+  violations?: { zoneId: string; name: string }[];
 }> {
   return apiFetch("/api/planning-studio/route-snap", {
     method: "POST",
-    body: JSON.stringify({ points, mode }),
+    body: JSON.stringify({ points, mode, ...(opts ?? {}) }),
   });
+}
+
+/* ─── Zone vietate bus (poligoni per progetto) ─── */
+
+export interface PsNoGoZone {
+  id: string;
+  name: string;
+  polygon: [number, number][];
+  active: boolean;
+}
+
+export async function listPsNoGoZones(projectId: string): Promise<PsNoGoZone[]> {
+  const r = await apiFetch<{ zones: PsNoGoZone[] }>(`/api/planning-studio/projects/${projectId}/no-go-zones`);
+  return r.zones;
+}
+export async function createPsNoGoZone(projectId: string, input: { name: string; polygon: [number, number][] }): Promise<PsNoGoZone> {
+  const r = await apiFetch<{ zone: PsNoGoZone }>(`/api/planning-studio/projects/${projectId}/no-go-zones`, {
+    method: "POST", body: JSON.stringify(input),
+  });
+  return r.zone;
+}
+export async function updatePsNoGoZone(projectId: string, zoneId: string, patch: { name?: string; active?: boolean }): Promise<PsNoGoZone> {
+  const r = await apiFetch<{ zone: PsNoGoZone }>(`/api/planning-studio/projects/${projectId}/no-go-zones/${zoneId}`, {
+    method: "PATCH", body: JSON.stringify(patch),
+  });
+  return r.zone;
+}
+export async function deletePsNoGoZone(projectId: string, zoneId: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${projectId}/no-go-zones/${zoneId}`, { method: "DELETE" });
 }
 
 /* ─── Calendari ─── */
