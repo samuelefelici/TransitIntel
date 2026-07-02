@@ -16,7 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
-  Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer,
+  Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
 } from "lucide-react";
 import {
   getPsProject,
@@ -26,8 +26,10 @@ import {
   listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, type PsTrip,
   getPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
+  getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
+import { listPsDayTypes, postPsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 
 function fmtTime(t?: string | null) {
   if (!t) return "—";
@@ -138,6 +140,98 @@ export default function PlanningStudioTripsPage() {
     else setSelected(new Set(filteredTrips.map(t => t.id)));
   }
   useEffect(() => { setSelected(new Set()); }, [routeId, variantId, calendarFilter, onlyActive]);
+
+  /* ─── Nuova corsa (la PRIMA della variante): orari calcolati da distanza
+   * e velocità commerciale, poi diventa il template per "Genera a cadenza".
+   * Imposta anche i GIORNI di validità (trip-row-set nella matrice). ─── */
+  const [newOpen, setNewOpen] = useState(false);
+  const [newStart, setNewStart] = useState("07:00");
+  const [newSpeed, setNewSpeed] = useState("18");   // km/h commerciale
+  const [newDwell, setNewDwell] = useState("0");    // secondi di sosta per fermata
+  const [newCalendarId, setNewCalendarId] = useState("");
+  const [newDayTypeIds, setNewDayTypeIds] = useState<Set<string>>(new Set());
+  const [newBusy, setNewBusy] = useState(false);
+  const dayTypesQ = useQuery({
+    queryKey: ["ps", projectId, "day-types"],
+    queryFn: () => listPsDayTypes(projectId),
+    enabled: !!projectId && newOpen,
+  });
+  // preseleziona "feriale" alla prima apertura
+  useEffect(() => {
+    if (!newOpen || !dayTypesQ.data || newDayTypeIds.size > 0) return;
+    const fer = dayTypesQ.data.find(d => d.code === "feriale");
+    if (fer) setNewDayTypeIds(new Set([fer.id]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newOpen, dayTypesQ.data]);
+
+  async function runCreateFirstTrip() {
+    if (!routeId || !variantId) { toast.error("Seleziona linea e variante"); return; }
+    const v = Number(newSpeed);
+    if (!Number.isFinite(v) || v < 3 || v > 80) { toast.error("Velocità commerciale non valida (3–80 km/h)"); return; }
+    const dwell = Math.max(0, Math.round(Number(newDwell) || 0));
+    setNewBusy(true);
+    try {
+      const det = await getPsVariant(projectId, variantId);
+      const vStops: PsVariantStop[] = det.stops ?? [];
+      if (vStops.length < 2) throw new Error("La variante ha meno di 2 fermate: completa prima il percorso nell'editor");
+      // Distanza progressiva: shape_dist_traveled se presente e crescente, altrimenti linea d'aria.
+      const hasShapeDist = vStops.every((st, i) =>
+        st.shapeDistTraveled != null && (i === 0 || st.shapeDistTraveled! >= (vStops[i - 1].shapeDistTraveled ?? 0)));
+      const cum: number[] = [];
+      if (hasShapeDist) {
+        const base = vStops[0].shapeDistTraveled ?? 0;
+        for (const st of vStops) cum.push((st.shapeDistTraveled ?? 0) - base);
+      } else {
+        let acc = 0;
+        vStops.forEach((st, i) => {
+          if (i > 0) {
+            const p = vStops[i - 1];
+            const R = 6371000, dLat = (st.lat - p.lat) * Math.PI / 180, dLon = (st.lon - p.lon) * Math.PI / 180;
+            const h = Math.sin(dLat / 2) ** 2 + Math.cos(p.lat * Math.PI / 180) * Math.cos(st.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+            acc += 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+          }
+          cum.push(acc);
+        });
+      }
+      const mps = v * 1000 / 3600;
+      const start = genToSec(newStart + ":00");
+      const stopTimes = vStops.map((st, i) => {
+        // arrivo = partenza + marcia + soste accumulate alle fermate intermedie precedenti
+        const arr = i === 0 ? start : Math.round(start + cum[i] / mps + dwell * Math.max(0, i - 1));
+        // ripartenza = arrivo + sosta (tranne prima e ultima fermata)
+        const dep = i === 0 ? start : i === vStops.length - 1 ? arr : arr + dwell;
+        return {
+          stopId: st.stopId,
+          arrivalTime: genSecToHms(arr),
+          departureTime: genSecToHms(dep),
+          timepoint: st.timepoint ?? 1,
+        };
+      });
+      const r = await batchCreatePsTrips(projectId, [{
+        routeId, variantId,
+        calendarId: newCalendarId || null,
+        headsign: null, direction: 0,
+        stopTimes,
+      }]);
+      // Giorni di validità (matrice): best-effort, non blocca la creazione.
+      const tripId = r.tripIds?.[0];
+      if (tripId && newDayTypeIds.size > 0) {
+        try {
+          await postPsValidityBulk(projectId, { op: "trip-row-set", tripId, dayTypeIds: [...newDayTypeIds], isValid: true });
+        } catch {
+          toast.warning("Corsa creata, ma giorni di validità non impostati", { description: "Impostali dalla Matrice di validità." });
+        }
+      }
+      toast.success("✅ Corsa creata", {
+        description: `Partenza ${newStart} · ${vStops.length} fermate con orari calcolati a ${v} km/h. Ora puoi moltiplicarla con "Genera a cadenza".`,
+        duration: 7000,
+      });
+      setNewOpen(false);
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+    } catch (e: any) {
+      toast.error("Creazione corsa fallita", { description: e?.message });
+    } finally { setNewBusy(false); }
+  }
 
   /* ─── C1 · Genera corse a cadenza (even headway, Ceder §4.3) ───
    * Corsa template + fascia oraria + headway → partenze t_k = t0 + k·H,
@@ -311,11 +405,22 @@ export default function PlanningStudioTripsPage() {
 
         <button
           onClick={() => {
+            if (!variantId) { toast.info("Seleziona linea e variante", { description: "La corsa si crea sul percorso (variante) scelto." }); return; }
+            setNewOpen(true);
+          }}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
+          title="Crea la prima corsa della variante: orari alle fermate calcolati da distanza e velocità commerciale"
+        >
+          <Plus className="w-3.5 h-3.5" /> Nuova corsa
+        </button>
+        <button
+          onClick={() => {
             if (!variantId) { toast.info("Seleziona linea e variante", { description: "La cadenza si genera da una corsa template della variante." }); return; }
+            if (filteredTrips.length === 0) { toast.info("Prima crea una corsa", { description: "Usa ➕ Nuova corsa: sarà il template per la cadenza." }); return; }
             setGenTemplateId(filteredTrips[0]?.id ?? "");
             setGenOpen(true);
           }}
-          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-500 transition-colors"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-500 transition-colors"
           title="Genera corse a cadenza costante da una corsa template (even headway)"
         >
           <Timer className="w-3.5 h-3.5" /> Genera a cadenza
@@ -371,7 +476,9 @@ export default function PlanningStudioTripsPage() {
         )}
         {!tripsQ.isLoading && filteredTrips.length === 0 && (
           <div className="p-12 text-center text-slate-500 text-sm">
-            Nessuna corsa trovata con i filtri attuali.
+            {variantId
+              ? <>Nessuna corsa per questa variante. <strong>Creane una con «➕ Nuova corsa»</strong> (orari calcolati automaticamente), poi moltiplicala con «⏱ Genera a cadenza» e imposta i giorni nella Matrice di validità.</>
+              : <>Nessuna corsa trovata con i filtri attuali. Seleziona una linea e una variante per creare corse.</>}
           </div>
         )}
         {filteredTrips.length > 0 && (
@@ -482,6 +589,75 @@ export default function PlanningStudioTripsPage() {
           onClose={() => setDetailTripId(null)}
           onChange={() => qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] })}
         />
+      )}
+
+      {/* ─── Dialog: Nuova corsa (la prima della variante) ─── */}
+      {newOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !newBusy && setNewOpen(false)}>
+          <div className="w-full max-w-md mx-4 rounded-xl border border-emerald-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Plus className="w-4 h-4 text-emerald-400" /> Nuova corsa
+              </h3>
+              <button onClick={() => !newBusy && setNewOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-4 space-y-3 text-sm">
+              <p className="text-[11px] text-slate-400">
+                Gli orari di transito a ogni fermata vengono <strong>calcolati</strong> dalle distanze del percorso
+                e dalla velocità commerciale. Potrai rifinirli e poi moltiplicare la corsa con «Genera a cadenza».
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Partenza</label>
+                  <input type="time" value={newStart} onChange={e => setNewStart(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1" title="Velocità media da capolinea a capolinea, soste incluse">Vel. comm. (km/h)</label>
+                  <input type="number" min={3} max={80} value={newSpeed} onChange={e => setNewSpeed(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Sosta/fermata (s)</label>
+                  <input type="number" min={0} max={300} value={newDwell} onChange={e => setNewDwell(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Giorni di circolazione (calendario)</label>
+                <select value={newCalendarId} onChange={e => setNewCalendarId(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs">
+                  <option value="">— nessun calendario —</option>
+                  {calendars.map(c => <option key={c.id} value={c.id}>{c.code} {c.name ? `· ${c.name}` : ""}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (tipi giorno — matrice)</label>
+                {dayTypesQ.isLoading && <p className="text-[11px] text-slate-500">Caricamento tipi giorno…</p>}
+                <div className="flex flex-wrap gap-2">
+                  {(dayTypesQ.data ?? []).map(dt => (
+                    <label key={dt.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
+                      style={{ borderColor: newDayTypeIds.has(dt.id) ? (dt.color || "#10b981") : "#334155", background: newDayTypeIds.has(dt.id) ? `${dt.color || "#10b981"}22` : "transparent" }}>
+                      <input type="checkbox" className="hidden" checked={newDayTypeIds.has(dt.id)}
+                        onChange={() => setNewDayTypeIds(prev => { const n = new Set(prev); n.has(dt.id) ? n.delete(dt.id) : n.add(dt.id); return n; })} />
+                      {dt.name}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">I bollini verdi nella Matrice di validità si accendono su questi giorni.</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+              <button onClick={() => setNewOpen(false)} disabled={newBusy}
+                className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
+              <button onClick={runCreateFirstTrip} disabled={newBusy}
+                className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
+                {newBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                Crea corsa
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ─── Dialog: Genera corse a cadenza (C1 — even headway) ─── */}
