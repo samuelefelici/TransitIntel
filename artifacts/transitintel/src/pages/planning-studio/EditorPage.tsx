@@ -1582,6 +1582,11 @@ export default function PlanningStudioEditorPage() {
             >3D</button>
           </div>
 
+          {/* I Source/Layer si aggiungono SOLO dopo il caricamento completo dello
+              stile: con lo stile "standard" (import async) un addSource anticipato
+              lancia "Style is not done loading" e fa crashare la pagina. */}
+          {mapReady && (
+          <>
           {/* ─── Cluster draw: poligono in costruzione (modalità draw) ─── */}
           {clusterDraw && clusterDraw.polygon.length > 0 && (
             <>
@@ -2077,6 +2082,8 @@ export default function PlanningStudioEditorPage() {
                 </div>
               </Popup>
             </>
+          )}
+          </>
           )}
         </Map>
 
