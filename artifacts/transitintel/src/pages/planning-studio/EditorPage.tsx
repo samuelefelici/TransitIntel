@@ -193,6 +193,30 @@ function viaInsertIndex(
   return idx;
 }
 
+/* Corrispondenza sequenza fermate ↔ waypoints (match per stopId in ordine,
+ * robusto ai duplicati e ai via liberi interposti). */
+function waypointIndexForStopPos(wpts: PsWaypoint[], stopsList: PsVariantStop[], idx: number): number {
+  let w = 0;
+  for (let sPos = 0; sPos <= idx && sPos < stopsList.length; sPos++) {
+    while (w < wpts.length && wpts[w].stopId !== stopsList[sPos].stopId) w++;
+    if (w >= wpts.length) return -1;
+    if (sPos === idx) return w;
+    w++;
+  }
+  return -1;
+}
+function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], wIdx: number): number {
+  if (!wpts[wIdx]?.stopId) return -1;
+  let w = 0;
+  for (let sPos = 0; sPos < stopsList.length; sPos++) {
+    while (w < wpts.length && wpts[w].stopId !== stopsList[sPos].stopId) w++;
+    if (w >= wpts.length) return -1;
+    if (w === wIdx) return sPos;
+    w++;
+  }
+  return -1;
+}
+
 /* Lunghezza in metri di una LineString (haversine) — usata per ricalcolare
  * distanceM dopo un edit manuale dei vertici. */
 function lineLengthM(coords: [number, number][]): number {
@@ -883,7 +907,7 @@ export default function PlanningStudioEditorPage() {
         geometry: data.shape?.geometry || null,
         distanceM: data.shape?.distanceM ?? null,
         durationS: data.shape?.durationS ?? null,
-        curb: true,
+        curb: false, // OFF di default: con fermate georeferenziate male produce giri dell'isolato
         legDistances: null,
         violations: [],
         dirty: false,
@@ -989,7 +1013,7 @@ export default function PlanningStudioEditorPage() {
       // Segmento i (tra waypoint i e i+1) manuale se uno dei due estremi è manuale.
       const modes = wpts.slice(0, -1).map((w, i) =>
         (mode === "manual" || w.mode === "manual" || wpts[i + 1].mode === "manual") ? "manual" as const : "driving" as const);
-      const curb = curbOverride ?? editor?.curb ?? true;
+      const curb = curbOverride ?? editor?.curb ?? false;
       const r = await routeSnap(points, mode, {
         modes,
         curb,
@@ -1080,8 +1104,15 @@ export default function PlanningStudioEditorPage() {
   function removeWaypoint(idx: number) {
     if (!editor) return;
     pushEditorHistory();
+    // Se il waypoint è una fermata, va tolta anche dalla sequenza (coerenza
+    // elenco ↔ percorso); i via liberi si rimuovono e basta.
+    const stopPos = stopPosForWaypointIdx(editor.waypoints, editor.stops, idx);
     const wpts = editor.waypoints.filter((_, i) => i !== idx);
-    setEditor({ ...editor, waypoints: wpts, dirty: true });
+    const list = stopPos >= 0
+      ? editor.stops.filter((_, i) => i !== stopPos).map((s, i) => ({ ...s, seq: i + 1 }))
+      : editor.stops;
+    setInsertAfterIdx(null);
+    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
     recomputeShape(wpts, editor.shapeMode);
   }
 
@@ -1140,26 +1171,39 @@ export default function PlanningStudioEditorPage() {
     const [m] = list.splice(from, 1);
     list.splice(to, 0, m);
     const renum = list.map((s, i) => ({ ...s, seq: i + 1 }));
+    // Riordino: i via lungo i vecchi tratti non hanno più senso → waypoints
+    // ricostruiti dalle sole fermate nel nuovo ordine, percorso ricalcolato.
+    const wpts: PsWaypoint[] = renum.map(s => ({ lng: s.lon, lat: s.lat, stopId: s.stopId, mode: "snap" }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: renum, dirty: true });
+    setEditor({ ...editor, stops: renum, waypoints: wpts, dirty: true });
+    recomputeShape(wpts, editor.shapeMode);
   }
 
   function removeStopFromSequence(idx: number) {
     if (!editor) return;
     pushEditorHistory();
+    // Rimuove anche il waypoint corrispondente, così il percorso non ci passa più.
+    const wIdx = waypointIndexForStopPos(editor.waypoints, editor.stops, idx);
+    const wpts = wIdx >= 0 ? editor.waypoints.filter((_, i) => i !== wIdx) : editor.waypoints;
     const list = editor.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, dirty: true });
+    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
+    recomputeShape(wpts, editor.shapeMode);
   }
 
   /** Rimuove più fermate dalla sequenza in un colpo solo (selezione multipla). */
   function removeStopsFromSequence(idxs: number[]) {
     if (!editor || idxs.length === 0) return;
     pushEditorHistory();
+    const wDrop = new Set(
+      idxs.map(i => waypointIndexForStopPos(editor.waypoints, editor.stops, i)).filter(i => i >= 0),
+    );
+    const wpts = editor.waypoints.filter((_, i) => !wDrop.has(i));
     const drop = new Set(idxs);
     const list = editor.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, dirty: true });
+    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
+    recomputeShape(wpts, editor.shapeMode);
   }
 
   /** Inverte l'ordine della sequenza (per creare il percorso di ritorno). */
@@ -1167,16 +1211,23 @@ export default function PlanningStudioEditorPage() {
     if (!editor || editor.stops.length < 2) return;
     pushEditorHistory();
     const list = [...editor.stops].reverse().map((s, i) => ({ ...s, seq: i + 1 }));
+    // Waypoints ricostruiti dalle fermate invertite (i via dell'andata non valgono al ritorno).
+    const wpts: PsWaypoint[] = list.map(s => ({ lng: s.lon, lat: s.lat, stopId: s.stopId, mode: "snap" }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, dirty: true });
+    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
+    recomputeShape(wpts, editor.shapeMode);
   }
 
-  /** Svuota completamente la sequenza fermate. */
+  /** Svuota completamente la sequenza: niente fermate ⇒ niente percorso. */
   function clearSequence() {
     if (!editor) return;
     pushEditorHistory();
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: [], dirty: true });
+    setEditor({
+      ...editor, stops: [], waypoints: [],
+      geometry: null, distanceM: 0, durationS: 0, legDistances: null, violations: [],
+      dirty: true,
+    });
   }
 
   /* ─── Salvataggio variante ─── */
@@ -1310,8 +1361,7 @@ export default function PlanningStudioEditorPage() {
       // alle fermate intermedie, arrivo lato marciapiede, km dalle legs OSRM.
       const pts: [number, number][] = routeView.stops.map(s => [Number(s.lon), Number(s.lat)]);
       const r = await routeSnap(pts, "driving", {
-        curb: true,
-        curbMask: pts.map(() => true), // sono tutte fermate
+        curb: false, // opzionale: ON solo dall'editor variante (può creare giri dell'isolato)
         projectId,
       });
       const merged: [number, number][] = (r.geometry?.coordinates ?? []) as [number, number][];
@@ -4098,9 +4148,9 @@ function VariantEditorPanel({
         {/* Arrivo lato marciapiede: il percorso passa sull'asse strada dal lato
             giusto anche per fermate laterali (OSRM approaches=curb) */}
         <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-300 cursor-pointer select-none"
-          title="Il bus arriva con la fermata sul lato marciapiede (guida a destra): il tracciato segue la carreggiata corretta anche per fermate laterali alla strada.">
+          title="Il bus arriva con la fermata sul lato marciapiede (guida a destra). ATTENZIONE: se le fermate sono georeferenziate sul lato sbagliato può creare giri dell'isolato — attivalo solo se serve.">
           <input type="checkbox" checked={editor.curb} onChange={onToggleCurb} className="accent-emerald-500" />
-          🚏 Arrivo lato fermata (curb)
+          🚏 Arrivo lato fermata (curb) <span className="text-slate-500">— opzionale</span>
         </label>
         {snapBusy && <p className="text-[10px] text-indigo-300 mt-1.5 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Calcolo percorso…</p>}
         {/* Violazioni zone vietate */}

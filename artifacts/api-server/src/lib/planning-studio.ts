@@ -1548,18 +1548,17 @@ async function snapSegment(
 }
 
 /** Snap dell'INTERA sequenza in una sola chiamata OSRM (chunk da 25 coordinate).
- *  Vantaggi vs per-coppia: continue_straight=true evita inversioni a U ai punti
- *  intermedi (il bus "prosegue" alla fermata) e le legs danno i km SU STRADA per
- *  ogni tratta fermata→fermata. curbMask[i]=true forza l'arrivo lato marciapiede
- *  (approaches=curb) su quel punto: il percorso passa sull'asse strada dal lato
- *  giusto anche per fermate laterali. */
+ *  Vantaggi vs per-coppia: OSRM considera la direzione di attraversamento dei
+ *  punti intermedi (niente zig-zag tra chiamate indipendenti) e le legs danno i
+ *  km SU STRADA per ogni tratta fermata→fermata. curbMask[i]=true (opt-in)
+ *  forza l'arrivo lato marciapiede su quel punto. */
 async function snapSequenceOSRM(
   coords: [number, number][],
   curbMask: boolean[] | null,
 ): Promise<{ geometry: [number, number][]; legs: { distanceM: number; durationS: number }[]; distanceM: number; durationS: number } | null> {
   const rounded = coords.map(c => [roundCoord(c[0]), roundCoord(c[1])] as [number, number]);
   const key = createHash("sha1")
-    .update(JSON.stringify({ v: 2, curb: curbMask ?? false, rounded }))
+    .update(JSON.stringify({ v: 3, curb: curbMask ?? false, rounded }))
     .digest("hex");
   try {
     const hit = await db.execute(sql`SELECT payload FROM ps_route_snap_multi_cache WHERE key = ${key} LIMIT 1`);
@@ -1577,8 +1576,11 @@ async function snapSequenceOSRM(
     const approaches = curbMask
       ? `&approaches=${curbMask.slice(start, start + part.length).map(f => (f ? "curb" : "unrestricted")).join(";")}`
       : "";
+    // Niente continue_straight forzato (OSRM decide: vietarlo genera loop
+    // assurdi quando serve un'inversione) e snapping di default (snapping=any
+    // aggancia anche strade chiuse/private → deviazioni fuori strada).
     const url = `${OSRM_BASE}/route/v1/driving/${coordStr}`
-              + `?overview=full&geometries=geojson&continue_straight=true&snapping=any${approaches}`;
+              + `?overview=full&geometries=geojson${approaches}`;
     let route: any = null;
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
@@ -1670,7 +1672,7 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     mode === "manual" || modesIn[i] === "manual" ? "manual" : "driving");
   // Curb: default ON. curbMask dice quali punti sono FERMATE (arrivo lato
   // marciapiede); i via liberi restano unrestricted per non sovra-vincolare.
-  const curbOn = b.curb !== false;
+  const curbOn = b.curb === true; // opt-in: con fermate mal georeferenziate produce giri dell'isolato
   const curbMaskIn: boolean[] | null =
     Array.isArray(b.curbMask) && b.curbMask.length === coords.length
       ? b.curbMask.map(Boolean) : null;
@@ -1690,8 +1692,7 @@ router.post("/planning-studio/route-snap", async (req, res): Promise<void> => {
     return { geometry: { type: "LineString", coordinates: [a, c] }, distanceM, durationS: distanceM / 8.33, mode: m };
   };
 
-  // Run di segmenti driving consecutivi → UNA chiamata OSRM multi-punto
-  // (continue_straight: niente inversioni a U alle fermate intermedie).
+  // Run di segmenti driving consecutivi → UNA chiamata OSRM multi-punto.
   let i = 0;
   while (i < nSeg) {
     if (segModes[i] === "manual") {
