@@ -29,6 +29,7 @@ import {
   listPsRoutes, type PsRoute,
   listPsVariants, type PsVariant,
   getPsVariant, type PsVariantStop,
+  listPsStops,
   listPsCalendars,
   listPsTrips, type PsTrip,
   getPsStopTimesBulk, type PsStopTime,
@@ -165,23 +166,30 @@ export default function PlanningStudioTtdPage() {
     enabled: !!projectId && !!variantId,
   });
 
-  // Asse Y: distanza progressiva. Usa shape_dist_traveled se presente e
-  // monotona, altrimenti cumulata haversine sulle coordinate fermate.
+  // Asse Y: due modalità.
+  //  - "equidistante" (default): fermate a passo uniforme → asse compatto e leggibile;
+  //  - "distanza": proporzionale ai km reali (shape_dist_traveled se monotona,
+  //    altrimenti cumulata haversine).
+  const [yMode, setYMode] = useState<"equidistante" | "distanza">("equidistante");
   const baseAxis = useMemo(() => {
     const stops = baseVariantQ.data?.stops ?? [];
     if (stops.length < 2) return null;
-    const sdt = stops.map(s => s.shapeDistTraveled);
-    const sdtOk =
-      sdt.every(d => d != null && Number.isFinite(d)) &&
-      sdt.every((d, i) => i === 0 || (d as number) >= (sdt[i - 1] as number)) &&
-      (sdt[sdt.length - 1] as number) > 0;
     let dists: number[];
-    if (sdtOk) {
-      dists = sdt.map(d => d as number);
+    if (yMode === "equidistante") {
+      dists = stops.map((_, i) => i);
     } else {
-      dists = [0];
-      for (let i = 1; i < stops.length; i++) {
-        dists.push(dists[i - 1] + haversineM(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon));
+      const sdt = stops.map(s => s.shapeDistTraveled);
+      const sdtOk =
+        sdt.every(d => d != null && Number.isFinite(d)) &&
+        sdt.every((d, i) => i === 0 || (d as number) >= (sdt[i - 1] as number)) &&
+        (sdt[sdt.length - 1] as number) > 0;
+      if (sdtOk) {
+        dists = sdt.map(d => d as number);
+      } else {
+        dists = [0];
+        for (let i = 1; i < stops.length; i++) {
+          dists.push(dists[i - 1] + haversineM(stops[i - 1].lat, stops[i - 1].lon, stops[i].lat, stops[i].lon));
+        }
       }
     }
     const byStop = new Map<string, number>();
@@ -191,7 +199,7 @@ export default function PlanningStudioTtdPage() {
       byStop,
       total: dists[dists.length - 1] || 1,
     };
-  }, [baseVariantQ.data]);
+  }, [baseVariantQ.data, yMode]);
 
   /* ─── Corse della variante base + stop times (caricamento a lotti) ─── */
   const tripsQ = useQuery({
@@ -220,10 +228,11 @@ export default function PlanningStudioTtdPage() {
       } catch { /* riproverà al prossimo render */ }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripsQ.data, projectId]);
+    // NB: stMap nelle deps → carica i lotti successivi finché tutte le corse
+    // hanno gli orari (prima si fermava al primo lotto: corse "invisibili").
+  }, [tripsQ.data, projectId, stMap]);
 
-  /* ─── Overlay: varianti che condividono ≥2 fermate con la base ─── */
+  /* ─── Overlay: TUTTE le altre varianti (con conteggio fermate in comune) ─── */
   const candidatesQ = useQuery({
     queryKey: ["ps", projectId, "ttd-candidates", variantId],
     enabled: !!projectId && !!variantId && !!baseVariantQ.data && !!routesQ.data,
@@ -236,18 +245,21 @@ export default function PlanningStudioTtdPage() {
         for (const v of vs) if (v.id !== variantId) all.push({ route: r, variant: v });
       }
       const out: { route: PsRoute; variant: PsVariant; stops: PsVariantStop[]; shared: number }[] = [];
-      const list = all.slice(0, 80); // cap difensivo su reti grandi
+      const list = all.slice(0, 200); // cap difensivo su reti grandi
       for (let i = 0; i < list.length; i += 6) {
         const chunk = list.slice(i, i + 6);
         const res = await Promise.all(chunk.map(async c => {
           try {
             const d = await getPsVariant(projectId, c.variant.id);
             const shared = d.stops.filter(s => baseStopIds.has(s.stopId)).length;
-            return shared >= 2 ? { ...c, stops: d.stops, shared } : null;
+            // NIENTE filtro: si possono accendere anche linee SENZA fermate in
+            // comune (il conteggio resta come indicatore di coincidenza).
+            return { ...c, stops: d.stops, shared };
           } catch { return null; }
         }));
         for (const r of res) if (r) out.push(r);
       }
+      out.sort((x, y) => y.shared - x.shared);
       return out;
     },
   });
@@ -274,6 +286,42 @@ export default function PlanningStudioTtdPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayOn, projectId]);
+
+  /* ─── Fascia oraria esplicita (filtro vista) ─── */
+  const [winFrom, setWinFrom] = useState("04:00");
+  const [winTo, setWinTo] = useState("26:00");
+
+  /* ─── Fullscreen ─── */
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void pageRef.current?.requestFullscreen();
+  }
+
+  /* ─── Nodi: fermata → nodo (cluster se assegnato, altrimenti la fermata stessa).
+     Le coincidenze valgono su QUALSIASI nodo condiviso, di cambio o meno. ─── */
+  const stopsQ = useQuery({
+    queryKey: ["ps", projectId, "stops"],
+    queryFn: () => listPsStops(projectId),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+  const nodeOfStop = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const st of stopsQ.data ?? []) m.set(st.id, (st as any).clusterId || st.id);
+    return m;
+  }, [stopsQ.data]);
+
+  /* ─── Coincidenze: parametri ─── */
+  const [showConn, setShowConn] = useState(true);
+  const [connMin, setConnMin] = useState("2");
+  const [connMax, setConnMax] = useState("10");
 
   /* ─── Viewport (dominio tempo) + dimensioni ─── */
   const [tDomain, setTDomain] = useState<{ t0: number; t1: number }>({ t0: DEFAULT_T0, t1: DEFAULT_T1 });
@@ -555,6 +603,147 @@ export default function PlanningStudioTtdPage() {
     );
   }, [baseAxis, multPreview]);
 
+  /* ─── Coincidenze ai nodi condivisi (stesso cluster O stessa fermata) ───
+     Direzioni: base arriva → altra linea parte, e viceversa, con attesa in
+     [connMin, connMax] minuti. Z = numero di coincidenze realizzate. ─── */
+  type ConnPt = { t: number; dist: number; wait: number; label: string };
+  const connections = useMemo<{ pts: ConnPt[]; z: number }>(() => {
+    if (!showConn || !baseAxis || overlayGeoms.length === 0 || baseGeoms.length === 0) return { pts: [], z: 0 };
+    const minW = Math.max(0, Number(connMin) || 0) * 60;
+    const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
+    // nodo → posizione y sulla base (prima fermata base del nodo)
+    const nodeDist = new Map<string, number>();
+    for (const st of baseAxis.stops) {
+      const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+      if (!nodeDist.has(n)) nodeDist.set(n, st.dist);
+    }
+    // eventi base per nodo
+    const baseArr = new Map<string, { t: number; label: string }[]>();
+    const baseDep = new Map<string, { t: number; label: string }[]>();
+    for (const g of baseGeoms) {
+      for (const st of g.sts) {
+        const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+        if (!nodeDist.has(n)) continue;
+        if (!baseArr.has(n)) baseArr.set(n, []);
+        if (!baseDep.has(n)) baseDep.set(n, []);
+        baseArr.get(n)!.push({ t: hmsToSec(st.arrivalTime), label: g.label });
+        baseDep.get(n)!.push({ t: hmsToSec(st.departureTime), label: g.label });
+      }
+    }
+    const pts: ConnPt[] = [];
+    for (const g of overlayGeoms) {
+      for (const st of g.sts) {
+        const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+        const d = nodeDist.get(n);
+        if (d == null) continue;
+        const oArr = hmsToSec(st.arrivalTime), oDep = hmsToSec(st.departureTime);
+        for (const a2 of baseArr.get(n) ?? []) {
+          const w = oDep - a2.t;
+          if (w >= minW && w <= maxW) pts.push({ t: oDep, dist: d, wait: w, label: `${a2.label} → ${g.label} · attesa ${Math.round(w / 60)}′ · ${st.stopName}` });
+        }
+        for (const p2 of baseDep.get(n) ?? []) {
+          const w = p2.t - oArr;
+          if (w >= minW && w <= maxW) pts.push({ t: p2.t, dist: d, wait: w, label: `${g.label} → ${p2.label} · attesa ${Math.round(w / 60)}′ · ${st.stopName}` });
+        }
+        if (pts.length > 1500) break; // cap difensivo render
+      }
+    }
+    return { pts, z: pts.length };
+  }, [showConn, baseAxis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
+
+  /* ─── C4 · Sincronizzatore coincidenze: trova lo shift Δ della variante scelta
+     che MASSIMIZZA Z (attese in finestra), entro ±maxShift minuti. ─── */
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncVariantId, setSyncVariantId] = useState("");
+  const [syncMaxShift, setSyncMaxShift] = useState("15");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ best: number; zNow: number; zBest: number; top: { delta: number; z: number }[] } | null>(null);
+  useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax]);
+
+  function computeZForShift(vid: string, deltaSec: number): number {
+    if (!baseAxis) return 0;
+    const minW = Math.max(0, Number(connMin) || 0) * 60;
+    const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
+    const nodeSet = new Set<string>();
+    for (const st of baseAxis.stops) nodeSet.add(nodeOfStop.get(st.stopId) ?? st.stopId);
+    const baseArr = new Map<string, number[]>();
+    const baseDep = new Map<string, number[]>();
+    for (const g of baseGeoms) for (const st of g.sts) {
+      const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+      if (!nodeSet.has(n)) continue;
+      if (!baseArr.has(n)) { baseArr.set(n, []); baseDep.set(n, []); }
+      baseArr.get(n)!.push(hmsToSec(st.arrivalTime));
+      baseDep.get(n)!.push(hmsToSec(st.departureTime));
+    }
+    const data = overlayData[vid];
+    if (!data) return 0;
+    let trips = data.trips;
+    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    let z = 0;
+    for (const t of trips) {
+      for (const st of data.st[t.id] ?? []) {
+        const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+        if (!nodeSet.has(n)) continue;
+        const oArr = hmsToSec(st.arrivalTime) + deltaSec;
+        const oDep = hmsToSec(st.departureTime) + deltaSec;
+        for (const a2 of baseArr.get(n) ?? []) { const w = oDep - a2; if (w >= minW && w <= maxW) z++; }
+        for (const p2 of baseDep.get(n) ?? []) { const w = p2 - oArr; if (w >= minW && w <= maxW) z++; }
+      }
+    }
+    return z;
+  }
+
+  function runSyncSearch() {
+    if (!syncVariantId || !overlayData[syncVariantId]) { toast.error("Accendi e scegli la linea da sincronizzare"); return; }
+    const M = Math.min(60, Math.max(1, Math.round(Number(syncMaxShift) || 15)));
+    const table: { delta: number; z: number }[] = [];
+    for (let d = -M; d <= M; d++) table.push({ delta: d, z: computeZForShift(syncVariantId, d * 60) });
+    const zNow = table.find(r => r.delta === 0)?.z ?? 0;
+    const best = [...table].sort((x, y) => y.z - x.z || Math.abs(x.delta) - Math.abs(y.delta))[0];
+    const top = [...table].sort((x, y) => y.z - x.z || Math.abs(x.delta) - Math.abs(y.delta)).slice(0, 5);
+    setSyncResult({ best: best.delta, zNow, zBest: best.z, top });
+  }
+
+  async function applySyncShift(deltaMin: number) {
+    const data = overlayData[syncVariantId];
+    if (!data || deltaMin === 0) return;
+    // guardia: nessun orario negativo
+    for (const t of data.trips) {
+      const sts = data.st[t.id] ?? [];
+      if (sts.length && Math.min(...sts.map(x => hmsToSec(x.arrivalTime))) + deltaMin * 60 < 0) {
+        toast.error("Lo shift porterebbe orari prima di 00:00"); return;
+      }
+    }
+    setSyncBusy(true);
+    try {
+      let done = 0;
+      for (const t of data.trips) {
+        await shiftPsTripTimes(projectId, t.id, deltaMin);
+        done++;
+      }
+      // aggiorna in locale gli orari della variante spostata
+      setOverlayData(prev => {
+        const cur = prev[syncVariantId];
+        if (!cur) return prev;
+        const st: Record<string, PsStopTime[]> = {};
+        for (const [tid, sts] of Object.entries(cur.st)) {
+          st[tid] = sts.map(x => ({
+            ...x,
+            arrivalTime: secToHms(hmsToSec(x.arrivalTime) + deltaMin * 60),
+            departureTime: secToHms(hmsToSec(x.departureTime) + deltaMin * 60),
+          }));
+        }
+        return { ...prev, [syncVariantId]: { ...cur, st } };
+      });
+      toast.success(`✅ Sincronizzato: ${done} corse traslate di ${deltaMin > 0 ? "+" : ""}${deltaMin} min`, {
+        description: "Le coincidenze sul grafico sono aggiornate.",
+      });
+      setSyncResult(null);
+    } catch (e: any) {
+      toast.error("Errore durante lo shift", { description: e?.message });
+    } finally { setSyncBusy(false); }
+  }
+
   /* ─── Hover tooltip su una corsa ─── */
   function onTripHover(e: React.PointerEvent, g: TripGeom) {
     if (dragRef.current) return;
@@ -608,7 +797,7 @@ export default function PlanningStudioTtdPage() {
 
   /* ════════════════ Render ════════════════ */
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100">
+    <div ref={pageRef} className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100">
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>
           <button className="p-2 rounded hover:bg-slate-800 text-slate-300" title="Torna al progetto">
@@ -706,7 +895,7 @@ export default function PlanningStudioTtdPage() {
                 </div>
               )}
               {!candidatesQ.isLoading && sharedCandidates.length === 0 && (
-                <div className="px-2 py-2 text-slate-500">Nessuna variante condivide ≥2 fermate.</div>
+                <div className="px-2 py-2 text-slate-500">Nessun'altra variante nel progetto.</div>
               )}
               {sharedCandidates.map(c => (
                 <label key={c.variant.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700 cursor-pointer">
@@ -746,6 +935,79 @@ export default function PlanningStudioTtdPage() {
         >
           <CopyPlus className="w-3.5 h-3.5" />
           Moltiplica corsa
+        </button>
+
+        {/* Sincronizzatore coincidenze */}
+        <button
+          onClick={() => setSyncOpen(o => !o)}
+          disabled={!variantId}
+          className={`px-2.5 py-1.5 rounded flex items-center gap-1.5 border disabled:opacity-40 ${
+            syncOpen
+              ? "bg-purple-500/15 border-purple-500/40 text-purple-300"
+              : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+          }`}
+          title="Trova lo shift che massimizza le coincidenze con un'altra linea"
+        >
+          ⇆ Sincronizza
+        </button>
+      </div>
+
+      {/* Toolbar 2: fascia oraria · asse Y · coincidenze · schermo intero */}
+      <div className="min-h-10 border-b border-slate-800 bg-slate-900/30 px-4 py-1.5 flex items-center gap-3 text-xs shrink-0 flex-wrap">
+        <span className="text-slate-500">Fascia:</span>
+        <input type="text" value={winFrom} onChange={e => setWinFrom(e.target.value)} placeholder="04:00"
+          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 25:30)" />
+        <span className="text-slate-600">–</span>
+        <input type="text" value={winTo} onChange={e => setWinTo(e.target.value)} placeholder="26:00"
+          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 26:00)" />
+        <button
+          onClick={() => {
+            const a2 = hmToSec(winFrom), b2 = hmToSec(winTo);
+            if (a2 == null || b2 == null || b2 <= a2) { toast.error("Fascia non valida"); return; }
+            setDomainClamped(a2, b2);
+          }}
+          className="px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-500 font-medium">Applica</button>
+
+        <div className="h-4 w-px bg-slate-800" />
+        <span className="text-slate-500">Asse fermate:</span>
+        <button onClick={() => setYMode(m => m === "equidistante" ? "distanza" : "equidistante")}
+          className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
+          title="Equidistante = fermate a passo uniforme (più vicine e leggibili) · Distanze = proporzionale ai km reali">
+          {yMode === "equidistante" ? "≡ Equidistante" : "⇕ Distanze reali"}
+        </button>
+
+        <div className="h-4 w-px bg-slate-800" />
+        <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" checked={showConn} onChange={e => setShowConn(e.target.checked)} className="accent-emerald-500" />
+          Coincidenze
+        </label>
+        <span className="text-slate-500">attesa</span>
+        <input type="number" min={0} max={60} value={connMin} onChange={e => setConnMin(e.target.value)}
+          className="w-12 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+        <span className="text-slate-600">–</span>
+        <input type="number" min={0} max={120} value={connMax} onChange={e => setConnMax(e.target.value)}
+          className="w-12 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+        <span className="text-slate-500">min</span>
+        {showConn && overlayOn.size > 0 && (
+          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono">
+            Z = {connections.z}
+          </span>
+        )}
+
+        <div className="flex-1" />
+        {/* Diagnostica corse visibili */}
+        {variantId && (tripsQ.data ?? []).length > 0 && (
+          <span className="text-slate-500">
+            {visibleTrips.length} corse
+            {baseGeoms.length < visibleTrips.length && (
+              <span className="text-amber-400"> · {visibleTrips.length - baseGeoms.length} senza orari (non disegnabili)</span>
+            )}
+          </span>
+        )}
+        <button onClick={toggleFullscreen}
+          className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
+          title="Schermo intero">
+          {isFullscreen ? "🗗 Esci da schermo intero" : "⛶ Schermo intero"}
         </button>
       </div>
 
@@ -885,6 +1147,14 @@ export default function PlanningStudioTtdPage() {
                   );
                 })}
 
+                {/* Coincidenze ai nodi condivisi */}
+                {showConn && connections.pts.slice(0, 800).map((c2, i) => (
+                  <circle key={`cn-${i}`} cx={xOf(c2.t)} cy={yOf(c2.dist)} r={3.5}
+                    fill="#10b981" stroke="#022c22" strokeWidth={1} opacity={0.95}>
+                    <title>{c2.label}</title>
+                  </circle>
+                ))}
+
                 {/* Anteprima cadenzamento (tratteggiata) */}
                 {previewGeoms.map((segs, k) => (
                   <g key={`prev-${k}`} opacity={0.85}>
@@ -927,6 +1197,62 @@ export default function PlanningStudioTtdPage() {
         </div>
 
         {/* Pannello cadenzamento ("Moltiplica corsa") */}
+        {/* ─── Pannello Sincronizzatore coincidenze (C4) ─── */}
+        {syncOpen && (
+          <div className="w-[300px] border-l border-slate-800 bg-slate-900/60 p-3 space-y-3 overflow-y-auto shrink-0 text-xs">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-purple-300">⇆ Sincronizza coincidenze</h3>
+              <button onClick={() => setSyncOpen(false)} className="text-slate-500 hover:text-slate-200">✕</button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Trova lo <strong>shift Δ</strong> (minuti) della linea scelta che <strong>massimizza le coincidenze Z</strong> con
+              la linea base ai nodi condivisi, con attesa {connMin}–{connMax} min.
+            </p>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Linea da spostare (accesa in "Altre linee")</label>
+              <select value={syncVariantId} onChange={e => setSyncVariantId(e.target.value)}
+                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
+                <option value="">— scegli —</option>
+                {sharedCandidates.filter(c => overlayOn.has(c.variant.id)).map(c => (
+                  <option key={c.variant.id} value={c.variant.id}>
+                    {c.route.shortName} · {c.variant.name}
+                  </option>
+                ))}
+              </select>
+              {overlayOn.size === 0 && (
+                <p className="text-[10px] text-amber-400 mt-1">Prima accendi almeno una linea dal pannello "Altre linee".</p>
+              )}
+            </div>
+            <div>
+              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Shift massimo (± min)</label>
+              <input type="number" min={1} max={60} value={syncMaxShift} onChange={e => setSyncMaxShift(e.target.value)}
+                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
+            </div>
+            <button onClick={runSyncSearch} disabled={!syncVariantId || syncBusy}
+              className="w-full px-2 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 font-medium">
+              Calcola shift ottimale
+            </button>
+            {syncResult && (
+              <div className="rounded border border-purple-500/30 bg-purple-500/10 p-2 space-y-1.5">
+                <p>Ora: <strong className="font-mono">Z = {syncResult.zNow}</strong></p>
+                <p>Migliore: <strong className="font-mono">Δ = {syncResult.best > 0 ? "+" : ""}{syncResult.best} min → Z = {syncResult.zBest}</strong></p>
+                <div className="text-[10px] text-slate-400">
+                  Alternative: {syncResult.top.map(r => `${r.delta > 0 ? "+" : ""}${r.delta}′→${r.z}`).join(" · ")}
+                </div>
+                {syncResult.zBest > syncResult.zNow && syncResult.best !== 0 ? (
+                  <button onClick={() => applySyncShift(syncResult.best)} disabled={syncBusy}
+                    className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
+                    {syncBusy ? "Applico…" : `Applica Δ ${syncResult.best > 0 ? "+" : ""}${syncResult.best} min a tutte le corse`}
+                  </button>
+                ) : (
+                  <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali nella finestra scelta.</p>
+                )}
+                <p className="text-[9px] text-slate-500">Lo shift trasla TUTTE le corse della linea scelta (l'headway interno resta invariato). Annullabile riapplicando Δ opposto.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {multOpen && (
           <div className="w-80 border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
             <div className="p-3 border-b border-slate-800 flex items-center gap-2">
