@@ -21,8 +21,8 @@ import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, CopyPlus, Layers,
-  X, Check, GitCommitHorizontal,
+  ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
+  X, Check, GitCommitHorizontal, CircleDot, Shuffle,
 } from "lucide-react";
 import {
   getPsProject,
@@ -118,6 +118,27 @@ function tickStep(spanSec: number): number {
   if (spanSec > 4 * 3600) return 1800;
   if (spanSec > 1.5 * 3600) return 600;
   return 300;
+}
+
+/** Pulsante della barra strumenti verticale (icona + etichetta + badge). */
+function RailButton({ icon, label, active, disabled, badge, activeCls, onClick, title }: {
+  icon: React.ReactNode; label: string; active: boolean; disabled?: boolean;
+  badge?: string | null; activeCls: string; onClick: () => void; title?: string;
+}) {
+  return (
+    <button onClick={onClick} disabled={disabled} title={title}
+      className={`relative flex flex-col items-center gap-1 px-1 py-2 rounded-lg border text-[9px] font-semibold leading-none transition-colors disabled:opacity-30 ${
+        active ? activeCls : "border-transparent text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+      }`}>
+      {icon}
+      <span>{label}</span>
+      {badge != null && badge !== "" && (
+        <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-slate-700 border border-slate-600 text-slate-100 text-[9px] flex items-center justify-center font-mono">
+          {badge}
+        </span>
+      )}
+    </button>
+  );
 }
 
 /* Margini del grafico */
@@ -267,7 +288,9 @@ export default function PlanningStudioTtdPage() {
 
   const [overlayOn, setOverlayOn] = useState<Set<string>>(new Set());
   const [overlayData, setOverlayData] = useState<Record<string, { trips: PsTrip[]; st: Record<string, PsStopTime[]> }>>({});
-  const [overlayPanelOpen, setOverlayPanelOpen] = useState(false);
+  /* ─── Area di lavoro: strumento attivo nella barra laterale (un pannello alla volta) ─── */
+  const [activeTool, setActiveTool] = useState<null | "layers" | "conn" | "sync" | "mult">(null);
+  const toggleTool = (t: NonNullable<typeof activeTool>) => setActiveTool(cur => (cur === t ? null : t));
   useEffect(() => { setOverlayOn(new Set()); setOverlayData({}); }, [variantId]);
   useEffect(() => {
     const missing = Array.from(overlayOn).filter(id => !(id in overlayData));
@@ -515,7 +538,7 @@ export default function PlanningStudioTtdPage() {
   }
 
   /* ─── Moltiplica corsa (cadenzamento) ─── */
-  const [multOpen, setMultOpen] = useState(false);
+  const multOpen = activeTool === "mult";
   const [multBaseTripId, setMultBaseTripId] = useState("");
   const [multHeadway, setMultHeadway] = useState(15);
   const [multFrom, setMultFrom] = useState("06:00");
@@ -576,7 +599,7 @@ export default function PlanningStudioTtdPage() {
     onSuccess: (r) => {
       toast.success(`${r.count} corse create`);
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
-      setMultOpen(false);
+      setActiveTool(null);
     },
     onError: (e: any) => toast.error(e?.message || "Errore nella creazione delle corse"),
   });
@@ -728,13 +751,53 @@ export default function PlanningStudioTtdPage() {
   }, [showConn, axis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
 
   /* ─── C4 · Sincronizzatore coincidenze: trova lo shift Δ della variante scelta
-     che MASSIMIZZA Z (attese in finestra), entro ±maxShift minuti. ─── */
-  const [syncOpen, setSyncOpen] = useState(false);
+     che MASSIMIZZA Z (attese in finestra), entro ±maxShift minuti.
+     - SENSO della coincidenza scelto dall'operatore (chi arriva prima al nodo);
+     - selezione PARZIALE delle corse da spostare (finestra oraria + spunta singola):
+       es. al mattino trasla solo le corse 06–09, al pomeriggio quelle 16–19
+       nell'altro senso. ─── */
+  const syncOpen = activeTool === "sync";
   const [syncVariantId, setSyncVariantId] = useState("");
   const [syncMaxShift, setSyncMaxShift] = useState("15");
   const [syncBusy, setSyncBusy] = useState(false);
+  // "base-first"  = arriva prima la linea BASE  → la linea scelta parte dopo (attesa Δ)
+  // "other-first" = arriva prima la linea SCELTA → la base parte dopo (attesa Δ)
+  const [syncDirection, setSyncDirection] = useState<"base-first" | "other-first">("base-first");
+  const [syncWinFrom, setSyncWinFrom] = useState("06:00");
+  const [syncWinTo, setSyncWinTo] = useState("09:00");
+  const [syncTripIds, setSyncTripIds] = useState<Set<string>>(new Set());
   const [syncResult, setSyncResult] = useState<{ best: number; zNow: number; zBest: number; top: { delta: number; z: number }[] } | null>(null);
-  useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax]);
+  useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax, syncDirection, syncTripIds]);
+
+  // Corse della linea scelta, ordinate per prima partenza (per la selezione parziale)
+  const syncTrips = useMemo(() => {
+    const data = overlayData[syncVariantId];
+    if (!data) return [] as { trip: PsTrip; dep: number }[];
+    let trips = data.trips;
+    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    return trips
+      .map(t => ({ trip: t, dep: data.st[t.id]?.length ? hmsToSec(data.st[t.id][0].departureTime) : Number.POSITIVE_INFINITY }))
+      .sort((a, b) => a.dep - b.dep);
+  }, [overlayData, syncVariantId, calendarFilter]);
+  // Al cambio linea: preseleziona TUTTE le corse (poi l'operatore restringe).
+  // Se la selezione corrente è ancora coerente con la lista (es. dopo un Applica
+  // che aggiorna solo gli orari), viene MANTENUTA.
+  useEffect(() => {
+    setSyncTripIds(prev => {
+      const allSet = new Set(syncTrips.map(x => x.trip.id));
+      const kept = [...prev].filter(id => allSet.has(id));
+      if (prev.size > 0 && kept.length === prev.size) return prev;
+      return kept.length > 0 ? new Set(kept) : allSet;
+    });
+  }, [syncTrips]);
+  /** Seleziona solo le corse con prima partenza nella finestra indicata. */
+  function applySyncWindow() {
+    const a = hmToSec(syncWinFrom), b = hmToSec(syncWinTo);
+    if (a == null || b == null || b < a) { toast.error("Finestra non valida (HH:MM)"); return; }
+    const ids = syncTrips.filter(x => x.dep >= a && x.dep <= b).map(x => x.trip.id);
+    setSyncTripIds(new Set(ids));
+    if (ids.length === 0) toast.warning("Nessuna corsa parte in quella finestra");
+  }
 
   function computeConnForShift(vid: string, deltaSec: number, collect = false): { z: number; pts: ConnPt[] } {
     if (!axis) return { z: 0, pts: [] };
@@ -758,6 +821,8 @@ export default function PlanningStudioTtdPage() {
     if (!data) return { z: 0, pts: [] };
     let trips = data.trips;
     if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    // SOLO le corse selezionate dall'operatore partecipano alla sincronizzazione
+    trips = trips.filter(t => syncTripIds.has(t.id));
     let z = 0;
     const pts: ConnPt[] = [];
     for (const t of trips) {
@@ -767,13 +832,18 @@ export default function PlanningStudioTtdPage() {
         if (dd == null) continue;
         const oArr = hmsToSec(st.arrivalTime) + deltaSec;
         const oDep = hmsToSec(st.departureTime) + deltaSec;
-        for (const a2 of baseArr.get(n) ?? []) {
-          const w = oDep - a2;
-          if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: oDep, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
-        }
-        for (const p2 of baseDep.get(n) ?? []) {
-          const w = p2 - oArr;
-          if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: p2, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
+        if (syncDirection === "base-first") {
+          // arriva la base → la linea scelta PARTE dopo, con attesa in [min,max]
+          for (const a2 of baseArr.get(n) ?? []) {
+            const w = oDep - a2;
+            if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: oDep, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
+          }
+        } else {
+          // arriva la linea scelta → la BASE parte dopo, con attesa in [min,max]
+          for (const p2 of baseDep.get(n) ?? []) {
+            const w = p2 - oArr;
+            if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: p2, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
+          }
         }
       }
     }
@@ -791,6 +861,7 @@ export default function PlanningStudioTtdPage() {
     const deltaSec = syncResult.best * 60;
     let trips = data.trips;
     if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    trips = trips.filter(t => syncTripIds.has(t.id)); // solo le corse selezionate traslano
     const geoms: Pt[][][] = [];
     for (const t of trips) {
       const sts = data.st[t.id];
@@ -801,12 +872,13 @@ export default function PlanningStudioTtdPage() {
     const conn = computeConnForShift(syncVariantId, deltaSec, true);
     return { geoms, pts: conn.pts, delta: syncResult.best };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncResult, syncVariantId, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
+  }, [syncOpen, syncResult, syncVariantId, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop, syncTripIds, syncDirection]);
 
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
 
   function runSyncSearch() {
     if (!syncVariantId || !overlayData[syncVariantId]) { toast.error("Accendi e scegli la linea da sincronizzare"); return; }
+    if (syncTripIds.size === 0) { toast.error("Seleziona almeno una corsa da spostare"); return; }
     const M = Math.min(60, Math.max(1, Math.round(Number(syncMaxShift) || 15)));
     const table: { delta: number; z: number }[] = [];
     for (let d = -M; d <= M; d++) table.push({ delta: d, z: computeZForShift(syncVariantId, d * 60) });
@@ -819,8 +891,11 @@ export default function PlanningStudioTtdPage() {
   async function applySyncShift(deltaMin: number) {
     const data = overlayData[syncVariantId];
     if (!data || deltaMin === 0) return;
+    // trasla SOLO le corse selezionate dall'operatore
+    const targets = data.trips.filter(t => syncTripIds.has(t.id));
+    if (targets.length === 0) { toast.error("Nessuna corsa selezionata"); return; }
     // guardia: nessun orario negativo
-    for (const t of data.trips) {
+    for (const t of targets) {
       const sts = data.st[t.id] ?? [];
       if (sts.length && Math.min(...sts.map(x => hmsToSec(x.arrivalTime))) + deltaMin * 60 < 0) {
         toast.error("Lo shift porterebbe orari prima di 00:00"); return;
@@ -829,26 +904,29 @@ export default function PlanningStudioTtdPage() {
     setSyncBusy(true);
     try {
       let done = 0;
-      for (const t of data.trips) {
+      for (const t of targets) {
         await shiftPsTripTimes(projectId, t.id, deltaMin);
         done++;
       }
-      // aggiorna in locale gli orari della variante spostata
+      // aggiorna in locale gli orari delle sole corse spostate
+      const shifted = new Set(targets.map(t => t.id));
       setOverlayData(prev => {
         const cur = prev[syncVariantId];
         if (!cur) return prev;
         const st: Record<string, PsStopTime[]> = {};
         for (const [tid, sts] of Object.entries(cur.st)) {
-          st[tid] = sts.map(x => ({
-            ...x,
-            arrivalTime: secToHms(hmsToSec(x.arrivalTime) + deltaMin * 60),
-            departureTime: secToHms(hmsToSec(x.departureTime) + deltaMin * 60),
-          }));
+          st[tid] = shifted.has(tid)
+            ? sts.map(x => ({
+                ...x,
+                arrivalTime: secToHms(hmsToSec(x.arrivalTime) + deltaMin * 60),
+                departureTime: secToHms(hmsToSec(x.departureTime) + deltaMin * 60),
+              }))
+            : sts;
         }
         return { ...prev, [syncVariantId]: { ...cur, st } };
       });
       toast.success(`✅ Sincronizzato: ${done} corse traslate di ${deltaMin > 0 ? "+" : ""}${deltaMin} min`, {
-        description: "Le coincidenze sul grafico sono aggiornate.",
+        description: "Le altre corse della linea NON sono state toccate.",
       });
       setSyncResult(null);
     } catch (e: any) {
@@ -908,6 +986,10 @@ export default function PlanningStudioTtdPage() {
   const calendars = calendarsQ.data ?? [];
   const variants = variantsQ.data ?? [];
   const sharedCandidates = candidatesQ.data ?? [];
+  // Nomi per il pannello Sincronizza (senso della coincidenza)
+  const syncCand = sharedCandidates.find(c => c.variant.id === syncVariantId) ?? null;
+  const baseName = baseRoute?.shortName ?? "linea base";
+  const otherName = syncCand?.route.shortName ?? "linea scelta";
 
   /* ════════════════ Render ════════════════ */
   return (
@@ -934,13 +1016,21 @@ export default function PlanningStudioTtdPage() {
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> orari…
           </span>
         )}
+        <button onClick={toggleFullscreen}
+          className="p-2 rounded hover:bg-slate-800 text-slate-300"
+          title={isFullscreen ? "Esci da schermo intero" : "Schermo intero"}>
+          {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+        </button>
       </div>
 
-      {/* Toolbar: selettori + zoom + strumenti */}
-      <div className="h-12 border-b border-slate-800 bg-slate-900/40 px-4 flex items-center gap-3 text-xs shrink-0">
+      {/* Toolbar: linea di riferimento + controlli vista (gli STRUMENTI stanno
+          nella barra verticale a destra, un pannello alla volta) */}
+      <div className="border-b border-slate-800 bg-slate-900/40 px-3 py-1.5 flex items-center gap-2 text-xs shrink-0 flex-wrap">
+        <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Riferimento</span>
         <select
           value={routeId} onChange={e => setRouteId(e.target.value)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[150px]"
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[140px]"
+          title="Linea di riferimento"
         >
           <option value="">Linea…</option>
           {routes.map(r => (
@@ -950,7 +1040,8 @@ export default function PlanningStudioTtdPage() {
         <select
           value={variantId} onChange={e => setVariantId(e.target.value)}
           disabled={!routeId}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[170px] disabled:opacity-40"
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[150px] disabled:opacity-40"
+          title="Variante (percorso) di riferimento"
         >
           <option value="">Variante…</option>
           {variants.map(v => (
@@ -959,7 +1050,8 @@ export default function PlanningStudioTtdPage() {
         </select>
         <select
           value={calendarFilter} onChange={e => setCalendarFilter(e.target.value)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[150px]"
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[140px]"
+          title="Filtro calendario/giorni"
         >
           <option value="">Tutti i giorni/calendari</option>
           {calendars.map(c => (
@@ -967,7 +1059,24 @@ export default function PlanningStudioTtdPage() {
           ))}
         </select>
 
-        <div className="flex items-center gap-1 ml-2">
+        <div className="h-5 w-px bg-slate-800 mx-1" />
+        <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Fascia</span>
+        <input type="text" value={winFrom} onChange={e => setWinFrom(e.target.value)} placeholder="04:00"
+          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 25:30)" />
+        <span className="text-slate-600">–</span>
+        <input type="text" value={winTo} onChange={e => setWinTo(e.target.value)} placeholder="26:00"
+          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 26:00)" />
+        <button
+          onClick={() => {
+            const a2 = hmToSec(winFrom), b2 = hmToSec(winTo);
+            if (a2 == null || b2 == null || b2 <= a2) { toast.error("Fascia non valida"); return; }
+            setDomainClamped(a2, b2);
+          }}
+          className="px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-500 font-medium">Applica</button>
+
+        <div className="h-5 w-px bg-slate-800 mx-1" />
+        <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Zoom</span>
+        <div className="flex items-center gap-1">
           <button onClick={() => zoomAt(1 / 1.4)} className="p-1.5 rounded hover:bg-slate-800 text-slate-300" title="Zoom +">
             <ZoomIn className="w-4 h-4" />
           </button>
@@ -985,179 +1094,16 @@ export default function PlanningStudioTtdPage() {
           </span>
         </div>
 
-        <div className="flex-1" />
-
-        {/* Toggle pannello overlay altre linee */}
-        <div className="relative">
-          <button
-            onClick={() => setOverlayPanelOpen(o => !o)}
-            disabled={!variantId}
-            className={`px-2.5 py-1.5 rounded flex items-center gap-1.5 border disabled:opacity-40 ${
-              overlayOn.size > 0
-                ? "bg-cyan-500/15 border-cyan-500/40 text-cyan-300"
-                : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            Altre linee{overlayOn.size > 0 ? ` (${overlayOn.size})` : ""}
-          </button>
-          {overlayPanelOpen && (
-            <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded p-1.5 z-30 min-w-[260px] max-h-72 overflow-auto shadow-xl">
-              {candidatesQ.isLoading && (
-                <div className="px-2 py-2 text-slate-500 flex items-center gap-2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Ricerca varianti compatibili…
-                </div>
-              )}
-              {!candidatesQ.isLoading && sharedCandidates.length === 0 && (
-                <div className="px-2 py-2 text-slate-500">Nessun'altra variante nel progetto.</div>
-              )}
-              {(() => {
-                // Raggruppa per LINEA: checkbox di linea (tutte le varianti) + varianti singole
-                const byRoute = new Map<string, { route: PsRoute; items: typeof sharedCandidates }>();
-                for (const c of sharedCandidates) {
-                  if (!byRoute.has(c.route.id)) byRoute.set(c.route.id, { route: c.route, items: [] as any });
-                  byRoute.get(c.route.id)!.items.push(c);
-                }
-                return [...byRoute.values()].map(grp => {
-                  const ids = grp.items.map(c => c.variant.id);
-                  const onCount = ids.filter(id => overlayOn.has(id)).length;
-                  const groupColor = colorByRoute.get(grp.route.id) ?? routeColor(grp.route.color, "#475569");
-                  return (
-                    <div key={grp.route.id} className="mb-0.5">
-                      <label className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700 cursor-pointer font-semibold">
-                        <input
-                          type="checkbox"
-                          checked={onCount === ids.length && ids.length > 0}
-                          ref={el => { if (el) el.indeterminate = onCount > 0 && onCount < ids.length; }}
-                          onChange={() => setOverlayOn(prev => {
-                            const n = new Set(prev);
-                            if (onCount > 0) ids.forEach(id => n.delete(id));
-                            else ids.forEach(id => n.add(id));
-                            return n;
-                          })}
-                          className="accent-cyan-500"
-                        />
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: onCount > 0 ? groupColor : "#475569" }} />
-                        <span
-                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                          style={{ backgroundColor: routeColor(grp.route.color, "#475569"), color: routeColor(grp.route.textColor, "#fff") }}
-                        >
-                          {grp.route.shortName}
-                        </span>
-                        <span className="flex-1 truncate text-slate-200">{grp.route.longName || "Linea"}</span>
-                        <span className="text-[10px] text-slate-500">{onCount}/{ids.length}</span>
-                      </label>
-                      {grp.items.map(c => (
-                        <label key={c.variant.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded hover:bg-slate-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={overlayOn.has(c.variant.id)}
-                            onChange={() => setOverlayOn(prev => {
-                              const n = new Set(prev);
-                              if (n.has(c.variant.id)) n.delete(c.variant.id); else n.add(c.variant.id);
-                              return n;
-                            })}
-                            className="accent-cyan-500"
-                          />
-                          <span className="flex-1 truncate text-slate-300">{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
-                          <span className="text-[10px] text-slate-500">{c.shared} ferm. comuni</span>
-                        </label>
-                      ))}
-                    </div>
-                  );
-                });
-              })()}
-            </div>
-          )}
-        </div>
-
-        {/* Toggle pannello cadenzamento */}
-        <button
-          onClick={() => setMultOpen(o => !o)}
-          disabled={!variantId}
-          className={`px-2.5 py-1.5 rounded flex items-center gap-1.5 border disabled:opacity-40 ${
-            multOpen
-              ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
-              : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
-          }`}
-        >
-          <CopyPlus className="w-3.5 h-3.5" />
-          Moltiplica corsa
-        </button>
-
-        {/* Sincronizzatore coincidenze */}
-        <button
-          onClick={() => setSyncOpen(o => !o)}
-          disabled={!variantId}
-          className={`px-2.5 py-1.5 rounded flex items-center gap-1.5 border disabled:opacity-40 ${
-            syncOpen
-              ? "bg-purple-500/15 border-purple-500/40 text-purple-300"
-              : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
-          }`}
-          title="Trova lo shift che massimizza le coincidenze con un'altra linea"
-        >
-          ⇆ Sincronizza
-        </button>
-      </div>
-
-      {/* Toolbar 2: fascia oraria · asse Y · coincidenze · schermo intero */}
-      <div className="min-h-10 border-b border-slate-800 bg-slate-900/30 px-4 py-1.5 flex items-center gap-3 text-xs shrink-0 flex-wrap">
-        <span className="text-slate-500">Fascia:</span>
-        <input type="text" value={winFrom} onChange={e => setWinFrom(e.target.value)} placeholder="04:00"
-          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 25:30)" />
-        <span className="text-slate-600">–</span>
-        <input type="text" value={winTo} onChange={e => setWinTo(e.target.value)} placeholder="26:00"
-          className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" title="HH:MM (anche oltre 24, es. 26:00)" />
-        <button
-          onClick={() => {
-            const a2 = hmToSec(winFrom), b2 = hmToSec(winTo);
-            if (a2 == null || b2 == null || b2 <= a2) { toast.error("Fascia non valida"); return; }
-            setDomainClamped(a2, b2);
-          }}
-          className="px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-500 font-medium">Applica</button>
-
-        <div className="h-4 w-px bg-slate-800" />
-        <span className="text-slate-500">Asse fermate:</span>
+        <div className="h-5 w-px bg-slate-800 mx-1" />
+        <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Asse</span>
         <button onClick={() => setYMode(m => m === "equidistante" ? "distanza" : "equidistante")}
           className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
-          title="Equidistante = fermate a passo uniforme (più vicine e leggibili) · Distanze = proporzionale ai km reali">
+          title="Equidistante = fermate a passo uniforme (più leggibile) · Distanze = proporzionale ai km reali">
           {yMode === "equidistante" ? "≡ Equidistante" : "⇕ Distanze reali"}
         </button>
-
-        <div className="h-4 w-px bg-slate-800" />
-        <label className="flex items-center gap-1.5 text-slate-300 cursor-pointer select-none">
-          <input type="checkbox" checked={showConn} onChange={e => setShowConn(e.target.checked)} className="accent-emerald-500" />
-          Coincidenze
-        </label>
-        <span className="text-slate-500">attesa</span>
-        <input type="number" min={0} max={60} value={connMin} onChange={e => setConnMin(e.target.value)}
-          className="w-12 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
-        <span className="text-slate-600">–</span>
-        <input type="number" min={0} max={120} value={connMax} onChange={e => setConnMax(e.target.value)}
-          className="w-12 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
-        <span className="text-slate-500">min</span>
-        {showConn && overlayOn.size > 0 && (
-          <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono">
-            Z = {connections.z}
-          </span>
-        )}
-
         <div className="flex-1" />
-        {/* Diagnostica corse visibili */}
-        {variantId && (tripsQ.data ?? []).length > 0 && (
-          <span className="text-slate-500">
-            {visibleTrips.length} corse
-            {baseGeoms.length < visibleTrips.length && (
-              <span className="text-amber-400"> · {visibleTrips.length - baseGeoms.length} senza orari (non disegnabili)</span>
-            )}
-          </span>
-        )}
-        <button onClick={toggleFullscreen}
-          className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
-          title="Schermo intero">
-          {isFullscreen ? "🗗 Esci da schermo intero" : "⛶ Schermo intero"}
-        </button>
       </div>
+
 
       {/* Corpo: grafico + pannello cadenzamento opzionale */}
       <div className="flex-1 flex overflow-hidden">
@@ -1391,74 +1337,254 @@ export default function PlanningStudioTtdPage() {
             </div>
           )}
 
-          {/* Legenda interazioni */}
-          {baseAxis && (
-            <div className="absolute bottom-2 right-3 text-[10px] text-slate-600 bg-slate-950/70 px-2 py-1 rounded">
-              rotella = zoom · drag sfondo = pan · drag corsa = trasla orari
-            </div>
-          )}
         </div>
 
-        {/* Pannello cadenzamento ("Moltiplica corsa") */}
-        {/* ─── Pannello Sincronizzatore coincidenze (C4) ─── */}
-        {syncOpen && (
-          <div className="w-[300px] border-l border-slate-800 bg-slate-900/60 p-3 space-y-3 overflow-y-auto shrink-0 text-xs">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-purple-300">⇆ Sincronizza coincidenze</h3>
-              <button onClick={() => setSyncOpen(false)} className="text-slate-500 hover:text-slate-200">✕</button>
+        {/* ─── Pannello: LINEE (overlay altre linee, un colore per linea) ─── */}
+        {activeTool === "layers" && (
+          <div className="w-[320px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-cyan-400" />
+              <h3 className="font-semibold text-sm text-cyan-300">Linee sul grafico</h3>
+              <div className="flex-1" />
+              <button onClick={() => setActiveTool(null)} className="p-1 rounded hover:bg-slate-800"><X className="w-4 h-4" /></button>
             </div>
-            <p className="text-[11px] text-slate-400">
-              Trova lo <strong>shift Δ</strong> (minuti) della linea scelta che <strong>massimizza le coincidenze Z</strong> con
-              la linea base ai nodi condivisi, con attesa {connMin}–{connMax} min.
-            </p>
-            <div>
-              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Linea da spostare (accesa in "Altre linee")</label>
-              <select value={syncVariantId} onChange={e => setSyncVariantId(e.target.value)}
-                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
-                <option value="">— scegli —</option>
-                {sharedCandidates.filter(c => overlayOn.has(c.variant.id)).map(c => (
-                  <option key={c.variant.id} value={c.variant.id}>
-                    {c.route.shortName} · {c.variant.name}
-                  </option>
-                ))}
-              </select>
-              {overlayOn.size === 0 && (
-                <p className="text-[10px] text-amber-400 mt-1">Prima accendi almeno una linea dal pannello "Altre linee".</p>
+            <div className="p-2 overflow-y-auto text-xs flex-1">
+              <p className="px-2 pb-2 text-[10px] text-slate-500">
+                Accendi altre linee per confrontarle con la <strong>{baseRoute?.shortName ?? "base"}</strong>: ogni linea ha un colore, le fermate comuni diventano interscambi ◆ sull'asse.
+              </p>
+              {candidatesQ.isLoading && (
+                <div className="px-2 py-2 text-slate-500 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" /> Ricerca varianti compatibili…
+                </div>
+              )}
+              {!candidatesQ.isLoading && sharedCandidates.length === 0 && (
+                <div className="px-2 py-2 text-slate-500">Nessun'altra variante nel progetto.</div>
+              )}
+              {(() => {
+                // Raggruppa per LINEA: checkbox di linea (tutte le varianti) + varianti singole
+                const byRoute = new Map<string, { route: PsRoute; items: typeof sharedCandidates }>();
+                for (const c of sharedCandidates) {
+                  if (!byRoute.has(c.route.id)) byRoute.set(c.route.id, { route: c.route, items: [] as any });
+                  byRoute.get(c.route.id)!.items.push(c);
+                }
+                return [...byRoute.values()].map(grp => {
+                  const ids = grp.items.map(c => c.variant.id);
+                  const onCount = ids.filter(id => overlayOn.has(id)).length;
+                  const groupColor = colorByRoute.get(grp.route.id) ?? routeColor(grp.route.color, "#475569");
+                  return (
+                    <div key={grp.route.id} className="mb-0.5">
+                      <label className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-800 cursor-pointer font-semibold">
+                        <input
+                          type="checkbox"
+                          checked={onCount === ids.length && ids.length > 0}
+                          ref={el => { if (el) el.indeterminate = onCount > 0 && onCount < ids.length; }}
+                          onChange={() => setOverlayOn(prev => {
+                            const n = new Set(prev);
+                            if (onCount > 0) ids.forEach(id => n.delete(id));
+                            else ids.forEach(id => n.add(id));
+                            return n;
+                          })}
+                          className="accent-cyan-500"
+                        />
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: onCount > 0 ? groupColor : "#475569" }} />
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                          style={{ backgroundColor: routeColor(grp.route.color, "#475569"), color: routeColor(grp.route.textColor, "#fff") }}
+                        >
+                          {grp.route.shortName}
+                        </span>
+                        <span className="flex-1 truncate text-slate-200">{grp.route.longName || "Linea"}</span>
+                        <span className="text-[10px] text-slate-500">{onCount}/{ids.length}</span>
+                      </label>
+                      {grp.items.map(c => (
+                        <label key={c.variant.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded hover:bg-slate-800 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={overlayOn.has(c.variant.id)}
+                            onChange={() => setOverlayOn(prev => {
+                              const n = new Set(prev);
+                              if (n.has(c.variant.id)) n.delete(c.variant.id); else n.add(c.variant.id);
+                              return n;
+                            })}
+                            className="accent-cyan-500"
+                          />
+                          <span className="flex-1 truncate text-slate-300">{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
+                          <span className="text-[10px] text-slate-500">{c.shared} ferm. comuni</span>
+                        </label>
+                      ))}
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Pannello: COINCIDENZE (vista + parametri attesa) ─── */}
+        {activeTool === "conn" && (
+          <div className="w-[300px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <CircleDot className="w-4 h-4 text-emerald-400" />
+              <h3 className="font-semibold text-sm text-emerald-300">Coincidenze</h3>
+              <div className="flex-1" />
+              <button onClick={() => setActiveTool(null)} className="p-1 rounded hover:bg-slate-800"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-3 space-y-3 text-xs overflow-y-auto">
+              <label className="flex items-center gap-2 text-slate-200 cursor-pointer select-none rounded border border-slate-700 bg-slate-800/60 px-2.5 py-2">
+                <input type="checkbox" checked={showConn} onChange={e => setShowConn(e.target.checked)} className="accent-emerald-500" />
+                Mostra le coincidenze sul grafico (pallini verdi)
+              </label>
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Attesa al nodo di cambio (min)</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={60} value={connMin} onChange={e => setConnMin(e.target.value)}
+                    className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+                  <span className="text-slate-600">–</span>
+                  <input type="number" min={0} max={120} value={connMax} onChange={e => setConnMax(e.target.value)}
+                    className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+                  <span className="text-slate-500">min</span>
+                </div>
+              </div>
+              {overlayOn.size > 0 ? (
+                <div className="rounded border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                  <span className="font-mono text-emerald-300 text-sm font-semibold">Z = {connections.z}</span>
+                  <span className="text-emerald-200/70"> coincidenze realizzate con attesa {connMin}–{connMax}′</span>
+                </div>
+              ) : (
+                <p className="text-[10px] text-amber-400">Accendi almeno un'altra linea dal pannello <strong>Linee</strong> per vedere le coincidenze.</p>
+              )}
+              <p className="text-[10px] text-slate-500 leading-snug">
+                Una coincidenza si realizza quando due linee condividono un <strong>nodo</strong> (stessa fermata o stesso cluster) e la seconda passa entro la finestra di attesa dopo l'arrivo della prima. Qui la vista conta <strong>entrambe le direzioni</strong>; per orientare e correggere gli orari usa lo strumento <strong>Sincronizza</strong>.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ─── Pannello: SINCRONIZZA (senso della coincidenza + selezione parziale corse) ─── */}
+        {syncOpen && (
+          <div className="w-[330px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <Shuffle className="w-4 h-4 text-purple-400" />
+              <h3 className="font-semibold text-sm text-purple-300">Sincronizza coincidenze</h3>
+              <div className="flex-1" />
+              <button onClick={() => setActiveTool(null)} className="p-1 rounded hover:bg-slate-800"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-3 space-y-3 text-xs overflow-y-auto flex-1">
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">1 · Linea da spostare (accesa in "Linee")</label>
+                <select value={syncVariantId} onChange={e => setSyncVariantId(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
+                  <option value="">— scegli —</option>
+                  {sharedCandidates.filter(c => overlayOn.has(c.variant.id)).map(c => (
+                    <option key={c.variant.id} value={c.variant.id}>
+                      {c.route.shortName} · {c.variant.name}
+                    </option>
+                  ))}
+                </select>
+                {overlayOn.size === 0 && (
+                  <p className="text-[10px] text-amber-400 mt-1">Prima accendi almeno una linea dal pannello <strong>Linee</strong>.</p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">2 · Senso della coincidenza (chi arriva prima al nodo)</label>
+                <div className="space-y-1">
+                  <label className={`flex items-start gap-2 px-2.5 py-2 rounded border cursor-pointer select-none ${syncDirection === "base-first" ? "border-purple-500/50 bg-purple-500/10 text-slate-100" : "border-slate-700 text-slate-400 hover:bg-slate-800"}`}>
+                    <input type="radio" name="sync-dir" checked={syncDirection === "base-first"} onChange={() => setSyncDirection("base-first")} className="accent-purple-500 mt-0.5" />
+                    <span>Arriva prima la <strong>{baseName}</strong> → la <strong>{otherName}</strong> parte {connMin}–{connMax}′ dopo</span>
+                  </label>
+                  <label className={`flex items-start gap-2 px-2.5 py-2 rounded border cursor-pointer select-none ${syncDirection === "other-first" ? "border-purple-500/50 bg-purple-500/10 text-slate-100" : "border-slate-700 text-slate-400 hover:bg-slate-800"}`}>
+                    <input type="radio" name="sync-dir" checked={syncDirection === "other-first"} onChange={() => setSyncDirection("other-first")} className="accent-purple-500 mt-0.5" />
+                    <span>Arriva prima la <strong>{otherName}</strong> → la <strong>{baseName}</strong> parte {connMin}–{connMax}′ dopo</span>
+                  </label>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Es. al mattino la {baseName} porta gli utenti alla {otherName} (primo senso); al pomeriggio il flusso si inverte (secondo senso).
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">3 · Attesa al nodo Δ (min)</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={60} value={connMin} onChange={e => setConnMin(e.target.value)}
+                    className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+                  <span className="text-slate-600">–</span>
+                  <input type="number" min={0} max={120} value={connMax} onChange={e => setConnMax(e.target.value)}
+                    className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
+                  <span className="text-slate-500">min</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                  4 · Corse da spostare — <span className="text-purple-300 font-semibold">{syncTripIds.size}/{syncTrips.length} selezionate</span>
+                </label>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <input type="text" value={syncWinFrom} onChange={e => setSyncWinFrom(e.target.value)} placeholder="06:00"
+                    className="w-14 px-1 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
+                  <span className="text-slate-600">–</span>
+                  <input type="text" value={syncWinTo} onChange={e => setSyncWinTo(e.target.value)} placeholder="09:00"
+                    className="w-14 px-1 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
+                  <button onClick={applySyncWindow} disabled={!syncVariantId}
+                    className="px-2 py-1 rounded bg-purple-600/80 text-white hover:bg-purple-500 disabled:opacity-40">Finestra</button>
+                  <button onClick={() => setSyncTripIds(new Set(syncTrips.map(x => x.trip.id)))} disabled={!syncVariantId}
+                    className="px-1.5 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Tutte</button>
+                  <button onClick={() => setSyncTripIds(new Set())} disabled={!syncVariantId}
+                    className="px-1.5 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Nessuna</button>
+                </div>
+                {syncVariantId ? (
+                  <div className="max-h-44 overflow-y-auto rounded border border-slate-800 divide-y divide-slate-800/60">
+                    {syncTrips.map(({ trip, dep }) => (
+                      <label key={trip.id} className="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-slate-800/60">
+                        <input type="checkbox" checked={syncTripIds.has(trip.id)}
+                          onChange={() => setSyncTripIds(prev => { const n = new Set(prev); n.has(trip.id) ? n.delete(trip.id) : n.add(trip.id); return n; })}
+                          className="accent-purple-500" />
+                        <span className="font-mono text-slate-200">{Number.isFinite(dep) ? secToHm(dep) : "—"}</span>
+                        <span className="flex-1 truncate text-slate-400">{trip.shortName || trip.headsign || trip.id.slice(0, 8)}</span>
+                      </label>
+                    ))}
+                    {syncTrips.length === 0 && <div className="px-2 py-2 text-slate-500">Corse in caricamento…</div>}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-500">Scegli prima la linea da spostare.</p>
+                )}
+                <p className="text-[10px] text-slate-500 mt-1">Le corse NON selezionate restano ferme: puoi sincronizzare solo la fascia del mattino e poi, separatamente, quella del pomeriggio nel senso opposto.</p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">5 · Shift massimo (± min)</label>
+                <input type="number" min={1} max={60} value={syncMaxShift} onChange={e => setSyncMaxShift(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
+              </div>
+              <button onClick={runSyncSearch} disabled={!syncVariantId || syncBusy || syncTripIds.size === 0}
+                className="w-full px-2 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 font-medium">
+                Calcola shift ottimale
+              </button>
+              {syncResult && (
+                <div className="rounded border border-purple-500/30 bg-purple-500/10 p-2 space-y-1.5">
+                  <p>Ora: <strong className="font-mono">Z = {syncResult.zNow}</strong></p>
+                  <p>Migliore: <strong className="font-mono">Δ = {syncResult.best > 0 ? "+" : ""}{syncResult.best} min → Z = {syncResult.zBest}</strong></p>
+                  <div className="text-[10px] text-slate-400">
+                    Alternative: {syncResult.top.map(r => `${r.delta > 0 ? "+" : ""}${r.delta}′→${r.z}`).join(" · ")}
+                  </div>
+                  {syncResult.zBest > syncResult.zNow && syncResult.best !== 0 ? (
+                    <>
+                      <p className="text-[10px] text-purple-300">
+                        👁 Sul grafico vedi <strong>tratteggiate in viola</strong> le {syncTripIds.size} corse selezionate
+                        traslate di Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best}′ (cerchi = coincidenze previste).
+                      </p>
+                      <button onClick={() => setSyncConfirmOpen(true)} disabled={syncBusy}
+                        className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
+                        Applica Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min…
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali per la selezione e il senso scelti.</p>
+                  )}
+                  <p className="text-[9px] text-slate-500">Lo shift trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando il Δ opposto sulla stessa selezione.</p>
+                </div>
               )}
             </div>
-            <div>
-              <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Shift massimo (± min)</label>
-              <input type="number" min={1} max={60} value={syncMaxShift} onChange={e => setSyncMaxShift(e.target.value)}
-                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
-            </div>
-            <button onClick={runSyncSearch} disabled={!syncVariantId || syncBusy}
-              className="w-full px-2 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 font-medium">
-              Calcola shift ottimale
-            </button>
-            {syncResult && (
-              <div className="rounded border border-purple-500/30 bg-purple-500/10 p-2 space-y-1.5">
-                <p>Ora: <strong className="font-mono">Z = {syncResult.zNow}</strong></p>
-                <p>Migliore: <strong className="font-mono">Δ = {syncResult.best > 0 ? "+" : ""}{syncResult.best} min → Z = {syncResult.zBest}</strong></p>
-                <div className="text-[10px] text-slate-400">
-                  Alternative: {syncResult.top.map(r => `${r.delta > 0 ? "+" : ""}${r.delta}′→${r.z}`).join(" · ")}
-                </div>
-                {syncResult.zBest > syncResult.zNow && syncResult.best !== 0 ? (
-                  <>
-                    <p className="text-[10px] text-purple-300">
-                      👁 Sul grafico vedi la linea <strong>tratteggiata viola</strong>: è dove finirebbero le corse
-                      con Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best}′ (cerchi = coincidenze previste).
-                    </p>
-                    <button onClick={() => setSyncConfirmOpen(true)} disabled={syncBusy}
-                      className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
-                      Applica Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min…
-                    </button>
-                  </>
-                ) : (
-                  <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali nella finestra scelta.</p>
-                )}
-                <p className="text-[9px] text-slate-500">Lo shift trasla TUTTE le corse della linea scelta (l'headway interno resta invariato). Annullabile riapplicando Δ opposto.</p>
-              </div>
-            )}
           </div>
         )}
 
@@ -1468,7 +1594,7 @@ export default function PlanningStudioTtdPage() {
               <CopyPlus className="w-4 h-4 text-emerald-400" />
               <h3 className="font-semibold text-sm">Moltiplica corsa</h3>
               <div className="flex-1" />
-              <button onClick={() => setMultOpen(false)} className="p-1 rounded hover:bg-slate-800">
+              <button onClick={() => setActiveTool(null)} className="p-1 rounded hover:bg-slate-800">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1550,6 +1676,64 @@ export default function PlanningStudioTtdPage() {
             </div>
           </div>
         )}
+
+        {/* ─── Barra STRUMENTI verticale (sempre visibile, un pannello alla volta) ─── */}
+        <div className="w-[68px] border-l border-slate-800 bg-slate-900 flex flex-col items-stretch py-2 px-1.5 gap-1.5 shrink-0">
+          <span className="text-center text-[8px] uppercase tracking-widest text-slate-600 font-semibold pb-0.5">Strumenti</span>
+          <RailButton
+            icon={<Layers className="w-4 h-4" />} label="Linee"
+            active={activeTool === "layers"} disabled={!variantId}
+            badge={overlayOn.size > 0 ? String(overlayOn.size) : null}
+            activeCls="bg-cyan-500/15 border-cyan-500/50 text-cyan-300"
+            onClick={() => toggleTool("layers")}
+            title="Accendi altre linee sul grafico (un colore per linea)" />
+          <RailButton
+            icon={<CircleDot className="w-4 h-4" />} label="Coincid."
+            active={activeTool === "conn"} disabled={!variantId}
+            badge={showConn && overlayOn.size > 0 ? String(connections.z) : null}
+            activeCls="bg-emerald-500/15 border-emerald-500/50 text-emerald-300"
+            onClick={() => toggleTool("conn")}
+            title="Coincidenze ai nodi di cambio: mostra/nascondi e finestra di attesa" />
+          <RailButton
+            icon={<Shuffle className="w-4 h-4" />} label="Sincron."
+            active={activeTool === "sync"} disabled={!variantId}
+            badge={null}
+            activeCls="bg-purple-500/15 border-purple-500/50 text-purple-300"
+            onClick={() => toggleTool("sync")}
+            title="Sincronizza le coincidenze: scegli senso, corse da spostare e Δ ottimale" />
+          <RailButton
+            icon={<CopyPlus className="w-4 h-4" />} label="Moltipl."
+            active={activeTool === "mult"} disabled={!variantId}
+            badge={null}
+            activeCls="bg-emerald-500/15 border-emerald-500/50 text-emerald-300"
+            onClick={() => toggleTool("mult")}
+            title="Moltiplica una corsa a cadenza costante" />
+        </div>
+      </div>
+
+      {/* ─── Barra di stato ─── */}
+      <div className="h-7 border-t border-slate-800 bg-slate-900 px-3 flex items-center gap-3 text-[10px] text-slate-500 shrink-0">
+        {variantId ? (
+          <>
+            <span><strong className="text-slate-300">{visibleTrips.length}</strong> corse · linea <strong className="text-slate-300">{baseRoute?.shortName}</strong></span>
+            {baseGeoms.length < visibleTrips.length && (
+              <span className="text-amber-400">{visibleTrips.length - baseGeoms.length} senza orari (non disegnabili)</span>
+            )}
+            {overlayOn.size > 0 && (
+              <span><strong className="text-cyan-300">{overlayOn.size}</strong> varianti sovrapposte</span>
+            )}
+            {showConn && overlayOn.size > 0 && (
+              <span className="px-1.5 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono">Z = {connections.z}</span>
+            )}
+            {((axis as any)?.shared?.size ?? 0) > 0 && (
+              <span className="text-amber-300">◆ {(axis as any).shared.size} interscambi</span>
+            )}
+          </>
+        ) : (
+          <span>Seleziona una linea e una variante di riferimento per iniziare.</span>
+        )}
+        <div className="flex-1" />
+        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · drag corsa = trasla orari</span>
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
@@ -1563,9 +1747,14 @@ export default function PlanningStudioTtdPage() {
               <p>
                 Linea: <strong>{(() => { const c = sharedCandidates.find(x => x.variant.id === syncVariantId); return c ? `${c.route.shortName} · ${c.variant.name}` : "—"; })()}</strong>
               </p>
-              <p>Shift: <strong className="font-mono">Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min</strong> su <strong>{(overlayData[syncVariantId]?.trips.length ?? 0)} corse</strong> (headway interno invariato).</p>
-              <p>Coincidenze: <strong className="font-mono">Z {syncResult.zNow} → {syncResult.zBest}</strong> (attesa {connMin}–{connMax} min).</p>
-              <p className="text-[10px] text-slate-500">Gli orari vengono aggiornati sul database. Reversibile riapplicando il Δ opposto.</p>
+              <p>
+                Senso: <strong>{syncDirection === "base-first"
+                  ? `arriva prima la ${baseName} → la ${otherName} parte dopo`
+                  : `arriva prima la ${otherName} → la ${baseName} parte dopo`}</strong> (attesa {connMin}–{connMax}′).
+              </p>
+              <p>Shift: <strong className="font-mono">Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min</strong> su <strong>{syncTripIds.size} corse selezionate</strong> (su {syncTrips.length} della linea; le altre restano ferme).</p>
+              <p>Coincidenze: <strong className="font-mono">Z {syncResult.zNow} → {syncResult.zBest}</strong>.</p>
+              <p className="text-[10px] text-slate-500">Gli orari vengono aggiornati sul database. Reversibile riapplicando il Δ opposto alla stessa selezione.</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
               <button onClick={() => setSyncConfirmOpen(false)} disabled={syncBusy}
