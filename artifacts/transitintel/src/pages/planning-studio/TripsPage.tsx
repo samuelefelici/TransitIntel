@@ -60,6 +60,15 @@ function fmtDate(d?: string | null) {
   const [y, m, day] = d.split("-");
   return `${day}/${m}/${y}`;
 }
+/* Conversioni orario GTFS (consentono >24:00 per corse dopo mezzanotte) */
+function genToSec(t: string): number {
+  const q = t.split(":").map(Number);
+  return (q[0] || 0) * 3600 + (q[1] || 0) * 60 + (q[2] || 0);
+}
+function genSecToHms(x: number): string {
+  const h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sec = Math.round(x % 60);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
 
 export default function PlanningStudioTripsPage() {
   const params = useParams<{ id: string }>();
@@ -326,11 +335,6 @@ export default function PlanningStudioTripsPage() {
    * Corsa template + fascia oraria + headway → partenze t_k = t0 + k·H,
    * orari propagati su tutte le fermate clonando gli stop_times traslati. */
 
-  const genToSec = (t: string) => { const q = t.split(":").map(Number); return (q[0] || 0) * 3600 + (q[1] || 0) * 60 + (q[2] || 0); };
-  const genSecToHms = (x: number) => {
-    const h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sec = Math.round(x % 60);
-    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  };
   const genPreviewCount = useMemo(() => {
     const H = Math.round(Number(genEvery));
     const a = genToSec(genFrom + ":00"), b = genToSec(genTo + ":00");
