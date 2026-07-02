@@ -1383,6 +1383,8 @@ router.delete("/planning-studio/projects/:id/trips/:tripId", async (req, res): P
   await db.execute(sql`
     DELETE FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${proj.id}::uuid
   `);
+  // ps_trip_category_validity non ha FK con cascata: pulizia esplicita
+  await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid`);
   await logActivity(proj.id, req.user!.id, "ps.trip.delete", { targetId: tripId });
   res.json({ ok: true });
 });
