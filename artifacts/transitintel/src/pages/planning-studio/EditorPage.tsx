@@ -1997,15 +1997,31 @@ export default function PlanningStudioEditorPage() {
 
           {/* Editing stop popup */}
           {editingStop && (
-            <Popup longitude={editingStop.lon} latitude={editingStop.lat} closeOnClick={false}
-              closeButton={false} anchor="bottom" offset={12}>
-              <NewStopForm
-                lat={editingStop.lat} lon={editingStop.lon}
-                initialName={editingStop.name} initialCode={editingStop.code || ""}
-                onCancel={() => setEditingStop(null)}
-                onSave={(d) => handleSaveStop(d, editingStop.id)}
-              />
-            </Popup>
+            <>
+              {/* Segnalino TRASCINABILE: sposta la fermata col cursore; lat/lon
+                  del form si aggiornano e "Salva" persiste la nuova posizione. */}
+              <Marker
+                longitude={editingStop.lon} latitude={editingStop.lat} anchor="center" draggable
+                onDragEnd={(e) => setEditingStop(prev => prev ? { ...prev, lat: e.lngLat.lat, lon: e.lngLat.lng } : prev)}
+              >
+                <div
+                  className="w-5 h-5 rounded-full bg-orange-500 border-2 border-white shadow-[0_0_0_4px_rgba(249,115,22,0.35)] cursor-grab active:cursor-grabbing"
+                  title="Trascina per spostare la fermata"
+                />
+              </Marker>
+              <Popup longitude={editingStop.lon} latitude={editingStop.lat} closeOnClick={false}
+                closeButton={false} anchor="bottom" offset={18}>
+                <div>
+                  <p className="text-[10px] text-orange-600 font-medium mb-1 px-1">↔ Trascina il segnalino arancione per spostare la fermata</p>
+                  <NewStopForm
+                    lat={editingStop.lat} lon={editingStop.lon}
+                    initialName={editingStop.name} initialCode={editingStop.code || ""}
+                    onCancel={() => setEditingStop(null)}
+                    onSave={(d) => handleSaveStop(d, editingStop.id)}
+                  />
+                </div>
+              </Popup>
+            </>
           )}
         </Map>
 
@@ -3558,6 +3574,20 @@ function VariantEditorPanel({
     return stopsAll.filter(s => s.name.toLowerCase().includes(qq) || (s.code || "").toLowerCase().includes(qq)).slice(0, 8);
   }, [stopsAll, stopPicker]);
 
+  // Distanza progressiva (m) per fermata: cumulata fermata→fermata (haversine).
+  const cumDistM = useMemo(() => {
+    const out: number[] = [];
+    let acc = 0;
+    editor.stops.forEach((s, i) => {
+      if (i > 0) {
+        const p = editor.stops[i - 1];
+        acc += lineLengthM([[p.lon, p.lat], [s.lon, s.lat]]);
+      }
+      out.push(acc);
+    });
+    return out;
+  }, [editor.stops]);
+
   return (
     <div className="flex flex-col h-full">
       {/* Header editor */}
@@ -3626,7 +3656,10 @@ function VariantEditorPanel({
             >
               <GripVertical className="w-3 h-3 text-slate-600" />
               <span className="text-[10px] font-mono text-slate-500 w-5 text-right">{vs.seq}</span>
-              <span className="text-xs flex-1 truncate">{vs.stopName}</span>
+              <span className="text-xs flex-1 truncate" title={vs.stopName}>{vs.stopName}</span>
+              <span className="text-[9px] font-mono text-emerald-400/80 shrink-0 tabular-nums" title="Distanza progressiva (in linea d'aria fermata→fermata)">
+                {idx === 0 ? "0 m" : cumDistM[idx] >= 1000 ? `${(cumDistM[idx] / 1000).toFixed(1)} km` : `${Math.round(cumDistM[idx])} m`}
+              </span>
               <button onClick={() => onRemoveStop(idx)}
                 className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-500 hover:text-red-400">
                 <X className="w-3 h-3" />
