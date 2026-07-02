@@ -16,7 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
-  Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff,
+  Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer,
 } from "lucide-react";
 import {
   getPsProject,
@@ -25,6 +25,7 @@ import {
   listPsCalendars, type PsCalendar,
   listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, type PsTrip,
   getPsStopTimes, type PsStopTime,
+  batchCreatePsTrips, type PsBatchTripInput,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
 
@@ -138,6 +139,75 @@ export default function PlanningStudioTripsPage() {
   }
   useEffect(() => { setSelected(new Set()); }, [routeId, variantId, calendarFilter, onlyActive]);
 
+  /* ─── C1 · Genera corse a cadenza (even headway, Ceder §4.3) ───
+   * Corsa template + fascia oraria + headway → partenze t_k = t0 + k·H,
+   * orari propagati su tutte le fermate clonando gli stop_times traslati. */
+  const [genOpen, setGenOpen] = useState(false);
+  const [genTemplateId, setGenTemplateId] = useState("");
+  const [genFrom, setGenFrom] = useState("06:00");
+  const [genTo, setGenTo] = useState("20:00");
+  const [genEvery, setGenEvery] = useState("15");
+  const [genBusy, setGenBusy] = useState(false);
+
+  const genToSec = (t: string) => { const q = t.split(":").map(Number); return (q[0] || 0) * 3600 + (q[1] || 0) * 60 + (q[2] || 0); };
+  const genSecToHms = (x: number) => {
+    const h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sec = Math.round(x % 60);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  };
+  const genPreviewCount = useMemo(() => {
+    const H = Math.round(Number(genEvery));
+    const a = genToSec(genFrom + ":00"), b = genToSec(genTo + ":00");
+    if (!Number.isFinite(H) || H < 1 || b <= a) return 0;
+    return Math.floor((b - a) / (H * 60)) + 1;
+  }, [genFrom, genTo, genEvery]);
+
+  async function runGenerate() {
+    const tpl = (tripsQ.data ?? []).find(t => t.id === genTemplateId);
+    if (!tpl) { toast.error("Scegli la corsa template"); return; }
+    const H = Math.round(Number(genEvery));
+    if (!Number.isFinite(H) || H < 1) { toast.error("Cadenza non valida (minuti ≥ 1)"); return; }
+    const winFrom = genToSec(genFrom + ":00"), winTo = genToSec(genTo + ":00");
+    if (winTo <= winFrom) { toast.error("Fascia oraria non valida (fine dopo inizio)"); return; }
+    setGenBusy(true);
+    try {
+      const sts = await getPsStopTimes(projectId, tpl.id);
+      if (sts.length < 2) throw new Error("La corsa template non ha orari alle fermate (stop_times)");
+      const baseDep = genToSec(sts[0].departureTime);
+      const minOff = Math.min(...sts.map(st => genToSec(st.arrivalTime) - baseDep));
+      const deps: number[] = [];
+      for (let t = winFrom; t <= winTo; t += H * 60) {
+        if (Math.abs(t - baseDep) < 30) continue; // il template esiste già: non clonarlo su se stesso
+        if (t + minOff < 0) continue;             // niente orari negativi
+        deps.push(t);
+      }
+      if (deps.length === 0) throw new Error("Nessuna partenza da generare nella fascia");
+      if (deps.length > 200) throw new Error(`${deps.length} corse superano il limite di 200 per batch: restringi la fascia o allunga la cadenza`);
+      const payload: PsBatchTripInput[] = deps.map(dep => ({
+        routeId: tpl.routeId,
+        variantId: tpl.variantId,
+        calendarId: tpl.calendarId ?? null,
+        headsign: tpl.headsign ?? null,
+        direction: tpl.direction ?? 0,
+        serviceLabel: tpl.serviceLabel ?? null,
+        stopTimes: sts.map(st => ({
+          stopId: st.stopId,
+          arrivalTime: genSecToHms(genToSec(st.arrivalTime) - baseDep + dep),
+          departureTime: genSecToHms(genToSec(st.departureTime) - baseDep + dep),
+          timepoint: st.timepoint,
+        })),
+      }));
+      const r = await batchCreatePsTrips(projectId, payload);
+      toast.success(`✅ ${r.count} corse generate`, {
+        description: `${genFrom}–${genTo} · una ogni ${H} min · orari propagati su ${sts.length} fermate`,
+        duration: 6000,
+      });
+      setGenOpen(false);
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+    } catch (e: any) {
+      toast.error("Generazione fallita", { description: e?.message });
+    } finally { setGenBusy(false); }
+  }
+
   /* ─── Mutations ─── */
   const updateMut = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Partial<PsTrip> }) =>
@@ -238,6 +308,18 @@ export default function PlanningStudioTripsPage() {
             className="accent-amber-500" />
           Solo attive
         </label>
+
+        <button
+          onClick={() => {
+            if (!variantId) { toast.info("Seleziona linea e variante", { description: "La cadenza si genera da una corsa template della variante." }); return; }
+            setGenTemplateId(filteredTrips[0]?.id ?? "");
+            setGenOpen(true);
+          }}
+          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-500 transition-colors"
+          title="Genera corse a cadenza costante da una corsa template (even headway)"
+        >
+          <Timer className="w-3.5 h-3.5" /> Genera a cadenza
+        </button>
 
         <div className="flex-1" />
 
@@ -400,6 +482,66 @@ export default function PlanningStudioTripsPage() {
           onClose={() => setDetailTripId(null)}
           onChange={() => qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] })}
         />
+      )}
+
+      {/* ─── Dialog: Genera corse a cadenza (C1 — even headway) ─── */}
+      {genOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !genBusy && setGenOpen(false)}>
+          <div className="w-full max-w-md mx-4 rounded-xl border border-amber-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Timer className="w-4 h-4 text-amber-400" /> Genera corse a cadenza
+              </h3>
+              <button onClick={() => !genBusy && setGenOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-4 space-y-3 text-sm">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Corsa template</label>
+                <select value={genTemplateId} onChange={e => setGenTemplateId(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs">
+                  <option value="">— scegli la corsa da replicare —</option>
+                  {filteredTrips.map(t => (
+                    <option key={t.id} value={t.id}>
+                      {fmtTime(firstTimes[t.id])} · {t.shortName || t.headsign || t.id.slice(0, 8)}
+                      {t.serviceLabel ? ` · ${t.serviceLabel}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">Gli orari di transito a ogni fermata vengono ricalcolati traslando quelli del template.</p>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Dalle</label>
+                  <input type="time" value={genFrom} onChange={e => setGenFrom(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Alle</label>
+                  <input type="time" value={genTo} onChange={e => setGenTo(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+                <div>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Ogni (min)</label>
+                  <input type="number" min={1} max={240} value={genEvery} onChange={e => setGenEvery(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
+                </div>
+              </div>
+              <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                ≈ <strong>{genPreviewCount}</strong> partenze nella fascia {genFrom}–{genTo} (headway costante).
+                {genPreviewCount > 200 && <span className="text-red-300"> Oltre il limite di 200: restringi la fascia.</span>}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+              <button onClick={() => setGenOpen(false)} disabled={genBusy}
+                className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
+              <button onClick={runGenerate} disabled={genBusy || !genTemplateId || genPreviewCount === 0 || genPreviewCount > 200}
+                className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                {genBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Timer className="w-3.5 h-3.5" />}
+                Genera corse
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -630,6 +772,7 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

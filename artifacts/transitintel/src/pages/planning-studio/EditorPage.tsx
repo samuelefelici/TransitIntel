@@ -329,6 +329,8 @@ export default function PlanningStudioEditorPage() {
   // Ancora di inserimento: se ≠ null, la prossima fermata cliccata viene inserita
   // DOPO questo indice della sequenza (invece che in coda), e l'ancora avanza.
   const [insertAfterIdx, setInsertAfterIdx] = useState<number | null>(null);
+  // Timestamp dell'ultimo salvataggio riuscito della variante (conferma visiva).
+  const [variantSavedAt, setVariantSavedAt] = useState<number | null>(null);
   // ── Annulla (editor variante): snapshot di stops+waypoints prima di ogni modifica ──
   const [editorHistory, setEditorHistory] = useState<{ stops: PsVariantStop[]; waypoints: PsWaypoint[] }[]>([]);
   // ── Drag della linea del percorso (stile Google Maps): via-point in inserimento ──
@@ -915,6 +917,7 @@ export default function PlanningStudioEditorPage() {
       setTool("editVariant");
       setInsertAfterIdx(null);
       setEditorHistory([]);
+      setVariantSavedAt(null);
       // fit map sui waypoint o sulle fermate della variante
       const coords = data.shape?.geometry?.coordinates?.length
         ? data.shape.geometry.coordinates
@@ -1248,9 +1251,11 @@ export default function PlanningStudioEditorPage() {
           durationS: editor.durationS ?? undefined,
         });
       }
-      toast.success("Variante salvata", {
-        description: `${editor.stops.length} fermate · ${editor.geometry ? `${(editor.distanceM! / 1000).toFixed(2)} km di percorso` : "nessun percorso"}`,
+      toast.success("✅ Percorso salvato", {
+        description: `${editor.stops.length} fermate · ${editor.geometry ? `${(editor.distanceM! / 1000).toFixed(2)} km di percorso` : "nessun tracciato"} — puoi chiudere l'editor.`,
+        duration: 5000,
       });
+      setVariantSavedAt(Date.now());
       setEditor({ ...editor, dirty: false });
       // Aggiorna flag has_shape sulla lista varianti della route
       const updated = await listPsVariants(projectId, editor.routeId);
@@ -1588,9 +1593,6 @@ export default function PlanningStudioEditorPage() {
             <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Activity} label="Inspector di rete" note="pagina" accent="violet"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/network`); }} />
-            {/* Orario grafico (diagramma tempo-distanza) — pagina dedicata */}
-            <MenuItem icon={LineChart} label="Orario grafico (TTD)" note="pagina" accent="amber"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
           </MenuGroup>
 
           {/* Orari: corse, pattern di circolazione, periodi, calendario aziendale */}
@@ -1601,7 +1603,13 @@ export default function PlanningStudioEditorPage() {
             onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
           >
             <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
+              desc="elenco, filtri, genera a cadenza"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
+            {/* Orario grafico (time–space / Marey): qui, insieme alle corse —
+                strumenti di scheduling unificati in un solo menu */}
+            <MenuItem icon={LineChart} label="Orario grafico (TTD)" note="pagina" accent="amber"
+              desc="diagramma tempo-distanza delle corse"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
             {/* Ex "Calendari": rinominata per chiarezza — sono i pattern di giorni
                 in cui circolano le corse (lun-ven, sabato, festivi…) */}
             <MenuItem icon={CalendarIcon} label="Giorni di circolazione"
@@ -2634,15 +2642,25 @@ export default function PlanningStudioEditorPage() {
                     onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
                     onDeleteVariant={async (id) => {
-                      if (!confirm("Eliminare la variante?")) return;
+                      if (!confirm("Eliminare il percorso (variante)? La linea resta comunque.")) return;
                       try {
                         await deletePsVariant(projectId, id);
+                        let ownerRouteId: string | null = null;
                         setRouteVariants(prev => {
                           const next = { ...prev };
-                          for (const k of Object.keys(next)) next[k] = next[k].filter(v => v.id !== id);
+                          for (const k of Object.keys(next)) {
+                            if (next[k].some(v => v.id === id)) ownerRouteId = k;
+                            next[k] = next[k].filter(v => v.id !== id);
+                          }
                           return next;
                         });
-                        toast.success("Variante eliminata");
+                        // Aggiorna il conteggio sulla linea: la LINEA non viene mai
+                        // eliminata, anche a 0 percorsi.
+                        if (ownerRouteId) {
+                          setRoutes(rs => rs.map(r => r.id === ownerRouteId
+                            ? { ...r, variantCount: Math.max(0, (r.variantCount ?? 1) - 1) } : r));
+                        }
+                        toast.success("Percorso eliminato", { description: "La linea resta (anche con 0 percorsi)." });
                       } catch (e: any) { toast.error("Errore", { description: e?.message }); }
                     }}
                   />
@@ -2728,6 +2746,7 @@ export default function PlanningStudioEditorPage() {
                 onToggleCurb={toggleCurb}
                 onUndo={undoEditor}
                 canUndo={editorHistory.length > 0}
+                savedAt={variantSavedAt}
                 onChangeMode={changeShapeMode}
                 onSave={saveVariant}
                 onExit={exitEditor}
@@ -3206,6 +3225,11 @@ function RoutesPanel({
               </div>
               {open && (
                 <div className="px-3 pb-3 space-y-1 border-t border-slate-800/50 bg-slate-900/30">
+                  {variants.length === 0 && (
+                    <p className="text-[11px] text-slate-500 italic pt-2">
+                      Nessun percorso: la linea resta comunque. Creane uno con «+ variante» qui sotto.
+                    </p>
+                  )}
                   {variants.map(v => (
                     <div key={v.id}
                       className="group flex items-center gap-2 py-1.5 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-800/50"
@@ -4024,7 +4048,7 @@ function ClustersPanel({
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
-  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, onChangeMode, onSave, onExit,
+  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -4042,6 +4066,7 @@ function VariantEditorPanel({
   onToggleCurb: () => void;
   onUndo: () => void;
   canUndo: boolean;
+  savedAt: number | null;
   onChangeMode: (m: "driving" | "manual") => void;
   onSave: () => void;
   onExit: () => void;
@@ -4267,9 +4292,21 @@ function VariantEditorPanel({
       {/* Save button */}
       <div className="p-3 border-t border-slate-800 shrink-0">
         <button onClick={onSave} disabled={saving || !editor.dirty}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium">
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          {editor.dirty ? "Salva variante" : "Nessuna modifica"}
+          className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+            editor.dirty
+              ? "bg-emerald-500 hover:bg-emerald-400 text-white"
+              : savedAt
+                ? "bg-emerald-600/25 text-emerald-300 border border-emerald-500/50 cursor-default"
+                : "bg-emerald-500 text-white opacity-50 cursor-not-allowed"
+          }`}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" />
+            : !editor.dirty && savedAt ? <Check className="w-4 h-4" />
+            : <Save className="w-4 h-4" />}
+          {editor.dirty
+            ? "Salva variante"
+            : savedAt
+              ? `Percorso salvato ✓ (${new Date(savedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })})`
+              : "Nessuna modifica"}
         </button>
       </div>
     </div>
