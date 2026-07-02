@@ -551,6 +551,33 @@ export default function PlanningStudioTtdPage() {
   const baseRoute = routes.find(r => r.id === routeId) ?? null;
   const baseColor = routeColor(baseRoute?.color, "#f59e0b"); // amber di default
 
+  // Un colore DISTINTO per ogni linea attiva: usa il colore della linea se
+  // definito e non in conflitto, altrimenti pesca dalla palette.
+  const OVERLAY_PALETTE = ["#22d3ee", "#a78bfa", "#f472b6", "#4ade80", "#fb923c", "#f87171", "#facc15", "#38bdf8", "#c084fc", "#34d399"];
+  const colorByRoute = useMemo(() => {
+    const used = new Set<string>([baseColor.toLowerCase()]);
+    const m = new Map<string, string>();
+    let pi = 0;
+    const activeRouteIds: string[] = [];
+    for (const c of candidatesQ.data ?? []) {
+      if (!overlayOn.has(c.variant.id)) continue;
+      if (!activeRouteIds.includes(c.route.id)) activeRouteIds.push(c.route.id);
+    }
+    for (const rid of activeRouteIds) {
+      const r = (routesQ.data ?? []).find(x => x.id === rid);
+      let col = routeColor(r?.color, "");
+      if (!col || used.has(col.toLowerCase())) {
+        while (pi < OVERLAY_PALETTE.length && used.has(OVERLAY_PALETTE[pi].toLowerCase())) pi++;
+        col = OVERLAY_PALETTE[pi % OVERLAY_PALETTE.length];
+        pi++;
+      }
+      used.add(col.toLowerCase());
+      m.set(rid, col);
+    }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidatesQ.data, overlayOn, routesQ.data, baseColor]);
+
   const baseGeoms: TripGeom[] = useMemo(() => {
     if (!baseAxis) return [];
     const out: TripGeom[] = [];
@@ -575,7 +602,7 @@ export default function PlanningStudioTtdPage() {
       if (!overlayOn.has(cand.variant.id)) continue;
       const data = overlayData[cand.variant.id];
       if (!data) continue;
-      const color = routeColor(cand.route.color, "#22d3ee"); // cyan di fallback
+      const color = colorByRoute.get(cand.route.id) ?? routeColor(cand.route.color, "#22d3ee");
       let trips = data.trips;
       if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
       for (const t of trips) {
@@ -590,7 +617,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, baseAxis, calendarFilter]);
+  }, [candidatesQ.data, overlayOn, overlayData, baseAxis, calendarFilter, colorByRoute]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
@@ -660,38 +687,74 @@ export default function PlanningStudioTtdPage() {
   const [syncResult, setSyncResult] = useState<{ best: number; zNow: number; zBest: number; top: { delta: number; z: number }[] } | null>(null);
   useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax]);
 
-  function computeZForShift(vid: string, deltaSec: number): number {
-    if (!baseAxis) return 0;
+  function computeConnForShift(vid: string, deltaSec: number, collect = false): { z: number; pts: ConnPt[] } {
+    if (!baseAxis) return { z: 0, pts: [] };
     const minW = Math.max(0, Number(connMin) || 0) * 60;
     const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
-    const nodeSet = new Set<string>();
-    for (const st of baseAxis.stops) nodeSet.add(nodeOfStop.get(st.stopId) ?? st.stopId);
+    const nodeDist = new Map<string, number>();
+    for (const st of baseAxis.stops) {
+      const n = nodeOfStop.get(st.stopId) ?? st.stopId;
+      if (!nodeDist.has(n)) nodeDist.set(n, st.dist);
+    }
     const baseArr = new Map<string, number[]>();
     const baseDep = new Map<string, number[]>();
     for (const g of baseGeoms) for (const st of g.sts) {
       const n = nodeOfStop.get(st.stopId) ?? st.stopId;
-      if (!nodeSet.has(n)) continue;
+      if (!nodeDist.has(n)) continue;
       if (!baseArr.has(n)) { baseArr.set(n, []); baseDep.set(n, []); }
       baseArr.get(n)!.push(hmsToSec(st.arrivalTime));
       baseDep.get(n)!.push(hmsToSec(st.departureTime));
     }
     const data = overlayData[vid];
-    if (!data) return 0;
+    if (!data) return { z: 0, pts: [] };
     let trips = data.trips;
     if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
     let z = 0;
+    const pts: ConnPt[] = [];
     for (const t of trips) {
       for (const st of data.st[t.id] ?? []) {
         const n = nodeOfStop.get(st.stopId) ?? st.stopId;
-        if (!nodeSet.has(n)) continue;
+        const dd = nodeDist.get(n);
+        if (dd == null) continue;
         const oArr = hmsToSec(st.arrivalTime) + deltaSec;
         const oDep = hmsToSec(st.departureTime) + deltaSec;
-        for (const a2 of baseArr.get(n) ?? []) { const w = oDep - a2; if (w >= minW && w <= maxW) z++; }
-        for (const p2 of baseDep.get(n) ?? []) { const w = p2 - oArr; if (w >= minW && w <= maxW) z++; }
+        for (const a2 of baseArr.get(n) ?? []) {
+          const w = oDep - a2;
+          if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: oDep, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
+        }
+        for (const p2 of baseDep.get(n) ?? []) {
+          const w = p2 - oArr;
+          if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: p2, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
+        }
       }
     }
-    return z;
+    return { z, pts };
   }
+  const computeZForShift = (vid: string, deltaSec: number) => computeConnForShift(vid, deltaSec).z;
+
+  /* ─── Anteprima sync: la linea scelta TRASLATA di Δbest, tratteggiata,
+     con le coincidenze previste — l'utente VEDE lo spostamento prima di
+     confermare. ─── */
+  const syncPreview = useMemo(() => {
+    if (!syncOpen || !syncResult || syncResult.best === 0 || !syncVariantId || !baseAxis) return null;
+    const data = overlayData[syncVariantId];
+    if (!data) return null;
+    const deltaSec = syncResult.best * 60;
+    let trips = data.trips;
+    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    const geoms: Pt[][][] = [];
+    for (const t of trips) {
+      const sts = data.st[t.id];
+      if (!sts || sts.length < 2) continue;
+      const segs = buildSegments(sts, baseAxis.byStop, deltaSec);
+      if (segs.length) geoms.push(segs);
+    }
+    const conn = computeConnForShift(syncVariantId, deltaSec, true);
+    return { geoms, pts: conn.pts, delta: syncResult.best };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncOpen, syncResult, syncVariantId, overlayData, baseAxis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
+
+  const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
 
   function runSyncSearch() {
     if (!syncVariantId || !overlayData[syncVariantId]) { toast.error("Accendi e scegli la linea da sincronizzare"); return; }
@@ -897,28 +960,62 @@ export default function PlanningStudioTtdPage() {
               {!candidatesQ.isLoading && sharedCandidates.length === 0 && (
                 <div className="px-2 py-2 text-slate-500">Nessun'altra variante nel progetto.</div>
               )}
-              {sharedCandidates.map(c => (
-                <label key={c.variant.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={overlayOn.has(c.variant.id)}
-                    onChange={() => setOverlayOn(prev => {
-                      const n = new Set(prev);
-                      if (n.has(c.variant.id)) n.delete(c.variant.id); else n.add(c.variant.id);
-                      return n;
-                    })}
-                    className="accent-cyan-500"
-                  />
-                  <span
-                    className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                    style={{ backgroundColor: routeColor(c.route.color, "#475569"), color: routeColor(c.route.textColor, "#fff") }}
-                  >
-                    {c.route.shortName}
-                  </span>
-                  <span className="flex-1 truncate text-slate-300">{c.variant.name}</span>
-                  <span className="text-[10px] text-slate-500">{c.shared} ferm.</span>
-                </label>
-              ))}
+              {(() => {
+                // Raggruppa per LINEA: checkbox di linea (tutte le varianti) + varianti singole
+                const byRoute = new Map<string, { route: PsRoute; items: typeof sharedCandidates }>();
+                for (const c of sharedCandidates) {
+                  if (!byRoute.has(c.route.id)) byRoute.set(c.route.id, { route: c.route, items: [] as any });
+                  byRoute.get(c.route.id)!.items.push(c);
+                }
+                return [...byRoute.values()].map(grp => {
+                  const ids = grp.items.map(c => c.variant.id);
+                  const onCount = ids.filter(id => overlayOn.has(id)).length;
+                  const groupColor = colorByRoute.get(grp.route.id) ?? routeColor(grp.route.color, "#475569");
+                  return (
+                    <div key={grp.route.id} className="mb-0.5">
+                      <label className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-700 cursor-pointer font-semibold">
+                        <input
+                          type="checkbox"
+                          checked={onCount === ids.length && ids.length > 0}
+                          ref={el => { if (el) el.indeterminate = onCount > 0 && onCount < ids.length; }}
+                          onChange={() => setOverlayOn(prev => {
+                            const n = new Set(prev);
+                            if (onCount > 0) ids.forEach(id => n.delete(id));
+                            else ids.forEach(id => n.add(id));
+                            return n;
+                          })}
+                          className="accent-cyan-500"
+                        />
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: onCount > 0 ? groupColor : "#475569" }} />
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                          style={{ backgroundColor: routeColor(grp.route.color, "#475569"), color: routeColor(grp.route.textColor, "#fff") }}
+                        >
+                          {grp.route.shortName}
+                        </span>
+                        <span className="flex-1 truncate text-slate-200">{grp.route.longName || "Linea"}</span>
+                        <span className="text-[10px] text-slate-500">{onCount}/{ids.length}</span>
+                      </label>
+                      {grp.items.map(c => (
+                        <label key={c.variant.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded hover:bg-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={overlayOn.has(c.variant.id)}
+                            onChange={() => setOverlayOn(prev => {
+                              const n = new Set(prev);
+                              if (n.has(c.variant.id)) n.delete(c.variant.id); else n.add(c.variant.id);
+                              return n;
+                            })}
+                            className="accent-cyan-500"
+                          />
+                          <span className="flex-1 truncate text-slate-300">{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
+                          <span className="text-[10px] text-slate-500">{c.shared} ferm. comuni</span>
+                        </label>
+                      ))}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           )}
         </div>
@@ -1155,6 +1252,24 @@ export default function PlanningStudioTtdPage() {
                   </circle>
                 ))}
 
+                {/* Anteprima SYNC: linea scelta traslata di Δbest (tratteggiata viola) */}
+                {syncPreview && syncPreview.geoms.map((segs, k) => (
+                  <g key={`sy-${k}`} opacity={0.9}>
+                    {segs.map((seg, i) => (
+                      <polyline key={i}
+                        points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
+                        fill="none" stroke="#c084fc" strokeWidth={1.8}
+                        strokeDasharray="6 4" strokeLinejoin="round" />
+                    ))}
+                  </g>
+                ))}
+                {syncPreview && syncPreview.pts.slice(0, 400).map((c2, i) => (
+                  <circle key={`syc-${i}`} cx={xOf(c2.t)} cy={yOf(c2.dist)} r={4}
+                    fill="none" stroke="#c084fc" strokeWidth={2}>
+                    <title>Coincidenza prevista · {c2.label}</title>
+                  </circle>
+                ))}
+
                 {/* Anteprima cadenzamento (tratteggiata) */}
                 {previewGeoms.map((segs, k) => (
                   <g key={`prev-${k}`} opacity={0.85}>
@@ -1174,6 +1289,32 @@ export default function PlanningStudioTtdPage() {
           )}
 
           {/* Tooltip hover */}
+          {/* Legenda: un colore per ogni linea attiva */}
+          {baseAxis && (
+            <div className="absolute top-2 right-2 flex flex-col gap-1 items-end pointer-events-none">
+              <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/85 border border-slate-700 text-[10px]">
+                <span className="w-4 h-1 rounded-full" style={{ background: baseColor }} />
+                <span className="text-slate-200 font-semibold">{baseRoute?.shortName ?? "base"}</span>
+                <span className="text-slate-500">base</span>
+              </span>
+              {[...colorByRoute.entries()].map(([rid, col]) => {
+                const r = routes.find(x => x.id === rid);
+                return (
+                  <span key={rid} className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/85 border border-slate-700 text-[10px]">
+                    <span className="w-4 h-1 rounded-full" style={{ background: col }} />
+                    <span className="text-slate-200 font-semibold">{r?.shortName ?? "?"}</span>
+                  </span>
+                );
+              })}
+              {syncPreview && (
+                <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/85 border border-purple-500/50 text-[10px]">
+                  <span className="w-4 h-0 border-t-2 border-dashed border-purple-400" />
+                  <span className="text-purple-300">anteprima Δ {syncPreview.delta > 0 ? "+" : ""}{syncPreview.delta}′</span>
+                </span>
+              )}
+            </div>
+          )}
+
           {hover && (
             <div
               className="absolute z-20 pointer-events-none bg-slate-800/95 border border-slate-600 rounded px-2.5 py-1.5 text-[11px] shadow-xl max-w-[280px]"
@@ -1240,10 +1381,16 @@ export default function PlanningStudioTtdPage() {
                   Alternative: {syncResult.top.map(r => `${r.delta > 0 ? "+" : ""}${r.delta}′→${r.z}`).join(" · ")}
                 </div>
                 {syncResult.zBest > syncResult.zNow && syncResult.best !== 0 ? (
-                  <button onClick={() => applySyncShift(syncResult.best)} disabled={syncBusy}
-                    className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
-                    {syncBusy ? "Applico…" : `Applica Δ ${syncResult.best > 0 ? "+" : ""}${syncResult.best} min a tutte le corse`}
-                  </button>
+                  <>
+                    <p className="text-[10px] text-purple-300">
+                      👁 Sul grafico vedi la linea <strong>tratteggiata viola</strong>: è dove finirebbero le corse
+                      con Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best}′ (cerchi = coincidenze previste).
+                    </p>
+                    <button onClick={() => setSyncConfirmOpen(true)} disabled={syncBusy}
+                      className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
+                      Applica Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min…
+                    </button>
+                  </>
                 ) : (
                   <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali nella finestra scelta.</p>
                 )}
@@ -1342,6 +1489,36 @@ export default function PlanningStudioTtdPage() {
           </div>
         )}
       </div>
+
+      {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
+      {syncConfirmOpen && syncResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !syncBusy && setSyncConfirmOpen(false)}>
+          <div className="w-full max-w-sm mx-4 rounded-xl border border-purple-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-100">⇆ Confermi la variazione?</h3>
+            </div>
+            <div className="p-4 space-y-2 text-xs text-slate-300">
+              <p>
+                Linea: <strong>{(() => { const c = sharedCandidates.find(x => x.variant.id === syncVariantId); return c ? `${c.route.shortName} · ${c.variant.name}` : "—"; })()}</strong>
+              </p>
+              <p>Shift: <strong className="font-mono">Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min</strong> su <strong>{(overlayData[syncVariantId]?.trips.length ?? 0)} corse</strong> (headway interno invariato).</p>
+              <p>Coincidenze: <strong className="font-mono">Z {syncResult.zNow} → {syncResult.zBest}</strong> (attesa {connMin}–{connMax} min).</p>
+              <p className="text-[10px] text-slate-500">Gli orari vengono aggiornati sul database. Reversibile riapplicando il Δ opposto.</p>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+              <button onClick={() => setSyncConfirmOpen(false)} disabled={syncBusy}
+                className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
+              <button
+                onClick={async () => { await applySyncShift(syncResult.best); setSyncConfirmOpen(false); }}
+                disabled={syncBusy}
+                className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
+                {syncBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                Conferma variazione
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
