@@ -271,11 +271,43 @@ export default function PlanningStudioValidityPage() {
     }
   }, [calCriterion, leafByDate]);
 
+  /* ─── Categorie di Validità (globali) ─── */
+  const categoriesQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+  });
+  const categoryCalQ = useQuery({
+    queryKey: ["ps-validity-categories", "calendar", from, to],
+    queryFn: () => listPsValidityCategoryCalendar({ from, to }),
+    enabled: !!from && !!to,
+  });
+  const categoryByDate = useMemo(() => {
+    const m = new Map<string, PsValidityCategory>();
+    const cats = categoriesQ.data ?? [];
+    const byId = new Map(cats.map((c) => [c.id, c]));
+    for (const e of (categoryCalQ.data ?? [])) {
+      const c = byId.get(e.categoryId);
+      if (c) m.set(e.date, c);
+    }
+    return m;
+  }, [categoriesQ.data, categoryCalQ.data]);
+
   /* ─── Algorithm context (memoizzato) ─── */
   const ctx = useMemo<MatrixContext | null>(() => {
     if (!matrixQ.data) return null;
-    return buildAlgoContext(matrixQ.data);
-  }, [matrixQ.data]);
+    const c = buildAlgoContext(matrixQ.data);
+    // Vincolo categorie (calendario aziendale): giorno→categoria + set per corsa.
+    const dc = new Map<string, string>();
+    for (const [d, catObj] of categoryByDate) dc.set(d, catObj.id);
+    c.dayCategory = dc;
+    const tc = new Map<string, Set<string>>();
+    for (const r of matrixQ.data.tripCategoryValidity ?? []) {
+      if (!tc.has(r.tripId)) tc.set(r.tripId, new Set());
+      tc.get(r.tripId)!.add(r.categoryId);
+    }
+    c.tripCategories = tc;
+    return c;
+  }, [matrixQ.data, categoryByDate]);
 
   const allDates = useMemo(() => isoRange(from, to), [from, to]);
   // Filtro colonne per criterio del Calendario aziendale (scuole aperte/chiuse…)
@@ -523,26 +555,7 @@ export default function PlanningStudioValidityPage() {
   /* ─── Riga corsa evidenziata (click sulla sticky cell della corsa) ─── */
   const [highlightedTripId, setHighlightedTripId] = useState<string | null>(null);
 
-  /* ─── Categorie di Validità (globali) ─── */
-  const categoriesQ = useQuery({
-    queryKey: ["ps-validity-categories"],
-    queryFn: () => listPsValidityCategories(),
-  });
-  const categoryCalQ = useQuery({
-    queryKey: ["ps-validity-categories", "calendar", from, to],
-    queryFn: () => listPsValidityCategoryCalendar({ from, to }),
-    enabled: !!from && !!to,
-  });
-  const categoryByDate = useMemo(() => {
-    const m = new Map<string, PsValidityCategory>();
-    const cats = categoriesQ.data ?? [];
-    const byId = new Map(cats.map((c) => [c.id, c]));
-    for (const e of (categoryCalQ.data ?? [])) {
-      const c = byId.get(e.categoryId);
-      if (c) m.set(e.date, c);
-    }
-    return m;
-  }, [categoriesQ.data, categoryCalQ.data]);
+
 
   const setCategoryMut = useMutation({
     mutationFn: (input: { dates: string[]; categoryId: string | null }) =>
