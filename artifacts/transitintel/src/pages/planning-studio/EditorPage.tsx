@@ -25,7 +25,7 @@ import {
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
-  ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2, Ban,
+  ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2, Ban, Undo2,
   CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
@@ -143,6 +143,56 @@ function sampleVertexIndices(n: number): number[] {
   return idx;
 }
 
+/* Indice di inserimento di un via-point lungo il percorso (drag stile Google
+ * Maps): proietta il punto di presa sulla polyline, ne calcola l'ascissa
+ * curvilinea e la mappa sul tratto waypoint→waypoint corrispondente usando le
+ * legDistances OSRM. Fallback: coppia di waypoint col segmento retto più vicino. */
+function viaInsertIndex(
+  geom: [number, number][] | null,
+  legs: number[] | null,
+  wpts: { lng: number; lat: number }[],
+  p: [number, number],
+): number {
+  const kx = Math.cos((p[1] * Math.PI) / 180) * 111320; // metri per grado di longitudine
+  const ky = 110540;                                     // metri per grado di latitudine
+  const projT = (a: [number, number], b: [number, number]): { d2: number; t: number } => {
+    const ax = (a[0] - p[0]) * kx, ay = (a[1] - p[1]) * ky;
+    const bx = (b[0] - p[0]) * kx, by = (b[1] - p[1]) * ky;
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+    const px = ax + t * dx, py = ay + t * dy;
+    return { d2: px * px + py * py, t };
+  };
+  if (geom && geom.length >= 2 && legs && legs.length === wpts.length - 1 && wpts.length >= 2) {
+    let best = Infinity, bestArc = 0, arc = 0;
+    for (let i = 0; i < geom.length - 1; i++) {
+      const segLen = lineLengthM([geom[i], geom[i + 1]]);
+      const { d2, t } = projT(geom[i], geom[i + 1]);
+      if (d2 < best) { best = d2; bestArc = arc + segLen * t; }
+      arc += segLen;
+    }
+    // Le legs OSRM ≈ lunghezza polyline ma non identiche: normalizza in proporzione.
+    const legsTotal = legs.reduce((s, l) => s + l, 0);
+    if (arc > 0 && legsTotal > 0) {
+      const target = (bestArc / arc) * legsTotal;
+      let cum = 0;
+      for (let k = 0; k < legs.length; k++) {
+        cum += legs[k];
+        if (target <= cum) return k + 1; // tra wpts[k] e wpts[k+1]
+      }
+      return wpts.length - 1;
+    }
+  }
+  // Fallback: coppia col segmento retto più vicino al punto di presa.
+  let best = Infinity, idx = Math.max(1, wpts.length - 1);
+  for (let i = 0; i < wpts.length - 1; i++) {
+    const { d2 } = projT([wpts[i].lng, wpts[i].lat], [wpts[i + 1].lng, wpts[i + 1].lat]);
+    if (d2 < best) { best = d2; idx = i + 1; }
+  }
+  return idx;
+}
+
 /* Lunghezza in metri di una LineString (haversine) — usata per ricalcolare
  * distanceM dopo un edit manuale dei vertici. */
 function lineLengthM(coords: [number, number][]): number {
@@ -255,6 +305,13 @@ export default function PlanningStudioEditorPage() {
   // Ancora di inserimento: se ≠ null, la prossima fermata cliccata viene inserita
   // DOPO questo indice della sequenza (invece che in coda), e l'ancora avanza.
   const [insertAfterIdx, setInsertAfterIdx] = useState<number | null>(null);
+  // ── Annulla (editor variante): snapshot di stops+waypoints prima di ogni modifica ──
+  const [editorHistory, setEditorHistory] = useState<{ stops: PsVariantStop[]; waypoints: PsWaypoint[] }[]>([]);
+  // ── Drag della linea del percorso (stile Google Maps): via-point in inserimento ──
+  const dragViaRef = useRef<{ insertIdx: number } | null>(null);
+  const [dragViaPos, setDragViaPos] = useState<[number, number] | null>(null);
+  const suppressClickRef = useRef(false);
+  const [lineHover, setLineHover] = useState(false);
   const [snapBusy, setSnapBusy] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -661,6 +718,8 @@ export default function PlanningStudioEditorPage() {
 
   /* ─── Map handlers ─── */
   const handleMapClick = useCallback((e: MapMouseEvent) => {
+    // Click sintetico generato dal rilascio di un drag della linea: ignora.
+    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
     const { lng, lat } = e.lngLat;
 
     // Modalità "disegna zona vietata": ogni clic aggiunge un vertice.
@@ -729,9 +788,10 @@ export default function PlanningStudioEditorPage() {
       return;
     }
 
-    // Tool 'editVariant': aggiunge un waypoint all'editor
+    // Tool 'editVariant': il click a vuoto NON aggiunge più waypoint (troppo
+    // facile sbagliare). Le deviazioni si fanno TRASCINANDO la linea del
+    // percorso (stile Google Maps); le fermate cliccandole. Ctrl+Z annulla.
     if (tool === "editVariant" && editor) {
-      addWaypoint([lng, lat], null /* free point, non legato a fermata */);
       return;
     }
     // select: deseleziona
@@ -830,6 +890,7 @@ export default function PlanningStudioEditorPage() {
       });
       setTool("editVariant");
       setInsertAfterIdx(null);
+      setEditorHistory([]);
       // fit map sui waypoint o sulle fermate della variante
       const coords = data.shape?.geometry?.coordinates?.length
         ? data.shape.geometry.coordinates
@@ -844,6 +905,7 @@ export default function PlanningStudioEditorPage() {
     if (editor?.dirty && !confirm("Hai modifiche non salvate. Uscire comunque?")) return;
     setEditor(null);
     setInsertAfterIdx(null);
+    setEditorHistory([]);
     setTool("select");
   }
 
@@ -961,6 +1023,7 @@ export default function PlanningStudioEditorPage() {
   /** Alterna il modo di un waypoint: snap ↔ manuale (forza i tratti adiacenti). */
   function toggleWaypointMode(idx: number) {
     if (!editor) return;
+    pushEditorHistory();
     const wpts = editor.waypoints.map((w, i) =>
       i === idx ? { ...w, mode: (w.mode === "manual" ? "snap" : "manual") as PsWaypoint["mode"] } : w);
     setEditor({ ...editor, waypoints: wpts, dirty: true });
@@ -975,20 +1038,40 @@ export default function PlanningStudioEditorPage() {
     recomputeShape(editor.waypoints, editor.shapeMode, next);
   }
 
-  function addWaypoint(lngLat: [number, number], stopId: string | null) {
+  /* ─── Annulla (editor variante) ─── */
+  /** Snapshot per l'Annulla: chiamare PRIMA di modificare stops/waypoints. */
+  function pushEditorHistory() {
     if (!editor) return;
-    const newWpt: PsWaypoint = {
-      lng: lngLat[0], lat: lngLat[1],
-      stopId: stopId || undefined,
-      mode: editor.shapeMode === "manual" ? "manual" : "snap",
-    };
-    const wpts = [...editor.waypoints, newWpt];
-    setEditor({ ...editor, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    const snap = { stops: editor.stops, waypoints: editor.waypoints };
+    setEditorHistory(h => [...h.slice(-29), snap]); // max 30 passi
   }
+  function undoEditor() {
+    if (!editor || editorHistory.length === 0) return;
+    const last = editorHistory[editorHistory.length - 1];
+    setEditorHistory(h => h.slice(0, -1));
+    setInsertAfterIdx(null);
+    setEditor({ ...editor, stops: last.stops, waypoints: last.waypoints, dirty: true });
+    recomputeShape(last.waypoints, editor.shapeMode);
+  }
+  // Ctrl/Cmd+Z quando l'editor variante è attivo (non dentro input di testo).
+  useEffect(() => {
+    if (!editor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        e.preventDefault();
+        undoEditor();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
 
   function moveWaypoint(idx: number, lngLat: [number, number]) {
     if (!editor) return;
+    pushEditorHistory();
     const wpts = editor.waypoints.map((w, i) => i === idx ? { ...w, lng: lngLat[0], lat: lngLat[1] } : w);
     setEditor({ ...editor, waypoints: wpts, dirty: true });
     recomputeShape(wpts, editor.shapeMode);
@@ -996,6 +1079,7 @@ export default function PlanningStudioEditorPage() {
 
   function removeWaypoint(idx: number) {
     if (!editor) return;
+    pushEditorHistory();
     const wpts = editor.waypoints.filter((_, i) => i !== idx);
     setEditor({ ...editor, waypoints: wpts, dirty: true });
     recomputeShape(wpts, editor.shapeMode);
@@ -1010,6 +1094,7 @@ export default function PlanningStudioEditorPage() {
   /* ─── Variant editor: stops sequence ─── */
   function addStopToSequence(stop: PsStop) {
     if (!editor) return;
+    pushEditorHistory();
     const vs: PsVariantStop = {
       seq: 0, // rinumerato sotto
       stopId: stop.id,
@@ -1050,6 +1135,7 @@ export default function PlanningStudioEditorPage() {
 
   function moveStopInSequence(from: number, to: number) {
     if (!editor) return;
+    pushEditorHistory();
     const list = [...editor.stops];
     const [m] = list.splice(from, 1);
     list.splice(to, 0, m);
@@ -1060,6 +1146,7 @@ export default function PlanningStudioEditorPage() {
 
   function removeStopFromSequence(idx: number) {
     if (!editor) return;
+    pushEditorHistory();
     const list = editor.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
     setEditor({ ...editor, stops: list, dirty: true });
@@ -1068,6 +1155,7 @@ export default function PlanningStudioEditorPage() {
   /** Rimuove più fermate dalla sequenza in un colpo solo (selezione multipla). */
   function removeStopsFromSequence(idxs: number[]) {
     if (!editor || idxs.length === 0) return;
+    pushEditorHistory();
     const drop = new Set(idxs);
     const list = editor.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
@@ -1077,6 +1165,7 @@ export default function PlanningStudioEditorPage() {
   /** Inverte l'ordine della sequenza (per creare il percorso di ritorno). */
   function reverseSequence() {
     if (!editor || editor.stops.length < 2) return;
+    pushEditorHistory();
     const list = [...editor.stops].reverse().map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
     setEditor({ ...editor, stops: list, dirty: true });
@@ -1085,6 +1174,7 @@ export default function PlanningStudioEditorPage() {
   /** Svuota completamente la sequenza fermate. */
   function clearSequence() {
     if (!editor) return;
+    pushEditorHistory();
     setInsertAfterIdx(null);
     setEditor({ ...editor, stops: [], dirty: true });
   }
@@ -1334,8 +1424,10 @@ export default function PlanningStudioEditorPage() {
 
   /* ─── Cursor sulla mappa secondo tool ─── */
   const mapCursor = pickingDepotLocation ? "crosshair"
+                  : dragViaPos ? "grabbing"
                   : (clusterDraw && clusterDraw.mode === "draw") ? "crosshair"
                   : (clusterDraw && clusterDraw.mode === "stops") ? "pointer"
+                  : (editor && lineHover) ? "grab"
                   : tool === "addStop" ? "crosshair"
                   : tool === "editVariant" ? "crosshair"
                   : "grab";
@@ -1666,7 +1758,53 @@ export default function PlanningStudioEditorPage() {
             }
           }}
           onLoad={() => setMapReady(true)}
+          onMouseDown={(e) => {
+            // Afferra la LINEA del percorso (stile Google Maps): inizia il drag di
+            // un nuovo via-point, inserito nel tratto giusto della sequenza.
+            if (!editor || editor.waypoints.length < 2) return;
+            const f = (e as any).features?.find((ft: any) => ft?.layer?.id === "editor-shape-line");
+            if (!f) return;
+            e.preventDefault();
+            const idx = viaInsertIndex(
+              editor.geometry?.coordinates ?? null,
+              editor.legDistances,
+              editor.waypoints,
+              [e.lngLat.lng, e.lngLat.lat],
+            );
+            dragViaRef.current = { insertIdx: idx };
+            setDragViaPos([e.lngLat.lng, e.lngLat.lat]);
+            mapRef.current?.getMap()?.dragPan.disable();
+          }}
+          onMouseUp={(e) => {
+            const d = dragViaRef.current;
+            if (!d) return;
+            dragViaRef.current = null;
+            setDragViaPos(null);
+            mapRef.current?.getMap()?.dragPan.enable();
+            suppressClickRef.current = true; // il click generato al rilascio non deve fare altro
+            if (!editor) return;
+            pushEditorHistory();
+            const wpts = [...editor.waypoints];
+            wpts.splice(d.insertIdx, 0, {
+              lng: e.lngLat.lng, lat: e.lngLat.lat,
+              mode: editor.shapeMode === "manual" ? "manual" : "snap",
+            });
+            setEditor({ ...editor, waypoints: wpts, dirty: true });
+            recomputeShape(wpts, editor.shapeMode);
+          }}
           onMouseMove={(e) => {
+            // Drag via-point in corso: il segnaposto segue il cursore.
+            if (dragViaRef.current) {
+              setDragViaPos([e.lngLat.lng, e.lngLat.lat]);
+              return;
+            }
+            // Hover sulla linea del percorso (editor attivo) → cursore "grab".
+            if (editor) {
+              const lf = e.features?.find(ft => ft.layer?.id === "editor-shape-line");
+              setLineHover(!!lf);
+            } else if (lineHover) {
+              setLineHover(false);
+            }
             // Nome fermata al passaggio del cursore: layer fermate base + layer
             // della vista/edit percorso (fermate della variante e "altre" dimmed).
             const HOVER_LAYERS = new Set([
@@ -1689,7 +1827,7 @@ export default function PlanningStudioEditorPage() {
           interactiveLayerIds={[
             "ps-stops-circle", "ps-stops-circle-hit",
             "route-view-stops-circle", "route-view-other-stops-circle",
-            "ps-nogo-fill",
+            "ps-nogo-fill", "editor-shape-line",
           ]}
           style={{ width: "100%", height: "100%" }}
         >
@@ -2121,6 +2259,13 @@ export default function PlanningStudioEditorPage() {
             </Source>
           )}
 
+          {/* Via-point in trascinamento (drag della linea, stile Google Maps) */}
+          {dragViaPos && (
+            <Marker longitude={dragViaPos[0]} latitude={dragViaPos[1]} anchor="center">
+              <div className="w-4 h-4 rounded-full bg-white border-[3px] border-indigo-500 shadow-[0_0_0_4px_rgba(99,102,241,0.3)]" />
+            </Marker>
+          )}
+
           {/* Waypoint draggable */}
           {editor?.waypoints.map((w, idx) => (
             <Marker key={`w-${idx}`} longitude={w.lng} latitude={w.lat}
@@ -2531,6 +2676,8 @@ export default function PlanningStudioEditorPage() {
                 onSetInsertAfter={setInsertAfterIdx}
                 onFlyToStop={(s) => mapRef.current?.flyTo({ center: [s.lon, s.lat], zoom: 16, duration: 600 })}
                 onToggleCurb={toggleCurb}
+                onUndo={undoEditor}
+                canUndo={editorHistory.length > 0}
                 onChangeMode={changeShapeMode}
                 onSave={saveVariant}
                 onExit={exitEditor}
@@ -2644,7 +2791,8 @@ export default function PlanningStudioEditorPage() {
                   {snapBusy && <Loader2 className="w-3 h-3 animate-spin ml-1" />}
                 </p>
                 <p className="text-[10px] text-slate-400">
-                  Clic su mappa = waypoint · Clic su fermata = aggiungi alla sequenza
+                  Clic su fermata = aggiungi · <b>Trascina la linea</b> = devia il percorso ·
+                  Clic su un pallino = forza manuale · <b>Ctrl+Z</b> = annulla
                 </p>
               </div>
             )}
@@ -3826,7 +3974,7 @@ function ClustersPanel({
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
-  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onChangeMode, onSave, onExit,
+  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, onChangeMode, onSave, onExit,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -3842,6 +3990,8 @@ function VariantEditorPanel({
   onSetInsertAfter: (idx: number | null) => void;
   onFlyToStop: (s: PsVariantStop) => void;
   onToggleCurb: () => void;
+  onUndo: () => void;
+  canUndo: boolean;
   onChangeMode: (m: "driving" | "manual") => void;
   onSave: () => void;
   onExit: () => void;
@@ -3904,9 +4054,16 @@ function VariantEditorPanel({
             <p className="text-[10px] uppercase tracking-wider text-emerald-300/80 font-semibold">Editor variante</p>
             <p className="text-sm font-medium text-slate-100 mt-0.5">Tracciato + sequenza</p>
           </div>
-          <button onClick={onExit} className="p-1 rounded hover:bg-slate-800 text-slate-400">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button onClick={onUndo} disabled={!canUndo}
+              title="Annulla ultima modifica (Ctrl+Z)"
+              className="p-1 rounded hover:bg-slate-800 text-slate-400 disabled:opacity-30 disabled:cursor-not-allowed">
+              <Undo2 className="w-4 h-4" />
+            </button>
+            <button onClick={onExit} className="p-1 rounded hover:bg-slate-800 text-slate-400">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
         {/* Stat */}
         <div className="grid grid-cols-2 gap-2 mt-3">
