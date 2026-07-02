@@ -1469,11 +1469,18 @@ export default function PlanningStudioEditorPage() {
           }}
           onLoad={() => setMapReady(true)}
           onMouseMove={(e) => {
-            // Nome fermata al passaggio del cursore (hover sui layer fermata).
-            const f = e.features?.find(ft => ft.layer?.id === "ps-stops-circle" || ft.layer?.id === "ps-stops-circle-hit");
+            // Nome fermata al passaggio del cursore: layer fermate base + layer
+            // della vista/edit percorso (fermate della variante e "altre" dimmed).
+            const HOVER_LAYERS = new Set([
+              "ps-stops-circle", "ps-stops-circle-hit",
+              "route-view-stops-circle", "route-view-other-stops-circle",
+            ]);
+            const f = e.features?.find(ft => HOVER_LAYERS.has(ft.layer?.id ?? ""));
             if (f && (f.geometry as any)?.type === "Point") {
               const [lon, lat] = (f.geometry as any).coordinates as [number, number];
-              const name = String((f.properties as any)?.name ?? "");
+              const props: any = f.properties ?? {};
+              // Fermate del percorso: prefissa il numero di sequenza (es. "3 · NOME").
+              const name = props.seq != null ? `${props.seq} · ${props.name ?? ""}` : String(props.name ?? "");
               if (!hoverStop || hoverStop.lon !== lon || hoverStop.lat !== lat) setHoverStop({ name, lon, lat });
             } else if (hoverStop) {
               setHoverStop(null);
@@ -1481,7 +1488,10 @@ export default function PlanningStudioEditorPage() {
           }}
           onMouseLeave={() => hoverStop && setHoverStop(null)}
           cursor={mapCursor}
-          interactiveLayerIds={["ps-stops-circle", "ps-stops-circle-hit"]}
+          interactiveLayerIds={[
+            "ps-stops-circle", "ps-stops-circle-hit",
+            "route-view-stops-circle", "route-view-other-stops-circle",
+          ]}
           style={{ width: "100%", height: "100%" }}
         >
           <NavigationControl position="bottom-right" />
