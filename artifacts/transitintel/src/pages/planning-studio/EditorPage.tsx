@@ -221,7 +221,9 @@ export default function PlanningStudioEditorPage() {
   // 'none'  = nessuna (default per partire veloce)
   // 'route' = solo le fermate appartenenti alle linee in routeFilterIds
   type StopsFilter = "all" | "none" | "route";
-  const [stopsFilter, setStopsFilter] = useState<StopsFilter>("none");
+  // Default "all": le fermate devono essere VISIBILI sulla mappa (il layer GPU
+  // regge migliaia di punti). "none"/"route" restano come filtri opzionali.
+  const [stopsFilter, setStopsFilter] = useState<StopsFilter>("all");
   const [routeFilterIds, setRouteFilterIds] = useState<Set<string>>(new Set());
   // Cache: routeId → Set<stopId> appartenenti alle varianti di quella linea.
   // Popolato on-demand quando l'utente seleziona la linea nel filtro.
@@ -490,6 +492,9 @@ export default function PlanningStudioEditorPage() {
     // Quando il pannello cluster è aperto (creazione/edit) servono SEMPRE
     // tutte le fermate, altrimenti l'utente non può cliccarle per assegnarle.
     if (activePanel === "clusters" || clusterDraw) return stops;
+    // Pannello Fermate aperto o editing di una variante (percorso): le fermate
+    // devono essere visibili/cliccabili a prescindere dal filtro scelto.
+    if (activePanel === "stops" || editor) return stops;
     if (showGlobalClusters) {
       // In modalità "vista cluster" mostriamo solo le fermate dentro un cluster:
       // i layer ne-clusters-* le disegnano già, quindi qui tagliamo a 0 (più la
@@ -508,7 +513,7 @@ export default function PlanningStudioEditorPage() {
     }
     if (selectedStopId) allowed.add(selectedStopId);
     return stops.filter(s => allowed.has(s.id));
-  }, [stops, stopsFilter, routeFilterIds, routeStopIds, selectedStopId, showGlobalClusters, activePanel, clusterDraw]);
+  }, [stops, stopsFilter, routeFilterIds, routeStopIds, selectedStopId, showGlobalClusters, activePanel, clusterDraw, editor]);
 
   // GeoJSON delle fermate visibili (usato dai layer Mapbox: 1 source, N layer
   // gestiti dalla GPU, 100x più veloce di N <Marker> React).
