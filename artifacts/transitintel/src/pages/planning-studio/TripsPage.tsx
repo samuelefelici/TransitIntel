@@ -32,6 +32,25 @@ import {
 import { listPsDayTypes, postPsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 
+/** Distanze progressive (m) tra le fermate di una variante: shape_dist se
+ * monotona, altrimenti cumulata haversine. */
+function cumDistsOf(vStops: PsVariantStop[]): number[] {
+  const sdt = vStops.map(st => st.shapeDistTraveled);
+  const ok = vStops.length >= 2 &&
+    sdt.every(d => d != null && Number.isFinite(d)) &&
+    sdt.every((d, i) => i === 0 || (d as number) >= (sdt[i - 1] as number)) &&
+    (sdt[sdt.length - 1] as number) > 0;
+  if (ok) { const base = sdt[0] as number; return sdt.map(d => (d as number) - base); }
+  const out = [0];
+  for (let i = 1; i < vStops.length; i++) {
+    const a2 = vStops[i - 1], b2 = vStops[i];
+    const R = 6371000, dLat = (b2.lat - a2.lat) * Math.PI / 180, dLon = (b2.lon - a2.lon) * Math.PI / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a2.lat * Math.PI / 180) * Math.cos(b2.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    out.push(out[i - 1] + 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h)));
+  }
+  return out;
+}
+
 function fmtTime(t?: string | null) {
   if (!t) return "—";
   return t.length >= 5 ? t.slice(0, 5) : t;
@@ -148,10 +167,27 @@ export default function PlanningStudioTripsPage() {
   const [genTo, setGenTo] = useState("20:00");
   const [genEvery, setGenEvery] = useState("15");
   const [genBusy, setGenBusy] = useState(false);
+  // ── F3 · Anteprima pre-salvataggio con variazione traffico ──
+  const [genStep, setGenStep] = useState<"params" | "preview">("params");
+  const [genProfile, setGenProfile] = useState<null | {
+    tpl: PsTrip; stopIds: string[]; stopNames: string[];
+    relArr: number[]; relDep: number[]; deps: number[];
+  }>(null);
+  const [genCoeff, setGenCoeff] = useState<Record<number, number>>({});
+  const [genApplyTraffic, setGenApplyTraffic] = useState(true);
+  useEffect(() => { if (!genOpen) { setGenStep("params"); setGenProfile(null); } }, [genOpen]);
+  /** Profilo di default dei coefficienti di rallentamento per fascia oraria
+   * (proposta modificabile; agganciabile ai dati Analytics quando disponibili). */
+  function defaultCoeffForHour(h: number): number {
+    const hh = ((h % 24) + 24) % 24;
+    if (hh === 7 || hh === 8) return 1.25;
+    if (hh === 18) return 1.3;
+    if (hh === 17) return 1.2;
+    if (hh === 9 || hh === 13) return 1.15;
+    if (hh === 12 || hh === 14 || hh === 19) return 1.1;
+    return 1.0;
+  }
 
-  /* ─── Nuova corsa (la PRIMA della variante): orari calcolati da distanza
-   * e velocità commerciale, poi diventa il template per "Genera a cadenza".
-   * Imposta anche i GIORNI di validità (trip-row-set nella matrice). ─── */
   const [newOpen, setNewOpen] = useState(false);
   const [newStart, setNewStart] = useState("07:00");
   const [newSpeed, setNewSpeed] = useState("18");   // km/h commerciale
@@ -159,6 +195,59 @@ export default function PlanningStudioTripsPage() {
   const [newCalendarId, setNewCalendarId] = useState("");
   const [newDayTypeIds, setNewDayTypeIds] = useState<Set<string>>(new Set());
   const [newBusy, setNewBusy] = useState(false);
+
+  /* ─── F1 · Corsa PROTOTIPO: grafo della linea con tempi per ARCO
+   * (auto-calcolati e sovrascrivibili) e SOSTA per fermata. ─── */
+  const newVariantQ = useQuery({
+    queryKey: ["ps", projectId, "variant-proto", variantId],
+    queryFn: () => getPsVariant(projectId, variantId),
+    enabled: !!projectId && !!variantId,
+    staleTime: 30_000,
+  });
+  const [newArcMin, setNewArcMin] = useState<number[]>([]);   // minuti per arco (editabili)
+  const [newDwellS, setNewDwellS] = useState<number[]>([]);   // sosta in secondi per fermata
+
+  /** Ricalcola i tempi d'arco dai km e dalla velocità di default. */
+  function recalcArcDefaults(vStops: PsVariantStop[], speedKmh: number, dwellSec: number) {
+    const cum = cumDistsOf(vStops);
+    const mps = Math.max(1, speedKmh) * 1000 / 3600;
+    const arcs: number[] = [];
+    for (let i = 0; i < vStops.length - 1; i++) {
+      const sec = (cum[i + 1] - cum[i]) / mps;
+      arcs.push(Math.max(0.5, Math.round((sec / 60) * 10) / 10)); // ≥ 30s, precisione 0.1 min
+    }
+    setNewArcMin(arcs);
+    setNewDwellS(vStops.map((_, i) => (i === 0 || i === vStops.length - 1 ? 0 : dwellSec)));
+  }
+  // Inizializza il grafo all'apertura del dialog (o al cambio variante)
+  useEffect(() => {
+    if (!newOpen) return;
+    const vStops = newVariantQ.data?.stops ?? [];
+    if (vStops.length < 2) return;
+    if (newArcMin.length !== vStops.length - 1) {
+      recalcArcDefaults(vStops, Number(newSpeed) || 18, Math.max(0, Math.round(Number(newDwell) || 0)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newOpen, newVariantQ.data]);
+  useEffect(() => { setNewArcMin([]); setNewDwellS([]); }, [variantId]);
+
+  // Orari live del prototipo (arrivo/partenza per fermata)
+  const protoTimes = useMemo(() => {
+    const vStops = newVariantQ.data?.stops ?? [];
+    if (vStops.length < 2 || newArcMin.length !== vStops.length - 1) return null;
+    const start = genToSec(newStart + ":00");
+    const arr: number[] = [start], dep: number[] = [start];
+    for (let i = 1; i < vStops.length; i++) {
+      arr.push(dep[i - 1] + Math.round((newArcMin[i - 1] || 0) * 60));
+      dep.push(i === vStops.length - 1 ? arr[i] : arr[i] + Math.max(0, Math.round(newDwellS[i] || 0)));
+    }
+    return { arr, dep, totalMin: Math.round((arr[arr.length - 1] - start) / 60) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newVariantQ.data, newArcMin, newDwellS, newStart]);
+
+  /* ─── Nuova corsa (la PRIMA della variante): orari calcolati da distanza
+   * e velocità commerciale, poi diventa il template per "Genera a cadenza".
+   * Imposta anche i GIORNI di validità (trip-row-set nella matrice). ─── */
   const dayTypesQ = useQuery({
     queryKey: ["ps", projectId, "day-types"],
     queryFn: () => listPsDayTypes(projectId),
@@ -190,47 +279,18 @@ export default function PlanningStudioTripsPage() {
 
   async function runCreateFirstTrip() {
     if (!routeId || !variantId) { toast.error("Seleziona linea e variante"); return; }
-    const v = Number(newSpeed);
-    if (!Number.isFinite(v) || v < 3 || v > 80) { toast.error("Velocità commerciale non valida (3–80 km/h)"); return; }
-    const dwell = Math.max(0, Math.round(Number(newDwell) || 0));
+    const vStops: PsVariantStop[] = newVariantQ.data?.stops ?? [];
+    if (vStops.length < 2) { toast.error("La variante ha meno di 2 fermate: completa prima il percorso nell'editor"); return; }
+    if (!protoTimes) { toast.error("Tempi del grafo non pronti"); return; }
     setNewBusy(true);
     try {
-      const det = await getPsVariant(projectId, variantId);
-      const vStops: PsVariantStop[] = det.stops ?? [];
-      if (vStops.length < 2) throw new Error("La variante ha meno di 2 fermate: completa prima il percorso nell'editor");
-      // Distanza progressiva: shape_dist_traveled se presente e crescente, altrimenti linea d'aria.
-      const hasShapeDist = vStops.every((st, i) =>
-        st.shapeDistTraveled != null && (i === 0 || st.shapeDistTraveled! >= (vStops[i - 1].shapeDistTraveled ?? 0)));
-      const cum: number[] = [];
-      if (hasShapeDist) {
-        const base = vStops[0].shapeDistTraveled ?? 0;
-        for (const st of vStops) cum.push((st.shapeDistTraveled ?? 0) - base);
-      } else {
-        let acc = 0;
-        vStops.forEach((st, i) => {
-          if (i > 0) {
-            const p = vStops[i - 1];
-            const R = 6371000, dLat = (st.lat - p.lat) * Math.PI / 180, dLon = (st.lon - p.lon) * Math.PI / 180;
-            const h = Math.sin(dLat / 2) ** 2 + Math.cos(p.lat * Math.PI / 180) * Math.cos(st.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-            acc += 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-          }
-          cum.push(acc);
-        });
-      }
-      const mps = v * 1000 / 3600;
-      const start = genToSec(newStart + ":00");
-      const stopTimes = vStops.map((st, i) => {
-        // arrivo = partenza + marcia + soste accumulate alle fermate intermedie precedenti
-        const arr = i === 0 ? start : Math.round(start + cum[i] / mps + dwell * Math.max(0, i - 1));
-        // ripartenza = arrivo + sosta (tranne prima e ultima fermata)
-        const dep = i === 0 ? start : i === vStops.length - 1 ? arr : arr + dwell;
-        return {
-          stopId: st.stopId,
-          arrivalTime: genSecToHms(arr),
-          departureTime: genSecToHms(dep),
-          timepoint: st.timepoint ?? 1,
-        };
-      });
+      // Orari dal GRAFO: tempi per arco (editati) + soste per fermata.
+      const stopTimes = vStops.map((st, i) => ({
+        stopId: st.stopId,
+        arrivalTime: genSecToHms(protoTimes.arr[i]),
+        departureTime: genSecToHms(protoTimes.dep[i]),
+        timepoint: st.timepoint ?? 1,
+      }));
       const r = await batchCreatePsTrips(projectId, [{
         routeId, variantId,
         calendarId: newCalendarId || null,
@@ -251,8 +311,8 @@ export default function PlanningStudioTripsPage() {
           toast.warning("Corsa creata, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
-      toast.success("✅ Corsa creata", {
-        description: `Partenza ${newStart} · ${vStops.length} fermate con orari calcolati a ${v} km/h. Ora puoi moltiplicarla con "Genera a cadenza".`,
+      toast.success("✅ Corsa prototipo creata", {
+        description: `Partenza ${newStart} · ${vStops.length} fermate · giro ${protoTimes.totalMin} min (tempi per arco dal grafo). Ora moltiplicala con "Genera a cadenza".`,
         duration: 7000,
       });
       setNewOpen(false);
@@ -278,7 +338,8 @@ export default function PlanningStudioTripsPage() {
     return Math.floor((b - a) / (H * 60)) + 1;
   }, [genFrom, genTo, genEvery]);
 
-  async function runGenerate() {
+  /** Step 1 → 2: prepara il profilo (archi del template + partenze) e apre l'ANTEPRIMA. */
+  async function prepareGenerate() {
     const tpl = (tripsQ.data ?? []).find(t => t.id === genTemplateId);
     if (!tpl) { toast.error("Scegli la corsa template"); return; }
     const H = Math.round(Number(genEvery));
@@ -290,29 +351,77 @@ export default function PlanningStudioTripsPage() {
       const sts = await getPsStopTimes(projectId, tpl.id);
       if (sts.length < 2) throw new Error("La corsa template non ha orari alle fermate (stop_times)");
       const baseDep = genToSec(sts[0].departureTime);
-      const minOff = Math.min(...sts.map(st => genToSec(st.arrivalTime) - baseDep));
+      const relArr = sts.map(st => genToSec(st.arrivalTime) - baseDep);
+      const relDep = sts.map(st => genToSec(st.departureTime) - baseDep);
+      const minOff = Math.min(...relArr);
       const deps: number[] = [];
       for (let t = winFrom; t <= winTo; t += H * 60) {
-        if (Math.abs(t - baseDep) < 30) continue; // il template esiste già: non clonarlo su se stesso
-        if (t + minOff < 0) continue;             // niente orari negativi
+        if (Math.abs(t - baseDep) < 30) continue;
+        if (t + minOff < 0) continue;
         deps.push(t);
       }
       if (deps.length === 0) throw new Error("Nessuna partenza da generare nella fascia");
       if (deps.length > 200) throw new Error(`${deps.length} corse superano il limite di 200 per batch: restringi la fascia o allunga la cadenza`);
-      const payload: PsBatchTripInput[] = deps.map(dep => ({
-        routeId: tpl.routeId,
-        variantId: tpl.variantId,
-        calendarId: tpl.calendarId ?? null,
-        headsign: tpl.headsign ?? null,
-        direction: tpl.direction ?? 0,
-        serviceLabel: tpl.serviceLabel ?? null,
-        stopTimes: sts.map(st => ({
-          stopId: st.stopId,
-          arrivalTime: genSecToHms(genToSec(st.arrivalTime) - baseDep + dep),
-          departureTime: genSecToHms(genToSec(st.departureTime) - baseDep + dep),
-          timepoint: st.timepoint,
-        })),
-      }));
+      // coefficienti: inizializza le fasce coperte con il profilo di default
+      const h0 = Math.floor((deps[0]) / 3600);
+      const h1 = Math.floor((deps[deps.length - 1] + relArr[relArr.length - 1]) / 3600);
+      setGenCoeff(prev => {
+        const next: Record<number, number> = { ...prev };
+        for (let h = h0; h <= h1; h++) if (next[h] == null) next[h] = defaultCoeffForHour(h);
+        return next;
+      });
+      setGenProfile({
+        tpl,
+        stopIds: sts.map(st => st.stopId),
+        stopNames: sts.map(st => st.stopName),
+        relArr, relDep, deps,
+      });
+      setGenStep("preview");
+    } catch (e: any) {
+      toast.error("Anteprima non disponibile", { description: e?.message });
+    } finally { setGenBusy(false); }
+  }
+
+  /** Orari finali di una corsa: archi del template scalati per il coefficiente
+   * della fascia oraria in cui il bus ENTRA nell'arco (se attivo). */
+  function buildRunTimes(dep: number, p2: NonNullable<typeof genProfile>): { arr: number[]; dep: number[] } {
+    const n = p2.relArr.length;
+    const arr: number[] = new Array(n), depT: number[] = new Array(n);
+    arr[0] = dep + p2.relArr[0];
+    depT[0] = dep + p2.relDep[0];
+    for (let i = 1; i < n; i++) {
+      const arcSec = p2.relArr[i] - p2.relDep[i - 1];
+      const dwell = p2.relDep[i] - p2.relArr[i];
+      const c = genApplyTraffic ? (genCoeff[Math.floor(depT[i - 1] / 3600)] ?? 1) : 1;
+      arr[i] = depT[i - 1] + Math.round(arcSec * c);
+      depT[i] = arr[i] + dwell;
+    }
+    return { arr, dep: depT };
+  }
+
+  /** Step 2 → salvataggio definitivo (con o senza variazione traffico). */
+  async function finalizeGenerate() {
+    if (!genProfile) return;
+    const tpl = genProfile.tpl;
+    setGenBusy(true);
+    try {
+      const payload: PsBatchTripInput[] = genProfile.deps.map(dep => {
+        const times = buildRunTimes(dep, genProfile);
+        return {
+          routeId: tpl.routeId,
+          variantId: tpl.variantId,
+          calendarId: tpl.calendarId ?? null,
+          headsign: tpl.headsign ?? null,
+          direction: tpl.direction ?? 0,
+          serviceLabel: tpl.serviceLabel ?? null,
+          stopTimes: genProfile.stopIds.map((stopId, i) => ({
+            stopId,
+            arrivalTime: genSecToHms(times.arr[i]),
+            departureTime: genSecToHms(times.dep[i]),
+            timepoint: 1,
+          })),
+        };
+      });
       const r = await batchCreatePsTrips(projectId, payload);
       // Validità per TUTTE le corse generate: giorni (matrice) + categorie (calendario aziendale)
       if (r.tripIds?.length) {
@@ -327,11 +436,13 @@ export default function PlanningStudioTripsPage() {
           toast.warning("Corse generate, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
-      toast.success(`✅ ${r.count} corse generate`, {
-        description: `${genFrom}–${genTo} · una ogni ${H} min · orari propagati su ${sts.length} fermate`,
+      toast.success(`✅ ${r.count} corse generate e salvate`, {
+        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? "variazione traffico applicata" : "senza variazione traffico"}`,
         duration: 6000,
       });
       setGenOpen(false);
+      setGenStep("params");
+      setGenProfile(null);
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
     } catch (e: any) {
       toast.error("Generazione fallita", { description: e?.message });
@@ -630,35 +741,93 @@ export default function PlanningStudioTripsPage() {
       {/* ─── Dialog: Nuova corsa (la prima della variante) ─── */}
       {newOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !newBusy && setNewOpen(false)}>
-          <div className="w-full max-w-md mx-4 rounded-xl border border-emerald-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="w-full max-w-2xl mx-4 rounded-xl border border-emerald-500/30 bg-slate-950 shadow-2xl max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-emerald-400" /> Nuova corsa
+                <Plus className="w-4 h-4 text-emerald-400" /> Corsa prototipo (corsa zero)
               </h3>
               <button onClick={() => !newBusy && setNewOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-4 space-y-3 text-sm">
               <p className="text-[11px] text-slate-400">
-                Gli orari di transito a ogni fermata vengono <strong>calcolati</strong> dalle distanze del percorso
-                e dalla velocità commerciale. Potrai rifinirli e poi moltiplicare la corsa con «Genera a cadenza».
+                Il <strong>grafo della linea</strong>: i tempi di percorrenza per <strong>arco</strong> sono calcolati
+                automaticamente (dai km e dalla velocità di default) e <strong>sovrascrivibili</strong>; su ogni fermata
+                imposti la <strong>sosta</strong>. Gli orari si aggiornano in tempo reale.
               </p>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-4 gap-2 items-end">
                 <div>
                   <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Partenza</label>
                   <input type="time" value={newStart} onChange={e => setNewStart(e.target.value)}
                     className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
                 </div>
                 <div>
-                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1" title="Velocità media da capolinea a capolinea, soste incluse">Vel. comm. (km/h)</label>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1" title="Usata per il calcolo automatico dei tempi d'arco">Vel. default (km/h)</label>
                   <input type="number" min={3} max={80} value={newSpeed} onChange={e => setNewSpeed(e.target.value)}
                     className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
                 </div>
                 <div>
-                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Sosta/fermata (s)</label>
+                  <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Sosta default (s)</label>
                   <input type="number" min={0} max={300} value={newDwell} onChange={e => setNewDwell(e.target.value)}
                     className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
                 </div>
+                <button
+                  onClick={() => {
+                    const vs = newVariantQ.data?.stops ?? [];
+                    if (vs.length >= 2) recalcArcDefaults(vs, Number(newSpeed) || 18, Math.max(0, Math.round(Number(newDwell) || 0)));
+                  }}
+                  className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 text-xs text-slate-300 hover:bg-slate-700"
+                  title="Ricalcola tutti gli archi e le soste dai valori di default (sovrascrive le modifiche manuali)">
+                  ↻ Ricalcola grafo
+                </button>
               </div>
+
+              {/* ── Grafo della linea: nodi (fermate+sosta) e archi (tempo) ── */}
+              {newVariantQ.isLoading && <p className="text-[11px] text-slate-500">Caricamento percorso…</p>}
+              {(newVariantQ.data?.stops?.length ?? 0) >= 2 && protoTimes && (() => {
+                const vs = newVariantQ.data!.stops;
+                const cum = cumDistsOf(vs);
+                return (
+                  <div className="max-h-[38vh] overflow-y-auto rounded-lg border border-slate-800 bg-slate-900/40 p-2 space-y-0">
+                    {vs.map((st, i) => (
+                      <div key={`${st.stopId}-${i}`}>
+                        <div className="flex items-center gap-2 py-1">
+                          <span className={`w-3 h-3 rounded-full shrink-0 border-2 ${i === 0 || i === vs.length - 1 ? "bg-emerald-400 border-emerald-200" : "bg-slate-700 border-slate-500"}`} />
+                          <span className="text-xs flex-1 truncate" title={st.stopName}>
+                            <span className="text-slate-500 font-mono">{i + 1}.</span> {st.stopName}
+                          </span>
+                          <span className="text-[10px] font-mono text-emerald-300/90 shrink-0 tabular-nums">
+                            {genSecToHms(protoTimes.arr[i]).slice(0, 5)}
+                            {protoTimes.dep[i] !== protoTimes.arr[i] && <span className="text-slate-500"> →{genSecToHms(protoTimes.dep[i]).slice(0, 5)}</span>}
+                          </span>
+                          {i > 0 && i < vs.length - 1 ? (
+                            <span className="flex items-center gap-1 shrink-0">
+                              <input type="number" min={0} max={600} value={newDwellS[i] ?? 0}
+                                onChange={e => setNewDwellS(prev => prev.map((x, k) => (k === i ? Math.max(0, Number(e.target.value) || 0) : x)))}
+                                className="w-14 px-1 py-0.5 rounded bg-slate-950 border border-slate-700 text-[10px] text-right" />
+                              <span className="text-[9px] text-slate-500 w-10">s sosta</span>
+                            </span>
+                          ) : <span className="w-[100px] shrink-0" />}
+                        </div>
+                        {i < vs.length - 1 && (
+                          <div className="flex items-center gap-2 py-0.5">
+                            <span className="w-0.5 h-5 bg-gradient-to-b from-slate-500 to-slate-700 ml-[5px] shrink-0 rounded" />
+                            <span className="text-[9px] text-slate-500 flex-1 pl-1">↓ {((cum[i + 1] - cum[i]) / 1000).toFixed(2)} km</span>
+                            <input type="number" min={0} step={0.5} value={newArcMin[i] ?? 0}
+                              onChange={e => setNewArcMin(prev => prev.map((x, k) => (k === i ? Math.max(0, Number(e.target.value) || 0) : x)))}
+                              className="w-16 px-1 py-0.5 rounded bg-slate-950 border border-amber-600/60 text-[10px] text-right text-amber-200 font-mono" />
+                            <span className="text-[9px] text-slate-500 w-24 shrink-0">min percorrenza</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+              {protoTimes && (
+                <p className="text-[10px] text-emerald-300">
+                  Giro completo: <strong>{protoTimes.totalMin} min</strong> · arrivo capolinea <strong className="font-mono">{genSecToHms(protoTimes.arr[protoTimes.arr.length - 1]).slice(0, 5)}</strong>
+                </p>
+              )}
               <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Giorni di circolazione (calendario)</label>
                 <select value={newCalendarId} onChange={e => setNewCalendarId(e.target.value)}
@@ -707,7 +876,7 @@ export default function PlanningStudioTripsPage() {
               <button onClick={runCreateFirstTrip} disabled={newBusy}
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
                 {newBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                Crea corsa
+                Crea corsa prototipo
               </button>
             </div>
           </div>
@@ -717,13 +886,16 @@ export default function PlanningStudioTripsPage() {
       {/* ─── Dialog: Genera corse a cadenza (C1 — even headway) ─── */}
       {genOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !genBusy && setGenOpen(false)}>
-          <div className="w-full max-w-md mx-4 rounded-xl border border-amber-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className={`w-full ${genStep === "preview" ? "max-w-4xl" : "max-w-md"} mx-4 rounded-xl border border-amber-500/30 bg-slate-950 shadow-2xl`} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <Timer className="w-4 h-4 text-amber-400" /> Genera corse a cadenza
+                <Timer className="w-4 h-4 text-amber-400" />
+                {genStep === "params" ? "Genera corse a cadenza" : "Anteprima · variazione traffico"}
+                <span className="text-[10px] text-slate-500 font-normal">— passo {genStep === "params" ? "1" : "2"} di 2</span>
               </h3>
               <button onClick={() => !genBusy && setGenOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
             </div>
+            {genStep === "params" && (
             <div className="p-4 space-y-3 text-sm">
               <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Corsa template</label>
@@ -788,14 +960,114 @@ export default function PlanningStudioTripsPage() {
                 {genPreviewCount > 200 && <span className="text-red-300"> Oltre il limite di 200: restringi la fascia.</span>}
               </div>
             </div>
+            )}
+            {genStep === "preview" && genProfile && (() => {
+              const nArcs = genProfile.stopIds.length - 1;
+              const h0 = Math.floor(genProfile.deps[0] / 3600);
+              const h1 = Math.floor((genProfile.deps[genProfile.deps.length - 1] + genProfile.relArr[genProfile.relArr.length - 1]) / 3600);
+              const hours: number[] = [];
+              for (let h = h0; h <= h1; h++) hours.push(h);
+              // transiti per cella: corse che ENTRANO nell'arco a nella fascia h (orari template)
+              const transits: number[][] = Array.from({ length: nArcs }, (_, a) =>
+                hours.map(h => genProfile.deps.filter(dep => Math.floor((dep + genProfile.relDep[a]) / 3600) === h).length));
+              const heat = (c: number) => c <= 1 ? "transparent"
+                : c <= 1.1 ? "rgba(245,158,11,0.12)" : c <= 1.2 ? "rgba(245,158,11,0.25)"
+                : c <= 1.3 ? "rgba(239,68,68,0.25)" : "rgba(239,68,68,0.4)";
+              const fmtH = (h: number) => `${String(h % 24).padStart(2, "0")}:00`;
+              // durata giro prima/dopo (prima e ultima partenza)
+              const giroBase = genProfile.relArr[genProfile.relArr.length - 1];
+              const giroOf = (dep: number) => { const t = buildRunTimes(dep, genProfile); return t.arr[t.arr.length - 1] - dep; };
+              return (
+                <div className="p-4 space-y-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-slate-400">
+                      Coefficienti di rallentamento per <strong className="text-slate-200">fascia oraria</strong> (proposta dal profilo traffico, modificabile).
+                      Ogni cella mostra il tempo dell'arco <span className="text-amber-300">adattato</span> e il n° di transiti previsti.
+                    </p>
+                    <label className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer select-none shrink-0">
+                      <input type="checkbox" checked={genApplyTraffic} onChange={e => setGenApplyTraffic(e.target.checked)} className="accent-amber-500" />
+                      Applica variazione traffico
+                    </label>
+                  </div>
+                  <div className="overflow-auto max-h-[52vh] rounded border border-slate-800">
+                    <table className="text-[11px] border-collapse w-full">
+                      <thead className="sticky top-0 bg-slate-900 z-10">
+                        <tr>
+                          <th className="text-left px-2 py-1.5 text-slate-400 font-medium border-b border-slate-800 min-w-[180px]">Arco del percorso</th>
+                          {hours.map(h => (
+                            <th key={h} className="px-1.5 py-1.5 border-b border-l border-slate-800 text-slate-300 font-medium whitespace-nowrap">
+                              <div>{fmtH(h)}–{fmtH(h + 1)}</div>
+                              <div className="mt-1 flex items-center justify-center gap-0.5">
+                                <span className="text-slate-500">×</span>
+                                <input type="number" step={0.05} min={0.5} max={3}
+                                  value={genCoeff[h] ?? 1}
+                                  onChange={e => { const v = Number(e.target.value); setGenCoeff(prev => ({ ...prev, [h]: Number.isFinite(v) && v > 0 ? v : 1 })); }}
+                                  disabled={!genApplyTraffic}
+                                  className="w-12 px-1 py-0.5 rounded bg-slate-950 border border-amber-500/40 text-amber-300 text-center disabled:opacity-40" />
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Array.from({ length: nArcs }, (_, a) => {
+                          const baseSec = genProfile.relArr[a + 1] - genProfile.relDep[a];
+                          return (
+                            <tr key={a} className="border-b border-slate-800/60">
+                              <td className="px-2 py-1 text-slate-300 whitespace-nowrap overflow-hidden text-ellipsis max-w-[220px]">
+                                <span className="text-slate-500">{a + 1}.</span> {genProfile.stopNames[a]} <span className="text-slate-600">→</span> {genProfile.stopNames[a + 1]}
+                                <span className="text-slate-500 ml-1">({Math.round(baseSec / 6) / 10}′)</span>
+                              </td>
+                              {hours.map((h, hi) => {
+                                const c = genApplyTraffic ? (genCoeff[h] ?? 1) : 1;
+                                const adj = Math.round((baseSec * c) / 6) / 10;
+                                const n = transits[a][hi];
+                                return (
+                                  <td key={h} className="px-1.5 py-1 border-l border-slate-800/60 text-center whitespace-nowrap"
+                                    style={{ background: n > 0 ? heat(c) : "transparent", opacity: n > 0 ? 1 : 0.25 }}>
+                                    {n > 0 ? (
+                                      <>
+                                        <span className={c > 1 ? "text-amber-200 font-medium" : "text-slate-300"}>{adj}′</span>
+                                        <span className="text-slate-500 ml-1">·{n}</span>
+                                      </>
+                                    ) : <span className="text-slate-700">—</span>}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 flex flex-wrap gap-x-4 gap-y-1">
+                    <span><strong>{genProfile.deps.length}</strong> corse da salvare</span>
+                    <span>giro template: <strong>{Math.round(giroBase / 60)}′</strong></span>
+                    <span>giro adattato: <strong>{Math.round(giroOf(genProfile.deps[0]) / 60)}′</strong> (prima) → <strong>{Math.round(giroOf(genProfile.deps[genProfile.deps.length - 1]) / 60)}′</strong> (ultima)</span>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+              {genStep === "preview" && (
+                <button onClick={() => setGenStep("params")} disabled={genBusy}
+                  className="mr-auto text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">← Indietro</button>
+              )}
               <button onClick={() => setGenOpen(false)} disabled={genBusy}
                 className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
-              <button onClick={runGenerate} disabled={genBusy || !genTemplateId || genPreviewCount === 0 || genPreviewCount > 200}
-                className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
-                {genBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Timer className="w-3.5 h-3.5" />}
-                Genera corse
-              </button>
+              {genStep === "params" ? (
+                <button onClick={prepareGenerate} disabled={genBusy || !genTemplateId || genPreviewCount === 0 || genPreviewCount > 200}
+                  className="text-xs px-3 py-1.5 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                  {genBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Timer className="w-3.5 h-3.5" />}
+                  Continua → Anteprima traffico
+                </button>
+              ) : (
+                <button onClick={finalizeGenerate} disabled={genBusy || !genProfile}
+                  className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
+                  {genBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  Salva {genProfile?.deps.length ?? 0} corse
+                </button>
+              )}
             </div>
           </div>
         </div>

@@ -201,6 +201,7 @@ export default function PlanningStudioTtdPage() {
     };
   }, [baseVariantQ.data, yMode]);
 
+
   /* ─── Corse della variante base + stop times (caricamento a lotti) ─── */
   const tripsQ = useQuery({
     queryKey: ["ps", projectId, "trips", "", variantId],
@@ -287,6 +288,54 @@ export default function PlanningStudioTtdPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayOn, projectId]);
 
+  /* ─── F4: asse UNIONE — con altre linee attive l'asse Y elenca TUTTE le
+     fermate (base + overlay, inserite dopo l'ultima fermata condivisa nella
+     sequenza), e le fermate COMUNI a ≥2 linee sono marcate come interscambi.
+     Attivo in modalità equidistante (in "distanze reali" resta l'asse base). ─── */
+  const unionAxis = useMemo(() => {
+    if (!baseAxis || yMode !== "equidistante") return null;
+    const activeCands = (candidatesQ.data ?? []).filter(c => overlayOn.has(c.variant.id));
+    if (activeCands.length === 0) return null;
+    const order: { stopId: string; stopName: string }[] =
+      baseAxis.stops.map(s => ({ stopId: s.stopId, stopName: s.stopName }));
+    const pos = new Map<string, number>();
+    order.forEach((s2, i) => pos.set(s2.stopId, i));
+    const lineHits = new Map<string, number>();
+    for (const s2 of order) lineHits.set(s2.stopId, 1);
+    for (const cand of activeCands) {
+      const seen = new Set<string>();
+      let insertAfter = -1;
+      for (const st of cand.stops) {
+        if (pos.has(st.stopId)) {
+          insertAfter = pos.get(st.stopId)!;
+          if (!seen.has(st.stopId)) lineHits.set(st.stopId, (lineHits.get(st.stopId) ?? 1) + 1);
+        } else {
+          const at = insertAfter + 1;
+          order.splice(at, 0, { stopId: st.stopId, stopName: st.stopName });
+          pos.clear();
+          order.forEach((s3, i) => pos.set(s3.stopId, i));
+          lineHits.set(st.stopId, 1);
+          insertAfter = at;
+        }
+        seen.add(st.stopId);
+      }
+    }
+    const byStop = new Map<string, number>();
+    order.forEach((s2, i) => byStop.set(s2.stopId, i));
+    const shared = new Set(
+      [...lineHits.entries()].filter(([, c2]) => c2 >= 2).map(([id]) => id),
+    );
+    return {
+      stops: order.map((s2, i) => ({ stopId: s2.stopId, stopName: s2.stopName, dist: i })),
+      byStop,
+      total: Math.max(1, order.length - 1),
+      shared,
+    };
+  }, [baseAxis, yMode, candidatesQ.data, overlayOn]);
+  // Asse attivo per il disegno: unione se disponibile, altrimenti base.
+  const axis = unionAxis ?? (baseAxis ? { ...baseAxis, shared: new Set<string>() } : null);
+
+
   /* ─── Fascia oraria esplicita (filtro vista) ─── */
   const [winFrom, setWinFrom] = useState("04:00");
   const [winTo, setWinTo] = useState("26:00");
@@ -345,7 +394,7 @@ export default function PlanningStudioTtdPage() {
   const innerW = Math.max(50, size.w - ML - MR);
   const innerH = Math.max(50, size.h - MT - MB);
   const xOf = (sec: number) => ML + ((sec - tDomain.t0) / (tDomain.t1 - tDomain.t0)) * innerW;
-  const yOf = (dist: number) => MT + (dist / (baseAxis?.total || 1)) * innerH;
+  const yOf = (dist: number) => MT + (dist / (axis?.total || 1)) * innerH;
 
   /** Imposta il dominio tempo con clamp su limiti e span min/max. */
   function setDomainClamped(t0: number, t1: number) {
@@ -579,13 +628,13 @@ export default function PlanningStudioTtdPage() {
   }, [candidatesQ.data, overlayOn, routesQ.data, baseColor]);
 
   const baseGeoms: TripGeom[] = useMemo(() => {
-    if (!baseAxis) return [];
+    if (!axis) return [];
     const out: TripGeom[] = [];
     for (const t of visibleTrips) {
       const sts = stMap[t.id];
       if (!sts || sts.length < 2) continue;
       const shift = tripDrag?.tripId === t.id ? tripDrag.deltaSec : 0;
-      const segs = buildSegments(sts, baseAxis.byStop, shift);
+      const segs = buildSegments(sts, axis.byStop, shift);
       if (segs.length === 0) continue;
       out.push({
         trip: t, sts, segs, color: baseColor, isOverlay: false,
@@ -593,10 +642,10 @@ export default function PlanningStudioTtdPage() {
       });
     }
     return out;
-  }, [visibleTrips, stMap, baseAxis, tripDrag, baseColor, baseRoute]);
+  }, [visibleTrips, stMap, axis, tripDrag, baseColor, baseRoute]);
 
   const overlayGeoms: TripGeom[] = useMemo(() => {
-    if (!baseAxis) return [];
+    if (!axis) return [];
     const out: TripGeom[] = [];
     for (const cand of candidatesQ.data ?? []) {
       if (!overlayOn.has(cand.variant.id)) continue;
@@ -608,7 +657,7 @@ export default function PlanningStudioTtdPage() {
       for (const t of trips) {
         const sts = data.st[t.id];
         if (!sts || sts.length < 2) continue;
-        const segs = buildSegments(sts, baseAxis.byStop);
+        const segs = buildSegments(sts, axis.byStop);
         if (segs.length === 0) continue;
         out.push({
           trip: t, sts, segs, color, isOverlay: true,
@@ -617,30 +666,30 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, baseAxis, calendarFilter, colorByRoute]);
+  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, colorByRoute]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
-    if (!baseAxis || !multPreview) return [];
+    if (!axis || !multPreview) return [];
     return multPreview.runs.map(run =>
       buildSegments(
         run.stopTimes.map(s => ({ ...s, tripId: "", stopSeq: 0, stopName: "", pickupType: 0, dropOffType: 0, shapeDistTraveled: null })) as PsStopTime[],
-        baseAxis.byStop,
+        axis.byStop,
       ),
     );
-  }, [baseAxis, multPreview]);
+  }, [axis, multPreview]);
 
   /* ─── Coincidenze ai nodi condivisi (stesso cluster O stessa fermata) ───
      Direzioni: base arriva → altra linea parte, e viceversa, con attesa in
      [connMin, connMax] minuti. Z = numero di coincidenze realizzate. ─── */
   type ConnPt = { t: number; dist: number; wait: number; label: string };
   const connections = useMemo<{ pts: ConnPt[]; z: number }>(() => {
-    if (!showConn || !baseAxis || overlayGeoms.length === 0 || baseGeoms.length === 0) return { pts: [], z: 0 };
+    if (!showConn || !axis || overlayGeoms.length === 0 || baseGeoms.length === 0) return { pts: [], z: 0 };
     const minW = Math.max(0, Number(connMin) || 0) * 60;
     const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
     // nodo → posizione y sulla base (prima fermata base del nodo)
     const nodeDist = new Map<string, number>();
-    for (const st of baseAxis.stops) {
+    for (const st of axis.stops) {
       const n = nodeOfStop.get(st.stopId) ?? st.stopId;
       if (!nodeDist.has(n)) nodeDist.set(n, st.dist);
     }
@@ -676,7 +725,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return { pts, z: pts.length };
-  }, [showConn, baseAxis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
+  }, [showConn, axis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
 
   /* ─── C4 · Sincronizzatore coincidenze: trova lo shift Δ della variante scelta
      che MASSIMIZZA Z (attese in finestra), entro ±maxShift minuti. ─── */
@@ -688,11 +737,11 @@ export default function PlanningStudioTtdPage() {
   useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax]);
 
   function computeConnForShift(vid: string, deltaSec: number, collect = false): { z: number; pts: ConnPt[] } {
-    if (!baseAxis) return { z: 0, pts: [] };
+    if (!axis) return { z: 0, pts: [] };
     const minW = Math.max(0, Number(connMin) || 0) * 60;
     const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
     const nodeDist = new Map<string, number>();
-    for (const st of baseAxis.stops) {
+    for (const st of axis.stops) {
       const n = nodeOfStop.get(st.stopId) ?? st.stopId;
       if (!nodeDist.has(n)) nodeDist.set(n, st.dist);
     }
@@ -736,7 +785,7 @@ export default function PlanningStudioTtdPage() {
      con le coincidenze previste — l'utente VEDE lo spostamento prima di
      confermare. ─── */
   const syncPreview = useMemo(() => {
-    if (!syncOpen || !syncResult || syncResult.best === 0 || !syncVariantId || !baseAxis) return null;
+    if (!syncOpen || !syncResult || syncResult.best === 0 || !syncVariantId || !axis) return null;
     const data = overlayData[syncVariantId];
     if (!data) return null;
     const deltaSec = syncResult.best * 60;
@@ -746,13 +795,13 @@ export default function PlanningStudioTtdPage() {
     for (const t of trips) {
       const sts = data.st[t.id];
       if (!sts || sts.length < 2) continue;
-      const segs = buildSegments(sts, baseAxis.byStop, deltaSec);
+      const segs = buildSegments(sts, axis.byStop, deltaSec);
       if (segs.length) geoms.push(segs);
     }
     const conn = computeConnForShift(syncVariantId, deltaSec, true);
     return { geoms, pts: conn.pts, delta: syncResult.best };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncResult, syncVariantId, overlayData, baseAxis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
+  }, [syncOpen, syncResult, syncVariantId, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
 
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
 
@@ -839,18 +888,20 @@ export default function PlanningStudioTtdPage() {
 
   // Etichette fermate diradate per evitare sovrapposizioni
   const stopLabels = useMemo(() => {
-    if (!baseAxis) return [];
-    const out: { name: string; y: number; dist: number }[] = [];
+    if (!axis) return [];
+    const out: { name: string; y: number; dist: number; shared: boolean }[] = [];
     let lastY = -Infinity;
-    for (const s of baseAxis.stops) {
-      const y = MT + (s.dist / baseAxis.total) * innerH;
-      if (y - lastY >= 12) {
-        out.push({ name: s.stopName, y, dist: s.dist });
+    for (const s of axis.stops) {
+      const y = MT + (s.dist / axis.total) * innerH;
+      const shared = (axis as any).shared?.has(s.stopId) ?? false;
+      // gli interscambi hanno SEMPRE l'etichetta, anche se fitti
+      if (shared || y - lastY >= 12) {
+        out.push({ name: s.stopName, y, dist: s.dist, shared });
         lastY = y;
       }
     }
     return out;
-  }, [baseAxis, innerH]);
+  }, [axis, innerH]);
 
   const stLoading = !!variantId && (tripsQ.data ?? []).some(t => !(t.id in stMap));
   const project = projectQ.data;
@@ -1164,20 +1215,31 @@ export default function PlanningStudioTtdPage() {
                 );
               })}
 
-              {/* Griglia orizzontale: fermate della variante base */}
-              {baseAxis.stops.map((s, i) => (
-                <line key={`${s.stopId}-${i}`}
-                  x1={ML} y1={yOf(s.dist)} x2={ML + innerW} y2={yOf(s.dist)}
-                  stroke="#1e293b" strokeWidth={1} />
-              ))}
+              {/* Griglia orizzontale: fermate dell'asse attivo (unione con overlay).
+                  Le fermate COMUNI a più linee (interscambi) hanno riga più marcata. */}
+              {axis!.stops.map((s, i) => {
+                const isShared = (axis as any).shared?.has(s.stopId) ?? false;
+                return (
+                  <line key={`${s.stopId}-${i}`}
+                    x1={ML} y1={yOf(s.dist)} x2={ML + innerW} y2={yOf(s.dist)}
+                    stroke={isShared ? "#78350f" : "#1e293b"} strokeWidth={isShared ? 1.5 : 1} />
+                );
+              })}
               {stopLabels.map((l, i) => (
-                <text key={i} x={ML - 6} y={l.y + 3} textAnchor="end" fill="#94a3b8" fontSize={9}>
-                  {l.name.length > 24 ? l.name.slice(0, 23) + "…" : l.name}
-                </text>
+                <g key={i}>
+                  {l.shared && (
+                    <rect x={ML - 4} y={l.y - 3} width={6} height={6} transform={`rotate(45 ${ML - 1} ${l.y})`}
+                      fill="#f59e0b" stroke="#78350f" strokeWidth={0.5} />
+                  )}
+                  <text x={ML - (l.shared ? 10 : 6)} y={l.y + 3} textAnchor="end"
+                    fill={l.shared ? "#fbbf24" : "#94a3b8"} fontSize={9} fontWeight={l.shared ? 700 : 400}>
+                    {l.name.length > 24 ? l.name.slice(0, 23) + "…" : l.name}
+                  </text>
+                </g>
               ))}
-              {/* Distanza totale in km in basso a sinistra */}
+              {/* Riepilogo asse in basso a sinistra */}
               <text x={ML - 6} y={MT + innerH + 4} textAnchor="end" fill="#475569" fontSize={9} fontFamily="monospace">
-                {(baseAxis.total / 1000).toFixed(1)} km
+                {yMode === "distanza" ? `${(axis!.total / 1000).toFixed(1)} km` : `${axis!.stops.length} fermate${(axis as any).shared?.size ? ` · ◆ ${(axis as any).shared.size} interscambi` : ""}`}
               </text>
 
               <g clipPath="url(#ttd-clip)">
