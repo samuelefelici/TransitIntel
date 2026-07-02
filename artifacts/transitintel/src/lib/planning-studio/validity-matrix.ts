@@ -38,6 +38,11 @@ export interface MatrixContext {
   tripExceptions: Map<string, Map<string, 1 | 2>>;
   /** Patroni locali in formato 'MM-DD' (es. '05-04' per San Ciriaco ad Ancona) */
   patronSaints: Set<string>;
+  /** giorno → categoria di validità (calendario aziendale), opzionale */
+  dayCategory?: Map<string, string>;
+  /** vincolo per corsa: se presente e non vuoto, la corsa vale SOLO nei giorni
+   *  la cui categoria è nel set */
+  tripCategories?: Map<string, Set<string>>;
 }
 
 /**
@@ -69,7 +74,16 @@ export function getCellValidity(
   if (!dayTypeId) return false;
 
   // 4) Default validity (trip, day_type). Assenza riga = false.
-  return ctx.tripDayValidity.get(tripId)?.get(dayTypeId) ?? false;
+  if (!(ctx.tripDayValidity.get(tripId)?.get(dayTypeId) ?? false)) return false;
+
+  // 5) Vincolo categorie (calendario aziendale): se la corsa ha ≥1 categorie,
+  //    vale solo nei giorni la cui categoria è tra quelle selezionate.
+  const cats = ctx.tripCategories?.get(tripId);
+  if (cats && cats.size > 0) {
+    const c = ctx.dayCategory?.get(date);
+    if (!c || !cats.has(c)) return false;
+  }
+  return true;
 }
 
 /**

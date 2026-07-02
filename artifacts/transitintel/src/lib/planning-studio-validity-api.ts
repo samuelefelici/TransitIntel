@@ -68,6 +68,8 @@ export interface PsValidityMatrix {
   tripDayValidity: PsTripDayValidity[];
   tripExceptions: PsTripExceptionMatrix[];
   patronSaints: string[];
+  /** vincolo corsa ↔ categorie (calendario aziendale) */
+  tripCategoryValidity?: { tripId: string; categoryId: string }[];
 }
 
 /* ─── Day-types CRUD ─── */
@@ -167,7 +169,8 @@ export async function deletePsTripExceptionMatrix(
 /* ─── Bulk operations (PR3) ─── */
 
 export type BulkOp =
-  | { op: "trip-row-set"; tripId: string; dayTypeIds: string[]; isValid: boolean }
+  | { op: "trip-row-set"; tripId?: string; tripIds?: string[]; dayTypeIds: string[]; isValid: boolean }
+  | { op: "trip-categories-set"; tripIds: string[]; categoryIds: string[] }
   | { op: "date-column-set"; date: string; isValid: boolean }
   | { op: "clear-exceptions"; from: string; to: string; tripIds?: string[] };
 

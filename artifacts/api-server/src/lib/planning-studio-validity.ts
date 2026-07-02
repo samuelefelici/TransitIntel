@@ -145,6 +145,16 @@ async function ensureValidityTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS validity_filter jsonb
     `);
 
+    /* ─── Vincolo corsa ↔ categorie di validità (calendario aziendale):
+       se una corsa ha ≥1 categorie, vale SOLO nei giorni con quella categoria ─── */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_trip_category_validity (
+        trip_id     uuid NOT NULL,
+        category_id uuid NOT NULL,
+        PRIMARY KEY (trip_id, category_id)
+      )
+    `);
+
     /* ─── Seed system day-types globali ─── */
     for (const dt of SYSTEM_DAY_TYPES) {
       await db.execute(sql`
@@ -603,6 +613,18 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
     reason: r.reason,
   }));
 
+  // Vincolo categorie (calendario aziendale) per corsa.
+  const tcvR = await db.execute(sql`
+    SELECT v.trip_id, v.category_id
+      FROM ps_trip_category_validity v
+      JOIN ps_trips t ON t.id = v.trip_id
+     WHERE t.project_id = ${req.params.id}::uuid
+  `);
+  const tripCategoryValidity = ((tcvR as any).rows ?? []).map((r: any) => ({
+    tripId: r.trip_id,
+    categoryId: r.category_id,
+  }));
+
   // Patroni locali → da agency_settings del progetto.
   const patronSaints: string[] = (() => {
     const settings = proj.agency_settings ?? {};
@@ -623,6 +645,7 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
     dayCalendar,
     tripDayValidity,
     tripExceptions,
+    tripCategoryValidity,
     patronSaints,
   });
 });
@@ -801,29 +824,72 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
 
   try {
     if (op === "trip-row-set") {
-      const { tripId, dayTypeIds, isValid } = body;
-      if (typeof tripId !== "string" || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
-        res.status(400).json({ error: "tripId, dayTypeIds[], isValid required" }); return;
+      const { dayTypeIds, isValid } = body;
+      // Retro-compatibile: tripId singolo OPPURE tripIds[] (es. corse generate a cadenza).
+      const UUID_RX = /^[0-9a-f-]{36}$/i;
+      const tripIds: string[] = (Array.isArray(body.tripIds) ? body.tripIds : [body.tripId])
+        .filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      if (tripIds.length === 0 || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
+        res.status(400).json({ error: "tripId|tripIds[], dayTypeIds[], isValid required" }); return;
       }
       const ownR = await db.execute(sql`
-        SELECT 1 FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${req.params.id}::uuid
+        SELECT count(*)::int AS c FROM ps_trips
+         WHERE id = ANY(${`{${tripIds.join(",")}}`}::uuid[]) AND project_id = ${req.params.id}::uuid
       `);
-      if (((ownR as any).rows ?? []).length === 0) {
+      if (Number(((ownR as any).rows ?? [])[0]?.c) !== tripIds.length) {
         res.status(404).json({ error: "trip not in project" }); return;
       }
       let count = 0;
-      for (const dtId of dayTypeIds) {
-        if (typeof dtId !== "string") continue;
-        await db.execute(sql`
-          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-          VALUES (${tripId}::uuid, ${dtId}::uuid, ${isValid}, now())
-          ON CONFLICT (trip_id, day_type_id) DO UPDATE
-            SET is_valid = EXCLUDED.is_valid, updated_at = now()
-        `);
-        count++;
+      for (const tripId of tripIds) {
+        for (const dtId of dayTypeIds) {
+          if (typeof dtId !== "string") continue;
+          await db.execute(sql`
+            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+            VALUES (${tripId}::uuid, ${dtId}::uuid, ${isValid}, now())
+            ON CONFLICT (trip_id, day_type_id) DO UPDATE
+              SET is_valid = EXCLUDED.is_valid, updated_at = now()
+          `);
+          count++;
+        }
       }
-      await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripId, { count, isValid });
-      telemetry("bulk.trip-row", req.params.id, { tripId, count, isValid });
+      await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripIds[0], { count, isValid, trips: tripIds.length });
+      telemetry("bulk.trip-row", req.params.id, { tripId: tripIds[0], count, isValid });
+      res.json({ ok: true, count });
+      return;
+    }
+
+    if (op === "trip-categories-set") {
+      // Sostituisce il set di categorie di validità (calendario aziendale) delle
+      // corse indicate. categoryIds vuoto = nessun vincolo (vale in ogni periodo).
+      const UUID_RX = /^[0-9a-f-]{36}$/i;
+      const tripIds: string[] = (Array.isArray(body.tripIds) ? body.tripIds : [body.tripId])
+        .filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      const categoryIds: string[] = (Array.isArray(body.categoryIds) ? body.categoryIds : [])
+        .filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      if (tripIds.length === 0) { res.status(400).json({ error: "tripIds[] required" }); return; }
+      const ownR = await db.execute(sql`
+        SELECT count(*)::int AS c FROM ps_trips
+         WHERE id = ANY(${`{${tripIds.join(",")}}`}::uuid[]) AND project_id = ${req.params.id}::uuid
+      `);
+      if (Number(((ownR as any).rows ?? [])[0]?.c) !== tripIds.length) {
+        res.status(404).json({ error: "trip not in project" }); return;
+      }
+      await db.execute(sql`
+        DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+      `);
+      let count = 0;
+      for (const tripId of tripIds) {
+        for (const catId of categoryIds) {
+          await db.execute(sql`
+            INSERT INTO ps_trip_category_validity (trip_id, category_id)
+            VALUES (${tripId}::uuid, ${catId}::uuid)
+            ON CONFLICT DO NOTHING
+          `);
+          count++;
+        }
+      }
+      await logActivity(req.params.id, userId, "validity.bulk.trip-categories", "trip", tripIds[0], { trips: tripIds.length, categories: categoryIds.length });
+      telemetry("bulk.trip-categories", req.params.id, { trips: tripIds.length, categories: categoryIds.length });
       res.json({ ok: true, count });
       return;
     }

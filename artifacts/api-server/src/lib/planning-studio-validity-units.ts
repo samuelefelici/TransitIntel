@@ -372,6 +372,20 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       }
     }
 
+    // Vincolo categorie per corsa (validità del calendario aziendale):
+    // se una corsa ha ≥1 categorie, vale SOLO nei giorni con quella categoria.
+    const tripCatMap = new Map<string, Set<string>>();
+    if (tripIds.length > 0) {
+      const tcR = await db.execute(sql`
+        SELECT trip_id, category_id FROM ps_trip_category_validity
+         WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+      `);
+      for (const r of (tcR as any).rows ?? []) {
+        if (!tripCatMap.has(r.trip_id)) tripCatMap.set(r.trip_id, new Set());
+        tripCatMap.get(r.trip_id)!.add(r.category_id);
+      }
+    }
+
     // Compute active trips per date.
     // activeAnywhere = corse attive in almeno un giorno del range (a prescindere
     // dal filtro linee), serve per segnalare le corse che restano FUORI dall'UDP.
@@ -393,7 +407,14 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
         else if (t.valid_from && d < t.valid_from) isActiveToday = false;
         else if (t.valid_to && d > t.valid_to) isActiveToday = false;
         else if (!dtId) isActiveToday = false;
-        else isActiveToday = !!tdvMap.get(t.id)?.get(dtId);
+        else {
+          isActiveToday = !!tdvMap.get(t.id)?.get(dtId);
+          // vincolo categorie: la corsa vale solo nei periodi selezionati
+          const cats = tripCatMap.get(t.id);
+          if (isActiveToday && cats && cats.size > 0) {
+            isActiveToday = !!cat && cats.has(cat.id);
+          }
+        }
         if (!isActiveToday) continue;
         activeAnywhere.add(t.id);
         // applica il filtro linee: solo le corse delle linee scelte entrano nell'UDP

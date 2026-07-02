@@ -30,6 +30,7 @@ import {
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
 import { listPsDayTypes, postPsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
+import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 
 function fmtTime(t?: string | null) {
   if (!t) return "—";
@@ -141,6 +142,13 @@ export default function PlanningStudioTripsPage() {
   }
   useEffect(() => { setSelected(new Set()); }, [routeId, variantId, calendarFilter, onlyActive]);
 
+  const [genOpen, setGenOpen] = useState(false);
+  const [genTemplateId, setGenTemplateId] = useState("");
+  const [genFrom, setGenFrom] = useState("06:00");
+  const [genTo, setGenTo] = useState("20:00");
+  const [genEvery, setGenEvery] = useState("15");
+  const [genBusy, setGenBusy] = useState(false);
+
   /* ─── Nuova corsa (la PRIMA della variante): orari calcolati da distanza
    * e velocità commerciale, poi diventa il template per "Genera a cadenza".
    * Imposta anche i GIORNI di validità (trip-row-set nella matrice). ─── */
@@ -154,8 +162,24 @@ export default function PlanningStudioTripsPage() {
   const dayTypesQ = useQuery({
     queryKey: ["ps", projectId, "day-types"],
     queryFn: () => listPsDayTypes(projectId),
-    enabled: !!projectId && newOpen,
+    enabled: !!projectId && (newOpen || genOpen),
   });
+  // Validità del CALENDARIO AZIENDALE (categorie globali: Scuole Aperte/Chiuse, Festività…)
+  const categoriesQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+    enabled: newOpen || genOpen,
+  });
+  const [newCategoryIds, setNewCategoryIds] = useState<Set<string>>(new Set());
+  const [genDayTypeIds, setGenDayTypeIds] = useState<Set<string>>(new Set());
+  const [genCategoryIds, setGenCategoryIds] = useState<Set<string>>(new Set());
+  // preseleziona "feriale" anche per il generatore
+  useEffect(() => {
+    if (!genOpen || !dayTypesQ.data || genDayTypeIds.size > 0) return;
+    const fer = dayTypesQ.data.find(d => d.code === "feriale");
+    if (fer) setGenDayTypeIds(new Set([fer.id]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genOpen, dayTypesQ.data]);
   // preseleziona "feriale" alla prima apertura
   useEffect(() => {
     if (!newOpen || !dayTypesQ.data || newDayTypeIds.size > 0) return;
@@ -215,11 +239,16 @@ export default function PlanningStudioTripsPage() {
       }]);
       // Giorni di validità (matrice): best-effort, non blocca la creazione.
       const tripId = r.tripIds?.[0];
-      if (tripId && newDayTypeIds.size > 0) {
+      if (tripId) {
         try {
-          await postPsValidityBulk(projectId, { op: "trip-row-set", tripId, dayTypeIds: [...newDayTypeIds], isValid: true });
+          if (newDayTypeIds.size > 0) {
+            await postPsValidityBulk(projectId, { op: "trip-row-set", tripId, dayTypeIds: [...newDayTypeIds], isValid: true });
+          }
+          if (newCategoryIds.size > 0) {
+            await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [tripId], categoryIds: [...newCategoryIds] });
+          }
         } catch {
-          toast.warning("Corsa creata, ma giorni di validità non impostati", { description: "Impostali dalla Matrice di validità." });
+          toast.warning("Corsa creata, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
       toast.success("✅ Corsa creata", {
@@ -236,12 +265,6 @@ export default function PlanningStudioTripsPage() {
   /* ─── C1 · Genera corse a cadenza (even headway, Ceder §4.3) ───
    * Corsa template + fascia oraria + headway → partenze t_k = t0 + k·H,
    * orari propagati su tutte le fermate clonando gli stop_times traslati. */
-  const [genOpen, setGenOpen] = useState(false);
-  const [genTemplateId, setGenTemplateId] = useState("");
-  const [genFrom, setGenFrom] = useState("06:00");
-  const [genTo, setGenTo] = useState("20:00");
-  const [genEvery, setGenEvery] = useState("15");
-  const [genBusy, setGenBusy] = useState(false);
 
   const genToSec = (t: string) => { const q = t.split(":").map(Number); return (q[0] || 0) * 3600 + (q[1] || 0) * 60 + (q[2] || 0); };
   const genSecToHms = (x: number) => {
@@ -291,6 +314,19 @@ export default function PlanningStudioTripsPage() {
         })),
       }));
       const r = await batchCreatePsTrips(projectId, payload);
+      // Validità per TUTTE le corse generate: giorni (matrice) + categorie (calendario aziendale)
+      if (r.tripIds?.length) {
+        try {
+          if (genDayTypeIds.size > 0) {
+            await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: r.tripIds, dayTypeIds: [...genDayTypeIds], isValid: true });
+          }
+          if (genCategoryIds.size > 0) {
+            await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: r.tripIds, categoryIds: [...genCategoryIds] });
+          }
+        } catch {
+          toast.warning("Corse generate, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
+        }
+      }
       toast.success(`✅ ${r.count} corse generate`, {
         description: `${genFrom}–${genTo} · una ogni ${H} min · orari propagati su ${sts.length} fermate`,
         duration: 6000,
@@ -632,6 +668,24 @@ export default function PlanningStudioTripsPage() {
                 </select>
               </div>
               <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (calendario aziendale) — anche più di una</label>
+                {categoriesQ.isLoading && <p className="text-[11px] text-slate-500">Caricamento validità…</p>}
+                {!categoriesQ.isLoading && (categoriesQ.data ?? []).length === 0 && (
+                  <p className="text-[11px] text-slate-500">Nessuna validità definita nel Calendario aziendale.</p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {(categoriesQ.data ?? []).map(c => (
+                    <label key={c.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
+                      style={{ borderColor: newCategoryIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: newCategoryIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
+                      <input type="checkbox" className="hidden" checked={newCategoryIds.has(c.id)}
+                        onChange={() => setNewCategoryIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
+                      {c.name}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Se ne selezioni ≥1, la corsa vale SOLO nei giorni di quei periodi (es. Scuole Aperte). Nessuna = vale in tutti i periodi.</p>
+              </div>
+              <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (tipi giorno — matrice)</label>
                 {dayTypesQ.isLoading && <p className="text-[11px] text-slate-500">Caricamento tipi giorno…</p>}
                 <div className="flex flex-wrap gap-2">
@@ -701,6 +755,33 @@ export default function PlanningStudioTripsPage() {
                   <input type="number" min={1} max={240} value={genEvery} onChange={e => setGenEvery(e.target.value)}
                     className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs" />
                 </div>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (calendario aziendale) — anche più di una</label>
+                <div className="flex flex-wrap gap-2">
+                  {(categoriesQ.data ?? []).map(c => (
+                    <label key={c.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
+                      style={{ borderColor: genCategoryIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: genCategoryIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
+                      <input type="checkbox" className="hidden" checked={genCategoryIds.has(c.id)}
+                        onChange={() => setGenCategoryIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
+                      {c.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (tipi giorno)</label>
+                <div className="flex flex-wrap gap-2">
+                  {(dayTypesQ.data ?? []).map(dt => (
+                    <label key={dt.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
+                      style={{ borderColor: genDayTypeIds.has(dt.id) ? (dt.color || "#10b981") : "#334155", background: genDayTypeIds.has(dt.id) ? `${dt.color || "#10b981"}22` : "transparent" }}>
+                      <input type="checkbox" className="hidden" checked={genDayTypeIds.has(dt.id)}
+                        onChange={() => setGenDayTypeIds(prev => { const n = new Set(prev); n.has(dt.id) ? n.delete(dt.id) : n.add(dt.id); return n; })} />
+                      {dt.name}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Giorni e periodi vengono applicati a TUTTE le corse generate.</p>
               </div>
               <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
                 ≈ <strong>{genPreviewCount}</strong> partenze nella fascia {genFrom}–{genTo} (headway costante).
