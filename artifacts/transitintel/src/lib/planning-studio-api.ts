@@ -446,7 +446,10 @@ export async function deletePsTrip(projectId: string, tripId: string): Promise<v
 export async function countPsTrips(projectId: string): Promise<{ count: number; active: number; km: number; kmActive: number }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/trips-count`);
 }
-export async function updatePsTrip(projectId: string, tripId: string, patch: Partial<PsTrip>): Promise<PsTrip> {
+export async function updatePsTrip(
+  projectId: string, tripId: string,
+  patch: Partial<PsTrip> & { attributesMerge?: Record<string, any> },
+): Promise<PsTrip> {
   const r = await apiFetch<{ trip: PsTrip }>(
     `/api/planning-studio/projects/${projectId}/trips/${tripId}`,
     { method: "PATCH", body: JSON.stringify(patch) },
@@ -456,7 +459,7 @@ export async function updatePsTrip(projectId: string, tripId: string, patch: Par
 export async function bulkUpdatePsTrips(
   projectId: string,
   tripIds: string[],
-  patch: Partial<Pick<PsTrip, "calendarId" | "validFrom" | "validTo" | "isActive" | "serviceLabel">>,
+  patch: Partial<Pick<PsTrip, "calendarId" | "validFrom" | "validTo" | "isActive" | "serviceLabel">> & { attributesMerge?: Record<string, any> },
 ): Promise<{ ok: boolean; count: number }> {
   return apiFetch(
     `/api/planning-studio/projects/${projectId}/trips/bulk-update`,
