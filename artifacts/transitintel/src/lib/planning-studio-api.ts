@@ -443,7 +443,7 @@ export async function deletePsTrip(projectId: string, tripId: string): Promise<v
   await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${projectId}/trips/${tripId}`, { method: "DELETE" });
 }
 /** Contatore corse/km del progetto (badge nella toolbar del Planner Studio). */
-export async function countPsTrips(projectId: string): Promise<{ count: number; active: number; km: number; kmActive: number }> {
+export async function countPsTrips(projectId: string): Promise<{ count: number; active: number; km: number; kmActive: number; prototypes?: number }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/trips-count`);
 }
 export async function updatePsTrip(
@@ -548,6 +548,7 @@ export interface PsBatchTripInput {
   shortName?: string | null;
   direction?: number;
   serviceLabel?: string | null;
+  attributes?: Record<string, any>;
   stopTimes: { stopId: string; arrivalTime: string; departureTime: string; timepoint?: number }[];
 }
 

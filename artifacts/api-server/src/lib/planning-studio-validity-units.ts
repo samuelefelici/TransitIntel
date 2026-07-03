@@ -405,6 +405,8 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
 
       const active: string[] = [];
       for (const t of trips) {
+        // corsa ZERO (prototipo): non è una corsa reale, non entra nelle UDP
+        if ((t.attributes as any)?.prototype) continue;
         const ex = excMap.get(t.id)?.get(d);
         let isActiveToday = false;
         if (ex === 2) isActiveToday = false;          // forced invalid

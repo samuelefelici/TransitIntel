@@ -40,6 +40,7 @@ export default function TripCountBadge({ projectId }: { projectId: string }) {
   const active = Number(q.data.active) || 0;
   const km = Number(q.data.km) || 0;
   const kmActive = Number(q.data.kmActive) || 0;
+  const prototypes = Number((q.data as any).prototypes) || 0;
   return (
     <span
       title={`Percorrenze programmate del progetto: ${fmtKm(km)} km totali su ${count} corse${count !== active ? ` · ${fmtKm(kmActive)} km sulle ${active} corse attive` : ""}`}
@@ -48,6 +49,12 @@ export default function TripCountBadge({ projectId }: { projectId: string }) {
       <RouteIcon className="w-3.5 h-3.5" />
       <span className="font-mono font-semibold">{fmtKm(km)}</span> km
       <span className="text-amber-500/70">· {count} corse</span>
+      {prototypes > 0 && (
+        <span title={`${prototypes} corse ZERO (prototipi): senza orario, non generano km. Crea le corse reali con «Genera a cadenza».`}
+          className="ml-0.5 px-1.5 rounded-full bg-amber-500/25 border border-amber-500/60 text-amber-200 font-bold">
+          ⚠ {prototypes} proto
+        </span>
+      )}
     </span>
   );
 }
