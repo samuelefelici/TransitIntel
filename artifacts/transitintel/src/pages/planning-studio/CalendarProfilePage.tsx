@@ -18,7 +18,7 @@ import ValiditySectionNav from "./ValiditySectionNav";
 
 interface Profile {
   /** periodi di SCUOLE CHIUSE; vuoto = tutto l'anno scuole aperte */
-  closedPeriods: Array<{ from: string; to: string }>;
+  closedPeriods: Array<{ from: string; to: string; label?: string }>;
   summerPeriod: { from: string; to: string } | null;
   extraHolidays: string[];
 }
@@ -118,6 +118,10 @@ export default function CalendarProfilePage() {
           </p>
           {profile.closedPeriods.map((p, i) => (
             <div key={i} className="flex items-center gap-1.5 text-xs">
+              <input type="text" value={p.label ?? ""} placeholder="Nome (es. Estivo, Natale…)"
+                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, label: e.target.value } : x) })}
+                title="Nome del periodo di scuole chiuse: identifica il periodo (es. invernale/estivo) in matrice e nelle UDP"
+                className="w-32 px-2 py-1 rounded bg-background border border-border/60" />
               <input type="date" value={p.from}
                 onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })}
                 className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />

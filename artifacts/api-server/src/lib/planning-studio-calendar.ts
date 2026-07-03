@@ -72,7 +72,13 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
     const b = req.body ?? {};
     const closedPeriods = Array.isArray(b.closedPeriods)
-      ? b.closedPeriods.filter((p: any) => DATE_RE.test(p?.from) && DATE_RE.test(p?.to) && p.from <= p.to)
+      ? b.closedPeriods
+          .filter((p: any) => DATE_RE.test(p?.from) && DATE_RE.test(p?.to) && p.from <= p.to)
+          .map((p: any) => ({
+            from: p.from, to: p.to,
+            // nome del periodo (es. "Estivo", "Natale"): identificazione umana
+            ...(typeof p.label === "string" && p.label.trim() ? { label: p.label.trim().slice(0, 60) } : {}),
+          }))
       : [];
     const summerPeriod = b.summerPeriod && DATE_RE.test(b.summerPeriod.from) && DATE_RE.test(b.summerPeriod.to)
       ? { from: b.summerPeriod.from, to: b.summerPeriod.to } : null;
