@@ -55,15 +55,18 @@ app.set("trust proxy", 1);
 
 // CORS: allowlist ESATTA di origin. Con credentials:true NON si può mai
 // riflettere un origin arbitrario (leggerebbe i cookie della vittima cross-site).
+// Normalizza (togli slash finale) così `https://app/` in FRONTEND_URL matcha
+// l'Origin del browser (che non ha mai slash/path finale).
+const stripSlash = (s: string) => s.replace(/\/+$/, "");
 const allowedOrigins = (process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(",").map(u => u.trim())
   : ["http://localhost:5173", "http://localhost:4173"]
-).filter(Boolean);
+).filter(Boolean).map(stripSlash);
 
 app.use(cors({
   origin: (origin, callback) => {
     // niente origin = curl / app native / cron → consentito (nessun cookie ambient da rubare)
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.includes(stripSlash(origin))) {
       callback(null, true);
     } else {
       callback(new Error("Origin non consentito da CORS"));
