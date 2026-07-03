@@ -1791,7 +1791,7 @@ export default function PlanningStudioEditorPage() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
+    <div className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
       {/* ─── Toolbar top ─── */}
       {/* Nota: niente overflow-x sulla barra, altrimenti i menu a tendina verrebbero tagliati */}
       <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30 whitespace-nowrap">

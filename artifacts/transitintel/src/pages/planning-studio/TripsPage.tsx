@@ -507,7 +507,7 @@ export default function PlanningStudioTripsPage() {
   const calendars = calendarsQ.data ?? [];
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100">
+    <div className="h-full w-full min-w-0 flex flex-col bg-slate-950 text-slate-100">
       {/* Toolbar */}
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>
@@ -530,8 +530,8 @@ export default function PlanningStudioTripsPage() {
         <span className="ml-2"><TripCountBadge projectId={projectId} /></span>
       </div>
 
-      {/* Filtri */}
-      <div className="h-12 border-b border-slate-800 bg-slate-900/40 px-4 flex items-center gap-3 text-xs">
+      {/* Filtri (flex-wrap: con le azioni bulk attive va a capo invece di uscire dallo schermo) */}
+      <div className="min-h-12 border-b border-slate-800 bg-slate-900/40 px-4 py-1.5 flex items-center gap-3 text-xs flex-wrap">
         <Filter className="w-3.5 h-3.5 text-slate-500" />
         <select
           value={routeId} onChange={e => setRouteId(e.target.value)}

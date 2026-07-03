@@ -697,7 +697,7 @@ export default function PlanningStudioValidityPage() {
   if (!projectId) return <div className="p-6">ID progetto mancante</div>;
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-full min-w-0 bg-slate-950 text-slate-100">
       {/* ─── TopBar (riga 1: identità + undo/redo) ───────────────────── */}
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>

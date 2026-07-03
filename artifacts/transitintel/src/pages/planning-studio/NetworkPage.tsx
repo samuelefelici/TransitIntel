@@ -97,7 +97,7 @@ export default function PlanningStudioNetworkPage() {
   const project = projectQ.data;
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-slate-100">
+    <div className="h-full w-full min-w-0 flex flex-col bg-slate-950 text-slate-100">
       {/* Toolbar */}
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>

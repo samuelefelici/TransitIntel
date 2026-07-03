@@ -55,7 +55,7 @@ function ProgramPicker() {
   }, [loading, forcePick, active, navigate]);
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-full min-w-0 bg-slate-950 text-slate-100">
       <div className="border-b border-slate-800 bg-slate-900 px-4 py-3 flex items-center gap-3">
         <ClipboardList className="h-5 w-5 text-emerald-400" />
         <h1 className="font-semibold text-slate-100">Progetti di esercizio</h1>
@@ -271,7 +271,7 @@ function Board({ psId }: { psId: string }) {
   const totUncovered = (board?.programUncoveredTrips ?? 0) + valleUncovered;
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-full min-w-0 bg-slate-950 text-slate-100">
       {/* Header contenitore */}
       <div className="border-b border-slate-800 bg-slate-900 shadow-sm">
         <div className="flex items-center gap-3 px-4 py-3">

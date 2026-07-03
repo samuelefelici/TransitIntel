@@ -56,7 +56,7 @@ export default function PlanningStudioValidityUnitsPage() {
   if (!projectId) return <div className="p-6">ID progetto mancante</div>;
 
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-full min-w-0 bg-slate-950 text-slate-100">
       {/* TopBar */}
       <div className="border-b border-slate-800 bg-slate-900 shadow-sm">
         <div className="flex items-center gap-3 px-4 py-3">
