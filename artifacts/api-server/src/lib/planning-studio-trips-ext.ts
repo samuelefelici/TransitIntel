@@ -236,6 +236,8 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
 
   const tripIds: string[] = Array.isArray(req.body?.tripIds) ? req.body.tripIds : [];
   if (tripIds.length === 0) { res.status(400).json({ error: "tripIds required" }); return; }
+  if (tripIds.length > 500) { res.status(400).json({ error: "max 500 corse per richiesta" }); return; }
+  if (tripIds.some(id => !UUID_RE.test(String(id)))) { res.status(400).json({ error: "tripIds invalid" }); return; }
 
   const patch = req.body?.patch ?? {};
   const fields: string[] = [];
@@ -387,9 +389,15 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
   if (trips.length > 200) { res.status(400).json({ error: "massimo 200 corse per batch" }); return; }
 
   // Validazione preventiva di tutto il batch (o tutto o niente)
+  const routeIds = new Set<string>(), variantIds = new Set<string>(), stopIds = new Set<string>(), calendarIds = new Set<string>();
   for (const t of trips) {
     if (!UUID_RE.test(String(t?.routeId ?? "")) || !UUID_RE.test(String(t?.variantId ?? ""))) {
       res.status(400).json({ error: "routeId e variantId obbligatori per ogni corsa" }); return;
+    }
+    routeIds.add(t.routeId); variantIds.add(t.variantId);
+    if (t.calendarId != null) {
+      if (!UUID_RE.test(String(t.calendarId))) { res.status(400).json({ error: "calendarId non valido" }); return; }
+      calendarIds.add(t.calendarId);
     }
     const sts: any[] = Array.isArray(t?.stopTimes) ? t.stopTimes : [];
     if (sts.length < 2) { res.status(400).json({ error: "ogni corsa richiede almeno 2 stopTimes" }); return; }
@@ -397,38 +405,59 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
       if (!UUID_RE.test(String(st?.stopId ?? ""))) {
         res.status(400).json({ error: "stopId non valido negli stopTimes" }); return;
       }
+      stopIds.add(st.stopId);
       if (!HHMMSS_RE.test(String(st?.arrivalTime ?? "")) || !HHMMSS_RE.test(String(st?.departureTime ?? ""))) {
         res.status(400).json({ error: "arrivalTime/departureTime devono essere HH:MM:SS" }); return;
       }
     }
   }
 
-  const tripIds: string[] = [];
-  for (const t of trips) {
-    const ins = await db.execute(sql`
-      INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id,
-                            headsign, short_name, direction, block_id, attributes, service_label)
-      VALUES (${req.params.id}::uuid, ${t.routeId}::uuid, ${t.variantId}::uuid,
-              ${t.calendarId ?? null}, ${t.headsign ?? null}, ${t.shortName ?? null},
-              ${t.direction ?? 0}, ${t.blockId ?? null},
-              ${JSON.stringify(t.attributes ?? {})}::jsonb, ${t.serviceLabel ?? null})
-      RETURNING id
-    `);
-    const tripId: string = ((ins as any).rows?.[0])?.id;
-    let seq = 1;
-    for (const st of t.stopTimes) {
-      await db.execute(sql`
-        INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
-                                   pickup_type, drop_off_type, timepoint, shape_dist_traveled)
-        VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
-                ${st.arrivalTime}, ${st.departureTime},
-                ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
-                ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
-      `);
-      seq++;
-    }
-    tripIds.push(tripId);
+  // IDOR fix (cross-project FK): tutte le entità referenziate DEVONO appartenere
+  // a QUESTO progetto. Senza, un editor potrebbe legare le sue corse alle
+  // route/variant/stop private di un altro progetto (FK globali single-column).
+  const projId = req.params.id;
+  const belongCheck = async (table: string, ids: Set<string>): Promise<boolean> => {
+    if (ids.size === 0) return true;
+    const lit = `{${[...ids].join(",")}}`;
+    const r = await db.execute(sql`SELECT count(*)::int AS c FROM ${sql.raw(table)} WHERE id = ANY(${lit}::uuid[]) AND project_id = ${projId}::uuid`);
+    return Number((r as any).rows?.[0]?.c) === ids.size;
+  };
+  if (!(await belongCheck("ps_routes", routeIds))
+      || !(await belongCheck("ps_route_variants", variantIds))
+      || !(await belongCheck("ps_stops", stopIds))
+      || !(await belongCheck("ps_calendars", calendarIds))) {
+    res.status(400).json({ error: "Riferimenti (linea/percorso/fermata/calendario) non appartenenti al progetto" }); return;
   }
+
+  // Transazione: o tutte le corse+orari o nessuna (niente corse orfane su errore).
+  const tripIds: string[] = [];
+  await db.transaction(async (tx) => {
+    for (const t of trips) {
+      const ins = await tx.execute(sql`
+        INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id,
+                              headsign, short_name, direction, block_id, attributes, service_label)
+        VALUES (${projId}::uuid, ${t.routeId}::uuid, ${t.variantId}::uuid,
+                ${t.calendarId ?? null}, ${t.headsign ?? null}, ${t.shortName ?? null},
+                ${t.direction ?? 0}, ${t.blockId ?? null},
+                ${JSON.stringify(t.attributes ?? {})}::jsonb, ${t.serviceLabel ?? null})
+        RETURNING id
+      `);
+      const tripId: string = ((ins as any).rows?.[0])?.id;
+      let seq = 1;
+      for (const st of t.stopTimes) {
+        await tx.execute(sql`
+          INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                     pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+          VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
+                  ${st.arrivalTime}, ${st.departureTime},
+                  ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
+                  ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
+        `);
+        seq++;
+      }
+      tripIds.push(tripId);
+    }
+  });
   await logActivity(req.params.id, userId, "trip.batch_create", "trip", null, { count: tripIds.length });
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });

@@ -71,21 +71,30 @@ router.put("/depots/:id", asyncHandler(async (req, res) => {
     color, notes,
   } = req.body;
 
+  // Coercizioni safe: un valore non-numerico/non-stringa non deve far 500.
+  const numOrNaN = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : NaN; };
   const patch: Record<string, any> = { updatedAt: new Date() };
-  if (name !== undefined)                patch.name                = name.trim();
-  if (address !== undefined)             patch.address             = address;
-  if (lat !== undefined)                 patch.lat                 = lat != null ? Number(lat) : null;
-  if (lon !== undefined)                 patch.lon                 = lon != null ? Number(lon) : null;
-  if (capacity !== undefined)            patch.capacity            = capacity != null ? Number(capacity) : null;
+  if (name !== undefined) {
+    if (typeof name !== "string" || !name.trim()) { res.status(400).json({ error: "name non valido" }); return; }
+    patch.name = name.trim();
+  }
+  if (address !== undefined)             patch.address             = address == null ? null : String(address);
+  if (lat !== undefined)                 patch.lat                 = lat == null ? null : numOrNaN(lat);
+  if (lon !== undefined)                 patch.lon                 = lon == null ? null : numOrNaN(lon);
+  if (capacity !== undefined)            patch.capacity            = capacity == null ? null : numOrNaN(capacity);
   if (operatingHoursStart !== undefined) patch.operatingHoursStart = operatingHoursStart;
   if (operatingHoursEnd !== undefined)   patch.operatingHoursEnd   = operatingHoursEnd;
-  if (hasDiesel !== undefined)           patch.hasDiesel           = hasDiesel;
-  if (hasMethane !== undefined)          patch.hasMethane          = hasMethane;
-  if (hasElectric !== undefined)         patch.hasElectric         = hasElectric;
-  if (chargingPoints !== undefined)      patch.chargingPoints      = Number(chargingPoints);
-  if (cngPoints !== undefined)           patch.cngPoints           = Number(cngPoints);
-  if (color !== undefined)               patch.color               = color;
-  if (notes !== undefined)               patch.notes               = notes;
+  if (hasDiesel !== undefined)           patch.hasDiesel           = !!hasDiesel;
+  if (hasMethane !== undefined)          patch.hasMethane          = !!hasMethane;
+  if (hasElectric !== undefined)         patch.hasElectric         = !!hasElectric;
+  if (chargingPoints !== undefined)      patch.chargingPoints      = numOrNaN(chargingPoints);
+  if (cngPoints !== undefined)           patch.cngPoints           = numOrNaN(cngPoints);
+  if (color !== undefined)               patch.color               = color == null ? null : String(color);
+  if (notes !== undefined)               patch.notes               = notes == null ? null : String(notes);
+  // Rifiuta 400 se una coercizione numerica è fallita (evita NaN → pg 500).
+  for (const [k, v] of Object.entries(patch)) {
+    if (typeof v === "number" && Number.isNaN(v)) { res.status(400).json({ error: `${k} non valido` }); return; }
+  }
 
   const [updated] = await db.update(depots).set(patch).where(eq(depots.id, id)).returning();
   if (!updated) {

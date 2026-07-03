@@ -280,12 +280,16 @@ router.get("/auth/me", requireAuth, (req, res) => {
 router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
   const q = String(req.query.q || "").trim().toLowerCase();
   const meId = req.user!.id;
+  // Serve una query di ≥2 caratteri: senza, si poteva dumpare l'intera rubrica
+  // (email di tutti gli utenti → enumerazione/phishing). Gli admin non hanno
+  // questo limite (usano la lista completa dal pannello admin).
+  if (q.length < 2 && req.user!.role !== "admin") { res.json({ users: [] }); return; }
   const r = q
     ? await db.execute(sql`
         SELECT id, email, full_name FROM users
          WHERE active = true AND id <> ${meId}::uuid
            AND (lower(email) LIKE ${'%' + q + '%'} OR lower(coalesce(full_name,'')) LIKE ${'%' + q + '%'})
-         ORDER BY email ASC LIMIT 50
+         ORDER BY email ASC LIMIT 20
       `)
     : await db.execute(sql`
         SELECT id, email, full_name FROM users
