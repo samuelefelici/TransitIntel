@@ -21,7 +21,20 @@ export default function TripCountBadge({ projectId }: { projectId: string }) {
     refetchInterval: 60_000,
     staleTime: 15_000,
   });
-  if (!projectId || !q.data) return null;
+  if (!projectId) return null;
+  // Endpoint non raggiungibile (es. server API non ancora aggiornato):
+  // il badge resta VISIBILE in stato "n/d" invece di sparire.
+  if (q.isError) {
+    return (
+      <span
+        title="Contatore km non disponibile: il server API non espone ancora /trips-count (deploy in corso?). Riprova tra poco."
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-slate-700 bg-slate-800/60 text-slate-500 text-xs font-medium select-none whitespace-nowrap"
+      >
+        <RouteIcon className="w-3.5 h-3.5" /> — km
+      </span>
+    );
+  }
+  if (!q.data) return null; // primo caricamento (frazione di secondo)
   // difensivo: se il backend non è ancora aggiornato i campi possono mancare
   const count = Number(q.data.count) || 0;
   const active = Number(q.data.active) || 0;
