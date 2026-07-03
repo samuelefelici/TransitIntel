@@ -218,13 +218,39 @@ function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], w
   return -1;
 }
 
-/* ─── Import KML/KMZ di un percorso ───
- * Il file contiene Placemark puntuali (fermate: <name> = CODICE fermata,
- * identico a quello a sistema) e una o più LineString (il tracciato).
- * KMZ = zip con dentro un .kml (doc.kml). */
+/* ─── Import KML/KMZ/ZIP di un percorso ───
+ * Formati supportati (export GIS aziendale incluso):
+ *  - fermate: Placemark con Point; il CODICE fermata sta in <name> OPPURE in
+ *    ExtendedData (SimpleData/Data, es. name="SIGLAUNIV" → "CI001");
+ *  - percorsi: un Placemark con LineString PER PERCORSO, etichettato dai campi
+ *    ExtendedData (es. CODICE/CODLINEA/CODVERSO) — se ce n'è più di uno
+ *    l'operatore sceglie quale importare;
+ *  - KMZ/ZIP: vengono letti TUTTI i .kml interni (es. Fermate.kml + Percorsi.kml). */
 interface KmlParsed {
   points: { code: string; lat: number; lon: number }[];
-  path: [number, number][];
+  tracks: { label: string; coords: [number, number][] }[];
+}
+/** Campi ExtendedData (SimpleData e Data/value) di un Placemark. */
+function kmlExtendedFields(pm: Element): { key: string; val: string }[] {
+  const out: { key: string; val: string }[] = [];
+  for (const sd of Array.from(pm.getElementsByTagName("SimpleData"))) {
+    const v = sd.textContent?.trim();
+    if (v) out.push({ key: sd.getAttribute("name") ?? "", val: v });
+  }
+  for (const d of Array.from(pm.getElementsByTagName("Data"))) {
+    const v = d.getElementsByTagName("value")[0]?.textContent?.trim();
+    if (v) out.push({ key: d.getAttribute("name") ?? "", val: v });
+  }
+  return out;
+}
+/** Codice fermata di un Placemark: <name>, altrimenti il campo ExtendedData
+ *  più plausibile (nome campo tipo SIGLA…, COD…, ID…), altrimenti il primo. */
+function kmlPlacemarkCode(pm: Element): string {
+  const name = pm.getElementsByTagName("name")[0]?.textContent?.trim();
+  if (name) return name;
+  const fields = kmlExtendedFields(pm);
+  const pref = fields.find(f => /sigla|cod|id|fermata|stop|palina/i.test(f.key));
+  return (pref ?? fields[0])?.val ?? "";
 }
 function parseKmlText(xml: string): KmlParsed {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -242,23 +268,48 @@ function parseKmlText(xml: string): KmlParsed {
     return out;
   };
   const points: KmlParsed["points"] = [];
-  const path: [number, number][] = [];
-  const placemarks = Array.from(doc.getElementsByTagName("Placemark"));
-  for (const pm of placemarks) {
-    const name = pm.getElementsByTagName("name")[0]?.textContent?.trim() ?? "";
+  const tracks: KmlParsed["tracks"] = [];
+  for (const pm of Array.from(doc.getElementsByTagName("Placemark"))) {
     // Point = fermata (anche dentro MultiGeometry)
     for (const pt of Array.from(pm.getElementsByTagName("Point"))) {
       const raw = pt.getElementsByTagName("coordinates")[0]?.textContent ?? "";
       const c = parseCoords(raw);
-      if (c.length > 0 && name) points.push({ code: name, lon: c[0][0], lat: c[0][1] });
+      const code = kmlPlacemarkCode(pm);
+      if (c.length > 0 && code) points.push({ code, lon: c[0][0], lat: c[0][1] });
     }
-    // LineString = tracciato (più segmenti vengono concatenati in ordine documento)
+    // LineString = UN percorso per Placemark (segmenti multipli concatenati)
+    const coords: [number, number][] = [];
     for (const ls of Array.from(pm.getElementsByTagName("LineString"))) {
-      const raw = ls.getElementsByTagName("coordinates")[0]?.textContent ?? "";
-      path.push(...parseCoords(raw));
+      coords.push(...parseCoords(ls.getElementsByTagName("coordinates")[0]?.textContent ?? ""));
+    }
+    if (coords.length >= 2) {
+      const name = pm.getElementsByTagName("name")[0]?.textContent?.trim();
+      const fields = kmlExtendedFields(pm);
+      const label = name || fields.map(f => f.val).join(" · ") || `percorso ${tracks.length + 1}`;
+      tracks.push({ label, coords });
     }
   }
-  return { points, path };
+  return { points, tracks };
+}
+/** Proiezione di un punto su una polilinea: distanza minima (m) e progressiva
+ *  lungo il tracciato (m) — equirettangolare, ok su scala urbana. */
+function projectOnPath(coords: [number, number][], p: [number, number]): { distM: number; alongM: number } {
+  const kx = 111320 * Math.cos((p[1] * Math.PI) / 180), ky = 110540;
+  const rel = (c: [number, number]) => [(c[0] - p[0]) * kx, (c[1] - p[1]) * ky] as const;
+  let best = { distM: Infinity, alongM: 0 };
+  let acc = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const a = rel(coords[i - 1]), b = rel(coords[i]);
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    const t = len2 > 0 ? Math.max(0, Math.min(1, -(a[0] * dx + a[1] * dy) / len2)) : 0;
+    const px = a[0] + t * dx, py = a[1] + t * dy;
+    const d = Math.hypot(px, py);
+    const segLen = Math.sqrt(len2);
+    if (d < best.distM) best = { distM: d, alongM: acc + t * segLen };
+    acc += segLen;
+  }
+  return best;
 }
 
 /* Lunghezza in metri di una LineString (haversine) — usata per ricalcolare
@@ -1132,26 +1183,37 @@ export default function PlanningStudioEditorPage() {
   };
   const [kmlPreview, setKmlPreview] = useState<null | {
     fileName: string;
-    path: [number, number][];
-    rows: KmlMatchRow[];
+    points: KmlMatchRow[];                                              // tutti i punti del file, già abbinati
+    tracks: { label: string; coords: [number, number][]; lengthM: number }[];
   }>(null);
+  const [kmlTrackIdx, setKmlTrackIdx] = useState(0);
+  const [kmlMaxDist, setKmlMaxDist] = useState("30"); // fermata "sul percorso" se entro N metri
+  useEffect(() => { setKmlTrackIdx(0); }, [kmlPreview?.fileName]);
 
   async function handleKmlFile(file: File) {
     try {
-      let xml: string;
       const buf = new Uint8Array(await file.arrayBuffer());
       const isZip = buf.length > 3 && buf[0] === 0x50 && buf[1] === 0x4b; // "PK"
-      if (isZip || /\.kmz$/i.test(file.name)) {
+      const xmls: string[] = [];
+      if (isZip || /\.(kmz|zip)$/i.test(file.name)) {
         const entries = unzipSync(buf);
-        const kmlName = Object.keys(entries).find(n => /\.kml$/i.test(n));
-        if (!kmlName) throw new Error("Nessun file .kml dentro il KMZ");
-        xml = new TextDecoder("utf-8").decode(entries[kmlName]);
+        // legge TUTTI i .kml (es. Fermate.kml + Percorsi.kml nello stesso zip)
+        for (const n of Object.keys(entries).filter(n2 => /\.kml$/i.test(n2)).sort()) {
+          xmls.push(new TextDecoder("utf-8").decode(entries[n]));
+        }
+        if (xmls.length === 0) throw new Error("Nessun file .kml dentro l'archivio");
       } else {
-        xml = new TextDecoder("utf-8").decode(buf);
+        xmls.push(new TextDecoder("utf-8").decode(buf));
       }
-      const parsed = parseKmlText(xml);
-      if (parsed.points.length === 0 && parsed.path.length < 2) {
-        throw new Error("Il file non contiene né fermate (Placemark puntuali) né un tracciato (LineString)");
+      const points: KmlParsed["points"] = [];
+      const tracks: KmlParsed["tracks"] = [];
+      for (const xml of xmls) {
+        const parsed = parseKmlText(xml);
+        points.push(...parsed.points);
+        tracks.push(...parsed.tracks);
+      }
+      if (points.length === 0 && tracks.length === 0) {
+        throw new Error("Il file non contiene né fermate (Placemark puntuali) né percorsi (LineString)");
       }
       // Indici di abbinamento sulle fermate a sistema
       const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
@@ -1164,7 +1226,7 @@ export default function PlanningStudioEditorPage() {
         const n = norm(s.name);
         if (n && !byName.has(n)) byName.set(n, s);
       }
-      const rows: KmlMatchRow[] = parsed.points.map(p => {
+      const rows: KmlMatchRow[] = points.map(p => {
         let match: PsStop | null = byCode.get(norm(p.code)) ?? null;
         let matchBy: KmlMatchRow["matchBy"] = match ? "codice" : null;
         if (!match) { match = byName.get(norm(p.code)) ?? null; if (match) matchBy = "nome"; }
@@ -1180,17 +1242,42 @@ export default function PlanningStudioEditorPage() {
         const distM = match ? Math.round(lineLengthM([[p.lon, p.lat], [match.lon, match.lat]])) : null;
         return { code: p.code, lat: p.lat, lon: p.lon, match, matchBy, distM };
       });
-      setKmlPreview({ fileName: file.name, path: parsed.path, rows });
+      setKmlPreview({
+        fileName: file.name,
+        points: rows,
+        tracks: tracks.map(t => ({ ...t, lengthM: lineLengthM(t.coords) })),
+      });
     } catch (e: any) {
       toast.error("Import KML/KMZ fallito", { description: e?.message });
     }
   }
 
+  /* Righe effettive dell'anteprima: se c'è un tracciato selezionato, tiene solo
+   * le fermate ENTRO la distanza massima e le ORDINA per progressiva lungo il
+   * percorso (le fermate dell'export sono spesso tutta la rete). */
+  const kmlSel = useMemo(() => {
+    if (!kmlPreview) return null;
+    const track = kmlPreview.tracks[kmlTrackIdx] ?? null;
+    if (!track) {
+      return { track: null as null | typeof track, rows: kmlPreview.points.map(p => ({ ...p, alongM: null as number | null, trackDistM: null as number | null })), excluded: 0 };
+    }
+    const maxD = Math.max(5, Number(kmlMaxDist) || 30);
+    const rows = kmlPreview.points
+      .map(p => {
+        const pr = projectOnPath(track.coords, [p.lon, p.lat] as [number, number]);
+        return { ...p, alongM: pr.alongM as number | null, trackDistM: Math.round(pr.distM) as number | null };
+      })
+      .filter(r => (r.trackDistM ?? Infinity) <= maxD)
+      .sort((a, b) => (a.alongM ?? 0) - (b.alongM ?? 0));
+    return { track, rows, excluded: kmlPreview.points.length - rows.length };
+  }, [kmlPreview, kmlTrackIdx, kmlMaxDist]);
+
   /** Conferma dell'anteprima: carica sequenza fermate + tracciato nell'editor. */
   function applyKmlImport() {
-    if (!editor || !kmlPreview) return;
-    const matched = kmlPreview.rows.filter(r => r.match);
-    if (matched.length < 2 && kmlPreview.path.length < 2) {
+    if (!editor || !kmlPreview || !kmlSel) return;
+    const matched = kmlSel.rows.filter(r => r.match);
+    const track = kmlSel.track;
+    if (matched.length < 2 && !(track && track.coords.length >= 2)) {
       toast.error("Servono almeno 2 fermate abbinate o un tracciato per caricare il percorso");
       return;
     }
@@ -1207,9 +1294,9 @@ export default function PlanningStudioEditorPage() {
       lng: s.lon, lat: s.lat, stopId: s.stopId,
       mode: editor.shapeMode === "manual" ? "manual" : "snap",
     }));
-    // Tracciato: LineString del KML se presente, altrimenti spezzata fermata→fermata
-    const coords: [number, number][] = kmlPreview.path.length >= 2
-      ? kmlPreview.path
+    // Tracciato: LineString scelta se presente, altrimenti spezzata fermata→fermata
+    const coords: [number, number][] = track && track.coords.length >= 2
+      ? track.coords
       : stopsList.map(s => [s.lon, s.lat] as [number, number]);
     const geometry = coords.length >= 2 ? { type: "LineString" as const, coordinates: coords } : null;
     setEditor({
@@ -1226,9 +1313,9 @@ export default function PlanningStudioEditorPage() {
     setInsertAfterIdx(null);
     if (geometry) fitToCoords(geometry.coordinates);
     else if (stopsList.length > 0) fitToCoords(stopsList.map(s => [s.lon, s.lat] as [number, number]));
-    const skipped = kmlPreview.rows.length - matched.length;
-    toast.success(`Percorso caricato dal file: ${matched.length} fermate${kmlPreview.path.length >= 2 ? " + tracciato" : ""}`, {
-      description: `${skipped > 0 ? `${skipped} fermate del file non abbinate (saltate). ` : ""}Il percorso resta modificabile: ricontrolla e premi Salva.`,
+    const unmatched = kmlSel.rows.length - matched.length;
+    toast.success(`Percorso caricato dal file: ${matched.length} fermate${track ? ` + tracciato ${track.label}` : ""}`, {
+      description: `${unmatched > 0 ? `${unmatched} fermate del file non abbinate (saltate). ` : ""}Il percorso resta modificabile: ricontrolla e premi Salva.`,
       duration: 6000,
     });
     setKmlPreview(null);
@@ -2695,7 +2782,7 @@ export default function PlanningStudioEditorPage() {
         <input
           ref={kmlInputRef}
           type="file"
-          accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz"
+          accept=".kml,.kmz,.zip,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz,application/zip"
           className="hidden"
           onChange={e => {
             const f = e.target.files?.[0];
@@ -2703,9 +2790,9 @@ export default function PlanningStudioEditorPage() {
             e.target.value = ""; // consenti di ricaricare lo stesso file
           }}
         />
-        {kmlPreview && (
+        {kmlPreview && kmlSel && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setKmlPreview(null)}>
-            <div className="w-full max-w-2xl mx-4 rounded-xl border border-cyan-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="w-full max-w-3xl mx-4 rounded-xl border border-cyan-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
                 <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
                   <FileArchive className="w-4 h-4 text-cyan-400" /> Anteprima import · {kmlPreview.fileName}
@@ -2713,14 +2800,33 @@ export default function PlanningStudioEditorPage() {
                 <button onClick={() => setKmlPreview(null)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
               </div>
               <div className="p-4 space-y-3 text-xs">
+                {/* Scelta del percorso (l'export può contenerne più di uno) + soglia */}
+                {kmlPreview.tracks.length > 0 && (
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="flex-1 min-w-[240px]">
+                      <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">Percorso nel file ({kmlPreview.tracks.length})</label>
+                      <select value={kmlTrackIdx} onChange={e => setKmlTrackIdx(Number(e.target.value))}
+                        className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700">
+                        {kmlPreview.tracks.map((t, i) => (
+                          <option key={i} value={i}>{t.label} — {(t.lengthM / 1000).toFixed(2)} km</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1" title="Una fermata del file è considerata SUL percorso se dista dal tracciato meno di questa soglia">Fermate entro (m)</label>
+                      <input type="number" min={5} max={200} value={kmlMaxDist} onChange={e => setKmlMaxDist(e.target.value)}
+                        className="w-20 px-2 py-1.5 rounded bg-slate-900 border border-slate-700" />
+                    </div>
+                  </div>
+                )}
                 {(() => {
-                  const ok = kmlPreview.rows.filter(r => r.match).length;
-                  const ko = kmlPreview.rows.length - ok;
-                  const far = kmlPreview.rows.filter(r => r.match && (r.distM ?? 0) > 100).length;
+                  const ok = kmlSel.rows.filter(r => r.match).length;
+                  const ko = kmlSel.rows.length - ok;
+                  const far = kmlSel.rows.filter(r => r.match && (r.distM ?? 0) > 100).length;
                   return (
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
-                        ✓ {ok}/{kmlPreview.rows.length} fermate abbinate
+                        ✓ {ok}/{kmlSel.rows.length} fermate abbinate
                       </span>
                       {ko > 0 && (
                         <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300">
@@ -2732,17 +2838,23 @@ export default function PlanningStudioEditorPage() {
                           ⚠ {far} a più di 100 m dalla fermata a sistema
                         </span>
                       )}
-                      <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">
-                        {kmlPreview.path.length >= 2 ? `tracciato: ${(lineLengthM(kmlPreview.path) / 1000).toFixed(2)} km` : "nessun tracciato nel file (spezzata fermata→fermata)"}
-                      </span>
+                      {kmlSel.track ? (
+                        <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                          tracciato: {(kmlSel.track.lengthM / 1000).toFixed(2)} km
+                          {kmlSel.excluded > 0 && <span className="text-slate-500"> · {kmlSel.excluded} fermate del file lontane dal percorso (escluse)</span>}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">nessun tracciato nel file (spezzata fermata→fermata)</span>
+                      )}
                     </div>
                   );
                 })()}
-                <div className="max-h-[46vh] overflow-auto rounded border border-slate-800">
+                <div className="max-h-[42vh] overflow-auto rounded border border-slate-800">
                   <table className="w-full text-[11px]">
                     <thead className="sticky top-0 bg-slate-900 text-slate-400">
                       <tr>
                         <th className="text-left px-2 py-1.5 w-8">#</th>
+                        {kmlSel.track && <th className="text-right px-2 py-1.5 w-16">Prog.</th>}
                         <th className="text-left px-2 py-1.5">Codice nel file</th>
                         <th className="text-left px-2 py-1.5">Fermata a sistema</th>
                         <th className="text-left px-2 py-1.5 w-20">Abbinata per</th>
@@ -2750,9 +2862,10 @@ export default function PlanningStudioEditorPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {kmlPreview.rows.map((r, i) => (
+                      {kmlSel.rows.map((r, i) => (
                         <tr key={i} className={`border-t border-slate-800/60 ${!r.match ? "bg-rose-500/10" : (r.distM ?? 0) > 100 ? "bg-amber-500/10" : ""}`}>
                           <td className="px-2 py-1 text-slate-500">{i + 1}</td>
+                          {kmlSel.track && <td className="px-2 py-1 text-right font-mono text-slate-400">{r.alongM != null ? `${(r.alongM / 1000).toFixed(2)}` : "—"}</td>}
                           <td className="px-2 py-1 font-mono text-slate-200">{r.code}</td>
                           <td className="px-2 py-1">
                             {r.match
@@ -2767,13 +2880,18 @@ export default function PlanningStudioEditorPage() {
                           <td className="px-2 py-1 text-right font-mono text-slate-400">{r.distM != null ? `${r.distM} m` : "—"}</td>
                         </tr>
                       ))}
-                      {kmlPreview.rows.length === 0 && (
-                        <tr><td colSpan={5} className="px-2 py-3 text-slate-500">Nessuna fermata nel file: verrà caricato solo il tracciato (aggiungi poi le fermate dall'editor).</td></tr>
+                      {kmlSel.rows.length === 0 && (
+                        <tr><td colSpan={kmlSel.track ? 6 : 5} className="px-2 py-3 text-slate-500">
+                          {kmlPreview.points.length > 0
+                            ? "Nessuna fermata del file entro la soglia dal percorso scelto: alza la soglia o verifica il verso."
+                            : "Nessuna fermata nel file: verrà caricato solo il tracciato (aggiungi poi le fermate dall'editor)."}
+                        </td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
                 <p className="text-[10px] text-slate-500">
+                  {kmlSel.track && "Le fermate sono ordinate per progressiva (km) lungo il percorso scelto. "}
                   Alla conferma la sequenza fermate e il tracciato vengono caricati <strong>nell'editor</strong> (nulla è ancora salvato):
                   puoi spostare fermate, trascinare la linea e correggere prima di premere <strong>Salva</strong>.
                 </p>
@@ -2782,9 +2900,9 @@ export default function PlanningStudioEditorPage() {
                 <button onClick={() => setKmlPreview(null)}
                   className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
                 <button onClick={applyKmlImport}
-                  disabled={kmlPreview.rows.filter(r => r.match).length < 2 && kmlPreview.path.length < 2}
+                  disabled={kmlSel.rows.filter(r => r.match).length < 2 && !(kmlSel.track && kmlSel.track.coords.length >= 2)}
                   className="text-xs px-3 py-1.5 rounded bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5" /> Carica nel percorso ({kmlPreview.rows.filter(r => r.match).length} fermate)
+                  <Check className="w-3.5 h-3.5" /> Carica nel percorso ({kmlSel.rows.filter(r => r.match).length} fermate)
                 </button>
               </div>
             </div>
