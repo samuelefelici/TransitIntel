@@ -467,8 +467,15 @@ export default function PlanningStudioTripsPage() {
           toast.warning("Corse generate, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
+      // Il PROTOTIPO ha esaurito il suo scopo: una volta generate le corse
+      // reali viene eliminato (con le sue validità, in cascata).
+      let protoRemoved = false;
+      if (tpl.attributes?.prototype) {
+        try { await deletePsTrip(projectId, tpl.id); protoRemoved = true; }
+        catch { toast.warning("Corse create, ma il prototipo non è stato rimosso", { description: "Eliminalo manualmente dall'elenco corse." }); }
+      }
       toast.success(`✅ ${r.count} corse generate e salvate`, {
-        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? "variazione traffico applicata" : "senza variazione traffico"}`,
+        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? "variazione traffico applicata" : "senza variazione traffico"}${protoRemoved ? " · prototipo rimosso" : ""}`,
         duration: 6000,
       });
       setGenOpen(false);

@@ -19,8 +19,9 @@
  */
 
 export interface CalendarProfile {
-  /** intervalli SCUOLE CHIUSE [{from,to}]; vuoto = tutto l'anno scuole aperte */
-  closedPeriods: Array<{ from: string; to: string }>;
+  /** intervalli SCUOLE CHIUSE [{from,to,label?}]; vuoto = tutto l'anno scuole
+   *  aperte. label = nome del periodo (es. "Estivo", "Natale", "Pasqua"). */
+  closedPeriods: Array<{ from: string; to: string; label?: string }>;
   /** periodo estivo (sotto-ramo di "scuole chiuse") */
   summerPeriod: { from: string; to: string } | null;
   /** festività extra oltre ai rossi nazionali (es. patrono) "MM-DD" o "YYYY-MM-DD" */
@@ -79,7 +80,8 @@ export function classifyDate(date: string, profile: CalendarProfile, holidays?: 
   const isRosso = rossi.has(date) || isExtra;
   const isSunday = weekday === 6;
   // STANDARD: scuole aperte ovunque, tranne nei periodi di "scuole chiuse".
-  const schoolsClosed = profile.closedPeriods.some((p) => inRange(date, p.from, p.to));
+  const closedPeriod = profile.closedPeriods.find((p) => inRange(date, p.from, p.to)) ?? null;
+  const schoolsClosed = closedPeriod !== null;
 
   let level1: DayClass["level1"];
   let level2: DayClass["level2"];
@@ -100,10 +102,17 @@ export function classifyDate(date: string, profile: CalendarProfile, holidays?: 
   // la chiave conserva comunque il weekday esatto per chi vuole granularità piena.
   const dayBand = level1 === "festivo" ? null : weekday === 5 ? "Sabato" : "Feriale";
   const l1Label = level1 === "scuole_aperte" ? "Scuole Aperte" : level1 === "scuole_chiuse" ? "Scuole Chiuse" : "Festivo";
-  const l2Label = level2 === "invernale" ? "Invernale" : level2 === "estivo" ? "Estivo"
+  // Nome del periodo (es. "Natale", "Estivo") accodato per identificare il
+  // periodo di scuole chiuse; la KEY resta invariata (grouping stabile).
+  const periodName = closedPeriod?.label?.trim() || null;
+  const l2Base = level2 === "invernale" ? "Invernale" : level2 === "estivo" ? "Estivo"
     : level2 === "domenica_aperte" ? "Domenica (scuole aperte)"
     : level2 === "domenica_chiuse" ? "Domenica (scuole chiuse)"
     : level2 === "rosso" ? "Rosso" : null;
+  const l2Label = (level1 === "scuole_chiuse" && periodName && l2Base
+      && periodName.toLowerCase() !== l2Base.toLowerCase())
+    ? `${l2Base} — ${periodName}`
+    : l2Base;
   const label = [l1Label, l2Label, dayBand].filter(Boolean).join(" · ");
   const key = [level1, level2 ?? "-", dayBand ?? "-"].join("/");
 

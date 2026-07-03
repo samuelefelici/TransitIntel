@@ -273,18 +273,39 @@ async function loadProjectOwned(id: string, userId: string): Promise<any | null>
   return row ?? null;
 }
 
-/** Carica un progetto se l'utente ne è owner OPPURE membro attivo.
+/** Carica un progetto se l'utente ne è owner OPPURE membro attivo OPPURE
+ *  collaboratore del progetto Planner Studio collegato (i membri PS restano
+ *  abilitati per TUTTO il processo, fino allo Scheduling Engine).
  *  Aggiunge a row il campo `my_role` ('owner' | 'editor' | 'viewer'). */
 async function loadProjectAccessible(id: string, userId: string): Promise<any | null> {
   const r = await db.execute(sql`
     SELECT p.*,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
-                ELSE pm.role END AS my_role
+                ELSE COALESCE(
+                  pm.role,
+                  -- membro del progetto PS collegato (link diretto o via UDP)
+                  (SELECT psm.role FROM ps_project_members psm
+                    WHERE psm.user_id = ${userId}::uuid
+                      AND (psm.project_id = p.planning_studio_project_id
+                           OR psm.project_id = (SELECT vu.project_id FROM ps_validity_units vu
+                                                 WHERE vu.id = p.validity_unit_id))
+                    LIMIT 1)
+                ) END AS my_role
       FROM scheduling_projects p
       LEFT JOIN project_members pm
              ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
      WHERE p.id = ${id}::uuid
-       AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+       AND (
+         p.owner_user_id = ${userId}::uuid
+         OR pm.user_id IS NOT NULL
+         OR EXISTS (
+           SELECT 1 FROM ps_project_members psm
+            WHERE psm.user_id = ${userId}::uuid
+              AND (psm.project_id = p.planning_studio_project_id
+                   OR psm.project_id = (SELECT vu.project_id FROM ps_validity_units vu
+                                         WHERE vu.id = p.validity_unit_id))
+         )
+       )
      LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -871,11 +892,11 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
   const out: any[] = [];
   for (const u of units) {
     // progetto-scheduling agganciato a questa UDP (se è stata avviata)
+    // l'accesso al progetto PS è già stato verificato sopra: lo scheduling
+    // agganciato alle sue UDP è visibile ai collaboratori per tutto il processo
     const spR = await db.execute(sql`
       SELECT sp.id, sp.name FROM scheduling_projects sp
-        LEFT JOIN project_members pm ON pm.project_id = sp.id AND pm.user_id = ${userId}::uuid
        WHERE sp.validity_unit_id = ${u.id}::uuid
-         AND (sp.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
        ORDER BY sp.created_at DESC LIMIT 1`);
     const sp = (spR as any).rows?.[0] ?? null;
     let v: any = null, d: any = null, uncoveredInTm = 0;
