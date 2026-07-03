@@ -86,11 +86,13 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
             FROM ps_variant_stops GROUP BY variant_id
         ) vs ON vs.variant_id = v.id
     )
-    SELECT count(t.id)::int                                        AS total,
-           (count(*) FILTER (WHERE t.is_active))::int              AS active,
-           COALESCE(SUM(vlen.len_m), 0)                            AS km_m,
-           COALESCE(SUM(vlen.len_m) FILTER (WHERE t.is_active), 0) AS km_m_active
-      FROM ps_trips t
+    SELECT (count(t.id) FILTER (WHERE NOT proto))::int                          AS total,
+           (count(*) FILTER (WHERE t.is_active AND NOT proto))::int             AS active,
+           (count(*) FILTER (WHERE proto))::int                                 AS prototypes,
+           COALESCE(SUM(vlen.len_m) FILTER (WHERE NOT proto), 0)                AS km_m,
+           COALESCE(SUM(vlen.len_m) FILTER (WHERE t.is_active AND NOT proto), 0) AS km_m_active
+      FROM (SELECT *, COALESCE((attributes->>'prototype')::boolean, false) AS proto
+              FROM ps_trips) t
       LEFT JOIN vlen ON vlen.variant_id = t.variant_id
      WHERE t.project_id = ${req.params.id}::uuid
   `);
@@ -98,6 +100,7 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
   res.json({
     count: Number(row.total) || 0,
     active: Number(row.active) || 0,
+    prototypes: Number(row.prototypes) || 0, // corse ZERO: non generano km
     km: Math.round(((Number(row.km_m) || 0) / 1000) * 10) / 10,
     kmActive: Math.round(((Number(row.km_m_active) || 0) / 1000) * 10) / 10,
   });

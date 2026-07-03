@@ -316,17 +316,21 @@ export default function PlanningStudioTripsPage() {
     if (!protoTimes) { toast.error("Tempi del grafo non pronti"); return; }
     setNewBusy(true);
     try {
-      // Orari dal GRAFO: tempi per arco (editati) + soste per fermata.
+      // CORSA ZERO: nessun orario reale — i tempi del grafo vengono salvati
+      // ANCORATI a 00:00 (solo tempi per arco + soste). Le corse vere nascono
+      // con "Genera a cadenza" a partire da questo prototipo.
+      const t0 = protoTimes.arr[0];
       const stopTimes = vStops.map((st, i) => ({
         stopId: st.stopId,
-        arrivalTime: genSecToHms(protoTimes.arr[i]),
-        departureTime: genSecToHms(protoTimes.dep[i]),
+        arrivalTime: genSecToHms(protoTimes.arr[i] - t0),
+        departureTime: genSecToHms(protoTimes.dep[i] - t0),
         timepoint: st.timepoint ?? 1,
       }));
       const r = await batchCreatePsTrips(projectId, [{
         routeId, variantId,
         calendarId: newCalendarId || null,
         headsign: null, direction: 0,
+        attributes: { prototype: true }, // corsa ZERO: non genera km, esclusa dalle UDP
         stopTimes,
       }]);
       // Giorni di validità (matrice): best-effort, non blocca la creazione.
@@ -343,9 +347,9 @@ export default function PlanningStudioTripsPage() {
           toast.warning("Corsa creata, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
-      toast.success("✅ Corsa prototipo creata", {
-        description: `Partenza ${newStart} · ${vStops.length} fermate · giro ${protoTimes.totalMin} min (tempi per arco dal grafo). Ora moltiplicala con "Genera a cadenza".`,
-        duration: 7000,
+      toast.success("✅ Corsa ZERO (prototipo) creata", {
+        description: `${vStops.length} fermate · giro ${protoTimes.totalMin} min. È solo un PROTOTIPO senza orario e non genera km: crea le corse reali con "Genera a cadenza".`,
+        duration: 8000,
       });
       setNewOpen(false);
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
@@ -654,7 +658,8 @@ export default function PlanningStudioTripsPage() {
           onClick={() => {
             if (!variantId) { toast.info("Seleziona linea e variante", { description: "La cadenza si genera da una corsa template della variante." }); return; }
             if (filteredTrips.length === 0) { toast.info("Prima crea una corsa", { description: "Usa ➕ Nuova corsa: sarà il template per la cadenza." }); return; }
-            setGenTemplateId(filteredTrips[0]?.id ?? "");
+            const proto = filteredTrips.find(t => t.attributes?.prototype);
+            setGenTemplateId((proto ?? filteredTrips[0])?.id ?? "");
             setGenOpen(true);
           }}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-500 transition-colors"
@@ -795,13 +800,19 @@ export default function PlanningStudioTripsPage() {
                 return (
                   <tr key={t.id} className={`border-b border-slate-800/60 hover:bg-slate-900/50 ${
                     isSel ? "bg-amber-500/5" : ""
-                  } ${!t.isActive ? "opacity-50" : ""}`}>
+                  } ${t.attributes?.prototype ? "bg-amber-500/10" : ""} ${!t.isActive ? "opacity-50" : ""}`}>
                     <td className="p-2">
                       <input type="checkbox" checked={isSel} onChange={() => toggleSel(t.id)}
                         className="accent-amber-500" />
                     </td>
                     <td className="p-2 font-mono text-slate-300">
-                      {fmtTime(firstTimes[t.id])}
+                      {t.attributes?.prototype ? (
+                        <span
+                          title="CORSA ZERO (prototipo): nessun orario, solo tempi per arco, durata e validità. Non genera km e NON entra nelle UDP. Crea le corse reali con «Genera a cadenza»."
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[10px] font-bold not-italic">
+                          ⚠ PROTO
+                        </span>
+                      ) : fmtTime(firstTimes[t.id])}
                     </td>
                     <td className="p-2">
                       <div className="font-medium text-slate-200">{route?.shortName || "?"}</div>
@@ -927,7 +938,7 @@ export default function PlanningStudioTripsPage() {
           <div className="w-full max-w-2xl mx-4 rounded-xl border border-emerald-500/30 bg-slate-950 shadow-2xl max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-emerald-400" /> Corsa prototipo (corsa zero)
+                <Plus className="w-4 h-4 text-emerald-400" /> Corsa ZERO (prototipo)
               </h3>
               <button onClick={() => !newBusy && setNewOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
             </div>
@@ -1122,7 +1133,7 @@ export default function PlanningStudioTripsPage() {
                   <option value="">— scegli la corsa da replicare —</option>
                   {filteredTrips.map(t => (
                     <option key={t.id} value={t.id}>
-                      {fmtTime(firstTimes[t.id])} · {t.shortName || t.headsign || t.id.slice(0, 8)}
+                      {t.attributes?.prototype ? "★ PROTOTIPO" : fmtTime(firstTimes[t.id])} · {t.shortName || t.headsign || t.id.slice(0, 8)}
                       {t.serviceLabel ? ` · ${t.serviceLabel}` : ""}
                     </option>
                   ))}
@@ -1630,6 +1641,14 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
         <div className="p-4 border-b border-slate-800 space-y-1 text-xs">
           <div className="text-slate-400">{trip.headsign || trip.shortName || "—"}</div>
           <div className="text-slate-600 font-mono">{trip.id.slice(0, 8)}…</div>
+          {!!trip.attributes?.prototype && (
+            <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200 leading-snug">
+              ⚠ <strong>CORSA ZERO (prototipo)</strong> — nessun orario di partenza/arrivo:
+              contiene solo i tempi per arco, la durata del giro e la validità.
+              Non genera km e NON entra nelle Unità di Progettazione.
+              Crea le corse reali con <strong>«Genera a cadenza»</strong> usando questo prototipo come template.
+            </div>
+          )}
         </div>
 
         {/* Validità */}
