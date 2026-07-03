@@ -261,13 +261,14 @@ export default function PlanningStudioTripsPage() {
   const dayTypesQ = useQuery({
     queryKey: ["ps", projectId, "day-types"],
     queryFn: () => listPsDayTypes(projectId),
-    enabled: !!projectId && (newOpen || genOpen),
+    enabled: !!projectId, // servono anche alle azioni bulk (proroga giorni)
   });
   // Validità del CALENDARIO AZIENDALE (categorie globali: Scuole Aperte/Chiuse, Festività…)
   const categoriesQ = useQuery({
     queryKey: ["ps-validity-categories"],
     queryFn: () => listPsValidityCategories(),
-    enabled: newOpen || genOpen,
+    enabled: true, // servono anche alle azioni bulk (proroga categorie)
+    staleTime: 60_000,
   });
   const [newCategoryIds, setNewCategoryIds] = useState<Set<string>>(new Set());
   const [genDayTypeIds, setGenDayTypeIds] = useState<Set<string>>(new Set());
@@ -456,7 +457,7 @@ export default function PlanningStudioTripsPage() {
 
   /* ─── Mutations ─── */
   const updateMut = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: Partial<PsTrip> }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<PsTrip> & { attributesMerge?: Record<string, any> } }) =>
       updatePsTrip(projectId, id, patch),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] }),
     onError: (e: any) => toast.error(e?.message || "Errore aggiornamento"),
@@ -624,6 +625,43 @@ export default function PlanningStudioTripsPage() {
               onApply={(cid) => bulkMut.mutate({ patch: { calendarId: cid || null } })}
               disabled={bulkMut.isPending}
             />
+            <BulkDaysCatsSetter
+              dayTypes={dayTypesQ.data ?? []}
+              categories={categoriesQ.data ?? []}
+              disabled={bulkMut.isPending}
+              onApplyDays={async (dayTypeIds, isValid) => {
+                try {
+                  await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [...selected], dayTypeIds, isValid });
+                  toast.success(isValid ? "Giorni aggiunti alle corse selezionate" : "Giorni tolti dalle corse selezionate");
+                  qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+                  qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+                } catch (e: any) { toast.error("Errore", { description: e?.message }); }
+              }}
+              onApplyCats={async (categoryIds, mode) => {
+                try {
+                  await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [...selected], categoryIds, mode });
+                  toast.success(mode === "add" ? "Categorie aggiunte (proroga)" : "Categorie sostituite");
+                  qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+                  qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+                } catch (e: any) { toast.error("Errore", { description: e?.message }); }
+              }}
+            />
+            <button
+              onClick={() => bulkMut.mutate({ patch: { attributesMerge: { onDemand: true } } })}
+              disabled={bulkMut.isPending}
+              className="px-2 py-1 rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1"
+              title="Segna le corse selezionate come A CHIAMATA (su prenotazione)"
+            >
+              📞 A chiamata
+            </button>
+            <button
+              onClick={() => bulkMut.mutate({ patch: { attributesMerge: { onDemand: false } } })}
+              disabled={bulkMut.isPending}
+              className="px-2 py-1 rounded border border-purple-500/40 text-purple-300 hover:bg-purple-500/10 flex items-center gap-1"
+              title="Rendi ordinarie le corse selezionate (toglie A chiamata)"
+            >
+              ordinaria
+            </button>
             <button
               onClick={() => setBulkDelOpen(true)}
               disabled={bulkDeleteMut.isPending}
@@ -673,6 +711,7 @@ export default function PlanningStudioTripsPage() {
                 <th className="p-2 text-left">Calendario</th>
                 <th className="p-2 text-left">Validità</th>
                 <th className="p-2 text-left">Etichetta</th>
+                <th className="p-2 text-center w-16" title="Corsa effettuata solo su prenotazione (servizio a chiamata / DRT)">A chiam.</th>
                 <th className="p-2 text-center w-16">Stato</th>
                 <th className="p-2 w-20"></th>
               </tr>
@@ -718,6 +757,16 @@ export default function PlanningStudioTripsPage() {
                         placeholder="—"
                         className="w-full bg-transparent text-slate-300 text-xs px-1.5 py-0.5 rounded hover:bg-slate-800 focus:bg-slate-800 outline-none border border-transparent focus:border-slate-700"
                       />
+                    </td>
+                    <td className="p-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={!!t.attributes?.onDemand}
+                        onChange={e => updateMut.mutate({ id: t.id, patch: { attributesMerge: { onDemand: e.target.checked } } })}
+                        title={t.attributes?.onDemand ? "Corsa A CHIAMATA (clic per renderla ordinaria)" : "Segna come corsa a chiamata"}
+                        className="accent-purple-500 cursor-pointer"
+                      />
+                      {!!t.attributes?.onDemand && <span className="block text-[9px] text-purple-300 leading-none mt-0.5">📞</span>}
                     </td>
                     <td className="p-2 text-center">
                       <button
@@ -1152,23 +1201,135 @@ function BulkValiditySetter({ onApply, disabled }: {
       <button
         onClick={() => setOpen(o => !o)}
         disabled={disabled}
+        title="Periodo di esistenza della corsa nel calendario (es. orario estivo)"
         className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1"
       >
-        <CalendarIcon className="w-3 h-3" /> Validità
+        <CalendarIcon className="w-3 h-3" /> Periodo
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded p-2 z-20 flex items-center gap-2">
-          <input type="date" value={vf} onChange={e => setVf(e.target.value)}
-            className="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-xs" />
-          <span className="text-slate-500">→</span>
-          <input type="date" value={vt} onChange={e => setVt(e.target.value)}
-            className="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-xs" />
-          <button
-            onClick={() => { onApply(vf, vt); setOpen(false); }}
-            className="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white"
-          >
-            <Check className="w-3 h-3" />
-          </button>
+        <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded p-3 z-20 w-72 space-y-2">
+          <p className="text-[11px] text-slate-300 font-medium">Periodo di validità della corsa</p>
+          <p className="text-[10px] text-slate-400 leading-snug">
+            La corsa circola SOLO tra queste due date (poi valgono comunque giorni e
+            categorie della Matrice). Serve per orari stagionali: es. una corsa estiva
+            dal 15/06 al 10/09. Se lasci vuoto, la corsa non ha limiti di periodo.
+          </p>
+          <div className="flex items-center gap-2">
+            <input type="date" value={vf} onChange={e => setVf(e.target.value)}
+              className="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-xs flex-1" />
+            <span className="text-slate-500">→</span>
+            <input type="date" value={vt} onChange={e => setVt(e.target.value)}
+              className="px-1.5 py-0.5 bg-slate-900 border border-slate-700 rounded text-xs flex-1" />
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              onClick={() => { onApply("", ""); setOpen(false); }}
+              title="Toglie il periodo: la corsa torna valida senza limiti di date"
+              className="px-2 py-1 rounded border border-slate-600 text-slate-300 hover:bg-slate-700 text-[11px]"
+            >
+              Illimitata
+            </button>
+            <button
+              onClick={() => { onApply(vf, vt); setOpen(false); }}
+              className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] inline-flex items-center gap-1"
+            >
+              <Check className="w-3 h-3" /> Applica
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Bulk: proroga GIORNI (tipi giorno) e CATEGORIE (calendario aziendale) ───
+ * Per estendere corse esistenti: es. nate "feriale · scuole chiuse", prorogate
+ * anche a "sabato" o ad altre categorie SENZA rifarle. */
+function BulkDaysCatsSetter({ dayTypes, categories, disabled, onApplyDays, onApplyCats }: {
+  dayTypes: PsDayType[];
+  categories: PsValidityCategory[];
+  disabled?: boolean;
+  onApplyDays: (dayTypeIds: string[], isValid: boolean) => Promise<void>;
+  onApplyCats: (categoryIds: string[], mode: "add" | "replace") => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [dayIds, setDayIds] = useState<Set<string>>(new Set());
+  const [catIds, setCatIds] = useState<Set<string>>(new Set());
+  const [catMode, setCatMode] = useState<"add" | "replace">("add");
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+        title="Proroga/estendi le corse selezionate: aggiungi o togli giorni (feriale, sabato, festivo) e categorie del calendario aziendale (scuole aperte/chiuse…)"
+        className="px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-white flex items-center gap-1"
+      >
+        <CalendarIcon className="w-3 h-3" /> Giorni/Categorie
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded p-3 z-20 w-80 space-y-3">
+          <div>
+            <p className="text-[11px] text-slate-300 font-medium mb-1">Giorni (tipi giorno)</p>
+            <div className="flex flex-wrap gap-1.5 mb-1.5">
+              {dayTypes.map(dt => (
+                <label key={dt.id} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border cursor-pointer select-none"
+                  style={{ borderColor: dayIds.has(dt.id) ? (dt.color || "#10b981") : "#334155", background: dayIds.has(dt.id) ? `${dt.color || "#10b981"}22` : "transparent" }}>
+                  <input type="checkbox" className="hidden" checked={dayIds.has(dt.id)}
+                    onChange={() => setDayIds(prev => { const n = new Set(prev); n.has(dt.id) ? n.delete(dt.id) : n.add(dt.id); return n; })} />
+                  {dt.name}
+                </label>
+              ))}
+            </div>
+            <div className="flex gap-1.5">
+              <button
+                onClick={async () => { if (dayIds.size === 0) return; await onApplyDays([...dayIds], true); setOpen(false); }}
+                disabled={dayIds.size === 0}
+                title="Le corse selezionate diventano valide ANCHE in questi giorni (quelli già attivi restano)"
+                className="flex-1 px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] disabled:opacity-40"
+              >
+                ➕ Aggiungi giorni
+              </button>
+              <button
+                onClick={async () => { if (dayIds.size === 0) return; await onApplyDays([...dayIds], false); setOpen(false); }}
+                disabled={dayIds.size === 0}
+                title="Le corse selezionate NON valgono più in questi giorni (gli altri restano)"
+                className="flex-1 px-2 py-1 rounded border border-rose-500/50 text-rose-300 hover:bg-rose-500/10 text-[11px] disabled:opacity-40"
+              >
+                ➖ Togli giorni
+              </button>
+            </div>
+          </div>
+          <div className="border-t border-slate-700 pt-2">
+            <p className="text-[11px] text-slate-300 font-medium mb-1">Categorie (calendario aziendale)</p>
+            <div className="flex flex-wrap gap-1.5 mb-1.5">
+              {categories.map(c => (
+                <label key={c.id} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border cursor-pointer select-none"
+                  style={{ borderColor: catIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: catIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
+                  <input type="checkbox" className="hidden" checked={catIds.has(c.id)}
+                    onChange={() => setCatIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
+                  {c.name}
+                </label>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 mb-1.5 text-[10px] text-slate-400">
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="radio" name="catmode" checked={catMode === "add"} onChange={() => setCatMode("add")} className="accent-emerald-500" />
+                Aggiungi alle esistenti (proroga)
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="radio" name="catmode" checked={catMode === "replace"} onChange={() => setCatMode("replace")} className="accent-amber-500" />
+                Sostituisci
+              </label>
+            </div>
+            <button
+              onClick={async () => { await onApplyCats([...catIds], catMode); setOpen(false); }}
+              disabled={catMode === "add" && catIds.size === 0}
+              title={catMode === "replace" && catIds.size === 0 ? "Sostituisci con nessuna categoria = la corsa vale in ogni periodo del calendario aziendale" : undefined}
+              className="w-full px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-[11px] disabled:opacity-40"
+            >
+              Applica categorie {catMode === "replace" && catIds.size === 0 ? "(nessun vincolo)" : ""}
+            </button>
+          </div>
         </div>
       )}
     </div>

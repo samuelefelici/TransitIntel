@@ -128,17 +128,20 @@ router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Pr
   for (const [k, col] of Object.entries(map)) {
     if (k in req.body) { fields.push(col); vals.push(req.body[k]); }
   }
-  if (fields.length === 0) { res.status(400).json({ error: "no fields to update" }); return; }
+  // Merge di attributi jsonb (es. { onDemand: true } per le corse "a chiamata"):
+  // NON sostituisce l'intero oggetto, aggiorna solo le chiavi indicate.
+  const attrMerge = req.body.attributesMerge && typeof req.body.attributesMerge === "object"
+    ? req.body.attributesMerge : null;
+  if (fields.length === 0 && !attrMerge) { res.status(400).json({ error: "no fields to update" }); return; }
 
   // valid_from <= valid_to (se entrambi forniti)
   if (req.body.validFrom && req.body.validTo && new Date(req.body.validFrom) > new Date(req.body.validTo)) {
     res.status(400).json({ error: "validFrom must be ≤ validTo" }); return;
   }
 
-  const setSql = sql.join(
-    fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`),
-    sql`, `,
-  );
+  const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
+  if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
+  const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
        SET ${setSql}
@@ -183,13 +186,14 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   for (const [k, col] of Object.entries(map)) {
     if (k in patch) { fields.push(col); vals.push(patch[k]); }
   }
-  if (fields.length === 0) { res.status(400).json({ error: "no fields to update" }); return; }
+  const attrMerge = patch.attributesMerge && typeof patch.attributesMerge === "object"
+    ? patch.attributesMerge : null;
+  if (fields.length === 0 && !attrMerge) { res.status(400).json({ error: "no fields to update" }); return; }
 
   const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
-  const setSql = sql.join(
-    fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`),
-    sql`, `,
-  );
+  const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
+  if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
+  const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
        SET ${setSql}

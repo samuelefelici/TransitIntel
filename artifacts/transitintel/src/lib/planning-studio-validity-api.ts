@@ -170,7 +170,7 @@ export async function deletePsTripExceptionMatrix(
 
 export type BulkOp =
   | { op: "trip-row-set"; tripId?: string; tripIds?: string[]; dayTypeIds: string[]; isValid: boolean }
-  | { op: "trip-categories-set"; tripIds: string[]; categoryIds: string[] }
+  | { op: "trip-categories-set"; tripIds: string[]; categoryIds: string[]; mode?: "add" | "replace" }
   | { op: "date-column-set"; date: string; isValid: boolean }
   | { op: "clear-exceptions"; from: string; to: string; tripIds?: string[] };
 

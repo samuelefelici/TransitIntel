@@ -859,8 +859,10 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
     }
 
     if (op === "trip-categories-set") {
-      // Sostituisce il set di categorie di validità (calendario aziendale) delle
-      // corse indicate. categoryIds vuoto = nessun vincolo (vale in ogni periodo).
+      // mode "replace" (default): sostituisce il set di categorie delle corse;
+      // mode "add": AGGIUNGE le categorie a quelle già presenti (proroga, es.
+      // corsa nata "scuole chiuse" estesa anche a un'altra categoria).
+      // categoryIds vuoto con replace = nessun vincolo (vale in ogni periodo).
       const UUID_RX = /^[0-9a-f-]{36}$/i;
       const tripIds: string[] = (Array.isArray(body.tripIds) ? body.tripIds : [body.tripId])
         .filter((x: any) => typeof x === "string" && UUID_RX.test(x));
@@ -874,9 +876,12 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       if (Number(((ownR as any).rows ?? [])[0]?.c) !== tripIds.length) {
         res.status(404).json({ error: "trip not in project" }); return;
       }
-      await db.execute(sql`
-        DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
-      `);
+      const mode = body.mode === "add" ? "add" : "replace";
+      if (mode === "replace") {
+        await db.execute(sql`
+          DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+        `);
+      }
       let count = 0;
       for (const tripId of tripIds) {
         for (const catId of categoryIds) {
