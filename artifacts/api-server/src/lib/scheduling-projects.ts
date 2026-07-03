@@ -88,12 +88,16 @@ async function ensureSchedulingTables(): Promise<void> {
       ALTER TABLE IF EXISTS service_program_scenarios
         ADD COLUMN IF NOT EXISTS project_id uuid
     `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sps_project ON service_program_scenarios(project_id)`);
+    try {
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sps_project ON service_program_scenarios(project_id)`);
+    } catch { /* tabella di un altro modulo: può non esistere ancora */ }
     await db.execute(sql`
       ALTER TABLE IF EXISTS driver_shift_scenarios
         ADD COLUMN IF NOT EXISTS project_id uuid
     `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_dss_project ON driver_shift_scenarios(project_id)`);
+    try {
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_dss_project ON driver_shift_scenarios(project_id)`);
+    } catch { /* tabella di un altro modulo: può non esistere ancora */ }
     // "In esercizio": marca lo scenario scelto (turni macchina / turni guida).
     // Esclusività: 1 turni-macchina operativo per progetto-scheduling (= per UDP);
     // 1 turni-guida operativo per ciascun turni-macchina.
@@ -159,8 +163,11 @@ async function ensureSchedulingTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS description text,
         ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
     `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sps_owner ON service_program_scenarios(owner_user_id)`);
+    try {
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_sps_owner ON service_program_scenarios(owner_user_id)`);
+    } catch { /* tabella di un altro modulo */ }
 
+    try {
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS vehicle_schedule_members (
         scenario_id uuid NOT NULL REFERENCES service_program_scenarios(id) ON DELETE CASCADE,
@@ -171,7 +178,10 @@ async function ensureSchedulingTables(): Promise<void> {
         PRIMARY KEY (scenario_id, user_id)
       )
     `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vsm_user ON vehicle_schedule_members(user_id)`);
+    } catch { /* dipende da service_program_scenarios (altro modulo) */ }
+    try {
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_vsm_user ON vehicle_schedule_members(user_id)`);
+    } catch { /* dipende da service_program_scenarios */ }
 
     await db.execute(sql`
       ALTER TABLE IF EXISTS driver_shift_scenarios
@@ -180,7 +190,9 @@ async function ensureSchedulingTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS description text,
         ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
     `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_dss_owner ON driver_shift_scenarios(owner_user_id)`);
+    try {
+      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_dss_owner ON driver_shift_scenarios(owner_user_id)`);
+    } catch { /* tabella di un altro modulo */ }
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS driver_schedule_members (
@@ -903,7 +915,10 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
     // Conteggio scenari CREATI (a prescindere dall'esercizio): serve all'anteprima
     // sull'UDP per distinguere "nessuno creato" da "creati ma nessuno in esercizio".
     let vehicleScenarioCount = 0, driverScenarioCount = 0;
-    if (sp) {
+    // Le tabelle degli scenari appartengono ai moduli TM/TG e possono non
+    // esistere ancora (installazione nuova, nessuna ottimizzazione lanciata):
+    // il quadro deve comunque mostrare le UDP (best-effort sui conteggi).
+    if (sp) try {
       const vcR = await db.execute(sql`
         SELECT COUNT(*)::int AS c FROM service_program_scenarios WHERE project_id = ${sp.id}::uuid`);
       vehicleScenarioCount = Number((vcR as any).rows?.[0]?.c) || 0;
@@ -930,7 +945,7 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
            WHERE service_program_scenario_id = ${v.id}::uuid AND is_operational = true LIMIT 1`);
         d = (dR as any).rows?.[0] ?? null;
       }
-    }
+    } catch { /* tabelle scenari non ancora presenti: UDP visibile comunque */ }
     const status = !sp ? "not_started" : !v ? "missing_vehicle" : !d ? "missing_driver" : "complete";
     out.push({
       validityUnitId: u.id,
