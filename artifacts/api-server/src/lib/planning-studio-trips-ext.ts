@@ -22,6 +22,20 @@ const router: IRouter = Router();
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+// Chiavi jsonb scrivibili via attributesMerge: solo flag business noti, tipizzati.
+// Evita che un client inietti chiavi arbitrarie (o sovrascriva flag interpretati
+// dal sistema con tipi sbagliati) nel campo attributes della corsa.
+function sanitizeAttrMerge(input: any): Record<string, any> | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const out: Record<string, any> = {};
+  if ("prototype" in input) out.prototype = !!input.prototype;
+  if ("onDemand" in input) out.onDemand = !!input.onDemand;
+  if ("weekdays" in input && Array.isArray(input.weekdays) && input.weekdays.length === 7) {
+    out.weekdays = input.weekdays.map((x: any) => x !== false);
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 async function loadProject(projectId: string, userId: string, needWrite: boolean): Promise<any | null> {
   const r = await db.execute(sql`
     SELECT p.*,
@@ -194,8 +208,7 @@ router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Pr
   }
   // Merge di attributi jsonb (es. { onDemand: true } per le corse "a chiamata"):
   // NON sostituisce l'intero oggetto, aggiorna solo le chiavi indicate.
-  const attrMerge = req.body.attributesMerge && typeof req.body.attributesMerge === "object"
-    ? req.body.attributesMerge : null;
+  const attrMerge = sanitizeAttrMerge(req.body.attributesMerge);
   if (fields.length === 0 && !attrMerge) { res.status(400).json({ error: "no fields to update" }); return; }
 
   // valid_from <= valid_to (se entrambi forniti)
@@ -252,8 +265,7 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   for (const [k, col] of Object.entries(map)) {
     if (k in patch) { fields.push(col); vals.push(patch[k]); }
   }
-  const attrMerge = patch.attributesMerge && typeof patch.attributesMerge === "object"
-    ? patch.attributesMerge : null;
+  const attrMerge = sanitizeAttrMerge(patch.attributesMerge);
   if (fields.length === 0 && !attrMerge) { res.status(400).json({ error: "no fields to update" }); return; }
 
   const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);

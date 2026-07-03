@@ -923,6 +923,7 @@ router.post("/planning-studio/projects/:id/stops/bulk", async (req, res): Promis
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const list: any[] = Array.isArray(req.body?.stops) ? req.body.stops : [];
   if (list.length === 0) { res.json({ inserted: 0 }); return; }
+  if (list.length > 10000) { res.status(400).json({ error: "massimo 10000 fermate per richiesta" }); return; }
   let inserted = 0;
   for (const s of list) {
     const la = Number(s.lat), lo = Number(s.lon);
@@ -1486,19 +1487,23 @@ router.put("/planning-studio/projects/:id/trips/:tripId/stop-times", async (req,
       res.status(400).json({ error: "arrivalTime/departureTime devono essere HH:MM:SS" }); return;
     }
   }
-  await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${tripId}::uuid`);
+  // Transazione: DELETE + reinserimento atomici. Senza, un INSERT fallito dopo
+  // il DELETE già committato lascerebbe la corsa senza orari (perdita dati).
   let seq = 1;
-  for (const st of list) {
-    await db.execute(sql`
-      INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
-                                 pickup_type, drop_off_type, timepoint, shape_dist_traveled)
-      VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
-              ${st.arrivalTime}, ${st.departureTime},
-              ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
-              ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
-    `);
-    seq++;
-  }
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${tripId}::uuid`);
+    for (const st of list) {
+      await tx.execute(sql`
+        INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                   pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+        VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
+                ${st.arrivalTime}, ${st.departureTime},
+                ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
+                ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
+      `);
+      seq++;
+    }
+  });
   await logActivity(proj.id, req.user!.id, "ps.trip.stop-times", { targetId: tripId, payload: { count: seq - 1 } });
   res.json({ ok: true, count: seq - 1 });
 });

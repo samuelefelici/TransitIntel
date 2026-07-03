@@ -355,7 +355,8 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     if (String(e?.message || "").includes("duplicate")) {
       res.status(409).json({ error: "Email già registrata" }); return;
     }
-    res.status(500).json({ error: e?.message || "Errore creazione utente" });
+    console.error("[admin.users.create] error:", e?.message || e);
+    res.status(500).json({ error: "Errore creazione utente" });
   }
 });
 

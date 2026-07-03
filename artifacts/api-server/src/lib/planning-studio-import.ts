@@ -151,6 +151,11 @@ router.post(
       res.status(400).json({ error: "ZIP non valido: " + (e?.message || "errore parsing") });
       return;
     }
+    // Anti zip-bomb: cap sulla somma dei size DECOMPRESSI (multer limita solo il compresso).
+    const totalUncompressed = zip.getEntries().reduce((s, e) => s + (e.header?.size || 0), 0);
+    if (totalUncompressed > 600 * 1024 * 1024) {
+      res.status(413).json({ error: "Archivio troppo grande una volta decompresso" }); return;
+    }
 
     /* ─── 1. Parse ─── */
     const stopsCsv     = readZipFile(zip, "stops.txt");
@@ -577,8 +582,9 @@ router.post(
         autoValidity: autoImport?.summary ?? null,
       });
     } catch (e: any) {
+      // dettaglio solo nei log (poteva leakare schema/constraint DB al client)
       console.error("[ps import] failed:", e);
-      res.status(500).json({ error: "Errore durante l'import: " + (e?.message || "sconosciuto") });
+      res.status(500).json({ error: "Errore durante l'import del GTFS" });
     }
   },
 );
