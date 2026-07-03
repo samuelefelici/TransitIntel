@@ -750,56 +750,128 @@ export default function PlanningStudioTtdPage() {
     return { pts, z: pts.length };
   }, [showConn, axis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
 
-  /* ─── C4 · Sincronizzatore coincidenze: trova lo shift Δ della variante scelta
-     che MASSIMIZZA Z (attese in finestra), entro ±maxShift minuti.
-     - SENSO della coincidenza scelto dall'operatore (chi arriva prima al nodo);
-     - selezione PARZIALE delle corse da spostare (finestra oraria + spunta singola):
-       es. al mattino trasla solo le corse 06–09, al pomeriggio quelle 16–19
-       nell'altro senso. ─── */
+  const sharedCandidates = candidatesQ.data ?? [];
+
+  /* ─── C4 · Sincronizzatore MULTI-LINEA: CATENA di coincidenze ordinata.
+     L'operatore mette in fila le linee per ORDINE DI ARRIVO al nodo:
+     la prima arriva, la seconda parte Δ dopo, la terza parte Δ dopo la
+     seconda, ecc. La linea BASE è l'ancora (non si sposta mai): le linee
+     DOPO la base vengono traslate in cascata in avanti, quelle PRIMA
+     all'indietro. Ogni linea partecipa con una selezione PARZIALE di
+     corse (finestra oraria + spunta singola). ─── */
+  type ChainItem = { kind: "base" } | { kind: "variant"; variantId: string };
   const syncOpen = activeTool === "sync";
-  const [syncVariantId, setSyncVariantId] = useState("");
-  const [syncMaxShift, setSyncMaxShift] = useState("15");
-  const [syncBusy, setSyncBusy] = useState(false);
-  // "base-first"  = arriva prima la linea BASE  → la linea scelta parte dopo (attesa Δ)
-  // "other-first" = arriva prima la linea SCELTA → la base parte dopo (attesa Δ)
-  const [syncDirection, setSyncDirection] = useState<"base-first" | "other-first">("base-first");
+  const [syncChain, setSyncChain] = useState<ChainItem[]>([{ kind: "base" }]);
+  const [syncSel, setSyncSel] = useState<Record<string, Set<string>>>({});
+  const [syncExpand, setSyncExpand] = useState<string | null>(null);
   const [syncWinFrom, setSyncWinFrom] = useState("06:00");
   const [syncWinTo, setSyncWinTo] = useState("09:00");
-  const [syncTripIds, setSyncTripIds] = useState<Set<string>>(new Set());
-  const [syncResult, setSyncResult] = useState<{ best: number; zNow: number; zBest: number; top: { delta: number; z: number }[] } | null>(null);
-  useEffect(() => { setSyncResult(null); }, [syncVariantId, overlayOn, connMin, connMax, syncDirection, syncTripIds]);
+  const [syncMaxShift, setSyncMaxShift] = useState("15");
+  const [syncBusy, setSyncBusy] = useState(false);
+  type SyncPlanItem = { variantId: string; delta: number; zNow: number; zBest: number; moved: number; name: string };
+  const [syncPlan, setSyncPlan] = useState<SyncPlanItem[] | null>(null);
+  useEffect(() => { setSyncPlan(null); }, [syncChain, syncSel, connMin, connMax, calendarFilter]);
+  useEffect(() => { setSyncChain([{ kind: "base" }]); setSyncSel({}); setSyncPlan(null); }, [variantId]);
+  // se una linea viene spenta dal pannello Linee, esce anche dalla catena
+  useEffect(() => {
+    setSyncChain(prev => {
+      const next = prev.filter(it => it.kind === "base" || overlayOn.has(it.variantId));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [overlayOn]);
 
-  // Corse della linea scelta, ordinate per prima partenza (per la selezione parziale)
-  const syncTrips = useMemo(() => {
-    const data = overlayData[syncVariantId];
-    if (!data) return [] as { trip: PsTrip; dep: number }[];
+  /** Corse di una linea della catena, ordinate per prima partenza. */
+  function syncLineTrips(vid: string): { trip: PsTrip; dep: number }[] {
+    const data = overlayData[vid];
+    if (!data) return [];
     let trips = data.trips;
     if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
     return trips
       .map(t => ({ trip: t, dep: data.st[t.id]?.length ? hmsToSec(data.st[t.id][0].departureTime) : Number.POSITIVE_INFINITY }))
       .sort((a, b) => a.dep - b.dep);
-  }, [overlayData, syncVariantId, calendarFilter]);
-  // Al cambio linea: preseleziona TUTTE le corse (poi l'operatore restringe).
-  // Se la selezione corrente è ancora coerente con la lista (es. dopo un Applica
-  // che aggiorna solo gli orari), viene MANTENUTA.
-  useEffect(() => {
-    setSyncTripIds(prev => {
-      const allSet = new Set(syncTrips.map(x => x.trip.id));
-      const kept = [...prev].filter(id => allSet.has(id));
-      if (prev.size > 0 && kept.length === prev.size) return prev;
-      return kept.length > 0 ? new Set(kept) : allSet;
+  }
+  const chainName = (it: ChainItem) =>
+    it.kind === "base"
+      ? `${baseRoute?.shortName ?? "base"} (riferimento)`
+      : (() => { const c = sharedCandidates.find(x => x.variant.id === it.variantId); return c ? `${c.route.shortName} · ${c.variant.name}` : "?"; })();
+  const chainColor = (it: ChainItem) =>
+    it.kind === "base"
+      ? baseColor
+      : (() => { const c = sharedCandidates.find(x => x.variant.id === it.variantId); return c ? (colorByRoute.get(c.route.id) ?? routeColor(c.route.color, "#c084fc")) : "#c084fc"; })();
+
+  function addLineToChain(vid: string) {
+    setSyncChain(prev => prev.some(it => it.kind === "variant" && it.variantId === vid) ? prev : [...prev, { kind: "variant", variantId: vid }]);
+  }
+  function moveChainItem(idx: number, dir: -1 | 1) {
+    setSyncChain(prev => {
+      const j = idx + dir;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return next;
     });
-  }, [syncTrips]);
-  /** Seleziona solo le corse con prima partenza nella finestra indicata. */
+  }
+  // seed/prune della selezione corse per ogni linea in catena (default: TUTTE)
+  useEffect(() => {
+    setSyncSel(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const it of syncChain) {
+        if (it.kind !== "variant") continue;
+        const ids = syncLineTrips(it.variantId).map(x => x.trip.id);
+        if (ids.length === 0) continue;
+        const idSet = new Set(ids);
+        const cur = prev[it.variantId];
+        if (!cur) { next[it.variantId] = idSet; changed = true; continue; }
+        const kept = [...cur].filter(id => idSet.has(id));
+        if (kept.length !== cur.size) { next[it.variantId] = kept.length ? new Set(kept) : idSet; changed = true; }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncChain, overlayData, calendarFilter]);
+  /** Applica la finestra oraria alla selezione di TUTTE le linee della catena. */
   function applySyncWindow() {
     const a = hmToSec(syncWinFrom), b = hmToSec(syncWinTo);
     if (a == null || b == null || b < a) { toast.error("Finestra non valida (HH:MM)"); return; }
-    const ids = syncTrips.filter(x => x.dep >= a && x.dep <= b).map(x => x.trip.id);
-    setSyncTripIds(new Set(ids));
-    if (ids.length === 0) toast.warning("Nessuna corsa parte in quella finestra");
+    setSyncSel(prev => {
+      const next = { ...prev };
+      for (const it of syncChain) {
+        if (it.kind !== "variant") continue;
+        next[it.variantId] = new Set(syncLineTrips(it.variantId).filter(x => x.dep >= a && x.dep <= b).map(x => x.trip.id));
+      }
+      return next;
+    });
   }
 
-  function computeConnForShift(vid: string, deltaSec: number, collect = false): { z: number; pts: ConnPt[] } {
+  /** Eventi (arrivi/partenze) ai nodi dell'asse per un elemento della catena,
+   *  con eventuale shift. Base = tutte le corse visibili; linea = solo selezionate. */
+  function chainNodeEvents(it: ChainItem, deltaSec: number): Map<string, { arr: number[]; dep: number[]; name: string }> {
+    const m = new Map<string, { arr: number[]; dep: number[]; name: string }>();
+    const push = (stopId: string, stopName: string, a: number, d: number) => {
+      const n = nodeOfStop.get(stopId) ?? stopId;
+      if (!m.has(n)) m.set(n, { arr: [], dep: [], name: stopName });
+      const e = m.get(n)!;
+      e.arr.push(a); e.dep.push(d);
+    };
+    if (it.kind === "base") {
+      for (const g of baseGeoms) for (const st of g.sts) push(st.stopId, st.stopName, hmsToSec(st.arrivalTime), hmsToSec(st.departureTime));
+    } else {
+      const data = overlayData[it.variantId];
+      if (!data) return m;
+      const sel = syncSel[it.variantId] ?? new Set<string>();
+      let trips = data.trips.filter(t => sel.has(t.id));
+      if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+      for (const t of trips) for (const st of data.st[t.id] ?? [])
+        push(st.stopId, st.stopName, hmsToSec(st.arrivalTime) + deltaSec, hmsToSec(st.departureTime) + deltaSec);
+    }
+    return m;
+  }
+  /** Coincidenze realizzate tra due elementi consecutivi della catena:
+   *  il PRIMO arriva al nodo → il SECONDO parte con attesa in [min,max]. */
+  function chainPairConn(prevEv: Map<string, { arr: number[]; dep: number[]; name: string }>,
+                         nextEv: Map<string, { arr: number[]; dep: number[]; name: string }>,
+                         collect = false): { z: number; pts: ConnPt[] } {
     if (!axis) return { z: 0, pts: [] };
     const minW = Math.max(0, Number(connMin) || 0) * 60;
     const maxW = Math.max(minW, (Number(connMax) || 10) * 60);
@@ -808,127 +880,165 @@ export default function PlanningStudioTtdPage() {
       const n = nodeOfStop.get(st.stopId) ?? st.stopId;
       if (!nodeDist.has(n)) nodeDist.set(n, st.dist);
     }
-    const baseArr = new Map<string, number[]>();
-    const baseDep = new Map<string, number[]>();
-    for (const g of baseGeoms) for (const st of g.sts) {
-      const n = nodeOfStop.get(st.stopId) ?? st.stopId;
-      if (!nodeDist.has(n)) continue;
-      if (!baseArr.has(n)) { baseArr.set(n, []); baseDep.set(n, []); }
-      baseArr.get(n)!.push(hmsToSec(st.arrivalTime));
-      baseDep.get(n)!.push(hmsToSec(st.departureTime));
-    }
-    const data = overlayData[vid];
-    if (!data) return { z: 0, pts: [] };
-    let trips = data.trips;
-    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
-    // SOLO le corse selezionate dall'operatore partecipano alla sincronizzazione
-    trips = trips.filter(t => syncTripIds.has(t.id));
     let z = 0;
     const pts: ConnPt[] = [];
-    for (const t of trips) {
-      for (const st of data.st[t.id] ?? []) {
-        const n = nodeOfStop.get(st.stopId) ?? st.stopId;
-        const dd = nodeDist.get(n);
-        if (dd == null) continue;
-        const oArr = hmsToSec(st.arrivalTime) + deltaSec;
-        const oDep = hmsToSec(st.departureTime) + deltaSec;
-        if (syncDirection === "base-first") {
-          // arriva la base → la linea scelta PARTE dopo, con attesa in [min,max]
-          for (const a2 of baseArr.get(n) ?? []) {
-            const w = oDep - a2;
-            if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: oDep, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
-          }
-        } else {
-          // arriva la linea scelta → la BASE parte dopo, con attesa in [min,max]
-          for (const p2 of baseDep.get(n) ?? []) {
-            const w = p2 - oArr;
-            if (w >= minW && w <= maxW) { z++; if (collect) pts.push({ t: p2, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${st.stopName}` }); }
-          }
+    for (const [n, nx] of nextEv) {
+      const pv = prevEv.get(n);
+      const dd = nodeDist.get(n);
+      if (!pv || dd == null) continue;
+      for (const dep of nx.dep) for (const arr of pv.arr) {
+        const w = dep - arr;
+        if (w >= minW && w <= maxW) {
+          z++;
+          if (collect && pts.length < 800) pts.push({ t: dep, dist: dd, wait: w, label: `attesa ${Math.round(w / 60)}′ · ${nx.name}` });
         }
       }
     }
     return { z, pts };
   }
-  const computeZForShift = (vid: string, deltaSec: number) => computeConnForShift(vid, deltaSec).z;
-
-  /* ─── Anteprima sync: la linea scelta TRASLATA di Δbest, tratteggiata,
-     con le coincidenze previste — l'utente VEDE lo spostamento prima di
-     confermare. ─── */
-  const syncPreview = useMemo(() => {
-    if (!syncOpen || !syncResult || syncResult.best === 0 || !syncVariantId || !axis) return null;
-    const data = overlayData[syncVariantId];
-    if (!data) return null;
-    const deltaSec = syncResult.best * 60;
-    let trips = data.trips;
-    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
-    trips = trips.filter(t => syncTripIds.has(t.id)); // solo le corse selezionate traslano
-    const geoms: Pt[][][] = [];
-    for (const t of trips) {
-      const sts = data.st[t.id];
-      if (!sts || sts.length < 2) continue;
-      const segs = buildSegments(sts, axis.byStop, deltaSec);
-      if (segs.length) geoms.push(segs);
-    }
-    const conn = computeConnForShift(syncVariantId, deltaSec, true);
-    return { geoms, pts: conn.pts, delta: syncResult.best };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncResult, syncVariantId, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop, syncTripIds, syncDirection]);
 
   const [syncConfirmOpen, setSyncConfirmOpen] = useState(false);
 
+  /** Ricerca a cascata: per ogni linea (dalla base verso l'esterno) trova il
+   *  Δ che massimizza le coincidenze con l'elemento adiacente già definitivo. */
   function runSyncSearch() {
-    if (!syncVariantId || !overlayData[syncVariantId]) { toast.error("Accendi e scegli la linea da sincronizzare"); return; }
-    if (syncTripIds.size === 0) { toast.error("Seleziona almeno una corsa da spostare"); return; }
+    const movers = syncChain.filter(it => it.kind === "variant") as { kind: "variant"; variantId: string }[];
+    if (movers.length === 0) { toast.error("Aggiungi alla catena almeno una linea da spostare"); return; }
+    for (const mv of movers) {
+      if (!overlayData[mv.variantId]) { toast.error("Orari della linea in caricamento: riprova tra un attimo"); return; }
+      if ((syncSel[mv.variantId]?.size ?? 0) === 0) { toast.error(`Seleziona almeno una corsa per ${chainName(mv)}`); return; }
+    }
     const M = Math.min(60, Math.max(1, Math.round(Number(syncMaxShift) || 15)));
-    const table: { delta: number; z: number }[] = [];
-    for (let d = -M; d <= M; d++) table.push({ delta: d, z: computeZForShift(syncVariantId, d * 60) });
-    const zNow = table.find(r => r.delta === 0)?.z ?? 0;
-    const best = [...table].sort((x, y) => y.z - x.z || Math.abs(x.delta) - Math.abs(y.delta))[0];
-    const top = [...table].sort((x, y) => y.z - x.z || Math.abs(x.delta) - Math.abs(y.delta)).slice(0, 5);
-    setSyncResult({ best: best.delta, zNow, zBest: best.z, top });
+    const k = syncChain.findIndex(it => it.kind === "base");
+    const deltas = new Map<string, number>();
+    const results = new Map<string, SyncPlanItem>();
+    const finalEv = (i: number) => {
+      const it = syncChain[i];
+      return chainNodeEvents(it, it.kind === "variant" ? (deltas.get(it.variantId) ?? 0) * 60 : 0);
+    };
+    const searchBest = (evalZ: (deltaSec: number) => number) => {
+      let best = { delta: 0, z: -1 }, zNow = 0;
+      for (let d = -M; d <= M; d++) {
+        const z = evalZ(d * 60);
+        if (d === 0) zNow = z;
+        if (z > best.z || (z === best.z && Math.abs(d) < Math.abs(best.delta))) best = { delta: d, z };
+      }
+      return { best, zNow };
+    };
+    // a valle della base: chi viene DOPO parte Δ dopo l'arrivo del precedente
+    for (let i = k + 1; i < syncChain.length; i++) {
+      const it = syncChain[i];
+      if (it.kind !== "variant") continue;
+      const prevEv = finalEv(i - 1);
+      const { best, zNow } = searchBest(ds => chainPairConn(prevEv, chainNodeEvents(it, ds)).z);
+      deltas.set(it.variantId, best.delta);
+      results.set(it.variantId, { variantId: it.variantId, delta: best.delta, zNow, zBest: best.z, moved: syncSel[it.variantId]?.size ?? 0, name: chainName(it) });
+    }
+    // a monte della base: chi viene PRIMA arriva Δ prima della partenza del successivo
+    for (let i = k - 1; i >= 0; i--) {
+      const it = syncChain[i];
+      if (it.kind !== "variant") continue;
+      const nextEv = finalEv(i + 1);
+      const { best, zNow } = searchBest(ds => chainPairConn(chainNodeEvents(it, ds), nextEv).z);
+      deltas.set(it.variantId, best.delta);
+      results.set(it.variantId, { variantId: it.variantId, delta: best.delta, zNow, zBest: best.z, moved: syncSel[it.variantId]?.size ?? 0, name: chainName(it) });
+    }
+    // piano in ordine di catena
+    const plan: SyncPlanItem[] = [];
+    for (const it of syncChain) if (it.kind === "variant") { const r = results.get(it.variantId); if (r) plan.push(r); }
+    setSyncPlan(plan);
+    if (plan.every(p => p.delta === 0)) toast.info("Gli orari attuali sono già ottimali per la catena scelta.");
   }
 
-  async function applySyncShift(deltaMin: number) {
-    const data = overlayData[syncVariantId];
-    if (!data || deltaMin === 0) return;
-    // trasla SOLO le corse selezionate dall'operatore
-    const targets = data.trips.filter(t => syncTripIds.has(t.id));
-    if (targets.length === 0) { toast.error("Nessuna corsa selezionata"); return; }
+  /* ─── Anteprima sync: ogni linea traslata (Δ≠0) tratteggiata nel SUO colore,
+     con le coincidenze previste lungo TUTTA la catena. ─── */
+  const syncPreview = useMemo(() => {
+    if (!syncOpen || !syncPlan || syncPlan.length === 0 || !axis) return null;
+    if (syncPlan.every(p => p.delta === 0)) return null;
+    const deltas = new Map(syncPlan.map(p => [p.variantId, p.delta]));
+    const lines: { color: string; geoms: Pt[][][] }[] = [];
+    for (const p of syncPlan) {
+      if (p.delta === 0) continue;
+      const data = overlayData[p.variantId];
+      if (!data) continue;
+      const sel = syncSel[p.variantId] ?? new Set<string>();
+      let trips = data.trips.filter(t => sel.has(t.id));
+      if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+      const geoms: Pt[][][] = [];
+      for (const t of trips) {
+        const sts = data.st[t.id];
+        if (!sts || sts.length < 2) continue;
+        const segs = buildSegments(sts, axis.byStop, p.delta * 60);
+        if (segs.length) geoms.push(segs);
+      }
+      lines.push({ color: chainColor({ kind: "variant", variantId: p.variantId }), geoms });
+    }
+    // coincidenze previste tra ogni coppia consecutiva della catena
+    const evOf = (i: number) => {
+      const it = syncChain[i];
+      return chainNodeEvents(it, it.kind === "variant" ? (deltas.get(it.variantId) ?? 0) * 60 : 0);
+    };
+    const pts: ConnPt[] = [];
+    let totalZ = 0;
+    for (let i = 1; i < syncChain.length; i++) {
+      const c = chainPairConn(evOf(i - 1), evOf(i), true);
+      totalZ += c.z;
+      pts.push(...c.pts);
+    }
+    return { lines, pts, totalZ, movedLines: lines.length };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
+
+  /** Applica il piano: trasla in sequenza le corse selezionate di ogni linea. */
+  async function applySyncPlan() {
+    if (!syncPlan) return;
+    const work = syncPlan.filter(p => p.delta !== 0);
+    if (work.length === 0) return;
     // guardia: nessun orario negativo
-    for (const t of targets) {
-      const sts = data.st[t.id] ?? [];
-      if (sts.length && Math.min(...sts.map(x => hmsToSec(x.arrivalTime))) + deltaMin * 60 < 0) {
-        toast.error("Lo shift porterebbe orari prima di 00:00"); return;
+    for (const p of work) {
+      const data = overlayData[p.variantId];
+      if (!data) continue;
+      const sel = syncSel[p.variantId] ?? new Set<string>();
+      for (const t of data.trips.filter(x => sel.has(x.id))) {
+        const sts = data.st[t.id] ?? [];
+        if (sts.length && Math.min(...sts.map(x => hmsToSec(x.arrivalTime))) + p.delta * 60 < 0) {
+          toast.error(`Lo shift di ${p.name} porterebbe orari prima di 00:00`); return;
+        }
       }
     }
     setSyncBusy(true);
     try {
       let done = 0;
-      for (const t of targets) {
-        await shiftPsTripTimes(projectId, t.id, deltaMin);
-        done++;
-      }
-      // aggiorna in locale gli orari delle sole corse spostate
-      const shifted = new Set(targets.map(t => t.id));
-      setOverlayData(prev => {
-        const cur = prev[syncVariantId];
-        if (!cur) return prev;
-        const st: Record<string, PsStopTime[]> = {};
-        for (const [tid, sts] of Object.entries(cur.st)) {
-          st[tid] = shifted.has(tid)
-            ? sts.map(x => ({
-                ...x,
-                arrivalTime: secToHms(hmsToSec(x.arrivalTime) + deltaMin * 60),
-                departureTime: secToHms(hmsToSec(x.departureTime) + deltaMin * 60),
-              }))
-            : sts;
+      for (const p of work) {
+        const data = overlayData[p.variantId];
+        if (!data) continue;
+        const sel = syncSel[p.variantId] ?? new Set<string>();
+        const targets = data.trips.filter(t => sel.has(t.id));
+        for (const t of targets) {
+          await shiftPsTripTimes(projectId, t.id, p.delta);
+          done++;
         }
-        return { ...prev, [syncVariantId]: { ...cur, st } };
+        const shifted = new Set(targets.map(t => t.id));
+        setOverlayData(prev => {
+          const cur = prev[p.variantId];
+          if (!cur) return prev;
+          const st: Record<string, PsStopTime[]> = {};
+          for (const [tid, sts] of Object.entries(cur.st)) {
+            st[tid] = shifted.has(tid)
+              ? sts.map(x => ({
+                  ...x,
+                  arrivalTime: secToHms(hmsToSec(x.arrivalTime) + p.delta * 60),
+                  departureTime: secToHms(hmsToSec(x.departureTime) + p.delta * 60),
+                }))
+              : sts;
+          }
+          return { ...prev, [p.variantId]: { ...cur, st } };
+        });
+      }
+      toast.success(`✅ Catena sincronizzata: ${done} corse traslate su ${work.length} linee`, {
+        description: "Le corse non selezionate NON sono state toccate.",
       });
-      toast.success(`✅ Sincronizzato: ${done} corse traslate di ${deltaMin > 0 ? "+" : ""}${deltaMin} min`, {
-        description: "Le altre corse della linea NON sono state toccate.",
-      });
-      setSyncResult(null);
+      setSyncPlan(null);
     } catch (e: any) {
       toast.error("Errore durante lo shift", { description: e?.message });
     } finally { setSyncBusy(false); }
@@ -985,11 +1095,6 @@ export default function PlanningStudioTtdPage() {
   const project = projectQ.data;
   const calendars = calendarsQ.data ?? [];
   const variants = variantsQ.data ?? [];
-  const sharedCandidates = candidatesQ.data ?? [];
-  // Nomi per il pannello Sincronizza (senso della coincidenza)
-  const syncCand = sharedCandidates.find(c => c.variant.id === syncVariantId) ?? null;
-  const baseName = baseRoute?.shortName ?? "linea base";
-  const otherName = syncCand?.route.shortName ?? "linea scelta";
 
   /* ════════════════ Render ════════════════ */
   return (
@@ -1260,15 +1365,15 @@ export default function PlanningStudioTtdPage() {
                   </circle>
                 ))}
 
-                {/* Anteprima SYNC: linea scelta traslata di Δbest (tratteggiata viola) */}
-                {syncPreview && syncPreview.geoms.map((segs, k) => (
+                {/* Anteprima SYNC: ogni linea traslata, tratteggiata nel SUO colore */}
+                {syncPreview && syncPreview.lines.map((ln, k) => (
                   <g key={`sy-${k}`} opacity={0.9}>
-                    {segs.map((seg, i) => (
-                      <polyline key={i}
+                    {ln.geoms.map((segs, j) => segs.map((seg, i) => (
+                      <polyline key={`${j}-${i}`}
                         points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
-                        fill="none" stroke="#c084fc" strokeWidth={1.8}
+                        fill="none" stroke={ln.color} strokeWidth={1.8}
                         strokeDasharray="6 4" strokeLinejoin="round" />
-                    ))}
+                    )))}
                   </g>
                 ))}
                 {syncPreview && syncPreview.pts.slice(0, 400).map((c2, i) => (
@@ -1317,7 +1422,7 @@ export default function PlanningStudioTtdPage() {
               {syncPreview && (
                 <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-900/85 border border-purple-500/50 text-[10px]">
                   <span className="w-4 h-0 border-t-2 border-dashed border-purple-400" />
-                  <span className="text-purple-300">anteprima Δ {syncPreview.delta > 0 ? "+" : ""}{syncPreview.delta}′</span>
+                  <span className="text-purple-300">anteprima catena · {syncPreview.movedLines} linee · Z {syncPreview.totalZ}</span>
                 </span>
               )}
             </div>
@@ -1460,9 +1565,9 @@ export default function PlanningStudioTtdPage() {
           </div>
         )}
 
-        {/* ─── Pannello: SINCRONIZZA (senso della coincidenza + selezione parziale corse) ─── */}
+        {/* ─── Pannello: SINCRONIZZA (catena multi-linea in ordine di arrivo) ─── */}
         {syncOpen && (
-          <div className="w-[330px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+          <div className="w-[340px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
             <div className="p-3 border-b border-slate-800 flex items-center gap-2">
               <Shuffle className="w-4 h-4 text-purple-400" />
               <h3 className="font-semibold text-sm text-purple-300">Sincronizza coincidenze</h3>
@@ -1471,40 +1576,55 @@ export default function PlanningStudioTtdPage() {
             </div>
             <div className="p-3 space-y-3 text-xs overflow-y-auto flex-1">
               <div>
-                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">1 · Linea da spostare (accesa in "Linee")</label>
-                <select value={syncVariantId} onChange={e => setSyncVariantId(e.target.value)}
-                  className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
-                  <option value="">— scegli —</option>
-                  {sharedCandidates.filter(c => overlayOn.has(c.variant.id)).map(c => (
-                    <option key={c.variant.id} value={c.variant.id}>
-                      {c.route.shortName} · {c.variant.name}
-                    </option>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">
+                  1 · Catena di coincidenze — <span className="text-purple-300">in alto chi ARRIVA prima</span>
+                </label>
+                <div className="rounded border border-slate-800 divide-y divide-slate-800/60">
+                  {syncChain.map((it, idx) => (
+                    <div key={it.kind === "base" ? "base" : it.variantId}
+                      className={`flex items-center gap-2 px-2 py-1.5 ${it.kind === "base" ? "bg-slate-800/40" : ""}`}>
+                      <span className="w-4 text-center font-mono text-slate-500">{idx + 1}</span>
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: chainColor(it) }} />
+                      <span className="flex-1 truncate text-slate-200">{chainName(it)}</span>
+                      {it.kind === "base" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300">non si sposta</span>}
+                      <button onClick={() => moveChainItem(idx, -1)} disabled={idx === 0}
+                        className="px-1 rounded hover:bg-slate-800 text-slate-400 disabled:opacity-20" title="Arriva prima">▲</button>
+                      <button onClick={() => moveChainItem(idx, 1)} disabled={idx === syncChain.length - 1}
+                        className="px-1 rounded hover:bg-slate-800 text-slate-400 disabled:opacity-20" title="Arriva dopo">▼</button>
+                      {it.kind === "variant" && (
+                        <button onClick={() => setSyncChain(prev => prev.filter(x => x.kind === "base" || x.variantId !== it.variantId))}
+                          className="px-1 rounded hover:bg-slate-800 text-rose-400" title="Togli dalla catena">✕</button>
+                      )}
+                    </div>
                   ))}
-                </select>
-                {overlayOn.size === 0 && (
-                  <p className="text-[10px] text-amber-400 mt-1">Prima accendi almeno una linea dal pannello <strong>Linee</strong>.</p>
-                )}
-              </div>
-
-              <div>
-                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">2 · Senso della coincidenza (chi arriva prima al nodo)</label>
-                <div className="space-y-1">
-                  <label className={`flex items-start gap-2 px-2.5 py-2 rounded border cursor-pointer select-none ${syncDirection === "base-first" ? "border-purple-500/50 bg-purple-500/10 text-slate-100" : "border-slate-700 text-slate-400 hover:bg-slate-800"}`}>
-                    <input type="radio" name="sync-dir" checked={syncDirection === "base-first"} onChange={() => setSyncDirection("base-first")} className="accent-purple-500 mt-0.5" />
-                    <span>Arriva prima la <strong>{baseName}</strong> → la <strong>{otherName}</strong> parte {connMin}–{connMax}′ dopo</span>
-                  </label>
-                  <label className={`flex items-start gap-2 px-2.5 py-2 rounded border cursor-pointer select-none ${syncDirection === "other-first" ? "border-purple-500/50 bg-purple-500/10 text-slate-100" : "border-slate-700 text-slate-400 hover:bg-slate-800"}`}>
-                    <input type="radio" name="sync-dir" checked={syncDirection === "other-first"} onChange={() => setSyncDirection("other-first")} className="accent-purple-500 mt-0.5" />
-                    <span>Arriva prima la <strong>{otherName}</strong> → la <strong>{baseName}</strong> parte {connMin}–{connMax}′ dopo</span>
-                  </label>
                 </div>
+                {(() => {
+                  const inChain = new Set(syncChain.filter(x => x.kind === "variant").map((x: any) => x.variantId));
+                  const addable = sharedCandidates.filter(c => overlayOn.has(c.variant.id) && !inChain.has(c.variant.id));
+                  return (
+                    <div className="mt-1.5">
+                      <select value="" onChange={e => { if (e.target.value) addLineToChain(e.target.value); }}
+                        className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
+                        <option value="">+ aggiungi una linea accesa alla catena…</option>
+                        {addable.map(c => (
+                          <option key={c.variant.id} value={c.variant.id}>{c.route.shortName} · {c.variant.name}</option>
+                        ))}
+                      </select>
+                      {overlayOn.size === 0 && (
+                        <p className="text-[10px] text-amber-400 mt-1">Prima accendi le linee dal pannello <strong>Linee</strong>.</p>
+                      )}
+                    </div>
+                  );
+                })()}
                 <p className="text-[10px] text-slate-500 mt-1">
-                  Es. al mattino la {baseName} porta gli utenti alla {otherName} (primo senso); al pomeriggio il flusso si inverte (secondo senso).
+                  Ogni linea parte {connMin}–{connMax}′ dopo l'arrivo della precedente al nodo comune.
+                  La <strong>{baseRoute?.shortName ?? "base"}</strong> resta ferma: le altre traslano a cascata.
+                  Es. mattina: 44 → 2 (la 2 parte dopo la 44); pomeriggio: 2 → 44.
                 </p>
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">3 · Attesa al nodo Δ (min)</label>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">2 · Attesa al nodo Δ (min)</label>
                 <div className="flex items-center gap-2">
                   <input type="number" min={0} max={60} value={connMin} onChange={e => setConnMin(e.target.value)}
                     className="w-16 px-1.5 py-1 rounded bg-slate-800 border border-slate-700" />
@@ -1516,72 +1636,98 @@ export default function PlanningStudioTtdPage() {
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">
-                  4 · Corse da spostare — <span className="text-purple-300 font-semibold">{syncTripIds.size}/{syncTrips.length} selezionate</span>
-                </label>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">3 · Corse da spostare (per ogni linea della catena)</label>
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <input type="text" value={syncWinFrom} onChange={e => setSyncWinFrom(e.target.value)} placeholder="06:00"
                     className="w-14 px-1 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
                   <span className="text-slate-600">–</span>
                   <input type="text" value={syncWinTo} onChange={e => setSyncWinTo(e.target.value)} placeholder="09:00"
                     className="w-14 px-1 py-1 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
-                  <button onClick={applySyncWindow} disabled={!syncVariantId}
-                    className="px-2 py-1 rounded bg-purple-600/80 text-white hover:bg-purple-500 disabled:opacity-40">Finestra</button>
-                  <button onClick={() => setSyncTripIds(new Set(syncTrips.map(x => x.trip.id)))} disabled={!syncVariantId}
-                    className="px-1.5 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Tutte</button>
-                  <button onClick={() => setSyncTripIds(new Set())} disabled={!syncVariantId}
-                    className="px-1.5 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Nessuna</button>
+                  <button onClick={applySyncWindow}
+                    className="px-2 py-1 rounded bg-purple-600/80 text-white hover:bg-purple-500">Applica finestra a tutte</button>
                 </div>
-                {syncVariantId ? (
-                  <div className="max-h-44 overflow-y-auto rounded border border-slate-800 divide-y divide-slate-800/60">
-                    {syncTrips.map(({ trip, dep }) => (
-                      <label key={trip.id} className="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-slate-800/60">
-                        <input type="checkbox" checked={syncTripIds.has(trip.id)}
-                          onChange={() => setSyncTripIds(prev => { const n = new Set(prev); n.has(trip.id) ? n.delete(trip.id) : n.add(trip.id); return n; })}
-                          className="accent-purple-500" />
-                        <span className="font-mono text-slate-200">{Number.isFinite(dep) ? secToHm(dep) : "—"}</span>
-                        <span className="flex-1 truncate text-slate-400">{trip.shortName || trip.headsign || trip.id.slice(0, 8)}</span>
-                      </label>
-                    ))}
-                    {syncTrips.length === 0 && <div className="px-2 py-2 text-slate-500">Corse in caricamento…</div>}
-                  </div>
-                ) : (
-                  <p className="text-[10px] text-slate-500">Scegli prima la linea da spostare.</p>
+                {syncChain.filter(it => it.kind === "variant").length === 0 && (
+                  <p className="text-[10px] text-slate-500">Aggiungi linee alla catena per selezionarne le corse.</p>
                 )}
-                <p className="text-[10px] text-slate-500 mt-1">Le corse NON selezionate restano ferme: puoi sincronizzare solo la fascia del mattino e poi, separatamente, quella del pomeriggio nel senso opposto.</p>
+                {syncChain.map(it => {
+                  if (it.kind !== "variant") return null;
+                  const trips = syncLineTrips(it.variantId);
+                  const sel = syncSel[it.variantId] ?? new Set<string>();
+                  const open = syncExpand === it.variantId;
+                  return (
+                    <div key={it.variantId} className="rounded border border-slate-800 mb-1.5">
+                      <button onClick={() => setSyncExpand(open ? null : it.variantId)}
+                        className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-slate-800/60">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: chainColor(it) }} />
+                        <span className="flex-1 truncate text-left text-slate-200">{chainName(it)}</span>
+                        <span className="text-purple-300 font-semibold">{sel.size}/{trips.length}</span>
+                        <span className="text-slate-500">{open ? "▾" : "▸"}</span>
+                      </button>
+                      {open && (
+                        <div className="border-t border-slate-800">
+                          <div className="flex items-center gap-1.5 px-2 py-1">
+                            <button onClick={() => setSyncSel(prev => ({ ...prev, [it.variantId]: new Set(trips.map(x => x.trip.id)) }))}
+                              className="px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">Tutte</button>
+                            <button onClick={() => setSyncSel(prev => ({ ...prev, [it.variantId]: new Set() }))}
+                              className="px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">Nessuna</button>
+                          </div>
+                          <div className="max-h-36 overflow-y-auto divide-y divide-slate-800/60">
+                            {trips.map(({ trip, dep }) => (
+                              <label key={trip.id} className="flex items-center gap-2 px-2 py-1 cursor-pointer hover:bg-slate-800/60">
+                                <input type="checkbox" checked={sel.has(trip.id)}
+                                  onChange={() => setSyncSel(prev => {
+                                    const n = new Set(prev[it.variantId] ?? []);
+                                    n.has(trip.id) ? n.delete(trip.id) : n.add(trip.id);
+                                    return { ...prev, [it.variantId]: n };
+                                  })}
+                                  className="accent-purple-500" />
+                                <span className="font-mono text-slate-200">{Number.isFinite(dep) ? secToHm(dep) : "—"}</span>
+                                <span className="flex-1 truncate text-slate-400">{trip.shortName || trip.headsign || trip.id.slice(0, 8)}</span>
+                              </label>
+                            ))}
+                            {trips.length === 0 && <div className="px-2 py-2 text-slate-500">Corse in caricamento…</div>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <p className="text-[10px] text-slate-500">Le corse NON selezionate restano ferme: sincronizza la fascia del mattino, poi riordina la catena e fai quella del pomeriggio.</p>
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">5 · Shift massimo (± min)</label>
+                <label className="block text-[10px] uppercase tracking-wider text-slate-500 mb-1">4 · Shift massimo per linea (± min)</label>
                 <input type="number" min={1} max={60} value={syncMaxShift} onChange={e => setSyncMaxShift(e.target.value)}
                   className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
               </div>
-              <button onClick={runSyncSearch} disabled={!syncVariantId || syncBusy || syncTripIds.size === 0}
+              <button onClick={runSyncSearch} disabled={syncBusy || syncChain.filter(it => it.kind === "variant").length === 0}
                 className="w-full px-2 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 font-medium">
-                Calcola shift ottimale
+                Calcola shift ottimali della catena
               </button>
-              {syncResult && (
+              {syncPlan && (
                 <div className="rounded border border-purple-500/30 bg-purple-500/10 p-2 space-y-1.5">
-                  <p>Ora: <strong className="font-mono">Z = {syncResult.zNow}</strong></p>
-                  <p>Migliore: <strong className="font-mono">Δ = {syncResult.best > 0 ? "+" : ""}{syncResult.best} min → Z = {syncResult.zBest}</strong></p>
-                  <div className="text-[10px] text-slate-400">
-                    Alternative: {syncResult.top.map(r => `${r.delta > 0 ? "+" : ""}${r.delta}′→${r.z}`).join(" · ")}
-                  </div>
-                  {syncResult.zBest > syncResult.zNow && syncResult.best !== 0 ? (
+                  {syncPlan.map(p2 => (
+                    <p key={p2.variantId} className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: chainColor({ kind: "variant", variantId: p2.variantId }) }} />
+                      <span className="flex-1 truncate">{p2.name}</span>
+                      <strong className="font-mono">Δ {p2.delta > 0 ? "+" : ""}{p2.delta}′</strong>
+                      <span className="font-mono text-slate-400">Z {p2.zNow}→{p2.zBest}</span>
+                    </p>
+                  ))}
+                  {syncPlan.some(p2 => p2.delta !== 0) ? (
                     <>
                       <p className="text-[10px] text-purple-300">
-                        👁 Sul grafico vedi <strong>tratteggiate in viola</strong> le {syncTripIds.size} corse selezionate
-                        traslate di Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best}′ (cerchi = coincidenze previste).
+                        👁 Sul grafico le linee traslate sono <strong>tratteggiate</strong> nel loro colore (cerchi = coincidenze previste lungo la catena).
                       </p>
                       <button onClick={() => setSyncConfirmOpen(true)} disabled={syncBusy}
                         className="w-full px-2 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 font-medium inline-flex items-center justify-center gap-1.5">
-                        Applica Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min…
+                        Applica la catena…
                       </button>
                     </>
                   ) : (
-                    <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali per la selezione e il senso scelti.</p>
+                    <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali per la catena scelta.</p>
                   )}
-                  <p className="text-[9px] text-slate-500">Lo shift trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando il Δ opposto sulla stessa selezione.</p>
+                  <p className="text-[9px] text-slate-500">Ogni linea trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando i Δ opposti.</p>
                 </div>
               )}
             </div>
@@ -1737,30 +1883,34 @@ export default function PlanningStudioTtdPage() {
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
-      {syncConfirmOpen && syncResult && (
+      {syncConfirmOpen && syncPlan && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !syncBusy && setSyncConfirmOpen(false)}>
           <div className="w-full max-w-sm mx-4 rounded-xl border border-purple-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="px-4 py-3 border-b border-slate-800">
-              <h3 className="text-sm font-semibold text-slate-100">⇆ Confermi la variazione?</h3>
+              <h3 className="text-sm font-semibold text-slate-100">⇆ Confermi la sincronizzazione della catena?</h3>
             </div>
             <div className="p-4 space-y-2 text-xs text-slate-300">
               <p>
-                Linea: <strong>{(() => { const c = sharedCandidates.find(x => x.variant.id === syncVariantId); return c ? `${c.route.shortName} · ${c.variant.name}` : "—"; })()}</strong>
+                Ordine di arrivo al nodo: <strong>{syncChain.map(it => it.kind === "base" ? (baseRoute?.shortName ?? "base") : (sharedCandidates.find(c => c.variant.id === it.variantId)?.route.shortName ?? "?")).join(" → ")}</strong>
+                {" "}(attesa {connMin}–{connMax}′ a ogni passaggio; la {baseRoute?.shortName ?? "base"} non si sposta).
               </p>
-              <p>
-                Senso: <strong>{syncDirection === "base-first"
-                  ? `arriva prima la ${baseName} → la ${otherName} parte dopo`
-                  : `arriva prima la ${otherName} → la ${baseName} parte dopo`}</strong> (attesa {connMin}–{connMax}′).
-              </p>
-              <p>Shift: <strong className="font-mono">Δ {syncResult.best > 0 ? "+" : ""}{syncResult.best} min</strong> su <strong>{syncTripIds.size} corse selezionate</strong> (su {syncTrips.length} della linea; le altre restano ferme).</p>
-              <p>Coincidenze: <strong className="font-mono">Z {syncResult.zNow} → {syncResult.zBest}</strong>.</p>
-              <p className="text-[10px] text-slate-500">Gli orari vengono aggiornati sul database. Reversibile riapplicando il Δ opposto alla stessa selezione.</p>
+              <div className="rounded border border-slate-800 divide-y divide-slate-800/60">
+                {syncPlan.map(p2 => (
+                  <p key={p2.variantId} className="flex items-center gap-2 px-2 py-1.5">
+                    <span className="flex-1 truncate">{p2.name}</span>
+                    <strong className="font-mono">Δ {p2.delta > 0 ? "+" : ""}{p2.delta}′</strong>
+                    <span className="text-slate-500">{p2.moved} corse</span>
+                    <span className="font-mono text-slate-400">Z {p2.zNow}→{p2.zBest}</span>
+                  </p>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500">Traslano SOLO le corse selezionate di ogni linea; le altre restano ferme. Gli orari vengono aggiornati sul database. Reversibile riapplicando i Δ opposti alle stesse selezioni.</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
               <button onClick={() => setSyncConfirmOpen(false)} disabled={syncBusy}
                 className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
               <button
-                onClick={async () => { await applySyncShift(syncResult.best); setSyncConfirmOpen(false); }}
+                onClick={async () => { await applySyncPlan(); setSyncConfirmOpen(false); }}
                 disabled={syncBusy}
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
                 {syncBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
