@@ -306,6 +306,12 @@ export default function PlanningStudioValidityPage() {
       tc.get(r.tripId)!.add(r.categoryId);
     }
     c.tripCategories = tc;
+    // maschera giorni-settimana per corsa (attributes.weekdays)
+    const tw = new Map<string, boolean[]>();
+    for (const t of matrixQ.data.trips) {
+      if (Array.isArray(t.weekdays) && t.weekdays.length === 7) tw.set(t.id, t.weekdays);
+    }
+    c.tripWeekdays = tw;
     return c;
   }, [matrixQ.data, categoryByDate]);
 

@@ -517,7 +517,7 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
   const tripsR = await db.execute(sql`
     SELECT t.id, t.route_id, t.variant_id, t.headsign, t.short_name, t.direction,
            t.valid_from::text AS valid_from, t.valid_to::text AS valid_to, t.is_active,
-           t.service_label,
+           t.service_label, t.attributes,
            r.short_name AS route_short_name, r.long_name AS route_long_name, r.color AS route_color,
            v.name AS variant_name,
            (SELECT departure_time FROM ps_stop_times st
@@ -549,6 +549,10 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
     validTo: t.valid_to,
     isActive: !!t.is_active,
     serviceLabel: t.service_label,
+    weekdays: Array.isArray(t.attributes?.weekdays) && t.attributes.weekdays.length === 7
+      ? t.attributes.weekdays.map((x: any) => x !== false)
+      : null,
+    onDemand: !!t.attributes?.onDemand,
     firstDeparture: t.first_departure,
     firstStopName: t.first_stop_name,
     lastStopName: t.last_stop_name,

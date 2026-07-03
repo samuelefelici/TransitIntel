@@ -33,6 +33,14 @@ export interface MatrixContext {
   dayCalendar: Map<string, string>;
   tripExceptions: Map<string, Map<string, 1 | 2>>;
   patronSaints: Set<string>;
+  /** maschera giorni-settimana per corsa: 7 boolean [Lun..Dom]; assente = tutti attivi */
+  tripWeekdays?: Map<string, boolean[]>;
+}
+
+/** Indice giorno-settimana 0=Lun … 6=Dom di una data 'YYYY-MM-DD' (UTC). */
+export function weekdayIndex(date: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  return (new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1)).getUTCDay() + 6) % 7;
 }
 
 export function getCellValidity(
@@ -52,7 +60,12 @@ export function getCellValidity(
   const dayTypeId = ctx.dayCalendar.get(date) ?? inferDefaultDayType(date, ctx);
   if (!dayTypeId) return false;
 
-  return ctx.tripDayValidity.get(tripId)?.get(dayTypeId) ?? false;
+  if (!(ctx.tripDayValidity.get(tripId)?.get(dayTypeId) ?? false)) return false;
+
+  // Maschera giorni-settimana della corsa (es. feriale MA senza giovedì).
+  const wd = ctx.tripWeekdays?.get(tripId);
+  if (wd && wd.length === 7 && wd[weekdayIndex(date)] === false) return false;
+  return true;
 }
 
 export function inferDefaultDayType(

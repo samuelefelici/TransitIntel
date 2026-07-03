@@ -37,6 +37,17 @@ export interface PsValidityTrip {
   firstDeparture: string | null;
   firstStopName: string | null;   // luogo di partenza (prima fermata)
   lastStopName: string | null;    // luogo di arrivo (ultima fermata)
+  /** maschera giorni-settimana [Lun..Dom]; null = tutti attivi */
+  weekdays?: boolean[] | null;
+  /** corsa a chiamata (su prenotazione) */
+  onDemand?: boolean;
+}
+
+/** Validità di UNA corsa: giorni per tipo-giorno + categorie del calendario aziendale. */
+export async function getPsTripValidity(
+  projectId: string, tripId: string,
+): Promise<{ dayValidity: Record<string, boolean>; categoryIds: string[] }> {
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/${tripId}/validity`);
 }
 
 export interface PsDayCalendarEntry {

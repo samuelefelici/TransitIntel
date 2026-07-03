@@ -103,6 +103,31 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
   });
 });
 
+/* ─── Validità di UNA corsa: giorni (tipi giorno) + categorie ───
+ * Alimenta la sezione "Giorni validità" del dettaglio corsa. */
+
+router.get("/planning-studio/projects/:id/trips/:tripId/validity", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(403).json({ error: "no access" }); return; }
+  if (!UUID_RE.test(req.params.tripId)) { res.status(400).json({ error: "tripId invalid" }); return; }
+  const own = await db.execute(sql`
+    SELECT 1 FROM ps_trips WHERE id = ${req.params.tripId}::uuid AND project_id = ${req.params.id}::uuid
+  `);
+  if (!((own as any).rows ?? []).length) { res.status(404).json({ error: "trip not found" }); return; }
+  const dvR = await db.execute(sql`
+    SELECT day_type_id, is_valid FROM ps_trip_day_validity WHERE trip_id = ${req.params.tripId}::uuid
+  `);
+  const dayValidity: Record<string, boolean> = {};
+  for (const r of (dvR as any).rows ?? []) dayValidity[r.day_type_id] = !!r.is_valid;
+  const tcR = await db.execute(sql`
+    SELECT category_id FROM ps_trip_category_validity WHERE trip_id = ${req.params.tripId}::uuid
+  `);
+  const categoryIds = ((tcR as any).rows ?? []).map((r: any) => r.category_id);
+  res.json({ dayValidity, categoryIds });
+});
+
 /* ─── PATCH trip (estensione: validità, attivo, label, headsign, calendar) ─── */
 
 router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Promise<void> => {
