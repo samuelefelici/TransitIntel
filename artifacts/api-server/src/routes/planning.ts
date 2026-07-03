@@ -1111,7 +1111,8 @@ router.get("/planning/feeds/:id/demand-preset", async (req: Request, res: Respon
 router.get("/planning/feeds/:id/hourly-schedule", async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
-    const serviceDate = req.query.serviceDate ? String(req.query.serviceDate) : null;
+    // YYYYMMDD validato: interpolato in sql.raw più sotto → mai valore grezzo (no SQLi).
+    const serviceDate = /^\d{8}$/.test(String(req.query.serviceDate || "")) ? String(req.query.serviceDate) : null;
     const rawDayType = String(req.query.dayType || "weekday").toLowerCase();
     // Mappa sinonimi italiani/inglesi
     const dayTypeAliases: Record<string, string> = {
@@ -1380,7 +1381,8 @@ function relevanceFor(category: string, dayIdx: number, season = "all"): number 
 router.get("/planning/feeds/:id/service-coverage", async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
-    const serviceDate = req.query.serviceDate ? String(req.query.serviceDate) : null;
+    // YYYYMMDD validato: interpolato in sql.raw più sotto → mai valore grezzo (no SQLi).
+    const serviceDate = /^\d{8}$/.test(String(req.query.serviceDate || "")) ? String(req.query.serviceDate) : null;
     const rawDayType = String(req.query.dayType || "weekday").toLowerCase();
     const dayTypeAliases: Record<string, string> = {
       feriale: "weekday", weekday: "weekday", weekdays: "weekday",

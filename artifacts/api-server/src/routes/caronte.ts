@@ -22,6 +22,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter, type RequestHandler } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { db } from "@workspace/db";
 import { carontetapEvents, carontejourneys, carontevehiclePositions } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
@@ -36,12 +37,22 @@ const router: IRouter = Router();
 const requireCaronteKey: RequestHandler = (req, res, next) => {
   const key = process.env.CERBERO_API_KEY;
   if (!key) {
-    console.warn("[caronte] CERBERO_API_KEY non impostata: endpoint non protetti");
+    // Fail-CLOSED in produzione: senza chiave gli endpoint di ingest sarebbero
+    // scrivibili da chiunque su internet (bigliettazione/AVM/GTFS-RT).
+    if (process.env.NODE_ENV === "production") {
+      res.status(503).json({ error: "Ingest non configurato (CERBERO_API_KEY mancante)" });
+      return;
+    }
+    console.warn("[caronte] CERBERO_API_KEY non impostata: endpoint aperti SOLO in sviluppo");
     return next();
   }
   const auth = req.headers.authorization;
-  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (token !== key) { res.status(401).json({ error: "Non autorizzato" }); return; }
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : "";
+  // confronto a tempo costante (evita timing oracle sulla chiave)
+  const a = Buffer.from(token), b = Buffer.from(key);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    res.status(401).json({ error: "Non autorizzato" }); return;
+  }
   next();
 };
 router.use(requireCaronteKey);

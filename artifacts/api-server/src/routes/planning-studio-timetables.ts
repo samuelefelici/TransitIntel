@@ -18,11 +18,25 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
+import { randomBytes } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { mergeStopPatterns } from "../lib/timetable-merge";
 
 const router: IRouter = Router();
+
+/** True se l'utente è owner o membro del progetto PS (admin sempre true). */
+async function canAccessPsProject(projectId: string, req: any): Promise<boolean> {
+  const u = req.user;
+  if (!u) return false;
+  if (u.role === "admin") return true;
+  const r = await db.execute(sql`
+    SELECT 1 FROM ps_projects p
+      LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${u.id}::uuid
+     WHERE p.id = ${projectId}::uuid
+       AND (p.owner_user_id = ${u.id}::uuid OR pm.user_id IS NOT NULL) LIMIT 1`);
+  return !!((r as any).rows?.length);
+}
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -429,6 +443,9 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    // IDOR fix: solo owner/membro può pubblicare un link PUBBLICO del progetto
+    // (prima chiunque poteva creare un link permanente per un progetto altrui).
+    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
     const routeIds: string[] = Array.isArray(req.body?.routeIds)
       ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : [];
     if (!routeIds.length) { res.status(400).json({ error: "routeIds richiesti" }); return; }
@@ -444,8 +461,8 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
         created_at timestamptz NOT NULL DEFAULT now()
       )`);
     await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
-    const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const token = Array.from({ length: 10 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+    // token CSPRNG non indovinabile (Math.random non è crittografico)
+    const token = randomBytes(18).toString("base64url");
     const userId = (req as any).user?.id ?? null;
     await db.execute(sql`
       INSERT INTO ps_network_shares (token, project_id, route_ids, title, created_by, expires_at)

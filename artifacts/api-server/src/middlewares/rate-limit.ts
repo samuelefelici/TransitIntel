@@ -28,3 +28,15 @@ export const strictLimiter = rateLimit({
   message: { error: "Limite raggiunto per operazioni pesanti, riprova tra un minuto." },
   // Use default keyGenerator (req.ip) — no custom one needed for dev
 });
+
+/**
+ * Login limiter — protegge /auth/login da brute-force e dal flood di hashing
+ * bcrypt (ogni tentativo è CPU-intensive). 20 tentativi/min per IP.
+ */
+export const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Troppi tentativi di accesso, riprova tra un minuto." },
+});

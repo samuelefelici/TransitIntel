@@ -32,6 +32,13 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
   try {
     const zip = new AdmZip(req.file.buffer);
     const entries = zip.getEntries();
+    // Anti zip-bomb: multer limita solo il COMPRESSO; qui limitiamo la somma
+    // dei size DECOMPRESSI (un .zip da 1MB può gonfiarsi a GB → OOM).
+    const MAX_UNCOMPRESSED = 600 * 1024 * 1024;
+    const totalUncompressed = entries.reduce((s, e) => s + (e.header?.size || 0), 0);
+    if (totalUncompressed > MAX_UNCOMPRESSED) {
+      res.status(413).json({ error: "Archivio troppo grande una volta decompresso" }); return;
+    }
     const getFile = (name: string): string | null => {
       const entry = entries.find(e => e.entryName.toLowerCase().endsWith(name));
       return entry ? entry.getData().toString("utf-8") : null;
@@ -313,7 +320,8 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err, message: msg, stack: err instanceof Error ? err.stack : undefined }, "GTFS upload failed — transaction rolled back, no partial data left");
-    res.status(500).json({ error: `Errore durante l'importazione GTFS: ${msg}` });
+    // dettaglio solo nei log (il msg poteva leakare schema/constraint DB)
+    res.status(500).json({ error: "Errore durante l'importazione GTFS" });
   }
 });
 

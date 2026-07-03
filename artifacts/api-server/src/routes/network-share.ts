@@ -32,7 +32,8 @@ router.use(async (_req, _res, next) => { await ensureNetworkShareTable(); next()
 router.get("/network-share/:token", async (req, res): Promise<void> => {
   try {
     const token = String(req.params.token);
-    if (!/^[a-z0-9]{6,64}$/i.test(token)) { res.status(400).json({ error: "token non valido" }); return; }
+    // accetta i token base64url (A–Z a–z 0–9 - _) oltre ai legacy [a-z0-9]
+    if (!/^[A-Za-z0-9_-]{6,64}$/.test(token)) { res.status(400).json({ error: "token non valido" }); return; }
     const r = await db.execute<any>(sql`
       SELECT project_id, route_ids, title, options, expires_at FROM ps_network_shares WHERE token = ${token} LIMIT 1`);
     const row = r.rows[0];

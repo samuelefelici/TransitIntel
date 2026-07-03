@@ -16,6 +16,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { getVehicleScenarioAccess } from "./scenario-access";
 
 /* ────────────────────────────────────────────────────────────
  * Bootstrap tabelle
@@ -753,10 +754,19 @@ router.post("/scheduling/projects/:id/attach-vehicle-scenario", async (req: Requ
   const owned = await loadProjectAccessible(id, req.user!.id);
   if (!owned) { res.status(404).json({ error: "Progetto non trovato" }); return; }
   if (owned.my_role === "viewer") { res.status(403).json({ error: "Permesso insufficiente" }); return; }
-  await db.execute(sql`
+  // IDOR fix: senza questo controllo si potrebbe ri-agganciare (e "rubare") lo
+  // scenario di un altro utente indovinandone l'id. Richiede accesso in
+  // scrittura ALLO SCENARIO e vincola la UPDATE alle righe possedute/legacy.
+  const isAdmin = req.user!.role === "admin";
+  const acc = await getVehicleScenarioAccess(scenarioId, req.user!.id, isAdmin);
+  if (!acc || !acc.canWrite) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+  const upd = await db.execute(sql`
     UPDATE service_program_scenarios SET project_id = ${id}::uuid
      WHERE id = ${scenarioId}::uuid
+       AND (${isAdmin} OR owner_user_id = ${req.user!.id}::uuid OR owner_user_id IS NULL)
+     RETURNING id
   `);
+  if (!((upd as any).rows?.length)) { res.status(404).json({ error: "Scenario non trovato" }); return; }
   await logActivity(id, req.user!.id, "scenario.attach", {
     targetType: "vehicle_scenario", targetId: scenarioId,
   });

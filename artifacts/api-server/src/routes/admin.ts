@@ -1,7 +1,11 @@
 import { Router, type IRouter } from "express";
+import { requireAdmin } from "../lib/auth";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
+
+// Sync distruttivi (wipe POI, TRUNCATE ISTAT, billing Google Places): solo admin.
+router.use("/admin/sync", requireAdmin);
 
 // Simple in-memory rate limit: one sync at a time, cooldown 60s
 const cooldown: Record<string, number> = {};

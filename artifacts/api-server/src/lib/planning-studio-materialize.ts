@@ -254,6 +254,7 @@ export async function materializePsToFeed(
       SELECT 1 FROM ps_trips
        WHERE project_id = ${psProjectId}::uuid
          AND COALESCE(is_active, true) = true
+         AND COALESCE((attributes->>'prototype')::boolean, false) = false
          AND calendar_id IS NULL ${fBare}
     ) AS need
   `);
@@ -282,7 +283,8 @@ export async function materializePsToFeed(
            COALESCE((t.attributes->>'onDemand')::boolean, false)
       FROM ps_trips t
      WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true ${fT}
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT}
   `);
 
   // 4f. gtfs_stop_times — la query più pesante (300k+ righe per Conerobus).
@@ -297,7 +299,8 @@ export async function materializePsToFeed(
       FROM ps_stop_times st
       JOIN ps_trips t ON t.id = st.trip_id
      WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true ${fT}
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT}
   `);
 
   // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)

@@ -23,6 +23,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
 
 const router: IRouter = Router();
 
@@ -245,7 +246,7 @@ router.get("/roster/duty-sources", async (req, res): Promise<void> => {
       LEFT JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
       LEFT JOIN scheduling_projects sp ON sp.id = s.project_id
       LEFT JOIN ps_validity_units vu ON vu.id = sp.validity_unit_id
-      WHERE 1=1 ${opWhere} ${psWhere}
+      WHERE ${driverScenariosAccessibleWhere(req.user!.id, req.user!.role === "admin")} ${opWhere} ${psWhere}
       ORDER BY d.is_operational DESC, d.created_at DESC
       LIMIT 50
     `);
@@ -281,6 +282,11 @@ router.get("/roster/board", async (req, res): Promise<void> => {
 
     let duties: ReturnType<typeof extractDuties> = [];
     if (dssId) {
+      // IDOR fix: verifica che l'utente possa leggere QUESTO scenario turni
+      // prima di esporne i duty (codici, orari, costi, residenze).
+      if (!UUID_RE.test(dssId)) { res.status(400).json({ error: "dssId non valido" }); return; }
+      const acc = await requireDriverScenarioRead(req, res, dssId);
+      if (!acc) return;
       const dssQ = await db.execute<any>(sql`
         SELECT result FROM driver_shift_scenarios WHERE id = ${dssId}::uuid LIMIT 1
       `);

@@ -127,9 +127,9 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     if (row?.id) return row.id as string;
   } catch {}
-  // ultimo fallback: il più recente in assoluto (legacy)
-  const rows = await db.select({ id: gtfsFeeds.id }).from(gtfsFeeds).orderBy(sql`uploaded_at DESC`).limit(1);
-  return rows[0]?.id ?? null;
+  // Nessun feed accessibile all'utente: NIENTE fallback globale (leakava il
+  // feed più recente di un altro tenant). Fail-closed → null.
+  return null;
 }
 
 // ── Service / Day helpers ─────────────────────────────────────
