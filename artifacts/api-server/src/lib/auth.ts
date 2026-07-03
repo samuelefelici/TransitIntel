@@ -13,6 +13,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { loginLimiter } from "../middlewares/rate-limit";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -39,7 +40,12 @@ declare global {
 /* ────────────────────────────────────────────────────────────
  * Config
  * ──────────────────────────────────────────────────────────── */
-const JWT_SECRET = process.env.JWT_SECRET || "dev-only-cerbero123-in-production-please";
+// Fail-closed: in produzione il secret DEVE essere impostato, altrimenti i
+// token sarebbero firmati con una costante pubblica del repo (forgiabili).
+const JWT_SECRET = process.env.JWT_SECRET
+  || (process.env.NODE_ENV === "production"
+        ? (() => { throw new Error("JWT_SECRET obbligatorio in produzione"); })()
+        : "dev-only-cerbero123-in-production-please");
 const JWT_COOKIE = "ti_auth";
 const JWT_TTL_DAYS = 30;
 const BCRYPT_ROUNDS = 10;
@@ -184,13 +190,53 @@ export function requirePermission(p: Permission): RequestHandler {
   };
 }
 
+/**
+ * Mappa prefisso-URL → dominio di permesso. È l'ENFORCEMENT RBAC centrale: i
+ * router sono montati senza prefisso (i path vivono dentro), quindi un singolo
+ * middleware path-aware è più sicuro di N prepend (che bloccherebbero anche i
+ * path non pertinenti). Ordine: le voci più specifiche PRIMA (es. /planning-studio
+ * prima di /planning). Prefisso non mappato ⇒ solo-autenticato.
+ */
+const PERMISSION_BY_PREFIX: Array<[string, Permission]> = [
+  // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
+  ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
+  ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
+  ["/roster", "scheduling"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
+  ["/deadheads", "scheduling"], ["/depots", "scheduling"], ["/coincidence-zones", "scheduling"],
+  // network (Planner Studio, rete, zonizzazione)
+  ["/planning-studio", "network"], ["/zones", "network"], ["/routes", "network"],
+  ["/stops", "network"], ["/clusters", "network"],
+  // fares
+  ["/fares", "fares"],
+  // analytics (analisi, territorio, gtfs, operazioni, orari, intermodale)
+  ["/analysis", "analytics"], ["/territory", "analytics"], ["/gtfs", "analytics"],
+  ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
+  ["/operations", "analytics"], ["/timetables", "analytics"], ["/planning", "analytics"],
+  ["/intermodal", "analytics"], ["/scenarios", "analytics"], ["/weather", "analytics"],
+  ["/calendar-presets", "analytics"], ["/settings", "analytics"],
+];
+
+export const requirePermissionByPath: RequestHandler = (req, res, next) => {
+  if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
+  if (req.user.role === "admin") { next(); return; }
+  const path = req.path;
+  for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
+    if (path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?")) {
+      if (req.user.permissions?.[perm]) { next(); return; }
+      res.status(403).json({ error: `Manca il permesso: ${perm}` });
+      return;
+    }
+  }
+  next(); // prefisso non mappato: basta l'autenticazione
+};
+
 /* ────────────────────────────────────────────────────────────
  * Router /api/auth/* + /api/admin/users/*
  * ──────────────────────────────────────────────────────────── */
 const router: IRouter = Router();
 
 // POST /api/auth/login { email, password }
-router.post("/auth/login", async (req: Request, res: Response): Promise<void> => {
+router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Promise<void> => {
   await ensureUsersTable();
   const { email, password } = req.body || {};
   if (typeof email !== "string" || typeof password !== "string") {
@@ -203,7 +249,9 @@ router.post("/auth/login", async (req: Request, res: Response): Promise<void> =>
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row || !row.active) { res.status(401).json({ error: "Credenziali non valide" }); return; }
-  const ok = bcrypt.compareSync(password, row.password_hash);
+  // async: non blocca l'event loop durante l'hashing bcrypt (una login lenta
+  // non deve congelare tutte le altre richieste).
+  const ok = await bcrypt.compare(password, row.password_hash);
   if (!ok) { res.status(401).json({ error: "Credenziali non valide" }); return; }
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   setAuthCookie(res, signToken(row.id));

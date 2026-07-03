@@ -19,6 +19,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter, type RequestHandler } from "express";
+import { timingSafeEqual } from "node:crypto";
 import GtfsRealtimeBindings from "gtfs-realtime-bindings";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
@@ -33,10 +34,11 @@ const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
 // ── Auth opzionale: GTFS_RT_API_KEY via ?key= o Authorization: Bearer ───────
 const requireRtKey: RequestHandler = (req, res, next) => {
   const key = process.env.GTFS_RT_API_KEY;
-  if (!key) return next(); // feed pubblico (default: gli aggregatori non mandano header)
+  if (!key) return next(); // feed READ-ONLY pubblico per aggregatori: nessuna scrittura, ok aperto
   const auth = req.headers.authorization;
   const token = auth?.startsWith("Bearer ") ? auth.slice(7) : String(req.query.key ?? "");
-  if (token !== key) { res.status(401).json({ error: "Non autorizzato" }); return; }
+  const a = Buffer.from(token), b = Buffer.from(key);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: "Non autorizzato" }); return; }
   next();
 };
 router.use(requireRtKey);

@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import authRouter from "../lib/auth";
-import { requireAuth } from "../lib/auth";
+import { requireAuth, requirePermissionByPath } from "../lib/auth";
 import { ensureTenantMiddleware } from "../lib/tenant";
 import trafficRouter from "./traffic";
 import poiRouter from "./poi";
@@ -70,6 +70,8 @@ router.use(networkShareRouter); // pubblico: mappa di rete condivisa via link
 // ⛔ Tutto sotto qui richiede autenticazione + colonne tenant pronte
 router.use(requireAuth);
 router.use(ensureTenantMiddleware);
+// RBAC centralizzato per dominio (analytics/fares/scheduling/network).
+router.use(requirePermissionByPath);
 
 router.use(trafficRouter);
 router.use(poiRouter);
@@ -81,7 +83,7 @@ router.use(gtfsUploadRouter);
 router.use(gtfsQueriesRouter);
 router.use(gtfsAnalysisRouter);
 router.use(gtfsTravelRouter);
-router.use(adminRouter);
+router.use(adminRouter); // gate requireAdmin applicato dentro admin.ts (sync distruttivi)
 router.use(scenariosRouter);
 router.use(intermodalRouter);
 router.use(intermodalOptimizerRouter);

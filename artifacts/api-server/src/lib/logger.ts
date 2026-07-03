@@ -26,6 +26,8 @@ export const logger = pino({
  */
 export function getRequestId(req: { headers: Record<string, string | string[] | undefined> }): string {
   const existing = req.headers["x-request-id"];
-  if (typeof existing === "string" && existing.length > 0) return existing;
+  // Propaga l'id solo se rispetta un formato safe (evita log-injection / bloat
+  // da header client arbitrario, che viene loggato e riflesso in risposta).
+  if (typeof existing === "string" && /^[A-Za-z0-9._-]{1,128}$/.test(existing)) return existing;
   return crypto.randomUUID();
 }

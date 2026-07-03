@@ -19,6 +19,13 @@ services:
         value: /opt/render/project/src/.python_packages:/opt/render/project/src/scripts
       - key: PATH
         value: /opt/render/project/src/.python_packages/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      # OBBLIGATORIO: senza, in produzione l'API rifiuta l'avvio (token forgiabili).
+      - key: JWT_SECRET
+        sync: false
+      # OBBLIGATORIO per l'ingest Caronte (bigliettazione/AVM/GTFS-RT): senza,
+      # in produzione gli endpoint /api/caronte rispondono 503 (fail-closed).
+      - key: CERBERO_API_KEY
+        sync: false
       - key: CRON_SECRET
         sync: false
       - key: TOMTOM_API_KEY
