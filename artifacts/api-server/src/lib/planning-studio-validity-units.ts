@@ -328,7 +328,7 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
 
     // Trips del progetto + matrice validità
     const tripsR = await db.execute(sql`
-      SELECT t.id, t.is_active, t.route_id,
+      SELECT t.id, t.is_active, t.route_id, t.attributes,
              r.short_name AS route_short_name, r.long_name AS route_long_name,
              to_char(t.valid_from, 'YYYY-MM-DD') AS valid_from,
              to_char(t.valid_to,   'YYYY-MM-DD') AS valid_to
@@ -338,9 +338,15 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     `);
     const trips = ((tripsR as any).rows ?? []) as Array<{
       id: string; is_active: boolean; route_id: string;
+      attributes: Record<string, any> | null;
       route_short_name: string | null; route_long_name: string | null;
       valid_from: string | null; valid_to: string | null;
     }>;
+    // maschera giorni-settimana (attributes.weekdays: [Lun..Dom]); assente = tutti
+    const wdIndexOf = (date: string): number => {
+      const [yy, mm, dd] = date.split("-").map(Number);
+      return (new Date(Date.UTC(yy, (mm ?? 1) - 1, dd ?? 1)).getUTCDay() + 6) % 7;
+    };
     const tripIds = trips.map((t) => t.id);
 
     // tripDayValidity: trip × dayType → bool
@@ -409,6 +415,11 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
         else if (!dtId) isActiveToday = false;
         else {
           isActiveToday = !!tdvMap.get(t.id)?.get(dtId);
+          // maschera giorni-settimana (es. feriale MA senza giovedì)
+          const wd = (t.attributes as any)?.weekdays;
+          if (isActiveToday && Array.isArray(wd) && wd.length === 7 && wd[wdIndexOf(d)] === false) {
+            isActiveToday = false;
+          }
           // vincolo categorie: la corsa vale solo nei periodi selezionati
           const cats = tripCatMap.get(t.id);
           if (isActiveToday && cats && cats.size > 0) {

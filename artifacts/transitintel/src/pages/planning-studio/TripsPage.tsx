@@ -30,7 +30,7 @@ import {
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
-import { listPsDayTypes, postPsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
+import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
@@ -1394,6 +1394,101 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
     setVt(trip.validTo || "");
   }, [trip.id]);
 
+  /* ─── Giorni validità (L…D), categorie e A chiamata ───
+   * I 7 giorni combinano: validità del TIPO GIORNO (feriale/sabato/festivo)
+   * + maschera per-corsa attributes.weekdays. Spegnere il giovedì di una
+   * corsa feriale spegne SOLO il giovedì; accendere un giorno di un tipo
+   * spento accende il tipo e preserva lo stato degli altri giorni. Tutto
+   * si riflette sulla Matrice di validità (stessa regola condivisa). */
+  const dayTypesDrawerQ = useQuery({
+    queryKey: ["ps", projectId, "day-types"],
+    queryFn: () => listPsDayTypes(projectId),
+  });
+  const categoriesDrawerQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+    staleTime: 60_000,
+  });
+  const tripValQ = useQuery({
+    queryKey: ["ps", projectId, "trip-validity", trip.id],
+    queryFn: () => getPsTripValidity(projectId, trip.id),
+  });
+  const [wdBusy, setWdBusy] = useState(false);
+  const WD_LABELS = ["L", "M", "M", "G", "V", "S", "D"];
+  const wdMask: boolean[] = Array.isArray(trip.attributes?.weekdays) && trip.attributes.weekdays.length === 7
+    ? trip.attributes.weekdays.map((x: any) => x !== false)
+    : [true, true, true, true, true, true, true];
+  const typicalCode = (i: number) => (i <= 4 ? "feriale" : i === 5 ? "sabato" : "festivo");
+  // matching robusto per prefisso: "feriale"/"FER", "sabato"/"SAB", "festivo"/"FES"
+  const dtByCode = useMemo(() => {
+    const m2: Record<string, PsDayType> = {};
+    for (const dt of dayTypesDrawerQ.data ?? []) {
+      const c = `${dt.code || dt.name || ""}`.toLowerCase();
+      if (/^fer/.test(c) && !m2.feriale) m2.feriale = dt;
+      else if (/^sab/.test(c) && !m2.sabato) m2.sabato = dt;
+      else if (/^fes|^dom/.test(c) && !m2.festivo) m2.festivo = dt;
+    }
+    return m2;
+  }, [dayTypesDrawerQ.data]);
+  const dayValidity = tripValQ.data?.dayValidity ?? {};
+  const dayOn = (i: number): boolean => {
+    const dt = dtByCode[typicalCode(i)];
+    return !!(dt && dayValidity[dt.id]) && wdMask[i];
+  };
+  async function toggleWeekday(i: number) {
+    if (wdBusy || !dayTypesDrawerQ.data || !tripValQ.data) return;
+    setWdBusy(true);
+    try {
+      const newWd = [...wdMask];
+      if (dayOn(i)) {
+        newWd[i] = false; // spegni SOLO questo giorno
+      } else {
+        newWd[i] = true;
+        const dt = dtByCode[typicalCode(i)];
+        if (dt && !dayValidity[dt.id]) {
+          // il tipo giorno era spento: accendilo, preservando lo stato
+          // (spento) degli altri giorni dello stesso tipo
+          for (let j = 0; j < 7; j++) {
+            if (j !== i && typicalCode(j) === typicalCode(i) && !dayOn(j)) newWd[j] = false;
+          }
+          await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [trip.id], dayTypeIds: [dt.id], isValid: true });
+        }
+      }
+      await updatePsTrip(projectId, trip.id, { attributesMerge: { weekdays: newWd } });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-validity", trip.id] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+      onChange();
+    } catch (e: any) {
+      toast.error("Errore aggiornamento giorni", { description: e?.message });
+    } finally { setWdBusy(false); }
+  }
+  async function toggleCategory(catId: string) {
+    if (wdBusy || !tripValQ.data) return;
+    setWdBusy(true);
+    try {
+      const cur = new Set(tripValQ.data.categoryIds);
+      cur.has(catId) ? cur.delete(catId) : cur.add(catId);
+      await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [trip.id], categoryIds: [...cur], mode: "replace" });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-validity", trip.id] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+      onChange();
+    } catch (e: any) {
+      toast.error("Errore categorie", { description: e?.message });
+    } finally { setWdBusy(false); }
+  }
+  async function toggleOnDemand() {
+    if (wdBusy) return;
+    setWdBusy(true);
+    try {
+      await updatePsTrip(projectId, trip.id, { attributesMerge: { onDemand: !trip.attributes?.onDemand } });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      onChange();
+    } catch (e: any) {
+      toast.error("Errore", { description: e?.message });
+    } finally { setWdBusy(false); }
+  }
+
   const saveValidity = useMutation({
     mutationFn: () => updatePsTrip(projectId, trip.id, {
       validFrom: vf || null, validTo: vt || null,
@@ -1470,6 +1565,59 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
             Restringe il periodo di attività della corsa rispetto al calendario.
             Vuoto = nessun limite.
           </p>
+        </div>
+
+        {/* Giorni validità (L…D) + categorie + a chiamata */}
+        <div className="p-4 border-b border-slate-800 space-y-3">
+          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Giorni di validità</div>
+          {tripValQ.isLoading ? (
+            <div className="text-[11px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> caricamento…</div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              {WD_LABELS.map((l, i) => {
+                const on = dayOn(i);
+                return (
+                  <button key={i} onClick={() => toggleWeekday(i)} disabled={wdBusy}
+                    title={`${["Lunedì","Martedì","Mercoledì","Giovedì","Venerdì","Sabato","Domenica"][i]} — ${on ? "attivo (clic per spegnere)" : "spento (clic per accendere)"}`}
+                    className={`w-8 h-8 rounded-full text-xs font-bold border transition-colors disabled:opacity-50 ${
+                      on
+                        ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/30"
+                        : "bg-slate-800 border-slate-700 text-slate-500 hover:bg-slate-700"
+                    }`}>
+                    {l}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[10px] text-slate-500 leading-tight">
+            Accendi/spegni i singoli giorni: es. corsa feriale (L–V) senza il giovedì.
+            La modifica si riflette subito sulla <strong>Matrice di validità</strong>.
+          </p>
+
+          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide pt-1">Categorie calendario aziendale</div>
+          <div className="flex flex-wrap gap-1.5">
+            {(categoriesDrawerQ.data ?? []).map(c => {
+              const on = (tripValQ.data?.categoryIds ?? []).includes(c.id);
+              return (
+                <button key={c.id} onClick={() => toggleCategory(c.id)} disabled={wdBusy || tripValQ.isLoading}
+                  className="text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50"
+                  style={{ borderColor: on ? (c.color || "#3b82f6") : "#334155", background: on ? `${c.color || "#3b82f6"}22` : "transparent", color: on ? undefined : "#94a3b8" }}>
+                  {c.name}
+                </button>
+              );
+            })}
+            {(categoriesDrawerQ.data ?? []).length === 0 && <span className="text-[11px] text-slate-500">Nessuna categoria definita.</span>}
+          </div>
+          <p className="text-[10px] text-slate-500 leading-tight">
+            Nessuna categoria accesa = la corsa vale in ogni periodo; con ≥1 accese vale SOLO nei giorni di quelle categorie.
+          </p>
+
+          <label className="flex items-center gap-2 pt-1 cursor-pointer select-none text-xs text-slate-200">
+            <input type="checkbox" checked={!!trip.attributes?.onDemand} onChange={toggleOnDemand} disabled={wdBusy}
+              className="accent-purple-500" />
+            📞 Corsa a chiamata (su prenotazione)
+          </label>
         </div>
 
         {/* Eccezioni */}

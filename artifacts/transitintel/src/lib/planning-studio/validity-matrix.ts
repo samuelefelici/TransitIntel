@@ -43,6 +43,16 @@ export interface MatrixContext {
   /** vincolo per corsa: se presente e non vuoto, la corsa vale SOLO nei giorni
    *  la cui categoria è nel set */
   tripCategories?: Map<string, Set<string>>;
+  /** maschera giorni-settimana per corsa: 7 boolean [Lun..Dom].
+   *  Assente = tutti attivi. Permette di spegnere un singolo giorno
+   *  (es. corsa feriale valida Lun-Ven ma NON il giovedì). */
+  tripWeekdays?: Map<string, boolean[]>;
+}
+
+/** Indice giorno-settimana 0=Lun … 6=Dom di una data 'YYYY-MM-DD' (UTC). */
+export function weekdayIndex(date: string): number {
+  const [y, m, d] = date.split("-").map(Number);
+  return (new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1)).getUTCDay() + 6) % 7;
 }
 
 /**
@@ -75,6 +85,10 @@ export function getCellValidity(
 
   // 4) Default validity (trip, day_type). Assenza riga = false.
   if (!(ctx.tripDayValidity.get(tripId)?.get(dayTypeId) ?? false)) return false;
+
+  // 4b) Maschera giorni-settimana della corsa (es. feriale MA senza giovedì).
+  const wd = ctx.tripWeekdays?.get(tripId);
+  if (wd && wd.length === 7 && wd[weekdayIndex(date)] === false) return false;
 
   // 5) Vincolo categorie (calendario aziendale): se la corsa ha ≥1 categorie,
   //    vale solo nei giorni la cui categoria è tra quelle selezionate.
