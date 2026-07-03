@@ -29,6 +29,8 @@ export interface PsProject {
   memberCount?: number;
   myRole?: "owner" | "editor" | "viewer";
   counts?: { stops: number; routes: number; variants: number; trips: number; calendars: number };
+  /** numero di Unità di Progettazione (UDP) create nel progetto */
+  unitCount?: number;
   materializedFeedId?: string | null;
   materializedAt?: string | null;
   /** true se il feed materializzato è quello attivo = programma di esercizio operativo */

@@ -43,8 +43,11 @@ function ProgramPicker() {
         udpCount.set(p.planningStudioProjectId, (udpCount.get(p.planningStudioProjectId) ?? 0) + 1);
     }
     return (psQ.data ?? [])
-      .map((p) => ({ psId: p.id, name: p.name, udp: udpCount.get(p.id) ?? 0, isActive: !!p.isOperational }))
-      .filter((g) => g.udp > 0 || g.isActive)
+      // udp = scheduling avviati; units = UDP CREATE nel progetto (anche da zero,
+      // senza GTFS e senza scheduling avviato: devono comparire qui per poter
+      // partire con turni macchina/guida)
+      .map((p) => ({ psId: p.id, name: p.name, udp: udpCount.get(p.id) ?? 0, units: p.unitCount ?? 0, isActive: !!p.isOperational }))
+      .filter((g) => g.udp > 0 || g.units > 0 || g.isActive)
       .sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0)); // attivo in cima
   })();
 

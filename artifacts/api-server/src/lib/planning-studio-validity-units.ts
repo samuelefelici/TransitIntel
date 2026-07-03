@@ -39,6 +39,35 @@ let bootstrapped = false;
 async function ensureTables(): Promise<void> {
   if (bootstrapped) return;
   try {
+    /* Dipendenze cross-modulo: le tabelle delle CATEGORIE possono non esistere
+       ancora (vengono create dal modulo validity-categories al primo uso).
+       Le creiamo qui in modo idempotente così la compute delle UDP funziona
+       anche su progetti "da zero" che non hanno mai toccato le categorie. */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_validity_categories (
+        id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        code        text NOT NULL UNIQUE,
+        name        text NOT NULL,
+        color       text NOT NULL,
+        sort_order  integer NOT NULL DEFAULT 0,
+        created_at  timestamptz NOT NULL DEFAULT now(),
+        updated_at  timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
+        date         date PRIMARY KEY,
+        category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
+        created_at   timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_trip_category_validity (
+        trip_id     uuid NOT NULL,
+        category_id uuid NOT NULL,
+        PRIMARY KEY (trip_id, category_id)
+      )
+    `);
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_validity_units (
         id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1839,6 +1839,12 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                 className="w-full px-2 py-1.5 rounded bg-purple-600 text-white hover:bg-purple-500 disabled:opacity-40 font-medium">
                 Calcola shift ottimali della catena
               </button>
+              {/* Export SEMPRE visibile: attivo dopo il calcolo del piano */}
+              <button onClick={() => downloadSyncReport("proposta")} disabled={syncBusy || !syncPlan}
+                title={syncPlan ? "Scarica il report HTML (stampabile) che certifica il lavoro sulle coincidenze" : "Prima calcola il piano della catena: il report certifica parametri, Δ e coincidenze"}
+                className="w-full px-2 py-1.5 rounded border border-purple-500/40 text-purple-300 hover:bg-purple-500/10 disabled:opacity-40 disabled:cursor-not-allowed font-medium">
+                📄 Esporta report coincidenze (HTML)
+              </button>
               {syncPlan && (
                 <div className="rounded border border-purple-500/30 bg-purple-500/10 p-2 space-y-1.5">
                   {syncPlan.map(p2 => (
@@ -1862,10 +1868,6 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   ) : (
                     <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali per la catena scelta.</p>
                   )}
-                  <button onClick={() => downloadSyncReport("proposta")} disabled={syncBusy}
-                    className="w-full px-2 py-1.5 rounded border border-purple-500/40 text-purple-300 hover:bg-purple-500/10 disabled:opacity-40 font-medium">
-                    📄 Esporta report (HTML stampabile)
-                  </button>
                   <p className="text-[9px] text-slate-500">Ogni linea trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando i Δ opposti. All'applicazione il report definitivo viene scaricato automaticamente.</p>
                 </div>
               )}

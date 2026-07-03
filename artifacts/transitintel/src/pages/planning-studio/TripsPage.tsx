@@ -663,7 +663,17 @@ export default function PlanningStudioTripsPage() {
         </button>
         <button
           onClick={() => {
-            if (!variantId) { toast.info("Seleziona linea e variante", { description: "La cadenza si genera da una corsa template della variante." }); return; }
+            // Via rapida: basta SPUNTARE una corsa (es. il prototipo) — niente
+            // filtro linea/variante obbligatorio. Con più spunte vince il
+            // prototipo, altrimenti serve una selezione univoca.
+            if (selected.size > 0) {
+              const sel = filteredTrips.filter(t => selected.has(t.id));
+              const tpl = sel.find(t => t.attributes?.prototype) ?? (sel.length === 1 ? sel[0] : null);
+              if (tpl) { setGenTemplateId(tpl.id); setGenOpen(true); return; }
+              toast.info("Selezione ambigua", { description: "Spunta UNA corsa (o un prototipo) da usare come template." });
+              return;
+            }
+            if (!variantId) { toast.info("Spunta una corsa oppure seleziona linea e variante", { description: "La cadenza si genera da una corsa template: basta la spunta sul prototipo." }); return; }
             if (filteredTrips.length === 0) { toast.info("Prima crea una corsa", { description: "Usa ➕ Nuova corsa: sarà il template per la cadenza." }); return; }
             const proto = filteredTrips.find(t => t.attributes?.prototype);
             setGenTemplateId((proto ?? filteredTrips[0])?.id ?? "");

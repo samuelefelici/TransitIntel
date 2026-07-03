@@ -459,6 +459,7 @@ function rowToProject(r: any) {
     // visibile a tutti): mai assumere "owner" come fallback.
     myRole: r.my_role ?? "viewer",
     counts: r.counts ?? undefined,
+    unitCount: r.unit_count != null ? Number(r.unit_count) : undefined,
     materializedFeedId: r.materialized_feed_id ?? null,
     materializedAt: r.materialized_at ?? null,
     // "Programma di esercizio operativo": il feed materializzato è quello attivo
@@ -654,6 +655,7 @@ router.get("/planning-studio/projects", async (req, res) => {
            u.email AS owner_email,
            u.full_name AS owner_full_name,
            (SELECT count(*)::int FROM ps_project_members pm2 WHERE pm2.project_id = p.id) AS member_count,
+           (SELECT count(*)::int FROM ps_validity_units vu WHERE vu.project_id = p.id) AS unit_count,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
                 ELSE pm.role END AS my_role,
            (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)) AS is_operational
