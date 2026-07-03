@@ -64,6 +64,45 @@ async function logActivity(
   }
 }
 
+/* ─── Contatore km del progetto (badge toolbar Planner Studio) ───
+ * km totali = Σ per corsa della lunghezza del SUO percorso:
+ * distance_m dello shape della variante, con fallback sull'ultima
+ * shape_dist_traveled della sequenza fermate. Cresce man mano che si
+ * aggiungono corse (vetture·km programmate). */
+
+router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(403).json({ error: "no access" }); return; }
+  const r = await db.execute(sql`
+    WITH vlen AS (
+      SELECT v.id AS variant_id,
+             COALESCE(sh.distance_m, vs.max_dist, 0) AS len_m
+        FROM ps_route_variants v
+        LEFT JOIN ps_shapes sh ON sh.variant_id = v.id
+        LEFT JOIN (
+          SELECT variant_id, MAX(shape_dist_traveled) AS max_dist
+            FROM ps_variant_stops GROUP BY variant_id
+        ) vs ON vs.variant_id = v.id
+    )
+    SELECT count(t.id)::int                                        AS total,
+           (count(*) FILTER (WHERE t.is_active))::int              AS active,
+           COALESCE(SUM(vlen.len_m), 0)                            AS km_m,
+           COALESCE(SUM(vlen.len_m) FILTER (WHERE t.is_active), 0) AS km_m_active
+      FROM ps_trips t
+      LEFT JOIN vlen ON vlen.variant_id = t.variant_id
+     WHERE t.project_id = ${req.params.id}::uuid
+  `);
+  const row: any = (r as any).rows?.[0] ?? {};
+  res.json({
+    count: Number(row.total) || 0,
+    active: Number(row.active) || 0,
+    km: Math.round(((Number(row.km_m) || 0) / 1000) * 10) / 10,
+    kmActive: Math.round(((Number(row.km_m_active) || 0) / 1000) * 10) / 10,
+  });
+});
+
 /* ─── PATCH trip (estensione: validità, attivo, label, headsign, calendar) ─── */
 
 router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Promise<void> => {

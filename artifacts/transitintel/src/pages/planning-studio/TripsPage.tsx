@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
@@ -526,6 +527,7 @@ export default function PlanningStudioTripsPage() {
             </span>
           </span>
         )}
+        <span className="ml-2"><TripCountBadge projectId={projectId} /></span>
       </div>
 
       {/* Filtri */}
