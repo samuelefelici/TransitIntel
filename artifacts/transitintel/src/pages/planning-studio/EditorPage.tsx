@@ -965,6 +965,20 @@ export default function PlanningStudioEditorPage() {
     }
   }
 
+  /** Modifica linea esistente (codice, nome, colore) — la linea resta editabile
+   *  anche DOPO la creazione, dal pulsante matita nel pannello Linee. */
+  async function handleUpdateRoute(id: string, patch: { shortName?: string; longName?: string | null; color?: string }): Promise<boolean> {
+    try {
+      const updated = await updatePsRoute(projectId, id, patch as any);
+      setRoutes(rs => rs.map(r => (r.id === id ? { ...r, ...updated } : r)));
+      toast.success("Linea aggiornata");
+      return true;
+    } catch (e: any) {
+      toast.error("Errore aggiornamento linea", { description: e?.message });
+      return false;
+    }
+  }
+
   async function loadVariants(routeId: string) {
     if (routeVariants[routeId]) return;
     try {
@@ -3016,6 +3030,7 @@ export default function PlanningStudioEditorPage() {
                       if (next) await loadVariants(next);
                     }}
                     onCreateRoute={handleCreateRoute}
+                    onUpdateRoute={handleUpdateRoute}
                     onDeleteRoute={async (id) => {
                       if (!confirm("Eliminare la linea e tutte le sue varianti?")) return;
                       try { await deletePsRoute(projectId, id); setRoutes(rs => rs.filter(r => r.id !== id)); toast.success("Linea eliminata"); }
@@ -3538,7 +3553,7 @@ function StopsPanel({
  * ════════════════════════════════════════════════════════════ */
 function RoutesPanel({
   routes, variantsByRoute, openRouteId,
-  onToggleRoute, onCreateRoute, onDeleteRoute,
+  onToggleRoute, onCreateRoute, onUpdateRoute, onDeleteRoute,
   onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
 }: {
   routes: PsRoute[];
@@ -3546,6 +3561,7 @@ function RoutesPanel({
   openRouteId: string | null;
   onToggleRoute: (id: string) => void;
   onCreateRoute: (input: { shortName: string; longName?: string; color?: string }) => Promise<PsRoute | undefined>;
+  onUpdateRoute: (id: string, patch: { shortName?: string; longName?: string | null; color?: string }) => Promise<boolean>;
   onDeleteRoute: (id: string) => void;
   onCreateVariant: (routeId: string, name: string, dir: number) => Promise<PsVariant | undefined>;
   /** Selezione percorso: apre la vista con fermate ordinate + tracciato evidenziato */
@@ -3559,6 +3575,12 @@ function RoutesPanel({
   const [newColor, setNewColor] = useState("#10b981");
 
   const [varForm, setVarForm] = useState<{ routeId: string; name: string; direction: number } | null>(null);
+  // Modifica di una linea esistente (matita sulla riga)
+  const [routeForm, setRouteForm] = useState<{ id: string; shortName: string; longName: string; color: string } | null>(null);
+  const normColor = (c: string | null | undefined) => {
+    const v = (c || "10b981").replace(/^#/, "");
+    return /^[0-9a-f]{6}$/i.test(v) ? `#${v}` : "#10b981";
+  };
 
   return (
     <div className="p-3 space-y-3">
@@ -3599,14 +3621,61 @@ function RoutesPanel({
           const variants = variantsByRoute[r.id] || [];
           return (
             <div key={r.id} className="rounded-lg border border-slate-800 overflow-hidden">
-              <div className="flex items-center gap-2 px-3 py-2 hover:bg-slate-900 cursor-pointer"
+              {routeForm?.id === r.id ? (
+                /* ─── Modifica linea: codice, nome, colore ─── */
+                <div className="px-3 py-2.5 space-y-2 bg-slate-900/70">
+                  <div className="flex items-center gap-2">
+                    <input value={routeForm.shortName} onChange={e => setRouteForm({ ...routeForm, shortName: e.target.value })}
+                      placeholder="Codice" autoFocus
+                      className="w-20 px-2 py-1.5 rounded bg-slate-800 text-sm font-bold border border-slate-700" />
+                    <input value={routeForm.longName} onChange={e => setRouteForm({ ...routeForm, longName: e.target.value })}
+                      placeholder="Nome lungo (opzionale)"
+                      className="flex-1 px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Palette className="w-3.5 h-3.5 text-slate-400" />
+                    <input type="color" value={routeForm.color} onChange={e => setRouteForm({ ...routeForm, color: e.target.value })}
+                      className="w-8 h-7 rounded border border-slate-700" />
+                    <span className="text-[11px] text-slate-500 font-mono">{routeForm.color}</span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: routeForm.color, color: "#fff" }}>
+                      {routeForm.shortName || "?"}
+                    </span>
+                    <div className="flex-1" />
+                    <button onClick={() => setRouteForm(null)}
+                      className="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300">Annulla</button>
+                    <button onClick={async () => {
+                      if (!routeForm.shortName.trim()) { toast.error("Codice obbligatorio"); return; }
+                      const ok = await onUpdateRoute(r.id, {
+                        shortName: routeForm.shortName.trim(),
+                        longName: routeForm.longName.trim() || null,
+                        color: routeForm.color,
+                      });
+                      if (ok) setRouteForm(null);
+                    }}
+                      className="text-xs px-2 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-white font-medium inline-flex items-center gap-1">
+                      <Check className="w-3 h-3" /> Salva
+                    </button>
+                  </div>
+                </div>
+              ) : (
+              <div className="group flex items-center gap-2 px-3 py-2 hover:bg-slate-900 cursor-pointer"
                 onClick={() => onToggleRoute(r.id)}>
                 <span className="w-3 h-3 rounded-full shrink-0" style={{ background: r.color || "#10b981" }} />
                 <span className="text-sm font-bold">{r.shortName}</span>
                 <span className="text-xs text-slate-400 truncate flex-1">{r.longName}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRouteForm({ id: r.id, shortName: r.shortName || "", longName: r.longName || "", color: normColor(r.color) });
+                  }}
+                  title="Modifica nome e colore della linea"
+                  className="p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-slate-800 opacity-0 group-hover:opacity-100">
+                  <Pencil className="w-3 h-3" />
+                </button>
                 <span className="text-[10px] text-slate-500">{r.variantCount ?? 0} var.</span>
                 <ChevronRight className={`w-3.5 h-3.5 text-slate-500 transition-transform ${open ? "rotate-90" : ""}`} />
               </div>
+              )}
               {open && (
                 <div className="px-3 pb-3 space-y-1 border-t border-slate-800/50 bg-slate-900/30">
                   {variants.length === 0 && (
