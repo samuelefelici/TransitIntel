@@ -20,6 +20,7 @@ import Map, {
 import "mapbox-gl/dist/mapbox-gl.css";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
+import { unzipSync } from "fflate";
 import {
   ArrowLeft, MapPin, Bus, Calendar as CalendarIcon, Layers, Plus, Trash2,
   Save, X, Crosshair, Route as RouteIcon, GripVertical, Loader2, Check,
@@ -215,6 +216,49 @@ function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], w
     w++;
   }
   return -1;
+}
+
+/* ─── Import KML/KMZ di un percorso ───
+ * Il file contiene Placemark puntuali (fermate: <name> = CODICE fermata,
+ * identico a quello a sistema) e una o più LineString (il tracciato).
+ * KMZ = zip con dentro un .kml (doc.kml). */
+interface KmlParsed {
+  points: { code: string; lat: number; lon: number }[];
+  path: [number, number][];
+}
+function parseKmlText(xml: string): KmlParsed {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    throw new Error("File KML non valido (XML malformato)");
+  }
+  const parseCoords = (raw: string): [number, number][] => {
+    // "lon,lat[,alt] lon,lat[,alt] …" separati da spazi/newline
+    const out: [number, number][] = [];
+    for (const tok of raw.trim().split(/\s+/)) {
+      const p = tok.split(",");
+      const lon = Number(p[0]), lat = Number(p[1]);
+      if (Number.isFinite(lon) && Number.isFinite(lat)) out.push([lon, lat]);
+    }
+    return out;
+  };
+  const points: KmlParsed["points"] = [];
+  const path: [number, number][] = [];
+  const placemarks = Array.from(doc.getElementsByTagName("Placemark"));
+  for (const pm of placemarks) {
+    const name = pm.getElementsByTagName("name")[0]?.textContent?.trim() ?? "";
+    // Point = fermata (anche dentro MultiGeometry)
+    for (const pt of Array.from(pm.getElementsByTagName("Point"))) {
+      const raw = pt.getElementsByTagName("coordinates")[0]?.textContent ?? "";
+      const c = parseCoords(raw);
+      if (c.length > 0 && name) points.push({ code: name, lon: c[0][0], lat: c[0][1] });
+    }
+    // LineString = tracciato (più segmenti vengono concatenati in ordine documento)
+    for (const ls of Array.from(pm.getElementsByTagName("LineString"))) {
+      const raw = ls.getElementsByTagName("coordinates")[0]?.textContent ?? "";
+      path.push(...parseCoords(raw));
+    }
+  }
+  return { points, path };
 }
 
 /* Lunghezza in metri di una LineString (haversine) — usata per ricalcolare
@@ -1071,6 +1115,123 @@ export default function PlanningStudioEditorPage() {
     if (!editor) return;
     const snap = { stops: editor.stops, waypoints: editor.waypoints };
     setEditorHistory(h => [...h.slice(-29), snap]); // max 30 passi
+  }
+
+  /* ─── Import KML/KMZ nel percorso in editing ───
+   * 1) parse del file (KMZ = zip → primo .kml interno);
+   * 2) ANTEPRIMA di abbinamento: ogni Placemark puntuale viene abbinato a una
+   *    fermata a sistema per CODICE identico (fallback: nome, poi vicinanza <30 m);
+   * 3) alla conferma: sequenza fermate + tracciato caricati nell'editor,
+   *    sempre modificabili dall'operatore prima del salvataggio. ─── */
+  const kmlInputRef = useRef<HTMLInputElement | null>(null);
+  type KmlMatchRow = {
+    code: string; lat: number; lon: number;
+    match: PsStop | null;
+    matchBy: "codice" | "nome" | "vicinanza" | null;
+    distM: number | null;   // distanza punto KML ↔ fermata abbinata
+  };
+  const [kmlPreview, setKmlPreview] = useState<null | {
+    fileName: string;
+    path: [number, number][];
+    rows: KmlMatchRow[];
+  }>(null);
+
+  async function handleKmlFile(file: File) {
+    try {
+      let xml: string;
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const isZip = buf.length > 3 && buf[0] === 0x50 && buf[1] === 0x4b; // "PK"
+      if (isZip || /\.kmz$/i.test(file.name)) {
+        const entries = unzipSync(buf);
+        const kmlName = Object.keys(entries).find(n => /\.kml$/i.test(n));
+        if (!kmlName) throw new Error("Nessun file .kml dentro il KMZ");
+        xml = new TextDecoder("utf-8").decode(entries[kmlName]);
+      } else {
+        xml = new TextDecoder("utf-8").decode(buf);
+      }
+      const parsed = parseKmlText(xml);
+      if (parsed.points.length === 0 && parsed.path.length < 2) {
+        throw new Error("Il file non contiene né fermate (Placemark puntuali) né un tracciato (LineString)");
+      }
+      // Indici di abbinamento sulle fermate a sistema
+      const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase();
+      // NB: "Map" qui è il componente react-map-gl → serve globalThis.Map
+      const byCode = new globalThis.Map<string, PsStop>();
+      const byName = new globalThis.Map<string, PsStop>();
+      for (const s of stops) {
+        const c = norm(s.code);
+        if (c && !byCode.has(c)) byCode.set(c, s);
+        const n = norm(s.name);
+        if (n && !byName.has(n)) byName.set(n, s);
+      }
+      const rows: KmlMatchRow[] = parsed.points.map(p => {
+        let match: PsStop | null = byCode.get(norm(p.code)) ?? null;
+        let matchBy: KmlMatchRow["matchBy"] = match ? "codice" : null;
+        if (!match) { match = byName.get(norm(p.code)) ?? null; if (match) matchBy = "nome"; }
+        if (!match) {
+          // fallback prudente: fermata più vicina entro 30 m
+          let best: PsStop | null = null, bestD = 30;
+          for (const s of stops) {
+            const d = lineLengthM([[p.lon, p.lat], [s.lon, s.lat]]);
+            if (d < bestD) { bestD = d; best = s; }
+          }
+          if (best) { match = best; matchBy = "vicinanza"; }
+        }
+        const distM = match ? Math.round(lineLengthM([[p.lon, p.lat], [match.lon, match.lat]])) : null;
+        return { code: p.code, lat: p.lat, lon: p.lon, match, matchBy, distM };
+      });
+      setKmlPreview({ fileName: file.name, path: parsed.path, rows });
+    } catch (e: any) {
+      toast.error("Import KML/KMZ fallito", { description: e?.message });
+    }
+  }
+
+  /** Conferma dell'anteprima: carica sequenza fermate + tracciato nell'editor. */
+  function applyKmlImport() {
+    if (!editor || !kmlPreview) return;
+    const matched = kmlPreview.rows.filter(r => r.match);
+    if (matched.length < 2 && kmlPreview.path.length < 2) {
+      toast.error("Servono almeno 2 fermate abbinate o un tracciato per caricare il percorso");
+      return;
+    }
+    pushEditorHistory();
+    const stopsList: PsVariantStop[] = matched.map((r, i) => ({
+      seq: i + 1,
+      stopId: r.match!.id,
+      stopName: r.match!.name,
+      stopCode: r.match!.code,
+      lat: r.match!.lat, lon: r.match!.lon,
+      pickupType: 0, dropOffType: 0, timepoint: 1,
+    }));
+    const wpts: PsWaypoint[] = stopsList.map(s => ({
+      lng: s.lon, lat: s.lat, stopId: s.stopId,
+      mode: editor.shapeMode === "manual" ? "manual" : "snap",
+    }));
+    // Tracciato: LineString del KML se presente, altrimenti spezzata fermata→fermata
+    const coords: [number, number][] = kmlPreview.path.length >= 2
+      ? kmlPreview.path
+      : stopsList.map(s => [s.lon, s.lat] as [number, number]);
+    const geometry = coords.length >= 2 ? { type: "LineString" as const, coordinates: coords } : null;
+    setEditor({
+      ...editor,
+      stops: stopsList,
+      waypoints: wpts,
+      geometry,
+      distanceM: geometry ? Math.round(lineLengthM(geometry.coordinates)) : null,
+      durationS: null,
+      legDistances: null,
+      violations: [],
+      dirty: true,
+    });
+    setInsertAfterIdx(null);
+    if (geometry) fitToCoords(geometry.coordinates);
+    else if (stopsList.length > 0) fitToCoords(stopsList.map(s => [s.lon, s.lat] as [number, number]));
+    const skipped = kmlPreview.rows.length - matched.length;
+    toast.success(`Percorso caricato dal file: ${matched.length} fermate${kmlPreview.path.length >= 2 ? " + tracciato" : ""}`, {
+      description: `${skipped > 0 ? `${skipped} fermate del file non abbinate (saltate). ` : ""}Il percorso resta modificabile: ricontrolla e premi Salva.`,
+      duration: 6000,
+    });
+    setKmlPreview(null);
   }
   function undoEditor() {
     if (!editor || editorHistory.length === 0) return;
@@ -2530,6 +2691,106 @@ export default function PlanningStudioEditorPage() {
           />
         )}
 
+        {/* ─── Import KML/KMZ: input nascosto + ANTEPRIMA abbinamento fermate ─── */}
+        <input
+          ref={kmlInputRef}
+          type="file"
+          accept=".kml,.kmz,application/vnd.google-earth.kml+xml,application/vnd.google-earth.kmz"
+          className="hidden"
+          onChange={e => {
+            const f = e.target.files?.[0];
+            if (f) void handleKmlFile(f);
+            e.target.value = ""; // consenti di ricaricare lo stesso file
+          }}
+        />
+        {kmlPreview && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setKmlPreview(null)}>
+            <div className="w-full max-w-2xl mx-4 rounded-xl border border-cyan-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                  <FileArchive className="w-4 h-4 text-cyan-400" /> Anteprima import · {kmlPreview.fileName}
+                </h3>
+                <button onClick={() => setKmlPreview(null)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="p-4 space-y-3 text-xs">
+                {(() => {
+                  const ok = kmlPreview.rows.filter(r => r.match).length;
+                  const ko = kmlPreview.rows.length - ok;
+                  const far = kmlPreview.rows.filter(r => r.match && (r.distM ?? 0) > 100).length;
+                  return (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
+                        ✓ {ok}/{kmlPreview.rows.length} fermate abbinate
+                      </span>
+                      {ko > 0 && (
+                        <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/40 text-rose-300">
+                          ✕ {ko} non trovate (verranno saltate)
+                        </span>
+                      )}
+                      {far > 0 && (
+                        <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/40 text-amber-300">
+                          ⚠ {far} a più di 100 m dalla fermata a sistema
+                        </span>
+                      )}
+                      <span className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300">
+                        {kmlPreview.path.length >= 2 ? `tracciato: ${(lineLengthM(kmlPreview.path) / 1000).toFixed(2)} km` : "nessun tracciato nel file (spezzata fermata→fermata)"}
+                      </span>
+                    </div>
+                  );
+                })()}
+                <div className="max-h-[46vh] overflow-auto rounded border border-slate-800">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 bg-slate-900 text-slate-400">
+                      <tr>
+                        <th className="text-left px-2 py-1.5 w-8">#</th>
+                        <th className="text-left px-2 py-1.5">Codice nel file</th>
+                        <th className="text-left px-2 py-1.5">Fermata a sistema</th>
+                        <th className="text-left px-2 py-1.5 w-20">Abbinata per</th>
+                        <th className="text-right px-2 py-1.5 w-16">Dist.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {kmlPreview.rows.map((r, i) => (
+                        <tr key={i} className={`border-t border-slate-800/60 ${!r.match ? "bg-rose-500/10" : (r.distM ?? 0) > 100 ? "bg-amber-500/10" : ""}`}>
+                          <td className="px-2 py-1 text-slate-500">{i + 1}</td>
+                          <td className="px-2 py-1 font-mono text-slate-200">{r.code}</td>
+                          <td className="px-2 py-1">
+                            {r.match
+                              ? <span className="text-slate-200">{r.match.name} {r.match.code && <span className="text-slate-500 font-mono">({r.match.code})</span>}</span>
+                              : <span className="text-rose-300">— non trovata —</span>}
+                          </td>
+                          <td className="px-2 py-1">
+                            {r.matchBy === "codice" && <span className="text-emerald-300">codice</span>}
+                            {r.matchBy === "nome" && <span className="text-cyan-300">nome</span>}
+                            {r.matchBy === "vicinanza" && <span className="text-amber-300">vicinanza</span>}
+                          </td>
+                          <td className="px-2 py-1 text-right font-mono text-slate-400">{r.distM != null ? `${r.distM} m` : "—"}</td>
+                        </tr>
+                      ))}
+                      {kmlPreview.rows.length === 0 && (
+                        <tr><td colSpan={5} className="px-2 py-3 text-slate-500">Nessuna fermata nel file: verrà caricato solo il tracciato (aggiungi poi le fermate dall'editor).</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  Alla conferma la sequenza fermate e il tracciato vengono caricati <strong>nell'editor</strong> (nulla è ancora salvato):
+                  puoi spostare fermate, trascinare la linea e correggere prima di premere <strong>Salva</strong>.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800 bg-black/30">
+                <button onClick={() => setKmlPreview(null)}
+                  className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+                <button onClick={applyKmlImport}
+                  disabled={kmlPreview.rows.filter(r => r.match).length < 2 && kmlPreview.path.length < 2}
+                  className="text-xs px-3 py-1.5 rounded bg-cyan-600 text-white hover:bg-cyan-500 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1.5">
+                  <Check className="w-3.5 h-3.5" /> Carica nel percorso ({kmlPreview.rows.filter(r => r.match).length} fermate)
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ─── Pannello dati floating (sx) ─── */}
         <AnimatePresence>
           {activePanel && !editor && (
@@ -2750,6 +3011,7 @@ export default function PlanningStudioEditorPage() {
                 onChangeMode={changeShapeMode}
                 onSave={saveVariant}
                 onExit={exitEditor}
+                onImportKml={() => kmlInputRef.current?.click()}
               />
             </motion.div>
           )}
@@ -4048,12 +4310,13 @@ function ClustersPanel({
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
-  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit,
+  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
   snapBusy: boolean;
   saving: boolean;
+  onImportKml: () => void;
   onAddStop: (s: PsStop) => void;
   onMoveStop: (from: number, to: number) => void;
   onRemoveStop: (idx: number) => void;
@@ -4170,6 +4433,12 @@ function VariantEditorPanel({
             ✏️ Manuale
           </button>
         </div>
+        {/* Import da file: fermate per codice + tracciato */}
+        <button onClick={onImportKml}
+          title="Carica un file KML/KMZ: le fermate vengono abbinate per codice a quelle a sistema (con anteprima), poi sequenza e tracciato entrano nell'editor — sempre modificabili prima del salvataggio."
+          className="w-full mt-2 text-xs py-1.5 rounded border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 font-medium inline-flex items-center justify-center gap-1.5">
+          <Upload className="w-3.5 h-3.5" /> Importa da KML/KMZ
+        </button>
         {/* Arrivo lato marciapiede: il percorso passa sull'asse strada dal lato
             giusto anche per fermate laterali (OSRM approaches=curb) */}
         <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-300 cursor-pointer select-none"
