@@ -61,8 +61,13 @@ parlarsi via rete interna:
    - `DATABASE_URL` (verso il servizio DB di Coolify)
    - `PGSSL_NO_VERIFY=1` se il Postgres usa un certificato self-signed
    - `NODE_ENV=production`, `PORT=3000`
-   - `JWT_SECRET`, `CRON_SECRET` (genera con `openssl rand -hex 32`)
-   - `FRONTEND_URL` = dominio pubblico del Web (per il CORS) — lo completi allo STEP 4
+   - `JWT_SECRET` (genera con `openssl rand -hex 32`) — **OBBLIGATORIO**: senza,
+     in produzione l'API rifiuta l'avvio (i token sarebbero forgiabili)
+   - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
+     gli endpoint `/api/caronte/*` rispondono 503 fail-closed
+   - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `FRONTEND_URL` = dominio pubblico del Web (per il CORS, allowlist ESATTA di
+     origin) — lo completi allo STEP 4
    - chiavi opzionali: `TOMTOM_API_KEY`, `MAPBOX_TOKEN`, `GOOGLE_PLACES_API_KEY`, `OPENROUTE_API_KEY`
 5. Deploy. Il build compila le librerie, builda l'API e installa OR-Tools
    (Python) — può richiedere qualche minuto.
