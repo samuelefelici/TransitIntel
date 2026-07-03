@@ -116,6 +116,7 @@ function shiftsToBars(
         if (entry.lastStopName) tooltip.push(`A: ${entry.lastStopName}`);
         if (entry.stopCount) tooltip.push(`${entry.stopCount} fermate`);
         if (entry.downsized) tooltip.push(`⚠ Mezzo ridotto (richiesto: ${VEHICLE_LABELS[entry.originalVehicle!]})`);
+        if ((entry as any).onDemand) tooltip.push("📞 CORSA A CHIAMATA (su prenotazione)");
       } else if (entry.type === "deadhead") {
         tooltip.push(`Vuoto ${entry.deadheadKm ?? 0} km`);
       } else {
@@ -129,7 +130,7 @@ function shiftsToBars(
         startMin: entry.departureMin,
         endMin: entry.arrivalMin,
         label: entry.type === "trip"
-          ? entry.routeName
+          ? `${(entry as any).onDemand ? "📞 " : ""}${entry.routeName}`
           : entry.type === "deadhead"
             ? `↝ ${(entry.deadheadKm ?? 0).toFixed(1)}km · ${Math.max(0, entry.arrivalMin - entry.departureMin)}′`
             : `🏠 Sosta dep. · ${Math.max(0, entry.arrivalMin - entry.departureMin)}′`,

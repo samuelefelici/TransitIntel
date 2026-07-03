@@ -141,6 +141,8 @@ export const gtfsTrips = pgTable("gtfs_trips", {
   tripHeadsign: text("trip_headsign"),
   directionId: integer("direction_id").default(0),
   shapeId: text("shape_id"),
+  /** corsa a chiamata (DRT/su prenotazione) — propagata da Planner Studio */
+  onDemand: boolean("on_demand").default(false),
 }, (t) => [
   index("idx_gtfs_trips_feed_id").on(t.feedId),
   index("idx_gtfs_trips_feed_trip").on(t.feedId, t.tripId),

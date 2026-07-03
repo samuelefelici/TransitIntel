@@ -31,7 +31,11 @@ async function ensurePsTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     /* ─── Progetti ─── */
-    await db.execute(sql`
+    // Colonna "a chiamata" sul feed GTFS materializzato (per scheduling TM/TG)
+  await db.execute(sql`
+    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
+  `);
+  await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_projects (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         owner_user_id uuid NOT NULL,

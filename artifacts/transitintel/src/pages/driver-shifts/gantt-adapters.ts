@@ -192,12 +192,13 @@ export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] { 
         if (t.firstStopName) tip.push(`Da: ${t.firstStopName}`);
         if (t.lastStopName) tip.push(`A: ${t.lastStopName}`);
         if (t.vehicleId) tip.push(`Veicolo: ${t.vehicleId}`);
+        if ((t as any).onDemand) tip.push("📞 CORSA A CHIAMATA (su prenotazione)");
         out.push({
           id: `${baseId}__t${t.tripId}`,
           rowId: shift.driverId,
           startMin: t.departureMin,
           endMin: t.arrivalMin,
-          label: t.routeName || t.routeId,
+          label: `${(t as any).onDemand ? "📞 " : ""}${t.routeName || t.routeId}`,
           color: typeColor,
           style: "solid",
           tooltip: tip,

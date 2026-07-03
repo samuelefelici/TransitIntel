@@ -453,6 +453,12 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                                       <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
                                       <span className="text-muted-foreground shrink-0 w-[46px] font-mono">{trip.arrivalTime?.substring(0, 5)}</span>
                                       <span className="text-[9px] px-1 py-0.5 rounded bg-muted/30 shrink-0">{trip.directionId === 0 ? "A" : "R"}</span>
+                                      {(trip as any).onDemand && (
+                                        <span title="Corsa A CHIAMATA (su prenotazione)"
+                                          className="text-[9px] px-1 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-purple-300 shrink-0 font-semibold">
+                                          📞
+                                        </span>
+                                      )}
                                       <span className="truncate flex-1 text-muted-foreground text-[10px]" title={`${trip.firstStopName} → ${trip.lastStopName}`}>
                                         {trip.firstStopName} → {trip.lastStopName}
                                       </span>

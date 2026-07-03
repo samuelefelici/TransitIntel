@@ -268,13 +268,18 @@ export async function materializePsToFeed(
     `);
   }
 
+  // colonna "a chiamata" (idempotente: feed storici senza colonna)
+  await db.execute(sql`
+    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
+  `);
   await db.execute(sql`
     INSERT INTO gtfs_trips
            (feed_id, trip_id, route_id, service_id,
-            trip_headsign, direction_id, shape_id)
+            trip_headsign, direction_id, shape_id, on_demand)
     SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
            COALESCE(t.calendar_id::text, ${fallbackServiceId}),
-           t.headsign, COALESCE(t.direction, 0), t.variant_id::text
+           t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
+           COALESCE((t.attributes->>'onDemand')::boolean, false)
       FROM ps_trips t
      WHERE t.project_id = ${psProjectId}::uuid
        AND COALESCE(t.is_active, true) = true ${fT}
