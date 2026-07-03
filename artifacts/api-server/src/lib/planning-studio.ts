@@ -31,11 +31,7 @@ async function ensurePsTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     /* ─── Progetti ─── */
-    // Colonna "a chiamata" sul feed GTFS materializzato (per scheduling TM/TG)
-  await db.execute(sql`
-    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
-  `);
-  await db.execute(sql`
+    await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_projects (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         owner_user_id uuid NOT NULL,
@@ -404,11 +400,21 @@ async function ensurePsTables(): Promise<void> {
       ADD COLUMN IF NOT EXISTS materialized_feed_id uuid,
       ADD COLUMN IF NOT EXISTS materialized_at timestamptz
     `);
-    await db.execute(sql`
-      ALTER TABLE gtfs_feeds
-      ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false,
-      ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false
-    `);
+    /* ALTER su tabelle GTFS: possono NON esistere ancora (DB nuovo, prima
+       delle migrazioni feed). Non devono MAI far fallire il bootstrap ps_*. */
+    try {
+      await db.execute(sql`
+        ALTER TABLE gtfs_feeds
+        ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false
+      `);
+      // Colonna "a chiamata" sul feed materializzato (scheduling TM/TG)
+      await db.execute(sql`
+        ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
+      `);
+    } catch (e: any) {
+      console.warn("[planning-studio] gtfs ALTER rinviato (tabelle feed non ancora presenti):", e?.message || e);
+    }
 
     bootstrapped = true;
     console.log("[planning-studio] tables ready (epic schema v2)");
