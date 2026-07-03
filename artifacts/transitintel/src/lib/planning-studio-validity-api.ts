@@ -43,6 +43,16 @@ export interface PsValidityTrip {
   onDemand?: boolean;
 }
 
+/** Validità BULK: giorni + categorie di N corse (colonne della tabella Corse). */
+export async function getPsTripsValidityBulk(
+  projectId: string, tripIds: string[],
+): Promise<{ dayValidity: Record<string, Record<string, boolean>>; categories: Record<string, string[]> }> {
+  if (tripIds.length === 0) return { dayValidity: {}, categories: {} };
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/validity-bulk`, {
+    method: "POST", body: JSON.stringify({ tripIds }),
+  });
+}
+
 /** Validità di UNA corsa: giorni per tipo-giorno + categorie del calendario aziendale. */
 export async function getPsTripValidity(
   projectId: string, tripId: string,

@@ -30,7 +30,7 @@ import {
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
-import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, type PsDayType } from "@/lib/planning-studio-validity-api";
+import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, getPsTripsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
@@ -61,6 +61,27 @@ function fmtDate(d?: string | null) {
   const [y, m, day] = d.split("-");
   return `${day}/${m}/${y}`;
 }
+/* ─── Giorni di validità L…D: helper condivisi tra riga tabella e drawer ─── */
+const WD_LABELS_ROW = ["L", "M", "M", "G", "V", "S", "D"];
+const WD_NAMES = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
+const wdTypicalCode = (i: number) => (i <= 4 ? "feriale" : i === 5 ? "sabato" : "festivo");
+/** Maschera settimanale della corsa (attributes.weekdays); assente = tutti attivi. */
+function wdMaskOf(trip: PsTrip): boolean[] {
+  const w = (trip.attributes as any)?.weekdays;
+  return Array.isArray(w) && w.length === 7 ? w.map((x: any) => x !== false) : [true, true, true, true, true, true, true];
+}
+/** Classifica i tipi giorno per prefisso: feriale/FER, sabato/SAB, festivo/FES|DOM. */
+function classifyDayTypes(dayTypes: PsDayType[]): Record<string, PsDayType> {
+  const m: Record<string, PsDayType> = {};
+  for (const dt of dayTypes) {
+    const c = `${dt.code || dt.name || ""}`.toLowerCase();
+    if (/^fer/.test(c) && !m.feriale) m.feriale = dt;
+    else if (/^sab/.test(c) && !m.sabato) m.sabato = dt;
+    else if (/^fes|^dom/.test(c) && !m.festivo) m.festivo = dt;
+  }
+  return m;
+}
+
 /* Conversioni orario GTFS (consentono >24:00 per corse dopo mezzanotte) */
 function genToSec(t: string): number {
   const q = t.split(":").map(Number);
@@ -494,6 +515,54 @@ export default function PlanningStudioTripsPage() {
     onError: (e: any) => toast.error(e?.message || "Errore eliminazione"),
   });
 
+  /* ─── Giorni + categorie di TUTTE le corse visibili (colonne di riga) ─── */
+  const tripsValQ = useQuery({
+    queryKey: ["ps", projectId, "trips", "validity-bulk", filteredTrips.map(t => t.id).join(",")],
+    queryFn: () => getPsTripsValidityBulk(projectId, filteredTrips.map(t => t.id)),
+    enabled: filteredTrips.length > 0,
+    staleTime: 15_000,
+  });
+  const dtKinds = useMemo(() => classifyDayTypes(dayTypesQ.data ?? []), [dayTypesQ.data]);
+  const catById = useMemo(() => {
+    const m = new Map<string, PsValidityCategory>();
+    for (const c of categoriesQ.data ?? []) m.set(c.id, c);
+    return m;
+  }, [categoriesQ.data]);
+  /** Il giorno i è attivo per la corsa? (tipo giorno valido + maschera) */
+  function rowDayOn(trip: PsTrip, i: number): boolean {
+    const dt = dtKinds[wdTypicalCode(i)];
+    const dv = tripsValQ.data?.dayValidity?.[trip.id] ?? {};
+    return !!(dt && dv[dt.id]) && wdMaskOf(trip)[i];
+  }
+  const [rowWdBusy, setRowWdBusy] = useState(false);
+  /** Toggle di un giorno direttamente dalla riga (stessa logica del drawer). */
+  async function toggleRowWeekday(trip: PsTrip, i: number) {
+    if (rowWdBusy || !tripsValQ.data || !dayTypesQ.data) return;
+    setRowWdBusy(true);
+    try {
+      const mask = wdMaskOf(trip);
+      const newWd = [...mask];
+      if (rowDayOn(trip, i)) {
+        newWd[i] = false; // spegni SOLO questo giorno
+      } else {
+        newWd[i] = true;
+        const dt = dtKinds[wdTypicalCode(i)];
+        const dv = tripsValQ.data.dayValidity?.[trip.id] ?? {};
+        if (dt && !dv[dt.id]) {
+          for (let j = 0; j < 7; j++) {
+            if (j !== i && wdTypicalCode(j) === wdTypicalCode(i) && !rowDayOn(trip, j)) newWd[j] = false;
+          }
+          await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [trip.id], dayTypeIds: [dt.id], isValid: true });
+        }
+      }
+      await updatePsTrip(projectId, trip.id, { attributesMerge: { weekdays: newWd } });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+    } catch (e: any) {
+      toast.error("Errore aggiornamento giorni", { description: e?.message });
+    } finally { setRowWdBusy(false); }
+  }
+
   /* ─── Drawer dettaglio corsa ─── */
   const [detailTripId, setDetailTripId] = useState<string | null>(null);
   const detailTrip = useMemo(
@@ -708,8 +777,9 @@ export default function PlanningStudioTripsPage() {
                 <th className="p-2 text-left">Partenza</th>
                 <th className="p-2 text-left">Linea / Variante</th>
                 <th className="p-2 text-left">Headsign</th>
-                <th className="p-2 text-left">Calendario</th>
-                <th className="p-2 text-left">Validità</th>
+                <th className="p-2 text-left" title="Giorni della settimana in cui la corsa è valida: clic sul giorno per accendere/spegnere">Giorni validità</th>
+                <th className="p-2 text-left" title="Categorie del calendario aziendale attive sulla corsa (nessuna = vale sempre)">Categorie</th>
+                <th className="p-2 text-left" title="Periodo di esistenza della corsa (vuoto = illimitata)">Periodo</th>
                 <th className="p-2 text-left">Etichetta</th>
                 <th className="p-2 text-center w-16" title="Corsa effettuata solo su prenotazione (servizio a chiamata / DRT)">A chiam.</th>
                 <th className="p-2 text-center w-16">Stato</th>
@@ -720,8 +790,8 @@ export default function PlanningStudioTripsPage() {
               {filteredTrips.map(t => {
                 const route = routes.find(r => r.id === t.routeId);
                 const variant = variants.find(v => v.id === t.variantId);
-                const cal = calendars.find(c => c.id === t.calendarId);
                 const isSel = selected.has(t.id);
+                const tripCats = tripsValQ.data?.categories?.[t.id] ?? [];
                 return (
                   <tr key={t.id} className={`border-b border-slate-800/60 hover:bg-slate-900/50 ${
                     isSel ? "bg-amber-500/5" : ""
@@ -738,13 +808,49 @@ export default function PlanningStudioTripsPage() {
                       <div className="text-[10px] text-slate-500">{variant?.name || ""}</div>
                     </td>
                     <td className="p-2 text-slate-300">{t.headsign || "—"}</td>
-                    <td className="p-2 text-slate-400">
-                      {cal ? <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px]">{cal.code}</span> : "—"}
+                    <td className="p-2">
+                      <div className="flex items-center gap-[3px]">
+                        {WD_LABELS_ROW.map((l, i) => {
+                          const on = rowDayOn(t, i);
+                          return (
+                            <button key={i}
+                              onClick={() => toggleRowWeekday(t, i)}
+                              disabled={rowWdBusy || tripsValQ.isLoading}
+                              title={`${WD_NAMES[i]} — ${on ? "attivo (clic per spegnere)" : "spento (clic per accendere)"}`}
+                              className={`w-[18px] h-[18px] rounded-full text-[9px] font-bold border leading-none transition-colors disabled:opacity-50 ${
+                                on
+                                  ? "bg-emerald-500/25 border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/40"
+                                  : "bg-slate-800 border-slate-700 text-slate-600 hover:bg-slate-700"
+                              }`}>
+                              {l}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
+                    <td className="p-2">
+                      {tripCats.length === 0
+                        ? <span className="text-[10px] text-slate-600" title="Nessuna categoria: la corsa vale in ogni periodo del calendario aziendale">tutte</span>
+                        : (
+                          <div className="flex flex-wrap gap-1 max-w-[160px]">
+                            {tripCats.map(cid => {
+                              const c = catById.get(cid);
+                              if (!c) return null;
+                              return (
+                                <span key={cid} title={c.name}
+                                  className="px-1.5 py-0.5 rounded text-[9px] font-medium border whitespace-nowrap"
+                                  style={{ borderColor: c.color || "#3b82f6", background: `${c.color || "#3b82f6"}22`, color: undefined }}>
+                                  {c.name.length > 14 ? c.name.slice(0, 13) + "…" : c.name}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
                     </td>
                     <td className="p-2 text-slate-400">
                       {t.validFrom || t.validTo
-                        ? <span>{fmtDate(t.validFrom)} → {fmtDate(t.validTo)}</span>
-                        : <span className="text-slate-600">illimitata</span>}
+                        ? <span className="whitespace-nowrap">{fmtDate(t.validFrom)} → {fmtDate(t.validTo)}</span>
+                        : <span className="text-slate-600">illimitato</span>}
                     </td>
                     <td className="p-2">
                       <input
@@ -1414,22 +1520,10 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
     queryFn: () => getPsTripValidity(projectId, trip.id),
   });
   const [wdBusy, setWdBusy] = useState(false);
-  const WD_LABELS = ["L", "M", "M", "G", "V", "S", "D"];
-  const wdMask: boolean[] = Array.isArray(trip.attributes?.weekdays) && trip.attributes.weekdays.length === 7
-    ? trip.attributes.weekdays.map((x: any) => x !== false)
-    : [true, true, true, true, true, true, true];
-  const typicalCode = (i: number) => (i <= 4 ? "feriale" : i === 5 ? "sabato" : "festivo");
-  // matching robusto per prefisso: "feriale"/"FER", "sabato"/"SAB", "festivo"/"FES"
-  const dtByCode = useMemo(() => {
-    const m2: Record<string, PsDayType> = {};
-    for (const dt of dayTypesDrawerQ.data ?? []) {
-      const c = `${dt.code || dt.name || ""}`.toLowerCase();
-      if (/^fer/.test(c) && !m2.feriale) m2.feriale = dt;
-      else if (/^sab/.test(c) && !m2.sabato) m2.sabato = dt;
-      else if (/^fes|^dom/.test(c) && !m2.festivo) m2.festivo = dt;
-    }
-    return m2;
-  }, [dayTypesDrawerQ.data]);
+  const WD_LABELS = WD_LABELS_ROW;
+  const wdMask: boolean[] = wdMaskOf(trip);
+  const typicalCode = wdTypicalCode;
+  const dtByCode = useMemo(() => classifyDayTypes(dayTypesDrawerQ.data ?? []), [dayTypesDrawerQ.data]);
   const dayValidity = tripValQ.data?.dayValidity ?? {};
   const dayOn = (i: number): boolean => {
     const dt = dtByCode[typicalCode(i)];

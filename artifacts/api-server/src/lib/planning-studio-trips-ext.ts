@@ -128,6 +128,42 @@ router.get("/planning-studio/projects/:id/trips/:tripId/validity", async (req, r
   res.json({ dayValidity, categoryIds });
 });
 
+/* ─── Validità BULK: giorni + categorie di N corse in una chiamata ───
+ * Alimenta le colonne "Giorni" e "Categorie" della tabella Corse. */
+
+router.post("/planning-studio/projects/:id/trips/validity-bulk", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, false);
+  if (!proj) { res.status(403).json({ error: "no access" }); return; }
+  const tripIds: string[] = (Array.isArray(req.body?.tripIds) ? req.body.tripIds : [])
+    .filter((x: any) => typeof x === "string" && UUID_RE.test(x))
+    .slice(0, 1000);
+  if (tripIds.length === 0) { res.json({ dayValidity: {}, categories: {} }); return; }
+  const idsLit = `{${tripIds.join(",")}}`;
+  const dvR = await db.execute(sql`
+    SELECT v.trip_id, v.day_type_id, v.is_valid
+      FROM ps_trip_day_validity v
+      JOIN ps_trips t ON t.id = v.trip_id
+     WHERE v.trip_id = ANY(${idsLit}::uuid[]) AND t.project_id = ${req.params.id}::uuid
+  `);
+  const dayValidity: Record<string, Record<string, boolean>> = {};
+  for (const r of (dvR as any).rows ?? []) {
+    (dayValidity[r.trip_id] ??= {})[r.day_type_id] = !!r.is_valid;
+  }
+  const tcR = await db.execute(sql`
+    SELECT c.trip_id, c.category_id
+      FROM ps_trip_category_validity c
+      JOIN ps_trips t ON t.id = c.trip_id
+     WHERE c.trip_id = ANY(${idsLit}::uuid[]) AND t.project_id = ${req.params.id}::uuid
+  `);
+  const categories: Record<string, string[]> = {};
+  for (const r of (tcR as any).rows ?? []) {
+    (categories[r.trip_id] ??= []).push(r.category_id);
+  }
+  res.json({ dayValidity, categories });
+});
+
 /* ─── PATCH trip (estensione: validità, attivo, label, headsign, calendar) ─── */
 
 router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Promise<void> => {
