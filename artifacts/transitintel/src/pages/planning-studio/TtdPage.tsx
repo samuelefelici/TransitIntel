@@ -20,6 +20,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import TripCountBadge from "@/components/planning-studio/TripCountBadge";
+import { useAuth } from "@/hooks/use-auth";
 import {
   ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
   X, Check, GitCommitHorizontal, CircleDot, Shuffle,
@@ -152,6 +154,7 @@ export default function PlanningStudioTtdPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
+  const { user } = useAuth();
 
   /* ─── Selettori: linea / variante / calendario ─── */
   const [routeId, setRouteId] = useState("");
@@ -1006,6 +1009,8 @@ export default function PlanningStudioTtdPage() {
         }
       }
     }
+    // genera il report PRIMA di scrivere (fotografa prima→dopo), lo scarica a successo
+    const reportHtml = buildSyncReportHtml("applicata");
     setSyncBusy(true);
     try {
       let done = 0;
@@ -1038,10 +1043,139 @@ export default function PlanningStudioTtdPage() {
       toast.success(`✅ Catena sincronizzata: ${done} corse traslate su ${work.length} linee`, {
         description: "Le corse non selezionate NON sono state toccate.",
       });
+      downloadSyncReport("applicata", reportHtml); // documentazione che certifica la variazione
       setSyncPlan(null);
     } catch (e: any) {
       toast.error("Errore durante lo shift", { description: e?.message });
     } finally { setSyncBusy(false); }
+  }
+
+  /* ─── Report esportabile: certifica il lavoro di sincronizzazione ───
+   * HTML autocontenuto (stampabile/convertibile in PDF dal browser) con:
+   * parametri, catena in ordine di arrivo, piano Δ per linea, dettaglio
+   * delle corse traslate, elenco delle coincidenze e snapshot del grafico. */
+  function buildSyncReportHtml(status: "proposta" | "applicata"): string | null {
+    if (!syncPlan || syncPlan.length === 0) return null;
+    const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const now = new Date();
+    const deltas = new globalThis.Map(syncPlan.map(p2 => [p2.variantId, p2.delta]));
+    const calLabel = calendarFilter
+      ? (calendars.find(c => c.id === calendarFilter)?.code ?? calendarFilter)
+      : "tutti i giorni/calendari";
+    const chainNames = syncChain.map(it => chainName(it));
+
+    // dettaglio corse traslate per linea (prima partenza prima → dopo)
+    const movedDetail = syncPlan.map(p2 => {
+      const data = overlayData[p2.variantId];
+      const sel = syncSel[p2.variantId] ?? new Set<string>();
+      const rows = (data?.trips ?? [])
+        .filter(t => sel.has(t.id))
+        .map(t => {
+          const dep = data!.st[t.id]?.length ? hmsToSec(data!.st[t.id][0].departureTime) : null;
+          return dep == null ? null : {
+            label: t.shortName || t.headsign || t.id.slice(0, 8),
+            before: secToHm(dep),
+            after: secToHm(dep + p2.delta * 60),
+          };
+        })
+        .filter(Boolean) as { label: string; before: string; after: string }[];
+      rows.sort((a, b) => a.before.localeCompare(b.before));
+      return { plan: p2, rows };
+    });
+
+    // coincidenze per coppia consecutiva della catena (con i Δ del piano)
+    const evOf = (i: number) => {
+      const it = syncChain[i];
+      return chainNodeEvents(it, it.kind === "variant" ? (deltas.get(it.variantId) ?? 0) * 60 : 0);
+    };
+    const pairSections: { title: string; pts: ConnPt[] }[] = [];
+    let totalZ = 0;
+    for (let i = 1; i < syncChain.length; i++) {
+      const c = chainPairConn(evOf(i - 1), evOf(i), true);
+      totalZ += c.z;
+      pairSections.push({
+        title: `${chainNames[i - 1]} → ${chainNames[i]}`,
+        pts: c.pts.sort((a, b) => a.t - b.t),
+      });
+    }
+
+    const svgSnapshot = svgRef.current ? svgRef.current.outerHTML : "";
+
+    return `<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8">
+<title>Report coincidenze · ${esc(project?.name ?? "")}</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #0f172a; margin: 32px auto; max-width: 960px; padding: 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 2px; } h2 { font-size: 14px; margin: 24px 0 6px; border-bottom: 2px solid #e2e8f0; padding-bottom: 3px; }
+  .muted { color: #64748b; font-size: 12px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .badge.applicata { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+  .badge.proposta { background: #fef9c3; color: #854d0e; border: 1px solid #fde047; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; margin: 6px 0 10px; }
+  th, td { border: 1px solid #e2e8f0; padding: 4px 8px; text-align: left; }
+  th { background: #f8fafc; font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .chain { font-size: 14px; font-weight: 600; margin: 6px 0; }
+  .chain .arrow { color: #7c3aed; padding: 0 6px; }
+  .chart { background: #0b1220; border-radius: 8px; padding: 8px; margin-top: 8px; overflow: auto; }
+  .chart svg { max-width: 100%; height: auto; }
+  .foot { margin-top: 28px; font-size: 10px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+  @media print { .chart { break-inside: avoid; } h2 { break-after: avoid; } }
+</style></head><body>
+<h1>Report sincronizzazione coincidenze <span class="badge ${status}">${status === "applicata" ? "Variazione applicata" : "Piano proposto"}</span></h1>
+<p class="muted">Progetto <strong>${esc(project?.name ?? "")}</strong> · Orario grafico (TTD) · generato il ${now.toLocaleDateString("it-IT")} alle ${now.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}${user ? ` · operatore ${esc(user.fullName || user.email)}` : ""}</p>
+
+<h2>Parametri</h2>
+<table><tbody>
+  <tr><th style="width:220px">Linea di riferimento (non traslata)</th><td>${esc(baseRoute?.shortName ?? "")} ${esc(baseRoute?.longName ?? "")}</td></tr>
+  <tr><th>Calendario / giorni</th><td>${esc(calLabel)}</td></tr>
+  <tr><th>Attesa al nodo Δ</th><td>${esc(connMin)}–${esc(connMax)} minuti</td></tr>
+  <tr><th>Shift massimo per linea</th><td>±${esc(syncMaxShift)} minuti</td></tr>
+  <tr><th>Coincidenze totali della catena</th><td><strong>Z = ${totalZ}</strong></td></tr>
+</tbody></table>
+
+<h2>Catena di coincidenze (ordine di arrivo al nodo)</h2>
+<p class="chain">${chainNames.map(esc).join('<span class="arrow">→</span>')}</p>
+<p class="muted">Ogni linea parte ${esc(connMin)}–${esc(connMax)} minuti dopo l'arrivo della precedente al nodo comune.</p>
+
+<h2>Piano di traslazione per linea</h2>
+<table><thead><tr><th>Linea</th><th class="num">Δ (min)</th><th class="num">Corse traslate</th><th class="num">Z prima</th><th class="num">Z dopo</th></tr></thead><tbody>
+${syncPlan.map(p2 => `<tr><td>${esc(p2.name)}</td><td class="num">${p2.delta > 0 ? "+" : ""}${p2.delta}</td><td class="num">${p2.moved}</td><td class="num">${p2.zNow}</td><td class="num"><strong>${p2.zBest}</strong></td></tr>`).join("")}
+</tbody></table>
+
+${movedDetail.map(md => md.plan.delta === 0 ? "" : `
+<h2>Corse traslate · ${esc(md.plan.name)} (Δ ${md.plan.delta > 0 ? "+" : ""}${md.plan.delta}′)</h2>
+<table><thead><tr><th>Corsa</th><th class="num">Partenza prima</th><th class="num">Partenza dopo</th></tr></thead><tbody>
+${md.rows.map(r => `<tr><td>${esc(r.label)}</td><td class="num">${r.before}</td><td class="num"><strong>${r.after}</strong></td></tr>`).join("")}
+</tbody></table>`).join("")}
+
+<h2>Coincidenze realizzate (${totalZ})</h2>
+${pairSections.map(sec => `
+<h3 style="font-size:12px;margin:10px 0 4px">${esc(sec.title)} — ${sec.pts.length} coincidenze</h3>
+<table><thead><tr><th class="num" style="width:90px">Orario</th><th>Dettaglio (fermata · attesa)</th></tr></thead><tbody>
+${sec.pts.slice(0, 400).map(pt => `<tr><td class="num">${secToHm(pt.t)}</td><td>${esc(pt.label)}</td></tr>`).join("")}
+${sec.pts.length === 0 ? '<tr><td colspan="2" class="muted">nessuna coincidenza in finestra per questa coppia</td></tr>' : ""}
+</tbody></table>`).join("")}
+
+${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div class="chart">${svgSnapshot}</div>` : ""}
+
+<div class="foot">Documento generato automaticamente da Cerbero · Planner Studio — Orario grafico (TTD). ${status === "applicata" ? "Gli orari indicati come «dopo» sono stati scritti sul database." : "Piano NON ancora applicato: gli orari «dopo» sono una proposta."}</div>
+</body></html>`;
+  }
+
+  function downloadSyncReport(status: "proposta" | "applicata", html?: string | null) {
+    const doc = html ?? buildSyncReportHtml(status);
+    if (!doc) { toast.error("Calcola prima il piano della catena"); return; }
+    const ts = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const name = `report-coincidenze_${(project?.name ?? "progetto").replace(/[^a-z0-9]+/gi, "-")}_${ts.getFullYear()}${pad(ts.getMonth() + 1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}.html`;
+    const blob = new Blob([doc], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast.success("📄 Report coincidenze scaricato", { description: name });
   }
 
   /* ─── Hover tooltip su una corsa ─── */
@@ -1115,6 +1249,7 @@ export default function PlanningStudioTtdPage() {
             {baseRoute && <span className="text-slate-400"> · linea {baseRoute.shortName}</span>}
           </span>
         )}
+        <span className="ml-2"><TripCountBadge projectId={projectId} /></span>
         <div className="flex-1" />
         {stLoading && (
           <span className="text-xs text-slate-500 flex items-center gap-1.5">
@@ -1727,7 +1862,11 @@ export default function PlanningStudioTtdPage() {
                   ) : (
                     <p className="text-[10px] text-emerald-300">Gli orari attuali sono già ottimali per la catena scelta.</p>
                   )}
-                  <p className="text-[9px] text-slate-500">Ogni linea trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando i Δ opposti.</p>
+                  <button onClick={() => downloadSyncReport("proposta")} disabled={syncBusy}
+                    className="w-full px-2 py-1.5 rounded border border-purple-500/40 text-purple-300 hover:bg-purple-500/10 disabled:opacity-40 font-medium">
+                    📄 Esporta report (HTML stampabile)
+                  </button>
+                  <p className="text-[9px] text-slate-500">Ogni linea trasla SOLO le corse selezionate (headway interno invariato). Annullabile riapplicando i Δ opposti. All'applicazione il report definitivo viene scaricato automaticamente.</p>
                 </div>
               )}
             </div>

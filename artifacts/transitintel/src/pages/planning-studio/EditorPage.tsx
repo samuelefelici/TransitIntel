@@ -30,6 +30,7 @@ import {
   CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
+import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import { getApiBase, apiFetch } from "@/lib/api";
 import {
   getPsProject, type PsProject,
@@ -1820,6 +1821,9 @@ export default function PlanningStudioEditorPage() {
         >
           {project.myRole === "owner" ? "Proprietario" : project.myRole === "editor" ? "Editor" : "Sola lettura"}
         </span>
+
+        {/* Contatore corse del progetto (si aggiorna man mano che se ne aggiungono) */}
+        <TripCountBadge projectId={projectId} />
 
         <div className="h-7 w-px bg-slate-800 mx-1" />
 
