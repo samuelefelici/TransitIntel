@@ -712,6 +712,7 @@ class Trip:
     category: str                 # "urbano" | "extraurbano"
     forced: bool                  # solo tipo esatto
     duration_min: int = 0
+    on_demand: bool = False       # corsa a chiamata (DRT)
 
 
 @dataclass
@@ -746,6 +747,7 @@ class VShiftTrip:
     deadhead_min: int = 0
     downsized: bool = False
     original_vehicle: str | None = None
+    on_demand: bool = False       # corsa a chiamata (DRT)
     cluster_stops: list[ClusterStop] = field(default_factory=list)  # fermate intermedie in cluster
 
 
@@ -1100,6 +1102,7 @@ def trip_from_dict(d: dict, idx: int) -> Trip:
         category=d.get("category", "urbano"),
         forced=d.get("forced", False),
         duration_min=max(1, arr_min - dep_min),
+        on_demand=bool(d.get("onDemand", False)),
     )
 
 
@@ -1124,6 +1127,8 @@ def vshift_trip_to_dict(t: VShiftTrip) -> dict:
         if t.downsized:
             d["downsized"] = True
             d["originalVehicle"] = t.original_vehicle
+        if getattr(t, "on_demand", False):
+            d["onDemand"] = True
     elif t.type == "deadhead":
         d["deadheadKm"] = t.deadhead_km
         d["deadheadMin"] = t.deadhead_min

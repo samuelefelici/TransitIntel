@@ -343,6 +343,8 @@ interface VTrip {
   durationMin?: number;
   deadheadKm?: number;
   deadheadMin?: number;
+  /** corsa a chiamata (propagata dal turno macchina) */
+  onDemand?: boolean;
   directionId?: number;
   downsized?: boolean;
   originalVehicle?: string;

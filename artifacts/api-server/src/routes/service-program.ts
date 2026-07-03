@@ -211,6 +211,8 @@ interface TripBlock {
   category: ServiceCategory;
   /** When true, this trip MUST run on the exact requiredVehicle type — no flexibility */
   forced: boolean;
+  /** Corsa A CHIAMATA (DRT): identificabile lungo tutta la pipeline TM/TG */
+  onDemand: boolean;
 }
 
 interface ShiftTripEntry {
@@ -235,6 +237,8 @@ interface ShiftTripEntry {
   downsized?: boolean;
   /** Original required vehicle type (set when downsized) */
   originalVehicle?: VehicleType;
+  /** Corsa A CHIAMATA (su prenotazione) */
+  onDemand?: boolean;
 }
 
 interface VehicleShift {
@@ -873,6 +877,7 @@ function buildServiceProgram(
         directionId: trip.directionId,
         downsized: isDownsized || undefined,
         originalVehicle: isDownsized ? trip.requiredVehicle : undefined,
+        onDemand: trip.onDemand || undefined,
       });
       if (isDownsized) shift.downsizedTrips++;
       shift.endMin = trip.arrivalMin;
@@ -896,6 +901,7 @@ function buildServiceProgram(
           firstStopName: trip.firstStopName, lastStopName: trip.lastStopName,
           stopCount: trip.stopCount, durationMin: trip.arrivalMin - trip.departureMin,
           directionId: trip.directionId,
+          onDemand: trip.onDemand || undefined,
         }],
         startMin: trip.departureMin,
         endMin: trip.arrivalMin,
@@ -1044,6 +1050,7 @@ router.get("/service-program/trips", async (req, res) => {
       serviceId: gtfsTrips.serviceId,
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
+      onDemand: gtfsTrips.onDemand,
     }).from(gtfsTrips)
       .where(eq(gtfsTrips.feedId, feedId));
 
@@ -1100,6 +1107,7 @@ router.get("/service-program/trips", async (req, res) => {
         arrivalTime: lastArr,
         firstStopName,
         lastStopName,
+        onDemand: !!t.onDemand,
       };
     }).sort((a, b) => a.departureTime.localeCompare(b.departureTime));
 
@@ -1182,6 +1190,7 @@ router.post("/service-program", async (req, res) => {
       serviceId: gtfsTrips.serviceId,
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
+      onDemand: gtfsTrips.onDemand,
     }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
 
     const trips = allTrips.filter(t =>
@@ -1264,6 +1273,7 @@ router.post("/service-program", async (req, res) => {
         requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),
         category: getServiceCategory(routeName),
         forced: routeForcedMap[t.routeId] ?? false,
+        onDemand: !!t.onDemand,
       });
     }
 
@@ -1448,6 +1458,7 @@ async function runCPSATVehicleScheduler(
     requiredVehicle: t.requiredVehicle,
     category: t.category,
     forced: t.forced,
+    onDemand: t.onDemand,
   }));
 
   const result = await new Promise<string>((resolve, reject) => {
@@ -1685,6 +1696,7 @@ router.post("/service-program/cpsat", async (req, res) => {
       serviceId: gtfsTrips.serviceId,
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
+      onDemand: gtfsTrips.onDemand,
     }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
 
     const trips = allTrips.filter(t =>
@@ -1774,6 +1786,7 @@ router.post("/service-program/cpsat", async (req, res) => {
         requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),
         category: getServiceCategory(routeName),
         forced: routeForcedMap[t.routeId] ?? false,
+        onDemand: !!t.onDemand,
       });
     }
 

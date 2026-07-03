@@ -177,7 +177,7 @@ function entryRowHtml(
     entry.durationMin ? fmtDur(entry.durationMin) : null,
   ].filter(Boolean).join(" · ");
   return `<tr class="trip">
-    <td class="line"><span class="badge" style="background:${routeColor}">${escape(entry.routeName)}</span>${downsize}</td>
+    <td class="line"><span class="badge" style="background:${routeColor}">${escape(entry.routeName)}</span>${(entry as any).onDemand ? ' <span title="Corsa a chiamata">\u{1F4DE}</span>' : ""}${downsize}</td>
     <td class="time">${minToHHMM(entry.departureMin)}</td>
     <td class="stop">${escape(entry.firstStopName || "")}</td>
     <td class="path">${path}${meta ? `<div class="metasub">${meta}</div>` : ""}</td>
