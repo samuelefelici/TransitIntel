@@ -429,10 +429,11 @@ export async function deletePsCalendar(projectId: string, calId: string): Promis
 
 /* ─── Trip / stop times ─── */
 
-export async function listPsTrips(projectId: string, opts: { routeId?: string; variantId?: string } = {}): Promise<PsTrip[]> {
+export async function listPsTrips(projectId: string, opts: { routeId?: string; variantId?: string; categoryId?: string } = {}): Promise<PsTrip[]> {
   const qs = new URLSearchParams();
   if (opts.routeId) qs.set("routeId", opts.routeId);
   if (opts.variantId) qs.set("variantId", opts.variantId);
+  if (opts.categoryId) qs.set("categoryId", opts.categoryId);
   const q = qs.toString();
   const r = await apiFetch<{ trips: PsTrip[] }>(
     `/api/planning-studio/projects/${projectId}/trips${q ? `?${q}` : ""}`
