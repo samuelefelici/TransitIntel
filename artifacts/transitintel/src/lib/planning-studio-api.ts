@@ -128,6 +128,10 @@ export interface PsCalendar {
   name?: string | null;
   monday: boolean; tuesday: boolean; wednesday: boolean; thursday: boolean;
   friday: boolean; saturday: boolean; sunday: boolean;
+  /** Pattern settimanale effettivo [lun…dom]: uguale ai flag sopra, ma per i
+   *  calendari "solo calendar_dates" (flag tutti false) è dedotto dai giorni
+   *  della settimana delle date operative. Usato per i bollini in Corse. */
+  effectiveWeekdays?: boolean[];
   startDate: string;
   endDate: string;
   createdAt: string;

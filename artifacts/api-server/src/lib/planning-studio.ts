@@ -1264,7 +1264,39 @@ router.get("/planning-studio/projects/:id/calendars", async (req, res): Promise<
     SELECT * FROM ps_calendars WHERE project_id = ${proj.id}::uuid ORDER BY code ASC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
-  res.json({ calendars: rows.map(rowToCalendar) });
+
+  // Pattern settimanale EFFETTIVO: molti feed (TPL italiano) definiscono il
+  // servizio via calendar_dates.txt con i flag monday..sunday tutti a false.
+  // In quel caso deduciamo i giorni della settimana operativi dalle date
+  // AGGIUNTE (exception_type=1). Serve a far accendere i bollini "Giorni
+  // validità" in Corse anche per questi calendari.
+  const dowR = await db.execute(sql`
+    SELECT cd.calendar_id, EXTRACT(ISODOW FROM cd.date)::int AS isodow
+      FROM ps_calendar_dates cd
+      JOIN ps_calendars c ON c.id = cd.calendar_id
+     WHERE c.project_id = ${proj.id}::uuid
+       AND cd.exception_type = 1
+     GROUP BY cd.calendar_id, EXTRACT(ISODOW FROM cd.date)
+  `);
+  const addedDow = new Map<string, Set<number>>(); // calId → ISODOW (1=lun … 7=dom)
+  for (const d of ((dowR as any).rows ?? [])) {
+    const set = addedDow.get(d.calendar_id) ?? new Set<number>();
+    set.add(Number(d.isodow));
+    addedDow.set(d.calendar_id, set);
+  }
+
+  res.json({
+    calendars: rows.map((row) => {
+      const cal = rowToCalendar(row);
+      const base = [cal.monday, cal.tuesday, cal.wednesday, cal.thursday, cal.friday, cal.saturday, cal.sunday].map(Boolean);
+      let effectiveWeekdays = base;
+      if (!base.some(Boolean)) {
+        const dows = addedDow.get(cal.id);
+        if (dows && dows.size > 0) effectiveWeekdays = [1, 2, 3, 4, 5, 6, 7].map((iso) => dows.has(iso));
+      }
+      return { ...cal, effectiveWeekdays };
+    }),
+  });
 });
 
 router.post("/planning-studio/projects/:id/calendars", async (req, res): Promise<void> => {
