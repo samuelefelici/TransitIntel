@@ -41,7 +41,7 @@ import {
   type PsWaypoint, type PsShape,
   routeSnap,
   listPsNoGoZones, createPsNoGoZone, deletePsNoGoZone, type PsNoGoZone,
-  listPsCalendars, createPsCalendar, deletePsCalendar, type PsCalendar,
+  listPsCalendars, type PsCalendar,
   importPsGtfs, type PsImportCounts,
   listPsClusters, createPsCluster, updatePsCluster, deletePsCluster,
   setPsClusterStops, suggestPsClusters,
@@ -1861,27 +1861,23 @@ export default function PlanningStudioEditorPage() {
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/network`); }} />
           </MenuGroup>
 
-          {/* Orari: corse, pattern di circolazione, periodi, calendario aziendale */}
+          {/* Orari: corse + orario grafico. I giorni/validità di ogni corsa sono
+              già in Corse (maschera settimanale) e nel Calendario Aziendale →
+              la vecchia sezione "Giorni di circolazione" (calendari) era ridondante. */}
           <MenuGroup
             label="Orari" icon={CalendarIcon} accent="indigo"
-            active={activePanel === "calendars"}
+            active={false}
             open={openMenu === "orari"}
             onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
           >
             <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
-              desc="elenco, filtri, genera a cadenza"
+              desc="elenco, filtri, giorni di validità, genera a cadenza"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
             {/* Orario grafico (time–space / Marey): qui, insieme alle corse —
                 strumenti di scheduling unificati in un solo menu */}
             <MenuItem icon={LineChart} label="Orario grafico (TTD)" note="pagina" accent="amber"
               desc="diagramma tempo-distanza delle corse"
               onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
-            {/* Ex "Calendari": rinominata per chiarezza — sono i pattern di giorni
-                in cui circolano le corse (lun-ven, sabato, festivi…) */}
-            <MenuItem icon={CalendarIcon} label="Giorni di circolazione"
-              desc="quando circolano le corse: pattern settimanali"
-              count={calendars.length} accent="indigo"
-              active={activePanel === "calendars"} onClick={() => togglePanel("calendars")} />
           </MenuGroup>
 
           {/* Validità: calendario aziendale → matrice → unità di progettazione */}
@@ -2941,7 +2937,6 @@ export default function PlanningStudioEditorPage() {
                 <h2 className="text-sm font-semibold flex items-center gap-2">
                   {activePanel === "stops" && <><MapPin className="w-4 h-4 text-emerald-400" /> Fermate</>}
                   {activePanel === "routes" && <><Bus className="w-4 h-4 text-cyan-400" /> Linee</>}
-                  {activePanel === "calendars" && <><CalendarIcon className="w-4 h-4 text-indigo-400" /> Giorni di circolazione</>}
                   {(activePanel === "clusters" || activePanel === "ne-clusters") && (
                     <><Layers className="w-4 h-4 text-cyan-400" /> Nodi
                       <span className="text-[10px] font-normal text-slate-500">
@@ -2955,12 +2950,6 @@ export default function PlanningStudioEditorPage() {
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              {/* Sottotitolo esplicativo dei calendari (nessuna logica cambiata) */}
-              {activePanel === "calendars" && (
-                <p className="px-4 py-2 border-b border-slate-800 text-[10px] text-slate-500 leading-snug shrink-0">
-                  Ogni calendario è un pattern di giorni (lun-ven, sab…): le corse agganciate circolano solo in quei giorni.
-                </p>
-              )}
               {/* Pannello Nodi unificato: tab Progetto / Globali legacy + mini-legenda.
                   La tab attiva coincide con activePanel, così layer mappa e logica
                   esistente (clusters / ne-clusters) restano invariati. */}
@@ -3060,23 +3049,6 @@ export default function PlanningStudioEditorPage() {
                         }
                         toast.success("Percorso eliminato", { description: "La linea resta (anche con 0 percorsi)." });
                       } catch (e: any) { toast.error("Errore", { description: e?.message }); }
-                    }}
-                  />
-                )}
-                {activePanel === "calendars" && (
-                  <CalendarsPanel
-                    calendars={calendars}
-                    onCreate={async (input) => {
-                      try {
-                        const c = await createPsCalendar(projectId, input);
-                        setCalendars(cs => [...cs, c]);
-                        toast.success("Calendario creato");
-                      } catch (e: any) { toast.error("Errore", { description: e?.message }); }
-                    }}
-                    onDelete={async (id) => {
-                      if (!confirm("Eliminare il calendario?")) return;
-                      try { await deletePsCalendar(projectId, id); setCalendars(cs => cs.filter(c => c.id !== id)); toast.success("Eliminato"); }
-                      catch (e: any) { toast.error("Errore", { description: e?.message }); }
                     }}
                   />
                 )}
@@ -3737,91 +3709,6 @@ function RoutesPanel({
             </div>
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-/* ════════════════════════════════════════════════════════════
- *  Sidebar — Calendari (semplificato)
- * ════════════════════════════════════════════════════════════ */
-function CalendarsPanel({
-  calendars, onCreate, onDelete,
-}: {
-  calendars: PsCalendar[];
-  onCreate: (input: any) => Promise<void>;
-  onDelete: (id: string) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const today = new Date().toISOString().slice(0, 10);
-  const nextYear = new Date(Date.now() + 365 * 86400000).toISOString().slice(0, 10);
-  const [form, setForm] = useState({
-    code: "", name: "", startDate: today, endDate: nextYear,
-    monday: true, tuesday: true, wednesday: true, thursday: true, friday: true,
-    saturday: false, sunday: false,
-  });
-  const dows = [
-    ["monday", "L"], ["tuesday", "M"], ["wednesday", "M"], ["thursday", "G"],
-    ["friday", "V"], ["saturday", "S"], ["sunday", "D"],
-  ] as const;
-  return (
-    <div className="p-3 space-y-3">
-      {!open ? (
-        <button onClick={() => setOpen(true)}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-white text-sm font-medium">
-          <Plus className="w-4 h-4" /> Nuovo calendario
-        </button>
-      ) : (
-        <div className="rounded-lg bg-slate-900 border border-slate-800 p-3 space-y-2">
-          <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} placeholder="Codice (es. WEEKDAY)"
-            className="w-full px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700" />
-          <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Nome (opzionale)"
-            className="w-full px-2 py-1.5 rounded bg-slate-800 text-sm border border-slate-700" />
-          <div className="flex gap-1">
-            {dows.map(([k, lbl]) => (
-              <button key={k} onClick={() => setForm({ ...form, [k]: !form[k] } as any)}
-                className={`flex-1 text-xs py-1.5 rounded font-medium ${(form as any)[k] ? "bg-emerald-500 text-white" : "bg-slate-800 text-slate-500"}`}>
-                {lbl}
-              </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input type="date" value={form.startDate} onChange={e => setForm({ ...form, startDate: e.target.value })}
-              className="px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
-            <input type="date" value={form.endDate} onChange={e => setForm({ ...form, endDate: e.target.value })}
-              className="px-2 py-1.5 rounded bg-slate-800 text-xs border border-slate-700" />
-          </div>
-          <div className="flex gap-2 pt-1">
-            <button onClick={() => setOpen(false)} className="flex-1 text-xs px-2 py-1.5 rounded bg-slate-800 text-slate-300">Annulla</button>
-            <button onClick={async () => { if (!form.code.trim()) { toast.error("Codice obbligatorio"); return; } await onCreate(form); setOpen(false); }}
-              className="flex-1 text-xs px-2 py-1.5 rounded bg-emerald-500 text-white font-medium">Crea</button>
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-1">
-        {calendars.length === 0 && <p className="text-center text-xs text-slate-500 py-8">Nessun calendario</p>}
-        {calendars.map(c => (
-          <div key={c.id} className="group rounded-lg border border-slate-800 px-3 py-2 hover:bg-slate-900">
-            <div className="flex items-center gap-2">
-              <CalendarIcon className="w-3.5 h-3.5 text-emerald-400" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium">{c.code}</p>
-                <p className="text-[10px] text-slate-500">{c.startDate} → {c.endDate}</p>
-              </div>
-              <button onClick={() => onDelete(c.id)} className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-red-400">
-                <Trash2 className="w-3 h-3" />
-              </button>
-            </div>
-            <div className="flex gap-0.5 mt-1.5">
-              {(["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] as const).map((d, i) => (
-                <span key={d} className={`text-[9px] w-4 h-4 flex items-center justify-center rounded ${(c as any)[d] ? "bg-emerald-500/30 text-emerald-200" : "bg-slate-800 text-slate-600"}`}>
-                  {"LMMGVSD"[i]}
-                </span>
-              ))}
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );
