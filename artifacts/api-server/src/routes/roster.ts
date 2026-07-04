@@ -62,11 +62,35 @@ async function ensureRosterTables(): Promise<void> {
     "patente text", "patente_validita date",
     "cqc_numero text", "cqc_validita date",
     "visita_medica_validita date", "note text",
+    // ── nuovi: foto, abilitazioni, visite mediche distinte ──
+    "photo_url text",
+    "abilitazioni text[] NOT NULL DEFAULT '{}'::text[]",
+    "visita_ferrovie_validita date",           // idoneità sanitaria ferrovie
+    "visita_medico_competente_validita date",  // sorveglianza sanitaria D.Lgs 81
   ]) {
     await db.execute(sql.raw(`ALTER TABLE roster_drivers ADD COLUMN IF NOT EXISTS ${col}`));
   }
+  // Storico del conducente (append-only): depositi, categoria, visite, patente, cqc.
+  // event_date = data di passaggio/visita; expiry_date = scadenza (dove ha senso).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS roster_driver_history (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
+      kind text NOT NULL,               -- deposito | categoria | visita_ferrovie | visita_medico_competente | patente | cqc
+      value text,                       -- deposito/categoria/classe patente/esito visita/n. cqc
+      event_date date,                  -- data di passaggio o della visita
+      expiry_date date,                 -- scadenza (visite/patenti/cqc)
+      note text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_hist_driver ON roster_driver_history(driver_id, event_date DESC)`);
   bootstrapped = true;
 }
+
+/** Abilitazioni ammesse (chiavi stabili, il simbolo/label è lato frontend). */
+const ABILITAZIONI = ["autobus", "filobus", "autosnodato", "ascensore", "verificatore"];
+const HISTORY_KINDS = ["deposito", "categoria", "visita_ferrovie", "visita_medico_competente", "patente", "cqc"];
 
 router.use(async (_req, _res, next) => { await ensureRosterTables(); next(); });
 
@@ -120,6 +144,10 @@ function rowToDriver(d: any) {
     patente: d.patente ?? null, patenteValidita: d.patente_validita ?? null,
     cqcNumero: d.cqc_numero ?? null, cqcValidita: d.cqc_validita ?? null,
     visitaMedicaValidita: d.visita_medica_validita ?? null, note: d.note ?? null,
+    photoUrl: d.photo_url ?? null,
+    abilitazioni: Array.isArray(d.abilitazioni) ? d.abilitazioni : [],
+    visitaFerrovieValidita: d.visita_ferrovie_validita ?? null,
+    visitaMedicoCompetenteValidita: d.visita_medico_competente_validita ?? null,
   };
 }
 
@@ -133,8 +161,15 @@ function driverFieldPairs(b: any): Array<{ col: string; val: any }> {
     patente: b.patente, patente_validita: b.patenteValidita,
     cqc_numero: b.cqcNumero, cqc_validita: b.cqcValidita,
     visita_medica_validita: b.visitaMedicaValidita, note: b.note, badge: b.badge,
+    photo_url: b.photoUrl,
+    visita_ferrovie_validita: b.visitaFerrovieValidita,
+    visita_medico_competente_validita: b.visitaMedicoCompetenteValidita,
   };
-  const dateCols = new Set(["data_nascita", "data_assunzione", "data_fine_servizio", "patente_validita", "cqc_validita", "visita_medica_validita"]);
+  const dateCols = new Set([
+    "data_nascita", "data_assunzione", "data_fine_servizio",
+    "patente_validita", "cqc_validita", "visita_medica_validita",
+    "visita_ferrovie_validita", "visita_medico_competente_validita",
+  ]);
   const out: Array<{ col: string; val: any }> = [];
   for (const [col, raw] of Object.entries(m)) {
     if (raw === undefined) continue;
@@ -144,6 +179,14 @@ function driverFieldPairs(b: any): Array<{ col: string; val: any }> {
     out.push({ col, val });
   }
   return out;
+}
+
+/** Letterale Postgres `{a,b}` per la colonna abilitazioni (chiavi allowlist,
+ *  quindi alfanumeriche: nessun escaping necessario). undefined = non toccare. */
+function abilitazioniLiteral(b: any): string | undefined {
+  if (!Array.isArray(b.abilitazioni)) return undefined;
+  const vals = b.abilitazioni.map((x: any) => String(x)).filter((x: string) => ABILITAZIONI.includes(x));
+  return `{${vals.join(",")}}`;
 }
 
 router.get("/roster/drivers", async (_req, res): Promise<void> => {
@@ -164,9 +207,11 @@ router.post("/roster/drivers", async (req, res): Promise<void> => {
     if (!name) { res.status(400).json({ error: "Cognome/Nome obbligatori" }); return; }
     const pairs = driverFieldPairs(b);
     const cols = ["name", "is_fictitious", ...pairs.map((p) => p.col)];
-    const vals = [name, !!b.isFictitious, ...pairs.map((p) => p.val)];
+    const frags = [sql`${name}`, sql`${!!b.isFictitious}`, ...pairs.map((p) => sql`${p.val}`)];
+    const abil = abilitazioniLiteral(b);
+    if (abil !== undefined) { cols.push("abilitazioni"); frags.push(sql`${abil}::text[]`); }
     const colSql = sql.raw(cols.join(", "));
-    const valSql = sql.join(vals.map((v) => sql`${v}`), sql`, `);
+    const valSql = sql.join(frags, sql`, `);
     const r = await db.execute<any>(sql`
       INSERT INTO roster_drivers (${colSql}) VALUES (${valSql}) RETURNING *
     `);
@@ -186,6 +231,8 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
       if (nm) sets.push(sql`name = ${nm}`);
     }
     for (const { col, val } of driverFieldPairs(b)) sets.push(sql`${sql.raw(col)} = ${val}`);
+    const abil = abilitazioniLiteral(b);
+    if (abil !== undefined) sets.push(sql`abilitazioni = ${abil}::text[]`);
     if (sets.length === 0) { res.status(400).json({ error: "Nessun campo da aggiornare" }); return; }
     const r = await db.execute<any>(sql`
       UPDATE roster_drivers SET ${sql.join(sets, sql`, `)}
@@ -219,6 +266,58 @@ router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
 router.delete("/roster/drivers/:id", async (req, res): Promise<void> => {
   try {
     await db.execute(sql`UPDATE roster_drivers SET is_active = false WHERE id = ${String(req.params.id)}::uuid`);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Storico conducente (depositi, categoria, visite, patente, cqc) ────────────
+
+function rowToHistory(h: any) {
+  return {
+    id: h.id, driverId: h.driver_id, kind: h.kind, value: h.value ?? null,
+    eventDate: h.event_date ?? null, expiryDate: h.expiry_date ?? null,
+    note: h.note ?? null, createdAt: h.created_at,
+  };
+}
+
+router.get("/roster/drivers/:id/history", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT * FROM roster_driver_history
+       WHERE driver_id = ${id}::uuid
+       ORDER BY event_date DESC NULLS LAST, created_at DESC
+    `);
+    res.json({ history: r.rows.map(rowToHistory) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.post("/roster/drivers/:id/history", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const b = req.body ?? {};
+    const kind = String(b.kind ?? "");
+    if (!HISTORY_KINDS.includes(kind)) { res.status(400).json({ error: "kind non valido" }); return; }
+    const value = b.value != null && String(b.value).trim() ? String(b.value).trim().slice(0, 200) : null;
+    const eventDate = DATE_RE.test(String(b.eventDate ?? "")) ? String(b.eventDate) : null;
+    const expiryDate = DATE_RE.test(String(b.expiryDate ?? "")) ? String(b.expiryDate) : null;
+    const note = b.note != null && String(b.note).trim() ? String(b.note).trim().slice(0, 500) : null;
+    const r = await db.execute<any>(sql`
+      INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note)
+      VALUES (${id}::uuid, ${kind}, ${value}, ${eventDate}::date, ${expiryDate}::date, ${note})
+      RETURNING *
+    `);
+    res.status(201).json(rowToHistory(r.rows[0]));
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
+  try {
+    const hid = String(req.params.hid);
+    if (!UUID_RE.test(hid)) { res.status(400).json({ error: "ID non valido" }); return; }
+    await db.execute(sql`DELETE FROM roster_driver_history WHERE id = ${hid}::uuid`);
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
