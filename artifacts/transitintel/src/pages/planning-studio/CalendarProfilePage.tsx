@@ -16,11 +16,24 @@ import { ArrowLeft, CalendarRange, Loader2, Plus, Save, Trash2 } from "lucide-re
 import { apiFetch } from "@/lib/api";
 import ValiditySectionNav from "./ValiditySectionNav";
 
+type PeriodKind = "estivo" | "invernale";
+interface ClosedPeriod { from: string; to: string; label?: string; kind?: PeriodKind }
 interface Profile {
-  /** periodi di SCUOLE CHIUSE; vuoto = tutto l'anno scuole aperte */
-  closedPeriods: Array<{ from: string; to: string; label?: string }>;
+  /** periodi di SCUOLE CHIUSE; vuoto = tutto l'anno scuole aperte.
+   *  Ogni periodo porta il proprio tipo (estivo/invernale): così si possono
+   *  inserire PIÙ periodi invernali (Natale, Pasqua, ponti…) e più estivi. */
+  closedPeriods: ClosedPeriod[];
+  /** @deprecated periodo estivo unico — solo per leggere i profili legacy */
   summerPeriod: { from: string; to: string } | null;
   extraHolidays: string[];
+}
+
+/** Tipo effettivo di un periodo: esplicito, oppure dedotto dal vecchio
+ *  summerPeriod per i profili salvati prima della migrazione. */
+function periodKind(p: ClosedPeriod, summer: { from: string; to: string } | null): PeriodKind {
+  if (p.kind) return p.kind;
+  if (summer && p.from <= summer.to && p.to >= summer.from) return "estivo"; // overlap col periodo estivo legacy
+  return "invernale";
 }
 interface DayClass { date: string; weekday: number; level1: string; level2: string | null; label: string; key: string }
 interface Classification {
@@ -59,9 +72,22 @@ export default function CalendarProfilePage() {
   const edit = (p: Profile) => setDraft(p);
 
   const saveMut = useMutation({
-    mutationFn: () => apiFetch(`/api/planning-studio/projects/${projectId}/calendar-profile`, {
-      method: "PUT", body: JSON.stringify(profile),
-    }),
+    mutationFn: () => {
+      // Migrazione: ogni periodo viene salvato con il proprio `kind` esplicito
+      // e il vecchio summerPeriod unico viene azzerato (ora è ridondante).
+      const normalized: Profile = {
+        closedPeriods: profile.closedPeriods.map((p) => ({
+          from: p.from, to: p.to,
+          ...(p.label && p.label.trim() ? { label: p.label.trim() } : {}),
+          kind: periodKind(p, profile.summerPeriod),
+        })),
+        summerPeriod: null,
+        extraHolidays: profile.extraHolidays,
+      };
+      return apiFetch(`/api/planning-studio/projects/${projectId}/calendar-profile`, {
+        method: "PUT", body: JSON.stringify(normalized),
+      });
+    },
     onSuccess: () => {
       toast.success("Calendario aziendale salvato");
       setDraft(null);
@@ -107,48 +133,56 @@ export default function CalendarProfilePage() {
       <ValiditySectionNav projectId={projectId} active="calendar" />
 
       <div className="grid lg:grid-cols-3 gap-4">
-        {/* Periodi SCUOLE CHIUSE (vacanze) — il resto è scuole aperte */}
-        <div className="rounded-xl border border-border/60 bg-card/60 p-4 space-y-2">
-          <p className="text-xs font-semibold flex items-center justify-between">
-            Periodi scuole chiuse (vacanze)
-            <button
-              onClick={() => edit({ ...profile, closedPeriods: [...profile.closedPeriods, { from: `${year}-06-08`, to: `${year}-09-14` }] })}
-              className="p-1 rounded hover:bg-white/10 text-amber-400"
-            ><Plus className="w-3.5 h-3.5" /></button>
-          </p>
-          {profile.closedPeriods.map((p, i) => (
-            <div key={i} className="flex items-center gap-1.5 text-xs">
-              <input type="text" value={p.label ?? ""} placeholder="Nome (es. Estivo, Natale…)"
-                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, label: e.target.value } : x) })}
-                title="Nome del periodo di scuole chiuse: identifica il periodo (es. invernale/estivo) in matrice e nelle UDP"
-                className="w-32 px-2 py-1 rounded bg-background border border-border/60" />
-              <input type="date" value={p.from}
-                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })}
-                className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
-              <span>→</span>
-              <input type="date" value={p.to}
-                onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, to: e.target.value } : x) })}
-                className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
-              <button onClick={() => edit({ ...profile, closedPeriods: profile.closedPeriods.filter((_, j) => j !== i) })}
-                className="p-1 rounded hover:bg-red-500/10 text-red-400"><Trash2 className="w-3 h-3" /></button>
+        {/* Periodi SCUOLE CHIUSE (vacanze) — il resto è scuole aperte.
+            Ogni periodo ha il proprio tipo (estivo/invernale): puoi inserire
+            più periodi invernali (Natale, Pasqua, ponti…) senza un blocco unico. */}
+        <div className="lg:col-span-2 rounded-xl border border-border/60 bg-card/60 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold">Periodi scuole chiuse (vacanze)</p>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => edit({ ...profile, closedPeriods: [...profile.closedPeriods, { from: `${year}-06-08`, to: `${year}-09-14`, kind: "estivo", label: "Estivo" }] })}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-medium"
+                title="Aggiungi un periodo estivo di scuole chiuse"
+              ><Plus className="w-3 h-3" /> Estivo</button>
+              <button
+                onClick={() => edit({ ...profile, closedPeriods: [...profile.closedPeriods, { from: `${year}-12-23`, to: `${year}-12-31`, kind: "invernale" }] })}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 text-[11px] font-medium"
+                title="Aggiungi un periodo invernale di scuole chiuse (es. Natale, Pasqua)"
+              ><Plus className="w-3 h-3" /> Invernale</button>
             </div>
-          ))}
-          {profile.closedPeriods.length === 0 && <p className="text-[11px] text-muted-foreground">Nessun periodo: tutto l'anno conta come "scuole aperte". Aggiungi le vacanze (estate, Natale, …).</p>}
-        </div>
-
-        {/* Periodo estivo */}
-        <div className="rounded-xl border border-border/60 bg-card/60 p-4 space-y-2">
-          <p className="text-xs font-semibold">Periodo estivo (sotto-ramo "scuole chiuse")</p>
-          <div className="flex items-center gap-1.5 text-xs">
-            <input type="date" value={profile.summerPeriod?.from ?? ""}
-              onChange={(e) => edit({ ...profile, summerPeriod: { from: e.target.value, to: profile.summerPeriod?.to ?? `${year}-09-14` } })}
-              className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
-            <span>→</span>
-            <input type="date" value={profile.summerPeriod?.to ?? ""}
-              onChange={(e) => edit({ ...profile, summerPeriod: { from: profile.summerPeriod?.from ?? `${year}-06-15`, to: e.target.value } })}
-              className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
           </div>
-          <p className="text-[11px] text-muted-foreground">Fuori da questo intervallo, "scuole chiuse" = invernale (es. vacanze di Natale).</p>
+          {profile.closedPeriods.map((p, i) => {
+            const kind = periodKind(p, profile.summerPeriod);
+            const isSummer = kind === "estivo";
+            return (
+              <div key={i} className="flex items-center gap-1.5 text-xs">
+                <select
+                  value={kind}
+                  onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, kind: e.target.value as PeriodKind } : x) })}
+                  title="Sotto-ramo scuole chiuse: estivo o invernale"
+                  className={`px-1.5 py-1 rounded border border-border/60 font-medium ${isSummer ? "bg-amber-500/15 text-amber-300" : "bg-sky-500/15 text-sky-300"}`}
+                >
+                  <option value="invernale">Invernale</option>
+                  <option value="estivo">Estivo</option>
+                </select>
+                <input type="text" value={p.label ?? ""} placeholder="Nome (es. Natale, Pasqua…)"
+                  onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, label: e.target.value } : x) })}
+                  title="Nome del periodo di scuole chiuse: identifica il periodo in matrice e nelle UDP"
+                  className="w-28 px-2 py-1 rounded bg-background border border-border/60" />
+                <input type="date" value={p.from}
+                  onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, from: e.target.value } : x) })}
+                  className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
+                <span>→</span>
+                <input type="date" value={p.to}
+                  onChange={(e) => edit({ ...profile, closedPeriods: profile.closedPeriods.map((x, j) => j === i ? { ...x, to: e.target.value } : x) })}
+                  className="flex-1 px-2 py-1 rounded bg-background border border-border/60" />
+                <button onClick={() => edit({ ...profile, closedPeriods: profile.closedPeriods.filter((_, j) => j !== i) })}
+                  className="p-1 rounded hover:bg-red-500/10 text-red-400"><Trash2 className="w-3 h-3" /></button>
+              </div>
+            );
+          })}
+          {profile.closedPeriods.length === 0 && <p className="text-[11px] text-muted-foreground">Nessun periodo: tutto l'anno conta come "scuole aperte". Aggiungi le vacanze — estive (es. giugno–settembre) e invernali (Natale, Pasqua, ponti). Puoi inserirne quante ne servono.</p>}
         </div>
 
         {/* Festività extra */}

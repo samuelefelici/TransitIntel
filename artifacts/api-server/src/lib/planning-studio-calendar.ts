@@ -78,6 +78,8 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
             from: p.from, to: p.to,
             // nome del periodo (es. "Estivo", "Natale"): identificazione umana
             ...(typeof p.label === "string" && p.label.trim() ? { label: p.label.trim().slice(0, 60) } : {}),
+            // sotto-ramo scuole chiuse: estivo | invernale (default invernale)
+            ...(p.kind === "estivo" || p.kind === "invernale" ? { kind: p.kind } : {}),
           }))
       : [];
     const summerPeriod = b.summerPeriod && DATE_RE.test(b.summerPeriod.from) && DATE_RE.test(b.summerPeriod.to)

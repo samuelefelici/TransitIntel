@@ -73,6 +73,50 @@ describe("classifyDate — albero a 3 livelli", () => {
   });
 });
 
+describe("classifyDate — tipo per periodo (kind), più periodi invernali", () => {
+  // Nuovo modello: ogni periodo di scuole chiuse porta il proprio `kind`.
+  // Niente summerPeriod: si possono avere PIÙ periodi invernali.
+  const PROFILE_KIND: CalendarProfile = {
+    closedPeriods: [
+      { from: "2026-01-01", to: "2026-01-06", kind: "invernale", label: "Befana" },
+      { from: "2026-04-03", to: "2026-04-07", kind: "invernale", label: "Pasqua" },
+      { from: "2026-06-08", to: "2026-09-14", kind: "estivo", label: "Estivo" },
+      { from: "2026-12-23", to: "2026-12-31", kind: "invernale", label: "Natale" },
+    ],
+    summerPeriod: null,
+    extraHolidays: [],
+  };
+
+  it("periodo con kind=estivo → estivo (senza summerPeriod)", () => {
+    const c = classifyDate("2026-07-15", PROFILE_KIND); // mercoledì
+    expect(c.level1).toBe("scuole_chiuse");
+    expect(c.level2).toBe("estivo");
+  });
+  it("primo periodo invernale (gennaio) → invernale", () => {
+    const c = classifyDate("2026-01-02", PROFILE_KIND); // venerdì
+    expect(c.level2).toBe("invernale");
+  });
+  it("secondo periodo invernale (Pasqua) → invernale", () => {
+    const c = classifyDate("2026-04-03", PROFILE_KIND); // venerdì, non rosso
+    expect(c.level1).toBe("scuole_chiuse");
+    expect(c.level2).toBe("invernale");
+  });
+  it("terzo periodo invernale (Natale) → invernale", () => {
+    const c = classifyDate("2026-12-28", PROFILE_KIND); // lunedì
+    expect(c.level2).toBe("invernale");
+  });
+  it("il kind esplicito vince sul summerPeriod legacy", () => {
+    // periodo dentro il vecchio summerPeriod ma marcato invernale → invernale
+    const mixed: CalendarProfile = {
+      closedPeriods: [{ from: "2026-07-01", to: "2026-07-31", kind: "invernale" }],
+      summerPeriod: { from: "2026-06-15", to: "2026-09-14" },
+      extraHolidays: [],
+    };
+    const c = classifyDate("2026-07-15", mixed); // mercoledì
+    expect(c.level2).toBe("invernale");
+  });
+});
+
 describe("classifyRange — copertura totale e riepilogo", () => {
   it("ogni giorno dell'anno ha esattamente una foglia", () => {
     const { days, summary } = classifyRange("2026-01-01", "2026-12-31", PROFILE);

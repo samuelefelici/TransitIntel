@@ -19,10 +19,15 @@
  */
 
 export interface CalendarProfile {
-  /** intervalli SCUOLE CHIUSE [{from,to,label?}]; vuoto = tutto l'anno scuole
-   *  aperte. label = nome del periodo (es. "Estivo", "Natale", "Pasqua"). */
-  closedPeriods: Array<{ from: string; to: string; label?: string }>;
-  /** periodo estivo (sotto-ramo di "scuole chiuse") */
+  /** intervalli SCUOLE CHIUSE [{from,to,label?,kind?}]; vuoto = tutto l'anno
+   *  scuole aperte. label = nome del periodo (es. "Estivo", "Natale", "Pasqua").
+   *  kind = sotto-ramo "scuole chiuse": estivo | invernale (default invernale).
+   *  Ogni periodo porta il proprio tipo, così si possono avere PIÙ periodi
+   *  invernali (Natale, Pasqua, ponti…) ed eventualmente più periodi estivi. */
+  closedPeriods: Array<{ from: string; to: string; label?: string; kind?: "estivo" | "invernale" }>;
+  /** @deprecated periodo estivo unico — sostituito dal `kind` per periodo.
+   *  Mantenuto solo per classificare i profili legacy salvati prima della
+   *  migrazione (fallback quando un periodo non ha `kind`). */
   summerPeriod: { from: string; to: string } | null;
   /** festività extra oltre ai rossi nazionali (es. patrono) "MM-DD" o "YYYY-MM-DD" */
   extraHolidays: string[];
@@ -92,10 +97,15 @@ export function classifyDate(date: string, profile: CalendarProfile, holidays?: 
     level2 = schoolsClosed ? "domenica_chiuse" : "domenica_aperte";
   }
   else if (!schoolsClosed) { level1 = "scuole_aperte"; level2 = null; }
-  else if (profile.summerPeriod && inRange(date, profile.summerPeriod.from, profile.summerPeriod.to)) {
-    level1 = "scuole_chiuse"; level2 = "estivo";
-  } else {
-    level1 = "scuole_chiuse"; level2 = "invernale";
+  else {
+    // Scuole chiuse → estivo | invernale. Preferisci il tipo ESPLICITO del
+    // periodo (`kind`); per i profili legacy senza kind, cade sul vecchio
+    // summerPeriod (dentro = estivo, fuori = invernale).
+    const isSummer = closedPeriod?.kind
+      ? closedPeriod.kind === "estivo"
+      : !!(profile.summerPeriod && inRange(date, profile.summerPeriod.from, profile.summerPeriod.to));
+    level1 = "scuole_chiuse";
+    level2 = isSummer ? "estivo" : "invernale";
   }
 
   // 3° livello: per i feriali distinguiamo lun-ven vs sabato (prassi TPL);
