@@ -7,11 +7,12 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio, Printer, Shuffle,
+  Milestone, Radio, Printer, Shuffle, Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
-import { getApiBase } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
+import { getApiBase, apiFetch } from "@/lib/api";
 import CopilotSidebar from "@/components/CopilotSidebar";
 import logoImg from "/logo.png";
 import logoSidebarImg from "/logosidebar.png";
@@ -81,6 +82,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [isMobileOpen, setIsMobileOpen] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
   const { logout, user, isAdmin, hasPermission } = useAuth();
+  const { toast } = useToast();
+
+  /* ── SSO verso FleetCare (modulo gestione flotta) ──
+   * FleetCare è un'app separata sullo stesso database: NON ha login proprio.
+   * Il backend emette un token monouso (60s) e ci reindirizza là già autenticati. */
+  const [fleetcareBusy, setFleetcareBusy] = React.useState(false);
+  const openFleetCare = React.useCallback(async () => {
+    if (fleetcareBusy) return;
+    setFleetcareBusy(true);
+    try {
+      const r = await apiFetch<{ url: string }>("/api/auth/fleetcare-sso");
+      window.location.href = r.url;
+    } catch (e: any) {
+      setFleetcareBusy(false);
+      toast({
+        title: "FleetCare non disponibile",
+        description: e?.message || "Errore durante l'accesso a FleetCare.",
+        variant: "destructive",
+      });
+    }
+  }, [fleetcareBusy, toast]);
 
   // Filtra le voci di Panoramica per i permessi (analytics)
   // e nasconde sezioni intere se non si ha il permesso richiesto.
@@ -702,6 +724,45 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             );
           })}
+
+          {/* ── Moduli Cerbero: FleetCare (app esterna via SSO) ──
+              Visibile solo agli utenti abilitati (admin sempre). */}
+          {hasPermission("fleetcare") && (
+            <div className="space-y-0.5">
+              {!collapsed && (
+                <p className="px-3 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+                  Moduli Cerbero
+                </p>
+              )}
+              {collapsed && (
+                <div className="flex justify-center py-1 mb-0.5">
+                  <div title="Moduli Cerbero" className="w-6 h-px bg-border/40 rounded" />
+                </div>
+              )}
+              <button
+                onClick={() => { setIsMobileOpen(false); void openFleetCare(); }}
+                disabled={fleetcareBusy}
+                title={collapsed ? "FleetCare — Gestione Flotta" : undefined}
+                data-virgilio-id="nav:fleetcare"
+                className={`
+                  w-full flex items-center gap-3 rounded-lg cursor-pointer
+                  transition-all duration-150 group text-sm
+                  ${collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5"}
+                  text-sky-400/70 hover:bg-sky-500/8 hover:text-sky-200 disabled:opacity-60
+                `}
+              >
+                <Wrench className={`w-4 h-4 shrink-0 transition-colors ${fleetcareBusy ? "animate-pulse text-sky-300" : "text-sky-500/70 group-hover:text-sky-300"}`} />
+                {!collapsed && (
+                  <span className="flex-1 min-w-0 text-left">
+                    <span className="block text-[13px] leading-tight text-sky-400/80 group-hover:text-sky-200 transition-colors">
+                      {fleetcareBusy ? "Apro FleetCare…" : "FleetCare"}
+                    </span>
+                    <span className="block text-[9px] text-sky-400/40 font-mono">Flotta · manutenzione · officina</span>
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
         </nav>
         )} {/* end normal nav conditional */}
 
