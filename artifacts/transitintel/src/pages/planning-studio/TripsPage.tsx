@@ -65,9 +65,13 @@ function fmtDate(d?: string | null) {
 const WD_LABELS_ROW = ["L", "M", "M", "G", "V", "S", "D"];
 const WD_NAMES = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
 const wdTypicalCode = (i: number) => (i <= 4 ? "feriale" : i === 5 ? "sabato" : "festivo");
-/** Pattern settimanale L…D di un calendario (per il fallback della maschera). */
+/** Pattern settimanale L…D di un calendario (per il fallback della maschera).
+ *  Usa `effectiveWeekdays` se presente (deduce i giorni dai calendar_dates per i
+ *  calendari senza flag settimanali), altrimenti i flag monday…sunday. */
 function calWeekdays(c: PsCalendar | undefined | null): boolean[] | null {
-  return c ? [c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday] : null;
+  if (!c) return null;
+  if (Array.isArray(c.effectiveWeekdays) && c.effectiveWeekdays.length === 7) return c.effectiveWeekdays.map(Boolean);
+  return [c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday];
 }
 /** Maschera settimanale EFFETTIVA della corsa:
  *  1) `attributes.weekdays` esplicita, se presente; altrimenti
