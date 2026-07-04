@@ -1387,11 +1387,17 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
   const proj = await requireProject(req, res); if (!proj) return;
   const routeId = req.query.routeId ? String(req.query.routeId) : null;
   const variantId = req.query.variantId ? String(req.query.variantId) : null;
+  // Filtro per CATEGORIA del calendario aziendale (validità): corse a cui è
+  // esplicitamente assegnata la categoria (coerente con la colonna "Categorie").
+  const categoryId = req.query.categoryId ? String(req.query.categoryId) : null;
   const r = await db.execute(sql`
     SELECT t.* FROM ps_trips t
      WHERE t.project_id = ${proj.id}::uuid
        AND (${routeId}::uuid IS NULL OR t.route_id = ${routeId}::uuid)
        AND (${variantId}::uuid IS NULL OR t.variant_id = ${variantId}::uuid)
+       AND (${categoryId}::uuid IS NULL OR EXISTS (
+             SELECT 1 FROM ps_trip_category_validity cv
+              WHERE cv.trip_id = t.id AND cv.category_id = ${categoryId}::uuid))
      ORDER BY t.created_at ASC
      LIMIT 5000
   `);

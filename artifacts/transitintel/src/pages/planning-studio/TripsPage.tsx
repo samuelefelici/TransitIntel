@@ -132,7 +132,9 @@ export default function PlanningStudioTripsPage() {
   /* ─── Filtri ─── */
   const [routeId, setRouteId] = useState<string>("");
   const [variantId, setVariantId] = useState<string>("");
-  const [calendarFilter, setCalendarFilter] = useState<string>("");
+  // Filtro per categoria del Calendario Aziendale (validità), non più per
+  // calendario GTFS: coerente con il resto del flusso di validità.
+  const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [onlyActive, setOnlyActive] = useState(false);
 
   // varianti dipendenti dalla route selezionata
@@ -146,10 +148,11 @@ export default function PlanningStudioTripsPage() {
 
   /* ─── Trips ─── */
   const tripsQ = useQuery({
-    queryKey: ["ps", projectId, "trips", routeId, variantId],
+    queryKey: ["ps", projectId, "trips", routeId, variantId, categoryFilter],
     queryFn: () => listPsTrips(projectId, {
       routeId: routeId || undefined,
       variantId: variantId || undefined,
+      categoryId: categoryFilter || undefined,
     }),
     enabled: !!projectId,
   });
@@ -180,7 +183,7 @@ export default function PlanningStudioTripsPage() {
 
   const filteredTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
-    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    // route/variant/categoria sono filtrati server-side (tripsQ); qui resta solo "solo attive".
     if (onlyActive) trips = trips.filter(t => t.isActive);
     // ordina per orario partenza se disponibile, altrimenti per shortName/headsign
     return [...trips].sort((a, b) => {
@@ -190,7 +193,7 @@ export default function PlanningStudioTripsPage() {
       if (tb) return 1;
       return (a.shortName || a.headsign || "").localeCompare(b.shortName || b.headsign || "");
     });
-  }, [tripsQ.data, calendarFilter, onlyActive, firstTimes]);
+  }, [tripsQ.data, onlyActive, firstTimes]);
 
   /* ─── Selezione bulk ─── */
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -205,7 +208,7 @@ export default function PlanningStudioTripsPage() {
     if (selected.size === filteredTrips.length) setSelected(new Set());
     else setSelected(new Set(filteredTrips.map(t => t.id)));
   }
-  useEffect(() => { setSelected(new Set()); }, [routeId, variantId, calendarFilter, onlyActive]);
+  useEffect(() => { setSelected(new Set()); }, [routeId, variantId, categoryFilter, onlyActive]);
 
   const [genOpen, setGenOpen] = useState(false);
   const [genTemplateId, setGenTemplateId] = useState("");
@@ -667,12 +670,13 @@ export default function PlanningStudioTripsPage() {
         </select>
 
         <select
-          value={calendarFilter} onChange={e => setCalendarFilter(e.target.value)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[160px]"
+          value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
+          title="Filtra le corse per categoria del Calendario Aziendale (es. Scuole Aperte, Scuole Chiuse Estivo…)"
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[180px]"
         >
-          <option value="">Tutti i calendari</option>
-          {calendars.map(c => (
-            <option key={c.id} value={c.id}>{c.code} {c.name ? `· ${c.name}` : ""}</option>
+          <option value="">Tutte le categorie (Cal. Aziendale)</option>
+          {(categoriesQ.data ?? []).map(c => (
+            <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
 
