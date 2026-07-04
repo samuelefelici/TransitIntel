@@ -32,11 +32,17 @@ interface RosterEntry { id: string; driverId: string; day: string; category: "as
 interface VoceDef { code: string; label: string }
 type VociCatalog = { assenza: VoceDef[]; presenza: VoceDef[] };
 interface ArmedVoce { category: "assenza" | "presenza"; code: string; label: string }
-/** Stile chip voce per categoria. */
+/** Stile chip voce nel menu della toolbar (solo lì usiamo lo sfondo colorato). */
 function voceStyle(cat: "assenza" | "presenza"): string {
   return cat === "assenza"
     ? "bg-rose-500/20 text-rose-200 border border-rose-500/40"
     : "bg-sky-500/20 text-sky-200 border border-sky-500/40";
+}
+/** Colore della SIGLA nella cella (niente card): assenze in rosso, Riposo in
+ *  blu, attività (presenze) in neutro/"nero". */
+function voceTextColor(cat: "assenza" | "presenza", code: string): string {
+  if (cat === "assenza") return code === "R" ? "text-blue-400" : "text-rose-500";
+  return "text-slate-100";
 }
 interface DutySource {
   dssId: string; name: string; scenarioName: string | null;
@@ -356,50 +362,53 @@ export default function RosterPage() {
                         const a = assignByCell.get(`${drv.id}|${day}`);
                         const duty = a ? dutyByCode.get(a.dutyCode) : undefined;
                         const cellEntries = entriesByCell.get(`${drv.id}|${day}`) ?? [];
+                        // elementi della cella: turno (se assegnato) + voci; il PRIMO è primario (grande).
+                        const items: Array<{ kind: "duty" } | { kind: "voce"; en: RosterEntry }> = [
+                          ...(a ? [{ kind: "duty" as const }] : []),
+                          ...cellEntries.map((en) => ({ kind: "voce" as const, en })),
+                        ];
+                        const hasItems = items.length > 0;
                         return (
-                          <td key={day} className="relative px-1.5 py-1.5 border-b border-slate-800/40 text-center align-middle">
-                            {cellEntries.length > 0 && (
-                              <div className="flex flex-wrap gap-0.5 justify-center mb-0.5">
-                                {cellEntries.map((en) => (
-                                  <span key={en.id} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-bold ${voceStyle(en.category)}`} title={en.category}>
-                                    {en.code}
-                                    <button onClick={(e) => { e.stopPropagation(); delEntryMut.mutate(en.id); }} className="hover:text-white leading-none">×</button>
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                            {a ? (
-                              <button
-                                onClick={() => { if (confirm(`Rimuovere ${a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a.id); }}
-                                title={duty ? `${a.dutyCode} · ${duty.start ?? ""}–${duty.end ?? ""} (click per rimuovere)` : a.dutyCode}
-                                className="w-full px-1.5 py-1 rounded text-white text-[10px] font-bold leading-tight hover:opacity-80"
-                                style={{ backgroundColor: resColor(duty) }}
-                              >
-                                {a.dutyCode}
-                                {duty?.start && <span className="block font-normal opacity-90">{duty.start}–{duty.end}</span>}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); }}
-                                className={`w-full h-8 rounded border border-dashed transition-colors ${cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300" : "border-slate-700/60 hover:border-violet-500/60 hover:bg-violet-500/5 text-slate-600 hover:text-violet-400"}`}
-                                title={cut && cut.day === day ? "Incolla qui (W)" : "Seleziona conducente"}
-                              >
-                                {cut && cut.day === day ? "↵" : "+"}
-                              </button>
-                            )}
-                            {armedVoce && (
-                              <button
-                                onClick={() => placeVoce(drv.id, day)}
-                                title={`Inserisci ${armedVoce.code} (${armedVoce.label})`}
-                                className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold rounded transition-colors ${
-                                  armedVoce.category === "assenza"
-                                    ? "bg-rose-500/15 hover:bg-rose-500/35 text-rose-200"
-                                    : "bg-sky-500/15 hover:bg-sky-500/35 text-sky-200"
-                                }`}
-                              >
-                                + {armedVoce.code}
-                              </button>
-                            )}
+                          <td key={day}
+                            onClick={armedVoce ? () => placeVoce(drv.id, day) : (!a ? () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); } : undefined)}
+                            className={`px-1 py-1 border-b border-slate-800/40 text-center align-middle ${armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : ""}`}>
+                            <div className={armedVoce ? "pointer-events-none" : ""}>
+                              {!hasItems ? (
+                                <div className={`h-9 rounded border border-dashed flex items-center justify-center text-xs ${
+                                  cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300"
+                                    : armedVoce ? "border-slate-700/50 text-slate-600"
+                                    : "border-slate-700/60 text-slate-600"
+                                }`}>{cut && cut.day === day ? "↵" : "+"}</div>
+                              ) : (
+                                <div className="space-y-0.5">
+                                  {items.map((it, idx) => {
+                                    const big = idx === 0;
+                                    if (it.kind === "duty") {
+                                      return (
+                                        <button key="duty"
+                                          onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${a!.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a!.id); }}
+                                          title={duty ? `${a!.dutyCode} · ${duty.start ?? ""}–${duty.end ?? ""} (click per rimuovere)` : a!.dutyCode}
+                                          className={`w-full rounded text-white font-bold leading-tight hover:opacity-80 ${big ? "px-1.5 py-1 text-[11px]" : "px-1 py-0.5 text-[9px]"}`}
+                                          style={{ backgroundColor: resColor(duty) }}>
+                                          {a!.dutyCode}
+                                          {big && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
+                                        </button>
+                                      );
+                                    }
+                                    const en = it.en;
+                                    return (
+                                      <div key={en.id}
+                                        className={`group relative w-full font-bold leading-none ${voceTextColor(en.category, en.code)} ${big ? "text-lg py-1" : "text-[11px] py-0.5"}`}
+                                        title={en.category}>
+                                        {en.code}
+                                        <button onClick={(e) => { e.stopPropagation(); delEntryMut.mutate(en.id); }}
+                                          className="absolute -top-0.5 -right-0.5 opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 text-[10px] leading-none">×</button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           </td>
                         );
                       })}
