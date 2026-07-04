@@ -448,7 +448,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
             {[
               { href: "/scenarios", label: "Scenari", icon: Route, desc: "Variazioni · ipotesi · A/B" },
-              { href: "/planning", label: "Planner Legacy", icon: Layers, desc: "Analisi GTFS · feed" },
+              { href: "/planning", label: "Planner Legacy", icon: Layers, desc: "Confronto tra due scenari" },
               { href: "/coincidence-zones", label: "Zone Coincidenza", icon: Zap, desc: "Hub · trasbordi" },
               { href: "/intermodal", label: "Intermodale", icon: ArrowRightLeft, desc: "Treno · gomma · integraz." },
             ].map((item) => {
