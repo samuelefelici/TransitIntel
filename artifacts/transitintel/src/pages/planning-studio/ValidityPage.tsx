@@ -1650,7 +1650,12 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
   const applyMut = useMutation({
     mutationFn: () => autoImportPsValidityFromCalendars(projectId, { dryRun: false }),
     onSuccess: (r) => {
-      toast.success(`Auto-import completato: ${r.summary.validityUpserts} validità + ${r.summary.exceptionInserts} eccezioni`);
+      toast.success(
+        `Auto-import completato: ${r.summary.validityUpserts} validità + ${r.summary.exceptionInserts} eccezioni`,
+        { description: typeof r.summary.tripCategoryUpserts === "number"
+            ? `Calendario Aziendale intrecciato: ${r.summary.categoryDates ?? 0} date classificate, categorie assegnate a ${r.summary.tripsWithCategories ?? 0} corse`
+            : undefined },
+      );
       onDone();
     },
     onError: (e: Error) => toast.error(e.message),
@@ -1687,6 +1692,11 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
             <li>Pattern domenica → day-type <span className="font-mono text-slate-300">festivo</span></li>
             <li>Date eccezione (calendar_dates) → eccezioni puntuali per ogni corsa del calendar</li>
             <li>Imposta valid_from/valid_to del trip dal range del calendar (solo se NULL)</li>
+            <li>
+              <span className="text-emerald-300 font-medium">Intreccio col Calendario Aziendale</span>: classifica ogni data
+              (Scuole Aperte / Scuole Chiuse / Festività), popola il calendario delle categorie e assegna a ogni corsa
+              le categorie dei periodi in cui circola davvero
+            </li>
           </ul>
 
           {!preview && (
@@ -1705,6 +1715,10 @@ function AutoImportDialog({ projectId, onClose, onDone }: AutoImportDialogProps)
               <div className="px-3 py-2 bg-slate-950 border-b border-slate-700 text-xs font-medium text-slate-300">
                 Preview · <span className="text-emerald-300">{preview.summary.calendars}</span> calendari · <span className="text-emerald-300">{preview.summary.validityUpserts}</span> righe validità
                 + <span className="text-emerald-300">{preview.summary.exceptionInserts}</span> eccezioni
+                {typeof preview.summary.tripCategoryUpserts === "number" && (
+                  <> · <span className="text-amber-300">{preview.summary.categoryDates ?? 0}</span> date classificate
+                  · <span className="text-amber-300">{preview.summary.tripCategoryUpserts}</span> categorie su <span className="text-amber-300">{preview.summary.tripsWithCategories ?? 0}</span> corse</>
+                )}
               </div>
               <table className="w-full text-xs">
                 <thead className="bg-slate-950 border-b border-slate-700 text-slate-400">

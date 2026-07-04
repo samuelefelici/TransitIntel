@@ -209,7 +209,11 @@ export async function postPsValidityBulk(
 export interface AutoImportSummary {
   ok: true;
   dryRun: boolean;
-  summary: { calendars: number; validityUpserts: number; exceptionInserts: number };
+  summary: {
+    calendars: number; validityUpserts: number; exceptionInserts: number;
+    /** sync col Calendario Aziendale: date classificate e categorie assegnate alle corse */
+    categoryDates?: number; tripCategoryUpserts?: number; tripsWithCategories?: number;
+  };
   perCalendar: Array<{
     calendarId: string;
     calendarCode: string | null;

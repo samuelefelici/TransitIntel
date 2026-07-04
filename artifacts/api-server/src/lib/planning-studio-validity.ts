@@ -35,6 +35,8 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { italianHolidays } from "./validity-matrix-shared";
+import { loadCalendarProfile } from "./planning-studio-calendar";
+import { classifyDate, italianHolidays as classifierHolidays } from "./day-classifier";
 
 const router: IRouter = Router();
 
@@ -1030,7 +1032,10 @@ export async function runValidityAutoImportFromCalendars(
   projectId: string,
   opts: { dryRun?: boolean } = {},
 ): Promise<{
-  summary: { calendars: number; validityUpserts: number; exceptionInserts: number };
+  summary: {
+    calendars: number; validityUpserts: number; exceptionInserts: number;
+    categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number;
+  };
   perCalendar: Array<{
     calendarId: string;
     calendarCode: string;
@@ -1124,10 +1129,269 @@ export async function runValidityAutoImportFromCalendars(
     }
   }
 
+  // ── Intreccio col Calendario Aziendale ──
+  // Deriva il calendario delle categorie (Scuole Aperte/Chiuse/Festività) dal
+  // profilo aziendale e assegna a ogni corsa le categorie dei periodi in cui
+  // circola davvero. Così filtro Corse, colonna Categorie, Matrice e UDP
+  // parlano la stessa lingua senza compilazioni manuali.
+  const catSync = await syncValidityCategoriesFromProfile(projectId, { dryRun });
+
   return {
-    summary: { calendars: cals.length, validityUpserts, exceptionInserts },
+    summary: {
+      calendars: cals.length, validityUpserts, exceptionInserts,
+      categoryDates: catSync.categoryDates,
+      tripCategoryUpserts: catSync.tripCategoryUpserts,
+      tripsWithCategories: catSync.tripsWithCategories,
+    },
     perCalendar,
   };
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Sincronizzazione categorie ← Calendario Aziendale
+ *  ────────────────────────────────────────────────────────────
+ *  1. Classifica ogni data del range dei calendari del progetto con il
+ *     day-classifier (profilo aziendale: periodi scuole chiuse + festivi):
+ *     scuole_aperte | scuole_chiuse | festivo.
+ *  2. Upsert in ps_validity_category_calendar (categoria per data) —
+ *     è la tabella usata dalle UDP per il validity_id.
+ *  3. Per ogni corsa calcola i giorni di circolazione reali (pattern del
+ *     calendario ∩ validità ∩ eccezioni calendario/corsa) e SOSTITUISCE le
+ *     assegnazioni in ps_trip_category_validity con le categorie dei periodi
+ *     effettivamente toccati. Alimenta filtro e colonna "Categorie" in Corse.
+ * ════════════════════════════════════════════════════════════ */
+
+const CLASS_TO_CATEGORY_CODE: Record<string, string> = {
+  scuole_aperte: "scuole_aperte",
+  scuole_chiuse: "scuole_chiuse",
+  festivo: "festivita",
+};
+
+const SEED_VALIDITY_CATEGORIES = [
+  { code: "scuole_aperte", name: "Scuole Aperte", color: "#3b82f6", sort: 10 },
+  { code: "scuole_chiuse", name: "Scuole Chiuse", color: "#f59e0b", sort: 20 },
+  { code: "festivita",     name: "Festività",     color: "#ef4444", sort: 30 },
+];
+
+export async function syncValidityCategoriesFromProfile(
+  projectId: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<{ categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number; from: string | null; to: string | null }> {
+  const dryRun = !!opts.dryRun;
+  const empty = { categoryDates: 0, tripCategoryUpserts: 0, tripsWithCategories: 0, from: null, to: null };
+
+  /* ── Dati del progetto ── */
+  const calsR = await db.execute(sql`
+    SELECT id, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
+           to_char(start_date, 'YYYY-MM-DD') AS start_date,
+           to_char(end_date,   'YYYY-MM-DD') AS end_date
+      FROM ps_calendars WHERE project_id = ${projectId}::uuid
+  `);
+  const cals: any[] = (calsR as any).rows ?? [];
+
+  const cdR = await db.execute(sql`
+    SELECT cd.calendar_id, to_char(cd.date, 'YYYY-MM-DD') AS date, cd.exception_type
+      FROM ps_calendar_dates cd
+      JOIN ps_calendars c ON c.id = cd.calendar_id
+     WHERE c.project_id = ${projectId}::uuid
+  `);
+  const cdates: any[] = (cdR as any).rows ?? [];
+
+  const tripsR = await db.execute(sql`
+    SELECT id, calendar_id,
+           to_char(valid_from, 'YYYY-MM-DD') AS valid_from,
+           to_char(valid_to,   'YYYY-MM-DD') AS valid_to
+      FROM ps_trips WHERE project_id = ${projectId}::uuid AND is_active = true
+  `);
+  const trips: any[] = (tripsR as any).rows ?? [];
+  if (trips.length === 0 && cals.length === 0) return empty;
+
+  const exR = await db.execute(sql`
+    SELECT e.trip_id, to_char(e.date, 'YYYY-MM-DD') AS date, e.exception_type
+      FROM ps_trip_exceptions e
+      JOIN ps_trips t ON t.id = e.trip_id
+     WHERE t.project_id = ${projectId}::uuid
+  `);
+  const tripExRows: any[] = (exR as any).rows ?? [];
+
+  /* ── Range date: dai calendari + eccezioni (clamp 750 giorni) ── */
+  let from: string | null = null;
+  let to: string | null = null;
+  const consider = (d: string | null) => {
+    if (!d) return;
+    if (!from || d < from) from = d;
+    if (!to || d > to) to = d;
+  };
+  for (const c of cals) { consider(c.start_date); consider(c.end_date); }
+  for (const cd of cdates) consider(cd.date);
+  for (const e of tripExRows) consider(e.date);
+  if (!from || !to) {
+    const y = new Date().getUTCFullYear();
+    from = `${y}-01-01`; to = `${y}-12-31`;
+  }
+  {
+    const spanDays = (new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / 86_400_000;
+    if (spanDays > 750) {
+      const cap = new Date(new Date(`${from}T00:00:00Z`).getTime() + 750 * 86_400_000);
+      to = cap.toISOString().slice(0, 10);
+    }
+  }
+
+  /* ── Classificazione per data (una volta sola) ── */
+  const profile = await loadCalendarProfile(projectId);
+  const holidaysByYear = new Map<number, Set<string>>();
+  const classByDate = new Map<string, string>(); // iso → level1
+  for (let t = new Date(`${from}T00:00:00Z`).getTime(); ; t += 86_400_000) {
+    const iso = new Date(t).toISOString().slice(0, 10);
+    if (iso > to) break;
+    const y = Number(iso.slice(0, 4));
+    if (!holidaysByYear.has(y)) holidaysByYear.set(y, classifierHolidays(y));
+    classByDate.set(iso, classifyDate(iso, profile, holidaysByYear.get(y)).level1);
+  }
+
+  /* ── Categorie (tabelle globali + seed idempotenti, lookup id per codice) ── */
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS ps_validity_categories (
+      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      code        text NOT NULL UNIQUE,
+      name        text NOT NULL,
+      color       text NOT NULL,
+      sort_order  integer NOT NULL DEFAULT 0,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      updated_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
+      date         date PRIMARY KEY,
+      category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  for (const c of SEED_VALIDITY_CATEGORIES) {
+    await db.execute(sql`
+      INSERT INTO ps_validity_categories (code, name, color, sort_order)
+      SELECT ${c.code}, ${c.name}, ${c.color}, ${c.sort}
+      WHERE NOT EXISTS (SELECT 1 FROM ps_validity_categories WHERE code = ${c.code})
+    `);
+  }
+  const catR = await db.execute(sql`
+    SELECT id, code FROM ps_validity_categories
+     WHERE code IN ('scuole_aperte', 'scuole_chiuse', 'festivita')
+  `);
+  const catIdByCode = new Map<string, string>();
+  for (const r of ((catR as any).rows ?? [])) catIdByCode.set(r.code, r.id);
+
+  /* ── Fase A: calendario categorie per data ── */
+  let categoryDates = 0;
+  const dateEntries: Array<{ iso: string; catId: string }> = [];
+  for (const [iso, level1] of classByDate) {
+    const catId = catIdByCode.get(CLASS_TO_CATEGORY_CODE[level1] ?? "");
+    if (catId) dateEntries.push({ iso, catId });
+  }
+  categoryDates = dateEntries.length;
+  if (!dryRun) {
+    const CHUNK = 400;
+    for (let i = 0; i < dateEntries.length; i += CHUNK) {
+      const chunk = dateEntries.slice(i, i + CHUNK);
+      const values = sql.join(chunk.map((e) => sql`(${e.iso}::date, ${e.catId}::uuid)`), sql`, `);
+      await db.execute(sql`
+        INSERT INTO ps_validity_category_calendar (date, category_id)
+        VALUES ${values}
+        ON CONFLICT (date) DO UPDATE SET category_id = EXCLUDED.category_id
+      `);
+    }
+  }
+
+  /* ── Fase B: giorni di circolazione per corsa → categorie ── */
+  // date attive per calendario: pattern settimanale ∩ [start,end] ± calendar_dates
+  const DOW_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+  const cdByCal = new Map<string, Array<{ date: string; type: number }>>();
+  for (const cd of cdates) {
+    if (!cdByCal.has(cd.calendar_id)) cdByCal.set(cd.calendar_id, []);
+    cdByCal.get(cd.calendar_id)!.push({ date: cd.date, type: Number(cd.exception_type) });
+  }
+  const calActive = new Map<string, Set<string>>();
+  for (const c of cals) {
+    const set = new Set<string>();
+    const cFrom = c.start_date && c.start_date > from! ? c.start_date : from!;
+    const cTo = c.end_date && c.end_date < to! ? c.end_date : to!;
+    if (cFrom <= cTo) {
+      for (let t = new Date(`${cFrom}T00:00:00Z`).getTime(); ; t += 86_400_000) {
+        const iso = new Date(t).toISOString().slice(0, 10);
+        if (iso > cTo) break;
+        const dow = DOW_KEYS[new Date(t).getUTCDay()];
+        if (c[dow]) set.add(iso);
+      }
+    }
+    for (const ex of cdByCal.get(c.id) ?? []) {
+      if (ex.type === 1) set.add(ex.date);
+      else set.delete(ex.date);
+    }
+    calActive.set(c.id, set);
+  }
+
+  const exByTrip = new Map<string, Array<{ date: string; type: number }>>();
+  for (const e of tripExRows) {
+    if (!exByTrip.has(e.trip_id)) exByTrip.set(e.trip_id, []);
+    exByTrip.get(e.trip_id)!.push({ date: e.date, type: Number(e.exception_type) });
+  }
+
+  let tripCategoryUpserts = 0;
+  let tripsWithCategories = 0;
+  const assignments: Array<{ tripId: string; catId: string }> = [];
+  for (const t of trips) {
+    const base = t.calendar_id ? (calActive.get(t.calendar_id) ?? new Set<string>()) : new Set<string>();
+    const days = new Set<string>();
+    for (const d of base) {
+      if (t.valid_from && d < t.valid_from) continue;
+      if (t.valid_to && d > t.valid_to) continue;
+      days.add(d);
+    }
+    for (const ex of exByTrip.get(t.id) ?? []) {
+      if (ex.type === 1) days.add(ex.date);
+      else days.delete(ex.date);
+    }
+    if (days.size === 0) continue;
+    const catIds = new Set<string>();
+    for (const d of days) {
+      const level1 = classByDate.get(d);
+      if (!level1) continue;
+      const catId = catIdByCode.get(CLASS_TO_CATEGORY_CODE[level1] ?? "");
+      if (catId) catIds.add(catId);
+    }
+    if (catIds.size === 0) continue;
+    tripsWithCategories++;
+    for (const catId of catIds) assignments.push({ tripId: t.id, catId });
+  }
+  tripCategoryUpserts = assignments.length;
+
+  if (!dryRun && trips.length > 0) {
+    // SOSTITUISCE le assegnazioni delle corse attive del progetto: la fonte di
+    // verità è il Calendario Aziendale (eventuali spunte manuali si rifanno
+    // dopo il sync, che gira solo su import GTFS / azione esplicita).
+    const allIds = trips.map((t) => t.id);
+    const CHUNK_DEL = 800;
+    for (let i = 0; i < allIds.length; i += CHUNK_DEL) {
+      const ids = allIds.slice(i, i + CHUNK_DEL);
+      await db.execute(sql`
+        DELETE FROM ps_trip_category_validity
+         WHERE trip_id = ANY(${`{${ids.join(",")}}`}::uuid[])
+      `);
+    }
+    const CHUNK_INS = 500;
+    for (let i = 0; i < assignments.length; i += CHUNK_INS) {
+      const chunk = assignments.slice(i, i + CHUNK_INS);
+      const values = sql.join(chunk.map((a) => sql`(${a.tripId}::uuid, ${a.catId}::uuid)`), sql`, `);
+      await db.execute(sql`
+        INSERT INTO ps_trip_category_validity (trip_id, category_id)
+        VALUES ${values}
+        ON CONFLICT (trip_id, category_id) DO NOTHING
+      `);
+    }
+  }
+
+  return { categoryDates, tripCategoryUpserts, tripsWithCategories, from, to };
 }
 
 /* ════════════════════════════════════════════════════════════
