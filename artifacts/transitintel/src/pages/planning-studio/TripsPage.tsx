@@ -65,10 +65,21 @@ function fmtDate(d?: string | null) {
 const WD_LABELS_ROW = ["L", "M", "M", "G", "V", "S", "D"];
 const WD_NAMES = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
 const wdTypicalCode = (i: number) => (i <= 4 ? "feriale" : i === 5 ? "sabato" : "festivo");
-/** Maschera settimanale della corsa (attributes.weekdays); assente = tutti attivi. */
-function wdMaskOf(trip: PsTrip): boolean[] {
+/** Pattern settimanale L…D di un calendario (per il fallback della maschera). */
+function calWeekdays(c: PsCalendar | undefined | null): boolean[] | null {
+  return c ? [c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday] : null;
+}
+/** Maschera settimanale EFFETTIVA della corsa:
+ *  1) `attributes.weekdays` esplicita, se presente; altrimenti
+ *  2) il pattern del calendario collegato (`fallback`, es. dopo import GTFS);
+ *  3) tutti i giorni attivi.
+ *  Così i bollini "Giorni validità" si accendono in base ai giorni reali di
+ *  circolazione anche prima di toccare la Matrice di validità. */
+function wdMaskOf(trip: PsTrip, fallback?: boolean[] | null): boolean[] {
   const w = (trip.attributes as any)?.weekdays;
-  return Array.isArray(w) && w.length === 7 ? w.map((x: any) => x !== false) : [true, true, true, true, true, true, true];
+  if (Array.isArray(w) && w.length === 7) return w.map((x: any) => x !== false);
+  if (fallback && fallback.length === 7) return fallback.map(Boolean);
+  return [true, true, true, true, true, true, true];
 }
 /** Classifica i tipi giorno per prefisso: feriale/FER, sabato/SAB, festivo/FES|DOM. */
 function classifyDayTypes(dayTypes: PsDayType[]): Record<string, PsDayType> {
@@ -539,11 +550,25 @@ export default function PlanningStudioTripsPage() {
     for (const c of categoriesQ.data ?? []) m.set(c.id, c);
     return m;
   }, [categoriesQ.data]);
-  /** Il giorno i è attivo per la corsa? (tipo giorno valido + maschera) */
+  /** calendarId → pattern settimanale L…D (fallback per la maschera corsa). */
+  const calWdById = useMemo(() => {
+    const m = new Map<string, boolean[]>();
+    for (const c of calendarsQ.data ?? []) m.set(c.id, calWeekdays(c)!);
+    return m;
+  }, [calendarsQ.data]);
+  const rowMask = (trip: PsTrip): boolean[] =>
+    wdMaskOf(trip, trip.calendarId ? calWdById.get(trip.calendarId) : null);
+  /** Il giorno i è attivo per la corsa?
+   *  Se la Matrice di validità non ha ancora righe per la corsa (tipico dopo
+   *  un import GTFS) si mostra direttamente la circolazione settimanale
+   *  (maschera esplicita o pattern del calendario). Con la matrice popolata si
+   *  interseca tipo-giorno valido × maschera. */
   function rowDayOn(trip: PsTrip, i: number): boolean {
+    const mask = rowMask(trip);
+    const dv = tripsValQ.data?.dayValidity?.[trip.id];
+    if (!dv || Object.keys(dv).length === 0) return mask[i];
     const dt = dtKinds[wdTypicalCode(i)];
-    const dv = tripsValQ.data?.dayValidity?.[trip.id] ?? {};
-    return !!(dt && dv[dt.id]) && wdMaskOf(trip)[i];
+    return !!(dt && dv[dt.id]) && mask[i];
   }
   const [rowWdBusy, setRowWdBusy] = useState(false);
   /** Toggle di un giorno direttamente dalla riga (stessa logica del drawer). */
@@ -551,7 +576,7 @@ export default function PlanningStudioTripsPage() {
     if (rowWdBusy || !tripsValQ.data || !dayTypesQ.data) return;
     setRowWdBusy(true);
     try {
-      const mask = wdMaskOf(trip);
+      const mask = rowMask(trip);
       const newWd = [...mask];
       if (rowDayOn(trip, i)) {
         newWd[i] = false; // spegni SOLO questo giorno
@@ -1547,13 +1572,26 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
     queryKey: ["ps", projectId, "trip-validity", trip.id],
     queryFn: () => getPsTripValidity(projectId, trip.id),
   });
+  const calendarsDrawerQ = useQuery({
+    queryKey: ["ps", projectId, "calendars"],
+    queryFn: () => listPsCalendars(projectId),
+    staleTime: 60_000,
+  });
   const [wdBusy, setWdBusy] = useState(false);
   const WD_LABELS = WD_LABELS_ROW;
-  const wdMask: boolean[] = wdMaskOf(trip);
+  // Fallback: pattern del calendario collegato (per corse importate da GTFS
+  // senza maschera esplicita), così i bollini riflettono la circolazione reale.
+  const calMask = useMemo(
+    () => calWeekdays((calendarsDrawerQ.data ?? []).find(c => c.id === trip.calendarId)),
+    [calendarsDrawerQ.data, trip.calendarId],
+  );
+  const wdMask: boolean[] = wdMaskOf(trip, calMask);
   const typicalCode = wdTypicalCode;
   const dtByCode = useMemo(() => classifyDayTypes(dayTypesDrawerQ.data ?? []), [dayTypesDrawerQ.data]);
   const dayValidity = tripValQ.data?.dayValidity ?? {};
   const dayOn = (i: number): boolean => {
+    // Nessuna riga in Matrice di validità → mostra la circolazione settimanale.
+    if (!dayValidity || Object.keys(dayValidity).length === 0) return wdMask[i];
     const dt = dtByCode[typicalCode(i)];
     return !!(dt && dayValidity[dt.id]) && wdMask[i];
   };
