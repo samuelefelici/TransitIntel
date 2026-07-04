@@ -165,6 +165,10 @@ function renderCover(result: ZonizzazioneResult, opts: ZonizzazioneExportOpts, g
 
   return `
     <section class="page cover">
+      <div class="cover-brand">
+        <span class="brand-mark">CERBERO</span>
+        <span class="brand-sub">Network Engine</span>
+      </div>
       <div class="cover-top">
         <div class="cover-kicker">Corrispettivi chilometrici · Documento tecnico</div>
         <h1 class="cover-title">Zonizzazione — Km sviluppati per comune</h1>
@@ -193,7 +197,7 @@ function renderCover(result: ZonizzazioneResult, opts: ZonizzazioneExportOpts, g
       </div>
 
       <div class="cover-foot">
-        <div>${escapeHtml(opts.agencyName || "")}</div>
+        <div>${escapeHtml(opts.agencyName || "")} · Generato con <strong>Cerbero Network Engine</strong></div>
         <div>${escapeHtml(genDate)}</div>
       </div>
     </section>`;
@@ -494,6 +498,9 @@ const STYLES = `
 
   /* Copertina */
   .cover { min-height: 250mm; display:flex; flex-direction:column; }
+  .cover-brand { display:flex; align-items:baseline; gap:10px; margin-bottom:14mm; }
+  .brand-mark { font-size:22px; font-weight:900; letter-spacing:.22em; color:var(--accent); }
+  .brand-sub { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.18em; color:var(--muted); }
   .cover-top { border-bottom: 3px solid var(--accent); padding-bottom: 10mm; }
   .cover-kicker { text-transform:uppercase; letter-spacing:.14em; font-size:11px; color:var(--accent); font-weight:700; }
   .cover-title { font-size:30px; line-height:1.15; margin:8px 0 6px; font-weight:800; }
