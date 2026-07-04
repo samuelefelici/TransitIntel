@@ -44,12 +44,17 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const HISTORY_KINDS: Array<{ key: string; label: string }> = [
   { key: "deposito", label: "Deposito" },
   { key: "categoria", label: "Categoria conducente" },
+  { key: "orario_lavoro", label: "Orario di lavoro" },
   { key: "visita_ferrovie", label: "Visita ferrovie" },
   { key: "visita_medico_competente", label: "Visita medico competente" },
   { key: "patente", label: "Patente" },
   { key: "cqc", label: "CQC" },
 ];
 const kindLabel = (k: string) => HISTORY_KINDS.find((h) => h.key === k)?.label ?? k;
+/** kind che rappresentano una scadenza (data visita + validità). */
+const KIND_HAS_EXPIRY = new Set(["visita_ferrovie", "visita_medico_competente", "patente", "cqc"]);
+/** kind mostrati nel riepilogo "Situazione attuale". */
+const CURRENT_KINDS = ["deposito", "categoria", "orario_lavoro", "visita_ferrovie", "visita_medico_competente"];
 
 /** Ridimensiona un'immagine lato client a max 256px e ritorna un data-URI JPEG. */
 async function resizeImage(file: File, max = 256): Promise<string> {
@@ -77,7 +82,9 @@ async function resizeImage(file: File, max = 256): Promise<string> {
 
 export default function DriverEditDialog({ driver, onClose }: { driver: RosterDriver | null; onClose: () => void }) {
   const qc = useQueryClient();
-  const isEdit = !!driver;
+  // dopo la creazione restiamo aperti in modifica, per inserire subito lo storico
+  const [liveDriver, setLiveDriver] = useState<RosterDriver | null>(driver);
+  const isEdit = !!liveDriver;
   const [f, setF] = useState<Form>(driver ?? { abilitazioni: [] });
   const set = (k: keyof RosterDriver, v: any) => setF((p) => ({ ...p, [k]: v }));
   const fileRef = useRef<HTMLInputElement>(null);
@@ -97,15 +104,24 @@ export default function DriverEditDialog({ driver, onClose }: { driver: RosterDr
 
   const saveMut = useMutation({
     mutationFn: () => {
-      const body = { ...f };
+      // deposito/categoria/orario/visite sono gestiti dallo Storico (sincronizzati
+      // dal backend): NON rimandarli qui, o sovrascriverebbero il valore attuale.
+      const { categoria, oreSettimanali, residenzaServizio,
+        visitaFerrovieValidita, visitaMedicoCompetenteValidita, ...body } = f;
+      void categoria; void oreSettimanali; void residenzaServizio;
+      void visitaFerrovieValidita; void visitaMedicoCompetenteValidita;
       return isEdit
-        ? apiFetch(`/api/roster/drivers/${driver!.id}`, { method: "PATCH", body: JSON.stringify(body) })
-        : apiFetch(`/api/roster/drivers`, { method: "POST", body: JSON.stringify(body) });
+        ? apiFetch<RosterDriver>(`/api/roster/drivers/${liveDriver!.id}`, { method: "PATCH", body: JSON.stringify(body) })
+        : apiFetch<RosterDriver>(`/api/roster/drivers`, { method: "POST", body: JSON.stringify(body) });
     },
-    onSuccess: () => {
-      toast.success(isEdit ? "Conducente aggiornato" : "Conducente creato");
+    onSuccess: (saved) => {
       qc.invalidateQueries({ queryKey: ["roster"] });
-      onClose();
+      if (isEdit) { toast.success("Conducente aggiornato"); onClose(); }
+      else {
+        // creato: resta aperto in modifica per aggiungere subito lo storico
+        toast.success("Conducente creato — ora aggiungi lo storico (deposito, categoria, orario, visite)");
+        setLiveDriver(saved);
+      }
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -178,35 +194,32 @@ export default function DriverEditDialog({ driver, onClose }: { driver: RosterDr
           </section>
 
           <section>
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2">Residenza & lavoro</h4>
+            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2">Residenza & rapporto</h4>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <Field label="Residenza anagrafica"><input className={TEXT} value={f.residenzaAnagrafica ?? ""} onChange={(e) => set("residenzaAnagrafica", e.target.value)} /></Field>
-              <Field label="Residenza di servizio"><input className={TEXT} value={f.residenzaServizio ?? ""} onChange={(e) => set("residenzaServizio", e.target.value)} /></Field>
-              <Field label="Categoria conducente"><input className={TEXT} value={f.categoria ?? ""} onChange={(e) => set("categoria", e.target.value)} /></Field>
-              <Field label="Ore settimanali"><input type="number" className={TEXT} value={f.oreSettimanali ?? ""} onChange={(e) => set("oreSettimanali", e.target.value === "" ? null : Number(e.target.value))} /></Field>
               <Field label="Data assunzione"><input type="date" className={TEXT} value={f.dataAssunzione ?? ""} onChange={(e) => set("dataAssunzione", e.target.value)} /></Field>
               <Field label="Data fine servizio"><input type="date" className={TEXT} value={f.dataFineServizio ?? ""} onChange={(e) => set("dataFineServizio", e.target.value)} /></Field>
             </div>
+            <p className="text-[10px] text-slate-500 mt-1.5">Deposito, categoria conducente e orario di lavoro si gestiscono dallo <b>Storico</b> (in fondo), sempre con la data di inizio.</p>
           </section>
 
           <section>
-            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2">Documenti e scadenze</h4>
+            <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2">Patente & CQC</h4>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               <Field label="Patente (categorie)"><input className={TEXT} value={f.patente ?? ""} onChange={(e) => set("patente", e.target.value)} placeholder="es. D, DE" /></Field>
               <Field label="Patente · validità"><input type="date" className={TEXT} value={f.patenteValidita ?? ""} onChange={(e) => set("patenteValidita", e.target.value)} /></Field>
               <div />
               <Field label="CQC · numero"><input className={TEXT} value={f.cqcNumero ?? ""} onChange={(e) => set("cqcNumero", e.target.value)} /></Field>
               <Field label="CQC · validità"><input type="date" className={TEXT} value={f.cqcValidita ?? ""} onChange={(e) => set("cqcValidita", e.target.value)} /></Field>
-              <div />
-              <Field label="Visita ferrovie · scadenza"><input type="date" className={TEXT} value={f.visitaFerrovieValidita ?? ""} onChange={(e) => set("visitaFerrovieValidita", e.target.value)} /></Field>
-              <Field label="Visita medico competente · scadenza"><input type="date" className={TEXT} value={f.visitaMedicoCompetenteValidita ?? ""} onChange={(e) => set("visitaMedicoCompetenteValidita", e.target.value)} /></Field>
             </div>
           </section>
 
           <Field label="Note"><textarea className={TEXT} rows={2} value={f.note ?? ""} onChange={(e) => set("note", e.target.value)} /></Field>
 
           {/* Storico — solo in modifica (serve l'id del conducente) */}
-          {isEdit && <HistorySection driverId={driver!.id} />}
+          {isEdit
+            ? <HistorySection driverId={liveDriver!.id} />
+            : <p className="text-[11px] text-slate-500 italic border-t border-slate-800 pt-3">Salva il conducente per poter inserire lo <b>storico</b> (deposito, categoria, orario di lavoro, visite) con le rispettive date di inizio.</p>}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-800">
@@ -250,25 +263,46 @@ function HistorySection({ driverId }: { driverId: string }) {
   });
 
   const history = histQ.data ?? [];
-  const usesExpiry = kind !== "deposito" && kind !== "categoria";
+  const usesExpiry = KIND_HAS_EXPIRY.has(kind);
+  const needsValue = kind === "deposito" || kind === "categoria" || kind === "orario_lavoro";
+  const valueLabel = kind === "deposito" ? "Deposito" : kind === "categoria" ? "Categoria"
+    : kind === "orario_lavoro" ? "Orario (es. 38h / Part-time)" : "Dettaglio (opz.)";
+  // situazione attuale = ultima voce per ciascun tipo
+  const current: Record<string, HistoryEntry | undefined> = {};
+  for (const h of history) if (!current[h.kind]) current[h.kind] = h; // history è già ordinato desc per data
 
   return (
     <section>
       <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2 flex items-center gap-1.5">
-        <History className="w-3.5 h-3.5" /> Storico — depositi, categoria, visite
+        <History className="w-3.5 h-3.5" /> Storico — deposito, categoria, orario di lavoro, visite
       </h4>
 
-      {/* form aggiunta */}
+      {/* Situazione attuale (dall'ultima voce di ogni tipo) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+        {CURRENT_KINDS.map((k) => {
+          const c = current[k];
+          const val = c ? (KIND_HAS_EXPIRY.has(k) ? (c.expiryDate ? `scad. ${c.expiryDate}` : c.eventDate) : c.value) : null;
+          return (
+            <div key={k} className="rounded-lg border border-slate-800 bg-slate-950/40 px-2.5 py-1.5">
+              <div className="text-[9px] uppercase tracking-wide text-slate-500">{kindLabel(k)}</div>
+              <div className={`text-xs font-medium ${val ? "text-slate-100" : "text-slate-600"}`}>{val ?? "—"}</div>
+              {c?.eventDate && <div className="text-[9px] text-slate-600 font-mono">dal {c.eventDate}</div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* form aggiunta — la DATA DI INIZIO è obbligatoria */}
       <div className="flex flex-wrap items-end gap-2 mb-3 p-2.5 rounded-lg border border-slate-800 bg-slate-950/50">
         <label className="block"><span className={LABEL}>Tipo</span>
           <select className={TEXT} value={kind} onChange={(e) => setKind(e.target.value)}>
             {HISTORY_KINDS.map((k) => <option key={k.key} value={k.key}>{k.label}</option>)}
           </select>
         </label>
-        <label className="block flex-1 min-w-[120px]"><span className={LABEL}>{kind === "deposito" ? "Deposito" : kind === "categoria" ? "Categoria" : "Dettaglio"}</span>
+        <label className="block flex-1 min-w-[120px]"><span className={LABEL}>{valueLabel}</span>
           <input className={TEXT} value={value} onChange={(e) => setValue(e.target.value)} placeholder={kind === "deposito" ? "es. Ancona" : ""} />
         </label>
-        <label className="block"><span className={LABEL}>{kind === "deposito" || kind === "categoria" ? "Data passaggio" : "Data visita"}</span>
+        <label className="block"><span className={LABEL}>Data inizio *</span>
           <input type="date" className={TEXT} value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
         </label>
         {usesExpiry && (
@@ -278,7 +312,8 @@ function HistorySection({ driverId }: { driverId: string }) {
         )}
         <button
           onClick={() => addMut.mutate()}
-          disabled={addMut.isPending || (!value && !eventDate)}
+          disabled={addMut.isPending || !eventDate || (needsValue && !value)}
+          title={!eventDate ? "La data di inizio è obbligatoria" : undefined}
           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-violet-600 text-white text-xs hover:bg-violet-500 disabled:opacity-50"
         >
           {addMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Aggiungi
