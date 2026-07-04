@@ -90,7 +90,35 @@ async function ensureRosterTables(): Promise<void> {
 
 /** Abilitazioni ammesse (chiavi stabili, il simbolo/label è lato frontend). */
 const ABILITAZIONI = ["autobus", "filobus", "autosnodato", "ascensore", "verificatore"];
-const HISTORY_KINDS = ["deposito", "categoria", "visita_ferrovie", "visita_medico_competente", "patente", "cqc"];
+const HISTORY_KINDS = ["deposito", "categoria", "orario_lavoro", "visita_ferrovie", "visita_medico_competente", "patente", "cqc"];
+/** kind dello storico che richiedono SEMPRE la data di inizio. */
+const HISTORY_REQUIRES_DATE = new Set(HISTORY_KINDS);
+/** kind → colonna "valore attuale" (denormalizzato = ultima voce dello storico). */
+const CURRENT_COL: Record<string, { col: string; from: "value" | "expiry"; numeric?: boolean }> = {
+  deposito: { col: "residenza_servizio", from: "value" },
+  categoria: { col: "categoria", from: "value" },
+  orario_lavoro: { col: "ore_settimanali", from: "value", numeric: true },
+  visita_ferrovie: { col: "visita_ferrovie_validita", from: "expiry" },
+  visita_medico_competente: { col: "visita_medico_competente_validita", from: "expiry" },
+  patente: { col: "patente_validita", from: "expiry" },
+  cqc: { col: "cqc_validita", from: "expiry" },
+};
+
+/** Riallinea la colonna "valore attuale" del conducente all'ultima voce dello
+ *  storico per quel kind (o la azzera se non ce ne sono). */
+async function syncCurrentFromHistory(driverId: string, kind: string): Promise<void> {
+  const map = CURRENT_COL[kind];
+  if (!map) return;
+  const r = await db.execute<any>(sql`
+    SELECT value, expiry_date FROM roster_driver_history
+     WHERE driver_id = ${driverId}::uuid AND kind = ${kind}
+     ORDER BY event_date DESC NULLS LAST, created_at DESC LIMIT 1
+  `);
+  const row = r.rows[0];
+  let val: any = row ? (map.from === "expiry" ? row.expiry_date : row.value) : null;
+  if (map.numeric) { const n = parseInt(String(val ?? ""), 10); val = Number.isFinite(n) ? n : null; }
+  await db.execute(sql`UPDATE roster_drivers SET ${sql.raw(map.col)} = ${val} WHERE id = ${driverId}::uuid`);
+}
 
 router.use(async (_req, _res, next) => { await ensureRosterTables(); next(); });
 
@@ -304,11 +332,16 @@ router.post("/roster/drivers/:id/history", async (req, res): Promise<void> => {
     const eventDate = DATE_RE.test(String(b.eventDate ?? "")) ? String(b.eventDate) : null;
     const expiryDate = DATE_RE.test(String(b.expiryDate ?? "")) ? String(b.expiryDate) : null;
     const note = b.note != null && String(b.note).trim() ? String(b.note).trim().slice(0, 500) : null;
+    // Ogni voce dello storico richiede la DATA DI INIZIO (data di passaggio/visita).
+    if (HISTORY_REQUIRES_DATE.has(kind) && !eventDate) {
+      res.status(400).json({ error: "Data di inizio obbligatoria" }); return;
+    }
     const r = await db.execute<any>(sql`
       INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note)
       VALUES (${id}::uuid, ${kind}, ${value}, ${eventDate}::date, ${expiryDate}::date, ${note})
       RETURNING *
     `);
+    await syncCurrentFromHistory(id, kind); // allinea il "valore attuale"
     res.status(201).json(rowToHistory(r.rows[0]));
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -317,7 +350,11 @@ router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
   try {
     const hid = String(req.params.hid);
     if (!UUID_RE.test(hid)) { res.status(400).json({ error: "ID non valido" }); return; }
+    // recupera driver_id + kind prima di eliminare, per ri-allineare il valore attuale
+    const before = await db.execute<any>(sql`SELECT driver_id, kind FROM roster_driver_history WHERE id = ${hid}::uuid LIMIT 1`);
+    const row = before.rows[0];
     await db.execute(sql`DELETE FROM roster_driver_history WHERE id = ${hid}::uuid`);
+    if (row) await syncCurrentFromHistory(row.driver_id, row.kind);
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
