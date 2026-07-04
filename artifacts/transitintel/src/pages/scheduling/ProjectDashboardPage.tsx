@@ -14,8 +14,9 @@ import { useLocation, useRoute } from "wouter";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Flame, Truck, Users, Layers, Zap, ChevronRight,
+  ArrowLeft, Flame, Truck, Users, Zap, ChevronRight,
   Loader2, Calendar, Database, ArrowRight, Share2, Activity, Shield, UserPlus,
+  Check, Lock,
 } from "lucide-react";
 import {
   getProject, STAGE_META, stageProgress,
@@ -28,41 +29,81 @@ import { Power } from "lucide-react";
 import ShareProjectDialog from "@/components/scheduling/ShareProjectDialog";
 import { useAuth } from "@/hooks/use-auth";
 
-interface ActionCardProps {
+type StepState = "done" | "current" | "locked";
+
+interface GuidedStepProps {
+  n: number;
+  state: StepState;
   icon: React.ComponentType<{ className?: string }>;
-  iconColor: string;
-  iconBg: string;
   title: string;
   desc: string;
   cta: string;
   onClick: () => void;
-  primary?: boolean;
+  lockedHint?: string;
+  /** azione secondaria (es. "Rivedi") mostrata quando il passo è già fatto */
+  secondary?: { label: string; onClick: () => void };
 }
 
-function ActionCard({ icon: Icon, iconColor, iconBg, title, desc, cta, onClick, primary }: ActionCardProps) {
+/** Passo di un percorso guidato verticale: numero, stato, descrizione, CTA. */
+function GuidedStep({ n, state, icon: Icon, title, desc, cta, onClick, lockedHint, secondary }: GuidedStepProps) {
+  const badge =
+    state === "done"
+      ? { ring: "border-emerald-500/60 bg-emerald-500/15 text-emerald-300", content: <Check className="w-4 h-4" /> }
+      : state === "current"
+        ? { ring: "border-orange-500/70 bg-orange-500/20 text-orange-300", content: <span className="text-sm font-black">{n}</span> }
+        : { ring: "border-zinc-700 bg-zinc-900 text-zinc-600", content: <Lock className="w-3.5 h-3.5" /> };
+  const chip =
+    state === "done"
+      ? <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40">Fatto</span>
+      : state === "current"
+        ? <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/50 animate-pulse">Fai questo ora</span>
+        : <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-zinc-800 text-zinc-500 border border-zinc-700">Bloccato</span>;
+
   return (
-    <motion.button
-      onClick={onClick}
-      whileHover={{ y: -3 }}
-      whileTap={{ scale: 0.98 }}
-      className={`group relative text-left rounded-2xl border p-6 transition-all overflow-hidden ${
-        primary
-          ? "border-orange-500/40 bg-gradient-to-br from-orange-950/40 via-zinc-950 to-black hover:border-orange-500/70 hover:shadow-[0_0_40px_rgba(251,146,60,0.2)]"
-          : "border-zinc-800 bg-gradient-to-br from-zinc-950 to-black hover:border-orange-500/40"
-      }`}
-    >
-      <div className={`w-14 h-14 rounded-xl ${iconBg} border flex items-center justify-center mb-4`}>
-        <Icon className={`w-7 h-7 ${iconColor}`} />
+    <div className={`relative flex gap-4 rounded-2xl border p-5 transition-all ${
+      state === "current"
+        ? "border-orange-500/50 bg-gradient-to-br from-orange-950/30 via-zinc-950 to-black shadow-[0_0_30px_rgba(251,146,60,0.12)]"
+        : state === "done"
+          ? "border-zinc-800 bg-gradient-to-br from-zinc-950 to-black"
+          : "border-zinc-800/60 bg-zinc-950/40 opacity-70"
+    }`}>
+      {/* numero/stato */}
+      <div className={`shrink-0 w-9 h-9 rounded-full border flex items-center justify-center ${badge.ring}`}>
+        {badge.content}
       </div>
-      <h3 className={`text-base font-bold mb-1.5 ${primary ? "text-orange-100" : "text-zinc-100"}`}>
-        {title}
-      </h3>
-      <p className="text-xs text-zinc-400 leading-relaxed mb-4 min-h-[2.5rem]">{desc}</p>
-      <div className={`inline-flex items-center gap-1.5 text-xs font-semibold ${primary ? "text-orange-300" : "text-zinc-300 group-hover:text-orange-300"} transition-colors`}>
-        {cta}
-        <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 mb-1">
+          <Icon className={`w-4 h-4 ${state === "current" ? "text-orange-400" : state === "done" ? "text-emerald-400/80" : "text-zinc-600"}`} />
+          <h3 className={`text-sm font-bold ${state === "locked" ? "text-zinc-500" : "text-zinc-100"}`}>{title}</h3>
+          {chip}
+        </div>
+        <p className="text-xs text-zinc-400 leading-relaxed mb-3">{desc}</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          {state === "locked" ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-600">
+              <Lock className="w-3 h-3" /> {lockedHint}
+            </span>
+          ) : (
+            <button
+              onClick={onClick}
+              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors ${
+                state === "current"
+                  ? "bg-orange-500 text-black hover:bg-orange-400"
+                  : "border border-zinc-700 text-zinc-300 hover:border-orange-500/50 hover:text-orange-300"
+              }`}
+            >
+              {cta}
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {secondary && state === "done" && (
+            <button onClick={secondary.onClick} className="text-[11px] text-zinc-500 hover:text-orange-300 inline-flex items-center gap-1">
+              {secondary.label} <ArrowRight className="w-3 h-3" />
+            </button>
+          )}
+        </div>
       </div>
-    </motion.button>
+    </div>
   );
 }
 
@@ -253,44 +294,57 @@ export default function ProjectDashboardPage() {
               </div>
             </div>
 
-            {/* 3 azioni principali */}
-            <div>
-              <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest mb-4">Cosa vuoi fare?</p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <ActionCard
-                  icon={Zap}
-                  iconColor="text-orange-400"
-                  iconBg="bg-orange-500/15 border-orange-500/40"
-                  title="Pipeline / Riottimizza"
-                  desc="Esegui o ri-esegui la pipeline completa: GTFS → vetture → cluster → fuori linea → CP-SAT."
-                  cta="Avvia pipeline"
-                  primary
-                  onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
-                />
-                <ActionCard
-                  icon={Truck}
-                  iconColor="text-amber-400"
-                  iconBg="bg-amber-500/15 border-amber-500/40"
-                  title="Area di Lavoro — Vetture"
-                  desc="Gantt interattivo dei turni macchina: drag & drop, modifiche, esporta. Richiede uno scenario in memoria."
-                  cta="Apri workspace vetture"
-                  onClick={() => navigate(`/fucina/${projectId}/vehicles`)}
-                />
-                <ActionCard
-                  icon={Users}
-                  iconColor="text-purple-400"
-                  iconBg="bg-purple-500/15 border-purple-500/40"
-                  title="Area di Lavoro — Turni Guida"
-                  desc="CSP autisti: saturazione, cap vetture, idle. Richiede uno scenario di vetture salvato."
-                  cta="Apri workspace turni guida"
-                  onClick={() => navigate(`/fucina/${projectId}/drivers`)}
-                />
-              </div>
-              <p className="text-[10px] text-zinc-600 mt-4 italic">
-                Suggerimento: i workspace richiedono uno scenario in memoria. Se non hai mai eseguito la pipeline,
-                parti da <span className="text-orange-400">Pipeline / Riottimizza</span>.
-              </p>
-            </div>
+            {/* Percorso guidato — l'ordine giusto dei passi */}
+            {(() => {
+              const hasVehicles = vehScenarios.length > 0;
+              const hasDrivers = drvScenarios.length > 0;
+              const opVehicle = vehScenarios.some((s) => s.isOperational);
+              const opDriver = drvScenarios.some((s) => s.isOperational);
+              const fullyOperational = opVehicle && opDriver;
+              // stato dei 3 passi in cascata
+              const s1: StepState = hasVehicles ? "done" : "current";
+              const s2: StepState = !hasVehicles ? "locked" : hasDrivers ? "done" : "current";
+              const s3: StepState = !hasDrivers ? "locked" : fullyOperational ? "done" : "current";
+              return (
+                <div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Come procedere · segui l'ordine</p>
+                    {fullyOperational && (
+                      <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 inline-flex items-center gap-1">
+                        <Power className="w-2.5 h-2.5" /> Scenario in esercizio
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-3">
+                    <GuidedStep
+                      n={1} state={s1} icon={Zap}
+                      title="Genera i turni macchina"
+                      desc="Avvia la pipeline: dalle corse dell'UDP il sistema costruisce i turni delle vetture (GTFS → vetture → cluster → fuori linea → ottimizzazione CP-SAT)."
+                      cta={hasVehicles ? "Riottimizza" : "Avvia pipeline"}
+                      onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
+                      secondary={hasVehicles ? { label: "Rivedi turni macchina", onClick: () => navigate(`/fucina/${projectId}/vehicles`) } : undefined}
+                    />
+                    <GuidedStep
+                      n={2} state={s2} icon={Truck}
+                      title="Genera i turni guida"
+                      desc="Dai turni macchina il sistema costruisce i turni degli autisti (saturazione, cambi vettura, tempi morti). Serve almeno uno scenario di vetture."
+                      cta={hasDrivers ? "Rigenera turni guida" : "Genera turni guida"}
+                      onClick={() => navigate(`/fucina/${projectId}/drivers`)}
+                      lockedHint="Prima genera i turni macchina (passo 1)."
+                      secondary={hasDrivers ? { label: "Rivedi turni guida", onClick: () => navigate(`/fucina/${projectId}/drivers`) } : undefined}
+                    />
+                    <GuidedStep
+                      n={3} state={s3} icon={Power}
+                      title="Metti in esercizio"
+                      desc="Scegli lo scenario vetture e quello turni guida definitivi e segnali «in esercizio»: diventano la soluzione ufficiale del progetto, usata da confronti, stampe e Sala Operativa."
+                      cta={fullyOperational ? "Gestisci esercizio" : "Vai agli scenari"}
+                      onClick={() => navigate(`/fucina/${projectId}/vehicles`)}
+                      lockedHint="Prima genera i turni guida (passo 2)."
+                    />
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ─── Scenari salvati (turni macchina / turni guida) ─── */}
             <div className="mt-10 grid grid-cols-1 lg:grid-cols-2 gap-4">
