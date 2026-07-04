@@ -18,11 +18,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Landmark, Upload, Trash2, Calculator, Download, Loader2,
-  ChevronRight, ChevronDown, Info, Bus,
+  ChevronRight, ChevronDown, Info, Bus, FileText,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { MAPBOX_TOKEN, MAP_STYLES } from "@/pages/dashboard/constants";
 import { getPsProject } from "@/lib/planning-studio-api";
+import {
+  exportZonizzazioneHtml,
+  type CalendarKm, type WeekdayKm, type CalendarDef,
+} from "./zonizzazione-export";
 
 /* ─── Tipi API ─── */
 interface Zone {
@@ -38,6 +42,8 @@ interface ZoneRouteKm {
   kmYear: number;
   runsYear: number;
   kmPerRun: number;
+  byCalendar?: CalendarKm[];
+  byWeekday?: WeekdayKm[];
 }
 interface ZoneKm {
   zoneId: string;
@@ -50,6 +56,8 @@ interface ComputeResult {
   year: number;
   zones: ZoneKm[];
   unassignedKm: number;
+  calendars?: CalendarDef[];
+  totals?: { byCalendar: CalendarKm[]; byWeekday: WeekdayKm[] };
   meta?: { zoneCount: number; variantCount: number; tripCount: number };
 }
 
@@ -258,6 +266,16 @@ export default function PlanningStudioZonesPage() {
     URL.revokeObjectURL(url);
   };
 
+  /* ─── Export PDF/HTML (documento tecnico stampabile) ─── */
+  const exportPdf = () => {
+    if (!result) return;
+    exportZonizzazioneHtml(result, {
+      year: result.year,
+      projectName: projectQ.data?.name,
+      agencyName: "Conerobus",
+    });
+  };
+
   const toggleExpand = (zoneId: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -356,14 +374,24 @@ export default function PlanningStudioZonesPage() {
                 Calcola km per comune
               </button>
               {result && (
-                <button
-                  onClick={exportCsv}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700"
-                  title="Esporta CSV"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  CSV
-                </button>
+                <>
+                  <button
+                    onClick={exportPdf}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-cyan-800/60 hover:bg-cyan-700/70 text-xs text-cyan-100 border border-cyan-700"
+                    title="Esporta documento tecnico stampabile (PDF/HTML) con il dettaglio dei calcoli"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    PDF
+                  </button>
+                  <button
+                    onClick={exportCsv}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 border border-slate-700"
+                    title="Esporta CSV"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    CSV
+                  </button>
+                </>
               )}
             </div>
             <div className="text-[10px] text-slate-500">
