@@ -620,9 +620,9 @@ const STYLES = `
   /* Copertina — sfondo bianco: il logo (già viola) fa da colore dominante */
   .cover { min-height: 250mm; display:flex; flex-direction:column; padding:0 0 12mm; overflow:hidden; }
   .cover-hero { padding: 12mm 14mm 10mm; border-bottom:3px solid; border-image: linear-gradient(90deg, var(--accent), var(--cyan)) 1; }
-  .cover-brand { display:flex; align-items:center; gap:8mm; margin-bottom:8mm; }
+  .cover-brand { display:flex; flex-direction:column; align-items:center; gap:2mm; margin-bottom:8mm; width:fit-content; }
   .brand-logo { width:208px; height:208px; object-fit:contain; }
-  .brand-mark { font-size:28px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; color:#1e293b; }
+  .brand-mark { font-size:13px; font-weight:800; letter-spacing:.26em; text-transform:uppercase; color:#475569; }
   .cover-kicker { text-transform:uppercase; letter-spacing:.14em; font-size:11px; color:var(--accent); font-weight:700; }
   .cover-title { font-size:32px; line-height:1.12; margin:8px 0 6px; font-weight:800; color:var(--ink); }
   .cover-subtitle { font-size:13px; color:var(--muted); max-width: 155mm; line-height:1.5; }
