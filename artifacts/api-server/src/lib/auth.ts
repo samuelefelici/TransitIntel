@@ -17,15 +17,26 @@ import jwt from "jsonwebtoken";
 /* ────────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────────── */
-export type Permission = "analytics" | "fares" | "scheduling" | "network";
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare";
 export interface AuthUser {
   id: string;
   email: string;
   fullName: string | null;
   role: "admin" | "user";
   permissions: Record<Permission, boolean>;
+  /** Ruolo dentro il modulo FleetCare (gli admin sono sempre fleet_admin). */
+  fleetcareRole: string;
   active: boolean;
 }
+
+/** Ruoli validi nel modulo FleetCare (enum fleetcare.profile_role lato FleetCare). */
+export const FLEETCARE_ROLES = [
+  "driver",
+  "mechanic",
+  "workshop_manager",
+  "admin_finance",
+  "fleet_admin",
+] as const;
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -58,7 +69,7 @@ async function ensureUsersTable(): Promise<void> {
         password_hash text NOT NULL,
         full_name text,
         role text NOT NULL DEFAULT 'user',
-        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true}'::jsonb,
+        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false}'::jsonb,
         active boolean NOT NULL DEFAULT true,
         last_login_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -72,6 +83,18 @@ async function ensureUsersTable(): Promise<void> {
       UPDATE users
          SET permissions = permissions || '{"network":true}'::jsonb
        WHERE NOT (permissions ? 'network')
+    `);
+
+    // FleetCare (modulo Cerbero di gestione flotta): abilitazione ESPLICITA,
+    // quindi default false — gli admin bypassano comunque (requirePermission).
+    await db.execute(sql`
+      UPDATE users
+         SET permissions = permissions || '{"fleetcare":false}'::jsonb
+       WHERE NOT (permissions ? 'fleetcare')
+    `);
+    // Ruolo che l'utente avrà DENTRO FleetCare quando entra via SSO.
+    await db.execute(sql`
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS fleetcare_role text NOT NULL DEFAULT 'driver'
     `);
 
     const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
@@ -90,7 +113,7 @@ async function ensureUsersTable(): Promise<void> {
           INSERT INTO users (email, password_hash, full_name, role, permissions, active)
           VALUES (
             ${u.email}, ${hash}, ${u.full}, ${u.role},
-            '{"analytics":true,"fares":true,"scheduling":true,"network":true}'::jsonb,
+            '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false}'::jsonb,
             true
           )
         `);
@@ -138,7 +161,7 @@ function clearAuthCookie(res: Response) {
 
 async function loadUserById(id: string): Promise<AuthUser | null> {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, active
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -148,7 +171,8 @@ async function loadUserById(id: string): Promise<AuthUser | null> {
     email: row.email,
     fullName: row.full_name,
     role: row.role,
-    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true },
+    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false },
+    fleetcareRole: row.fleetcare_role ?? "driver",
     active: row.active,
   };
 }
@@ -198,7 +222,7 @@ router.post("/auth/login", async (req: Request, res: Response): Promise<void> =>
     return;
   }
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, active, password_hash
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active, password_hash
       FROM users WHERE lower(email) = lower(${email}) LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -210,7 +234,8 @@ router.post("/auth/login", async (req: Request, res: Response): Promise<void> =>
   res.json({
     user: {
       id: row.id, email: row.email, fullName: row.full_name,
-      role: row.role, permissions: row.permissions, active: row.active,
+      role: row.role, permissions: row.permissions,
+      fleetcareRole: row.fleetcare_role ?? "driver", active: row.active,
     },
   });
 });
@@ -224,6 +249,49 @@ router.post("/auth/logout", (_req, res) => {
 // GET /api/auth/me
 router.get("/auth/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
+});
+
+/* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
+ *
+ * FleetCare è un'app separata (stesso database, schema `fleetcare`) e NON ha
+ * un login proprio: si entra SOLO da qui. Il flusso:
+ *   1. l'utente (già autenticato su Cerbero) clicca "FleetCare" in sidebar
+ *   2. il frontend chiama questo endpoint → token firmato monouso (60s)
+ *      con il segreto condiviso FLEETCARE_SSO_SECRET
+ *   3. il browser viene rediretto a <FLEETCARE_URL>/api/auth/sso?token=…
+ *   4. FleetCare verifica il token e crea la SUA sessione (upsert profilo)
+ *
+ * Autorizzazione: admin sempre; gli altri solo con permissions.fleetcare.
+ */
+router.get("/auth/fleetcare-sso", requireAuth, (req, res): void => {
+  const user = req.user!;
+  const enabled = user.role === "admin" || !!user.permissions?.fleetcare;
+  if (!enabled) {
+    res.status(403).json({ error: "Non sei abilitato a FleetCare: chiedi all'amministratore." });
+    return;
+  }
+  const secret = process.env.FLEETCARE_SSO_SECRET;
+  const fleetcareUrl = (process.env.FLEETCARE_URL || "").replace(/\/+$/, "");
+  if (!secret || !fleetcareUrl) {
+    res.status(503).json({
+      error: "SSO FleetCare non configurato (FLEETCARE_SSO_SECRET / FLEETCARE_URL mancanti).",
+    });
+    return;
+  }
+  // Gli admin di Cerbero entrano sempre come fleet_admin; gli altri col ruolo
+  // scelto dall'amministratore in Gestione Utenti.
+  const fleetcareRole = user.role === "admin" ? "fleet_admin" : user.fleetcareRole || "driver";
+  const token = jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+      name: user.fullName ?? undefined,
+      fleetcareRole,
+    },
+    secret,
+    { expiresIn: "60s", issuer: "cerbero", audience: "fleetcare" },
+  );
+  res.json({ url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}` });
 });
 
 /* ─── Lookup utenti (per picker membri progetto) ─── */
@@ -255,7 +323,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 // GET /api/admin/users
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, active, last_login_at, created_at
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at
       FROM users ORDER BY created_at ASC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
@@ -266,6 +334,7 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
     fullName: u.full_name,
     role: u.role,
     permissions: u.permissions,
+    fleetcareRole: u.fleetcare_role ?? "driver",
     active: u.active,
     lastLoginAt: u.last_login_at,
     createdAt: u.created_at,
@@ -273,9 +342,9 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   res.json({ users });
 });
 
-// POST /api/admin/users { email, password, fullName, role, permissions }
+// POST /api/admin/users { email, password, fullName, role, permissions, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
-  const { email, password, fullName, role, permissions } = req.body || {};
+  const { email, password, fullName, role, permissions, fleetcareRole } = req.body || {};
   if (typeof email !== "string" || typeof password !== "string" || password.length < 4) {
     res.status(400).json({ error: "Email e password (≥4 char) obbligatori" }); return;
   }
@@ -285,18 +354,24 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     fares:     !!(permissions?.fares     ?? true),
     scheduling:!!(permissions?.scheduling?? true),
     network:   !!(permissions?.network   ?? true),
+    // FleetCare: abilitazione esplicita → default false
+    fleetcare: !!(permissions?.fleetcare ?? false),
   };
+  const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
+    ? fleetcareRole
+    : "driver";
   try {
     const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
     const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, permissions, active)
-      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${JSON.stringify(safePerm)}::jsonb, true)
-      RETURNING id, email, full_name, role, permissions, active, created_at
+      INSERT INTO users (email, password_hash, full_name, role, permissions, fleetcare_role, active)
+      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${JSON.stringify(safePerm)}::jsonb, ${safeFleetcareRole}, true)
+      RETURNING id, email, full_name, role, permissions, fleetcare_role, active, created_at
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     res.json({ user: {
       id: row.id, email: row.email, fullName: row.full_name,
-      role: row.role, permissions: row.permissions, active: row.active,
+      role: row.role, permissions: row.permissions,
+      fleetcareRole: row.fleetcare_role, active: row.active,
       createdAt: row.created_at,
     }});
   } catch (e: any) {
@@ -307,11 +382,11 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   }
 });
 
-// PATCH /api/admin/users/:id { fullName?, role?, permissions?, active?, password? }
+// PATCH /api/admin/users/:id { fullName?, role?, permissions?, fleetcareRole?, active?, password? }
 router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-  const { fullName, role, permissions, active, password } = req.body || {};
+  const { fullName, role, permissions, fleetcareRole, active, password } = req.body || {};
   const sets: any[] = [];
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
   if (role !== undefined) sets.push(sql`role = ${role === "admin" ? "admin" : "user"}`);
@@ -321,8 +396,15 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
       fares: !!permissions.fares,
       scheduling: !!permissions.scheduling,
       network: !!permissions.network,
+      fleetcare: !!permissions.fleetcare,
     };
     sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
+  }
+  if (fleetcareRole !== undefined) {
+    if (!(FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)) {
+      res.status(400).json({ error: `Ruolo FleetCare non valido: ${fleetcareRole}` }); return;
+    }
+    sets.push(sql`fleetcare_role = ${fleetcareRole}`);
   }
   if (active !== undefined) sets.push(sql`active = ${!!active}`);
   if (typeof password === "string" && password.length >= 4) {
@@ -333,13 +415,14 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   const assignments = sql.join(sets, sql`, `);
   const r = await db.execute(sql`
     UPDATE users SET ${assignments} WHERE id = ${id}::uuid
-    RETURNING id, email, full_name, role, permissions, active
+    RETURNING id, email, full_name, role, permissions, fleetcare_role, active
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row) { res.status(404).json({ error: "Utente non trovato" }); return; }
   res.json({ user: {
     id: row.id, email: row.email, fullName: row.full_name,
-    role: row.role, permissions: row.permissions, active: row.active,
+    role: row.role, permissions: row.permissions,
+    fleetcareRole: row.fleetcare_role, active: row.active,
   }});
 });
 

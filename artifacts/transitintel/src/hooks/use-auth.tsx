@@ -8,7 +8,7 @@ import {
 } from "react";
 import { apiFetch } from "@/lib/api";
 
-export type Permission = "analytics" | "fares" | "scheduling" | "network";
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare";
 
 export interface CurrentUser {
   id: string;
@@ -16,6 +16,8 @@ export interface CurrentUser {
   fullName: string | null;
   role: "admin" | "user";
   permissions: Record<Permission, boolean>;
+  /** Ruolo dentro il modulo FleetCare (usato dallo SSO; admin = fleet_admin). */
+  fleetcareRole?: string;
   active: boolean;
 }
 

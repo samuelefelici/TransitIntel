@@ -22,6 +22,7 @@ interface AdminUser {
   fullName: string | null;
   role: "admin" | "user";
   permissions: Record<Permission, boolean>;
+  fleetcareRole: string;
   active: boolean;
   lastLoginAt: string | null;
   createdAt: string;
@@ -32,6 +33,16 @@ const PERM_LABEL: Record<Permission, string> = {
   fares: "Bigliettazione (Fares Engine)",
   scheduling: "Scheduling (Crea Servizio + Ottimizzazione)",
   network: "Network Engine (PlannerStudio + Crea Servizio)",
+  fleetcare: "FleetCare (Gestione Flotta e Manutenzione)",
+};
+
+/** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
+const FLEETCARE_ROLE_LABEL: Record<string, string> = {
+  driver: "Autista",
+  mechanic: "Meccanico",
+  workshop_manager: "Resp. Officina",
+  admin_finance: "Amministrazione",
+  fleet_admin: "Admin Flotta",
 };
 
 export default function AdminUsersPage() {
@@ -110,6 +121,19 @@ export default function AdminUsersPage() {
     }
   };
 
+  const handleFleetcareRole = async (u: AdminUser, fleetcareRole: string) => {
+    try {
+      await apiFetch(`/api/admin/users/${u.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fleetcareRole }),
+      });
+      void load();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e?.message, variant: "destructive" });
+    }
+  };
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
@@ -147,6 +171,7 @@ export default function AdminUsersPage() {
                     <th className="py-2 pr-4">Fares</th>
                     <th className="py-2 pr-4">Scheduling</th>
                     <th className="py-2 pr-4">Network</th>
+                    <th className="py-2 pr-4">FleetCare</th>
                     <th className="py-2 pr-4">Ultimo login</th>
                     <th className="py-2 pr-4 text-right">Azioni</th>
                   </tr>
@@ -186,6 +211,31 @@ export default function AdminUsersPage() {
                             />
                           </td>
                         ))}
+                        {/* FleetCare: abilitazione + ruolo dentro il modulo.
+                            Gli admin sono sempre abilitati (come fleet_admin). */}
+                        <td className="py-2 pr-4">
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={isAdminRow ? true : !!u.permissions?.fleetcare}
+                              disabled={isAdminRow}
+                              onCheckedChange={() => handleTogglePermission(u, "fleetcare")}
+                            />
+                            {isAdminRow ? (
+                              <span className="text-xs text-amber-400/80">Admin Flotta</span>
+                            ) : u.permissions?.fleetcare ? (
+                              <select
+                                className="bg-background border border-border rounded-md h-7 px-1 text-xs"
+                                value={u.fleetcareRole || "driver"}
+                                onChange={(e) => handleFleetcareRole(u, e.target.value)}
+                                title="Ruolo dell'utente dentro FleetCare"
+                              >
+                                {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
+                                  <option key={v} value={v}>{l}</option>
+                                ))}
+                              </select>
+                            ) : null}
+                          </div>
+                        </td>
                         <td className="py-2 pr-4 text-xs text-muted-foreground">
                           {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("it-IT") : "mai"}
                         </td>
@@ -272,7 +322,10 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     fares: true,
     scheduling: true,
     network: true,
+    // FleetCare va abilitato esplicitamente dall'admin
+    fleetcare: false,
   });
+  const [fleetcareRole, setFleetcareRole] = useState("driver");
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -285,7 +338,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       await apiFetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, fullName, password, role, permissions: perms }),
+        body: JSON.stringify({ email, fullName, password, role, permissions: perms, fleetcareRole }),
       });
       toast({ title: "Utente creato" });
       onCreated();
@@ -338,6 +391,21 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                 />
               </div>
             ))}
+            {/* Ruolo dentro FleetCare (solo se abilitato; gli admin sono sempre Admin Flotta) */}
+            {role !== "admin" && perms.fleetcare && (
+              <div className="flex items-center justify-between pl-4">
+                <span className="text-sm text-muted-foreground">Ruolo in FleetCare</span>
+                <select
+                  className="bg-background border border-border rounded-md h-8 px-2 text-sm"
+                  value={fleetcareRole}
+                  onChange={(e) => setFleetcareRole(e.target.value)}
+                >
+                  {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
+                    <option key={v} value={v}>{l}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
         <DialogFooter>
