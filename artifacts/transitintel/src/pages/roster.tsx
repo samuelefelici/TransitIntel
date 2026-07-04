@@ -14,7 +14,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
-  UserPlus, Users, Pencil, Scissors, ClipboardPaste, Info,
+  UserPlus, Users, Pencil, Scissors, ClipboardPaste, Info, Ban, Clock, ChevronDown,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
@@ -28,6 +28,16 @@ interface RosterDuty {
   residenzaName?: string | null; residenzaColor?: string | null;
 }
 interface RosterAssignment { id: string; driverId: string; day: string; dutyCode: string; dssId: string }
+interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string }
+interface VoceDef { code: string; label: string }
+type VociCatalog = { assenza: VoceDef[]; presenza: VoceDef[] };
+interface ArmedVoce { category: "assenza" | "presenza"; code: string; label: string }
+/** Stile chip voce per categoria. */
+function voceStyle(cat: "assenza" | "presenza"): string {
+  return cat === "assenza"
+    ? "bg-rose-500/20 text-rose-200 border border-rose-500/40"
+    : "bg-sky-500/20 text-sky-200 border border-sky-500/40";
+}
 interface DutySource {
   dssId: string; name: string; scenarioName: string | null;
   scenarioDate: string | null; dutyCount: number; createdAt: string;
@@ -36,6 +46,7 @@ interface DutySource {
 interface Board {
   from: string; days: string[]; drivers: RosterDriver[];
   duties: RosterDuty[]; assignments: RosterAssignment[];
+  entries?: RosterEntry[];
   /** residenza di servizio (deposito) dello scenario → colore dei turni */
   residenza?: { name: string; color: string } | null;
 }
@@ -124,6 +135,28 @@ export default function RosterPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // ── Voci Assenza / Presenza ──
+  const vociQ = useQuery({
+    queryKey: ["roster", "voci"],
+    queryFn: () => apiFetch<{ catalog: VociCatalog }>("/api/roster/voci").then((r) => r.catalog),
+  });
+  const [armedVoce, setArmedVoce] = useState<ArmedVoce | null>(null);
+  const [voceMenu, setVoceMenu] = useState<"assenza" | "presenza" | null>(null);
+  const addEntryMut = useMutation({
+    mutationFn: (i: { driverId: string; day: string; category: string; code: string }) =>
+      apiFetch("/api/roster/entries", { method: "POST", body: JSON.stringify(i) }),
+    onSuccess: () => invalidateBoard(),
+    onError: (e: Error) => toast.error("Inserimento voce fallito", { description: e.message }),
+  });
+  const delEntryMut = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/roster/entries/${id}`, { method: "DELETE" }),
+    onSuccess: () => invalidateBoard(),
+  });
+  const placeVoce = (driverId: string, day: string) => {
+    if (!armedVoce) return;
+    addEntryMut.mutate({ driverId, day, category: armedVoce.category, code: armedVoce.code });
+  };
+
   const board = boardQ.data;
   const dutyByCode = useMemo(() => new Map((board?.duties ?? []).map((d) => [d.code, d])), [board?.duties]);
   const assignByCell = useMemo(() => {
@@ -131,6 +164,14 @@ export default function RosterPage() {
     for (const a of board?.assignments ?? []) m.set(`${a.driverId}|${a.day}`, a);
     return m;
   }, [board?.assignments]);
+  const entriesByCell = useMemo(() => {
+    const m = new Map<string, RosterEntry[]>();
+    for (const e of board?.entries ?? []) {
+      const k = `${e.driverId}|${e.day}`;
+      const arr = m.get(k); if (arr) arr.push(e); else m.set(k, [e]);
+    }
+    return m;
+  }, [board?.entries]);
   const uncoveredByDay = useMemo(() => {
     const m = new Map<string, RosterDuty[]>();
     if (!board) return m;
@@ -155,7 +196,7 @@ export default function RosterPage() {
       const k = e.key.toLowerCase();
       if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
       else if (k === "w") { e.preventDefault(); doPaste(); }
-      else if (e.key === "Escape") { setCut(null); }
+      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -201,6 +242,39 @@ export default function RosterPage() {
           <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, 6)).dm}</span>
           <button onClick={() => setFrom(shiftDate(from, 7))} className="p-1.5 rounded hover:bg-white/10"><ChevronRight className="w-4 h-4" /></button>
         </div>
+
+        {/* Voci Assenza / Presenza: scegli una voce → clicca una cella per inserirla */}
+        {(["assenza", "presenza"] as const).map((cat) => (
+          <div key={cat} className="relative">
+            <button
+              onClick={() => setVoceMenu(voceMenu === cat ? null : cat)}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+                cat === "assenza"
+                  ? "border-rose-500/40 text-rose-200 bg-rose-500/10 hover:bg-rose-500/20"
+                  : "border-sky-500/40 text-sky-200 bg-sky-500/10 hover:bg-sky-500/20"
+              }`}
+            >
+              {cat === "assenza" ? <Ban className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+              {cat === "assenza" ? "Assenza" : "Presenza"}
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {voceMenu === cat && (
+              <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
+                {(vociQ.data?.[cat] ?? []).map((v) => (
+                  <button key={v.code}
+                    onClick={() => { setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-slate-800"
+                  >
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${voceStyle(cat)}`}>{v.code}</span>
+                    <span className="text-xs text-slate-300">{v.label}</span>
+                  </button>
+                ))}
+                {(vociQ.data?.[cat] ?? []).length === 0 && <p className="text-[11px] text-slate-500 px-2 py-1.5">Caricamento…</p>}
+              </div>
+            )}
+          </div>
+        ))}
+
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla</span>
           <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium">
@@ -216,6 +290,17 @@ export default function RosterPage() {
       {cut && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-[11px] text-amber-200 flex items-center gap-2 shrink-0">
           <Scissors className="w-3.5 h-3.5" /> In taglio: <b>{cut.code}</b> · {dayLabel(cut.day).dow} {dayLabel(cut.day).dm} — seleziona un conducente e premi <b>W</b> (Esc per annullare)
+        </div>
+      )}
+
+      {/* voce armata: clicca una cella per inserirla */}
+      {armedVoce && (
+        <div className={`border-b px-4 py-1.5 text-[11px] flex items-center gap-2 shrink-0 ${
+          armedVoce.category === "assenza" ? "bg-rose-500/15 border-rose-500/30 text-rose-200" : "bg-sky-500/15 border-sky-500/30 text-sky-200"
+        }`}>
+          {armedVoce.category === "assenza" ? <Ban className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+          Inserimento voce: <b>{armedVoce.code}</b> ({armedVoce.label}) — <b>clicca una cella</b> del tabellone. Esc per annullare.
+          <button onClick={() => setArmedVoce(null)} className="ml-auto underline hover:no-underline">Annulla</button>
         </div>
       )}
 
@@ -270,8 +355,19 @@ export default function RosterPage() {
                       {board.days.map((day) => {
                         const a = assignByCell.get(`${drv.id}|${day}`);
                         const duty = a ? dutyByCode.get(a.dutyCode) : undefined;
+                        const cellEntries = entriesByCell.get(`${drv.id}|${day}`) ?? [];
                         return (
-                          <td key={day} className="px-1.5 py-1.5 border-b border-slate-800/40 text-center align-middle">
+                          <td key={day} className="relative px-1.5 py-1.5 border-b border-slate-800/40 text-center align-middle">
+                            {cellEntries.length > 0 && (
+                              <div className="flex flex-wrap gap-0.5 justify-center mb-0.5">
+                                {cellEntries.map((en) => (
+                                  <span key={en.id} className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-bold ${voceStyle(en.category)}`} title={en.category}>
+                                    {en.code}
+                                    <button onClick={(e) => { e.stopPropagation(); delEntryMut.mutate(en.id); }} className="hover:text-white leading-none">×</button>
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             {a ? (
                               <button
                                 onClick={() => { if (confirm(`Rimuovere ${a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a.id); }}
@@ -289,6 +385,19 @@ export default function RosterPage() {
                                 title={cut && cut.day === day ? "Incolla qui (W)" : "Seleziona conducente"}
                               >
                                 {cut && cut.day === day ? "↵" : "+"}
+                              </button>
+                            )}
+                            {armedVoce && (
+                              <button
+                                onClick={() => placeVoce(drv.id, day)}
+                                title={`Inserisci ${armedVoce.code} (${armedVoce.label})`}
+                                className={`absolute inset-0 flex items-center justify-center text-[10px] font-bold rounded transition-colors ${
+                                  armedVoce.category === "assenza"
+                                    ? "bg-rose-500/15 hover:bg-rose-500/35 text-rose-200"
+                                    : "bg-sky-500/15 hover:bg-sky-500/35 text-sky-200"
+                                }`}
+                              >
+                                + {armedVoce.code}
                               </button>
                             )}
                           </td>

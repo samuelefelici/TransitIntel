@@ -85,8 +85,45 @@ async function ensureRosterTables(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_hist_driver ON roster_driver_history(driver_id, event_date DESC)`);
+  // Voci di ASSENZA / PRESENZA inserite sul tabellone (conducente × giorno),
+  // in aggiunta ai turni. Indipendenti dalla fonte turni (DSS).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS roster_entries (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
+      day date NOT NULL,
+      category text NOT NULL,   -- assenza | presenza
+      code text NOT NULL,       -- R, MA3, STRA, D1 …
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (driver_id, day, code)
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_day ON roster_entries(day)`);
   bootstrapped = true;
 }
+
+/** Catalogo voci Assenza/Presenza. Estendibile: aggiungi qui nuovi codici. */
+const VOCI_CATALOG: Record<"assenza" | "presenza", Array<{ code: string; label: string }>> = {
+  assenza: [
+    { code: "R",   label: "Riposo" },
+    { code: "MA3", label: "Malattia primi 3 giorni" },
+    { code: "MA",  label: "Malattia giorni successivi" },
+    { code: "I",   label: "Infortunio" },
+    { code: "PAD", label: "Permesso 104" },
+  ],
+  presenza: [
+    { code: "STRA", label: "Straordinario" },
+    { code: "D1",   label: "Disposizione mattinale" },
+    { code: "D2",   label: "Disposizione pomeridiana" },
+    { code: "DISP", label: "Disposizione" },
+    { code: "DAM1", label: "Controllerie mattinali" },
+    { code: "DAM2", label: "Controllerie pomeridiane" },
+  ],
+};
+const VOCE_CODES: Record<string, Set<string>> = {
+  assenza: new Set(VOCI_CATALOG.assenza.map((v) => v.code)),
+  presenza: new Set(VOCI_CATALOG.presenza.map((v) => v.code)),
+};
 
 /** Abilitazioni ammesse (chiavi stabili, il simbolo/label è lato frontend). */
 const ABILITAZIONI = ["autobus", "filobus", "autosnodato", "ascensore", "verificatore"];
@@ -452,6 +489,13 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       } catch { /* depot_id può non esistere su scenari vecchi */ }
     }
 
+    // Voci Assenza/Presenza nel range (indipendenti dal DSS selezionato).
+    const entriesQ = await db.execute<any>(sql`
+      SELECT id, driver_id, day::text AS day, category, code
+        FROM roster_entries
+       WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
+    `);
+
     res.json({
       from, days: dayList,
       drivers: driversQ.rows.map(rowToDriver),
@@ -459,6 +503,9 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       residenza,
       assignments: assignQ.rows.map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
+      })),
+      entries: entriesQ.rows.map((e: any) => ({
+        id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
       })),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -487,6 +534,39 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
     }
     res.status(500).json({ error: e.message });
   }
+});
+
+// ── Voci Assenza / Presenza ───────────────────────────────────────────────────
+
+router.get("/roster/voci", async (_req, res): Promise<void> => {
+  res.json({ catalog: VOCI_CATALOG });
+});
+
+router.post("/roster/entries", async (req, res): Promise<void> => {
+  try {
+    const { driverId, day, category, code } = req.body ?? {};
+    if (!driverId || !UUID_RE.test(String(driverId)) || !DATE_RE.test(String(day ?? ""))) {
+      res.status(400).json({ error: "driverId (uuid) e day (YYYY-MM-DD) richiesti" }); return;
+    }
+    if (category !== "assenza" && category !== "presenza") { res.status(400).json({ error: "category non valida" }); return; }
+    if (!VOCE_CODES[category].has(String(code))) { res.status(400).json({ error: "codice voce non valido" }); return; }
+    const r = await db.execute<any>(sql`
+      INSERT INTO roster_entries (driver_id, day, category, code)
+      VALUES (${driverId}::uuid, ${day}::date, ${category}, ${code})
+      ON CONFLICT (driver_id, day, code) DO UPDATE SET category = EXCLUDED.category
+      RETURNING id
+    `);
+    res.status(201).json({ ok: true, id: r.rows[0]?.id });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/roster/entries/:id", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    await db.execute(sql`DELETE FROM roster_entries WHERE id = ${id}::uuid`);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.delete("/roster/assignments/:id", async (req, res): Promise<void> => {
