@@ -218,11 +218,8 @@ function renderCover(
     <section class="page cover">
       <div class="cover-hero">
         <div class="cover-brand">
-          ${logo ? `<img class="brand-logo" src="${logo}" alt="Planning Studio" />` : ""}
-          <div class="brand-words">
-            <span class="brand-mark">CERBERO</span>
-            <span class="brand-sub">Network Engine · Planning Studio</span>
-          </div>
+          ${logo ? `<img class="brand-logo" src="${logo}" alt="Network Engine" />` : ""}
+          <span class="brand-mark">Network Engine</span>
         </div>
         <div class="cover-kicker">Corrispettivi chilometrici · Documento tecnico</div>
         <h1 class="cover-title">Zonizzazione<br/>Km sviluppati per comune</h1>
@@ -253,7 +250,7 @@ function renderCover(
       </div>
 
       <div class="cover-foot">
-        <div>${escapeHtml(opts.agencyName || "")} · Generato con <strong>Cerbero Network Engine</strong></div>
+        <div>${escapeHtml(opts.agencyName || "")} · Generato con <strong>Network Engine</strong></div>
         <div>${escapeHtml(genDate)}</div>
       </div>
     </section>`;
@@ -620,17 +617,15 @@ const STYLES = `
   .btn-close { background:#334155; color:#e2e8f0; }
   .toolbar .hint { font-size:11px; color:#a5b4fc; }
 
-  /* Copertina */
+  /* Copertina — sfondo bianco: il logo (già viola) fa da colore dominante */
   .cover { min-height: 250mm; display:flex; flex-direction:column; padding:0 0 12mm; overflow:hidden; }
-  .cover-hero { background:linear-gradient(135deg,#312e81 0%, #6d28d9 55%, #0e7490 100%); color:#fff; padding: 14mm 14mm 12mm; }
-  .cover-brand { display:flex; align-items:center; gap:12px; margin-bottom:12mm; }
-  .brand-logo { width:52px; height:52px; border-radius:12px; object-fit:contain; background:rgba(255,255,255,.12); padding:4px; box-shadow:0 2px 10px rgba(0,0,0,.25); }
-  .brand-words { display:flex; flex-direction:column; }
-  .brand-mark { font-size:20px; font-weight:900; letter-spacing:.22em; color:#fff; }
-  .brand-sub { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.18em; color:#c7d2fe; }
-  .cover-kicker { text-transform:uppercase; letter-spacing:.14em; font-size:11px; color:#a5f3fc; font-weight:700; }
-  .cover-title { font-size:32px; line-height:1.12; margin:8px 0 6px; font-weight:800; color:#fff; }
-  .cover-subtitle { font-size:13px; color:#e0e7ff; max-width: 155mm; line-height:1.5; }
+  .cover-hero { padding: 12mm 14mm 10mm; border-bottom:3px solid; border-image: linear-gradient(90deg, var(--accent), var(--cyan)) 1; }
+  .cover-brand { display:flex; align-items:center; gap:8mm; margin-bottom:8mm; }
+  .brand-logo { width:208px; height:208px; object-fit:contain; }
+  .brand-mark { font-size:28px; font-weight:900; letter-spacing:.12em; text-transform:uppercase; color:#1e293b; }
+  .cover-kicker { text-transform:uppercase; letter-spacing:.14em; font-size:11px; color:var(--accent); font-weight:700; }
+  .cover-title { font-size:32px; line-height:1.12; margin:8px 0 6px; font-weight:800; color:var(--ink); }
+  .cover-subtitle { font-size:13px; color:var(--muted); max-width: 155mm; line-height:1.5; }
   .cover-meta { margin: 10mm 14mm 6mm; display:grid; grid-template-columns: 1fr 1fr; gap: 4mm 12mm; }
   .cm-row { display:flex; flex-direction:column; border-left:3px solid var(--accent); padding-left:10px; }
   .cm-label { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
