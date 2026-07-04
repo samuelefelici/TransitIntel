@@ -565,10 +565,12 @@ export default function PlanningStudioTripsPage() {
    *  interseca tipo-giorno valido × maschera. */
   function rowDayOn(trip: PsTrip, i: number): boolean {
     const mask = rowMask(trip);
+    if (!mask[i]) return false;                       // la corsa non circola quel giorno
     const dv = tripsValQ.data?.dayValidity?.[trip.id];
-    if (!dv || Object.keys(dv).length === 0) return mask[i];
+    if (!dv) return true;                             // nessuna riga in Matrice → circola
     const dt = dtKinds[wdTypicalCode(i)];
-    return !!(dt && dv[dt.id]) && mask[i];
+    if (!dt) return true;                             // tipo-giorno non classificabile → circola
+    return dv[dt.id] !== false;                       // spento SOLO se esplicitamente non valido
   }
   const [rowWdBusy, setRowWdBusy] = useState(false);
   /** Toggle di un giorno direttamente dalla riga (stessa logica del drawer). */
@@ -1590,10 +1592,12 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
   const dtByCode = useMemo(() => classifyDayTypes(dayTypesDrawerQ.data ?? []), [dayTypesDrawerQ.data]);
   const dayValidity = tripValQ.data?.dayValidity ?? {};
   const dayOn = (i: number): boolean => {
+    if (!wdMask[i]) return false;                      // la corsa non circola quel giorno
     // Nessuna riga in Matrice di validità → mostra la circolazione settimanale.
-    if (!dayValidity || Object.keys(dayValidity).length === 0) return wdMask[i];
+    if (!dayValidity || Object.keys(dayValidity).length === 0) return true;
     const dt = dtByCode[typicalCode(i)];
-    return !!(dt && dayValidity[dt.id]) && wdMask[i];
+    if (!dt) return true;                              // tipo-giorno non classificabile → circola
+    return dayValidity[dt.id] !== false;               // spento SOLO se esplicitamente non valido
   };
   async function toggleWeekday(i: number) {
     if (wdBusy || !dayTypesDrawerQ.data || !tripValQ.data) return;
