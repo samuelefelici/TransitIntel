@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
+import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
 interface RosterDuty {
@@ -63,6 +64,15 @@ function dayLabel(iso: string): { dow: string; dm: string } {
 }
 function driverLabel(d: RosterDriver): string {
   return [d.cognome, d.nome].filter(Boolean).join(" ") || d.name;
+}
+/** Avatar del conducente: foto se presente, altrimenti iniziali. */
+function DriverAvatar({ drv }: { drv: RosterDriver }) {
+  const initials = (drv.cognome ?? drv.name ?? "?").trim().slice(0, 2).toUpperCase() || "?";
+  return drv.photoUrl ? (
+    <img src={drv.photoUrl} alt="" className="w-7 h-7 rounded-full object-cover border border-slate-700 shrink-0" />
+  ) : (
+    <span className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-400 flex items-center justify-center shrink-0">{initials}</span>
+  );
 }
 
 export default function RosterPage() {
@@ -242,11 +252,19 @@ export default function RosterPage() {
                     <tr key={drv.id} className={isSel ? "bg-violet-500/10" : "odd:bg-white/[0.02]"}>
                       <td className={`px-3 py-1.5 border-b border-slate-800/40 sticky left-0 cursor-pointer ${isSel ? "bg-violet-500/15" : "bg-slate-950"}`}
                           onClick={() => setSelDriver(isSel ? null : drv.id)}>
-                        <div className="flex items-center gap-1.5">
-                          {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
-                          <span className="font-medium truncate">{driverLabel(drv)}</span>
-                          {drv.isFictitious && <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
-                          <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv); }} className="ml-auto p-0.5 rounded text-slate-500 hover:text-violet-300" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
+                        <div className="flex items-center gap-2">
+                          <DriverAvatar drv={drv} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
+                              <span className="font-medium truncate">{driverLabel(drv)}</span>
+                              {drv.isFictitious && <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                            </div>
+                            {drv.abilitazioni?.length > 0 && (
+                              <div className="mt-0.5"><AbilitazioneBadges keys={drv.abilitazioni} size={11} /></div>
+                            )}
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv); }} className="p-0.5 rounded text-slate-500 hover:text-violet-300 shrink-0" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
                         </div>
                       </td>
                       {board.days.map((day) => {
