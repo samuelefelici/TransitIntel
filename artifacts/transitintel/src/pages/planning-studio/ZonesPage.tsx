@@ -25,7 +25,7 @@ import { MAPBOX_TOKEN, MAP_STYLES } from "@/pages/dashboard/constants";
 import { getPsProject } from "@/lib/planning-studio-api";
 import {
   exportZonizzazioneHtml,
-  type CalendarKm, type WeekdayKm, type CalendarDef,
+  type CalendarKm, type WeekdayKm, type CalendarDef, type CategoryKm,
 } from "./zonizzazione-export";
 
 /* ─── Tipi API ─── */
@@ -44,6 +44,7 @@ interface ZoneRouteKm {
   kmPerRun: number;
   byCalendar?: CalendarKm[];
   byWeekday?: WeekdayKm[];
+  byCategory?: CategoryKm[];
 }
 interface ZoneKm {
   zoneId: string;
@@ -57,7 +58,7 @@ interface ComputeResult {
   zones: ZoneKm[];
   unassignedKm: number;
   calendars?: CalendarDef[];
-  totals?: { byCalendar: CalendarKm[]; byWeekday: WeekdayKm[] };
+  totals?: { byCalendar: CalendarKm[]; byWeekday: WeekdayKm[]; byCategory?: CategoryKm[] };
   meta?: { zoneCount: number; variantCount: number; tripCount: number };
 }
 
@@ -269,7 +270,8 @@ export default function PlanningStudioZonesPage() {
   /* ─── Export PDF/HTML (documento tecnico stampabile) ─── */
   const exportPdf = () => {
     if (!result) return;
-    exportZonizzazioneHtml(result, {
+    // async: apre subito la finestra (anti popup-block), poi embedda il logo
+    void exportZonizzazioneHtml(result, {
       year: result.year,
       projectName: projectQ.data?.name,
       agencyName: "Conerobus",

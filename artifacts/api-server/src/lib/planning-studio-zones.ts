@@ -28,6 +28,15 @@ import {
   type ZoneGeometry,
 } from "./geo-zones";
 import { haversineKm } from "./geo-utils";
+import { loadCalendarProfile } from "./planning-studio-calendar";
+import { classifyDate, italianHolidays } from "./day-classifier";
+
+/** Categorie del Calendario Aziendale (classi level1 del day-classifier). */
+const CATEGORY_META: Record<string, { name: string; color: string; order: number }> = {
+  scuole_aperte: { name: "Scuole Aperte", color: "#3b82f6", order: 0 },
+  scuole_chiuse: { name: "Scuole Chiuse", color: "#f59e0b", order: 1 },
+  festivo:       { name: "Festività",     color: "#ef4444", order: 2 },
+};
 
 const router: IRouter = Router();
 
@@ -385,6 +394,15 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     const dowByIso = new Map<string, (typeof DOW_KEYS)[number]>();
     for (const d of allDates) dowByIso.set(d.iso, d.dowKey);
 
+    // Mappa ISO → categoria del Calendario Aziendale (Scuole Aperte/Chiuse/
+    // Festività): classificazione una volta sola per data, poi lookup.
+    const profile = await loadCalendarProfile(proj.id);
+    const yearHolidays = italianHolidays(year);
+    const catByIso = new Map<string, string>();
+    for (const d of allDates) {
+      catByIso.set(d.iso, classifyDate(d.iso, profile, yearHolidays).level1);
+    }
+
     // Corse/anno per variante = Σ giorni di circolazione dei suoi trip.
     // Oltre al totale, teniamo la ripartizione per calendario aziendale e per
     // giorno della settimana (servono all'export per rendere trasparente il calcolo).
@@ -392,6 +410,7 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     const runsByVariant = new Map<string, number>();
     const calRunsByVariant = new Map<string, Map<string, number>>(); // variantId → calId → corse
     const dowRunsByVariant = new Map<string, Map<string, number>>(); // variantId → dowKey → corse
+    const catRunsByVariant = new Map<string, Map<string, number>>(); // variantId → categoria → corse
     for (const t of trips) {
       // base dal calendario, ritagliata su valid_from/valid_to del trip
       const base = t.calendar_id ? (calActiveDates.get(t.calendar_id) ?? new Set<string>()) : new Set<string>();
@@ -417,13 +436,16 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
       if (!cm) { cm = new Map(); calRunsByVariant.set(vId, cm); }
       cm.set(calKey, (cm.get(calKey) ?? 0) + days.size);
 
-      // ripartizione per giorno della settimana
+      // ripartizione per giorno della settimana + categoria aziendale
       let dm = dowRunsByVariant.get(vId);
       if (!dm) { dm = new Map(); dowRunsByVariant.set(vId, dm); }
+      let km = catRunsByVariant.get(vId);
+      if (!km) { km = new Map(); catRunsByVariant.set(vId, km); }
       for (const iso of days) {
         const dow = dowByIso.get(iso);
-        if (!dow) continue;
-        dm.set(dow, (dm.get(dow) ?? 0) + 1);
+        if (dow) dm.set(dow, (dm.get(dow) ?? 0) + 1);
+        const cat = catByIso.get(iso);
+        if (cat) km.set(cat, (km.get(cat) ?? 0) + 1);
       }
     }
 
@@ -460,27 +482,31 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     interface DimAgg { kmYear: number; runsYear: number }
     interface RouteAgg {
       routeId: string; shortName: string; color: string | null; kmYear: number; runsYear: number;
-      byCal: Map<string, DimAgg>; byDow: Map<string, DimAgg>;
+      byCal: Map<string, DimAgg>; byDow: Map<string, DimAgg>; byCat: Map<string, DimAgg>;
     }
     const zoneAgg = new Map<string, Map<string, RouteAgg>>(); // zoneId → routeId → agg
     let unassignedKm = 0;
-    // Totali di rete (km assegnati dentro i comuni) per calendario e per giorno.
-    // Le corse/anno di rete si contano UNA volta per variante (non moltiplicate
-    // per il numero di comuni attraversati).
+    // Totali di rete (km assegnati dentro i comuni) per calendario, giorno e
+    // categoria aziendale. Le corse/anno di rete si contano UNA volta per
+    // variante (non moltiplicate per il numero di comuni attraversati).
     const globalCalKm = new Map<string, number>();
     const globalDowKm = new Map<string, number>();
+    const globalCatKm = new Map<string, number>();
     const globalCalRuns = new Map<string, number>();
     const globalDowRuns = new Map<string, number>();
+    const globalCatRuns = new Map<string, number>();
 
     for (const v of variants) {
       const runs = runsByVariant.get(v.variantId) ?? 0;
       if (runs === 0) continue;
       const calRuns = calRunsByVariant.get(v.variantId) ?? new Map<string, number>();
       const dowRuns = dowRunsByVariant.get(v.variantId) ?? new Map<string, number>();
+      const catRuns = catRunsByVariant.get(v.variantId) ?? new Map<string, number>();
 
-      // corse/anno di rete per calendario e per giorno (una volta per variante)
+      // corse/anno di rete per calendario / giorno / categoria (una volta per variante)
       for (const [k, n] of calRuns) globalCalRuns.set(k, (globalCalRuns.get(k) ?? 0) + n);
       for (const [k, n] of dowRuns) globalDowRuns.set(k, (globalDowRuns.get(k) ?? 0) + n);
+      for (const [k, n] of catRuns) globalCatRuns.set(k, (globalCatRuns.get(k) ?? 0) + n);
 
       let insideSum = 0;
       for (const [zoneId, kmInside] of v.kmByZone) {
@@ -489,7 +515,7 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
         const byRoute = zoneAgg.get(zoneId)!;
         const agg = byRoute.get(v.routeId) ?? {
           routeId: v.routeId, shortName: v.shortName, color: v.color, kmYear: 0, runsYear: 0,
-          byCal: new Map<string, DimAgg>(), byDow: new Map<string, DimAgg>(),
+          byCal: new Map<string, DimAgg>(), byDow: new Map<string, DimAgg>(), byCat: new Map<string, DimAgg>(),
         };
         agg.kmYear += kmInside * runs;
         agg.runsYear += runs;
@@ -504,6 +530,12 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
           e.kmYear += kmInside * n; e.runsYear += n;
           agg.byDow.set(k, e);
           globalDowKm.set(k, (globalDowKm.get(k) ?? 0) + kmInside * n);
+        }
+        for (const [k, n] of catRuns) {
+          const e = agg.byCat.get(k) ?? { kmYear: 0, runsYear: 0 };
+          e.kmYear += kmInside * n; e.runsYear += n;
+          agg.byCat.set(k, e);
+          globalCatKm.set(k, (globalCatKm.get(k) ?? 0) + kmInside * n);
         }
         byRoute.set(v.routeId, agg);
       }
@@ -538,6 +570,14 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
             byWeekday: Array.from(a.byDow.entries())
               .map(([dow, e]) => ({ dow, kmYear: r1(e.kmYear), runsYear: e.runsYear }))
               .sort((x, y) => (DOW_ORDER[x.dow] ?? 9) - (DOW_ORDER[y.dow] ?? 9)),
+            byCategory: Array.from(a.byCat.entries())
+              .map(([key, e]) => ({
+                key,
+                name: CATEGORY_META[key]?.name ?? key,
+                color: CATEGORY_META[key]?.color ?? null,
+                kmYear: r1(e.kmYear), runsYear: e.runsYear,
+              }))
+              .sort((x, y) => (CATEGORY_META[x.key]?.order ?? 9) - (CATEGORY_META[y.key]?.order ?? 9)),
           }))
           .sort((a, b) => b.kmYear - a.kmYear);
         const totalKmYear = r1(Array.from(byRouteMap.values()).reduce((s, a) => s + a.kmYear, 0));
@@ -579,13 +619,23 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     const totalsByWeekday = Object.keys(DOW_ORDER)
       .sort((a, b) => DOW_ORDER[a] - DOW_ORDER[b])
       .map((dow) => ({ dow, kmYear: r1(globalDowKm.get(dow) ?? 0), runsYear: globalDowRuns.get(dow) ?? 0 }));
+    const totalsByCategory = Object.keys(CATEGORY_META)
+      .sort((a, b) => CATEGORY_META[a].order - CATEGORY_META[b].order)
+      .map((key) => ({
+        key,
+        name: CATEGORY_META[key].name,
+        color: CATEGORY_META[key].color,
+        kmYear: r1(globalCatKm.get(key) ?? 0),
+        runsYear: globalCatRuns.get(key) ?? 0,
+      }))
+      .filter((c) => c.kmYear > 0 || c.runsYear > 0);
 
     res.json({
       year,
       zones: zonesOut,
       unassignedKm: r1(unassignedKm),
       calendars,
-      totals: { byCalendar: totalsByCalendar, byWeekday: totalsByWeekday },
+      totals: { byCalendar: totalsByCalendar, byWeekday: totalsByWeekday, byCategory: totalsByCategory },
       meta: {
         zoneCount: zones.length,
         variantCount: variants.length,
