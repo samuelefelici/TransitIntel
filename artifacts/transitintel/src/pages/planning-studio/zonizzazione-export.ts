@@ -3,21 +3,21 @@
  *
  * Genera un documento stampabile (finestra separata + CSS `@page`, come
  * `fares-polimetriche-export.ts`) pensato per i corrispettivi chilometrici
- * dovuti agli enti locali. Rende TRASPARENTE il calcolo su cinque dimensioni:
+ * dovuti agli enti locali. Rende TRASPARENTE il calcolo su quattro dimensioni:
  *   • linea (route del progetto)
  *   • comune (zona ISTAT)
  *   • categoria del Calendario Aziendale (Scuole Aperte / Chiuse / Festività)
- *   • calendario di servizio (ps_calendars, pattern settimanale + validità)
  *   • giorno della settimana (lun…dom)
+ * NB: i calendari di servizio GTFS (ps_calendars) NON compaiono nel documento:
+ * sono un dettaglio dell'import, sostituiti dalle categorie aziendali.
  *
  * Struttura del PDF:
- *   1. Copertina           — hero colorata, logo Planning Studio, KPI
+ *   1. Copertina           — logo Planning Studio, KPI
  *   2. Metodologia         — come si calcolano i km per comune
  *   3. Calendario Aziendale — ripartizione per categoria (rete)
- *   4. Calendari di servizio — definizione (pattern, validità, giorni attivi)
- *   5. Riepilogo comuni    — tabella comune → km/anno (+ % sul totale)
- *   6. Totali di rete      — km/anno per calendario e per giorno settimana
- *   7. Dettaglio comune    — linee + ripartizioni categoria/calendario/giorni
+ *   4. Riepilogo comuni    — tabella comune → km/anno (+ % sul totale)
+ *   5. Totali di rete      — km/anno per giorno della settimana
+ *   6. Dettaglio comune    — linee + ripartizioni categoria/giorni
  *
  * Il calcolo è fatto dal backend (`POST /planning-studio/:id/zones/compute`):
  * qui non si ricalcola nulla, si formatta soltanto. Il logo (/planningstudio.png)
@@ -160,20 +160,6 @@ async function fetchLogoDataUri(): Promise<string | null> {
 
 /* ─── Aggregazioni a livello comune (somma delle linee) ─── */
 
-function comuneByCalendar(zone: ZoneKm): CalendarKm[] {
-  const acc = new Map<string, CalendarKm>();
-  for (const r of zone.byRoute) {
-    for (const c of r.byCalendar ?? []) {
-      const e = acc.get(c.calendarId) ?? { calendarId: c.calendarId, code: c.code, name: c.name, kmYear: 0, runsYear: 0 };
-      e.kmYear += c.kmYear; e.runsYear += c.runsYear;
-      acc.set(c.calendarId, e);
-    }
-  }
-  return Array.from(acc.values())
-    .map((e) => ({ ...e, kmYear: Math.round(e.kmYear * 10) / 10 }))
-    .sort((a, b) => b.kmYear - a.kmYear);
-}
-
 function comuneByWeekday(zone: ZoneKm): WeekdayKm[] {
   const acc = new Map<string, WeekdayKm>();
   for (const r of zone.byRoute) {
@@ -224,7 +210,7 @@ function renderCover(
         <div class="cover-kicker">Corrispettivi chilometrici · Documento tecnico</div>
         <h1 class="cover-title">Zonizzazione<br/>Km sviluppati per comune</h1>
         <div class="cover-subtitle">Percorrenza annua del servizio ripartita per comune, linea, categoria del
-          calendario aziendale, calendario di servizio e giorno della settimana</div>
+          Calendario Aziendale (Scuole Aperte / Chiuse / Festività) e giorno della settimana</div>
       </div>
 
       <div class="cover-meta">
@@ -244,7 +230,7 @@ function renderCover(
       <div class="cover-note">
         I km sono calcolati intersecando la geometria di ogni linea con i confini amministrativi dei comuni e
         moltiplicando i km all'interno di ciascun comune per il numero di corse annue effettivamente circolanti
-        (calendari di servizio, eccezioni, validità delle corse). Le ripartizioni per categoria derivano dal
+        (giorni di circolazione reali, eccezioni e validità delle corse). Le ripartizioni per categoria derivano dal
         <strong>Calendario Aziendale</strong> (periodi scuole aperte/chiuse e festività). Il dettaglio del metodo
         è nella pagina seguente.
       </div>
@@ -279,9 +265,9 @@ function renderMethodology(result: ZonizzazioneResult): string {
         </li>
         <li>
           <strong>Corse/anno per linea.</strong> Da ogni corsa (trip) si ricava l'insieme dei giorni di
-          circolazione nell'anno: pattern settimanale del <em>calendario di servizio</em> (lun…dom) intersecato
-          con il periodo di validità e con l'anno, corretto dalle eccezioni (giorni aggiunti/rimossi) e dalla
-          validità della singola corsa. Le corse/anno della linea sono la somma dei giorni di circolazione.
+          circolazione nell'anno: pattern settimanale (lun…dom) intersecato con il periodo di validità e con
+          l'anno, corretto dalle eccezioni (giorni aggiunti/rimossi) e dalla validità della singola corsa.
+          Le corse/anno della linea sono la somma dei giorni di circolazione.
         </li>
         <li>
           <strong>Km/anno per comune.</strong> Per ogni coppia (linea, comune):
@@ -297,10 +283,10 @@ function renderMethodology(result: ZonizzazioneResult): string {
           I giorni di circolazione di ogni corsa vengono ripartiti su queste classi.
         </li>
         <li>
-          <strong>Ripartizioni esatte.</strong> Categoria, calendario di servizio e giorno della settimana sono
-          tre partizioni dello <em>stesso</em> insieme di giorni di circolazione: la somma dei km per categoria,
-          per calendario o per giorno coincide sempre con i km/anno della linea nel comune. Questo permette di
-          verificare i totali da più angolazioni.
+          <strong>Ripartizioni esatte.</strong> Categoria del Calendario Aziendale e giorno della settimana sono
+          due partizioni dello <em>stesso</em> insieme di giorni di circolazione: la somma dei km per categoria
+          o per giorno coincide sempre con i km/anno della linea nel comune. Questo permette di verificare i
+          totali da più angolazioni.
         </li>
       </ol>
 
@@ -343,57 +329,6 @@ function renderCategoryTotals(result: ZonizzazioneResult, grandTotal: number): s
       <div class="cat-cards">${cards}</div>
       <p class="hint-note">La somma delle categorie coincide con il totale di rete (${fmtKm(grandTotal)} km/anno):
         sono una partizione esatta dei giorni di circolazione.</p>
-    </section>`;
-}
-
-function renderCalendars(result: ZonizzazioneResult): string {
-  const cals = (result.calendars ?? []).filter((c) => c.id !== "__nocal__");
-  const noCal = (result.calendars ?? []).find((c) => c.id === "__nocal__");
-  if (cals.length === 0 && !noCal) return "";
-
-  const dowHead = DOW_SEQ.map((d) => `<th class="dow-h">${DOW_SHORT[d]}</th>`).join("");
-  const rows = cals.map((c) => {
-    const dows = DOW_SEQ.map((d) => {
-      const on = c.weekdays?.[d];
-      return `<td class="dow-c ${on ? "on" : "off"}">${on ? "●" : "·"}</td>`;
-    }).join("");
-    return `
-      <tr>
-        <td class="cal-name"><strong>${escapeHtml(c.name)}</strong>${c.code ? `<span class="cal-code">${escapeHtml(c.code)}</span>` : ""}</td>
-        ${dows}
-        <td class="num">${fmtDate(c.startDate)} – ${fmtDate(c.endDate)}</td>
-        <td class="num">${fmtInt(c.activeDays)}</td>
-        <td class="num">${fmtInt(c.runsYear)}</td>
-        <td class="num strong">${fmtKm(c.kmYear)}</td>
-      </tr>`;
-  }).join("");
-  const noCalRow = noCal ? `
-      <tr class="nocal">
-        <td class="cal-name"><strong>${escapeHtml(noCal.name)}</strong></td>
-        ${DOW_SEQ.map(() => `<td class="dow-c off">·</td>`).join("")}
-        <td class="num">—</td><td class="num">—</td>
-        <td class="num">${fmtInt(noCal.runsYear)}</td>
-        <td class="num strong">${fmtKm(noCal.kmYear)}</td>
-      </tr>` : "";
-
-  return `
-    <section class="page">
-      <h2 class="sec-title">Calendari di servizio</h2>
-      <p class="lead">Ogni calendario definisce i giorni della settimana in cui il servizio circola e il periodo
-        di validità (dal GTFS). «Giorni attivi» sono i giorni nell'anno, al netto delle eccezioni di calendario.</p>
-      <table class="grid cal-table">
-        <thead>
-          <tr>
-            <th class="left">Calendario</th>
-            ${dowHead}
-            <th>Validità</th>
-            <th>Giorni attivi</th>
-            <th>Corse/anno</th>
-            <th>Km/anno</th>
-          </tr>
-        </thead>
-        <tbody>${rows}${noCalRow}</tbody>
-      </table>
     </section>`;
 }
 
@@ -440,24 +375,8 @@ function renderSummary(result: ZonizzazioneResult, grandTotal: number): string {
 }
 
 function renderNetworkTotals(result: ZonizzazioneResult, grandTotal: number): string {
-  const byCal = result.totals?.byCalendar ?? [];
   const byDow = result.totals?.byWeekday ?? [];
-  if (byCal.length === 0 && byDow.length === 0) return "";
-
-  const maxCal = Math.max(1, ...byCal.map((c) => c.kmYear));
-  const calRows = byCal.map((c) => {
-    const pct = grandTotal > 0 ? (c.kmYear / grandTotal) * 100 : 0;
-    return `
-      <tr>
-        <td class="left"><strong>${escapeHtml(c.name)}</strong>${c.code ? `<span class="cal-code">${escapeHtml(c.code)}</span>` : ""}</td>
-        <td class="num">${fmtInt(c.runsYear)}</td>
-        <td class="num strong">${fmtKm(c.kmYear)}</td>
-        <td class="bar-cell">
-          <div class="bar"><div class="bar-fill cal" style="width:${Math.max(1, (c.kmYear / maxCal) * 100).toFixed(1)}%"></div></div>
-          <span class="bar-lbl">${fmtPct(pct)}</span>
-        </td>
-      </tr>`;
-  }).join("");
+  if (byDow.length === 0) return "";
 
   const maxDow = Math.max(1, ...byDow.map((d) => d.kmYear));
   const totDow = byDow.reduce((s, d) => s + d.kmYear, 0);
@@ -477,17 +396,10 @@ function renderNetworkTotals(result: ZonizzazioneResult, grandTotal: number): st
 
   return `
     <section class="page">
-      <h2 class="sec-title">Totali di rete per calendario e per giorno</h2>
-      <p class="lead">Km/anno sviluppati <strong>dentro i comuni</strong>, ripartiti per calendario di servizio e per
-        giorno della settimana. Sono ripartizioni dello stesso totale (${fmtKm(grandTotal)} km/anno).</p>
+      <h2 class="sec-title">Totali di rete per giorno della settimana</h2>
+      <p class="lead">Km/anno sviluppati <strong>dentro i comuni</strong>, ripartiti per giorno della settimana.
+        Come le categorie, è una ripartizione esatta dello stesso totale (${fmtKm(grandTotal)} km/anno).</p>
 
-      <h3 class="sub-title">Per calendario di servizio</h3>
-      <table class="grid">
-        <thead><tr><th class="left">Calendario</th><th>Corse/anno</th><th>Km/anno</th><th class="left">Quota</th></tr></thead>
-        <tbody>${calRows}</tbody>
-      </table>
-
-      <h3 class="sub-title">Per giorno della settimana</h3>
       <table class="grid">
         <thead><tr><th class="left">Giorno</th><th>Corse/anno</th><th>Km/anno</th><th class="left">Quota</th></tr></thead>
         <tbody>${dowRows}</tbody>
@@ -497,7 +409,6 @@ function renderNetworkTotals(result: ZonizzazioneResult, grandTotal: number): st
 
 function renderZoneDetail(zone: ZoneKm, year: number): string {
   const byCat = comuneByCategory(zone);
-  const byCal = comuneByCalendar(zone);
   const byDow = comuneByWeekday(zone);
   const maxDow = Math.max(1, ...byDow.map((d) => d.kmYear));
   const totCat = byCat.reduce((s, c) => s + c.kmYear, 0) || 1;
@@ -535,13 +446,6 @@ function renderZoneDetail(zone: ZoneKm, year: number): string {
         <td class="num strong">${fmtKm(c.kmYear)}</td>
       </tr>`).join("");
 
-  const calRows = byCal.map((c) => `
-      <tr>
-        <td class="left">${escapeHtml(c.name)}</td>
-        <td class="num">${fmtInt(c.runsYear)}</td>
-        <td class="num strong">${fmtKm(c.kmYear)}</td>
-      </tr>`).join("");
-
   const dowRows = byDow.map((d) => `
       <tr>
         <td class="left">${DOW_FULL[d.dow] ?? d.dow}</td>
@@ -568,20 +472,13 @@ function renderZoneDetail(zone: ZoneKm, year: number): string {
           </table>
         </div>
 
-        <div class="zt-split three">
+        <div class="zt-split">
           <div class="zt">
-            <div class="zt-title">Per categoria (Cal. Aziendale)</div>
+            <div class="zt-title">Per categoria (Calendario Aziendale)</div>
             ${catStack}
             <table class="grid slim">
               <thead><tr><th class="left">Categoria</th><th>Corse</th><th>Km/anno</th></tr></thead>
               <tbody>${catRows || `<tr><td colspan="3" class="empty">—</td></tr>`}</tbody>
-            </table>
-          </div>
-          <div class="zt">
-            <div class="zt-title">Per calendario di servizio</div>
-            <table class="grid slim">
-              <thead><tr><th class="left">Calendario</th><th>Corse</th><th>Km/anno</th></tr></thead>
-              <tbody>${calRows || `<tr><td colspan="3" class="empty">—</td></tr>`}</tbody>
             </table>
           </div>
           <div class="zt">
@@ -711,7 +608,7 @@ const STYLES = `
   .zone-tables { display:flex; flex-direction:column; gap:4mm; }
   .zt-title { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#475569; margin-bottom:1.5mm; }
   .zt-hint { font-weight:500; text-transform:none; letter-spacing:0; color:var(--muted); }
-  .zt-split.three { display:grid; grid-template-columns: 1fr 1fr 1.15fr; gap: 6mm; }
+  .zt-split { display:grid; grid-template-columns: 1fr 1.15fr; gap: 8mm; }
   .line-pill { display:inline-block; color:#fff; font-weight:800; font-size:10px; padding:2px 7px; border-radius:4px; }
   .line-cal { margin-top:3px; font-size:9px; color:var(--muted); line-height:1.5; display:flex; flex-wrap:wrap; gap:2px 10px; }
   .line-cal .ci { white-space:nowrap; }
@@ -750,7 +647,7 @@ export async function exportZonizzazioneHtml(result: ZonizzazioneResult, opts: Z
     <section class="page zone-detail-page">
       <h2 class="sec-title">Dettaglio per comune · ${escapeHtml(result.year)}</h2>
       <p class="lead">Per ogni comune: km/anno per linea (con ripartizione per categoria del Calendario Aziendale
-        sotto il nome della linea) e totali del comune per categoria, calendario di servizio e giorno della settimana.</p>
+        sotto il nome della linea) e totali del comune per categoria e per giorno della settimana.</p>
     </section>
     ${result.zones.map((z) => renderZoneDetail(z, result.year)).join("")}
   `;
@@ -773,7 +670,6 @@ export async function exportZonizzazioneHtml(result: ZonizzazioneResult, opts: Z
     ${renderCover(result, opts, grandTotal, genDate, logo)}
     ${renderMethodology(result)}
     ${renderCategoryTotals(result, grandTotal)}
-    ${renderCalendars(result)}
     ${renderSummary(result, grandTotal)}
     ${renderNetworkTotals(result, grandTotal)}
     ${detailHtml}
