@@ -250,6 +250,28 @@ function coverageCurveSvg(points: any[]): string {
     <text x="${(L + iw / 2).toFixed(0)}" y="${H}" text-anchor="middle" class="ax">Distanza dalla linea (m)</text></svg>`;
 }
 
+/** Curva di copertura con più serie sovrapposte (confronto). */
+function coverageCurveMultiSvg(series: Array<{ color: string; points: any[] }>): string {
+  const valid = series.filter((s) => s.points && s.points.length > 1);
+  if (!valid.length) return "";
+  const W = 620, H = 210, L = 46, B = 30, T = 12, R = 14;
+  const iw = W - L - R, ih = H - T - B;
+  const n = valid[0].points.length;
+  const x = (i: number) => L + (i / (n - 1)) * iw;
+  const y = (pct: number) => T + ih - (clamp(pct) / 100) * ih;
+  let grid = "";
+  for (const g of [0, 25, 50, 75, 100]) grid += `<line x1="${L}" y1="${y(g).toFixed(1)}" x2="${W - R}" y2="${y(g).toFixed(1)}" stroke="#eef2f7" /><text x="${L - 6}" y="${(y(g) + 3).toFixed(1)}" text-anchor="end" class="ax">${g}%</text>`;
+  let xlab = "";
+  valid[0].points.forEach((p: any, i: number) => { xlab += `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" class="ax">${p.m}</text>`; });
+  const lines = valid.map((s) => {
+    const pts = s.points.map((p: any, i: number) => `${x(i).toFixed(1)},${y(p.pct).toFixed(1)}`).join(" ");
+    const dots = s.points.map((p: any, i: number) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.pct).toFixed(1)}" r="2.6" fill="${s.color}" />`).join("");
+    return `<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2.5" style="print-color-adjust:exact" />${dots}`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" class="curve">${grid}${xlab}${lines}
+    <text x="${(L + iw / 2).toFixed(0)}" y="${H}" text-anchor="middle" class="ax">Distanza dalla linea (m)</text></svg>`;
+}
+
 /* ─── Score breakdown (replica formula backend 35/30/20/15) ─── */
 function scoreBreakdown(a: any): Array<{ label: string; value: number; weight: number; color: string }> {
   const popPct = a?.populationCoverage?.percent ?? 0;
@@ -717,7 +739,59 @@ export async function exportComparisonReport(
     ${suggestions}
   </section>` : "";
 
-  const body = cover + cmpSec + demandCmp + sugSec;
+  // Dati ricchi per scenario (dal /deep passato dal frontend)
+  const dA = scenarios[0]?.deep, dB = scenarios[1]?.deep;
+  const layers = scenarios.slice(0, 2).map((s, i) => layerFromGeojson(s.geojson, safeColor(s.color, i === 0 ? cA : cB)));
+
+  // Diagrammi di linea (metro) a confronto
+  const metroCmp = (dA?.stopsEnriched?.length || dB?.stopsEnriched?.length) ? `<section class="page">
+    <h2 class="sec-title">Diagrammi di linea a confronto</h2>
+    ${scenarios.slice(0, 2).map((s, i) => `<div class="sub-title" style="color:${i === 0 ? cA : cB}">${esc(s.name)} · ${fInt(s.deep?.stopsEnriched?.length || 0)} fermate</div>
+      <div class="map-wrap metro-wrap">${metroDiagram(s.deep?.stopsEnriched || [], i === 0 ? cA : cB)}</div>`).join("")}
+  </section>` : "";
+
+  // Isocrone a confronto: mappe affiancate + tabella pop per banda
+  const isoA = dA?.accessibilityIso, isoB = dB?.accessibilityIso;
+  const isoAvail = isoA?.available || isoB?.available;
+  const minutesSet = Array.from(new Set([...(isoA?.bands || []), ...(isoB?.bands || [])].map((b: any) => b.minutes))).sort((a: number, b: number) => a - b);
+  const popAt = (iso: any, m: number) => (iso?.bands || []).find((b: any) => b.minutes === m)?.population ?? null;
+  const isoCmp = isoAvail ? `<section class="page">
+    <h2 class="sec-title">Accessibilità a piedi a confronto</h2>
+    <div class="cols2">
+      ${scenarios.slice(0, 2).map((s, i) => {
+        const iso = s.deep?.accessibilityIso;
+        return `<div><div class="sub-title" style="color:${i === 0 ? cA : cB}">${esc(s.name)}</div>
+          ${iso?.available && (iso.bands || []).some((b: any) => (b.geometries || []).length)
+            ? `<div class="map-wrap">${buildIsoMap(layers[i], [...(iso.bands || [])].sort((x: any, y: any) => x.minutes - y.minutes))}</div>`
+            : `<p class="hint">Isocrone non disponibili.</p>`}</div>`;
+      }).join("")}
+    </div>
+    <div class="sub-title">Popolazione raggiungibile a piedi</div>
+    <table class="grid"><thead><tr><th class="left">Isocrona</th><th>${esc(A?.name ?? "A")}</th><th>${esc(B?.name ?? "B")}</th><th>Δ</th></tr></thead>
+      <tbody>${minutesSet.map((m: number) => { const pa = popAt(isoA, m), pb = popAt(isoB, m); return `<tr><td class="left strong">${m} min a piedi</td><td class="num">${pa != null ? fInt(pa) : "—"}</td><td class="num">${pb != null ? fInt(pb) : "—"}</td><td class="num">${pa != null && pb != null ? (pa - pb >= 0 ? "+" : "") + fInt(pa - pb) : "—"}</td></tr>`; }).join("")}</tbody></table>
+  </section>` : "";
+
+  // Copertura popolazione: curve sovrapposte
+  const coverageCmp = (dA?.coverageCurve?.length || dB?.coverageCurve?.length) ? `<section class="page">
+    <h2 class="sec-title">Curva di copertura a confronto</h2>
+    <p class="lead">Popolazione (%) raggiunta al crescere della distanza dalla linea, per i due percorsi.</p>
+    <div style="display:flex;justify-content:center">${coverageCurveMultiSvg([
+      { color: cA, points: dA?.coverageCurve || [] }, { color: cB, points: dB?.coverageCurve || [] },
+    ])}</div>
+    <div class="map-legend" style="justify-content:center">
+      <span><i style="background:${cA}"></i>${esc(A?.name ?? "A")}</span>
+      <span><i style="background:${cB}"></i>${esc(B?.name ?? "B")}</span></div>
+  </section>` : "";
+
+  // Traffico a confronto
+  const trafficCmp = (dA?.corridorTraffic || dB?.corridorTraffic) ? `<section class="page">
+    <h2 class="sec-title">Traffico sul corridoio a confronto</h2>
+    <div class="cols2">
+      ${scenarios.slice(0, 2).map((s, i) => `<div><div class="sub-title" style="color:${i === 0 ? cA : cB}">${esc(s.name)}</div>${trafficHtml(s.deep?.corridorTraffic)}</div>`).join("")}
+    </div>
+  </section>` : "";
+
+  const body = cover + cmpSec + metroCmp + isoCmp + coverageCmp + trafficCmp + demandCmp + sugSec;
   win.document.open();
   win.document.write(shell(`Confronto · ${A?.name ?? ""} vs ${B?.name ?? ""}`, body));
   win.document.close();
