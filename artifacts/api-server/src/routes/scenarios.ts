@@ -1581,10 +1581,98 @@ async function computeIsochroneAccessibility(
         if (geoms.some((g) => pointInIsoGeometry(poi.lng, poi.lat, g))) { poiTotal++; poiByCat[poi.category] = (poiByCat[poi.category] || 0) + 1; }
       }
     }
-    return { minutes: m, population, sections, poiTotal, poiByCat, points: geoms.length };
+    // geometrie semplificate per il disegno nel report (fasce sovrapposte)
+    return { minutes: m, population, sections, poiTotal, poiByCat, points: geoms.length, geometries: geoms.map(simplifyGeom) };
   });
 
   return { available: true, partial, sampledPoints: pts.length, pointsWithData, minutes: minutesList, bands: results };
+}
+
+/** Semplifica una geometria isocrona per il disegno (arrotonda + campiona anelli). */
+function simplifyGeom(geom: any): any {
+  const ring = (r: number[][]) => {
+    const step = Math.max(1, Math.floor(r.length / 48));
+    const out: number[][] = [];
+    for (let i = 0; i < r.length; i += step) out.push([Math.round(r[i][0] * 100000) / 100000, Math.round(r[i][1] * 100000) / 100000]);
+    if (out.length && r.length && (out[out.length - 1][0] !== r[r.length - 1][0])) out.push([Math.round(r[r.length - 1][0] * 100000) / 100000, Math.round(r[r.length - 1][1] * 100000) / 100000]);
+    return out;
+  };
+  if (!geom) return null;
+  if (geom.type === "Polygon") return { type: "Polygon", coordinates: [ring(geom.coordinates?.[0] ?? [])] };
+  if (geom.type === "MultiPolygon") return { type: "MultiPolygon", coordinates: (geom.coordinates ?? []).map((p: any) => [ring(p?.[0] ?? [])]) };
+  return null;
+}
+
+/* ─── Dettaglio per fermata (ordine lungo il percorso, POI vicini, comune) ─── */
+function polyCum(line: number[][]): number[] {
+  const cum = [0];
+  for (let i = 1; i < line.length; i++) cum.push(cum[i - 1] + haversineKm(line[i - 1][1], line[i - 1][0], line[i][1], line[i][0]));
+  return cum;
+}
+function projectAlongKm(line: number[][], cum: number[], lng: number, lat: number): { along: number; dist: number } {
+  let best = { along: 0, dist: Infinity };
+  const kx = Math.cos((lat * Math.PI) / 180) || 1;
+  for (let i = 0; i < line.length - 1; i++) {
+    const ax = line[i][0], ay = line[i][1], bx = line[i + 1][0], by = line[i + 1][1];
+    const dx = (bx - ax) * kx, dy = by - ay;
+    const len2 = dx * dx + dy * dy || 1e-12;
+    let t = (((lng - ax) * kx) * dx + (lat - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const projLng = ax + t * (bx - ax), projLat = ay + t * (by - ay);
+    const d = haversineKm(lat, lng, projLat, projLng);
+    if (d < best.dist) best = { along: cum[i] + t * (cum[i + 1] - cum[i]), dist: d };
+  }
+  return best;
+}
+function computeStopsEnriched(
+  lines: number[][][],
+  stops: Array<{ name: string; lng: number; lat: number }>,
+  poiRows: Array<{ category: string; lng: number; lat: number }>,
+  census: Array<{ istatCode: string | null; population: number; centroidLng: number; centroidLat: number }>,
+  radiusKm: number,
+): any[] {
+  const spine = (lines.slice().sort((a, b) => b.length - a.length)[0]) || [];
+  const cum = spine.length > 1 ? polyCum(spine) : [0];
+  const out = stops.map((s) => {
+    const proj = spine.length > 1 ? projectAlongKm(spine, cum, s.lng, s.lat) : { along: 0, dist: 0 };
+    // POI entro raggio, per categoria
+    const poiByCat: Record<string, number> = {};
+    let poiNear = 0;
+    for (const p of poiRows) {
+      if (haversineKm(s.lat, s.lng, p.lat, p.lng) <= radiusKm) { poiNear++; poiByCat[p.category] = (poiByCat[p.category] || 0) + 1; }
+    }
+    // comune = sezione censuaria più vicina
+    let comune: string | null = null, cd = Infinity;
+    for (const c of census) {
+      const d = haversineKm(s.lat, s.lng, c.centroidLat, c.centroidLng);
+      if (d < cd) { cd = d; comune = c.istatCode ? getComuneName(c.istatCode) : null; }
+    }
+    return { name: s.name, lng: s.lng, lat: s.lat, cumKm: Math.round(proj.along * 100) / 100, poiNear, poiByCat, comune };
+  });
+  out.sort((a, b) => a.cumKm - b.cumKm);
+  return out;
+}
+
+/** Curva di copertura: popolazione entro soglie di distanza dalla linea/fermate. */
+function computeCoverageCurve(
+  lines: number[][][],
+  stops: Array<{ lng: number; lat: number }>,
+  census: Array<{ population: number; centroidLng: number; centroidLat: number }>,
+  totalPop: number,
+): any[] {
+  const thresholdsM = [100, 200, 300, 400, 500, 750, 1000, 1500];
+  const effDist = (lng: number, lat: number): number => {
+    let best = Infinity;
+    for (const s of stops) { const d = haversineKm(lat, lng, s.lat, s.lng); if (d < best) best = d; }
+    for (const line of lines) { const d = pointToLineDistance(lng, lat, line); if (d < best) best = d; }
+    return best; // km
+  };
+  const dists = census.map((c) => ({ pop: c.population, d: effDist(c.centroidLng, c.centroidLat) }));
+  const base = totalPop > 0 ? totalPop : dists.reduce((s, x) => s + x.pop, 0) || 1;
+  return thresholdsM.map((m) => {
+    const pop = dists.filter((x) => x.d <= m / 1000).reduce((s, x) => s + x.pop, 0);
+    return { m, pop, pct: Math.round((pop / base) * 1000) / 10 };
+  });
 }
 
 // GET /api/scenarios/:id/deep — analisi approfondita per il report
@@ -1606,11 +1694,13 @@ router.get("/scenarios/:id/deep", async (req, res) => {
     const demand = await computeDemand((analysis.comuniDetails || []).map((c: any) => c.name));
     const routeLines = (analysis.routes || []).map((r: any) => r.coordinates).filter((c: any) => Array.isArray(c) && c.length > 1);
     const corridorTraffic = await computeCorridorTraffic(routeLines, analysis.totalLengthKm || 0);
+    const stopsEnriched = computeStopsEnriched(routeLines, analysis.stops as any, poiRows as any, censusRows as any, radius);
+    const coverageCurve = computeCoverageCurve(routeLines, analysis.stops as any, censusRows as any, analysis.populationCoverage?.totalPop || 0);
     const accessibilityIso = iso
       ? await computeIsochroneAccessibility(analysis.stops as any, poiRows as any, censusRows as any, minutes.length ? minutes : [5, 10, 15], 20_000)
       : { available: false, reason: "Isocrone disattivate" };
 
-    res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, corridorTraffic, accessibilityIso });
+    res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, corridorTraffic, stopsEnriched, coverageCurve, accessibilityIso });
   } catch (err) {
     req.log.error(err, "Error deep-analyzing scenario");
     res.status(500).json({ error: "Internal server error" });
