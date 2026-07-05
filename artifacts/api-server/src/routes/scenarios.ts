@@ -977,6 +977,151 @@ router.get("/scenarios/compare", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Import di un PERCORSO già a sistema (Planner Studio) come scenario, così da
+// confrontarlo con altri percorsi — anche di progetti diversi — nella stessa
+// schermata di confronto A/B (niente più solo KMZ).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Predicato SQL: progetti PS accessibili all'utente (owner | membro | in esercizio). */
+function psAccessWhere(userId: string) {
+  return sql`(p.owner_user_id = ${userId}::uuid
+              OR pm.user_id IS NOT NULL
+              OR (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)))`;
+}
+
+// GET /api/scenarios/importable-variants — elenco progetti→linee→percorsi (con
+// geometria) importabili come scenario. Definito PRIMA di /scenarios/:id.
+router.get("/scenarios/importable-variants", async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const r = await db.execute<any>(sql`
+      SELECT p.id AS project_id, p.name AS project_name,
+             r.id AS route_id, r.short_name, r.long_name, r.code AS route_code, r.color AS route_color, r.sort_order,
+             v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign,
+             s.distance_m,
+             (SELECT count(*)::int FROM ps_variant_stops vs WHERE vs.variant_id = v.id) AS stop_count
+        FROM ps_projects p
+        JOIN ps_routes r ON r.project_id = p.id
+        JOIN ps_route_variants v ON v.route_id = r.id
+        JOIN ps_shapes s ON s.variant_id = v.id
+        LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
+        LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
+       WHERE ${psAccessWhere(userId)}
+       ORDER BY p.name, r.sort_order, r.short_name, v.direction, v.name
+    `);
+    // Raggruppa: progetti → linee → percorsi
+    const projects: any[] = [];
+    const projIdx = new Map<string, any>();
+    const routeIdx = new Map<string, any>();
+    for (const row of r.rows) {
+      let proj = projIdx.get(row.project_id);
+      if (!proj) { proj = { projectId: row.project_id, projectName: row.project_name, routes: [] }; projIdx.set(row.project_id, proj); projects.push(proj); }
+      const rKey = `${row.project_id}|${row.route_id}`;
+      let route = routeIdx.get(rKey);
+      if (!route) {
+        route = { routeId: row.route_id, code: row.route_code, shortName: row.short_name, longName: row.long_name, color: row.route_color, variants: [] };
+        routeIdx.set(rKey, route); proj.routes.push(route);
+      }
+      route.variants.push({
+        variantId: row.variant_id, name: row.variant_name, direction: row.direction,
+        headsign: row.headsign, stopCount: row.stop_count ?? 0,
+        distanceKm: row.distance_m != null ? Math.round(Number(row.distance_m) / 10) / 100 : null,
+      });
+    }
+    res.json({ projects });
+  } catch (err: any) {
+    req.log.error(err, "Error listing importable variants");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/scenarios/from-variant — crea uno scenario dalla geometria di un
+// percorso (variante) di Planner Studio. body: { variantId, name?, color? }
+router.post("/scenarios/from-variant", async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const variantId = String(req.body?.variantId ?? "");
+    if (!/^[0-9a-f-]{36}$/i.test(variantId)) { res.status(400).json({ error: "variantId non valido" }); return; }
+
+    const vr = await db.execute<any>(sql`
+      SELECT v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign,
+             r.short_name, r.long_name, r.code AS route_code, r.color AS route_color,
+             p.id AS project_id, p.name AS project_name,
+             s.geometry, s.distance_m
+        FROM ps_route_variants v
+        JOIN ps_routes r ON r.id = v.route_id
+        JOIN ps_projects p ON p.id = v.project_id
+        LEFT JOIN ps_shapes s ON s.variant_id = v.id
+        LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
+        LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
+       WHERE v.id = ${variantId}::uuid AND ${psAccessWhere(userId)}
+       LIMIT 1
+    `);
+    const v = vr.rows[0];
+    if (!v) { res.status(404).json({ error: "Percorso non trovato o non accessibile" }); return; }
+    const geometry = v.geometry as any;
+    if (!geometry || geometry.type !== "LineString" || !Array.isArray(geometry.coordinates) || geometry.coordinates.length < 2) {
+      res.status(400).json({ error: "Il percorso non ha una geometria valida da confrontare" }); return;
+    }
+
+    // Fermate ordinate del percorso
+    const sr = await db.execute<any>(sql`
+      SELECT st.name, st.code, st.lat, st.lon
+        FROM ps_variant_stops vs
+        JOIN ps_stops st ON st.id = vs.stop_id
+       WHERE vs.variant_id = ${variantId}::uuid
+       ORDER BY vs.seq
+    `);
+
+    const routeLabel = [v.short_name, v.variant_name].filter(Boolean).join(" · ");
+    const color = String(req.body?.color ?? "").trim() || v.route_color || "#3b82f6";
+    const name = String(req.body?.name ?? "").trim() || `${v.project_name} — ${routeLabel}`;
+
+    const features: GeoJSONFeature[] = [];
+    features.push({
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: geometry.coordinates },
+      properties: { name: routeLabel, featureType: "route", color },
+    });
+    for (const st of sr.rows) {
+      if (st.lat == null || st.lon == null) continue;
+      features.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [Number(st.lon), Number(st.lat)] },
+        properties: { name: st.name ?? "Fermata", stopId: st.code ?? "", featureType: "stop", color },
+      });
+    }
+
+    const geojson: GeoJSONFeatureCollection = { type: "FeatureCollection", features };
+    const lengthKm = Math.round(lineLength(geometry.coordinates) * 100) / 100;
+    const stopsCount = features.filter((f) => f.geometry.type === "Point").length;
+
+    const [inserted] = await db.insert(scenarios).values({
+      name,
+      description: v.headsign ? `Capolinea: ${v.headsign}` : null,
+      color,
+      geojson: geojson as any,
+      stopsCount,
+      lengthKm,
+      metadata: {
+        source: "planning-studio",
+        psProjectId: v.project_id,
+        psProjectName: v.project_name,
+        psVariantId: v.variant_id,
+        psRouteCode: v.route_code,
+        psRouteShortName: v.short_name,
+        importedAt: new Date().toISOString(),
+      },
+    }).returning();
+
+    res.json(inserted);
+  } catch (err: any) {
+    req.log.error(err, "Error importing scenario from variant");
+    res.status(400).json({ error: err.message || "Errore nell'import del percorso" });
+  }
+});
+
 // GET /api/scenarios/:id — get single scenario with geojson
 router.get("/scenarios/:id", async (req, res) => {
   try {
