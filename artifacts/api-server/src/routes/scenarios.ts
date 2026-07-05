@@ -2,9 +2,10 @@ import { Router, type IRouter } from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
-import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenarioServicePrograms, coincidenceZones, coincidenceZoneStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsStops, scenarioProgramCalendars, scenarioProgramCalendarExceptions } from "@workspace/db/schema";
+import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenarioServicePrograms, coincidenceZones, coincidenceZoneStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsStops, scenarioProgramCalendars, scenarioProgramCalendarExceptions, istatCommutingOd } from "@workspace/db/schema";
 import { eq, sql, desc, inArray } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
+import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -1372,6 +1373,156 @@ router.get("/scenarios/:id/analyze", async (req, res) => {
     res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis });
   } catch (err) {
     req.log.error(err, "Error analyzing scenario");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ANALISI APPROFONDITA — analisi standard + domanda di mobilità (matrice
+// pendolarismo ISTAT, offline) + accessibilità isocrone a piedi (ORS/Mapbox,
+// con fallback graceful al raggio). Alimenta il report.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _norm = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+
+/** Domanda di mobilità sui comuni serviti dalla linea (matrice pendolarismo). */
+async function computeDemand(comuneNames: string[]): Promise<any | null> {
+  const names = comuneNames.filter(Boolean);
+  if (names.length === 0) return null;
+  const lower = names.map((n) => n.toLowerCase());
+  let rows: any[];
+  try {
+    const inList = sql.join(lower.map((n) => sql`${n}`), sql`, `);
+    const r = await db.execute<any>(sql`
+      SELECT origin_name, dest_name, reason, mode, flow
+        FROM istat_commuting_od
+       WHERE lower(origin_name) IN (${inList}) OR lower(dest_name) IN (${inList})
+    `);
+    rows = r.rows;
+  } catch { return null; }
+  if (!rows || rows.length === 0) return null;
+
+  const wanted = new Set(names.map(_norm));
+  const byMode: Record<string, number> = {};
+  const byReason: Record<string, number> = {};
+  let touchingTotal = 0, intraCorridor = 0;
+  for (const r of rows) {
+    const o = wanted.has(_norm(r.origin_name || ""));
+    const d = wanted.has(_norm(r.dest_name || ""));
+    if (!o && !d) continue;
+    const flow = Number(r.flow) || 0;
+    touchingTotal += flow;
+    byMode[r.mode || "other"] = (byMode[r.mode || "other"] || 0) + flow;
+    byReason[r.reason || "?"] = (byReason[r.reason || "?"] || 0) + flow;
+    if (o && d) intraCorridor += flow;
+  }
+  if (touchingTotal === 0) return null;
+  const busFlow = (byMode["bus_urban"] || 0) + (byMode["bus_extraurban"] || 0);
+  const carFlow = (byMode["car_driver"] || 0) + (byMode["car_passenger"] || 0);
+  return {
+    totalFlow: touchingTotal,
+    intraCorridorFlow: intraCorridor,
+    busFlow, carFlow,
+    trainFlow: byMode["train"] || 0,
+    activeFlow: (byMode["bike"] || 0) + (byMode["walk"] || 0),
+    busSharePct: Math.round((busFlow / touchingTotal) * 1000) / 10,
+    carSharePct: Math.round((carFlow / touchingTotal) * 1000) / 10,
+    workFlow: byReason["work"] || 0,
+    studyFlow: byReason["study"] || 0,
+    byMode, byReason,
+    comuni: names.length,
+  };
+}
+
+/** Campiona i punti (fermate) deduplicando entro ~250 m e limitando a `max`. */
+function sampleAccessPoints(stops: Array<{ lng: number; lat: number }>, max: number): Array<{ lng: number; lat: number }> {
+  const dedup: Array<{ lng: number; lat: number }> = [];
+  for (const s of stops) {
+    if (s.lng == null || s.lat == null) continue;
+    if (dedup.some((d) => haversineKm(d.lat, d.lng, s.lat, s.lng) < 0.25)) continue;
+    dedup.push({ lng: s.lng, lat: s.lat });
+  }
+  if (dedup.length <= max) return dedup;
+  const step = dedup.length / max;
+  const out: Array<{ lng: number; lat: number }> = [];
+  for (let i = 0; i < max; i++) out.push(dedup[Math.floor(i * step)]);
+  if (out[out.length - 1] !== dedup[dedup.length - 1]) out[out.length - 1] = dedup[dedup.length - 1];
+  return out;
+}
+
+/** Accessibilità isocrone a piedi: popolazione/POI raggiungibili entro 5/10/15 min. */
+async function computeIsochroneAccessibility(
+  stops: Array<{ lng: number; lat: number }>,
+  poiRows: Array<{ category: string; lng: number; lat: number }>,
+  censusRows: Array<{ population: number; centroidLng: number; centroidLat: number }>,
+  minutesList: number[],
+  budgetMs: number,
+): Promise<any> {
+  if (!hasIsochroneProvider()) return { available: false, reason: "Nessuna chiave ORS/Mapbox configurata" };
+  const pts = sampleAccessPoints(stops, 16);
+  if (pts.length === 0) return { available: false, reason: "Nessuna fermata da campionare" };
+
+  const bands: Record<number, any[]> = {};
+  for (const m of minutesList) bands[m] = [];
+  const deadline = Date.now() + budgetMs;
+  let pointsWithData = 0, partial = false;
+  for (const p of pts) {
+    const overBudget = Date.now() > deadline;
+    try {
+      // Se oltre budget, prendo solo ciò che è già in cache (fetchIsochronesMulti
+      // fa comunque una chiamata se manca: quindi oltre budget salto i punti nuovi).
+      if (overBudget) { partial = true; break; }
+      const geoms = await fetchIsochronesMulti(p.lng, p.lat, minutesList);
+      let any = false;
+      for (const m of minutesList) if (geoms[m]) { bands[m].push(geoms[m]); any = true; }
+      if (any) pointsWithData++;
+    } catch { partial = true; }
+  }
+  const totalGeoms = minutesList.reduce((s, m) => s + bands[m].length, 0);
+  if (totalGeoms === 0) return { available: false, reason: "Isocrone non disponibili (quota o chiave)" };
+
+  const results = minutesList.map((m) => {
+    const geoms = bands[m];
+    let population = 0, sections = 0, poiTotal = 0;
+    const poiByCat: Record<string, number> = {};
+    if (geoms.length > 0) {
+      for (const c of censusRows) {
+        if (geoms.some((g) => pointInIsoGeometry(c.centroidLng, c.centroidLat, g))) { population += c.population; sections++; }
+      }
+      for (const poi of poiRows) {
+        if (geoms.some((g) => pointInIsoGeometry(poi.lng, poi.lat, g))) { poiTotal++; poiByCat[poi.category] = (poiByCat[poi.category] || 0) + 1; }
+      }
+    }
+    return { minutes: m, population, sections, poiTotal, poiByCat, points: geoms.length };
+  });
+
+  return { available: true, partial, sampledPoints: pts.length, pointsWithData, minutes: minutesList, bands: results };
+}
+
+// GET /api/scenarios/:id/deep — analisi approfondita per il report
+router.get("/scenarios/:id/deep", async (req, res) => {
+  try {
+    const radius = Number(req.query.radius) || 0.5;
+    const iso = req.query.iso !== "0";
+    const minutes = String(req.query.minutes || "5,10,15").split(",").map((x) => parseInt(x, 10)).filter((x) => x > 0 && x <= 30).slice(0, 4);
+    const [row] = await db.select().from(scenarios).where(eq(scenarios.id, req.params.id)).limit(1);
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+
+    const [poiRows, censusRows] = await Promise.all([
+      db.select({ category: pointsOfInterest.category, lng: pointsOfInterest.lng, lat: pointsOfInterest.lat, name: pointsOfInterest.name }).from(pointsOfInterest),
+      db.select({ istatCode: censusSections.istatCode, population: censusSections.population, centroidLng: censusSections.centroidLng, centroidLat: censusSections.centroidLat, geojson: censusSections.geojson })
+        .from(censusSections).where(sql`${censusSections.population} > 0`),
+    ]);
+
+    const analysis = await analyzeScenario(row.geojson as any, poiRows, censusRows, radius);
+    const demand = await computeDemand((analysis.comuniDetails || []).map((c: any) => c.name));
+    const accessibilityIso = iso
+      ? await computeIsochroneAccessibility(analysis.stops as any, poiRows as any, censusRows as any, minutes.length ? minutes : [5, 10, 15], 20_000)
+      : { available: false, reason: "Isocrone disattivate" };
+
+    res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, accessibilityIso });
+  } catch (err) {
+    req.log.error(err, "Error deep-analyzing scenario");
     res.status(500).json({ error: "Internal server error" });
   }
 });
