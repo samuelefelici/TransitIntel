@@ -3179,13 +3179,14 @@ def serialize_output(
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
-def main() -> None:
-    t_start = time.time()
+def run(raw: dict, time_limit_sec: int = 240) -> dict:
+    """Esegue il CSP su un input già parsato e RITORNA l'output (dict).
 
-    # ── Input ──
-    # Default tempo PIÙ ALTO (Maior-style): 240s anziché 120s, scala con intensità via UI
-    time_limit_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 240
-    raw = load_input()
+    Entrypoint riusabile dall'orchestratore VCSP (vcsp_orchestrator.py).
+    main() resta il wrapper argv/stdin→stdout. I global di configurazione
+    vengono riassegnati a ogni chiamata (safe per run ripetuti in-process).
+    """
+    t_start = time.time()
     vehicle_shifts_raw = raw.get("vehicleShifts", [])
     user_config = raw.get("config", {})
     config = merge_config(user_config)
@@ -3316,7 +3317,13 @@ def main() -> None:
         f"{n_viol} violazioni BDS ===")
     report_progress("done", 100, f"{n_total} turni, €{output['summary']['totalDailyCost']:.0f}/giorno")
 
-    write_output(output)
+    return output
+
+
+def main() -> None:
+    # Default tempo PIÙ ALTO (Maior-style): 240s anziché 120s, scala con intensità via UI
+    time_limit_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 240
+    write_output(run(load_input(), time_limit_sec))
 
 
 if __name__ == "__main__":

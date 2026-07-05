@@ -159,7 +159,7 @@ export interface ServiceProgramResult {
   costs: ScenarioCost;
   score: ScenarioScore;
   advisories: Advisory[];
-  solver?: "greedy" | "cpsat";
+  solver?: "greedy" | "cpsat" | "vcsp";
   solverMetrics?: any;
   costBreakdown?: {
     aggregated: {

@@ -175,6 +175,7 @@ class VehicleShiftCost:
     balance_penalty: float = 0.0
     gap_penalty: float = 0.0
     downsize_penalty: float = 0.0
+    vcsp_penalty: float = 0.0    # feedback CSP (costo-ombra turni guida)
     total: float = 0.0
 
     def compute(self) -> float:
@@ -182,6 +183,7 @@ class VehicleShiftCost:
             self.fixed_daily + self.service_km_cost + self.deadhead_km_cost
             + self.idle_cost + self.depot_return_cost
             + self.balance_penalty + self.gap_penalty + self.downsize_penalty
+            + self.vcsp_penalty
         )
         return self.total
 
@@ -195,6 +197,7 @@ class VehicleShiftCost:
             "balancePenalty": round(self.balance_penalty, 2),
             "gapPenalty": round(self.gap_penalty, 2),
             "downsizePenalty": round(self.downsize_penalty, 2),
+            "vcspPenalty": round(self.vcsp_penalty, 2),
             "total": round(self.total, 2),
         }
 
@@ -724,6 +727,9 @@ class Arc:
     dh_min: int
     gap_min: int    # departure(j) - arrival(i)
     depot_return: bool  # gap > MAX_IDLE_AT_TERMINAL
+    # Penalità VCSP (EUR): costo-ombra dal CSP sui pairing che generano blocchi
+    # difficili da tagliare in turni guida legali. 0 = nessun feedback.
+    penalty_eur: float = 0.0
 
 
 @dataclass

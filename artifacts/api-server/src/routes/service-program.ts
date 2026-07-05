@@ -19,6 +19,7 @@ import {
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, type DHNode } from "../lib/deadhead-matrix";
+import { enrichTripsWithClusterStops } from "./driver-shifts";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -1427,19 +1428,9 @@ router.post("/service-program", async (req, res) => {
  *  Spawn python vehicle_scheduler_cpsat.py
  * ═══════════════════════════════════════════════════════════════ */
 
-async function runCPSATVehicleScheduler(
-  tripBlocks: TripBlock[],
-  timeLimitSec: number,
-  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
-  extraConfig?: Record<string, any>,
-  routeDetails?: { routeId: string; routeName: string }[],
-  psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
-  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[],
-  deadheadKm?: Record<string, number>,
-): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "vehicle_scheduler_cpsat.py");
-
-  const pyTrips = tripBlocks.map(t => ({
+/** Corse nel formato atteso dagli script Python (VSP e orchestratore VCSP). */
+function buildPyTrips(tripBlocks: TripBlock[]) {
+  return tripBlocks.map(t => ({
     tripId: t.tripId,
     routeId: t.routeId,
     routeName: t.routeName,
@@ -1463,9 +1454,19 @@ async function runCPSATVehicleScheduler(
     forced: t.forced,
     onDemand: t.onDemand,
   }));
+}
 
-  const result = await new Promise<string>((resolve, reject) => {
-    const py = spawn("python3", [scriptPath, String(timeLimitSec)], {
+/** Spawn generico di uno script Python (JSON stdin → JSON stdout). */
+function spawnPythonJson(
+  scriptName: string,
+  argv: string[],
+  input: unknown,
+  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
+  label: string,
+): Promise<any> {
+  const scriptPath = path.resolve(SCRIPTS_DIR, scriptName);
+  return new Promise((resolve, reject) => {
+    const py = spawn("python3", [scriptPath, ...argv], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env },
     });
@@ -1476,42 +1477,61 @@ async function runCPSATVehicleScheduler(
     py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
     py.stderr.on("data", (d: Buffer) => {
       stderr += d.toString();
-      logger.info(`VSP stderr: ${d.toString().trim()}`);
+      logger.info(`${label} stderr: ${d.toString().trim()}`);
     });
 
     py.on("error", (err) => reject(new Error(`Errore avvio Python: ${err.message}`)));
 
     py.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(`Python exit code ${code}: ${stderr}`));
-      } else {
-        resolve(stdout);
+        reject(new Error(`Python exit code ${code}: ${stderr.slice(-1500)}`));
+        return;
       }
+      try { resolve(JSON.parse(stdout)); }
+      catch (e: any) { reject(new Error(`parse ${label}: ${e.message}`)); }
     });
 
     // Guard against EPIPE: if Python dies before we finish writing, catch the error
     py.stdin.on("error", (err) => {
-      logger.error(`VSP stdin error: ${err.message}`);
+      logger.error(`${label} stdin error: ${err.message}`);
     });
 
-    const inputJson = JSON.stringify({
-      trips: pyTrips,
-      config: {
-        timeLimit: timeLimitSec,
-        ...extraConfig,
-      },
-      routeDetails: routeDetails || [],
-      psClusters: psClusters || [],
-      // Multi-deposito: domiciliazione + cap vetture per deposito (vincolo hard)
-      ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
-      // Matrice fuorilinea (km stradali reali, OSRM/fallback) per archi e tratte deposito
-      ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
-    });
-    py.stdin.write(inputJson);
+    py.stdin.write(JSON.stringify(input));
     py.stdin.end();
   });
+}
 
-  return JSON.parse(result);
+async function runCPSATVehicleScheduler(
+  tripBlocks: TripBlock[],
+  timeLimitSec: number,
+  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
+  extraConfig?: Record<string, any>,
+  routeDetails?: { routeId: string; routeName: string }[],
+  psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
+  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[],
+  deadheadKm?: Record<string, number>,
+): Promise<any> {
+  return spawnPythonJson("vehicle_scheduler_cpsat.py", [String(timeLimitSec)], {
+    trips: buildPyTrips(tripBlocks),
+    config: {
+      timeLimit: timeLimitSec,
+      ...extraConfig,
+    },
+    routeDetails: routeDetails || [],
+    psClusters: psClusters || [],
+    // Multi-deposito: domiciliazione + cap vetture per deposito (vincolo hard)
+    ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
+    // Matrice fuorilinea (km stradali reali, OSRM/fallback) per archi e tratte deposito
+    ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
+  }, logger, "VSP");
+}
+
+/** Orchestratore VCSP (loop VSP→CSP→costi-ombra→re-VSP in un unico processo). */
+async function runVcspOrchestrator(
+  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
+  input: unknown,
+): Promise<any> {
+  return spawnPythonJson("vcsp_orchestrator.py", [], input, logger, "VCSP");
 }
 
 type DepotPoint = { id: string; name: string; color: string; lat: number; lon: number };
@@ -1623,7 +1643,15 @@ function depotCapacityAdvisory(counts: Map<string, number>, caps: Map<string, nu
   };
 }
 
-router.post("/service-program/cpsat", async (req, res) => {
+/**
+ * Handler condiviso CP-SAT / VCSP.
+ * mode="cpsat"  → solver turni macchina (vehicle_scheduler_cpsat.py)
+ * mode="vcsp"   → ottimizzazione INTEGRATA veicoli+guida (vcsp_orchestrator.py):
+ *                 loop VSP→CSP→costi-ombra→re-VSP; la risposta ha la stessa
+ *                 forma del CP-SAT (post-processing riusato) + sezione `vcsp`
+ *                 con i KPI per round e i turni guida del round migliore.
+ */
+async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp"): Promise<void> {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
@@ -1909,20 +1937,53 @@ router.post("/service-program/cpsat", async (req, res) => {
       }
     }
 
-    // 6. Spawn Python solver
-    const cpResult = await runCPSATVehicleScheduler(
-      tripBlocks, timeLimitSec, req.log,
-      {
-        vehicleCosts: body.vehicleCosts || {},
-        solverIntensity: body.solverIntensity || "normal",
-        // Parametri avanzati VSP (regola #1 + override costi dalla UI)
-        ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
-      },
-      routeDetailsForPy,
-      psClustersForPy,
-      depotsForPy,
-      deadheadKm,
-    );
+    // 6. Spawn Python solver (CP-SAT puro, oppure orchestratore VCSP)
+    const vspExtraConfig = {
+      vehicleCosts: body.vehicleCosts || {},
+      solverIntensity: body.solverIntensity || "normal",
+      // Parametri avanzati VSP (regola #1 + override costi dalla UI)
+      ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
+    };
+    let cpResult: any;
+    if (mode === "vcsp") {
+      // Relief points per corsa (fermate intermedie nei cluster) precomputati
+      // UNA volta: l'orchestratore li riattacca ai blocchi di ogni round prima
+      // di lanciare il CSP.
+      const pseudoShifts: any[] = [{ trips: tripBlocks.map(tb => ({ type: "trip", tripId: tb.tripId })) }];
+      try { await enrichTripsWithClusterStops(pseudoShifts as any, req.log); } catch { /* senza cluster il CSP taglia solo ai capolinea */ }
+      const tripClusterStops: Record<string, any[]> = {};
+      for (const t of pseudoShifts[0].trips as any[]) {
+        if (Array.isArray(t.clusterStops) && t.clusterStops.length > 0) tripClusterStops[t.tripId] = t.clusterStops;
+      }
+      const vcspBody = (body as any).vcsp || {};
+      const crewConfig = (body as any).crewConfig
+        ?? { bds: { serviceType: (body as any).serviceType || "urbano" } };
+      cpResult = await runVcspOrchestrator(req.log, {
+        vsp: {
+          trips: buildPyTrips(tripBlocks),
+          config: { timeLimit: timeLimitSec, ...vspExtraConfig },
+          routeDetails: routeDetailsForPy,
+          psClusters: psClustersForPy,
+          ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
+          ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
+        },
+        crew: { config: crewConfig },
+        vcsp: {
+          rounds: Number(vcspBody.rounds) || 3,
+          crewTimeLimit: Number(vcspBody.crewTimeLimit) || 90,
+        },
+        tripClusterStops,
+      });
+    } else {
+      cpResult = await runCPSATVehicleScheduler(
+        tripBlocks, timeLimitSec, req.log,
+        vspExtraConfig,
+        routeDetailsForPy,
+        psClustersForPy,
+        depotsForPy,
+        deadheadKm,
+      );
+    }
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
     const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
@@ -2031,7 +2092,7 @@ router.post("/service-program/cpsat", async (req, res) => {
     routeStats.sort((a: any, b: any) => b.tripsCount - a.tripsCount);
 
     res.json({
-      solver: "cpsat",
+      solver: mode === "vcsp" ? "vcsp" : "cpsat",
       shifts: cpShifts,
       unassigned: [],
       routeStats,
@@ -2043,12 +2104,18 @@ router.post("/service-program/cpsat", async (req, res) => {
       solverMetrics: cpResult.metrics,
       costBreakdown: cpResult.costBreakdown || null,
       greedyComparison: cpResult.greedyComparison || null,
+      // VCSP: KPI dei round, feedback costi-ombra e turni guida del best round
+      ...(cpResult.vcsp ? { vcsp: cpResult.vcsp } : {}),
     });
   } catch (err: any) {
     req.log.error(err, "Error in CP-SAT service-program");
     res.status(500).json({ error: err.message || "Errore nel solver CP-SAT" });
   }
-});
+}
+
+router.post("/service-program/cpsat", (req, res) => handleVehicleOptimize(req, res, "cpsat"));
+// VCSP: ottimizzazione integrata turni macchina + turni guida (iterativo con feedback)
+router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, res, "vcsp"));
 
 /* ═══════════════════════════════════════════════════════════════
  *  SCENARIO SAVE / LOAD / LIST / DELETE
