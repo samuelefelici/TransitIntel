@@ -154,6 +154,102 @@ function radarSvg(axes: string[], series: Array<{ name: string; color: string; v
   return `<svg viewBox="0 0 ${S} ${S}" class="radar">${grid}${spokes}${polys}${labels}</svg>`;
 }
 
+/** Proiezione equirettangolare condivisa (route + isocrone). */
+function makeProjection(pts: number[][], W: number, H: number, pad: number) {
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  for (const [x, y] of pts) { if (x < minLng) minLng = x; if (x > maxLng) maxLng = x; if (y < minLat) minLat = y; if (y > maxLat) maxLat = y; }
+  const midLat = (minLat + maxLat) / 2;
+  const kx = Math.cos((midLat * Math.PI) / 180) || 1;
+  const spanX = (maxLng - minLng) * kx || 1e-6;
+  const spanY = (maxLat - minLat) || 1e-6;
+  const scale = Math.min((W - 2 * pad) / spanX, (H - 2 * pad) / spanY);
+  const offX = (W - spanX * scale) / 2, offY = (H - spanY * scale) / 2;
+  return {
+    px: (lng: number) => offX + (lng - minLng) * kx * scale,
+    py: (lat: number) => H - offY - (lat - minLat) * scale,
+  };
+}
+function ringPath(ring: number[][], px: (n: number) => number, py: (n: number) => number): string {
+  if (!ring || ring.length < 3) return "";
+  return "M" + ring.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join("L") + "Z";
+}
+function geomPaths(geom: any, px: (n: number) => number, py: (n: number) => number): string {
+  if (!geom) return "";
+  if (geom.type === "Polygon") return ringPath(geom.coordinates?.[0] ?? [], px, py);
+  if (geom.type === "MultiPolygon") return (geom.coordinates ?? []).map((p: any) => ringPath(p?.[0] ?? [], px, py)).join(" ");
+  return "";
+}
+
+/** Mappa con isocrone disegnate (fasce a piedi) + percorso + fermate. */
+const ISO_COLORS = ["#1d4ed8", "#3b82f6", "#93c5fd", "#bfdbfe"];
+function buildIsoMap(layer: MapLayer, isoBands: any[], W = 980, H = 560): string {
+  const pts: number[][] = [];
+  for (const l of layer.lines) for (const p of l) pts.push(p);
+  for (const s of layer.stops) pts.push(s);
+  for (const b of isoBands || []) for (const g of (b.geometries || [])) {
+    const rings = g?.type === "Polygon" ? [g.coordinates?.[0]] : g?.type === "MultiPolygon" ? (g.coordinates || []).map((p: any) => p?.[0]) : [];
+    for (const r of rings) for (const p of (r || [])) pts.push(p);
+  }
+  if (pts.length < 2) return `<div class="map-empty">Geometria non disponibile.</div>`;
+  const { px, py } = makeProjection(pts, W, H, 28);
+  let body = "";
+  // fasce dalla più esterna (minuti maggiori) alla più interna
+  const ordered = [...(isoBands || [])].sort((a, b) => (b.minutes || 0) - (a.minutes || 0));
+  ordered.forEach((b, idx) => {
+    const col = ISO_COLORS[Math.min(ISO_COLORS.length - 1, idx)];
+    const d = (b.geometries || []).map((g: any) => geomPaths(g, px, py)).filter(Boolean).join(" ");
+    if (d) body += `<path d="${d}" fill="${col}" fill-opacity="0.28" stroke="${col}" stroke-opacity="0.5" stroke-width="1" style="print-color-adjust:exact" />`;
+  });
+  for (const l of layer.lines) {
+    const d = l.map(([x, y]) => `${px(x).toFixed(1)},${py(y).toFixed(1)}`).join(" ");
+    body += `<polyline points="${d}" fill="none" stroke="${layer.color}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" style="print-color-adjust:exact" />`;
+  }
+  for (const s of layer.stops) body += `<circle cx="${px(s[0]).toFixed(1)}" cy="${py(s[1]).toFixed(1)}" r="3.4" fill="#fff" stroke="${layer.color}" stroke-width="2" style="print-color-adjust:exact" />`;
+  return `<svg viewBox="0 0 ${W} ${H}" class="map-svg" preserveAspectRatio="xMidYMid meet"><rect width="${W}" height="${H}" fill="#f8fafc" />${body}</svg>`;
+}
+
+/** Diagramma linea stile "mappa metro": fermate come nodi lungo una linea. */
+function metroDiagram(stops: any[], color: string): string {
+  if (!stops || stops.length < 2) return `<div class="map-empty">Elenco fermate non disponibile.</div>`;
+  const W = 980, y = 66, padX = 46;
+  const total = stops[stops.length - 1].cumKm || (stops.length - 1);
+  const xOf = (s: any, i: number) => padX + (total > 0 ? (s.cumKm / total) : (i / (stops.length - 1))) * (W - 2 * padX);
+  const x0 = xOf(stops[0], 0), x1 = xOf(stops[stops.length - 1], stops.length - 1);
+  let nodes = "";
+  stops.forEach((s, i) => {
+    const x = xOf(s, i);
+    if (s.poiNear) nodes += `<text x="${x.toFixed(1)}" y="${y - 16}" text-anchor="middle" class="metro-poi">${fInt(s.poiNear)}</text>`;
+    nodes += `<circle cx="${x.toFixed(1)}" cy="${y}" r="6" fill="#fff" stroke="${color}" stroke-width="3" style="print-color-adjust:exact" />`;
+    nodes += `<text x="${x.toFixed(1)}" y="${y + 20}" transform="rotate(55 ${x.toFixed(1)} ${y + 20})" class="metro-name">${esc(s.name)}</text>`;
+    nodes += `<text x="${x.toFixed(1)}" y="${y - 26}" text-anchor="middle" class="metro-km">${fKm(s.cumKm)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} 190" class="metro" preserveAspectRatio="xMidYMid meet">
+    <line x1="${x0.toFixed(1)}" y1="${y}" x2="${x1.toFixed(1)}" y2="${y}" stroke="${color}" stroke-width="6" stroke-linecap="round" style="print-color-adjust:exact" />
+    ${nodes}
+    <text x="${padX}" y="180" class="metro-cap">▲ POI entro il raggio · km progressivi sopra i nodi</text>
+  </svg>`;
+}
+
+/** Curva di copertura: popolazione (%) entro soglie di distanza. */
+function coverageCurveSvg(points: any[]): string {
+  if (!points || points.length < 2) return "";
+  const W = 620, H = 210, L = 46, B = 30, T = 12, R = 14;
+  const iw = W - L - R, ih = H - T - B;
+  const n = points.length;
+  const x = (i: number) => L + (i / (n - 1)) * iw;
+  const y = (pct: number) => T + ih - (clamp(pct) / 100) * ih;
+  let grid = "", xlab = "";
+  for (const g of [0, 25, 50, 75, 100]) grid += `<line x1="${L}" y1="${y(g).toFixed(1)}" x2="${W - R}" y2="${y(g).toFixed(1)}" stroke="#eef2f7" /><text x="${L - 6}" y="${(y(g) + 3).toFixed(1)}" text-anchor="end" class="ax">${g}%</text>`;
+  points.forEach((p, i) => { xlab += `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="middle" class="ax">${p.m}</text>`; });
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(p.pct).toFixed(1)}`).join(" ");
+  const area = `M${x(0).toFixed(1)},${y(0).toFixed(1)} L` + line + ` L${x(n - 1).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.pct).toFixed(1)}" r="3" fill="#3b82f6" />`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" class="curve">${grid}
+    <path d="${area}" fill="#3b82f6" fill-opacity="0.12" />
+    <polyline points="${line}" fill="none" stroke="#2563eb" stroke-width="2.5" />${dots}
+    <text x="${(L + iw / 2).toFixed(0)}" y="${H}" text-anchor="middle" class="ax">Distanza dalla linea (m)</text></svg>`;
+}
+
 /* ─── Score breakdown (replica formula backend 35/30/20/15) ─── */
 function scoreBreakdown(a: any): Array<{ label: string; value: number; weight: number; color: string }> {
   const popPct = a?.populationCoverage?.percent ?? 0;
@@ -201,19 +297,59 @@ function singleSummary(a: any): string {
     Il punteggio di accessibilità complessivo è <b>${Math.round(score)}/100</b>.`;
 }
 
-function accessibilityIsoHtml(iso: any): string {
+/** Sezione isocrone completa: mappa fasce + tabella cumulativa/incrementale + barre. */
+function isoSectionHtml(iso: any, layer: MapLayer): string {
   if (!iso || !iso.available) {
-    return `<p class="hint">Accessibilità a tempo di percorrenza non disponibile${iso?.reason ? ` (${esc(iso.reason)})` : ""}. L'analisi usa il catchment a raggio.</p>`;
+    return `<p class="hint">Accessibilità a tempo di percorrenza non disponibile${iso?.reason ? ` (${esc(iso.reason)})` : ""}.
+      L'analisi di copertura usa il catchment a raggio. Configura una chiave OpenRouteService o Mapbox per abilitare le isocrone.</p>`;
   }
-  const rows = (iso.bands ?? []).map((b: any) => `<tr>
-    <td class="left strong">${esc(b.minutes)} min a piedi</td>
-    <td class="num">${fInt(b.population)}</td>
-    <td class="num">${fInt(b.sections)}</td>
-    <td class="num">${fInt(b.poiTotal)}</td></tr>`).join("");
-  return `<table class="grid">
-    <thead><tr><th class="left">Isocrona</th><th>Popolazione raggiungibile</th><th>Sezioni</th><th>POI</th></tr></thead>
-    <tbody>${rows}</tbody></table>
-    <p class="hint">Isocrone a piedi calcolate su ${fInt(iso.pointsWithData ?? iso.sampledPoints ?? 0)} punti campione${iso.partial ? " (calcolo parziale: rigenera il report per completare la cache delle isocrone)" : ""}.</p>`;
+  const bands = [...(iso.bands ?? [])].sort((a, b) => (a.minutes || 0) - (b.minutes || 0));
+  const hasGeom = bands.some((b: any) => (b.geometries || []).length);
+  const map = hasGeom ? `<div class="map-wrap">${buildIsoMap(layer, bands)}</div>
+    <div class="map-legend">${bands.map((b: any, i: number) => `<span><i style="background:${ISO_COLORS[Math.min(ISO_COLORS.length - 1, bands.length - 1 - i)]}"></i>${b.minutes} min</span>`).join("")}<span><i style="background:${layer.color}"></i>Percorso</span></div>` : "";
+  const maxPop = Math.max(1, ...bands.map((b: any) => b.population || 0));
+  let prev = 0;
+  const rows = bands.map((b: any) => {
+    const inc = Math.max(0, (b.population || 0) - prev); prev = b.population || 0;
+    return `<tr><td class="left strong">${esc(b.minutes)} min a piedi</td>
+      <td class="num">${fInt(b.population)}</td><td class="num">+${fInt(inc)}</td>
+      <td class="num">${fInt(b.sections)}</td><td class="num">${fInt(b.poiTotal)}</td></tr>`;
+  }).join("");
+  return `${map}
+    <div class="sub-title">Popolazione raggiungibile a piedi (cumulativa)</div>
+    ${barList(bands.map((b: any) => ({ label: `${b.minutes} min`, value: b.population || 0, max: maxPop, sub: fInt(b.population || 0), color: "#2563eb" })))}
+    <table class="grid">
+      <thead><tr><th class="left">Isocrona</th><th>Popolazione</th><th>In più</th><th>Sezioni</th><th>POI</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    <p class="hint">Isocrone a piedi (rete pedonale reale) su ${fInt(iso.pointsWithData ?? iso.sampledPoints ?? 0)} fermate campione${iso.partial ? " · calcolo parziale, rigenera per completare la cache" : ""}.
+      "In più" = popolazione aggiuntiva rispetto alla fascia precedente.</p>`;
+}
+
+/** Diagramma metro + tabella per fermata. */
+function metroSectionHtml(stopsEnriched: any[], color: string): string {
+  if (!stopsEnriched || stopsEnriched.length < 2) return `<p class="hint">Dettaglio fermate non disponibile.</p>`;
+  const rows = stopsEnriched.map((s: any, i: number) => {
+    const cats = Object.entries(s.poiByCat || {}).sort((a: any, b: any) => b[1] - a[1]).slice(0, 3).map(([k, v]: any) => `${poiLabel(k)} ${v}`).join(", ");
+    return `<tr><td class="rank">${i + 1}</td><td class="left strong">${esc(s.name)}</td>
+      <td class="num">${fKm(s.cumKm)}</td><td class="left">${esc(s.comune ?? "—")}</td>
+      <td class="num">${fInt(s.poiNear || 0)}</td><td class="left small">${esc(cats || "—")}</td></tr>`;
+  }).join("");
+  return `<div class="map-wrap metro-wrap">${metroDiagram(stopsEnriched, color)}</div>
+    <table class="grid slim">
+      <thead><tr><th>#</th><th class="left">Fermata</th><th>km</th><th class="left">Comune</th><th>POI vicini</th><th class="left">Principali POI</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+}
+
+/** Curva di copertura + tabella soglie. */
+function coverageCurveHtml(curve: any[]): string {
+  if (!curve || !curve.length) return "";
+  const cells = curve.map((p: any) => `<td class="num">${fPct(p.pct)}</td>`).join("");
+  const pops = curve.map((p: any) => `<td class="num">${fInt(p.pop)}</td>`).join("");
+  const heads = curve.map((p: any) => `<th>${p.m} m</th>`).join("");
+  return `<div style="display:flex;justify-content:center">${coverageCurveSvg(curve)}</div>
+    <table class="grid slim"><thead><tr><th class="left">Distanza</th>${heads}</tr></thead>
+      <tbody><tr><td class="left strong">Popolazione</td>${pops}</tr><tr><td class="left strong">% sul bacino</td>${cells}</tr></tbody></table>
+    <p class="hint">Popolazione (sezioni ISTAT) entro la distanza indicata dalla linea o da una fermata.</p>`;
 }
 
 function demandHtml(d: any): string {
@@ -319,6 +455,11 @@ const STYLES = `
   table.grid th { background:#f1f5f9; color:#334155; font-weight:700; text-align:right; padding:6px 8px; border-bottom:2px solid #cbd5e1; font-size:10px; text-transform:uppercase; letter-spacing:.03em; }
   table.grid th.left, table.grid td.left { text-align:left; } table.grid td { padding:5px 8px; border-bottom:1px solid var(--line); text-align:right; }
   table.grid td.num { font-variant-numeric:tabular-nums; } table.grid td.strong { font-weight:700; }
+  table.grid.slim th { padding:4px 6px; font-size:9px; } table.grid.slim td { padding:3px 6px; font-size:10px; }
+  table.grid td.rank { text-align:center; color:var(--muted); font-weight:700; } table.grid td.small { font-size:9.5px; color:#475569; }
+  .metro { width:100%; height:auto; display:block; } .metro-wrap { padding:4mm 2mm 2mm; }
+  .metro-name { font-size:9px; fill:#334155; text-anchor:start; } .metro-poi { font-size:9px; fill:#7c3aed; font-weight:800; } .metro-km { font-size:8px; fill:#94a3b8; } .metro-cap { font-size:8.5px; fill:#94a3b8; }
+  .curve { width:620px; max-width:100%; height:auto; } .ax { font-size:9px; fill:#94a3b8; }
   .win { background:#ecfdf5; } .win-badge { color:#059669; font-weight:800; }
   .sug { font-size:12px; line-height:1.55; padding:7px 12px; border-left:3px solid var(--accent); background:#f8fafc; border-radius:0 6px 6px 0; margin-bottom:5px; }
   .sug.warn { border-color:#d97706; background:#fffbeb; } .sug.ind { border-color:#cbd5e1; margin-left:14px; font-size:11px; color:#475569; }
@@ -392,36 +533,60 @@ export async function exportScenarioReport(win: Window | null, analysis: any, ge
     <p class="note">${singleSummary(a)}</p>
   </section>`;
 
+  const layer = layerFromGeojson(geojson, color);
+  const stopsEnriched = a?.stopsEnriched ?? [];
+  const curve = a?.coverageCurve ?? [];
+
+  const metroSec = `<section class="page">
+    <h2 class="sec-title">Diagramma di linea e fermate</h2>
+    <p class="lead">Schema della linea con le <b>${fInt(stopsEnriched.length || a?.stops?.length || 0)} fermate</b> in sequenza (km progressivi) e i punti di interesse serviti da ciascuna.</p>
+    ${metroSectionHtml(stopsEnriched, color)}
+  </section>`;
+
+  const isoSec = `<section class="page">
+    <h2 class="sec-title">Accessibilità a piedi (isocrone)</h2>
+    <p class="lead">Aree raggiungibili a piedi dalle fermate entro 5, 10 e 15 minuti (rete pedonale reale) e popolazione che vi risiede.</p>
+    ${isoSectionHtml(a?.accessibilityIso, layer)}
+  </section>`;
+
   const scoreSec = `<section class="page">
     <h2 class="sec-title">Accessibilità e composizione del punteggio</h2>
     <p class="lead">Il punteggio (0–100) combina copertura di popolazione (35%), POI (30%), qualità della distribuzione delle
       fermate (20%) ed efficienza (15%).</p>
     <div style="margin-bottom:5mm"><span class="badge-score" style="background:${scoreColor(score)};print-color-adjust:exact">${Math.round(score)}/100</span></div>
     ${scoreBreakdownHtml(a)}
-    <div class="sub-title">Efficienza</div>
+    <div class="sub-title">Indicatori di efficienza</div>
     <div class="tiles">
-      <div class="tile"><div class="tile-n">${fInt(a?.efficiencyMetrics?.popPerKm ?? 0)}</div><div class="tile-l">Abitanti/km</div></div>
+      <div class="tile"><div class="tile-n">${fInt(a?.efficiencyMetrics?.popPerKm ?? 0)}</div><div class="tile-l">Abitanti serviti/km</div></div>
       <div class="tile"><div class="tile-n">${(a?.efficiencyMetrics?.poiPerKm ?? 0)}</div><div class="tile-l">POI/km</div></div>
       <div class="tile"><div class="tile-n">${(a?.efficiencyMetrics?.stopsPerKm ?? 0)}</div><div class="tile-l">Fermate/km</div></div>
       <div class="tile"><div class="tile-n">${(a?.efficiencyMetrics?.costIndex ?? 0)}</div><div class="tile-l">% pop / 10 km</div></div>
     </div>
-    <div class="sub-title">Accessibilità a tempo di percorrenza (isocrone a piedi)</div>
-    ${accessibilityIsoHtml(a?.accessibilityIso)}
   </section>`;
 
   const coverageSec = `<section class="page">
-    <h2 class="sec-title">Copertura territoriale</h2>
+    <h2 class="sec-title">Copertura della popolazione</h2>
     <div class="grid2">
       ${donut(a?.populationCoverage?.percent ?? 0, "Popolazione", "#3b82f6")}
       <div>
-        <div class="lead" style="margin:0">Su una base di <b>${fInt(a?.populationCoverage?.totalPop ?? 0)}</b> abitanti nei comuni serviti,
+        <div class="lead" style="margin:0 0 3mm">Su una base di <b>${fInt(a?.populationCoverage?.totalPop ?? 0)}</b> abitanti nei ${fInt(comuni.length)} comuni serviti,
           il percorso ne raggiunge circa <b>${fInt(a?.populationCoverage?.coveredPop ?? 0)}</b> entro ${fInt(radius * 1000)} m.</div>
+        <div class="kpi-row4" style="grid-template-columns:1fr 1fr">
+          ${kpi(fInt(a?.populationCoverage?.coveredPop ?? 0), "Abitanti coperti", "cyan")}
+          ${kpi(fInt(a?.poiCoverage?.covered ?? 0) + "/" + fInt(a?.poiCoverage?.total ?? 0), "POI coperti", "violet")}
+        </div>
       </div>
     </div>
-    <div class="sub-title">Popolazione per comune</div>
-    ${barList(comuni.slice(0, 12).map((c: any) => ({ label: c.name, value: c.totalPop || 0, max: maxPop, sub: `${fPct(c.percent || 0)} · ${fInt(c.coveredPop || 0)}` })))}
-    <div class="sub-title">Copertura punti di interesse per categoria</div>
-    ${barList(Object.entries(poiCat).map(([k, v]: any) => ({ label: poiLabel(k), value: v.covered || 0, max: Math.max(1, v.total || 0), sub: `${v.covered}/${v.total}`, color: "#8b5cf6" })).sort((x, y) => y.value - x.value))}
+    ${curve.length ? `<div class="sub-title">Curva di copertura (popolazione entro distanza)</div>${coverageCurveHtml(curve)}` : ""}
+  </section>`;
+
+  const comuniSec = `<section class="page">
+    <h2 class="sec-title">Dettaglio per comune e per categoria POI</h2>
+    <div class="sub-title">Popolazione e copertura per comune</div>
+    <table class="grid slim"><thead><tr><th class="left">Comune</th><th>Popolazione</th><th>Coperta</th><th>%</th><th>Sezioni</th><th>POI</th></tr></thead>
+      <tbody>${comuni.map((c: any) => `<tr><td class="left strong">${esc(c.name)}</td><td class="num">${fInt(c.totalPop || 0)}</td><td class="num">${fInt(c.coveredPop || 0)}</td><td class="num">${fPct(c.percent || 0)}</td><td class="num">${fInt(c.coveredSections || 0)}/${fInt(c.totalSections || 0)}</td><td class="num">${fInt(c.poiCovered || 0)}/${fInt(c.poiTotal || 0)}</td></tr>`).join("")}</tbody></table>
+    <div class="sub-title">Copertura POI per categoria</div>
+    ${barList(Object.entries(poiCat).map(([k, v]: any) => ({ label: poiLabel(k), value: v.covered || 0, max: Math.max(1, v.total || 0), sub: `${v.covered}/${v.total}`, color: "#8b5cf6" })).sort((x, y) => (y.value / (y.max || 1)) - (x.value / (x.max || 1))))}
   </section>`;
 
   const stopsSec = `<section class="page">
@@ -451,7 +616,7 @@ export async function exportScenarioReport(win: Window | null, analysis: any, ge
     ${demandHtml(a?.demand)}
   </section>`;
 
-  const body = cover + scoreSec + coverageSec + stopsSec + trafficSec + demandSec;
+  const body = cover + metroSec + isoSec + coverageSec + comuniSec + scoreSec + stopsSec + trafficSec + demandSec;
   win.document.open();
   win.document.write(shell(`Report linea · ${name}`, body));
   win.document.close();
