@@ -437,7 +437,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: scenarioName.trim(), date: assignment.selectedDate, input, result, projectId: projectId ?? undefined, depotId: depotId ?? undefined }),
+        body: JSON.stringify({
+          name: scenarioName.trim(), date: assignment.selectedDate, input, result,
+          projectId: projectId ?? undefined, depotId: depotId ?? undefined,
+          // Multi-deposito: persisti l'intera selezione (id + cap vetture)
+          ...(depots && depots.length > 0 ? { depots } : {}),
+        }),
       });
       if (!resp.ok) throw new Error("Errore nel salvataggio");
       const data = await resp.json();
@@ -450,7 +455,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment, projectId, depotId, serviceType]);
+  }, [result, scenarioName, assignment, projectId, depotId, depots, serviceType]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {
