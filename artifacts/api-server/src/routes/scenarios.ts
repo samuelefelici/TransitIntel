@@ -983,53 +983,54 @@ router.get("/scenarios/compare", async (req, res) => {
 // schermata di confronto A/B (niente più solo KMZ).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Predicato SQL: progetti PS accessibili all'utente (owner | membro | in esercizio). */
-function psAccessWhere(userId: string) {
-  return sql`(p.owner_user_id = ${userId}::uuid
-              OR pm.user_id IS NOT NULL
-              OR (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)))`;
+// Raggruppa le righe (progetto×linea×percorso) nell'albero progetti→linee→percorsi.
+function groupVariantRows(rows: any[]) {
+  const projects: any[] = [];
+  const projIdx = new Map<string, any>();
+  const routeIdx = new Map<string, any>();
+  for (const row of rows) {
+    let proj = projIdx.get(row.project_id);
+    if (!proj) { proj = { projectId: row.project_id, projectName: row.project_name, routes: [] }; projIdx.set(row.project_id, proj); projects.push(proj); }
+    const rKey = `${row.project_id}|${row.route_id}`;
+    let route = routeIdx.get(rKey);
+    if (!route) {
+      route = { routeId: row.route_id, code: row.route_code, shortName: row.short_name, longName: row.long_name, color: row.route_color, variants: [] };
+      routeIdx.set(rKey, route); proj.routes.push(route);
+    }
+    route.variants.push({
+      variantId: row.variant_id, name: row.variant_name, direction: row.direction,
+      headsign: row.headsign, stopCount: row.stop_count ?? 0,
+      distanceKm: row.distance_m != null ? Math.round(Number(row.distance_m) / 10) / 100 : null,
+    });
+  }
+  return projects;
 }
 
 // GET /api/scenarios/importable-variants — elenco progetti→linee→percorsi (con
 // geometria) importabili come scenario. Definito PRIMA di /scenarios/:id.
+// Accesso: progetti di proprietà o condivisi (membro). Se la query "membro"
+// fallisce per qualunque motivo (schema), si ripiega su solo-proprietario.
 router.get("/scenarios/importable-variants", async (req, res) => {
+  const userId = req.user!.id;
+  const build = (ownerOnly: boolean) => sql`
+    SELECT p.id AS project_id, p.name AS project_name,
+           r.id AS route_id, r.short_name, r.long_name, r.code AS route_code, r.color AS route_color, r.sort_order,
+           v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign,
+           s.distance_m,
+           (SELECT count(*)::int FROM ps_variant_stops vs WHERE vs.variant_id = v.id) AS stop_count
+      FROM ps_projects p
+      JOIN ps_routes r ON r.project_id = p.id
+      JOIN ps_route_variants v ON v.route_id = r.id
+      JOIN ps_shapes s ON s.variant_id = v.id
+      ${ownerOnly ? sql`` : sql`LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid`}
+     WHERE ${ownerOnly ? sql`p.owner_user_id = ${userId}::uuid` : sql`(p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)`}
+     ORDER BY p.name, r.sort_order, r.short_name, v.direction, v.name
+  `;
   try {
-    const userId = req.user!.id;
-    const r = await db.execute<any>(sql`
-      SELECT p.id AS project_id, p.name AS project_name,
-             r.id AS route_id, r.short_name, r.long_name, r.code AS route_code, r.color AS route_color, r.sort_order,
-             v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign,
-             s.distance_m,
-             (SELECT count(*)::int FROM ps_variant_stops vs WHERE vs.variant_id = v.id) AS stop_count
-        FROM ps_projects p
-        JOIN ps_routes r ON r.project_id = p.id
-        JOIN ps_route_variants v ON v.route_id = r.id
-        JOIN ps_shapes s ON s.variant_id = v.id
-        LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
-        LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
-       WHERE ${psAccessWhere(userId)}
-       ORDER BY p.name, r.sort_order, r.short_name, v.direction, v.name
-    `);
-    // Raggruppa: progetti → linee → percorsi
-    const projects: any[] = [];
-    const projIdx = new Map<string, any>();
-    const routeIdx = new Map<string, any>();
-    for (const row of r.rows) {
-      let proj = projIdx.get(row.project_id);
-      if (!proj) { proj = { projectId: row.project_id, projectName: row.project_name, routes: [] }; projIdx.set(row.project_id, proj); projects.push(proj); }
-      const rKey = `${row.project_id}|${row.route_id}`;
-      let route = routeIdx.get(rKey);
-      if (!route) {
-        route = { routeId: row.route_id, code: row.route_code, shortName: row.short_name, longName: row.long_name, color: row.route_color, variants: [] };
-        routeIdx.set(rKey, route); proj.routes.push(route);
-      }
-      route.variants.push({
-        variantId: row.variant_id, name: row.variant_name, direction: row.direction,
-        headsign: row.headsign, stopCount: row.stop_count ?? 0,
-        distanceKm: row.distance_m != null ? Math.round(Number(row.distance_m) / 10) / 100 : null,
-      });
-    }
-    res.json({ projects });
+    let r;
+    try { r = await db.execute<any>(build(false)); }
+    catch (e) { req.log.warn?.(e, "importable-variants: member query failed, fallback owner-only"); r = await db.execute<any>(build(true)); }
+    res.json({ projects: groupVariantRows(r.rows) });
   } catch (err: any) {
     req.log.error(err, "Error listing importable variants");
     res.status(500).json({ error: "Internal server error" });
@@ -1044,7 +1045,7 @@ router.post("/scenarios/from-variant", async (req, res) => {
     const variantId = String(req.body?.variantId ?? "");
     if (!/^[0-9a-f-]{36}$/i.test(variantId)) { res.status(400).json({ error: "variantId non valido" }); return; }
 
-    const vr = await db.execute<any>(sql`
+    const buildV = (ownerOnly: boolean) => sql`
       SELECT v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign,
              r.short_name, r.long_name, r.code AS route_code, r.color AS route_color,
              p.id AS project_id, p.name AS project_name,
@@ -1053,11 +1054,14 @@ router.post("/scenarios/from-variant", async (req, res) => {
         JOIN ps_routes r ON r.id = v.route_id
         JOIN ps_projects p ON p.id = v.project_id
         LEFT JOIN ps_shapes s ON s.variant_id = v.id
-        LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
-        LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
-       WHERE v.id = ${variantId}::uuid AND ${psAccessWhere(userId)}
+        ${ownerOnly ? sql`` : sql`LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid`}
+       WHERE v.id = ${variantId}::uuid
+         AND ${ownerOnly ? sql`p.owner_user_id = ${userId}::uuid` : sql`(p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)`}
        LIMIT 1
-    `);
+    `;
+    let vr;
+    try { vr = await db.execute<any>(buildV(false)); }
+    catch (e) { req.log.warn?.(e, "from-variant: member query failed, fallback owner-only"); vr = await db.execute<any>(buildV(true)); }
     const v = vr.rows[0];
     if (!v) { res.status(404).json({ error: "Percorso non trovato o non accessibile" }); return; }
     const geometry = v.geometry as any;
@@ -1125,6 +1129,8 @@ router.post("/scenarios/from-variant", async (req, res) => {
 // GET /api/scenarios/:id — get single scenario with geojson
 router.get("/scenarios/:id", async (req, res) => {
   try {
+    // id non-uuid (es. path servito per errore) → 404 pulito, mai 500 da cast uuid
+    if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) { res.status(404).json({ error: "Scenario non trovato" }); return; }
     const [row] = await db.select().from(scenarios).where(eq(scenarios.id, req.params.id)).limit(1);
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
     res.json(row);

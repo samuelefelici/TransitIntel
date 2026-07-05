@@ -58,6 +58,8 @@ export default function ScenariosPage() {
   const [importTree, setImportTree] = useState<ImportProject[] | null>(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState(false);
+  const [kmzOpen, setKmzOpen] = useState(false);
   const [pickProject, setPickProject] = useState("");
   const [pickRoute, setPickRoute] = useState("");
   const [pickVariant, setPickVariant] = useState("");
@@ -218,21 +220,27 @@ export default function ScenariosPage() {
   }, [uploadName, stopsFile, routeFile, scenarioList.length, fetchScenarios]);
 
   // ── Import di un percorso già a sistema (Planner Studio) ──
-  const openImport = useCallback(async () => {
-    setImportOpen(true);
-    setImportedNames([]);
-    if (importTree) return;
+  const loadImportTree = useCallback(async () => {
     setImportLoading(true);
+    setImportError(false);
     try {
       const d = await apiFetch<{ projects: ImportProject[] }>("/api/scenarios/importable-variants");
       setImportTree(d.projects || []);
     } catch (err) {
       console.error("Errore caricamento percorsi:", err);
-      setImportTree([]);
+      setImportError(true);
+      setImportTree(null);
     } finally {
       setImportLoading(false);
     }
-  }, [importTree]);
+  }, []);
+
+  const openImport = useCallback(async () => {
+    setImportOpen(true);
+    setImportedNames([]);
+    if (importTree || importLoading) return;
+    await loadImportTree();
+  }, [importTree, importLoading, loadImportTree]);
 
   const importVariant = useCallback(async (variantId: string, label: string) => {
     setImporting(true);
@@ -804,85 +812,94 @@ export default function ScenariosPage() {
               {!scenarioPanelCollapsed && (
                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
                   <CardContent className="px-3 pb-3 pt-0 space-y-3 border-t border-border/30">
-                    {/* Upload area — 2 file separati */}
+                    {/* Aggiunta scenario — PRIMA scelta: percorso dal progetto (con fermate) */}
                     <div className="space-y-2 pt-2">
-                      <input type="text" value={uploadName} onChange={e => setUploadName(e.target.value)}
-                        placeholder="Nome scenario (opzionale)"
-                        className="w-full px-3 py-1.5 text-xs bg-muted rounded-lg border border-border/40 focus:outline-none focus:ring-1 focus:ring-primary" />
-
-                      {/* Stops file */}
-                      <input ref={stopsFileRef} type="file" accept=".kml,.kmz" className="hidden"
-                        onChange={e => { if (e.target.files?.[0]) setStopsFile(e.target.files[0]); e.target.value = ""; }} />
-                      <button onClick={() => stopsFileRef.current?.click()}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-medium transition-all ${
-                          stopsFile
-                            ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
-                            : "border-primary/20 hover:border-primary/50 bg-muted/30 text-muted-foreground hover:text-foreground"
-                        }`}>
-                        <MapPin className="w-4 h-4 shrink-0" />
-                        <span className="flex-1 text-left truncate">
-                          {stopsFile ? stopsFile.name : "📍 File Fermate (.kml / .kmz)"}
-                        </span>
-                        {stopsFile && (
-                          <X className="w-3.5 h-3.5 text-muted-foreground hover:text-red-400 shrink-0"
-                            onClick={e => { e.stopPropagation(); setStopsFile(null); }} />
-                        )}
-                      </button>
-
-                      {/* Route file */}
-                      <input ref={routeFileRef} type="file" accept=".kml,.kmz" className="hidden"
-                        onChange={e => { if (e.target.files?.[0]) setRouteFile(e.target.files[0]); e.target.value = ""; }} />
-                      <button onClick={() => routeFileRef.current?.click()}
-                        className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-medium transition-all ${
-                          routeFile
-                            ? "border-blue-500/50 bg-blue-500/10 text-blue-400"
-                            : "border-primary/20 hover:border-primary/50 bg-muted/30 text-muted-foreground hover:text-foreground"
-                        }`}>
-                        <Route className="w-4 h-4 shrink-0" />
-                        <span className="flex-1 text-left truncate">
-                          {routeFile ? routeFile.name : "🚌 File Percorso (.kml / .kmz)"}
-                        </span>
-                        {routeFile && (
-                          <X className="w-3.5 h-3.5 text-muted-foreground hover:text-red-400 shrink-0"
-                            onClick={e => { e.stopPropagation(); setRouteFile(null); }} />
-                        )}
-                      </button>
-
-                      {/* Upload button */}
-                      <button onClick={handleUpload} disabled={uploading || (!stopsFile && !routeFile)}
-                        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-primary/20">
-                        {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
-                        {uploading ? "Caricamento…" : "Carica Scenario"}
-                      </button>
-
-                      {/* Import da percorsi già a sistema (Planner Studio) */}
-                      <div className="flex items-center gap-2 py-0.5">
-                        <div className="flex-1 h-px bg-border/40" />
-                        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">oppure</span>
-                        <div className="flex-1 h-px bg-border/40" />
-                      </div>
                       <button onClick={openImport}
-                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-xs font-semibold transition-all border border-blue-500/20">
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary/15 hover:bg-primary/25 text-primary text-xs font-semibold transition-all border border-primary/30">
                         <FolderInput className="w-4 h-4" />
-                        Aggiungi percorso dal sistema
+                        Percorso dal progetto (con fermate)
                       </button>
+                      <p className="text-[9px] text-muted-foreground text-center leading-snug">
+                        Scegli un percorso già a sistema — anche da progetti diversi — e confrontalo.
+                      </p>
+
+                      {/* SECONDA scelta: carica KML/KMZ (collassabile) */}
+                      <button onClick={() => setKmzOpen(v => !v)}
+                        className="w-full flex items-center gap-2 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors">
+                        <div className="flex-1 h-px bg-border/40" />
+                        <span className="flex items-center gap-1 shrink-0">oppure carica KML/KMZ {kmzOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}</span>
+                        <div className="flex-1 h-px bg-border/40" />
+                      </button>
+
+                      {kmzOpen && (
+                        <div className="space-y-2">
+                          <input type="text" value={uploadName} onChange={e => setUploadName(e.target.value)}
+                            placeholder="Nome scenario (opzionale)"
+                            className="w-full px-3 py-1.5 text-xs bg-muted rounded-lg border border-border/40 focus:outline-none focus:ring-1 focus:ring-primary" />
+
+                          {/* Stops file */}
+                          <input ref={stopsFileRef} type="file" accept=".kml,.kmz" className="hidden"
+                            onChange={e => { if (e.target.files?.[0]) setStopsFile(e.target.files[0]); e.target.value = ""; }} />
+                          <button onClick={() => stopsFileRef.current?.click()}
+                            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-medium transition-all ${
+                              stopsFile
+                                ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
+                                : "border-primary/20 hover:border-primary/50 bg-muted/30 text-muted-foreground hover:text-foreground"
+                            }`}>
+                            <MapPin className="w-4 h-4 shrink-0" />
+                            <span className="flex-1 text-left truncate">
+                              {stopsFile ? stopsFile.name : "📍 File Fermate (.kml / .kmz)"}
+                            </span>
+                            {stopsFile && (
+                              <X className="w-3.5 h-3.5 text-muted-foreground hover:text-red-400 shrink-0"
+                                onClick={e => { e.stopPropagation(); setStopsFile(null); }} />
+                            )}
+                          </button>
+
+                          {/* Route file */}
+                          <input ref={routeFileRef} type="file" accept=".kml,.kmz" className="hidden"
+                            onChange={e => { if (e.target.files?.[0]) setRouteFile(e.target.files[0]); e.target.value = ""; }} />
+                          <button onClick={() => routeFileRef.current?.click()}
+                            className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-medium transition-all ${
+                              routeFile
+                                ? "border-blue-500/50 bg-blue-500/10 text-blue-400"
+                                : "border-primary/20 hover:border-primary/50 bg-muted/30 text-muted-foreground hover:text-foreground"
+                            }`}>
+                            <Route className="w-4 h-4 shrink-0" />
+                            <span className="flex-1 text-left truncate">
+                              {routeFile ? routeFile.name : "🚌 File Percorso (.kml / .kmz)"}
+                            </span>
+                            {routeFile && (
+                              <X className="w-3.5 h-3.5 text-muted-foreground hover:text-red-400 shrink-0"
+                                onClick={e => { e.stopPropagation(); setRouteFile(null); }} />
+                            )}
+                          </button>
+
+                          {/* Upload button */}
+                          <button onClick={handleUpload} disabled={uploading || (!stopsFile && !routeFile)}
+                            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-primary/20">
+                            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileUp className="w-4 h-4" />}
+                            {uploading ? "Caricamento…" : "Carica Scenario"}
+                          </button>
+
+                          {(stopsFile || routeFile) && !uploading && (
+                            <p className="text-[9px] text-muted-foreground text-center">
+                              {stopsFile && routeFile ? "Fermate + Percorso pronti" : stopsFile ? "Solo fermate — il percorso è opzionale" : "Solo percorso — le fermate verranno generate automaticamente"}
+                            </p>
+                          )}
+                        </div>
+                      )}
 
                       {/* Hidden input for reimport stops */}
                       <input ref={reimportInputRef} type="file" accept=".kml,.kmz" className="hidden"
                         onChange={onReimportFileSelected} />
-
-                      {(stopsFile || routeFile) && !uploading && (
-                        <p className="text-[9px] text-muted-foreground text-center">
-                          {stopsFile && routeFile ? "Fermate + Percorso pronti" : stopsFile ? "Solo fermate — il percorso è opzionale" : "Solo percorso — le fermate verranno generate automaticamente"}
-                        </p>
-                      )}
                     </div>
 
                     {/* Scenario list */}
                     <div className="max-h-60 overflow-y-auto space-y-1.5">
                       {scenarioList.length === 0 && (
                         <p className="text-xs text-muted-foreground text-center py-4">
-                          Nessuno scenario caricato.<br />Carica un file KML/KMZ per iniziare.
+                          Nessuno scenario.<br />Scegli un <b>percorso dal progetto</b> o carica un KML/KMZ.
                         </p>
                       )}
                       {scenarioList.map(s => {
@@ -1023,8 +1040,15 @@ export default function ScenariosPage() {
 
                 {importLoading ? (
                   <div className="py-8 text-center text-sm text-muted-foreground flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico i percorsi…</div>
+                ) : importError ? (
+                  <div className="py-8 text-center space-y-2">
+                    <div className="text-sm text-red-400">Impossibile caricare i percorsi.</div>
+                    <button onClick={loadImportTree} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted hover:bg-muted/70 text-xs font-medium">
+                      <RefreshCw className="w-3.5 h-3.5" /> Riprova
+                    </button>
+                  </div>
                 ) : projects.length === 0 ? (
-                  <div className="py-8 text-center text-sm text-muted-foreground">Nessun percorso con geometria trovato nei progetti accessibili.</div>
+                  <div className="py-8 text-center text-sm text-muted-foreground">Nessun percorso con geometria trovato nei progetti accessibili.<br />Disegna un percorso in Planner Studio, poi torna qui.</div>
                 ) : (
                   <>
                     <label className="block">
