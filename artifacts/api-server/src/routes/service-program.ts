@@ -18,6 +18,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
+import { buildDeadheadKmMatrix, type DHNode } from "../lib/deadhead-matrix";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -1433,6 +1434,8 @@ async function runCPSATVehicleScheduler(
   extraConfig?: Record<string, any>,
   routeDetails?: { routeId: string; routeName: string }[],
   psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
+  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[],
+  deadheadKm?: Record<string, number>,
 ): Promise<any> {
   const scriptPath = path.resolve(SCRIPTS_DIR, "vehicle_scheduler_cpsat.py");
 
@@ -1499,6 +1502,10 @@ async function runCPSATVehicleScheduler(
       },
       routeDetails: routeDetails || [],
       psClusters: psClusters || [],
+      // Multi-deposito: domiciliazione + cap vetture per deposito (vincolo hard)
+      ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
+      // Matrice fuorilinea (km stradali reali, OSRM/fallback) per archi e tratte deposito
+      ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
     });
     py.stdin.write(inputJson);
     py.stdin.end();
@@ -1866,6 +1873,42 @@ router.post("/service-program/cpsat", async (req, res) => {
       req.log.error(`CP-SAT VSP: errore caricamento cluster utente: ${err?.message}`);
     }
 
+    // 5c. Multi-deposito: selezione utente + matrice fuorilinea per il solver.
+    // I depositi selezionati entrano nel SOLVER (domiciliazione + cap hard);
+    // la matrice copre {depositi}×{capolinea} ∪ {capolinea}×{capolinea} con km
+    // stradali OSRM (fallback Haversine×circuità).
+    const depotSel = parseDepotSelection((body as any).depots);
+    const allDepots = await loadDepotPoints();
+    const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
+
+    let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[] | undefined;
+    let deadheadKm: Record<string, number> | undefined;
+    if (depotSel && depotPoints.length > 0) {
+      depotsForPy = depotPoints.map(d => ({
+        id: d.id, name: d.name, color: d.color, lat: d.lat, lon: d.lon,
+        maxVehicles: depotSel.caps.get(d.id) ?? null,
+      }));
+      try {
+        const depotNodes: DHNode[] = depotPoints.map(d => ({ lat: d.lat, lon: d.lon }));
+        const terminalNodes: DHNode[] = [];
+        for (const t of tripBlocks) {
+          terminalNodes.push({ lat: t.firstStopLat, lon: t.firstStopLon });
+          terminalNodes.push({ lat: t.lastStopLat, lon: t.lastStopLon });
+        }
+        const [outM, inM, ttM] = await Promise.all([
+          buildDeadheadKmMatrix(depotNodes, terminalNodes),   // uscite deposito→capolinea
+          buildDeadheadKmMatrix(terminalNodes, depotNodes),   // rientri capolinea→deposito
+          buildDeadheadKmMatrix(terminalNodes, terminalNodes), // riposizionamenti
+        ]);
+        deadheadKm = { ...ttM.matrix, ...outM.matrix, ...inM.matrix };
+        const osrm = outM.osrmPairs + inM.osrmPairs + ttM.osrmPairs;
+        const total = outM.totalPairs + inM.totalPairs + ttM.totalPairs;
+        req.log.info(`CP-SAT VSP: matrice fuorilinea ${total} coppie (${osrm} da OSRM, ${total - osrm} Haversine)`);
+      } catch (err: any) {
+        req.log.warn({ err: err?.message }, "matrice fuorilinea non disponibile, il solver stima Haversine");
+      }
+    }
+
     // 6. Spawn Python solver
     const cpResult = await runCPSATVehicleScheduler(
       tripBlocks, timeLimitSec, req.log,
@@ -1877,18 +1920,23 @@ router.post("/service-program/cpsat", async (req, res) => {
       },
       routeDetailsForPy,
       psClustersForPy,
+      depotsForPy,
+      deadheadKm,
     );
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
     const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
 
-    // 7b. Residenza di servizio per turno (deposito di uscita/rientro, geometrico).
-    // Se l'utente ha scelto depositi specifici, l'assegnazione usa SOLO quelli
-    // (cap morbido: preferisce i non pieni, overflow consentito).
-    const depotSel = parseDepotSelection((body as any).depots);
-    const allDepots = await loadDepotPoints();
-    const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
-    const depotCounts = assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints, depotSel?.caps);
+    // 7b. Residenza di servizio per turno. Se il SOLVER ha già domiciliato i
+    // turni (multi-deposito con cap hard, tratte uscita/rientro incluse) usiamo
+    // la sua assegnazione; altrimenti fallback geometrico legacy.
+    const solverAssigned = cpShifts.length > 0 && cpShifts.every((s: any) => s.residenzaDepotId);
+    const depotCounts = solverAssigned
+      ? cpShifts.reduce((m: Map<string, number>, s: any) => {
+          m.set(s.residenzaDepotId, (m.get(s.residenzaDepotId) ?? 0) + 1);
+          return m;
+        }, new Map<string, number>())
+      : assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints, depotSel?.caps);
 
     const totalServiceMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalServiceMin, 0);
     const totalDeadheadMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalDeadheadMin, 0);
@@ -1905,7 +1953,25 @@ router.post("/service-program/cpsat", async (req, res) => {
     }
 
     const advisories = generateAdvisories(cpShifts, tripBlocks, costs, score, hourlyDist);
-    if (depotSel?.caps.size) {
+    // Vincolo flotta HARD: se il solver non ha potuto rispettare i cap per
+    // deposito, riportiamo l'infeasibility come advisory CRITICA con il deficit.
+    const fleetInfo = cpResult.metrics?.fleetInfeasibility;
+    if (fleetInfo) {
+      const perDep = Array.isArray(fleetInfo.perDepot) && fleetInfo.perDepot.length > 0
+        ? ` Depositi oltre capacità: ${fleetInfo.perDepot.map((p: any) => `${p.name} ${p.vehicles}/${p.cap}`).join(", ")}.`
+        : "";
+      advisories.unshift({
+        id: "fleet-infeasible",
+        severity: "critical",
+        category: "fleet",
+        title: "Flotta insufficiente per il servizio",
+        description: `Servono ${fleetInfo.required} veicoli ma la flotta disponibile nei depositi selezionati è ${fleetInfo.available} (mancano ${fleetInfo.deficit}).${perDep}`,
+        impact: `${fleetInfo.deficit} veicol${fleetInfo.deficit === 1 ? "o" : "i"} mancant${fleetInfo.deficit === 1 ? "e" : "i"}`,
+        action: "Aumenta le vetture disponibili nei depositi, aggiungi un deposito o riduci le linee dello scenario.",
+        metric: fleetInfo.deficit,
+      });
+    } else if (!solverAssigned && depotSel?.caps.size) {
+      // Fallback geometrico legacy: cap morbido → advisory warning
       const capAdv = depotCapacityAdvisory(depotCounts, depotSel.caps, depotPoints);
       if (capAdv) advisories.unshift(capAdv);
     }
@@ -1935,6 +2001,12 @@ router.post("/service-program/cpsat", async (req, res) => {
         ? +((totalServiceMin / (totalServiceMin + totalDeadheadMin)) * 100).toFixed(1)
         : 0,
       downsizedTrips: cpShifts.reduce((s: number, v: VehicleShift) => s + v.downsizedTrips, 0),
+      // Multi-deposito: veicoli domiciliati per deposito (dal solver, cap hard)
+      byDepot: cpResult.metrics?.depotAssignment?.perDepot
+        ?? Array.from(depotCounts.entries()).map(([id, n]) => ({
+          id, name: depotPoints.find(p => p.id === id)?.name ?? "Deposito",
+          vehicles: n, cap: depotSel?.caps.get(id) ?? null,
+        })),
     };
 
     // Route stats
@@ -1986,10 +2058,12 @@ router.post("/service-program/cpsat", async (req, res) => {
 /** POST /api/service-program/scenarios — save a scenario */
 router.post("/service-program/scenarios", async (req, res) => {
   try {
-    const { name, date, input, result: scenarioResult, projectId, depotId } = req.body as {
+    const { name, date, input, result: scenarioResult, projectId, depotId, depots: depotsSel } = req.body as {
       name?: string; date?: string;
       input?: unknown; result?: unknown;
       projectId?: string; depotId?: string;
+      /** Multi-deposito: selezione completa [{id, maxVehicles}] (jsonb additivo) */
+      depots?: { id: string; maxVehicles?: number | null }[];
     };
     if (!name || !date || !input || !scenarioResult) {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
@@ -2019,6 +2093,21 @@ router.post("/service-program/scenarios", async (req, res) => {
         await db.execute(sql`UPDATE service_program_scenarios SET depot_id = ${depotId}::uuid WHERE id = ${row.id}::uuid`);
       } catch (e: any) {
         req.log.warn({ err: e?.message }, "attach depot_id failed (non-fatal)");
+      }
+    }
+    // Multi-deposito: salva l'INSIEME dei depositi selezionati (con cap vetture).
+    // Colonna additiva jsonb; depot_id resta per compatibilità (primo deposito).
+    if (Array.isArray(depotsSel) && depotsSel.length > 0) {
+      const clean = depotsSel
+        .filter(d => d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id))
+        .map(d => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
+      if (clean.length > 0) {
+        try {
+          await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
+          await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
+        } catch (e: any) {
+          req.log.warn({ err: e?.message }, "attach depots failed (non-fatal)");
+        }
       }
     }
     if (projectId && /^[0-9a-f-]{36}$/i.test(projectId)) {
@@ -2090,7 +2179,15 @@ router.get("/service-program/scenarios/:id", async (req, res) => {
     const [row] = await db.select().from(serviceProgramScenarios)
       .where(eq(serviceProgramScenarios.id, req.params.id));
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
-    res.json(row);
+    // Colonne additive (fuori dallo schema drizzle): depot_id + depots (multi-deposito)
+    let extra: Record<string, unknown> = {};
+    try {
+      const r = await db.execute<any>(sql`
+        SELECT depot_id AS "depotId", depots FROM service_program_scenarios WHERE id = ${req.params.id}::uuid
+      `);
+      if (r.rows[0]) extra = { depotId: r.rows[0].depotId ?? null, depots: r.rows[0].depots ?? null };
+    } catch { /* colonne non ancora presenti su installazioni vecchie */ }
+    res.json({ ...row, ...extra });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

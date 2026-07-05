@@ -749,6 +749,7 @@ class VShiftTrip:
     original_vehicle: str | None = None
     on_demand: bool = False       # corsa a chiamata (DRT)
     cluster_stops: list[ClusterStop] = field(default_factory=list)  # fermate intermedie in cluster
+    depot_leg: str | None = None  # "out" (uscita deposito) | "in" (rientro) — solo per deadhead
 
 
 @dataclass
@@ -770,6 +771,18 @@ class VehicleShift:
     last_in: int = 0
     shift_duration: int = 0
     downsized_trips: int = 0
+    # Coordinate del primo/ultimo capolinea del turno (per la domiciliazione)
+    first_stop_lat: float = 0.0
+    first_stop_lon: float = 0.0
+    last_stop_lat: float = 0.0
+    last_stop_lon: float = 0.0
+    # ── Domiciliazione (multi-deposito): impostata dal solver quando l'input
+    # contiene i depositi. Se None il TS ricade sull'assegnazione geometrica.
+    residenza_depot_id: str | None = None
+    residenza_name: str | None = None
+    residenza_color: str | None = None
+    depot_out: dict | None = None   # {id, name, color} deposito di uscita
+    depot_in: dict | None = None    # {id, name, color} deposito di rientro
 
 
 @dataclass
@@ -860,15 +873,51 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# ── Matrice fuorilinea (km stradali reali, es. OSRM) ─────────────────────
+# Popolata via set_deadhead_matrix() dall'input del solver (chiave
+# "lat5,lon5|lat5,lon5" → km stradali). Quando una coppia è presente, i km
+# sono usati al posto della stima Haversine×circuità: stessa formula per i
+# minuti (velocità commerciale a vuoto per categoria + buffer).
+_DH_KM_MATRIX: dict[str, float] = {}
+
+
+def dh_key(lat: float, lon: float) -> str:
+    return f"{lat:.5f},{lon:.5f}"
+
+
+def set_deadhead_matrix(matrix: dict | None) -> int:
+    """Installa la matrice fuorilinea condivisa. Ritorna il n. di coppie valide."""
+    _DH_KM_MATRIX.clear()
+    if not isinstance(matrix, dict):
+        return 0
+    for k, v in matrix.items():
+        try:
+            km = float(v)
+            if km >= 0 and isinstance(k, str) and "|" in k:
+                _DH_KM_MATRIX[k] = km
+        except (TypeError, ValueError):
+            continue
+    return len(_DH_KM_MATRIX)
+
+
 def estimate_deadhead(
     from_lat: float, from_lon: float,
     to_lat: float, to_lon: float,
     category: str = "urbano",
 ) -> tuple[float, int]:
-    """Restituisce (km_stradali, minuti) per il deadhead."""
+    """Restituisce (km_stradali, minuti) per il deadhead.
+
+    Se la coppia è nella matrice fuorilinea (km stradali reali, es. OSRM) usa
+    quella; altrimenti stima Haversine × circuità.
+    """
+    speed = DEADHEAD_SPEED.get(category, 20)
+    if _DH_KM_MATRIX:
+        road = _DH_KM_MATRIX.get(dh_key(from_lat, from_lon) + "|" + dh_key(to_lat, to_lon))
+        if road is not None:
+            minutes = math.ceil((road / speed) * 60) + DEADHEAD_BUFFER
+            return round(road, 1), minutes
     straight = haversine_km(from_lat, from_lon, to_lat, to_lon)
     road_km = straight * ROAD_CIRCUITY
-    speed = DEADHEAD_SPEED.get(category, 20)
     minutes = math.ceil((road_km / speed) * 60) + DEADHEAD_BUFFER
     return round(road_km, 1), minutes
 
@@ -1132,11 +1181,13 @@ def vshift_trip_to_dict(t: VShiftTrip) -> dict:
     elif t.type == "deadhead":
         d["deadheadKm"] = t.deadhead_km
         d["deadheadMin"] = t.deadhead_min
+        if t.depot_leg:
+            d["depotLeg"] = t.depot_leg
     return d
 
 
 def vehicle_shift_to_dict(vs: VehicleShift) -> dict:
-    return {
+    d = {
         "vehicleId": vs.vehicle_id,
         "vehicleType": vs.vehicle_type,
         "category": vs.category,
@@ -1154,6 +1205,14 @@ def vehicle_shift_to_dict(vs: VehicleShift) -> dict:
         "shiftDuration": vs.shift_duration,
         "downsizedTrips": vs.downsized_trips,
     }
+    # Domiciliazione multi-deposito (presente solo se il solver l'ha calcolata)
+    if vs.residenza_depot_id is not None:
+        d["residenzaDepotId"] = vs.residenza_depot_id
+        d["residenzaName"] = vs.residenza_name
+        d["residenzaColor"] = vs.residenza_color
+        d["depotOut"] = vs.depot_out
+        d["depotIn"] = vs.depot_in
+    return d
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -48,6 +48,7 @@ from optimizer_common import (
     haversine_km, estimate_deadhead, is_peak_hour, can_vehicle_serve,
     min_to_time, fmt_dur,
     load_input, write_output, log, report_progress,
+    set_deadhead_matrix,
 )
 
 # FIX-6: aumentato da 100 a 1000 per evitare che bonus < 0.01 EUR vengano
@@ -2233,6 +2234,11 @@ def chains_to_shifts(
             vs.last_in = last_trip.arrival_min
             vs.shift_duration = vs.end_min - vs.start_min
 
+        # Coordinate del primo/ultimo capolinea (per la domiciliazione multi-deposito)
+        t_first, t_last = trips[chain[0]], trips[chain[-1]]
+        vs.first_stop_lat, vs.first_stop_lon = t_first.first_stop_lat, t_first.first_stop_lon
+        vs.last_stop_lat, vs.last_stop_lon = t_last.last_stop_lat, t_last.last_stop_lon
+
         shifts.append(vs)
 
     shifts.sort(key=lambda s: s.first_out)
@@ -2240,6 +2246,142 @@ def chains_to_shifts(
         s.fifo_order = idx + 1
 
     return shifts
+
+
+# ═══════════════════════════════════════════════════════════════
+#  MULTI-DEPOSITO — domiciliazione capacitata + fuorilinea deposito
+# ═══════════════════════════════════════════════════════════════
+
+def assign_depots_to_shifts(
+    shifts: list[VehicleShift],
+    depots: list[dict],
+    time_limit_sec: float = 5.0,
+) -> dict:
+    """Domicilia ogni turno macchina in un deposito, DENTRO l'ottimizzazione.
+
+    Modello CP-SAT di assegnazione capacitata: ogni turno sceglie esattamente un
+    deposito; il n. di turni domiciliati in un deposito non supera maxVehicles
+    (vincolo HARD, se indicato); obiettivo = minimizzare i km di fuorilinea
+    totali di uscita (deposito → primo capolinea) + rientro (ultimo capolinea →
+    deposito). I km usano la matrice fuorilinea (OSRM) quando disponibile.
+
+    Aggiunge ai turni le tratte reali di uscita/rientro deposito (deadhead con
+    depotLeg = "out"/"in") e i campi residenza. Ritorna un report:
+      { perDepot: [{id,name,vehicles,cap}], totalPulloutKm, totalPullinKm,
+        infeasibility: None | {required, available, deficit, note} }
+    """
+    valid = [d for d in depots
+             if d.get("id") and d.get("lat") is not None and d.get("lon") is not None]
+    if not valid or not shifts:
+        return {"perDepot": [], "totalPulloutKm": 0, "totalPullinKm": 0, "infeasibility": None}
+
+    n, m = len(shifts), len(valid)
+    caps: list[int | None] = []
+    for d in valid:
+        mv = d.get("maxVehicles")
+        caps.append(int(mv) if isinstance(mv, (int, float)) and mv > 0 else None)
+
+    # Costi (out_km, in_km) per coppia turno×deposito — decimi di km interi
+    out_km = [[0.0] * m for _ in range(n)]
+    in_km = [[0.0] * m for _ in range(n)]
+    for si, s in enumerate(shifts):
+        for di, d in enumerate(valid):
+            ok, _ = estimate_deadhead(d["lat"], d["lon"], s.first_stop_lat, s.first_stop_lon, s.category)
+            ik, _ = estimate_deadhead(s.last_stop_lat, s.last_stop_lon, d["lat"], d["lon"], s.category)
+            out_km[si][di] = ok
+            in_km[si][di] = ik
+
+    def _solve(enforce_caps: bool) -> list[int] | None:
+        model = cp_model.CpModel()
+        x = [[model.new_bool_var(f"x_{s}_{d}") for d in range(m)] for s in range(n)]
+        for s in range(n):
+            model.add(sum(x[s]) == 1)
+        if enforce_caps:
+            for d in range(m):
+                if caps[d] is not None:
+                    model.add(sum(x[s][d] for s in range(n)) <= caps[d])
+        model.minimize(sum(
+            x[s][d] * int(round((out_km[s][d] + in_km[s][d]) * 10))
+            for s in range(n) for d in range(m)
+        ))
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = float(time_limit_sec)
+        st = solver.solve(model)
+        if st not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
+        return [next(d for d in range(m) if solver.value(x[s][d])) for s in range(n)]
+
+    infeasibility = None
+    assignment = _solve(enforce_caps=True)
+    if assignment is None:
+        # Cap violabili solo perché Σcap < n. turni: assegna senza cap e riporta
+        # il deficit esatto (quante vetture mancano e dove).
+        assignment = _solve(enforce_caps=False)
+        finite_total = sum(c for c in caps if c is not None)
+        infeasibility = {
+            "required": n,
+            "available": finite_total,
+            "deficit": max(0, n - finite_total),
+            "note": "Capacità depositi insufficiente: assegnazione con overflow",
+        }
+        if assignment is None:  # difensivo: non dovrebbe accadere
+            assignment = [min(range(m), key=lambda d: out_km[s][d] + in_km[s][d]) for s in range(n)]
+
+    counts = [0] * m
+    tot_out = 0.0
+    tot_in = 0.0
+    for si, di in enumerate(assignment):
+        s, d = shifts[si], valid[di]
+        counts[di] += 1
+        info = {"id": d["id"], "name": d.get("name") or "Deposito", "color": d.get("color") or "#3b82f6"}
+        s.residenza_depot_id = info["id"]
+        s.residenza_name = info["name"]
+        s.residenza_color = info["color"]
+        s.depot_out = info
+        s.depot_in = info
+
+        # Tratte reali di uscita/rientro dal deposito domiciliatario
+        ok, omin = estimate_deadhead(d["lat"], d["lon"], s.first_stop_lat, s.first_stop_lon, s.category)
+        ik, imin = estimate_deadhead(s.last_stop_lat, s.last_stop_lon, d["lat"], d["lon"], s.category)
+        first_trip = next((e for e in s.trips if e.type == "trip"), None)
+        last_trip = next((e for e in reversed(s.trips) if e.type == "trip"), None)
+        if first_trip and ok >= 0.15:
+            dep_min = max(0, first_trip.departure_min - omin)
+            s.trips.insert(0, VShiftTrip(
+                type="deadhead", trip_id="", route_id="",
+                route_name=f"Uscita {info['name']} ({ok} km)", headsign=None,
+                departure_time=min_to_time(dep_min), arrival_time=min_to_time(first_trip.departure_min),
+                departure_min=dep_min, arrival_min=first_trip.departure_min,
+                deadhead_km=ok, deadhead_min=omin, depot_leg="out",
+            ))
+            s.total_deadhead_km += ok
+            s.total_deadhead_min += omin
+            tot_out += ok
+        if last_trip and ik >= 0.15:
+            s.trips.append(VShiftTrip(
+                type="deadhead", trip_id="", route_id="",
+                route_name=f"Rientro {info['name']} ({ik} km)", headsign=None,
+                departure_time=min_to_time(last_trip.arrival_min), arrival_time=min_to_time(last_trip.arrival_min + imin),
+                departure_min=last_trip.arrival_min, arrival_min=last_trip.arrival_min + imin,
+                deadhead_km=ik, deadhead_min=imin, depot_leg="in",
+            ))
+            s.total_deadhead_km += ik
+            s.total_deadhead_min += imin
+            tot_in += ik
+
+    per_depot = [{"id": valid[d]["id"], "name": valid[d].get("name") or "Deposito",
+                  "vehicles": counts[d], "cap": caps[d]} for d in range(m)]
+    if infeasibility is not None:
+        over = [{"id": p["id"], "name": p["name"], "vehicles": p["vehicles"], "cap": p["cap"],
+                 "over": p["vehicles"] - p["cap"]} for p in per_depot
+                if p["cap"] is not None and p["vehicles"] > p["cap"]]
+        infeasibility["perDepot"] = over
+    return {
+        "perDepot": per_depot,
+        "totalPulloutKm": round(tot_out, 1),
+        "totalPullinKm": round(tot_in, 1),
+        "infeasibility": infeasibility,
+    }
 
 
 def compute_shift_costs(
@@ -2678,6 +2820,20 @@ def main():
             log(f"  [VSP-USER-CLUSTER] ricevuti {len(ps_clusters_raw)} cluster "
                 f"PS, {len(user_clusters)} fermate mappate")
 
+    # Matrice fuorilinea (km stradali reali, es. OSRM) — installata PRIMA della
+    # costruzione degli archi così ogni deadhead capolinea↔capolinea la usa.
+    dh_pairs = set_deadhead_matrix(data.get("deadheadKm"))
+    if dh_pairs:
+        log(f"  [VSP-DH-MATRIX] {dh_pairs} coppie fuorilinea stradali ricevute")
+
+    # Depositi selezionati (multi-deposito): domiciliazione + cap per deposito
+    depots_data = [d for d in (data.get("depots") or [])
+                   if isinstance(d, dict) and d.get("id")]
+    if depots_data:
+        log(f"  [VSP-DEPOTS] {len(depots_data)} depositi: "
+            + ", ".join(f"{d.get('name', d['id'])}"
+                        f"(cap={d.get('maxVehicles', '∞')})" for d in depots_data))
+
     # Build arcs
     report_progress("VSP", 10, "Building compatibility arcs...")
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None)
@@ -2781,8 +2937,63 @@ def main():
             )
     report_progress("VSP", 97, f"Pipeline finale: {len(improved_chains)} vehicles")
 
+    # ── FLOTTA: cap globale HARD = Σ maxVehicles dei depositi selezionati ──
+    # Se la soluzione usa più veicoli della flotta disponibile, tentiamo un
+    # solve vincolato (nv ≤ Σcap). Se nemmeno così è possibile, riportiamo
+    # l'infeasibility con il deficit esatto (il TS la mostra come critica).
+    fleet_cap: int | None = None
+    fleet_infeasibility: dict | None = None
+    if depots_data:
+        caps_list = [d.get("maxVehicles") for d in depots_data]
+        if caps_list and all(isinstance(c, (int, float)) and c > 0 for c in caps_list):
+            fleet_cap = int(sum(caps_list))
+    if fleet_cap is not None and len(improved_chains) > fleet_cap:
+        log(f"  [VSP-FLEET] {len(improved_chains)} veicoli > flotta disponibile {fleet_cap}: "
+            f"tento solve vincolato...")
+        report_progress("VSP", 97, f"Vincolo flotta: cerco soluzione ≤{fleet_cap} veicoli...")
+        cap_strat = VSP_STRATEGIES["balanced"]
+        cap_arc_costs = precompute_arc_costs(arcs, trips, rates, strategy=cap_strat,
+                                             amplifier=vsp_config.strategy_amplifier)
+        cap_fixed_costs = precompute_fixed_costs(trips, rates, strategy=cap_strat,
+                                                 amplifier=vsp_config.strategy_amplifier)
+        cap_status, cap_chains = solve_vsp_feasibility_with_bound(
+            trips, arcs, cap_arc_costs, cap_fixed_costs,
+            max_vehicles=fleet_cap,
+            time_limit=min(90.0, max(20.0, time_limit / 3)),
+            warmstart_chains=improved_chains, intensity=intensity,
+            seed=7777, label="fleet-cap",
+        )
+        if cap_chains:
+            improved_chains = cap_chains
+            validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-fleet-cap")
+            log(f"  [VSP-FLEET] OK: soluzione con {len(improved_chains)} ≤ {fleet_cap} veicoli")
+        else:
+            fleet_infeasibility = {
+                "required": len(improved_chains),
+                "available": fleet_cap,
+                "deficit": len(improved_chains) - fleet_cap,
+                "status": cap_status,
+                "note": ("Impossibile coprire il servizio con la flotta indicata: "
+                         f"servono {len(improved_chains)} veicoli, disponibili {fleet_cap}."),
+            }
+            log(f"  [VSP-FLEET] INFEASIBLE: deficit {fleet_infeasibility['deficit']} veicoli")
+
     # Convert to VehicleShift objects
     shifts = chains_to_shifts(improved_chains, trips, arcs_lookup, rates, route_names)
+
+    # ── MULTI-DEPOSITO: domiciliazione capacitata + fuorilinea deposito ──
+    depot_assignment: dict | None = None
+    if depots_data:
+        report_progress("VSP", 98, "Domiciliazione turni nei depositi...")
+        depot_assignment = assign_depots_to_shifts(shifts, depots_data)
+        if depot_assignment.get("infeasibility") and fleet_infeasibility is None:
+            fleet_infeasibility = depot_assignment["infeasibility"]
+        per_dep = ", ".join(f"{p['name']}={p['vehicles']}"
+                            + (f"/{p['cap']}" if p["cap"] is not None else "")
+                            for p in depot_assignment["perDepot"])
+        log(f"  [VSP-DEPOTS] domiciliazione: {per_dep} · "
+            f"uscite {depot_assignment['totalPulloutKm']} km, "
+            f"rientri {depot_assignment['totalPullinKm']} km")
 
     # Cost breakdown
     cost_breakdown = compute_shift_costs(improved_chains, trips, arcs_lookup, rates)
@@ -2826,6 +3037,10 @@ def main():
         "scenariosRun": vsp_analysis.get("scenariosRun", 0),
         "bestStrategy": vsp_analysis.get("bestStrategyLabel", "balanced"),
         "costSpreadPct": vsp_analysis.get("costSpreadPct", 0),
+        "deadheadMatrixPairs": dh_pairs,
+        "fleetCap": fleet_cap,
+        "fleetInfeasibility": fleet_infeasibility,
+        "depotAssignment": depot_assignment,
     }
 
     report_progress("VSP", 95, "Writing output...")
