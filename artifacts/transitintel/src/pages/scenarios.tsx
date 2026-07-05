@@ -12,7 +12,7 @@ import {
   Ruler, BarChart3, AlertTriangle, CheckCircle2, Info, Play, Clock, Truck, Settings2, Save,
   Ship, Bus, Car, Plane, Zap, MapPinned, Timer, TrainFront,
   Download, Package, CalendarDays, ShieldCheck, CalendarX2, GripVertical, RefreshCw,
-  FolderInput, CheckCircle,
+  FolderInput, CheckCircle, FileDown,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -28,6 +28,7 @@ import {
   POI_CATEGORY_IT, POI_COLOR, POI_ICON, POI_SVG_PATHS,
   renderPoiIcon, DEFAULT_PDE_CONFIG,
 } from "./scenarios/constants";
+import { openReportWindow, exportScenarioReport, exportComparisonReport } from "./scenarios/scenario-report";
 
 // ─── Import di percorsi già a sistema (Planner Studio) ───────────────────
 interface ImportVariant { variantId: string; name: string; direction: number; headsign: string | null; stopCount: number; distanceKm: number | null; }
@@ -368,6 +369,48 @@ export default function ScenariosPage() {
       setCompareLoading(false);
     }
   }, [selectedForCompare, analysisRadius]);
+
+  // ── Report analisi (PDF stampabile) ──
+  const [reportLoading, setReportLoading] = useState(false);
+  const loadGeojson = useCallback(async (id: string): Promise<any> => {
+    if (loadedScenariosRef.current[id]?.geojson) return loadedScenariosRef.current[id].geojson;
+    const full = await apiFetch<any>(`/api/scenarios/${id}`);
+    setLoadedScenarios(prev => ({ ...prev, [id]: full }));
+    return full.geojson;
+  }, []);
+  const openSingleReport = useCallback(async () => {
+    const id = analysisResult?.scenario?.id;
+    if (!id) return;
+    const win = openReportWindow();
+    if (!win) return;
+    setReportLoading(true);
+    try {
+      const [deep, geojson] = await Promise.all([
+        apiFetch<any>(`/api/scenarios/${id}/deep?radius=${analysisRadius}&iso=1`),
+        loadGeojson(id),
+      ]);
+      await exportScenarioReport(win, deep, geojson, { radius: analysisRadius });
+    } catch (err: any) {
+      try { win.close(); } catch { /* noop */ }
+      alert(`Errore nella generazione del report: ${err.message}`);
+    } finally { setReportLoading(false); }
+  }, [analysisResult, analysisRadius, loadGeojson]);
+  const openCompareReport = useCallback(async () => {
+    const ids = compareResult?.scenarios?.map(s => s.id) ?? [];
+    if (ids.length < 2) return;
+    const win = openReportWindow();
+    if (!win) return;
+    setReportLoading(true);
+    try {
+      const deeps = await Promise.all(ids.map(id => apiFetch<any>(`/api/scenarios/${id}/deep?radius=${analysisRadius}&iso=1`).catch(() => null)));
+      const geos = await Promise.all(ids.map(id => loadGeojson(id).catch(() => null)));
+      const scenarios = (compareResult!.scenarios).map((s, i) => ({ name: s.name, color: s.color, geojson: geos[i], deep: deeps[i] }));
+      await exportComparisonReport(win, compareResult, scenarios);
+    } catch (err: any) {
+      try { win.close(); } catch { /* noop */ }
+      alert(`Errore nella generazione del report: ${err.message}`);
+    } finally { setReportLoading(false); }
+  }, [compareResult, analysisRadius, loadGeojson]);
 
   // ── PdE functions ──
   const openPdePanel = useCallback(async (scenarioId: string) => {
@@ -1121,9 +1164,18 @@ export default function ScenariosPage() {
                   {compareResult ? <GitCompareArrows className="w-4 h-4 text-amber-400" /> : <BarChart3 className="w-4 h-4 text-primary" />}
                   {compareResult ? "Confronto Scenari" : "Analisi Scenario"}
                 </span>
-                <button onClick={() => setAnalysisPanelOpen(false)} className="text-muted-foreground hover:text-foreground">
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-2">
+                  {(analysisResult || compareResult) && !analysisLoading && !compareLoading && (
+                    <button onClick={compareResult ? openCompareReport : openSingleReport} disabled={reportLoading}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/15 hover:bg-primary/25 text-primary text-xs font-semibold border border-primary/30 disabled:opacity-50">
+                      {reportLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
+                      Report PDF
+                    </button>
+                  )}
+                  <button onClick={() => setAnalysisPanelOpen(false)} className="text-muted-foreground hover:text-foreground">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <CardContent className="p-4 max-h-[50vh] overflow-y-auto">
