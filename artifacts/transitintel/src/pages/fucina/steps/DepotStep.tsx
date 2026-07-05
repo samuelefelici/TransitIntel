@@ -36,7 +36,17 @@ interface Depot {
   notes: string | null;
 }
 
-export interface SelectedDepot { id: string; maxVehicles: number | null }
+// fleet: veicoli disponibili per TIPOLOGIA nel deposito (opzionale, chiave =
+// tipo veicolo usato nel run: pollicino/10m/12m/autosnodato). Vuoto = nessun
+// vincolo per tipo, resta solo maxVehicles totale.
+export interface SelectedDepot { id: string; maxVehicles: number | null; fleet?: Record<string, number> }
+
+const FLEET_TYPES: { key: string; label: string }[] = [
+  { key: "pollicino",   label: "Pollicino" },
+  { key: "10m",         label: "10 m" },
+  { key: "12m",         label: "12 m" },
+  { key: "autosnodato", label: "Snodato" },
+];
 
 interface Props {
   initial?: SelectedDepot[] | null;  // depositi preselezionati (rientro dallo step successivo)
@@ -51,6 +61,10 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
   // Selezione MULTIPLA: depotId → max veicoli (capacità). null = nessun limite.
   const [selected, setSelected] = useState<Map<string, number | null>>(
     () => new globalThis.Map((initial ?? []).map(d => [d.id, d.maxVehicles])),
+  );
+  // Flotta per TIPOLOGIA per deposito (opzionale): depotId → { tipo → n }.
+  const [fleets, setFleets] = useState<Map<string, Record<string, number>>>(
+    () => new globalThis.Map((initial ?? []).filter(d => d.fleet).map(d => [d.id, d.fleet!])),
   );
   const [popupId, setPopupId] = useState<string | null>(null);
   const mapRef = useRef<MapRef>(null);
@@ -92,17 +106,33 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
   const toggle = (d: Depot) => {
     setSelected(prev => {
       const n = new globalThis.Map(prev);
-      if (n.has(d.id)) n.delete(d.id);
-      else { n.set(d.id, d.capacity ?? null); flyTo(d); }
+      if (n.has(d.id)) {
+        n.delete(d.id);
+        setFleets(f => { const m = new globalThis.Map(f); m.delete(d.id); return m; });
+      } else { n.set(d.id, d.capacity ?? null); flyTo(d); }
       return n;
     });
   };
   const setCap = (id: string, v: number | null) => {
     setSelected(prev => { const n = new globalThis.Map(prev); if (n.has(id)) n.set(id, v); return n; });
   };
+  const setFleetType = (id: string, type: string, v: number | null) => {
+    setFleets(prev => {
+      const n = new globalThis.Map(prev);
+      const cur = { ...(n.get(id) ?? {}) };
+      if (v == null) delete cur[type];
+      else cur[type] = Math.max(0, Math.floor(v));
+      if (Object.keys(cur).length === 0) n.delete(id);
+      else n.set(id, cur);
+      return n;
+    });
+  };
   const confirm = () => {
     if (selected.size === 0) return;
-    onComplete([...selected].map(([id, maxVehicles]) => ({ id, maxVehicles })));
+    onComplete([...selected].map(([id, maxVehicles]) => {
+      const fleet = fleets.get(id);
+      return { id, maxVehicles, ...(fleet && Object.keys(fleet).length > 0 ? { fleet } : {}) };
+    }));
   };
 
   /* ── Render ── */
@@ -383,16 +413,42 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
 
                             {/* Capacità max veicoli per questo deposito (solo se selezionato) */}
                             {selected.has(d.id) && (
-                              <div className="flex items-center gap-1.5 mt-1.5" onClick={e => e.stopPropagation()}>
-                                <Truck className="w-3 h-3 text-orange-400/70 shrink-0" />
-                                <span className="text-[9px] text-muted-foreground">Max veicoli:</span>
-                                <input
-                                  type="number" min={0} inputMode="numeric"
-                                  value={selected.get(d.id) ?? ""}
-                                  placeholder="∞"
-                                  onChange={e => { const v = e.target.value; setCap(d.id, v === "" ? null : Math.max(0, Number(v))); }}
-                                  className="w-16 text-[11px] bg-background border border-border/50 rounded px-1.5 py-0.5 focus:outline-none focus:border-orange-500/50"
-                                />
+                              <div className="mt-1.5 space-y-1.5" onClick={e => e.stopPropagation()}>
+                                <div className="flex items-center gap-1.5">
+                                  <Truck className="w-3 h-3 text-orange-400/70 shrink-0" />
+                                  <span className="text-[9px] text-muted-foreground">Max veicoli:</span>
+                                  <input
+                                    type="number" min={0} inputMode="numeric"
+                                    value={selected.get(d.id) ?? ""}
+                                    placeholder="∞"
+                                    onChange={e => { const v = e.target.value; setCap(d.id, v === "" ? null : Math.max(0, Number(v))); }}
+                                    className="w-16 text-[11px] bg-background border border-border/50 rounded px-1.5 py-0.5 focus:outline-none focus:border-orange-500/50"
+                                  />
+                                </div>
+                                {/* Flotta per tipologia (opzionale): vincolo HARD per tipo veicolo */}
+                                <details className="text-[9px] text-muted-foreground select-none">
+                                  <summary className="cursor-pointer hover:text-foreground/80">
+                                    Flotta per tipologia{fleets.has(d.id) ? ` · ${Object.entries(fleets.get(d.id)!).map(([t, n]) => `${n}×${t}`).join(" ")}` : " (opzionale)"}
+                                  </summary>
+                                  <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                                    {FLEET_TYPES.map(ft => (
+                                      <label key={ft.key} className="flex items-center gap-1">
+                                        <span className="w-14 shrink-0">{ft.label}</span>
+                                        <input
+                                          type="number" min={0} inputMode="numeric"
+                                          value={fleets.get(d.id)?.[ft.key] ?? ""}
+                                          placeholder="—"
+                                          onChange={e => { const v = e.target.value; setFleetType(d.id, ft.key, v === "" ? null : Number(v)); }}
+                                          className="w-12 text-[10px] bg-background border border-border/50 rounded px-1 py-0.5 focus:outline-none focus:border-orange-500/50"
+                                        />
+                                      </label>
+                                    ))}
+                                  </div>
+                                  <p className="mt-1 text-[8px] text-muted-foreground/60">
+                                    Se compili la flotta, quella è la dotazione del deposito: i tipi non
+                                    indicati valgono 0. Lascia tutto vuoto per nessun vincolo di tipologia.
+                                  </p>
+                                </details>
                               </div>
                             )}
 

@@ -1508,7 +1508,7 @@ async function runCPSATVehicleScheduler(
   extraConfig?: Record<string, any>,
   routeDetails?: { routeId: string; routeName: string }[],
   psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
-  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[],
+  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[],
   deadheadKm?: Record<string, number>,
 ): Promise<any> {
   return spawnPythonJson("vehicle_scheduler_cpsat.py", [String(timeLimitSec)], {
@@ -1603,19 +1603,30 @@ function assignResidenzaToShifts(
   return counts;
 }
 
-/** Selezione depositi dall'input ottimizzatore: ids consentiti + capacità (max veicoli). */
-function parseDepotSelection(raw: any): { ids: Set<string>; caps: Map<string, number> } | null {
+/** Selezione depositi dall'input ottimizzatore: ids consentiti + capacità (max
+ *  veicoli totali e, opzionale, flotta per TIPOLOGIA di veicolo). */
+function parseDepotSelection(raw: any): { ids: Set<string>; caps: Map<string, number>; fleets: Map<string, Record<string, number>> } | null {
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const ids = new Set<string>();
   const caps = new Map<string, number>();
+  const fleets = new Map<string, Record<string, number>>();
   for (const d of raw) {
     if (d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id)) {
       ids.add(d.id);
       const mv = Number(d.maxVehicles);
       if (Number.isFinite(mv) && mv > 0) caps.set(d.id, mv);
+      // flotta per tipologia: { "12m": 10, "autosnodato": 3, ... }
+      if (d.fleet && typeof d.fleet === "object" && !Array.isArray(d.fleet)) {
+        const clean: Record<string, number> = {};
+        for (const [vt, n] of Object.entries(d.fleet)) {
+          const num = Number(n);
+          if (typeof vt === "string" && vt.length <= 20 && Number.isFinite(num) && num >= 0) clean[vt] = Math.floor(num);
+        }
+        if (Object.keys(clean).length > 0) fleets.set(d.id, clean);
+      }
     }
   }
-  return ids.size > 0 ? { ids, caps } : null;
+  return ids.size > 0 ? { ids, caps, fleets } : null;
 }
 
 /** Advisory "cap morbido": segnala i depositi che superano la capacità indicata. */
@@ -1909,12 +1920,14 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     const allDepots = await loadDepotPoints();
     const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
 
-    let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null }[] | undefined;
+    let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[] | undefined;
     let deadheadKm: Record<string, number> | undefined;
     if (depotSel && depotPoints.length > 0) {
       depotsForPy = depotPoints.map(d => ({
         id: d.id, name: d.name, color: d.color, lat: d.lat, lon: d.lon,
         maxVehicles: depotSel.caps.get(d.id) ?? null,
+        // flotta per TIPOLOGIA di veicolo (vincolo hard nella domiciliazione)
+        ...(depotSel.fleets.get(d.id) ? { fleet: depotSel.fleets.get(d.id) } : {}),
       }));
       try {
         const depotNodes: DHNode[] = depotPoints.map(d => ({ lat: d.lat, lon: d.lon }));
@@ -1962,6 +1975,21 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       req.log.info(`VSP robustezza=${robustnessLevel}: profilo ritardi su ${Object.keys(delayByHour).length} fasce orarie${Object.keys(delayByHour).length === 0 ? " (default)" : " (traffico reale)"}`);
     }
 
+    // 5e. NORMATIVA VSP (MAIOR-style): cambi linea, tripper, sosta capolinea,
+    // max pezzi, vuoti interni. Whitelist dei campi accettati dal solver.
+    let normativaCfg: Record<string, any> | undefined;
+    const rawNorm = (body as any).vspNormativa;
+    if (rawNorm && typeof rawNorm === "object") {
+      const n: Record<string, any> = {};
+      for (const k of ["costoCambioLinea", "maxCambiLinea", "maxPezziPerBlocco", "costoTripper", "tripperServizioMinMin", "maxSostaCapolineaMin"]) {
+        const v = Number(rawNorm[k]);
+        if (rawNorm[k] !== undefined && rawNorm[k] !== null && rawNorm[k] !== "" && Number.isFinite(v)) n[k] = v;
+      }
+      if (rawNorm.vietaCambiLinea) n.vietaCambiLinea = true;
+      if (rawNorm.vietaVuotiInterni) n.vietaVuotiInterni = true;
+      if (Object.keys(n).length > 0) normativaCfg = n;
+    }
+
     // 6. Spawn Python solver (CP-SAT puro, oppure orchestratore VCSP)
     const vspExtraConfig = {
       vehicleCosts: body.vehicleCosts || {},
@@ -1970,6 +1998,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
       // Robustezza ai ritardi (buffer δ data-driven)
       ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
+      // Normativa VSP (MAIOR-style)
+      ...(normativaCfg ? { normativa: normativaCfg } : {}),
     };
     let cpResult: any;
     if (mode === "vcsp") {

@@ -127,6 +127,48 @@ class VehicleCostRates:
     # Soglia sotto la quale il deadhead è trascurabile
     min_deadhead_km: float = 0.5
 
+    # ── NORMATIVA VSP (MAIOR-style, Manuale normativa VS §4.7/§6) ──
+    # Tutti opzionali: default = regola disattiva. Config: config.normativa.
+    # VINCOLO_CAMBI_LINEA — costo per ogni cambio linea nel blocco + tetto hard
+    cost_per_line_change: float = 0.0
+    max_line_changes: int = -1            # -1 = illimitato
+    # VIETA_CAMBI_LINEA — nessun cambio linea nei blocchi
+    forbid_line_changes: bool = False
+    # VIETA_VAV_INTERNI — nessun vuoto interno (solo capolinea coincidenti)
+    forbid_internal_deadheads: bool = False
+    # VINCOLO_NUMERO_PEZZI — max corse per blocco
+    max_pieces_per_block: int = -1        # -1 = illimitato
+    # Costo TRIPPER — penalità per blocchi "ritaglio" (1 corsa o servizio corto)
+    tripper_cost: float = 0.0
+    tripper_min_service_min: int = 120
+
+    def apply_normativa(self, norm: dict | None) -> list[str]:
+        """Applica config.normativa (chiavi JS) e ritorna le regole attive (log)."""
+        if not isinstance(norm, dict) or not norm:
+            return []
+        active: list[str] = []
+        def _num(key, attr, cast=float, label=None):
+            if key in norm and norm[key] is not None:
+                try:
+                    setattr(self, attr, cast(norm[key]))
+                    active.append(label or f"{key}={norm[key]}")
+                except (TypeError, ValueError):
+                    pass
+        _num("costoCambioLinea", "cost_per_line_change", float, None)
+        _num("maxCambiLinea", "max_line_changes", int, None)
+        _num("maxPezziPerBlocco", "max_pieces_per_block", int, None)
+        _num("costoTripper", "tripper_cost", float, None)
+        _num("tripperServizioMinMin", "tripper_min_service_min", int, None)
+        # SOSTA_CAPOLINEA — sosta massima al capolinea (oltre → rientro deposito)
+        _num("maxSostaCapolineaMin", "max_idle_at_terminal", int, None)
+        if norm.get("vietaCambiLinea"):
+            self.forbid_line_changes = True
+            active.append("vietaCambiLinea")
+        if norm.get("vietaVuotiInterni"):
+            self.forbid_internal_deadheads = True
+            active.append("vietaVuotiInterni")
+        return active
+
     @classmethod
     def from_config(cls, cfg: dict | None) -> "VehicleCostRates":
         """Crea VehicleCostRates da config operatore JSON (merge con default)."""
@@ -176,6 +218,7 @@ class VehicleShiftCost:
     gap_penalty: float = 0.0
     downsize_penalty: float = 0.0
     vcsp_penalty: float = 0.0    # feedback CSP (costo-ombra turni guida)
+    normativa_cost: float = 0.0  # cambi linea, tripper, violazioni hard (MAIOR-style)
     total: float = 0.0
 
     def compute(self) -> float:
@@ -183,7 +226,7 @@ class VehicleShiftCost:
             self.fixed_daily + self.service_km_cost + self.deadhead_km_cost
             + self.idle_cost + self.depot_return_cost
             + self.balance_penalty + self.gap_penalty + self.downsize_penalty
-            + self.vcsp_penalty
+            + self.vcsp_penalty + self.normativa_cost
         )
         return self.total
 
@@ -198,6 +241,7 @@ class VehicleShiftCost:
             "gapPenalty": round(self.gap_penalty, 2),
             "downsizePenalty": round(self.downsize_penalty, 2),
             "vcspPenalty": round(self.vcsp_penalty, 2),
+            "normativaCost": round(self.normativa_cost, 2),
             "total": round(self.total, 2),
         }
 
