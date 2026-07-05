@@ -103,6 +103,11 @@ async function ensureRosterTables(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_day ON roster_entries(day)`);
+  // `source` traccia l'origine di una voce generata (es. "rotazione:<uuid>"):
+  // permette la rigenerazione idempotente (cancella per source + reinserisci) a
+  // fronte di variazioni (nuovo conducente, cambio rotazione…). NULL = manuale.
+  await db.execute(sql`ALTER TABLE roster_entries ADD COLUMN IF NOT EXISTS source text`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_source ON roster_entries(source)`);
   bootstrapped = true;
 }
 
@@ -336,20 +341,117 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /roster/drivers/seed — genera operatori fittizi "Autista 01..N"
+// ── Generatore anagrafica fittizia (dati falsi, coerenti) ─────────────────────
+const FAKE_COGNOMI = [
+  "Rossi", "Bianchi", "Ferrari", "Russo", "Romano", "Gallo", "Costa", "Fontana",
+  "Conti", "Esposito", "Ricci", "Bruno", "De Luca", "Moretti", "Marino", "Greco",
+  "Barbieri", "Lombardi", "Giordano", "Rizzo", "Colombo", "Mancini", "Longo",
+  "Leone", "Martinelli", "Marchetti", "Serra", "Vitale", "Caruso", "Ferrara",
+  "Galli", "Martini", "Pellegrini", "Palumbo", "Sanna", "Farina", "Rinaldi",
+  "Villa", "Monti", "Cattaneo",
+];
+const FAKE_NOMI_M = [
+  "Marco", "Luca", "Andrea", "Francesco", "Alessandro", "Matteo", "Davide",
+  "Stefano", "Simone", "Giuseppe", "Antonio", "Giovanni", "Roberto", "Paolo",
+  "Fabio", "Michele", "Riccardo", "Emanuele", "Daniele", "Nicola",
+];
+const FAKE_NOMI_F = [
+  "Giulia", "Sara", "Martina", "Chiara", "Francesca", "Alessia", "Valentina",
+  "Federica", "Elena", "Silvia", "Laura", "Anna", "Elisa", "Marta", "Serena",
+];
+// Depositi dell'azienda (residenza di servizio). "depositi diversi".
+const FAKE_DEPOSITI = ["Ancona", "Jesi", "Senigallia", "Falconara", "Fabriano", "Osimo"];
+const FAKE_CATEGORIE = ["Autista", "Autista", "Autista", "Verificatore", "Manovratore"];
+const FAKE_ORE = [39, 39, 39, 38, 24];
+const _pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]!;
+const _pad = (n: number, w: number) => String(n).padStart(w, "0");
+/** Data casuale (YYYY-MM-DD) tra due anni interi inclusi. */
+function _fakeDate(yearFrom: number, yearTo: number): string {
+  const y = yearFrom + Math.floor(Math.random() * (yearTo - yearFrom + 1));
+  const m = 1 + Math.floor(Math.random() * 12);
+  const d = 1 + Math.floor(Math.random() * 28);
+  return `${y}-${_pad(m, 2)}-${_pad(d, 2)}`;
+}
+/** Codice fiscale plausibile (NON valido: solo formato, dato fittizio). */
+function _fakeCF(cognome: string, nome: string): string {
+  const cons = (s: string) => s.toUpperCase().replace(/[^A-Z]/g, "").replace(/[AEIOU]/g, "");
+  const c3 = (cons(cognome) + "XXX").slice(0, 3);
+  const n3 = (cons(nome) + "XXX").slice(0, 3);
+  const yy = _pad(50 + Math.floor(Math.random() * 50), 2);
+  const mm = "ABCDEHLMPRST"[Math.floor(Math.random() * 12)];
+  const dd = _pad(1 + Math.floor(Math.random() * 28), 2);
+  const cat = "ABCDEFGHILMNPRSTZ";
+  const catcode = cat[Math.floor(Math.random() * cat.length)] + _pad(100 + Math.floor(Math.random() * 899), 3);
+  const chk = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
+  return `${c3}${n3}${yy}${mm}${dd}${catcode}${chk}`;
+}
+
+// POST /roster/drivers/seed — genera N operatori fittizi con anagrafica ricca
+// (cognome/nome/CF/cellulare/categoria/deposito/abilitazioni) e depositi diversi.
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
     const count = Math.min(Math.max(Number(req.body?.count) || 10, 1), 200);
-    const existing = await db.execute<any>(sql`SELECT name FROM roster_drivers`);
-    const names = new Set(existing.rows.map((r: any) => r.name));
+    const existing = await db.execute<any>(sql`SELECT badge FROM roster_drivers WHERE badge LIKE 'FIT-%'`);
+    const usedBadges = new Set(existing.rows.map((r: any) => r.badge));
+    // prossima matricola libera
+    let nextN = 1;
+    while (usedBadges.has(`FIT-${_pad(nextN, 3)}`)) nextN++;
+
     let created = 0;
-    for (let i = 1; created < count && i <= 999; i++) {
-      const name = `Autista ${String(i).padStart(2, "0")}`;
-      if (names.has(name)) continue;
-      await db.execute(sql`
-        INSERT INTO roster_drivers (name, badge, is_fictitious)
-        VALUES (${name}, ${`FIT-${String(i).padStart(3, "0")}`}, true)
+    for (let k = 0; created < count && k < count + 400; k++) {
+      const badge = `FIT-${_pad(nextN, 3)}`;
+      nextN++;
+      if (usedBadges.has(badge)) continue;
+
+      const female = Math.random() < 0.25;
+      const cognome = _pick(FAKE_COGNOMI);
+      const nome = female ? _pick(FAKE_NOMI_F) : _pick(FAKE_NOMI_M);
+      const name = `${cognome} ${nome}`;
+      const cf = _fakeCF(cognome, nome);
+      const cellulare = `3${_pick([2, 3, 4, 6, 8])}${_pad(Math.floor(Math.random() * 10000000), 7)}`;
+      const deposito = _pick(FAKE_DEPOSITI);
+      const idx = Math.floor(Math.random() * FAKE_CATEGORIE.length);
+      const categoria = FAKE_CATEGORIE[idx]!;
+      const ore = FAKE_ORE[idx]!;
+      const dataNascita = _fakeDate(1968, 2000);
+      const dataAssunzione = _fakeDate(2005, 2024);
+      const patenteValidita = _fakeDate(2026, 2031);
+      const cqcValidita = _fakeDate(2026, 2030);
+      const visitaFerrovie = _fakeDate(2026, 2028);
+      const visitaMedico = _fakeDate(2026, 2028);
+      // 1–3 abilitazioni casuali (sempre almeno "autobus")
+      const abil = new Set<string>(["autobus"]);
+      const nExtra = Math.floor(Math.random() * 3);
+      for (let j = 0; j < nExtra; j++) abil.add(_pick(ABILITAZIONI));
+      if (categoria === "Verificatore") abil.add("verificatore");
+      const abilLit = `{${[...abil].join(",")}}`;
+
+      const ins = await db.execute<any>(sql`
+        INSERT INTO roster_drivers (
+          name, badge, is_fictitious, cognome, nome, matricola, cf, cellulare,
+          residenza_servizio, residenza_anagrafica, categoria, ore_settimanali,
+          data_nascita, data_assunzione, patente, patente_validita,
+          cqc_numero, cqc_validita, visita_ferrovie_validita, visita_medico_competente_validita,
+          abilitazioni
+        ) VALUES (
+          ${name}, ${badge}, true, ${cognome}, ${nome}, ${badge.replace("FIT-", "")}, ${cf}, ${cellulare},
+          ${deposito}, ${deposito}, ${categoria}, ${ore},
+          ${dataNascita}::date, ${dataAssunzione}::date, ${"D-CQC"}, ${patenteValidita}::date,
+          ${`CQC${_pad(100000 + Math.floor(Math.random() * 899999), 6)}`}, ${cqcValidita}::date,
+          ${visitaFerrovie}::date, ${visitaMedico}::date,
+          ${abilLit}::text[]
+        ) RETURNING id
       `);
+      const driverId = ins.rows[0]?.id;
+      // Storico: deposito + categoria a partire dall'assunzione.
+      if (driverId) {
+        await db.execute(sql`
+          INSERT INTO roster_driver_history (driver_id, kind, value, event_date)
+          VALUES (${driverId}::uuid, 'deposito', ${deposito}, ${dataAssunzione}::date),
+                 (${driverId}::uuid, 'categoria', ${categoria}, ${dataAssunzione}::date)
+        `);
+      }
+      usedBadges.add(badge);
       created++;
     }
     res.json({ ok: true, created });
@@ -519,7 +621,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
 
     // Voci Assenza/Presenza nel range (indipendenti dal DSS selezionato).
     const entriesQ = await db.execute<any>(sql`
-      SELECT id, driver_id, day::text AS day, category, code
+      SELECT id, driver_id, day::text AS day, category, code, source
         FROM roster_entries
        WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
     `);
@@ -534,6 +636,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       })),
       entries: entriesQ.rows.map((e: any) => ({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
+        source: e.source ?? null,
       })),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }

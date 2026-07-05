@@ -6,10 +6,10 @@
  * l'assistente automatico (OR-Tools) che, dati domanda e vincoli, propone i
  * pattern migliori; scegliendone uno la griglia si compila da sola.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { X, Save, Loader2, Plus, Minus, Wand2, Trash2, CalendarDays, ChevronRight } from "lucide-react";
+import { X, Save, Loader2, Plus, Minus, Wand2, Trash2, CalendarDays, ChevronRight, Users, Check } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 const GIORNI = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
@@ -299,7 +299,7 @@ export function RotazioniRiposiListDialog({ onClose }: { onClose: () => void }) 
   );
 }
 
-function MiniGrid({ grid }: { grid: Grid }) {
+export function MiniGrid({ grid, highlight }: { grid: Grid; highlight?: number }) {
   return (
     <div className="overflow-auto">
       <table className="border-collapse text-[10px]">
@@ -309,8 +309,8 @@ function MiniGrid({ grid }: { grid: Grid }) {
         </tr></thead>
         <tbody>
           {grid.map((week, w) => (
-            <tr key={w}>
-              <td className="px-1 text-slate-600 font-mono">{w + 1}</td>
+            <tr key={w} className={highlight === w ? "bg-violet-500/15" : ""}>
+              <td className={`px-1 font-mono ${highlight === w ? "text-violet-300 font-bold" : "text-slate-600"}`}>{w + 1}{highlight === w && " ◄"}</td>
               {week.map((c, d) => (
                 <td key={d} className="px-0.5 py-0.5">
                   <span className={`inline-flex w-6 h-5 items-center justify-center rounded text-[9px] font-bold ${
@@ -322,6 +322,328 @@ function MiniGrid({ grid }: { grid: Grid }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ══════════════════ Dialog ASSEGNA ROTAZIONI (scaglioni) ══════════════════ */
+interface PickerDriver {
+  id: string; name: string; cognome: string | null; nome: string | null;
+  badge: string | null; residenzaServizio: string | null; categoria: string | null;
+}
+const restDays = (week: (string | null)[]) => week.map((c, i) => c ? GIORNI[i] : null).filter(Boolean).join(" ");
+
+export function AssegnaRotazioniDialog({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const rotQ = useQuery({
+    queryKey: ["roster", "rotazioni-riposi"],
+    queryFn: () => apiFetch<{ rotazioni: Rotazione[] }>("/api/roster/rotazioni-riposi").then((r) => r.rotazioni),
+  });
+  const drvQ = useQuery({
+    queryKey: ["roster", "drivers"],
+    queryFn: () => apiFetch<{ drivers: PickerDriver[] }>("/api/roster/drivers").then((r) => r.drivers),
+  });
+  const rotazioni = rotQ.data ?? [];
+  const drivers = drvQ.data ?? [];
+  const [rotId, setRotId] = useState<string>("");
+  const rot = rotazioni.find((r) => r.id === rotId) ?? null;
+
+  // assign: driverId → weekIndex (scaglione). Caricato dal server, editabile localmente.
+  const [assign, setAssign] = useState<Record<string, number>>({});
+  const asgQ = useQuery({
+    enabled: !!rotId,
+    queryKey: ["roster", "assegnazioni", rotId],
+    queryFn: () => apiFetch<{ assegnazioni: Array<{ weekIndex: number; driverId: string }> }>(`/api/roster/rotazioni-riposi/${rotId}/assegnazioni`).then((r) => r.assegnazioni),
+  });
+  // sincronizza lo stato locale quando cambia rotazione / arrivano i dati
+  const loadedKey = useRef<string>("");
+  useEffect(() => {
+    if (!rotId || !asgQ.data) return;
+    const key = `${rotId}:${asgQ.dataUpdatedAt}`;
+    if (loadedKey.current === key) return;
+    loadedKey.current = key;
+    const m: Record<string, number> = {};
+    for (const a of asgQ.data) m[a.driverId] = a.weekIndex;
+    setAssign(m);
+  }, [rotId, asgQ.data, asgQ.dataUpdatedAt]);
+
+  const [pickerWeek, setPickerWeek] = useState<number | null>(null);
+
+  const saveMut = useMutation({
+    mutationFn: () => apiFetch(`/api/roster/rotazioni-riposi/${rotId}/assegnazioni`, {
+      method: "PUT",
+      body: JSON.stringify({ assignments: Object.entries(assign).map(([driverId, weekIndex]) => ({ driverId, weekIndex })) }),
+    }),
+    onSuccess: () => {
+      toast.success("Assegnazioni salvate — la cadenza compare nei dati di ogni conducente");
+      qc.invalidateQueries({ queryKey: ["roster", "assegnazioni", rotId] });
+      qc.invalidateQueries({ queryKey: ["roster", "cadenze"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const driverById = useMemo(() => new Map(drivers.map((d) => [d.id, d])), [drivers]);
+  const assignedCount = Object.keys(assign).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col text-slate-100">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
+          <div className="text-sm font-semibold flex items-center gap-2"><Users className="w-4 h-4 text-violet-400" /> Assegna rotazioni — scaglioni</div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-5 space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="block flex-1 min-w-[240px]"><span className={LBL}>Rotazione riposi</span>
+              <select className={`${TEXT} w-full`} value={rotId} onChange={(e) => { setRotId(e.target.value); setAssign({}); loadedKey.current = ""; }}>
+                <option value="">— scegli una rotazione —</option>
+                {rotazioni.map((r) => <option key={r.id} value={r.id}>{r.name} · {r.weeks} sett.</option>)}
+              </select>
+            </label>
+            {rot && <span className="text-[11px] text-slate-500 pb-1.5">{assignedCount} conducenti assegnati su {drivers.length}</span>}
+          </div>
+
+          {!rot ? (
+            <div className="text-center text-slate-500 text-sm py-10">
+              Scegli una rotazione. Poi, per ogni <b>settimana</b> (scaglione), aggiungi il gruppo di conducenti che parte da quella riga.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-[12px] text-slate-400">
+                Ogni riga è uno <b>scaglione</b>: i conducenti aggiunti partono da quella settimana del ciclo e avanzano di una
+                settimana alla volta. Un conducente può stare in un solo scaglione.
+              </p>
+              {rot.pattern.map((week, w) => {
+                const members = Object.entries(assign).filter(([, wi]) => wi === w).map(([id]) => id);
+                return (
+                  <div key={w} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-violet-500/20 text-violet-300 text-xs font-bold">{w + 1}</span>
+                      <span className="text-sm font-semibold">Scaglione {w + 1}</span>
+                      <span className="text-[11px] text-slate-500">riposi: {restDays(week) || "—"}</span>
+                      <span className="text-[11px] text-slate-500">· {members.length} conducenti</span>
+                      <button onClick={() => setPickerWeek(w)}
+                        className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-violet-600 text-white text-xs hover:bg-violet-500">
+                        <Plus className="w-3.5 h-3.5" /> Aggiungi
+                      </button>
+                    </div>
+                    {members.length === 0 ? (
+                      <div className="text-[11px] text-slate-600 italic">Nessun conducente in questo scaglione.</div>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {members.map((id) => {
+                          const d = driverById.get(id);
+                          return (
+                            <span key={id} className="inline-flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-xs">
+                              <span className="font-medium">{d?.name ?? id.slice(0, 8)}</span>
+                              {d?.residenzaServizio && <span className="text-[10px] text-slate-500">{d.residenzaServizio}</span>}
+                              <button onClick={() => setAssign((a) => { const n = { ...a }; delete n[id]; return n; })}
+                                className="p-0.5 rounded-full text-slate-500 hover:text-rose-400 hover:bg-slate-700"><X className="w-3 h-3" /></button>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-800">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Chiudi</button>
+          <button onClick={() => saveMut.mutate()} disabled={!rot || saveMut.isPending}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {saveMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Salva assegnazioni
+          </button>
+        </div>
+      </div>
+
+      {pickerWeek !== null && rot && (
+        <DriverPicker
+          drivers={drivers}
+          assign={assign}
+          targetWeek={pickerWeek}
+          onClose={() => setPickerWeek(null)}
+          onConfirm={(ids) => {
+            setAssign((a) => { const n = { ...a }; for (const id of ids) n[id] = pickerWeek; return n; });
+            setPickerWeek(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ─── Selettore conducenti (filtrabile per deposito) ─── */
+function DriverPicker({ drivers, assign, targetWeek, onClose, onConfirm }: {
+  drivers: PickerDriver[]; assign: Record<string, number>; targetWeek: number;
+  onClose: () => void; onConfirm: (ids: string[]) => void;
+}) {
+  const depots = useMemo(() => [...new Set(drivers.map((d) => d.residenzaServizio).filter(Boolean))].sort() as string[], [drivers]);
+  const [depot, setDepot] = useState("");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState<Set<string>>(new Set());
+
+  const filtered = drivers.filter((d) => {
+    if (depot && d.residenzaServizio !== depot) return false;
+    if (q && !`${d.name} ${d.badge ?? ""}`.toLowerCase().includes(q.toLowerCase())) return false;
+    return true;
+  });
+  const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allVisible = () => setSel((s) => { const n = new Set(s); filtered.forEach((d) => n.add(d.id)); return n; });
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4" onClick={onClose}>
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col text-slate-100" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+          <div className="text-sm font-semibold">Aggiungi conducenti allo scaglione {targetWeek + 1}</div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="px-4 py-3 border-b border-slate-800 flex flex-wrap items-end gap-2">
+          <label className="block"><span className={LBL}>Deposito</span>
+            <select className={`${TEXT} w-40`} value={depot} onChange={(e) => setDepot(e.target.value)}>
+              <option value="">Tutti i depositi</option>
+              {depots.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </label>
+          <label className="block flex-1 min-w-[140px]"><span className={LBL}>Cerca</span>
+            <input className={`${TEXT} w-full`} value={q} onChange={(e) => setQ(e.target.value)} placeholder="cognome, matricola…" />
+          </label>
+          <button onClick={allVisible} className="px-2.5 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">Seleziona tutti</button>
+        </div>
+        <div className="flex-1 overflow-auto p-2 space-y-1">
+          {filtered.length === 0 ? (
+            <div className="text-center text-slate-600 text-sm py-8">Nessun conducente.</div>
+          ) : filtered.map((d) => {
+            const cur = assign[d.id];
+            const inThis = cur === targetWeek;
+            const inOther = cur != null && cur !== targetWeek;
+            const on = sel.has(d.id);
+            return (
+              <button key={d.id} onClick={() => toggle(d.id)}
+                className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg border text-left text-xs ${
+                  on ? "border-violet-500 bg-violet-500/10" : "border-slate-800 hover:bg-slate-800/50"
+                }`}>
+                <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${on ? "bg-violet-500 border-violet-500" : "border-slate-600"}`}>
+                  {on && <Check className="w-3 h-3 text-white" />}
+                </span>
+                <span className="font-medium flex-1 min-w-0 truncate">{d.name}</span>
+                {d.categoria && <span className="text-[10px] text-slate-500">{d.categoria}</span>}
+                {d.residenzaServizio && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">{d.residenzaServizio}</span>}
+                {inThis && <span className="text-[10px] text-emerald-400">già qui</span>}
+                {inOther && <span className="text-[10px] text-amber-400">scagl. {cur + 1} → sposta</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800">
+          <span className="text-[11px] text-slate-500">{sel.size} selezionati · {filtered.length} mostrati</span>
+          <button onClick={() => onConfirm([...sel])} disabled={sel.size === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            <Plus className="w-4 h-4" /> Aggiungi allo scaglione {targetWeek + 1}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════ Dialog ALGORITMO: Assegna cadenze → Riposi ══════════════════ */
+export function GeneraRiposiDialog({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const rotQ = useQuery({
+    queryKey: ["roster", "rotazioni-riposi"],
+    queryFn: () => apiFetch<{ rotazioni: Rotazione[] }>("/api/roster/rotazioni-riposi").then((r) => r.rotazioni),
+  });
+  const drvQ = useQuery({
+    queryKey: ["roster", "drivers"],
+    queryFn: () => apiFetch<{ drivers: PickerDriver[] }>("/api/roster/drivers").then((r) => r.drivers),
+  });
+  const rotazioni = rotQ.data ?? [];
+  const drivers = drvQ.data ?? [];
+  const depots = useMemo(() => [...new Set(drivers.map((d) => d.residenzaServizio).filter(Boolean))].sort() as string[], [drivers]);
+  const categorie = useMemo(() => [...new Set(drivers.map((d) => d.categoria).filter(Boolean))].sort() as string[], [drivers]);
+
+  const [rotId, setRotId] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [categoria, setCategoria] = useState("");
+  const [deposito, setDeposito] = useState("");
+  const [result, setResult] = useState<{ drivers: number; created: number; cleared: number } | null>(null);
+
+  const genMut = useMutation({
+    mutationFn: () => apiFetch<{ ok: boolean; drivers: number; created: number; cleared: number }>(
+      `/api/roster/rotazioni-riposi/${rotId}/genera-riposi`,
+      { method: "POST", body: JSON.stringify({ startDate, categoria, deposito, days: 365 }) },
+    ),
+    onSuccess: (r) => {
+      setResult({ drivers: r.drivers, created: r.created, cleared: r.cleared });
+      toast.success(`Riposi caricati: ${r.created} voci su ${r.drivers} conducenti`);
+      qc.invalidateQueries({ queryKey: ["roster", "board"] });
+    },
+    onError: (e: Error) => toast.error("Generazione fallita", { description: e.message }),
+  });
+
+  const canRun = !!rotId && /^\d{4}-\d{2}-\d{2}$/.test(startDate) && !genMut.isPending;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col text-slate-100">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800">
+          <div className="text-sm font-semibold flex items-center gap-2"><Wand2 className="w-4 h-4 text-violet-400" /> Assegna cadenze → Riposi</div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="flex-1 overflow-auto p-5 space-y-4">
+          <p className="text-[12px] text-slate-400">
+            Carica automaticamente i <b>riposi</b> dei conducenti assegnati alla rotazione sul tabellone, per un anno intero a
+            partire dalla data scelta. Rieseguibile: rigenera in modo idempotente (gestisce nuovi conducenti, rimozioni,
+            cambi di scaglione).
+          </p>
+          <label className="block"><span className={LBL}>Rotazione</span>
+            <select className={`${TEXT} w-full`} value={rotId} onChange={(e) => { setRotId(e.target.value); setResult(null); }}>
+              <option value="">— scegli una rotazione —</option>
+              {rotazioni.map((r) => <option key={r.id} value={r.id}>{r.name} · {r.weeks} sett.</option>)}
+            </select>
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block"><span className={LBL}>Data di inizio</span>
+              <input type="date" className={`${TEXT} w-full`} value={startDate} onChange={(e) => { setStartDate(e.target.value); setResult(null); }} />
+            </label>
+            <label className="block"><span className={LBL}>Categoria</span>
+              <select className={`${TEXT} w-full`} value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+                <option value="">Tutte le categorie</option>
+                {categorie.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+            <label className="block"><span className={LBL}>Deposito</span>
+              <select className={`${TEXT} w-full`} value={deposito} onChange={(e) => setDeposito(e.target.value)}>
+                <option value="">Tutti i depositi</option>
+                {depots.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </label>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Il lunedì della settimana d'inizio allinea il ciclo (i riposi partono comunque dalla data scelta). I conducenti
+            senza scaglione nella rotazione vengono ignorati.
+          </p>
+
+          {result && (
+            <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.06] px-3 py-2.5 text-xs space-y-0.5">
+              <div className="font-semibold text-emerald-300">Riposi generati ✓</div>
+              <div className="text-slate-300">{result.created} voci di riposo su <b>{result.drivers}</b> conducenti · {result.cleared} voci precedenti riconciliate.</div>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-800">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Chiudi</button>
+          <button onClick={() => genMut.mutate()} disabled={!canRun}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+            {genMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />} Carica riposi (anno)
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

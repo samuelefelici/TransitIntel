@@ -7,9 +7,10 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Loader2, X, Save, Camera, Trash2, Plus, History, UserRound } from "lucide-react";
+import { Loader2, X, Save, Camera, Trash2, Plus, History, UserRound, CalendarDays } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { ABILITAZIONI, type AbilitazioneKey } from "./abilitazioni";
+import { MiniGrid } from "./RotazioniRiposi";
 
 export interface RosterDriver {
   id: string; name: string; badge: string | null; isFictitious: boolean;
@@ -216,6 +217,9 @@ export default function DriverEditDialog({ driver, onClose }: { driver: RosterDr
 
           <Field label="Note"><textarea className={TEXT} rows={2} value={f.note ?? ""} onChange={(e) => set("note", e.target.value)} /></Field>
 
+          {/* Cadenze assegnate (rotazioni riposi) — solo in modifica */}
+          {isEdit && <CadenzeSection driverId={liveDriver!.id} />}
+
           {/* Storico — solo in modifica (serve l'id del conducente) */}
           {isEdit
             ? <HistorySection driverId={liveDriver!.id} />
@@ -234,6 +238,44 @@ export default function DriverEditDialog({ driver, onClose }: { driver: RosterDr
         </div>
       </div>
     </div>
+  );
+}
+
+/* ─── Cadenze assegnate (rotazioni riposi) ─── */
+interface Cadenza {
+  rotazioneId: string; name: string; weeks: number;
+  scaglione: number; pattern: (string | null)[][];
+}
+function CadenzeSection({ driverId }: { driverId: string }) {
+  const cadQ = useQuery({
+    queryKey: ["roster", "cadenze", driverId],
+    queryFn: () => apiFetch<{ cadenze: Cadenza[] }>(`/api/roster/drivers/${driverId}/cadenze`).then((r) => r.cadenze),
+  });
+  const cadenze = cadQ.data ?? [];
+  return (
+    <section className="border-t border-slate-800 pt-4">
+      <h4 className="text-[11px] font-semibold uppercase tracking-wide text-violet-300/80 mb-2 flex items-center gap-1.5">
+        <CalendarDays className="w-3.5 h-3.5" /> Cadenze — rotazioni riposi assegnate
+      </h4>
+      {cadQ.isLoading ? (
+        <p className="text-[11px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico le cadenze…</p>
+      ) : cadenze.length === 0 ? (
+        <p className="text-[11px] text-slate-600 italic">Nessuna cadenza assegnata. Si assegna da «Rotazioni → Assegna rotazioni».</p>
+      ) : (
+        <div className="space-y-2">
+          {cadenze.map((c) => (
+            <div key={c.rotazioneId} className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="font-semibold text-sm">{c.name}</span>
+                <span className="text-[11px] text-slate-500">{c.weeks} settimane</span>
+                <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-300">parte dallo scaglione {c.scaglione + 1}</span>
+              </div>
+              <MiniGrid grid={c.pattern} highlight={c.scaglione} />
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
