@@ -9,7 +9,7 @@
  * rimuoverlo. Anagrafica conducente completa via la matita.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -115,10 +115,10 @@ function festLevel(iso: string): 0 | 1 | 2 {
   if (dt.getUTCDay() === 0) return 1; // domenica
   return 0;
 }
-/** Sfondo rosso tenue per le colonne festive. */
+/** Sfondo rosso per le colonne festive (festività marcata, domenica più tenue). */
 function festBg(iso: string): string {
   const lvl = festLevel(iso);
-  return lvl === 2 ? "bg-rose-500/10" : lvl === 1 ? "bg-rose-500/[0.04]" : "";
+  return lvl === 2 ? "bg-rose-500/20" : lvl === 1 ? "bg-rose-500/10" : "";
 }
 /** Avatar del conducente: foto se presente, altrimenti iniziali. size=0 → nascosto. */
 function DriverAvatar({ drv, size = 28 }: { drv: RosterDriver; size?: number }) {
@@ -165,6 +165,23 @@ export default function RosterPage() {
     queryFn: () => apiFetch<Board>(`/api/roster/board?from=${from}&days=${RANGE_DAYS}${dssId ? `&dssId=${dssId}` : ""}`),
   });
   const invalidateBoard = () => qc.invalidateQueries({ queryKey: ["roster", "board"] });
+
+  // Scroll orizzontale sincronizzato: tabellone (sopra) ↔ turni scoperti (sotto).
+  // Sincronizzazione proporzionale (larghezze diverse), con lock anti-loop.
+  const boardScrollRef = useRef<HTMLDivElement>(null);
+  const uncoveredScrollRef = useRef<HTMLDivElement>(null);
+  const scrollLock = useRef(false);
+  const mirrorScroll = (from: "board" | "unc") => {
+    const src = from === "board" ? boardScrollRef.current : uncoveredScrollRef.current;
+    const dst = from === "board" ? uncoveredScrollRef.current : boardScrollRef.current;
+    if (!src || !dst || scrollLock.current) return;
+    const sMax = src.scrollWidth - src.clientWidth;
+    const dMax = dst.scrollWidth - dst.clientWidth;
+    if (sMax <= 0 || dMax <= 0) return;
+    scrollLock.current = true;
+    dst.scrollLeft = (src.scrollLeft / sMax) * dMax;
+    requestAnimationFrame(() => { scrollLock.current = false; });
+  };
 
   const seedMut = useMutation({
     mutationFn: () => apiFetch<{ created: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 30 }) }),
@@ -311,7 +328,7 @@ export default function RosterPage() {
   const dayColW = cellSize === "small" ? "min-w-[52px]" : cellSize === "large" ? "min-w-[104px]" : "min-w-[76px]";
   // La card del conducente mostra SEMPRE gli stessi dati: la vista "solo codice"
   // rende compatte solo le celle-giorno, non l'anagrafica di sinistra.
-  const nameColW = "min-w-[176px]";
+  const nameColW = "min-w-[188px]";
   const avatarSize = 24;
 
   return (
@@ -505,16 +522,16 @@ export default function RosterPage() {
       {/* ── Tabellone (sopra) + turni scoperti (finestra in basso) ── */}
       <div className="flex-1 min-h-0 flex flex-col">
         {/* Tabellone a tutta larghezza */}
-        <div className="flex-1 min-w-0 overflow-auto">
+        <div ref={boardScrollRef} onScroll={() => mirrorScroll("board")} className="flex-1 min-w-0 overflow-auto">
           {boardQ.isLoading ? (
             <div className="p-10 text-center text-slate-500 text-sm flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico il tabellone…</div>
           ) : !board || board.drivers.length === 0 ? (
             <div className="p-10 text-center text-slate-500 text-sm">Nessun conducente. Aggiungine uno o genera operatori fittizi.</div>
           ) : (
             <table className="min-w-full text-xs border-collapse">
-              <thead className="sticky top-0 bg-slate-900 z-10">
+              <thead className="sticky top-0 bg-slate-900 z-30">
                 <tr>
-                  <th className={`text-left px-2 py-1 border-b border-slate-800 sticky left-0 bg-slate-900 ${nameColW}`}>Conducente</th>
+                  <th className={`text-left px-2 py-1 border-b border-slate-800 sticky left-0 z-20 bg-slate-900 ${nameColW}`}>Conducente</th>
                   {board.days.map((day) => {
                     const { dow, dm } = dayLabel(day);
                     const unc = uncoveredByDay.get(day)?.length ?? 0;
@@ -533,19 +550,18 @@ export default function RosterPage() {
                   const isSel = selDriver === drv.id;
                   return (
                     <tr key={drv.id} className={isSel ? "bg-violet-500/10" : "odd:bg-white/[0.02]"}>
-                      <td className={`px-2 py-0.5 border-b border-slate-800/40 sticky left-0 cursor-pointer ${isSel ? "bg-violet-500/15" : "bg-slate-950"}`}
+                      <td className={`px-2 py-0.5 border-b border-slate-800/40 sticky left-0 z-20 cursor-pointer ${isSel ? "bg-violet-950" : "bg-slate-950"}`}
                           onClick={() => setSelDriver(isSel ? null : drv.id)}>
                         <div className="flex items-center gap-1.5">
                           <DriverAvatar drv={drv} size={avatarSize} />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1">
+                            {/* Nome su riga propria (meno troncato); matricola e simboli sotto */}
+                            <div className="font-medium truncate text-[12px] leading-tight">{driverLabel(drv)}</div>
+                            <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 mt-0.5">
                               {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
-                              <span className="font-medium truncate text-[12px]">{driverLabel(drv)}</span>
-                              {drv.isFictitious && <span className="text-[8px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              {drv.isFictitious && <span className="text-[7px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              {drv.abilitazioni?.length > 0 && <AbilitazioneBadges keys={drv.abilitazioni} size={9} />}
                             </div>
-                            {drv.abilitazioni?.length > 0 && (
-                              <div className="mt-0.5"><AbilitazioneBadges keys={drv.abilitazioni} size={10} /></div>
-                            )}
                           </div>
                           <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv); }} className="p-0.5 rounded text-slate-500 hover:text-violet-300 shrink-0" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
                         </div>
@@ -632,7 +648,7 @@ export default function RosterPage() {
               </button>
             </div>
             {showUncovered && (
-              <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden flex">
+              <div ref={uncoveredScrollRef} onScroll={() => mirrorScroll("unc")} className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden flex">
                 {board?.days.map((day) => {
                   const list = uncoveredByDay.get(day) ?? [];
                   return (
