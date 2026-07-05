@@ -58,6 +58,7 @@ import planningStudioValidityUnitsRouter from "../lib/planning-studio-validity-u
 import planningStudioCalendarRouter from "../lib/planning-studio-calendar";
 import planningStudioZonesRouter from "../lib/planning-studio-zones";
 import planningCompareRouter from "../lib/planning-compare";
+import rosterRotazioniRouter from "../lib/roster-rotazioni";
 
 const router: IRouter = Router();
 
@@ -100,6 +101,7 @@ router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legg
 router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea (feed GTFS)
 router.use(planningStudioTimetablesRouter); // Stampa Orari dal programma di esercizio Planning Studio (ps_*)
 router.use(rosterRouter); // Roster: assegnazione turni guida al personale viaggiante
+router.use(rosterRotazioniRouter); // Roster: rotazioni riposi (ciclo settimanale) + assistente CP-SAT
 router.use(serviceDbRouter); // Database di Esercizio: vista unica della catena di pianificazione
 router.use(faresRouter);
 router.use(faresMinOdRouter);
