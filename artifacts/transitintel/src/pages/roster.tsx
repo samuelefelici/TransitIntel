@@ -15,11 +15,12 @@ import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
-  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye,
+  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
+import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog } from "@/components/roster/RotazioniRiposi";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
 interface DutySegment {
@@ -175,6 +176,7 @@ export default function RosterPage() {
   // ── Gomma: cancella turno + voci di una cella (il turno torna fra gli scoperti) ──
   const [eraser, setEraser] = useState(false);
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
+  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | null>(null);
   const eraseCell = (driverId: string, day: string) => {
     for (const a of assignmentsByCell.get(`${driverId}|${day}`) ?? []) unassignMut.mutate(a.id);
     for (const en of entriesByCell.get(`${driverId}|${day}`) ?? []) delEntryMut.mutate(en.id);
@@ -281,9 +283,16 @@ export default function RosterPage() {
               <div className="absolute left-0 top-full mt-0.5 min-w-56 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1 z-50">
                 {m === "Rotazioni" && (
                   <>
-                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Cicli e rotazioni turni</div>
-                    <button className={menuDisabledCls} disabled>Genera rotazione · prossimamente</button>
-                    <button className={menuDisabledCls} disabled>Ruota di N giorni · prossimamente</button>
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione riposi</div>
+                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("create-riposi"); }}>
+                      <Plus className="w-3.5 h-3.5" /> Crea rotazione riposi
+                    </button>
+                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("list-riposi"); }}>
+                      <CalendarDays className="w-3.5 h-3.5" /> Elenco rotazioni riposi
+                    </button>
+                    <div className="border-t border-slate-800 my-1" />
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione turni</div>
+                    <button className={menuDisabledCls} disabled>Crea rotazione turni · prossimamente</button>
                   </>
                 )}
                 {m === "Algoritmi" && (
@@ -609,6 +618,9 @@ export default function RosterPage() {
       {editDriver !== null && (
         <DriverEditDialog driver={editDriver === "new" ? null : editDriver} onClose={() => setEditDriver(null)} />
       )}
+
+      {rotDialog === "create-riposi" && <RotazioneRiposiCreateDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "list-riposi" && <RotazioniRiposiListDialog onClose={() => setRotDialog(null)} />}
 
       {/* Dettaglio turno (tasto destro) */}
       {ctxDuty && (
