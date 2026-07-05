@@ -227,7 +227,7 @@ async function loadCompanyCars(): Promise<number> {
  * di tutti i turni. Risultato: per ogni trip, lista di fermate intermedie
  * (esclusi capolinea partenza/arrivo) che stanno in un cluster.
  */
-async function enrichTripsWithClusterStops(
+export async function enrichTripsWithClusterStops(
   vehicleShifts: VehicleShift[],
   logger?: { info: (...a: any[]) => void },
 ): Promise<void> {

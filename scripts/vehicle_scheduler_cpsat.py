@@ -582,6 +582,11 @@ def precompute_arc_costs(
         if mul_pair > 1.0:
             cost_euro += a.gap_min * 0.05 * (mul_pair - 1.0)
 
+        # VCSP: penalità di feedback dal CSP (costo-ombra del pairing).
+        # NON scalata per strategia: è un segnale assoluto in EUR.
+        if a.penalty_eur:
+            cost_euro += a.penalty_eur
+
         # NB: niente max(0, …). Il bonus monolinea (sottrattivo) deve poter
         # rendere un arco "same-route" più economico di uno neutro: troncare a 0
         # azzererebbe il segnale di preferenza. CP-SAT gestisce coefficienti
@@ -1393,6 +1398,7 @@ def chain_cost_detailed(
     deadhead_km = 0.0
     idle_minutes = 0.0
     depot_returns = 0
+    vcsp_pen = 0.0
     for k in range(len(chain) - 1):
         arc = arcs_lookup.get((chain[k], chain[k + 1]))
         if arc:
@@ -1400,6 +1406,7 @@ def chain_cost_detailed(
             idle_minutes += _arc_idle_min(arc)
             if arc.depot_return:
                 depot_returns += 1
+            vcsp_pen += arc.penalty_eur
 
     shift_start = trips[chain[0]].departure_min
     shift_end = trips[chain[-1]].arrival_min
@@ -1436,6 +1443,7 @@ def chain_cost_detailed(
             else:
                 ds_pen += levels * t.duration_min * rates.downsize_offpeak_per_level_per_min
     cost.downsize_penalty = ds_pen
+    cost.vcsp_penalty = vcsp_pen
 
     cost.compute()
     return cost
@@ -1457,6 +1465,7 @@ def chain_cost_fast(
     dh_km = 0.0
     idle_min = 0.0
     depot_ret = 0
+    vcsp_pen = 0.0
     for k in range(len(chain) - 1):
         arc = arcs_lookup.get((chain[k], chain[k + 1]))
         if arc:
@@ -1464,11 +1473,13 @@ def chain_cost_fast(
             idle_min += _arc_idle_min(arc)
             if arc.depot_return:
                 depot_ret += 1
+            vcsp_pen += arc.penalty_eur
     return (fixed
             + service_km * rates.per_service_km.get(vtype, 0.95)
             + dh_km * rates.per_deadhead_km.get(vtype, 0.80)
             + idle_min * rates.idle_per_min
-            + depot_ret * rates.per_depot_return)
+            + depot_ret * rates.per_depot_return
+            + vcsp_pen)
 
 
 def chain_cost_accept(
@@ -2409,6 +2420,7 @@ def compute_shift_costs(
         totals.balance_penalty += sc.balance_penalty
         totals.gap_penalty += sc.gap_penalty
         totals.downsize_penalty += sc.downsize_penalty
+        totals.vcsp_penalty += sc.vcsp_penalty
         totals.total += sc.total
 
     return {
@@ -2714,9 +2726,14 @@ def optimize_vsp_multi_scenario(
 
 # ─── MAIN ───────────────────────────────────────────────────────────────
 
-def main():
+def run(data: dict) -> dict:
+    """Esegue il VSP su un input già parsato e RITORNA l'output (dict).
+
+    Entrypoint riusabile dall'orchestratore VCSP (vcsp_orchestrator.py), che
+    chiama run() più volte nello stesso processo con penalità d'arco diverse.
+    main() resta il wrapper stdin→stdout.
+    """
     t_start = time.time()
-    data = load_input()
     config = data.get("config", {})
     forced = config.get("forced", False)
 
@@ -2784,9 +2801,8 @@ def main():
     trips_data = data.get("trips", [])
     if not trips_data:
         log("No trips provided")
-        write_output({"vehicleShifts": [], "metrics": _empty_metrics(),
-                       "costBreakdown": {"perShift": [], "aggregated": {}, "numVehicles": 0}})
-        return
+        return {"vehicleShifts": [], "metrics": _empty_metrics(),
+                "costBreakdown": {"perShift": [], "aggregated": {}, "numVehicles": 0}}
 
     trips: list[Trip] = [trip_from_dict(td, i) for i, td in enumerate(trips_data)]
     trips.sort(key=lambda t: (t.departure_min, t.arrival_min))
@@ -2838,6 +2854,29 @@ def main():
     report_progress("VSP", 10, "Building compatibility arcs...")
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None)
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
+
+    # ── VCSP: penalità d'arco dal feedback CSP (costi-ombra) ──
+    # Formato input: data.arcPenalties = { "tripIdA|tripIdB": eur }. Applicate
+    # come costo aggiuntivo sull'arco: il solver evita di ri-formare i pairing
+    # che al round precedente hanno prodotto blocchi mal tagliabili in turni
+    # guida legali (BDS).
+    arc_pen_raw = data.get("arcPenalties") or {}
+    arc_pen_applied = 0
+    if isinstance(arc_pen_raw, dict) and arc_pen_raw:
+        MAX_ARC_PENALTY_EUR = 500.0
+        for a in arcs:
+            key = trips[a.i].trip_id + "|" + trips[a.j].trip_id
+            p = arc_pen_raw.get(key)
+            if p is not None:
+                try:
+                    a.penalty_eur = min(MAX_ARC_PENALTY_EUR, max(0.0, float(p)))
+                    if a.penalty_eur > 0:
+                        arc_pen_applied += 1
+                except (TypeError, ValueError):
+                    pass
+        if arc_pen_applied:
+            log(f"  [VCSP] {arc_pen_applied} penalità d'arco applicate "
+                f"(su {len(arc_pen_raw)} ricevute)")
     log(f"  Arcs: {len(arcs)}")
     report_progress("VSP", 15, f"Built {len(arcs)} arcs")
 
@@ -3073,8 +3112,12 @@ def main():
             "costBreakdown": greedy_breakdown,
         },
     }
-    write_output(output)
     report_progress("VSP", 100, f"Done: {len(shifts)} vehicles, EUR{final_cost:.2f}")
+    return output
+
+
+def main():
+    write_output(run(load_input()))
 
 
 if __name__ == "__main__":
