@@ -37,6 +37,21 @@ async function ensureTable(): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+  // Assegnazione conducenti agli scaglioni (righe = settimane) di una rotazione.
+  // week_index = riga di partenza (scaglione, 0-based). Un conducente ha un solo
+  // scaglione per rotazione.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS roster_rotazione_assegnazioni (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      rotazione_id uuid NOT NULL REFERENCES roster_rotazioni_riposi(id) ON DELETE CASCADE,
+      week_index integer NOT NULL,
+      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (rotazione_id, driver_id)
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_rot_asg_rot ON roster_rotazione_assegnazioni(rotazione_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_rot_asg_drv ON roster_rotazione_assegnazioni(driver_id)`);
   bootstrapped = true;
 }
 router.use(async (_req, _res, next) => { await ensureTable(); next(); });
@@ -122,6 +137,179 @@ function runSolver(input: any): Promise<any> {
     py.stdin.write(JSON.stringify(input)); py.stdin.end();
   });
 }
+
+/* ─── Assegnazione scaglioni (conducenti → righe della cadenza) ─── */
+
+/** Letterale Postgres `{uuid,uuid}` per una colonna uuid[] (ANY / cast). */
+function uuidArrayLiteral(ids: string[]): string {
+  return `{${ids.filter((x) => UUID_RE.test(x)).join(",")}}`;
+}
+
+// GET assegnazioni di una rotazione → elenco { weekIndex, driverId }.
+router.get("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT week_index, driver_id FROM roster_rotazione_assegnazioni
+       WHERE rotazione_id = ${id}::uuid ORDER BY week_index
+    `);
+    res.json({ assegnazioni: r.rows.map((x: any) => ({ weekIndex: x.week_index, driverId: x.driver_id })) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT assegnazioni: sostituisce l'intero set di scaglioni della rotazione.
+// body: { assignments: [{ weekIndex, driverId }] }. Un conducente = un solo scaglione.
+router.put("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const rot = await db.execute<any>(sql`SELECT weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid`);
+    if (!rot.rows[0]) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
+    const weeks = Number(rot.rows[0].weeks);
+    const raw = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
+    // Deduplica per conducente (ultimo scaglione vince) e valida.
+    const byDriver = new Map<string, number>();
+    for (const a of raw) {
+      const driverId = String(a?.driverId ?? "");
+      const wi = Number(a?.weekIndex);
+      if (!UUID_RE.test(driverId)) continue;
+      if (!Number.isInteger(wi) || wi < 0 || wi >= weeks) continue;
+      byDriver.set(driverId, wi);
+    }
+    await db.execute(sql`DELETE FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
+    for (const [driverId, wi] of byDriver) {
+      await db.execute(sql`
+        INSERT INTO roster_rotazione_assegnazioni (rotazione_id, week_index, driver_id)
+        VALUES (${id}::uuid, ${wi}, ${driverId}::uuid)
+        ON CONFLICT (rotazione_id, driver_id) DO UPDATE SET week_index = EXCLUDED.week_index
+      `);
+    }
+    res.json({ ok: true, count: byDriver.size });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// GET cadenze di un conducente → rotazioni a cui è assegnato + scaglione + pattern.
+router.get("/roster/drivers/:id/cadenze", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT rr.id, rr.name, rr.weeks, rr.pattern, a.week_index
+        FROM roster_rotazione_assegnazioni a
+        JOIN roster_rotazioni_riposi rr ON rr.id = a.rotazione_id
+       WHERE a.driver_id = ${id}::uuid
+       ORDER BY rr.name
+    `);
+    res.json({ cadenze: r.rows.map((x: any) => ({
+      rotazioneId: x.id, name: x.name, weeks: x.weeks,
+      scaglione: x.week_index, pattern: x.pattern,
+    })) });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+/* ─── Generazione riposi (cadenza → voci sul tabellone, per tutto l'anno) ─── */
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+/** Indice giorno settimana Lun=0 … Dom=6 da una data UTC. */
+function weekdayMon0(d: Date): number { return (d.getUTCDay() + 6) % 7; }
+
+// POST genera-riposi: carica i riposi della rotazione sul tabellone per i
+// conducenti assegnati, filtrati per categoria/deposito, per `days` giorni.
+// Idempotente: cancella e rigenera le voci con source='rotazione:<id>' nello
+// scope (categoria/deposito) e range, gestendo variazioni (nuovo conducente,
+// rimozione, cambio scaglione).
+router.post("/roster/rotazioni-riposi/:id/genera-riposi", async (req, res): Promise<void> => {
+  try {
+    const id = String(req.params.id);
+    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    const b = req.body ?? {};
+    const startDate = String(b.startDate ?? "");
+    if (!DATE_RE.test(startDate)) { res.status(400).json({ error: "startDate=YYYY-MM-DD richiesto" }); return; }
+    const days = Math.min(Math.max(Number(b.days) || 365, 7), 400);
+    const categoria = b.categoria ? String(b.categoria).trim() : "";
+    const deposito = b.deposito ? String(b.deposito).trim() : "";
+    const codeDefault = String(b.code ?? "R").trim().toUpperCase().slice(0, 8) || "R";
+
+    const rot = await db.execute<any>(sql`
+      SELECT pattern, weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid
+    `);
+    if (!rot.rows[0]) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
+    const pattern: (string | null)[][] = rot.rows[0].pattern;
+    const weeks = Number(rot.rows[0].weeks);
+    if (!Array.isArray(pattern) || weeks < 1) { res.status(400).json({ error: "Pattern rotazione non valido" }); return; }
+
+    // Scope = conducenti attivi che rientrano nei filtri categoria/deposito
+    // (o tutti se nessun filtro). Le loro voci-rotazione nel range vengono
+    // riconciliate. Target = scope ∩ assegnati alla rotazione.
+    const scope = await db.execute<any>(sql`
+      SELECT id, week_index FROM (
+        SELECT d.id,
+               (SELECT a.week_index FROM roster_rotazione_assegnazioni a
+                 WHERE a.rotazione_id = ${id}::uuid AND a.driver_id = d.id) AS week_index
+          FROM roster_drivers d
+         WHERE d.is_active = true
+           AND (${categoria}::text = '' OR d.categoria = ${categoria})
+           AND (${deposito}::text = '' OR d.residenza_servizio = ${deposito})
+      ) s
+    `);
+    const scopeIds: string[] = scope.rows.map((r: any) => r.id);
+    if (scopeIds.length === 0) { res.json({ ok: true, drivers: 0, created: 0, cleared: 0 }); return; }
+
+    // Range date
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const endStr = new Date(start.getTime() + days * DAY_MS).toISOString().slice(0, 10);
+    // Lunedì della settimana di partenza (allineamento Lun..Dom).
+    const startMonday = new Date(start.getTime() - weekdayMon0(start) * DAY_MS);
+
+    // 1) Pulisci le voci-rotazione precedenti nello scope e nel range.
+    const del = await db.execute<any>(sql`
+      DELETE FROM roster_entries
+       WHERE source = ${`rotazione:${id}`}
+         AND day >= ${startDate}::date AND day < ${endStr}::date
+         AND driver_id = ANY(${uuidArrayLiteral(scopeIds)}::uuid[])
+    `);
+    const cleared = del.rowCount ?? 0;
+
+    // 2) Genera le voci per i target (assegnati).
+    const targets = scope.rows.filter((r: any) => r.week_index != null);
+    const values: any[] = [];
+    for (const t of targets) {
+      const scaglione = Number(t.week_index);
+      for (let i = 0; i < days; i++) {
+        const d = new Date(start.getTime() + i * DAY_MS);
+        const wd = weekdayMon0(d);
+        const mondayOfD = new Date(d.getTime() - wd * DAY_MS);
+        const weekOffset = Math.round((mondayOfD.getTime() - startMonday.getTime()) / (7 * DAY_MS));
+        const row = ((scaglione + weekOffset) % weeks + weeks) % weeks;
+        const cell = pattern[row]?.[wd];
+        if (cell == null || cell === "") continue;
+        const code = String(cell).trim().toUpperCase().slice(0, 8) || codeDefault;
+        values.push({ driverId: t.id, day: d.toISOString().slice(0, 10), code });
+      }
+    }
+
+    // Bulk insert a blocchi.
+    let created = 0;
+    const src = `rotazione:${id}`;
+    for (let off = 0; off < values.length; off += 500) {
+      const chunk = values.slice(off, off + 500);
+      const rows = chunk.map((v) => sql`(${v.driverId}::uuid, ${v.day}::date, 'assenza', ${v.code}, ${src})`);
+      const r = await db.execute<any>(sql`
+        INSERT INTO roster_entries (driver_id, day, category, code, source)
+        VALUES ${sql.join(rows, sql`, `)}
+        ON CONFLICT (driver_id, day, code) DO UPDATE SET source = EXCLUDED.source, category = 'assenza'
+      `);
+      created += r.rowCount ?? chunk.length;
+    }
+
+    res.json({ ok: true, drivers: targets.length, scope: scopeIds.length, created, cleared });
+  } catch (e: any) {
+    console.error("[rotazioni.genera-riposi]", e?.message || e);
+    res.status(500).json({ error: e?.message || "Errore nella generazione" });
+  }
+});
 
 router.post("/roster/rotazioni-riposi/solve", async (req, res): Promise<void> => {
   try {

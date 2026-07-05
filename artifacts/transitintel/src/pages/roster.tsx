@@ -15,12 +15,12 @@ import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
-  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus,
+  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
-import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog } from "@/components/roster/RotazioniRiposi";
+import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
 interface DutySegment {
@@ -134,7 +134,7 @@ export default function RosterPage() {
   const invalidateBoard = () => qc.invalidateQueries({ queryKey: ["roster", "board"] });
 
   const seedMut = useMutation({
-    mutationFn: () => apiFetch<{ created: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 10 }) }),
+    mutationFn: () => apiFetch<{ created: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 30 }) }),
     onSuccess: (r) => { toast.success(`${r.created} operatori fittizi creati`); qc.invalidateQueries({ queryKey: ["roster"] }); },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -176,7 +176,7 @@ export default function RosterPage() {
   // ── Gomma: cancella turno + voci di una cella (il turno torna fra gli scoperti) ──
   const [eraser, setEraser] = useState(false);
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
-  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | null>(null);
+  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | null>(null);
   const eraseCell = (driverId: string, day: string) => {
     for (const a of assignmentsByCell.get(`${driverId}|${day}`) ?? []) unassignMut.mutate(a.id);
     for (const en of entriesByCell.get(`${driverId}|${day}`) ?? []) delEntryMut.mutate(en.id);
@@ -290,6 +290,9 @@ export default function RosterPage() {
                     <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("list-riposi"); }}>
                       <CalendarDays className="w-3.5 h-3.5" /> Elenco rotazioni riposi
                     </button>
+                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("assegna"); }}>
+                      <Users className="w-3.5 h-3.5" /> Assegna rotazioni
+                    </button>
                     <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione turni</div>
                     <button className={menuDisabledCls} disabled>Crea rotazione turni · prossimamente</button>
@@ -297,6 +300,11 @@ export default function RosterPage() {
                 )}
                 {m === "Algoritmi" && (
                   <>
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegna cadenze</div>
+                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("genera-riposi"); }}>
+                      <Wand2 className="w-3.5 h-3.5" /> Assegna cadenze → Riposi
+                    </button>
+                    <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegnazione automatica</div>
                     <button className={menuDisabledCls} disabled>Copri gli scoperti · prossimamente</button>
                     <button className={menuDisabledCls} disabled>Bilancia i carichi · prossimamente</button>
@@ -414,7 +422,7 @@ export default function RosterPage() {
             <UserPlus className="w-3.5 h-3.5" /> Conducente
           </button>
           <button onClick={() => seedMut.mutate()} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
-            +10 fittizi
+            +30 fittizi
           </button>
         </div>
       </div>
@@ -621,6 +629,8 @@ export default function RosterPage() {
 
       {rotDialog === "create-riposi" && <RotazioneRiposiCreateDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "list-riposi" && <RotazioniRiposiListDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "assegna" && <AssegnaRotazioniDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "genera-riposi" && <GeneraRiposiDialog onClose={() => setRotDialog(null)} />}
 
       {/* Dettaglio turno (tasto destro) */}
       {ctxDuty && (
