@@ -217,24 +217,54 @@ function accessibilityIsoHtml(iso: any): string {
 }
 
 function demandHtml(d: any): string {
-  if (!d) return `<p class="hint">Dati di domanda (matrice pendolarismo ISTAT) non disponibili per i comuni serviti.</p>`;
-  const segs = [
-    { label: "Bus", value: d.busFlow || 0, color: "#059669" },
-    { label: "Auto", value: d.carFlow || 0, color: "#dc2626" },
-    { label: "Treno", value: d.trainFlow || 0, color: "#0891b2" },
-    { label: "Bici/piedi", value: d.activeFlow || 0, color: "#f59e0b" },
-    { label: "Altro", value: Math.max(0, (d.totalFlow || 0) - (d.busFlow || 0) - (d.carFlow || 0) - (d.trainFlow || 0) - (d.activeFlow || 0)), color: "#94a3b8" },
-  ].filter((s) => s.value > 0);
-  return `<div class="kpi-row4">
-      ${kpi(fInt(d.totalFlow || 0), "Spostamenti/giorno sui comuni serviti", "violet")}
-      ${kpi(fInt(d.intraCorridorFlow || 0), "Spostamenti interni al corridoio", "cyan")}
-      ${kpi(fPct(d.busSharePct || 0), "Quota già su bus", "emerald")}
+  if (!d) return `<p class="hint">Dati di domanda (matrice pendolarismo ISTAT) non disponibili per i comuni serviti. Esegui l'import della matrice pendolarismo per abilitare questa sezione.</p>`;
+  const thirdCard = d.hasModeData
+    ? kpi(fPct(d.busSharePct || 0), "Quota già su bus", "emerald")
+    : kpi(fInt(d.estimatedTplDaily || 0), "Domanda TPL captabile (stima)", "emerald");
+  const kpis = `<div class="kpi-row4">
+      ${kpi(fInt(d.totalFlow || 0), "Spostamenti sistematici/giorno (comuni serviti)", "violet")}
+      ${kpi(fInt(d.intraCorridorFlow || 0), "Interni al corridoio", "cyan")}
+      ${thirdCard}
       ${kpi(fInt(d.workFlow || 0) + " / " + fInt(d.studyFlow || 0), "Lavoro / studio", "amber")}
+    </div>`;
+  let body: string;
+  if (d.hasModeData) {
+    const segs = [
+      { label: "Bus", value: d.busFlow || 0, color: "#059669" },
+      { label: "Auto", value: d.carFlow || 0, color: "#dc2626" },
+      { label: "Treno", value: d.trainFlow || 0, color: "#0891b2" },
+      { label: "Bici/piedi", value: d.activeFlow || 0, color: "#f59e0b" },
+      { label: "Altro", value: Math.max(0, (d.totalFlow || 0) - (d.busFlow || 0) - (d.carFlow || 0) - (d.trainFlow || 0) - (d.activeFlow || 0)), color: "#94a3b8" },
+    ].filter((s) => s.value > 0);
+    body = `<div class="sub-title">Ripartizione modale attuale</div>${stackBar(segs)}
+      <p class="hint">Una quota bus bassa a fronte di flussi elevati indica potenziale di spostamento modale.</p>`;
+  } else {
+    body = `<p class="hint">La matrice del pendolarismo ISTAT (2011) non riporta il <b>modo di trasporto</b>: la ripartizione modale
+      non è disponibile. La <b>domanda TPL captabile</b> stima applica una quota indicativa del ${fInt(d.tplSharePct || 10)}% ai
+      flussi sistematici interni al corridoio.</p>`;
+  }
+  return `${kpis}${body}
+    <p class="hint">Fonte: matrice del pendolarismo ISTAT sui comuni attraversati (spostamenti casa-lavoro/studio).</p>`;
+}
+
+function trafficHtml(t: any): string {
+  if (!t || !t.available) return `<p class="hint">Dati di traffico non disponibili per il corridoio${t?.reason ? ` (${esc(t.reason)})` : ""}.</p>`;
+  const congTone = t.avgCongestionPct >= 40 ? "amber" : t.avgCongestionPct >= 25 ? "amber" : "emerald";
+  return `<div class="kpi-row4">
+      ${kpi(fPct(t.avgCongestionPct || 0), "Congestione media", congTone)}
+      ${kpi(fInt(t.avgSpeedKmh || 0) + " km/h", "Velocità reale (flusso libero " + fInt(t.avgFreeflowKmh || 0) + ")", "cyan")}
+      ${kpi(fPct(t.slowdownPct || 0), "Rallentamento vs libero", "violet")}
+      ${kpi(fInt(t.busSpeedUrbanKmh || 0) + "–" + fInt(t.busSpeedExtraKmh || 0) + " km/h", "Velocità commerciale bus stimata", "emerald")}
     </div>
-    <div class="sub-title">Ripartizione modale attuale</div>
-    ${stackBar(segs)}
-    <p class="hint">Fonte: matrice del pendolarismo ISTAT (spostamenti sistematici casa-lavoro/studio) sui comuni attraversati.
-      Una quota bus bassa a fronte di flussi elevati indica potenziale di spostamento modale.</p>`;
+    <div class="sub-title">Tempo di percorrenza stimato e criticità</div>
+    <div class="tiles">
+      <div class="tile"><div class="tile-n">${fInt(t.runtimeUrbanMin || 0)}′</div><div class="tile-l">Percorrenza (urbano)</div></div>
+      <div class="tile"><div class="tile-n">${fInt(t.runtimeExtraMin || 0)}′</div><div class="tile-l">Percorrenza (extraurbano)</div></div>
+      <div class="tile"><div class="tile-n">${fInt(t.congestedSegments || 0)}</div><div class="tile-l">Tratti congestionati</div></div>
+      <div class="tile"><div class="tile-n">${fPct(t.maxCongestionPct || 0)}</div><div class="tile-l">Congestione di picco</div></div>
+    </div>
+    <p class="hint">Stima su ${fInt(t.matchedPoints || 0)}/${fInt(t.sampledPoints || 0)} punti del percorso con rilievo TomTom (ultimi 30 giorni).
+      Velocità commerciale bus stimata dalla velocità stradale con fattori 0,36 (urbano) / 0,56 (extraurbano).</p>`;
 }
 
 /* ─── STYLES ─── */
@@ -409,12 +439,19 @@ export async function exportScenarioReport(win: Window | null, analysis: any, ge
       <tbody>${gap.uncoveredPoi.slice(0, 10).map((p: any) => `<tr><td class="left">${esc(poiLabel(p.category))}</td><td class="left">${esc(p.name || "—")}</td><td class="num">${fInt((p.distKm || 0) * 1000)} m</td></tr>`).join("")}</tbody></table>` : "")}
   </section>`;
 
+  const trafficSec = `<section class="page">
+    <h2 class="sec-title">Traffico sul corridoio</h2>
+    <p class="lead">Impatto del traffico stradale reale (rilievi TomTom) lungo il percorso: congestione, velocità e stima
+      della velocità commerciale del bus.</p>
+    ${trafficHtml(a?.corridorTraffic)}
+  </section>`;
+
   const demandSec = `<section class="page">
     <h2 class="sec-title">Domanda di mobilità sul corridoio</h2>
     ${demandHtml(a?.demand)}
   </section>`;
 
-  const body = cover + scoreSec + coverageSec + stopsSec + demandSec;
+  const body = cover + scoreSec + coverageSec + stopsSec + trafficSec + demandSec;
   win.document.open();
   win.document.write(shell(`Report linea · ${name}`, body));
   win.document.close();
