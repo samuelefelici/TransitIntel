@@ -1937,12 +1937,39 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       }
     }
 
+    // 5d. DELAY-ROBUST (Fase 2): profilo ritardi orario dai dati di traffico
+    // reali (TomTom, ultimi 30 giorni). delayByHour[h] = minuti di ritardo
+    // atteso per ORA di corsa nella fascia h, stimati dalla congestione media
+    // (congestione 40% ≈ 6 min persi per ora di guida). Il solver li usa come
+    // buffer δ sul concatenamento (off/media/alta).
+    const robustnessLevel = String((body as any).robustness || "off").toLowerCase();
+    let robustnessCfg: { level: string; delayByHour: Record<string, number> } | undefined;
+    if (robustnessLevel === "media" || robustnessLevel === "alta") {
+      const delayByHour: Record<string, number> = {};
+      try {
+        const tr = await db.execute<any>(sql`
+          SELECT EXTRACT(HOUR FROM captured_at)::int AS h, avg(congestion_level) AS cong
+            FROM traffic_snapshots
+           WHERE captured_at > now() - interval '30 days'
+           GROUP BY 1
+        `);
+        for (const r of tr.rows) {
+          const d = Math.min(15, Math.round(Number(r.cong || 0) * 15 * 10) / 10);
+          if (d > 0) delayByHour[String(r.h)] = d;
+        }
+      } catch { /* nessun dato traffico → il solver usa il profilo di default */ }
+      robustnessCfg = { level: robustnessLevel, delayByHour };
+      req.log.info(`VSP robustezza=${robustnessLevel}: profilo ritardi su ${Object.keys(delayByHour).length} fasce orarie${Object.keys(delayByHour).length === 0 ? " (default)" : " (traffico reale)"}`);
+    }
+
     // 6. Spawn Python solver (CP-SAT puro, oppure orchestratore VCSP)
     const vspExtraConfig = {
       vehicleCosts: body.vehicleCosts || {},
       solverIntensity: body.solverIntensity || "normal",
       // Parametri avanzati VSP (regola #1 + override costi dalla UI)
       ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
+      // Robustezza ai ritardi (buffer δ data-driven)
+      ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
     };
     let cpResult: any;
     if (mode === "vcsp") {

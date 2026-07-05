@@ -204,6 +204,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep" | "extreme">("normal");
   // VCSP: numero massimo di round VSP→CSP (feedback costi-ombra)
   const [vcspRounds, setVcspRounds] = useState(3);
+  // Robustezza ai ritardi: buffer δ sul concatenamento, dai dati di traffico reali
+  const [robustness, setRobustness] = useState<"off" | "media" | "alta">("off");
   // Tipo di servizio del run: imposta il contesto normativo (RD131 urbano /
   // Accordo Quadro extraurbano) e fa da preset per i turni guida.
   const [serviceType, setServiceType] = useState<"urbano" | "extraurbano" | "misto">("urbano");
@@ -385,6 +387,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           // VCSP: budget per round — il VSP usa timeLimit/round, il CSP ha il suo
           bodyPayload.vcsp = { rounds: vcspRounds, crewTimeLimit: 90 };
         }
+        // Robustezza ai ritardi (buffer δ dal traffico reale): off/media/alta
+        if (robustness !== "off") bodyPayload.robustness = robustness;
         // Planning Studio project (se collegato): backend leggera anche i
         // cluster PS logici come hint di transfer 0 al CP-SAT.
         if (psProjectId) bodyPayload.psProjectId = psProjectId;
@@ -432,7 +436,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, robustness]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
@@ -611,6 +615,22 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       </button>
                     ))}
                     <span className="text-[10px] text-muted-foreground/70">si ferma prima se non migliora</span>
+                  </div>
+                )}
+                {solverMode !== "greedy" && (
+                  <div className="flex items-center gap-3 pt-1 flex-wrap">
+                    <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:</span>
+                    {([["off", "Off"], ["media", "Media"], ["alta", "Alta"]] as const).map(([k, label]) => (
+                      <button key={k} onClick={() => setRobustness(k)}
+                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${robustness === k ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
+                        {label}
+                      </button>
+                    ))}
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {robustness === "off"
+                        ? "nessun margine extra tra le corse"
+                        : `buffer δ sul concatenamento dai ritardi reali (traffico ultimi 30 gg)${robustness === "alta" ? " ×1,8" : ""} — meno rotture in esercizio, possibile qualche veicolo in più`}
+                    </span>
                   </div>
                 )}
               </div>
