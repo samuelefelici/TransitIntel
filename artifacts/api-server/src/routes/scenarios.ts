@@ -1417,20 +1417,108 @@ async function computeDemand(comuneNames: string[]): Promise<any | null> {
     if (o && d) intraCorridor += flow;
   }
   if (touchingTotal === 0) return null;
+  // La matrice pendolarismo ISTAT 2011 importata NON ha il modo (mode=NULL): la
+  // ripartizione modale è affidabile solo se ci sono valori di mode non nulli.
+  const hasModeData = rows.some((r) => r.mode != null && String(r.mode).trim() !== "");
   const busFlow = (byMode["bus_urban"] || 0) + (byMode["bus_extraurban"] || 0);
   const carFlow = (byMode["car_driver"] || 0) + (byMode["car_passenger"] || 0);
+  // Stima della domanda TPL potenzialmente captabile dai flussi sistematici
+  // interni al corridoio (quota TPL indicativa 10%, coerente con il modello
+  // desire-lines dell'app).
+  const TPL_SHARE = 0.10;
+  const estimatedTplDaily = Math.round(intraCorridor * TPL_SHARE);
   return {
     totalFlow: touchingTotal,
     intraCorridorFlow: intraCorridor,
+    hasModeData,
     busFlow, carFlow,
     trainFlow: byMode["train"] || 0,
     activeFlow: (byMode["bike"] || 0) + (byMode["walk"] || 0),
-    busSharePct: Math.round((busFlow / touchingTotal) * 1000) / 10,
-    carSharePct: Math.round((carFlow / touchingTotal) * 1000) / 10,
+    busSharePct: hasModeData ? Math.round((busFlow / touchingTotal) * 1000) / 10 : null,
+    carSharePct: hasModeData ? Math.round((carFlow / touchingTotal) * 1000) / 10 : null,
+    estimatedTplDaily,
+    tplSharePct: Math.round(TPL_SHARE * 100),
     workFlow: byReason["work"] || 0,
     studyFlow: byReason["study"] || 0,
     byMode, byReason,
     comuni: names.length,
+  };
+}
+
+/** Aggrega i punti di più polilinee campionando lungo il percorso ogni ~stepKm. */
+function samplePointsAlongLines(lines: number[][][], stepKm: number, cap = 60): Array<{ lng: number; lat: number }> {
+  const out: Array<{ lng: number; lat: number }> = [];
+  for (const line of lines) {
+    for (let i = 0; i < line.length; i++) {
+      const [lng, lat] = line[i];
+      if (out.length === 0) { out.push({ lng, lat }); continue; }
+      const prev = out[out.length - 1];
+      if (haversineKm(prev.lat, prev.lng, lat, lng) >= stepKm) out.push({ lng, lat });
+    }
+  }
+  if (out.length <= cap) return out;
+  const step = out.length / cap;
+  const s: Array<{ lng: number; lat: number }> = [];
+  for (let i = 0; i < cap; i++) s.push(out[Math.floor(i * step)]);
+  return s;
+}
+
+/** Impatto del traffico sul corridoio: dati TomTom (traffic_snapshots) lungo il percorso. */
+async function computeCorridorTraffic(lines: number[][][], lengthKm: number): Promise<any> {
+  const pts: number[][] = [];
+  for (const l of lines) for (const p of l) pts.push(p);
+  if (pts.length < 2) return { available: false, reason: "Geometria non disponibile" };
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  for (const [x, y] of pts) { if (x < minLng) minLng = x; if (x > maxLng) maxLng = x; if (y < minLat) minLat = y; if (y > maxLat) maxLat = y; }
+  const pad = 0.03;
+  let agg: any[];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT round(lng::numeric, 3) AS lng, round(lat::numeric, 3) AS lat,
+             avg(congestion_level) AS cong, avg(speed) AS speed, avg(freeflow_speed) AS freeflow
+        FROM traffic_snapshots
+       WHERE captured_at > now() - interval '30 days'
+         AND lng BETWEEN ${minLng - pad} AND ${maxLng + pad}
+         AND lat BETWEEN ${minLat - pad} AND ${maxLat + pad}
+       GROUP BY 1, 2
+    `);
+    agg = r.rows;
+  } catch { return { available: false, reason: "Dati traffico non disponibili" }; }
+  if (!agg || agg.length === 0) return { available: false, reason: "Nessun dato traffico nell'area del percorso" };
+
+  const sampled = samplePointsAlongLines(lines, 0.3);
+  const matched: Array<{ cong: number; speed: number; freeflow: number }> = [];
+  for (const p of sampled) {
+    let best: any = null, bd = Infinity;
+    for (const s of agg) {
+      const d = haversineKm(p.lat, p.lng, Number(s.lat), Number(s.lng));
+      if (d < bd) { bd = d; best = s; }
+    }
+    if (best && bd <= 2.0) matched.push({ cong: Number(best.cong) || 0, speed: Number(best.speed) || 0, freeflow: Number(best.freeflow) || 0 });
+  }
+  if (matched.length === 0) return { available: false, reason: "Nessun rilievo traffico vicino al percorso" };
+
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / (xs.length || 1);
+  const avgCong = mean(matched.map((m) => m.cong));
+  const avgSpeed = mean(matched.map((m) => m.speed));
+  const avgFree = mean(matched.map((m) => m.freeflow));
+  const slowdownPct = avgFree > 0 ? Math.round((1 - avgSpeed / avgFree) * 100) : 0;
+  const busUrban = Math.max(1, Math.round(avgSpeed * 0.36));   // fattori come pagina Traffico
+  const busExtra = Math.max(1, Math.round(avgSpeed * 0.56));
+  return {
+    available: true,
+    sampledPoints: sampled.length,
+    matchedPoints: matched.length,
+    avgCongestionPct: Math.round(avgCong * 100),
+    avgSpeedKmh: Math.round(avgSpeed),
+    avgFreeflowKmh: Math.round(avgFree),
+    slowdownPct,
+    busSpeedUrbanKmh: busUrban,
+    busSpeedExtraKmh: busExtra,
+    runtimeUrbanMin: Math.round((lengthKm / busUrban) * 60),
+    runtimeExtraMin: Math.round((lengthKm / busExtra) * 60),
+    congestedSegments: matched.filter((m) => m.cong >= 0.3).length,
+    maxCongestionPct: Math.round(Math.max(...matched.map((m) => m.cong)) * 100),
   };
 }
 
@@ -1516,11 +1604,13 @@ router.get("/scenarios/:id/deep", async (req, res) => {
 
     const analysis = await analyzeScenario(row.geojson as any, poiRows, censusRows, radius);
     const demand = await computeDemand((analysis.comuniDetails || []).map((c: any) => c.name));
+    const routeLines = (analysis.routes || []).map((r: any) => r.coordinates).filter((c: any) => Array.isArray(c) && c.length > 1);
+    const corridorTraffic = await computeCorridorTraffic(routeLines, analysis.totalLengthKm || 0);
     const accessibilityIso = iso
       ? await computeIsochroneAccessibility(analysis.stops as any, poiRows as any, censusRows as any, minutes.length ? minutes : [5, 10, 15], 20_000)
       : { available: false, reason: "Isocrone disattivate" };
 
-    res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, accessibilityIso });
+    res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, corridorTraffic, accessibilityIso });
   } catch (err) {
     req.log.error(err, "Error deep-analyzing scenario");
     res.status(500).json({ error: "Internal server error" });
