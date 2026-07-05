@@ -379,6 +379,8 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
 _LAST_ARCS_PRUNED = False
 # DELAY-ROBUST: archi scartati per il buffer ritardi nell'ultimo build.
 _LAST_ROBUST_DROPPED = 0
+# NORMATIVA: archi scartati dai filtri hard (vieta cambi linea / vuoti interni).
+_NORMATIVA_DROPPED = {"lineChange": 0, "internalDeadhead": 0}
 
 
 def build_compatible_arcs_fast(
@@ -435,6 +437,8 @@ def build_compatible_arcs_fast(
     robust_dropped = 0    # DELAY-ROBUST: archi scartati SOLO per il buffer δ
     global _LAST_ROBUST_DROPPED
     _LAST_ROBUST_DROPPED = 0
+    _NORMATIVA_DROPPED["lineChange"] = 0
+    _NORMATIVA_DROPPED["internalDeadhead"] = 0
     for i in range(n):
         ti = trips[i]
         delay_buf = (delay_buffers or {}).get(i, 0)
@@ -473,6 +477,13 @@ def build_compatible_arcs_fast(
                     tj.first_stop_lat, tj.first_stop_lon, ti.category)
 
             if dh_km > MAX_DEADHEAD_KM:
+                continue
+            # NORMATIVA: VIETA_CAMBI_LINEA / VIETA_VAV_INTERNI (filtri hard)
+            if rates.forbid_line_changes and ti.route_id != tj.route_id:
+                _NORMATIVA_DROPPED["lineChange"] += 1
+                continue
+            if rates.forbid_internal_deadheads and dh_km > rates.min_deadhead_km:
+                _NORMATIVA_DROPPED["internalDeadhead"] += 1
                 continue
             # FIX-TIGHT: il bus che arriva alle 12:58 e riparte alle 13:00 dallo
             # stesso capolinea NON deve essere bloccato dal MIN_LAYOVER=3min.
@@ -609,6 +620,10 @@ def precompute_arc_costs(
         # NON scalata per strategia: è un segnale assoluto in EUR.
         if a.penalty_eur:
             cost_euro += a.penalty_eur
+
+        # NORMATIVA: costo per cambio di linea (VINCOLO_CAMBI_LINEA)
+        if rates.cost_per_line_change > 0 and ti.route_id != tj.route_id:
+            cost_euro += rates.cost_per_line_change
 
         # NB: niente max(0, …). Il bonus monolinea (sottrattivo) deve poter
         # rendere un arco "same-route" più economico di uno neutro: troncare a 0
@@ -1467,8 +1482,51 @@ def chain_cost_detailed(
                 ds_pen += levels * t.duration_min * rates.downsize_offpeak_per_level_per_min
     cost.downsize_penalty = ds_pen
     cost.vcsp_penalty = vcsp_pen
+    cost.normativa_cost = chain_normativa_cost(chain, trips, rates)
 
     cost.compute()
+    return cost
+
+
+def chain_normativa_cost(chain: list[int], trips: list[Trip], rates: VehicleCostRates) -> float:
+    """Costi/penalità della normativa VSP (MAIOR-style) a livello di blocco.
+
+    - costo per cambio di linea (VINCOLO_CAMBI_LINEA);
+    - costo TRIPPER per blocchi "ritaglio" (1 corsa o servizio sotto soglia);
+    - penalità PROIBITIVE (10k EUR/violazione) per superamento dei cap hard
+      (max cambi linea, max corse per blocco): guidano greedy e local search
+      lontano dalle violazioni; il post-pass di split garantisce comunque il
+      rispetto hard.
+    """
+    if (rates.cost_per_line_change <= 0 and rates.tripper_cost <= 0
+            and rates.max_line_changes < 0 and rates.max_pieces_per_block <= 0
+            and not rates.forbid_line_changes and not rates.forbid_internal_deadheads):
+        return 0.0
+    cost = 0.0
+    line_changes = sum(1 for k in range(len(chain) - 1)
+                       if trips[chain[k]].route_id != trips[chain[k + 1]].route_id)
+    if rates.cost_per_line_change > 0:
+        cost += line_changes * rates.cost_per_line_change
+    if rates.tripper_cost > 0:
+        service_min = sum(trips[i].duration_min for i in chain)
+        if len(chain) == 1 or service_min < rates.tripper_min_service_min:
+            cost += rates.tripper_cost
+    if rates.forbid_line_changes and line_changes > 0:
+        cost += 10_000.0 * line_changes
+    if rates.max_line_changes >= 0 and line_changes > rates.max_line_changes:
+        cost += 10_000.0 * (line_changes - rates.max_line_changes)
+    if rates.max_pieces_per_block > 0 and len(chain) > rates.max_pieces_per_block:
+        cost += 10_000.0 * (len(chain) - rates.max_pieces_per_block)
+    if rates.forbid_internal_deadheads:
+        # VIETA_VAV_INTERNI: qualunque trasferimento a vuoto tra capolinea
+        # diversi in linea è una violazione (la LS/eliminazione veicoli può
+        # fondere catene senza passare dagli archi filtrati).
+        for k in range(len(chain) - 1):
+            a, b = trips[chain[k]], trips[chain[k + 1]]
+            dh, _ = estimate_deadhead(a.last_stop_lat, a.last_stop_lon,
+                                      b.first_stop_lat, b.first_stop_lon, a.category)
+            if dh > rates.min_deadhead_km:
+                cost += 10_000.0
     return cost
 
 
@@ -1502,7 +1560,8 @@ def chain_cost_fast(
             + dh_km * rates.per_deadhead_km.get(vtype, 0.80)
             + idle_min * rates.idle_per_min
             + depot_ret * rates.per_depot_return
-            + vcsp_pen)
+            + vcsp_pen
+            + chain_normativa_cost(chain, trips, rates))
 
 
 def chain_cost_accept(
@@ -2282,6 +2341,50 @@ def chains_to_shifts(
     return shifts
 
 
+def enforce_normativa_split(
+    chains: list[list[int]], trips: list[Trip], rates: VehicleCostRates,
+) -> tuple[list[list[int]], int]:
+    """Garanzia HARD dei cap di normativa (max cambi linea, max corse/blocco).
+
+    Le penalità proibitive guidano CP-SAT/greedy/LS lontano dalle violazioni,
+    ma il modello ad archi non può imporre cap per-catena: questo post-pass
+    SPEZZA le catene residue nel punto di violazione (aumentando i veicoli,
+    come da semantica MAIOR: la regola vince sul risparmio).
+    """
+    if (rates.max_line_changes < 0 and rates.max_pieces_per_block <= 0
+            and not rates.forbid_line_changes and not rates.forbid_internal_deadheads):
+        return chains, 0
+    # vietaCambiLinea equivale a max cambi = 0
+    max_lc = 0 if rates.forbid_line_changes else rates.max_line_changes
+    out: list[list[int]] = []
+    splits = 0
+    for chain in chains:
+        if not chain:
+            continue
+        cur = [chain[0]]
+        lc = 0
+        for idx in chain[1:]:
+            next_lc = lc + (1 if trips[cur[-1]].route_id != trips[idx].route_id else 0)
+            over_pieces = rates.max_pieces_per_block > 0 and len(cur) + 1 > rates.max_pieces_per_block
+            over_changes = max_lc >= 0 and next_lc > max_lc
+            over_dh = False
+            if rates.forbid_internal_deadheads and not (over_pieces or over_changes):
+                a, b = trips[cur[-1]], trips[idx]
+                dh, _ = estimate_deadhead(a.last_stop_lat, a.last_stop_lon,
+                                          b.first_stop_lat, b.first_stop_lon, a.category)
+                over_dh = dh > rates.min_deadhead_km
+            if over_pieces or over_changes or over_dh:
+                out.append(cur)
+                cur = [idx]
+                lc = 0
+                splits += 1
+            else:
+                cur.append(idx)
+                lc = next_lc
+        out.append(cur)
+    return out, splits
+
+
 # ═══════════════════════════════════════════════════════════════
 #  MULTI-DEPOSITO — domiciliazione capacitata + fuorilinea deposito
 # ═══════════════════════════════════════════════════════════════
@@ -2311,9 +2414,26 @@ def assign_depots_to_shifts(
 
     n, m = len(shifts), len(valid)
     caps: list[int | None] = []
+    type_caps: list[dict[str, int] | None] = []   # flotta per TIPOLOGIA per deposito
     for d in valid:
         mv = d.get("maxVehicles")
-        caps.append(int(mv) if isinstance(mv, (int, float)) and mv > 0 else None)
+        fleet = d.get("fleet")
+        tc: dict[str, int] | None = None
+        if isinstance(fleet, dict):
+            tc = {}
+            for vt, num in fleet.items():
+                if isinstance(num, (int, float)) and num >= 0:
+                    tc[str(vt)] = int(num)
+            if not tc:
+                tc = None
+        # cap totale: esplicito, oppure derivato dalla somma della flotta per tipo
+        if isinstance(mv, (int, float)) and mv > 0:
+            caps.append(int(mv))
+        elif tc is not None:
+            caps.append(sum(tc.values()))
+        else:
+            caps.append(None)
+        type_caps.append(tc)
 
     # Costi (out_km, in_km) per coppia turno×deposito — decimi di km interi
     out_km = [[0.0] * m for _ in range(n)]
@@ -2325,7 +2445,7 @@ def assign_depots_to_shifts(
             out_km[si][di] = ok
             in_km[si][di] = ik
 
-    def _solve(enforce_caps: bool) -> list[int] | None:
+    def _solve(enforce_caps: bool, enforce_type_caps: bool) -> list[int] | None:
         model = cp_model.CpModel()
         x = [[model.new_bool_var(f"x_{s}_{d}") for d in range(m)] for s in range(n)]
         for s in range(n):
@@ -2334,6 +2454,19 @@ def assign_depots_to_shifts(
             for d in range(m):
                 if caps[d] is not None:
                     model.add(sum(x[s][d] for s in range(n)) <= caps[d])
+        if enforce_type_caps:
+            # Flotta per TIPOLOGIA (disponibilità_tipologie_per_deposito, MAIOR):
+            # se un deposito dichiara la flotta, quella È la sua dotazione:
+            # tipo elencato → cap dichiarato, tipo NON elencato → 0 vetture.
+            shift_idxs_by_type: dict[str, list[int]] = {}
+            for s in range(n):
+                shift_idxs_by_type.setdefault(shifts[s].vehicle_type, []).append(s)
+            for d in range(m):
+                tc = type_caps[d]
+                if not tc:
+                    continue
+                for vt, idxs in shift_idxs_by_type.items():
+                    model.add(sum(x[s][d] for s in idxs) <= tc.get(vt, 0))
         model.minimize(sum(
             x[s][d] * int(round((out_km[s][d] + in_km[s][d]) * 10))
             for s in range(n) for d in range(m)
@@ -2345,12 +2478,39 @@ def assign_depots_to_shifts(
             return None
         return [next(d for d in range(m) if solver.value(x[s][d])) for s in range(n)]
 
+    has_type_caps = any(tc for tc in type_caps)
     infeasibility = None
-    assignment = _solve(enforce_caps=True)
+    assignment = _solve(enforce_caps=True, enforce_type_caps=has_type_caps)
+    if assignment is None and has_type_caps:
+        # Flotta per tipo insufficiente: riprova con soli cap totali e riporta
+        # il problema per tipologia.
+        assignment = _solve(enforce_caps=True, enforce_type_caps=False)
+        if assignment is not None:
+            need_by_type: dict[str, int] = {}
+            for s in shifts:
+                need_by_type[s.vehicle_type] = need_by_type.get(s.vehicle_type, 0) + 1
+            # Disponibilità per tipo: nei depositi con flotta dichiarata vale il
+            # cap (0 se il tipo non è elencato); un deposito SENZA flotta è
+            # illimitato per ogni tipo → nessun deficit possibile per quel tipo.
+            unbounded = any(not tc for tc in type_caps)
+            over_types = []
+            if not unbounded:
+                for vt, need in need_by_type.items():
+                    avail = sum((tc or {}).get(vt, 0) for tc in type_caps)
+                    if need > avail:
+                        over_types.append({"vehicleType": vt, "required": need,
+                                           "available": avail, "deficit": need - avail})
+            infeasibility = {
+                "required": n,
+                "available": sum(c for c in caps if c is not None),
+                "deficit": 0,
+                "byType": over_types,
+                "note": "Flotta per TIPOLOGIA insufficiente: assegnazione senza vincolo di tipo",
+            }
     if assignment is None:
         # Cap violabili solo perché Σcap < n. turni: assegna senza cap e riporta
         # il deficit esatto (quante vetture mancano e dove).
-        assignment = _solve(enforce_caps=False)
+        assignment = _solve(enforce_caps=False, enforce_type_caps=False)
         finite_total = sum(c for c in caps if c is not None)
         infeasibility = {
             "required": n,
@@ -2362,11 +2522,13 @@ def assign_depots_to_shifts(
             assignment = [min(range(m), key=lambda d: out_km[s][d] + in_km[s][d]) for s in range(n)]
 
     counts = [0] * m
+    counts_by_type: list[dict[str, int]] = [defaultdict(int) for _ in range(m)]
     tot_out = 0.0
     tot_in = 0.0
     for si, di in enumerate(assignment):
         s, d = shifts[si], valid[di]
         counts[di] += 1
+        counts_by_type[di][s.vehicle_type] += 1
         info = {"id": d["id"], "name": d.get("name") or "Deposito", "color": d.get("color") or "#3b82f6"}
         s.residenza_depot_id = info["id"]
         s.residenza_name = info["name"]
@@ -2404,7 +2566,9 @@ def assign_depots_to_shifts(
             tot_in += ik
 
     per_depot = [{"id": valid[d]["id"], "name": valid[d].get("name") or "Deposito",
-                  "vehicles": counts[d], "cap": caps[d]} for d in range(m)]
+                  "vehicles": counts[d], "cap": caps[d],
+                  "byType": dict(counts_by_type[d]) if counts_by_type[d] else None,
+                  "fleet": type_caps[d]} for d in range(m)]
     if infeasibility is not None:
         over = [{"id": p["id"], "name": p["name"], "vehicles": p["vehicles"], "cap": p["cap"],
                  "over": p["vehicles"] - p["cap"]} for p in per_depot
@@ -2444,6 +2608,7 @@ def compute_shift_costs(
         totals.gap_penalty += sc.gap_penalty
         totals.downsize_penalty += sc.downsize_penalty
         totals.vcsp_penalty += sc.vcsp_penalty
+        totals.normativa_cost += sc.normativa_cost
         totals.total += sc.total
 
     return {
@@ -2776,6 +2941,12 @@ def run(data: dict) -> dict:
         log(f"  [VSP] Cost rates override applicato: "
             f"{list(vsp_config.cost_rates_override.keys())}")
 
+    # ── NORMATIVA VSP (MAIOR-style): cambi linea, tripper, sosta capolinea,
+    # max pezzi, vieta vuoti interni. config.normativa (tutte opzionali).
+    normativa_active = rates.apply_normativa(config.get("normativa"))
+    if normativa_active:
+        log(f"  [VSP-NORMATIVA] regole attive: {', '.join(normativa_active)}")
+
     # FIX-VSP-1/3/6/8 (wiring): coordinazione strict/lexicographic.
     # Se l'utente ha scelto strict o lexicographic come priorità min-veicoli,
     # attiviamo automaticamente:
@@ -3030,6 +3201,15 @@ def run(data: dict) -> dict:
             )
     report_progress("VSP", 97, f"Pipeline finale: {len(improved_chains)} vehicles")
 
+    # ── NORMATIVA: garanzia HARD dei cap (split delle catene in violazione) ──
+    normativa_splits = 0
+    if normativa_active:
+        improved_chains, normativa_splits = enforce_normativa_split(improved_chains, trips, rates)
+        if normativa_splits:
+            validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-normativa")
+            log(f"  [VSP-NORMATIVA] {normativa_splits} split applicati per rispettare "
+                f"i cap (ora {len(improved_chains)} veicoli)")
+
     # ── FLOTTA: cap globale HARD = Σ maxVehicles dei depositi selezionati ──
     # Se la soluzione usa più veicoli della flotta disponibile, tentiamo un
     # solve vincolato (nv ≤ Σcap). Se nemmeno così è possibile, riportiamo
@@ -3037,8 +3217,20 @@ def run(data: dict) -> dict:
     fleet_cap: int | None = None
     fleet_infeasibility: dict | None = None
     if depots_data:
-        caps_list = [d.get("maxVehicles") for d in depots_data]
-        if caps_list and all(isinstance(c, (int, float)) and c > 0 for c in caps_list):
+        # cap per deposito: maxVehicles esplicito, oppure somma della flotta
+        # per tipologia (disponibilità_tipologie_per_deposito)
+        caps_list = []
+        for d in depots_data:
+            mv = d.get("maxVehicles")
+            fl = d.get("fleet")
+            if isinstance(mv, (int, float)) and mv > 0:
+                caps_list.append(int(mv))
+            elif isinstance(fl, dict) and fl:
+                tot = sum(int(v) for v in fl.values() if isinstance(v, (int, float)) and v >= 0)
+                caps_list.append(tot if tot > 0 else None)
+            else:
+                caps_list.append(None)
+        if caps_list and all(c is not None for c in caps_list):
             fleet_cap = int(sum(caps_list))
     if fleet_cap is not None and len(improved_chains) > fleet_cap:
         log(f"  [VSP-FLEET] {len(improved_chains)} veicoli > flotta disponibile {fleet_cap}: "
@@ -3142,6 +3334,21 @@ def run(data: dict) -> dict:
             "maxBufferMin": max(delay_buffers.values()) if delay_buffers else 0,
             "arcsDropped": _LAST_ROBUST_DROPPED,
         } if robust_factor > 0 else None,
+        # NORMATIVA VSP (MAIOR-style)
+        "normativa": {
+            "rules": normativa_active,
+            "lineChangesTotal": sum(
+                1 for c in improved_chains for k in range(len(c) - 1)
+                if trips[c[k]].route_id != trips[c[k + 1]].route_id),
+            "trippers": sum(
+                1 for c in improved_chains
+                if rates.tripper_cost > 0 and (
+                    len(c) == 1
+                    or sum(trips[i].duration_min for i in c) < rates.tripper_min_service_min)),
+            "splitsApplied": normativa_splits,
+            "arcsDroppedLineChange": _NORMATIVA_DROPPED["lineChange"],
+            "arcsDroppedInternalDeadhead": _NORMATIVA_DROPPED["internalDeadhead"],
+        } if normativa_active else None,
     }
 
     report_progress("VSP", 95, "Writing output...")

@@ -186,7 +186,7 @@ interface Props {
   /** deposito scelto (residenza di servizio dello scenario) — salvato con lo scenario */
   depotId?: string | null;
   /** depositi selezionati (multi) con capacità max veicoli — passati al solver */
-  depots?: Array<{ id: string; maxVehicles: number | null }>;
+  depots?: Array<{ id: string; maxVehicles: number | null; fleet?: Record<string, number> }>;
   /** Pipeline scelta nella dashboard UDP:
    *  "classic" = VSP (turni macchina), poi CSP nello step Turni Guida;
    *  "vcsp"    = pipeline integrata: TM+TG insieme, salvataggio doppio. */
@@ -220,6 +220,24 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   }, [pipelineMode]);
   // Robustezza ai ritardi: buffer δ sul concatenamento, dai dati di traffico reali
   const [robustness, setRobustness] = useState<"off" | "media" | "alta">("off");
+  // Normativa turni macchina (regole stile MAIOR): cambi linea, tripper, pezzi,
+  // sosta max al capolinea, vuoti interni. Tutto opzionale → payload solo se attivo.
+  type NormativaCfg = {
+    costoCambioLinea?: number; maxCambiLinea?: number; vietaCambiLinea?: boolean;
+    maxSostaCapolineaMin?: number; maxPezziPerBlocco?: number;
+    costoTripper?: number; tripperServizioMinMin?: number; vietaVuotiInterni?: boolean;
+  };
+  const [normativa, setNormativa] = useState<NormativaCfg>({});
+  const [normativaOpen, setNormativaOpen] = useState(false);
+  const setNorm = useCallback(<K extends keyof NormativaCfg>(k: K, v: NormativaCfg[K]) => {
+    setNormativa((n) => {
+      const next = { ...n };
+      if (v === undefined || v === false || (typeof v === "number" && !Number.isFinite(v))) delete next[k];
+      else next[k] = v;
+      return next;
+    });
+  }, []);
+  const normativaActiveCount = Object.keys(normativa).length;
   // Tipo di servizio del run: imposta il contesto normativo (RD131 urbano /
   // Accordo Quadro extraurbano) e fa da preset per i turni guida.
   const [serviceType, setServiceType] = useState<"urbano" | "extraurbano" | "misto">("urbano");
@@ -403,6 +421,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         }
         // Robustezza ai ritardi (buffer δ dal traffico reale): off/media/alta
         if (robustness !== "off") bodyPayload.robustness = robustness;
+        // Normativa turni macchina (MAIOR-style): solo le regole attivate
+        if (Object.keys(normativa).length > 0) bodyPayload.vspNormativa = normativa;
         // Planning Studio project (se collegato): backend leggera anche i
         // cluster PS logici come hint di transfer 0 al CP-SAT.
         if (psProjectId) bodyPayload.psProjectId = psProjectId;
@@ -450,7 +470,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, robustness]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, robustness, normativa]);
 
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
@@ -705,6 +725,106 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     💡 Vuoi mezzi e personale ottimizzati <b>insieme</b>? Torna alla dashboard dell'UDP e usa la <b>Pipeline Integrata VCSP</b>.
                   </p>
                 </div>
+              )}
+
+              {/* ── NORMATIVA TURNI MACCHINA (regole stile MAIOR, tutte opzionali) ── */}
+              {solverMode !== "greedy" && (
+                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
+                  className="bg-card/40 border border-border/30 rounded-xl">
+                  <button onClick={() => setNormativaOpen(o => !o)}
+                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-amber-500/10 transition-colors rounded-xl">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">📏</span>
+                      <span className="text-xs font-semibold text-amber-300">Normativa turni macchina</span>
+                      {normativaActiveCount > 0 && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          {normativaActiveCount} regol{normativaActiveCount === 1 ? "a attiva" : "e attive"}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">{normativaOpen ? "▲ chiudi" : "▼ apri"}</span>
+                  </button>
+                  {normativaOpen && (
+                    <div className="px-4 pb-4 space-y-3 border-t border-border/20 pt-3">
+                      <p className="text-[10px] text-muted-foreground leading-relaxed">
+                        Regole aziendali sulla <b>composizione dei blocchi vettura</b>: cambi di linea, blocchi
+                        troppo corti ("tripper"), numero di pezzi, soste al capolinea, trasferimenti a vuoto.
+                        Lascia vuoto un campo per non applicare quella regola.
+                      </p>
+                      {/* Cambi di linea */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Costo per cambio linea (€)</span>
+                          <input type="number" min={0} step={0.5} placeholder="es. 5"
+                            disabled={!!normativa.vietaCambiLinea}
+                            value={normativa.costoCambioLinea ?? ""}
+                            onChange={(e) => setNorm("costoCambioLinea", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground disabled:opacity-40" />
+                        </label>
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Max cambi linea per blocco</span>
+                          <input type="number" min={0} step={1} placeholder="es. 2"
+                            disabled={!!normativa.vietaCambiLinea}
+                            value={normativa.maxCambiLinea ?? ""}
+                            onChange={(e) => setNorm("maxCambiLinea", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground disabled:opacity-40" />
+                        </label>
+                      </div>
+                      <label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+                        <input type="checkbox" checked={!!normativa.vietaCambiLinea}
+                          onChange={(e) => setNorm("vietaCambiLinea", e.target.checked || undefined)}
+                          className="accent-amber-500" />
+                        <span><b className="text-foreground">Vieta cambi di linea</b> — ogni vettura resta su una sola linea (monolinea HARD)</span>
+                      </label>
+                      {/* Tripper */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Costo "tripper" (€) — blocco troppo corto</span>
+                          <input type="number" min={0} step={5} placeholder="es. 50"
+                            value={normativa.costoTripper ?? ""}
+                            onChange={(e) => setNorm("costoTripper", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground" />
+                        </label>
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Servizio minimo anti-tripper (min)</span>
+                          <input type="number" min={0} step={10} placeholder="default 120"
+                            value={normativa.tripperServizioMinMin ?? ""}
+                            onChange={(e) => setNorm("tripperServizioMinMin", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground" />
+                        </label>
+                      </div>
+                      {/* Pezzi + sosta capolinea */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Max pezzi (corse) per blocco</span>
+                          <input type="number" min={1} step={1} placeholder="es. 25"
+                            value={normativa.maxPezziPerBlocco ?? ""}
+                            onChange={(e) => setNorm("maxPezziPerBlocco", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground" />
+                        </label>
+                        <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                          <span>Sosta max al capolinea (min)</span>
+                          <input type="number" min={0} step={10} placeholder="es. 90"
+                            value={normativa.maxSostaCapolineaMin ?? ""}
+                            onChange={(e) => setNorm("maxSostaCapolineaMin", e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="bg-background/60 border border-border/40 rounded-lg px-2 py-1.5 text-xs text-foreground" />
+                        </label>
+                      </div>
+                      <label className="flex items-center gap-2 text-[11px] text-muted-foreground cursor-pointer">
+                        <input type="checkbox" checked={!!normativa.vietaVuotiInterni}
+                          onChange={(e) => setNorm("vietaVuotiInterni", e.target.checked || undefined)}
+                          className="accent-amber-500" />
+                        <span><b className="text-foreground">Vieta trasferimenti a vuoto interni</b> — niente spostamenti a vuoto tra capolinea diversi in linea</span>
+                      </label>
+                      {normativaActiveCount > 0 && (
+                        <button onClick={() => setNormativa({})}
+                          className="text-[10px] text-muted-foreground hover:text-foreground underline">
+                          Azzera tutte le regole
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </motion.div>
               )}
 
               {/* ── PROFILO PRESET (solo CP-SAT) — scelta umana, mappa più parametri ── */}

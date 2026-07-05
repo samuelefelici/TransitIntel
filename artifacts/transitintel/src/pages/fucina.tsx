@@ -316,8 +316,8 @@ export default function FucinaPage() {
   const [gtfsSelection, setGtfsSelection] = useState<GtfsSelection | null>(null);
   const [vehicleAssignment, setVehicleAssignment] = useState<VehicleAssignment | null>(null);
   const [selectedDepotId, setSelectedDepotId] = useState<string | null>(null);
-  // Selezione multi-deposito (id + max veicoli) per l'ottimizzazione TM.
-  const [selectedDepots, setSelectedDepots] = useState<Array<{ id: string; maxVehicles: number | null }>>([]);
+  // Selezione multi-deposito (id + max veicoli + flotta per tipologia) per l'ottimizzazione TM.
+  const [selectedDepots, setSelectedDepots] = useState<Array<{ id: string; maxVehicles: number | null; fleet?: Record<string, number> }>>([]);
   const [selectedClusterIds, setSelectedClusterIds] = useState<string[]>([]);
   const [deadheadMatrix, setDeadheadMatrix] = useState<DeadheadMatrix | null>(null);
   const [optimizationResult, setOptimizationResult] = useState<ServiceProgramResult | null>(null);
