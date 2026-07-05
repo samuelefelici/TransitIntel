@@ -823,7 +823,7 @@ export default function DriverWorkspace({
                 <Users className="w-5 h-5 text-purple-300" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-purple-100">Setup Turni Guida</h3>
+                <h3 className="text-base font-semibold text-purple-100">CSP · Ottimizzatore Turni Guida</h3>
                 <p className="text-xs text-zinc-400">
                   Verifica i parametri principali prima di lanciare l'ottimizzazione.
                 </p>

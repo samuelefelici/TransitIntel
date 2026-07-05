@@ -57,9 +57,9 @@ const STEPS = [
   { id: 2, label: "Deposito",            icon: Building2,desc: "Punto di partenza veicoli" },
   { id: 3, label: "Cluster di Cambio",   icon: Layers,   desc: "Punti di cambio vettura" },
   { id: 4, label: "Fuori Linea",         icon: Route,    desc: "Distanze · tempi · costi" },
-  { id: 5, label: "Ottimizzazione",      icon: Zap,      desc: "CP-SAT · analisi · salva" },
+  { id: 5, label: "Ottimizzazione",      icon: Zap,      desc: "VSP turni macchina · VCSP integrato" },
   { id: 6, label: "Area di Lavoro",      icon: Truck,    desc: "Gantt · drag & drop · esporta" },
-  { id: 7, label: "Turni Guida",         icon: Users,    desc: "CSP · saturazione · cap vetture · idle" },
+  { id: 7, label: "Turni Guida (CSP)",   icon: Users,    desc: "CSP · saturazione · cap vetture · idle" },
 ] as const;
 
 // Step della pipeline TURNI MACCHINA (visibili nella stepper):

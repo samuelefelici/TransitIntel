@@ -129,7 +129,7 @@ function LoadingScreen({ solverMode, intensity }: { solverMode: "greedy" | "cpsa
 
       <div className="text-center space-y-3 max-w-sm">
         <h2 className="text-xl font-black text-foreground">
-          {solverMode === "vcsp" ? "🔗 VCSP integrato in esecuzione" : solverMode === "cpsat" ? "🧠 CP-SAT in esecuzione" : "⚡ Elaborazione Greedy"}
+          {solverMode === "vcsp" ? "🔗 VCSP · Integrato Macchina+Guida in esecuzione" : solverMode === "cpsat" ? "🧠 VSP · CP-SAT in esecuzione" : "⚡ VSP · Greedy in esecuzione"}
         </h2>
         <p className="text-sm text-muted-foreground">
           {solverMode === "vcsp"
@@ -204,6 +204,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep" | "extreme">("normal");
   // VCSP: numero massimo di round VSP→CSP (feedback costi-ombra)
   const [vcspRounds, setVcspRounds] = useState(3);
+  // Ultimo algoritmo VSP scelto (per tornare da VCSP → VSP senza perdere la scelta)
+  const [prevVspAlgo, setPrevVspAlgo] = useState<"cpsat" | "greedy">("cpsat");
+  useEffect(() => { if (solverMode !== "vcsp") setPrevVspAlgo(solverMode); }, [solverMode]);
   // Robustezza ai ritardi: buffer δ sul concatenamento, dai dati di traffico reali
   const [robustness, setRobustness] = useState<"off" | "media" | "alta">("off");
   // Tipo di servizio del run: imposta il contesto normativo (RD131 urbano /
@@ -503,7 +506,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           </span>
           {result && !running && (
             <Badge variant="outline" className={`text-[9px] ${result.solver === "vcsp" ? "border-cyan-500/40 text-cyan-400" : result.solver === "cpsat" ? "border-purple-500/40 text-purple-400" : "border-orange-500/30 text-orange-400"}`}>
-              {result.solver === "vcsp" ? "🔗 VCSP" : result.solver === "cpsat" ? "🧠 CP-SAT" : "⚡ Greedy"}
+              {result.solver === "vcsp" ? "🔗 VCSP · Integrato" : result.solver === "cpsat" ? "🧠 VSP · CP-SAT" : "⚡ VSP · Greedy"}
             </Badge>
           )}
         </div>
@@ -573,37 +576,31 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 </p>
               </div>
 
-              {/* Scelta algoritmo — CP-SAT è il motore principale (consigliato) */}
+              {/* ══ 1. PROCESSO DI OTTIMIZZAZIONE — VSP (sequenziale) vs VCSP (integrato) ══
+                  Sono DUE PROCESSI DIVERSI, non due algoritmi dello stesso ottimizzatore:
+                  · VSP  = solo turni macchina; i Turni Guida (CSP) si fanno dopo, nel loro step
+                  · VCSP = terzo processo che UNIFICA VSP e CSP in un ciclo con feedback     */}
               <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
-                <p className="text-xs font-semibold text-foreground">Algoritmo</p>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => setSolverMode("cpsat")}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
-                    <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">CONSIGLIATO</span>
-                    <span className="text-xl">🧠</span>
-                    <span className="font-bold">CP-SAT</span>
-                    <span className="text-[10px] opacity-70">il vero ottimizzatore</span>
+                <p className="text-xs font-semibold text-foreground">Processo di ottimizzazione</p>
+                <div className="flex items-stretch gap-2">
+                  <button onClick={() => setSolverMode(prevVspAlgo)}
+                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border text-xs font-medium transition-all text-center ${solverMode !== "vcsp" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                    <span className="text-xl">🚌</span>
+                    <span className="font-bold">VSP · Turni Macchina</span>
+                    <span className="text-[10px] opacity-70 leading-tight">Sequenziale: qui ottimizzi i MEZZI.<br />I Turni Guida (CSP) si generano dopo, nel loro step.</span>
                   </button>
                   <button onClick={() => setSolverMode("vcsp")}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "vcsp" ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border text-xs font-medium transition-all relative text-center ${solverMode === "vcsp" ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                     <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">NUOVO</span>
                     <span className="text-xl">🔗</span>
-                    <span className="font-bold">Integrato VCSP</span>
-                    <span className="text-[10px] opacity-70">mezzi + guida insieme</span>
-                  </button>
-                  <button onClick={() => setSolverMode("greedy")}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "greedy" ? "bg-orange-500/15 border-orange-500/50 text-orange-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
-                    <span className="text-xl">⚡</span>
-                    <span className="font-bold">Greedy</span>
-                    <span className="text-[10px] opacity-70">anteprima rapida (~1s)</span>
+                    <span className="font-bold">VCSP · Integrato Macchina + Guida</span>
+                    <span className="text-[10px] opacity-70 leading-tight">Terzo processo: unifica VSP e CSP.<br />Ottimizza mezzi e personale INSIEME (costo totale minimo).</span>
                   </button>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  {solverMode === "greedy"
-                    ? "Greedy: velocissimo, utile per un'anteprima. Per il risultato finale usa CP-SAT."
-                    : solverMode === "vcsp"
-                    ? "VCSP: ottimizza turni macchina e turni guida INSIEME. A ogni round i turni guida rimandano \"costi-ombra\" sui blocchi difficili da tagliare, e i turni macchina si riorganizzano. Più lento del CP-SAT (esegue anche i turni guida), ma minimizza il costo totale mezzi+personale."
-                    : "CP-SAT: ottimizzazione combinatoria reale, minimizza veicoli e km a vuoto. È il motore principale (sequenziale: i turni guida si calcolano dopo)."}
+                  {solverMode === "vcsp"
+                    ? "VCSP (Vehicle-and-Crew Scheduling): a ogni round i Turni Guida rimandano \"costi-ombra\" sui blocchi difficili da tagliare in turni legali, e i Turni Macchina si riorganizzano. Più lento (esegue anche il CSP a ogni round), ma minimizza il costo mezzi+personale."
+                    : "VSP (Vehicle Scheduling): ottimizza i turni macchina. Il costo del personale NON entra in questa fase: i Turni Guida (CSP) li calcoli dopo, nello step dedicato."}
                 </p>
                 {solverMode === "vcsp" && (
                   <div className="flex items-center gap-3 pt-1">
@@ -634,6 +631,33 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   </div>
                 )}
               </div>
+
+              {/* ══ 2. ALGORITMO VSP (solo processo sequenziale) ══ */}
+              {solverMode !== "vcsp" && (
+                <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-foreground">Algoritmo VSP</p>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setSolverMode("cpsat")}
+                      className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                      <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">CONSIGLIATO</span>
+                      <span className="text-xl">🧠</span>
+                      <span className="font-bold">VSP · CP-SAT</span>
+                      <span className="text-[10px] opacity-70">il vero ottimizzatore</span>
+                    </button>
+                    <button onClick={() => setSolverMode("greedy")}
+                      className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "greedy" ? "bg-orange-500/15 border-orange-500/50 text-orange-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
+                      <span className="text-xl">⚡</span>
+                      <span className="font-bold">VSP · Greedy</span>
+                      <span className="text-[10px] opacity-70">anteprima rapida (~1s)</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {solverMode === "greedy"
+                      ? "Greedy: velocissimo, utile per un'anteprima. Per il risultato finale usa CP-SAT."
+                      : "CP-SAT: ottimizzazione combinatoria reale, minimizza veicoli e km a vuoto."}
+                  </p>
+                </div>
+              )}
 
               {/* ── PROFILO PRESET (solo CP-SAT) — scelta umana, mappa più parametri ── */}
               {solverMode !== "greedy" && (
@@ -892,7 +916,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     : "bg-gradient-to-r from-orange-400 to-amber-400 hover:from-orange-300 hover:to-amber-300 shadow-orange-500/20"
                 }`}>
                 <Play className="w-4 h-4" />
-                {solverMode === "vcsp" ? "Avvia VCSP integrato" : solverMode === "cpsat" ? "Avvia CP-SAT" : "Avvia Greedy"}
+                {solverMode === "vcsp" ? "Avvia VCSP · Integrato" : solverMode === "cpsat" ? "Avvia VSP · CP-SAT" : "Avvia VSP · Greedy"}
               </button>
             </motion.div>
           )}
@@ -933,7 +957,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   </p>
                   <p className="text-[10px] text-muted-foreground">
                     Data {result.summary.date ? ymdToDisplay(result.summary.date) : assignment.selectedDate} ·
-                    {" "}{solverMode === "vcsp" ? `VCSP ${solverIntensity}` : solverMode === "cpsat" ? `CP-SAT ${solverIntensity}` : "Greedy"}
+                    {" "}{solverMode === "vcsp" ? `VCSP integrato · ${solverIntensity}` : solverMode === "cpsat" ? `VSP CP-SAT · ${solverIntensity}` : "VSP Greedy"}
                     {solverMetrics?.totalSolveTimeSec && ` · ${solverMetrics.totalSolveTimeSec}s`}
                   </p>
                 </div>
