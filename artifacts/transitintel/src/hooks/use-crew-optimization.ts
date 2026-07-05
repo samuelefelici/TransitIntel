@@ -146,6 +146,10 @@ export interface UseCrewOptimizationReturn {
 
 /* ─── Hook ─────────────────────────────────────────────────── */
 
+const JOB_GONE_MESSAGE =
+  "L'ottimizzazione non è più disponibile sul server: probabile riavvio del servizio durante il calcolo " +
+  "(i calcoli lunghi, tipici dell'extraurbano, sono più esposti). Rilancia l'ottimizzazione.";
+
 export function useCrewOptimization(): UseCrewOptimizationReturn {
   const [state, setState] = useState<OptimizationState>("idle");
   const [progress, setProgress] = useState<OptimizationProgress | null>(null);
@@ -159,6 +163,8 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
+  // conteggio 404 consecutivi in polling: il job è sparito (riavvio server / TTL)
+  const notFoundRef = useRef<number>(0);
 
   /* ── Cleanup helpers ──────────────────────────────────────── */
 
@@ -270,12 +276,25 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
 
   const startFallbackPolling = useCallback((jId: string) => {
     stopPolling();
+    notFoundRef.current = 0;
     const base = getApiBase();
 
     pollingRef.current = setInterval(async () => {
       try {
         const resp = await fetch(`${base}/api/driver-shifts/jobs/${jId}`);
+        // 404 = il job non esiste più (riavvio del server / TTL). Dopo alcuni
+        // tentativi consecutivi lo dichiariamo perso invece di ciclare all'infinito.
+        if (resp.status === 404) {
+          notFoundRef.current += 1;
+          if (notFoundRef.current >= 3) {
+            setError(JOB_GONE_MESSAGE);
+            setState("failed");
+            cleanup();
+          }
+          return;
+        }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        notFoundRef.current = 0;
         const data = await resp.json();
 
         if (data.progress) {
@@ -292,7 +311,7 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
           cleanup();
         }
       } catch {
-        // Polling failed — will retry next interval
+        // Errore di rete transitorio — riprova al prossimo intervallo (non è un 404)
       }
     }, 2000);
   }, [stopPolling, cleanup]);
