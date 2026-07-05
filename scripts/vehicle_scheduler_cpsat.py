@@ -377,12 +377,15 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
 # Serve a iterative_vehicle_reduction: un INFEASIBLE sul grafo POTATO non
 # dimostra l'infeasibilità reale, quindi `provenOptimal` non può essere True.
 _LAST_ARCS_PRUNED = False
+# DELAY-ROBUST: archi scartati per il buffer ritardi nell'ultimo build.
+_LAST_ROBUST_DROPPED = 0
 
 
 def build_compatible_arcs_fast(
     trips: list[Trip],
     rates: VehicleCostRates,
     user_clusters: dict[str, int] | None = None,
+    delay_buffers: dict[int, int] | None = None,
 ) -> list[Arc]:
     """O(n x k) arc building with bisect temporal windowing.
 
@@ -400,6 +403,13 @@ def build_compatible_arcs_fast(
     due stop_id appartenenti allo stesso user-cluster sono trattati come stesso
     punto (deadhead=0). Stop_id non in alcun user-cluster ricadono sul
     clustering geografico standard.
+
+    DELAY-ROBUST (VCSP Fase 2): delay_buffers[i] = δ minuti di margine richiesto
+    DOPO l'arrivo della corsa i (ritardo atteso, stimato dai dati di puntualità/
+    traffico reali). Un arco è fattibile solo se
+        arrival(i) + max(dh, layover) + δ_i ≤ departure(j).
+    Con robustezza attiva i concatenamenti "stretti" spariscono: i blocchi
+    reggono i ritardi reali invece di rompersi al primo minuto perso.
     """
     n = len(trips)
     sorted_by_dep = sorted(range(n), key=lambda idx: trips[idx].departure_min)
@@ -422,8 +432,12 @@ def build_compatible_arcs_fast(
     arcs: list[Arc] = []
     same_cluster_count = 0
     tight_arc_count = 0   # FIX-TIGHT: archi salvati grazie al layover=0 sullo stesso capolinea
+    robust_dropped = 0    # DELAY-ROBUST: archi scartati SOLO per il buffer δ
+    global _LAST_ROBUST_DROPPED
+    _LAST_ROBUST_DROPPED = 0
     for i in range(n):
         ti = trips[i]
+        delay_buf = (delay_buffers or {}).get(i, 0)
         # FIX-TIGHT: usiamo gap≥0 (NON arrival+MIN_LAYOVER) per non pre-escludere
         # archi tight. Il filtro `MIN_LAYOVER` viene applicato dopo, e SOLO se le
         # due corse non sono sullo stesso capolinea fisico.
@@ -464,7 +478,12 @@ def build_compatible_arcs_fast(
             # stesso capolinea NON deve essere bloccato dal MIN_LAYOVER=3min.
             # Il layover serve solo come buffer per spostarsi tra fermate diverse.
             min_layover_eff = 0 if (same_id or same_cluster) else MIN_LAYOVER
-            if ti.arrival_min + max(dh_min, min_layover_eff) > tj.departure_min:
+            base_ready = ti.arrival_min + max(dh_min, min_layover_eff)
+            if base_ready > tj.departure_min:
+                continue
+            # DELAY-ROBUST: il margine deve assorbire anche il ritardo atteso δ_i
+            if delay_buf > 0 and base_ready + delay_buf > tj.departure_min:
+                robust_dropped += 1
                 continue
             if not trips_vehicle_compatible(ti, tj):
                 continue
@@ -485,6 +504,10 @@ def build_compatible_arcs_fast(
     if tight_arc_count > 0:
         log(f"  [VSP-TIGHT] {tight_arc_count} archi tight (gap<{MIN_LAYOVER}min) "
             f"salvati grazie a layover=0 sullo stesso capolinea")
+    if robust_dropped > 0:
+        _LAST_ROBUST_DROPPED = robust_dropped
+        log(f"  [VSP-ROBUST] {robust_dropped} archi stretti scartati per il "
+            f"buffer ritardi (delay-robust)")
 
     # ── PRUNING ANTI-OOM ────────────────────────────────────────────────
     # Con migliaia di corse gli archi crescono quadraticamente (1391 corse →
@@ -2850,9 +2873,40 @@ def run(data: dict) -> dict:
             + ", ".join(f"{d.get('name', d['id'])}"
                         f"(cap={d.get('maxVehicles', '∞')})" for d in depots_data))
 
+    # ── DELAY-ROBUST (Fase 2): buffer δ per corsa dai dati di puntualità reali ──
+    # config.robustness = { level: "off"|"media"|"alta",
+    #                       delayByHour: { "0".."23": min di ritardo atteso per
+    #                                       ORA di corsa in quella fascia } }
+    # δ_i = fattore(level) × delayByHour[ora_arrivo_i] × durata_i/60, cap 15 min.
+    robustness_cfg = config.get("robustness") or {}
+    robust_level = str(robustness_cfg.get("level") or "off").lower()
+    robust_factor = {"off": 0.0, "media": 1.0, "alta": 1.8}.get(robust_level, 0.0)
+    delay_buffers: dict[int, int] = {}
+    if robust_factor > 0:
+        dbh_raw = robustness_cfg.get("delayByHour") or {}
+        delay_by_hour = {}
+        for k, v in dbh_raw.items():
+            try:
+                delay_by_hour[int(k)] = max(0.0, float(v))
+            except (TypeError, ValueError):
+                continue
+        DEFAULT_DELAY_PER_TRIP_HOUR = 4.0  # min/h di corsa se nessun dato reale
+        for t in trips:
+            hh = (t.arrival_min // 60) % 24
+            per_hour = delay_by_hour.get(hh, DEFAULT_DELAY_PER_TRIP_HOUR)
+            buf = round(robust_factor * per_hour * (t.duration_min / 60.0))
+            if buf > 0:
+                delay_buffers[t.idx] = min(15, buf)
+        if delay_buffers:
+            avg_buf = sum(delay_buffers.values()) / len(delay_buffers)
+            log(f"  [VSP-ROBUST] robustezza={robust_level} (×{robust_factor}): "
+                f"buffer su {len(delay_buffers)}/{n} corse, media {avg_buf:.1f} min"
+                + (" · profilo ritardi REALE" if delay_by_hour else " · profilo di default"))
+
     # Build arcs
     report_progress("VSP", 10, "Building compatibility arcs...")
-    arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None)
+    arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None,
+                                      delay_buffers=delay_buffers or None)
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
 
     # ── VCSP: penalità d'arco dal feedback CSP (costi-ombra) ──
@@ -3080,6 +3134,14 @@ def run(data: dict) -> dict:
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
         "depotAssignment": depot_assignment,
+        # DELAY-ROBUST (Fase 2)
+        "robustness": {
+            "level": robust_level,
+            "tripsBuffered": len(delay_buffers),
+            "avgBufferMin": round(sum(delay_buffers.values()) / len(delay_buffers), 1) if delay_buffers else 0,
+            "maxBufferMin": max(delay_buffers.values()) if delay_buffers else 0,
+            "arcsDropped": _LAST_ROBUST_DROPPED,
+        } if robust_factor > 0 else None,
     }
 
     report_progress("VSP", 95, "Writing output...")
