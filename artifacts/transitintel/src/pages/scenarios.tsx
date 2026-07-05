@@ -12,6 +12,7 @@ import {
   Ruler, BarChart3, AlertTriangle, CheckCircle2, Info, Play, Clock, Truck, Settings2, Save,
   Ship, Bus, Car, Plane, Zap, MapPinned, Timer, TrainFront,
   Download, Package, CalendarDays, ShieldCheck, CalendarX2, GripVertical, RefreshCw,
+  FolderInput, CheckCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -27,6 +28,11 @@ import {
   POI_CATEGORY_IT, POI_COLOR, POI_ICON, POI_SVG_PATHS,
   renderPoiIcon, DEFAULT_PDE_CONFIG,
 } from "./scenarios/constants";
+
+// ─── Import di percorsi già a sistema (Planner Studio) ───────────────────
+interface ImportVariant { variantId: string; name: string; direction: number; headsign: string | null; stopCount: number; distanceKm: number | null; }
+interface ImportRoute { routeId: string; code: string | null; shortName: string; longName: string | null; color: string | null; variants: ImportVariant[]; }
+interface ImportProject { projectId: string; projectName: string; routes: ImportRoute[]; }
 
 // ─── Component ──────────────────────────────────────────────────────────
 export default function ScenariosPage() {
@@ -46,6 +52,16 @@ export default function ScenariosPage() {
   const [uploadName, setUploadName] = useState("");
   const [stopsFile, setStopsFile] = useState<File | null>(null);
   const [routeFile, setRouteFile] = useState<File | null>(null);
+
+  // Import percorsi già a sistema (Planner Studio)
+  const [importOpen, setImportOpen] = useState(false);
+  const [importTree, setImportTree] = useState<ImportProject[] | null>(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [pickProject, setPickProject] = useState("");
+  const [pickRoute, setPickRoute] = useState("");
+  const [pickVariant, setPickVariant] = useState("");
+  const [importedNames, setImportedNames] = useState<string[]>([]);
 
   // Analysis state
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -200,6 +216,42 @@ export default function ScenariosPage() {
       setUploading(false);
     }
   }, [uploadName, stopsFile, routeFile, scenarioList.length, fetchScenarios]);
+
+  // ── Import di un percorso già a sistema (Planner Studio) ──
+  const openImport = useCallback(async () => {
+    setImportOpen(true);
+    setImportedNames([]);
+    if (importTree) return;
+    setImportLoading(true);
+    try {
+      const d = await apiFetch<{ projects: ImportProject[] }>("/api/scenarios/importable-variants");
+      setImportTree(d.projects || []);
+    } catch (err) {
+      console.error("Errore caricamento percorsi:", err);
+      setImportTree([]);
+    } finally {
+      setImportLoading(false);
+    }
+  }, [importTree]);
+
+  const importVariant = useCallback(async (variantId: string, label: string) => {
+    setImporting(true);
+    try {
+      const data = await apiFetch<ScenarioFull>("/api/scenarios/from-variant", {
+        method: "POST",
+        body: JSON.stringify({ variantId, color: SCENARIO_COLORS[(scenarioList.length + importedNames.length) % SCENARIO_COLORS.length] }),
+      });
+      await fetchScenarios();
+      setLoadedScenarios(prev => ({ ...prev, [data.id]: data }));
+      setVisibleIds(prev => new Set([...prev, data.id]));
+      setImportedNames(prev => [...prev, data.name || label]);
+      setPickVariant("");
+    } catch (err: any) {
+      alert(`Errore import percorso: ${err.message}`);
+    } finally {
+      setImporting(false);
+    }
+  }, [scenarioList.length, importedNames.length, fetchScenarios]);
 
   // Delete — primo click: segna per conferma; secondo click: esegue
   const pendingDeleteRef = useRef<string | null>(null);
@@ -803,6 +855,18 @@ export default function ScenariosPage() {
                         {uploading ? "Caricamento…" : "Carica Scenario"}
                       </button>
 
+                      {/* Import da percorsi già a sistema (Planner Studio) */}
+                      <div className="flex items-center gap-2 py-0.5">
+                        <div className="flex-1 h-px bg-border/40" />
+                        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">oppure</span>
+                        <div className="flex-1 h-px bg-border/40" />
+                      </div>
+                      <button onClick={openImport}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 text-xs font-semibold transition-all border border-blue-500/20">
+                        <FolderInput className="w-4 h-4" />
+                        Aggiungi percorso dal sistema
+                      </button>
+
                       {/* Hidden input for reimport stops */}
                       <input ref={reimportInputRef} type="file" accept=".kml,.kmz" className="hidden"
                         onChange={onReimportFileSelected} />
@@ -935,6 +999,88 @@ export default function ScenariosPage() {
           </Card>
         </motion.div>
       </div>
+
+      {/* ── Modale: importa un percorso già a sistema (Planner Studio) ── */}
+      {importOpen && (() => {
+        const projects = importTree ?? [];
+        const proj = projects.find(p => p.projectId === pickProject) ?? null;
+        const route = proj?.routes.find(r => r.routeId === pickRoute) ?? null;
+        const variant = route?.variants.find(v => v.variantId === pickVariant) ?? null;
+        const selCls = "w-full px-3 py-2 text-sm rounded-lg bg-muted border border-border/40 focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40";
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 pointer-events-auto" onClick={() => setImportOpen(false)}>
+            <div className="bg-card border border-border/60 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-5 py-3 border-b border-border/40">
+                <span className="text-sm font-bold flex items-center gap-2"><FolderInput className="w-4 h-4 text-blue-400" /> Confronta percorsi già a sistema</span>
+                <button onClick={() => setImportOpen(false)} className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted"><X className="w-4 h-4" /></button>
+              </div>
+
+              <div className="px-5 py-4 space-y-3 overflow-y-auto">
+                <p className="text-xs text-muted-foreground">
+                  Scegli un percorso da un progetto di Planner Studio e importalo come scenario. Puoi importarne più d'uno,
+                  anche da <b>progetti diversi</b>, e poi confrontarli con il pulsante di confronto.
+                </p>
+
+                {importLoading ? (
+                  <div className="py-8 text-center text-sm text-muted-foreground flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico i percorsi…</div>
+                ) : projects.length === 0 ? (
+                  <div className="py-8 text-center text-sm text-muted-foreground">Nessun percorso con geometria trovato nei progetti accessibili.</div>
+                ) : (
+                  <>
+                    <label className="block">
+                      <span className="text-[11px] font-medium text-muted-foreground mb-1 block">Progetto</span>
+                      <select className={selCls} value={pickProject} onChange={e => { setPickProject(e.target.value); setPickRoute(""); setPickVariant(""); }}>
+                        <option value="">— scegli un progetto —</option>
+                        {projects.map(p => <option key={p.projectId} value={p.projectId}>{p.projectName} · {p.routes.length} linee</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-[11px] font-medium text-muted-foreground mb-1 block">Linea</span>
+                      <select className={selCls} value={pickRoute} disabled={!proj} onChange={e => { setPickRoute(e.target.value); setPickVariant(""); }}>
+                        <option value="">— scegli una linea —</option>
+                        {proj?.routes.map(r => <option key={r.routeId} value={r.routeId}>{[r.shortName, r.longName].filter(Boolean).join(" · ")}</option>)}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="text-[11px] font-medium text-muted-foreground mb-1 block">Percorso</span>
+                      <select className={selCls} value={pickVariant} disabled={!route} onChange={e => setPickVariant(e.target.value)}>
+                        <option value="">— scegli un percorso —</option>
+                        {route?.variants.map(v => (
+                          <option key={v.variantId} value={v.variantId}>
+                            {v.name}{v.direction === 1 ? " (ritorno)" : v.direction === 0 ? " (andata)" : ""} · {v.stopCount} fermate{v.distanceKm != null ? ` · ${v.distanceKm} km` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    {variant && (
+                      <div className="rounded-lg border border-blue-500/25 bg-blue-500/[0.05] px-3 py-2 text-[11px] text-muted-foreground">
+                        <b className="text-foreground">{route?.shortName} · {variant.name}</b> — {variant.stopCount} fermate{variant.distanceKm != null ? `, ${variant.distanceKm} km` : ""}. Sarà aggiunto come scenario e reso visibile sulla mappa.
+                      </div>
+                    )}
+
+                    {importedNames.length > 0 && (
+                      <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/[0.05] px-3 py-2 space-y-0.5">
+                        <div className="text-[11px] font-semibold text-emerald-400 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Importati ({importedNames.length})</div>
+                        {importedNames.map((n, i) => <div key={i} className="text-[11px] text-muted-foreground truncate">• {n}</div>)}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-border/40">
+                <button onClick={() => setImportOpen(false)} className="px-3 py-1.5 text-sm rounded-lg border border-border/50 text-muted-foreground hover:bg-muted">Fatto</button>
+                <button onClick={() => variant && importVariant(variant.variantId, `${route?.shortName} · ${variant.name}`)}
+                  disabled={!variant || importing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40">
+                  {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />} Importa percorso
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Analysis / Compare Panel — bottom ─────────────────── */}
       <AnimatePresence>
