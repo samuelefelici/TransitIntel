@@ -291,6 +291,143 @@ def apply_fase2_overrides(cfg: dict) -> None:
             f"pctOverPenalty={PCT_OVER_PENALTY}, scenTimeFrac={SCENARIO_TIME_FRACTION}")
 
 
+_TIPOLOGIE_VALIDE = {"intero", "semiunico", "spezzato", "supplemento"}
+_MISURE_VALIDE = {"lavoro", "nastro", "guida"}
+
+
+def apply_vincoli_globali_config(cfg: dict) -> None:
+    """Parsa config.bds.vincoliGlobali (BDSI cap. 14) nel global VINCOLI_GLOBALI.
+    Voci malformate vengono scartate (mai un errore fatale)."""
+    global VINCOLI_GLOBALI
+    VINCOLI_GLOBALI = []
+    raw = ((cfg or {}).get("bds", {}) or {}).get("vincoliGlobali")
+    if not isinstance(raw, list):
+        return
+
+    def _opt_num(d, key):
+        v = d.get(key)
+        if v is None or v == "":
+            return None
+        try:
+            return max(0, int(v))
+        except (TypeError, ValueError):
+            return None
+
+    for v in raw[:20]:  # cap difensivo
+        if not isinstance(v, dict):
+            continue
+        tipo = v.get("tipo")
+        tipologie = [t for t in (v.get("tipologie") or []) if t in _TIPOLOGIE_VALIDE]
+        if not tipologie:
+            continue
+        parsed: dict | None = None
+        if tipo == "numerico":
+            mn, mx = _opt_num(v, "min"), _opt_num(v, "max")
+            if mn is None and mx is None:
+                continue
+            parsed = {"tipo": "numerico", "tipologie": tipologie, "min": mn, "max": mx,
+                      "perResidenza": bool(v.get("perResidenza"))}
+        elif tipo == "percentuale":
+            mn, mx = _opt_num(v, "minPct"), _opt_num(v, "maxPct")
+            if mn is None and mx is None:
+                continue
+            parsed = {"tipo": "percentuale", "tipologie": tipologie,
+                      "minPct": mn, "maxPct": mx,
+                      "perResidenza": bool(v.get("perResidenza"))}
+        elif tipo == "media":
+            misura = v.get("misura")
+            if misura not in _MISURE_VALIDE:
+                continue
+            mn, mx = _opt_num(v, "minMin"), _opt_num(v, "maxMin")
+            if mn is None and mx is None:
+                continue
+            parsed = {"tipo": "media", "tipologie": tipologie, "misura": misura,
+                      "minMin": mn, "maxMin": mx}
+        if parsed is not None:
+            if v.get("label"):
+                parsed["label"] = str(v["label"])[:80]
+            VINCOLI_GLOBALI.append(parsed)
+
+    if VINCOLI_GLOBALI:
+        log(f"[V4][VINCOLI] {len(VINCOLI_GLOBALI)} vincoli globali attivi: "
+            + "; ".join(_vincolo_label(v) for v in VINCOLI_GLOBALI))
+
+
+def _vincolo_label(v: dict) -> str:
+    if v.get("label"):
+        return v["label"]
+    tip = "+".join(v["tipologie"])
+    if v["tipo"] == "numerico":
+        return f"n({tip}) in [{v.get('min') if v.get('min') is not None else '-'}"\
+               f", {v.get('max') if v.get('max') is not None else '-'}]" \
+               + (" per residenza" if v.get("perResidenza") else "")
+    if v["tipo"] == "percentuale":
+        return f"%({tip}) in [{v.get('minPct') if v.get('minPct') is not None else '-'}"\
+               f", {v.get('maxPct') if v.get('maxPct') is not None else '-'}]" \
+               + (" per residenza" if v.get("perResidenza") else "")
+    return f"media {v.get('misura')}({tip}) in "\
+           f"[{v.get('minMin') if v.get('minMin') is not None else '-'}"\
+           f", {v.get('maxMin') if v.get('maxMin') is not None else '-'}] min"
+
+
+def _duty_residenza_id(duty: "DriverDutyV3") -> str | None:
+    if not duty.segments:
+        return None
+    res = RESIDENZA_BY_VEHICLE.get(duty.segments[0].vehicle_id)
+    return res.get("id") if res else None
+
+
+def evaluate_vincoli_globali(duties: list["DriverDutyV3"]) -> list[dict] | None:
+    """Valuta i vincoli globali sulla soluzione FINALE → report per i metrics."""
+    if not VINCOLI_GLOBALI:
+        return None
+    report: list[dict] = []
+    n_total = len(duties)
+
+    def _groups(per_residenza: bool):
+        """[(scope_label, duties_del_gruppo, totale_del_gruppo)]"""
+        if not per_residenza:
+            return [(None, duties, n_total)]
+        by_res: dict[str, list] = {}
+        for d in duties:
+            rid = _duty_residenza_id(d) or "?"
+            by_res.setdefault(rid, []).append(d)
+        return [(rid, ds, len(ds)) for rid, ds in sorted(by_res.items())]
+
+    for v in VINCOLI_GLOBALI:
+        tipset = set(v["tipologie"])
+        entries: list[dict] = []
+        ok_all = True
+        for scope, group, group_total in _groups(bool(v.get("perResidenza"))):
+            in_tip = [d for d in group if d.duty_type in tipset]
+            cnt = len(in_tip)
+            entry: dict = {"scope": scope, "count": cnt, "totale": group_total}
+            if v["tipo"] == "numerico":
+                attuale = cnt
+                ok = ((v.get("min") is None or attuale >= v["min"])
+                      and (v.get("max") is None or attuale <= v["max"]))
+                entry["attuale"] = attuale
+            elif v["tipo"] == "percentuale":
+                attuale = round(cnt / max(group_total, 1) * 100, 1)
+                ok = ((v.get("minPct") is None or attuale >= v["minPct"])
+                      and (v.get("maxPct") is None or attuale <= v["maxPct"]))
+                entry["attuale"] = attuale
+            else:  # media
+                key = {"lavoro": "work_min", "nastro": "nastro_min", "guida": "driving_min"}[v["misura"]]
+                attuale = round(sum(getattr(d, key) for d in in_tip) / max(cnt, 1), 1) if cnt else 0.0
+                ok = cnt == 0 or ((v.get("minMin") is None or attuale >= v["minMin"])
+                                  and (v.get("maxMin") is None or attuale <= v["maxMin"]))
+                entry["attuale"] = attuale
+            entry["soddisfatto"] = ok
+            ok_all = ok_all and ok
+            entries.append(entry)
+        report.append({**{k: val for k, val in v.items()},
+                       "label": _vincolo_label(v),
+                       "soddisfatto": ok_all,
+                       "dettaglio": entries})
+    return report
+
+
 # ----------------------------------------------------------------
 # Multi-scenario
 # ----------------------------------------------------------------
@@ -338,6 +475,18 @@ CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 1
 # Penalità (cost-cents) per punto-percentuale-corsa oltre i cap soft dei tipi
 # turno (semiunico/spezzato). Override-abile da config.bds.optimizer.pctOverPenalty.
 PCT_OVER_PENALTY = 150
+
+# Vincoli GLOBALI di soluzione (BDSI cap. 14) da config.bds.vincoliGlobali:
+#   {tipo:"numerico",   tipologie:[...], min?, max?, perResidenza?: bool}
+#   {tipo:"percentuale",tipologie:[...], minPct?, maxPct?, perResidenza?: bool}
+#   {tipo:"media",      tipologie:[...], misura:"lavoro"|"nastro"|"guida", minMin?, maxMin?}
+# Nel CP-SAT sono quasi-hard: slack penalizzati in modo proibitivo, così il
+# solver li viola solo se il problema sarebbe altrimenti infeasible; il report
+# di soddisfacimento finisce nei metrics (evaluate_vincoli_globali).
+VINCOLI_GLOBALI: list[dict] = []
+VINCOLO_NUM_PENALTY = 5000 * COST_SCALE     # per turno di scarto (numerico)
+VINCOLO_PCT_PENALTY = 3 * PCT_OVER_PENALTY  # per punto-percentuale-corsa
+VINCOLO_MEDIA_PENALTY = 50 * COST_SCALE     # per minuto di scarto sull'aggregato
 
 # ----------------------------------------------------------------
 # Sosta inoperosa (extraurbano)
@@ -1976,6 +2125,81 @@ def _build_cpsat_model(
         model.add(ex >= 100 * semi_sosta_count - SOSTA_INOP_MAX_PCT_WITH_SEMI * total_duties)
         pct_excess.append(ex)
 
+    # -- Vincoli GLOBALI di soluzione (BDSI cap. 14): quasi-hard con slack --
+    # Il tipo di turno di ogni variabile è noto a build-time (single→intero/
+    # supplemento, pair→semiunico/spezzato), quindi numerico/percentuale/media
+    # sono vincoli lineari esatti. Slack penalizzati in modo proibitivo: il
+    # solver li viola solo se altrimenti il modello sarebbe infeasible.
+    vincoli_slack_terms: list[Any] = []
+    if VINCOLI_GLOBALI:
+        # Penalità ancorate al costo-per-turno del modello (WEIGHT_DUTY_COUNT
+        # × COST_SCALE per turno): una violazione deve costare più di diversi
+        # turni extra, altrimenti la minimizzazione dei turni la domina.
+        _duty_cost = max(1, WEIGHT_DUTY_COUNT) * COST_SCALE
+        _pen_num = 10 * _duty_cost + VINCOLO_NUM_PENALTY          # per turno di scarto
+        _pen_pct = _duty_cost // 10 + VINCOLO_PCT_PENALTY         # per punto-%-turno (≈100/turno)
+        _pen_media = _duty_cost // 100 + VINCOLO_MEDIA_PENALTY    # per minuto di scarto aggregato
+        var_info: list[tuple[Any, str, str, int, int, int]] = []
+        for s in segments:
+            nastro_s, work_s = single_nastro_work(s, bds, clusters)
+            dtype = "supplemento" if nastro_s <= SUPPLEMENTO_NASTRO_MAX else "intero"
+            res = RESIDENZA_BY_VEHICLE.get(s.vehicle_id)
+            var_info.append((single[s.idx], dtype, (res or {}).get("id") or "?",
+                             nastro_s, work_s, s.driving_min))
+        for key, pv in pair_vars.items():
+            a, b = seg_by_idx[key[0]], seg_by_idx[key[1]]
+            if a.start_min > b.start_min:
+                a, b = b, a
+            nastro_p, work_p = pair_nastro_work(a, b, bds, clusters)
+            res = RESIDENZA_BY_VEHICLE.get(a.vehicle_id)
+            var_info.append((pv, pair_types[key], (res or {}).get("id") or "?",
+                             nastro_p, work_p, a.driving_min + b.driving_min))
+
+        for vk, vg in enumerate(VINCOLI_GLOBALI):
+            tipset = set(vg["tipologie"])
+            scopes = (sorted({i[2] for i in var_info})
+                      if vg.get("perResidenza") else [None])
+            for scope in scopes:
+                in_scope = [i for i in var_info if scope is None or i[2] == scope]
+                sel = [i for i in in_scope if i[1] in tipset]
+                if not in_scope:
+                    continue
+                cnt = sum(i[0] for i in sel) if sel else 0
+                sfx = f"vg{vk}_{scope or 'all'}"
+                if vg["tipo"] == "numerico":
+                    if vg.get("max") is not None and sel:
+                        over = model.new_int_var(0, n_seg, f"{sfx}_over")
+                        model.add(over >= cnt - vg["max"])
+                        vincoli_slack_terms.append(_pen_num * over)
+                    if vg.get("min") is not None:
+                        under = model.new_int_var(0, n_seg, f"{sfx}_under")
+                        model.add(under >= vg["min"] - cnt)
+                        vincoli_slack_terms.append(_pen_num * under)
+                elif vg["tipo"] == "percentuale":
+                    tot = sum(i[0] for i in in_scope)
+                    if vg.get("maxPct") is not None and sel:
+                        over = model.new_int_var(0, 100 * n_seg, f"{sfx}_pover")
+                        model.add(over >= 100 * cnt - vg["maxPct"] * tot)
+                        vincoli_slack_terms.append(_pen_pct * over)
+                    if vg.get("minPct") is not None:
+                        under = model.new_int_var(0, 100 * n_seg, f"{sfx}_punder")
+                        model.add(under >= vg["minPct"] * tot - 100 * cnt)
+                        vincoli_slack_terms.append(_pen_pct * under)
+                else:  # media: Σ misura·x vs soglia·count (lineare)
+                    if not sel:
+                        continue
+                    m_idx = {"nastro": 3, "lavoro": 4, "guida": 5}[vg["misura"]]
+                    agg = sum(i[m_idx] * i[0] for i in sel)
+                    bound = sum(i[m_idx] for i in sel) + 1
+                    if vg.get("maxMin") is not None:
+                        over = model.new_int_var(0, bound, f"{sfx}_mover")
+                        model.add(over >= agg - vg["maxMin"] * cnt)
+                        vincoli_slack_terms.append(_pen_media * over)
+                    if vg.get("minMin") is not None:
+                        under = model.new_int_var(0, max(bound, vg["minMin"] * n_seg + 1), f"{sfx}_munder")
+                        model.add(under >= vg["minMin"] * cnt - agg)
+                        vincoli_slack_terms.append(_pen_media * under)
+
     # -- Obiettivo (con noise per multi-scenario) --
     rng = random.Random(scenario_seed)
     obj_terms: list[Any] = []
@@ -2043,6 +2267,9 @@ def _build_cpsat_model(
     # Penalità SOFT per superamento dei limiti percentuali (flessibili)
     for ex in pct_excess:
         obj_terms.append(PCT_OVER_PENALTY * ex)
+
+    # Vincoli globali di soluzione (BDSI): slack quasi-hard
+    obj_terms.extend(vincoli_slack_terms)
 
     model.minimize(sum(obj_terms))
 
@@ -3149,6 +3376,8 @@ def serialize_output(
             # extraurbane. Echo dei dati ricevuti dal backend: il consumo nella
             # generazione del duty-type "sosta inoperosa" è un follow-up.
             "restPoints": len(config.get("restPoints") or []),
+            # Vincoli GLOBALI di soluzione (BDSI cap. 14): report soddisfacimento
+            "vincoliGlobali": evaluate_vincoli_globali(duties),
         },
         "bdsConfig": bds.to_dict(),
         "clusters": [
@@ -3214,6 +3443,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     apply_optimizer_overrides(config)
     # Override avanzati Fase 2 (soglie/scoring tagli, cap %, multi-scenario)
     apply_fase2_overrides(config)
+    # Vincoli GLOBALI di soluzione (BDSI cap. 14)
+    apply_vincoli_globali_config(config)
 
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)

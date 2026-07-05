@@ -1151,6 +1151,14 @@ def merge_config(user_config: dict | None) -> dict:
     # ── v3: restrizione cambi a cluster definiti ──
     merged["cutOnlyAtClusters"] = user_config.get("cutOnlyAtClusters", True)
 
+    # ── Passthrough: le chiavi non gestite sopra (bds, clusters, restPoints,
+    #    vincoli globali, ecc.) arrivano INTATTE — le leggono gli apply_*_override
+    #    e parse_clusters_from_config sul config merged. Senza questo passthrough
+    #    tutti gli override config.bds.* venivano silenziosamente scartati.
+    for k, v in user_config.items():
+        if k not in merged:
+            merged[k] = v
+
     return merged
 
 
