@@ -187,11 +187,15 @@ interface Props {
   depotId?: string | null;
   /** depositi selezionati (multi) con capacità max veicoli — passati al solver */
   depots?: Array<{ id: string; maxVehicles: number | null }>;
+  /** Pipeline scelta nella dashboard UDP:
+   *  "classic" = VSP (turni macchina), poi CSP nello step Turni Guida;
+   *  "vcsp"    = pipeline integrata: TM+TG insieme, salvataggio doppio. */
+  pipelineMode?: "classic" | "vcsp";
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, depots, onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, depots, pipelineMode = "classic", onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -207,6 +211,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   // Ultimo algoritmo VSP scelto (per tornare da VCSP → VSP senza perdere la scelta)
   const [prevVspAlgo, setPrevVspAlgo] = useState<"cpsat" | "greedy">("cpsat");
   useEffect(() => { if (solverMode !== "vcsp") setPrevVspAlgo(solverMode); }, [solverMode]);
+  // La pipeline scelta nella dashboard UDP determina il processo: niente scelta
+  // ambigua qui dentro. VCSP → forza la modalità integrata.
+  useEffect(() => {
+    if (pipelineMode === "vcsp") setSolverMode("vcsp");
+    else if (solverMode === "vcsp") setSolverMode("cpsat");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipelineMode]);
   // Robustezza ai ritardi: buffer δ sul concatenamento, dai dati di traffico reali
   const [robustness, setRobustness] = useState<"off" | "media" | "alta">("off");
   // Tipo di servizio del run: imposta il contesto normativo (RD131 urbano /
@@ -466,9 +477,45 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       if (!resp.ok) throw new Error("Errore nel salvataggio");
       const data = await resp.json();
       setSavedScenarioId(data.id);
+
+      // ── Pipeline integrata VCSP: salva ANCHE i turni guida del best round
+      // come DSS collegato allo scenario vetture appena creato. Così entrambe
+      // le aree di lavoro (Vetture e Turni Guida) sono subito pronte.
+      const vcspCrew = (result as any).vcsp?.crew;
+      let savedCrew = false;
+      if (result.solver === "vcsp" && vcspCrew?.driverShifts?.length) {
+        try {
+          const dssResp = await fetch(`${base}/api/driver-shifts/${data.id}/scenarios`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: `${scenarioName.trim()} · Turni guida (VCSP)`,
+              result: {
+                solver: "vcsp_crew",
+                driverShifts: vcspCrew.driverShifts,
+                summary: vcspCrew.summary ?? null,
+                handovers: vcspCrew.handovers ?? [],
+                clusters: vcspCrew.clusters ?? [],
+                metrics: vcspCrew.metrics ?? null,
+              },
+              config: { source: "vcsp", bestRound: (result as any).vcsp?.bestRound ?? null },
+            }),
+          });
+          savedCrew = dssResp.ok;
+        } catch { /* il TM è salvato comunque; i TG si possono rigenerare dal CSP */ }
+      }
+
       setShowSaveDialog(false);
       setScenarioName("");
-      toast.success("Scenario salvato", { description: scenarioName.trim() });
+      if (result.solver === "vcsp") {
+        toast.success(savedCrew ? "Scenario integrato salvato" : "Scenario vetture salvato", {
+          description: savedCrew
+            ? "Turni macchina + turni guida creati: aprili dalle due aree di lavoro."
+            : "Turni guida non salvati automaticamente: generali dallo step CSP.",
+        });
+      } else {
+        toast.success("Scenario salvato", { description: scenarioName.trim() });
+      }
     } catch (e: any) {
       toast.error("Errore salvataggio", { description: e.message });
     } finally {
@@ -576,33 +623,22 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 </p>
               </div>
 
-              {/* ══ 1. PROCESSO DI OTTIMIZZAZIONE — VSP (sequenziale) vs VCSP (integrato) ══
-                  Sono DUE PROCESSI DIVERSI, non due algoritmi dello stesso ottimizzatore:
-                  · VSP  = solo turni macchina; i Turni Guida (CSP) si fanno dopo, nel loro step
-                  · VCSP = terzo processo che UNIFICA VSP e CSP in un ciclo con feedback     */}
-              <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
-                <p className="text-xs font-semibold text-foreground">Processo di ottimizzazione</p>
-                <div className="flex items-stretch gap-2">
-                  <button onClick={() => setSolverMode(prevVspAlgo)}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border text-xs font-medium transition-all text-center ${solverMode !== "vcsp" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
-                    <span className="text-xl">🚌</span>
-                    <span className="font-bold">VSP · Turni Macchina</span>
-                    <span className="text-[10px] opacity-70 leading-tight">Sequenziale: qui ottimizzi i MEZZI.<br />I Turni Guida (CSP) si generano dopo, nel loro step.</span>
-                  </button>
-                  <button onClick={() => setSolverMode("vcsp")}
-                    className={`flex-1 flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl border text-xs font-medium transition-all relative text-center ${solverMode === "vcsp" ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
-                    <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">NUOVO</span>
+              {/* ══ La pipeline è già stata scelta nella dashboard dell'UDP: qui
+                     ogni modalità mostra SOLO le sue impostazioni, senza scelte
+                     ambigue. ══ */}
+              {pipelineMode === "vcsp" ? (
+                /* ── PIPELINE INTEGRATA · VCSP ── */
+                <div className="bg-gradient-to-br from-cyan-500/8 to-blue-500/5 border border-cyan-500/40 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2">
                     <span className="text-xl">🔗</span>
-                    <span className="font-bold">VCSP · Integrato Macchina + Guida</span>
-                    <span className="text-[10px] opacity-70 leading-tight">Terzo processo: unifica VSP e CSP.<br />Ottimizza mezzi e personale INSIEME (costo totale minimo).</span>
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {solverMode === "vcsp"
-                    ? "VCSP (Vehicle-and-Crew Scheduling): a ogni round i Turni Guida rimandano \"costi-ombra\" sui blocchi difficili da tagliare in turni legali, e i Turni Macchina si riorganizzano. Più lento (esegue anche il CSP a ogni round), ma minimizza il costo mezzi+personale."
-                    : "VSP (Vehicle Scheduling): ottimizza i turni macchina. Il costo del personale NON entra in questa fase: i Turni Guida (CSP) li calcoli dopo, nello step dedicato."}
-                </p>
-                {solverMode === "vcsp" && (
+                    <p className="text-sm font-bold text-cyan-300">VCSP · Pipeline Integrata Macchina + Guida</p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Un unico processo che genera <b className="text-cyan-300">turni macchina E turni guida insieme</b>:
+                    a ogni round i turni guida rimandano "costi-ombra" sui blocchi difficili da tagliare in turni legali (BDS),
+                    e i turni macchina si riorganizzano. Al salvataggio vengono creati <b className="text-cyan-300">entrambi
+                    gli scenari</b> — li ritrovi nelle due aree di lavoro (Vetture e Turni Guida) come sempre.
+                  </p>
                   <div className="flex items-center gap-3 pt-1">
                     <span className="text-[11px] text-muted-foreground">Round max:</span>
                     {[2, 3, 4, 5].map(n => (
@@ -613,8 +649,6 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     ))}
                     <span className="text-[10px] text-muted-foreground/70">si ferma prima se non migliora</span>
                   </div>
-                )}
-                {solverMode !== "greedy" && (
                   <div className="flex items-center gap-3 pt-1 flex-wrap">
                     <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:</span>
                     {([["off", "Off"], ["media", "Media"], ["alta", "Alta"]] as const).map(([k, label]) => (
@@ -624,37 +658,51 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       </button>
                     ))}
                     <span className="text-[10px] text-muted-foreground/70">
-                      {robustness === "off"
-                        ? "nessun margine extra tra le corse"
-                        : `buffer δ sul concatenamento dai ritardi reali (traffico ultimi 30 gg)${robustness === "alta" ? " ×1,8" : ""} — meno rotture in esercizio, possibile qualche veicolo in più`}
+                      {robustness === "off" ? "nessun margine extra tra le corse" : "buffer δ dai ritardi reali (traffico 30 gg)"}
                     </span>
                   </div>
-                )}
-              </div>
-
-              {/* ══ 2. ALGORITMO VSP (solo processo sequenziale) ══ */}
-              {solverMode !== "vcsp" && (
+                </div>
+              ) : (
+                /* ── PIPELINE CLASSICA · VSP (i Turni Guida CSP arrivano dopo) ── */
                 <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
-                  <p className="text-xs font-semibold text-foreground">Algoritmo VSP</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">🚌</span>
+                    <p className="text-sm font-bold text-foreground">VSP · Ottimizzatore Turni Macchina</p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Pipeline classica: qui ottimizzi i <b>mezzi</b>. I <b>Turni Guida (CSP)</b> si generano dopo, nel loro step dedicato.
+                  </p>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setSolverMode("cpsat")}
                       className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                       <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">CONSIGLIATO</span>
                       <span className="text-xl">🧠</span>
-                      <span className="font-bold">VSP · CP-SAT</span>
+                      <span className="font-bold">CP-SAT</span>
                       <span className="text-[10px] opacity-70">il vero ottimizzatore</span>
                     </button>
                     <button onClick={() => setSolverMode("greedy")}
                       className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "greedy" ? "bg-orange-500/15 border-orange-500/50 text-orange-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                       <span className="text-xl">⚡</span>
-                      <span className="font-bold">VSP · Greedy</span>
+                      <span className="font-bold">Greedy</span>
                       <span className="text-[10px] opacity-70">anteprima rapida (~1s)</span>
                     </button>
                   </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {solverMode === "greedy"
-                      ? "Greedy: velocissimo, utile per un'anteprima. Per il risultato finale usa CP-SAT."
-                      : "CP-SAT: ottimizzazione combinatoria reale, minimizza veicoli e km a vuoto."}
+                  {solverMode !== "greedy" && (
+                    <div className="flex items-center gap-3 pt-1 flex-wrap">
+                      <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:</span>
+                      {([["off", "Off"], ["media", "Media"], ["alta", "Alta"]] as const).map(([k, label]) => (
+                        <button key={k} onClick={() => setRobustness(k)}
+                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${robustness === k ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
+                          {label}
+                        </button>
+                      ))}
+                      <span className="text-[10px] text-muted-foreground/70">
+                        {robustness === "off" ? "nessun margine extra tra le corse" : "buffer δ dai ritardi reali (traffico 30 gg)"}
+                      </span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-muted-foreground/60">
+                    💡 Vuoi mezzi e personale ottimizzati <b>insieme</b>? Torna alla dashboard dell'UDP e usa la <b>Pipeline Integrata VCSP</b>.
                   </p>
                 </div>
               )}

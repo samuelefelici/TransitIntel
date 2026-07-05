@@ -309,6 +309,9 @@ export default function FucinaPage() {
 
   const [showSplash, setShowSplash] = useState(!projectId);
   const [step, setStep] = useState<number>(initialStep);
+  // Pipeline scelta nella dashboard UDP (?mode=vcsp → integrata Macchina+Guida)
+  const [pipelineMode] = useState<"classic" | "vcsp">(() =>
+    new URLSearchParams(window.location.search).get("mode") === "vcsp" ? "vcsp" : "classic");
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(initialCompleted as Set<number>);
   const [gtfsSelection, setGtfsSelection] = useState<GtfsSelection | null>(null);
   const [vehicleAssignment, setVehicleAssignment] = useState<VehicleAssignment | null>(null);
@@ -804,6 +807,7 @@ export default function FucinaPage() {
                         psProjectId={psProjectId}
                         depotId={selectedDepotId}
                         depots={selectedDepots}
+                        pipelineMode={pipelineMode}
                         onBack={() => setStep(4)}
                         onComplete={(r, id) => {
                           setOptimizationResult(r);
