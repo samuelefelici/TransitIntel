@@ -9,12 +9,13 @@
  * rimuoverlo. Anagrafica conducente completa via la matita.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Info, Ban, Clock, ChevronDown,
+  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
@@ -163,6 +164,35 @@ export default function RosterPage() {
     addEntryMut.mutate({ driverId, day, category: armedVoce.category, code: armedVoce.code });
   };
 
+  // ── Gomma: cancella turno + voci di una cella (il turno torna fra gli scoperti) ──
+  const [eraser, setEraser] = useState(false);
+  const eraseCell = (driverId: string, day: string) => {
+    const a = assignByCell.get(`${driverId}|${day}`);
+    if (a) unassignMut.mutate(a.id);
+    for (const en of entriesByCell.get(`${driverId}|${day}`) ?? []) delEntryMut.mutate(en.id);
+  };
+
+  // ── Dimensione celle (Visualizza) ──
+  const [cellSize, setCellSize] = useState<"small" | "medium" | "large">(() => {
+    const v = typeof localStorage !== "undefined" ? localStorage.getItem("roster.cellSize") : null;
+    return v === "small" || v === "large" ? v : "medium";
+  });
+  useEffect(() => { try { localStorage.setItem("roster.cellSize", cellSize); } catch { /* noop */ } }, [cellSize]);
+
+  // ── Menu della toolbar + tooltip dettaglio turno (tasto destro) ──
+  const [openTopMenu, setOpenTopMenu] = useState<string | null>(null);
+  const [ctxDuty, setCtxDuty] = useState<{ x: number; y: number; duty: RosterDuty } | null>(null);
+  const openDutyContext = (e: ReactMouseEvent, duty: RosterDuty | undefined) => {
+    if (!duty) return;
+    e.preventDefault();
+    setCtxDuty({ x: e.clientX, y: e.clientY, duty });
+  };
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
+    setOpenTopMenu(null);
+  };
+
   const board = boardQ.data;
   const dutyByCode = useMemo(() => new Map((board?.duties ?? []).map((d) => [d.code, d])), [board?.duties]);
   const assignByCell = useMemo(() => {
@@ -202,7 +232,7 @@ export default function RosterPage() {
       const k = e.key.toLowerCase();
       if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
       else if (k === "w") { e.preventDefault(); doPaste(); }
-      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); }
+      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); setEraser(false); setOpenTopMenu(null); setCtxDuty(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -213,8 +243,73 @@ export default function RosterPage() {
   const resColor = (duty: RosterDuty | null | undefined) =>
     duty?.residenzaColor ?? board?.residenza?.color ?? dutyColor(duty?.type ?? null);
 
+  const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
+  const menuDisabledCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-600 cursor-not-allowed flex items-center gap-2";
+  // dimensione celle (Visualizza)
+  const showTimes = cellSize !== "small";   // orari solo da Media in su
+  const showExtra = cellSize === "large";   // dettagli extra solo in Grande
+  const dutyBigCls = cellSize === "small" ? "px-1 py-0.5 text-[10px]" : cellSize === "large" ? "px-1.5 py-1.5 text-[13px]" : "px-1.5 py-1 text-[11px]";
+  const voceBigCls = cellSize === "small" ? "text-sm py-0.5" : cellSize === "large" ? "text-2xl py-1.5" : "text-lg py-1";
+  const emptyH = cellSize === "small" ? "h-6" : cellSize === "large" ? "h-11" : "h-9";
+
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+      {/* ── Toolbar software (menu) ── */}
+      <div className="h-9 bg-slate-900 border-b border-slate-800 flex items-center px-2 gap-0.5 shrink-0 text-xs relative z-40">
+        {([
+          ["Rotazioni", RotateCcw], ["Algoritmi", Cpu], ["Stampe", Printer], ["Visualizza", Eye],
+        ] as const).map(([m, Icon]) => (
+          <div key={m} className="relative">
+            <button onClick={() => setOpenTopMenu(openTopMenu === m ? null : m)}
+              className={`px-3 py-1 rounded inline-flex items-center gap-1.5 ${openTopMenu === m ? "bg-slate-800 text-violet-300" : "text-slate-300 hover:bg-slate-800/60"}`}>
+              <Icon className="w-3.5 h-3.5" /> {m}
+            </button>
+            {openTopMenu === m && (
+              <div className="absolute left-0 top-full mt-0.5 min-w-56 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1 z-50">
+                {m === "Rotazioni" && (
+                  <>
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Cicli e rotazioni turni</div>
+                    <button className={menuDisabledCls} disabled>Genera rotazione · prossimamente</button>
+                    <button className={menuDisabledCls} disabled>Ruota di N giorni · prossimamente</button>
+                  </>
+                )}
+                {m === "Algoritmi" && (
+                  <>
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegnazione automatica</div>
+                    <button className={menuDisabledCls} disabled>Copri gli scoperti · prossimamente</button>
+                    <button className={menuDisabledCls} disabled>Bilancia i carichi · prossimamente</button>
+                  </>
+                )}
+                {m === "Stampe" && (
+                  <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); window.print(); }}>
+                    <Printer className="w-3.5 h-3.5" /> Stampa tabellone
+                  </button>
+                )}
+                {m === "Visualizza" && (
+                  <>
+                    <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Dimensione celle</div>
+                    {([
+                      ["small", "Piccola — solo codice"], ["medium", "Media — con orari"], ["large", "Grande — con dettagli"],
+                    ] as const).map(([k, label]) => (
+                      <button key={k} className={menuItemCls} onClick={() => { setCellSize(k); setOpenTopMenu(null); }}>
+                        <span className="flex-1">{label}</span>
+                        {cellSize === k && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                      </button>
+                    ))}
+                    <div className="border-t border-slate-800 my-1" />
+                    <button className={menuItemCls} onClick={toggleFullscreen}>
+                      <Maximize2 className="w-3.5 h-3.5" /> Schermo intero
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+        <span className="ml-auto pr-2 text-[10px] text-slate-500">Roster · vista operativa</span>
+      </div>
+      {openTopMenu && <div className="fixed inset-0 z-30" onClick={() => setOpenTopMenu(null)} />}
+
       {/* ── Barra comandi ── */}
       <div className="border-b border-slate-800 bg-slate-900 px-4 py-2.5 flex flex-wrap items-center gap-3 shrink-0">
         <div className="flex items-center gap-2">
@@ -268,7 +363,7 @@ export default function RosterPage() {
               <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
                   <button key={v.code}
-                    onClick={() => { setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}
+                    onClick={() => { setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); setEraser(false); }}
                     className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-slate-800"
                   >
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${voceStyle(cat)}`}>{v.code}</span>
@@ -280,6 +375,16 @@ export default function RosterPage() {
             )}
           </div>
         ))}
+
+        <button
+          onClick={() => { setEraser((v) => !v); setArmedVoce(null); setVoceMenu(null); }}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+            eraser ? "border-rose-500 bg-rose-500/20 text-rose-100" : "border-slate-700 text-slate-300 hover:bg-slate-800"
+          }`}
+          title="Gomma: cancella turno e voci da una cella (il turno torna fra gli scoperti)"
+        >
+          <Eraser className="w-3.5 h-3.5" /> Gomma
+        </button>
 
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla</span>
@@ -307,6 +412,14 @@ export default function RosterPage() {
           {armedVoce.category === "assenza" ? <Ban className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
           Inserimento voce: <b>{armedVoce.code}</b> ({armedVoce.label}) — <b>clicca una cella</b> del tabellone. Esc per annullare.
           <button onClick={() => setArmedVoce(null)} className="ml-auto underline hover:no-underline">Annulla</button>
+        </div>
+      )}
+
+      {/* gomma attiva */}
+      {eraser && (
+        <div className="bg-rose-500/10 border-b border-rose-500/30 px-4 py-1.5 text-[11px] text-rose-100 flex items-center gap-2 shrink-0">
+          <Eraser className="w-3.5 h-3.5" /> Gomma attiva — <b>clicca una cella</b> per cancellarne turno e voci (il turno torna fra gli scoperti). Esc per uscire.
+          <button onClick={() => setEraser(false)} className="ml-auto underline hover:no-underline">Chiudi</button>
         </div>
       )}
 
@@ -368,16 +481,20 @@ export default function RosterPage() {
                           ...cellEntries.map((en) => ({ kind: "voce" as const, en })),
                         ];
                         const hasItems = items.length > 0;
+                        const cellClick = eraser ? () => eraseCell(drv.id, day)
+                          : armedVoce ? () => placeVoce(drv.id, day)
+                          : (!a ? () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); } : undefined);
                         return (
                           <td key={day}
-                            onClick={armedVoce ? () => placeVoce(drv.id, day) : (!a ? () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); } : undefined)}
-                            className={`px-1 py-1 border-b border-slate-800/40 text-center align-middle ${armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : ""}`}>
-                            <div className={armedVoce ? "pointer-events-none" : ""}>
+                            onClick={cellClick}
+                            onContextMenu={(e) => { if (duty) openDutyContext(e, duty); }}
+                            className={`px-1 py-1 border-b border-slate-800/40 text-center align-middle ${
+                              armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : eraser ? "cursor-pointer hover:bg-rose-500/10" : ""
+                            }`}>
+                            <div className={armedVoce || eraser ? "pointer-events-none" : ""}>
                               {!hasItems ? (
-                                <div className={`h-9 rounded border border-dashed flex items-center justify-center text-xs ${
-                                  cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300"
-                                    : armedVoce ? "border-slate-700/50 text-slate-600"
-                                    : "border-slate-700/60 text-slate-600"
+                                <div className={`${emptyH} rounded border border-dashed flex items-center justify-center text-xs ${
+                                  cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300" : "border-slate-700/60 text-slate-600"
                                 }`}>{cut && cut.day === day ? "↵" : "+"}</div>
                               ) : (
                                 <div className="space-y-0.5">
@@ -387,18 +504,24 @@ export default function RosterPage() {
                                       return (
                                         <button key="duty"
                                           onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${a!.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a!.id); }}
-                                          title={duty ? `${a!.dutyCode} · ${duty.start ?? ""}–${duty.end ?? ""} (click per rimuovere)` : a!.dutyCode}
-                                          className={`w-full rounded text-white font-bold leading-tight hover:opacity-80 ${big ? "px-1.5 py-1 text-[11px]" : "px-1 py-0.5 text-[9px]"}`}
+                                          onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty); }}
+                                          title="Click: rimuovi · Tasto destro: dettaglio"
+                                          className={`w-full rounded text-white font-bold leading-tight hover:opacity-80 ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"}`}
                                           style={{ backgroundColor: resColor(duty) }}>
                                           {a!.dutyCode}
-                                          {big && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
+                                          {big && showTimes && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
+                                          {big && showExtra && duty && (duty.tripsCount || duty.nastro) && (
+                                            <span className="block font-normal opacity-80 text-[9px]">
+                                              {duty.nastro ? `nastro ${duty.nastro}` : ""}{duty.nastro && duty.tripsCount ? " · " : ""}{duty.tripsCount ? `${duty.tripsCount} corse` : ""}
+                                            </span>
+                                          )}
                                         </button>
                                       );
                                     }
                                     const en = it.en;
                                     return (
                                       <div key={en.id}
-                                        className={`group relative w-full font-bold leading-none ${voceTextColor(en.category, en.code)} ${big ? "text-lg py-1" : "text-[11px] py-0.5"}`}
+                                        className={`group relative w-full font-bold leading-none ${voceTextColor(en.category, en.code)} ${big ? voceBigCls : "text-[11px] py-0.5"}`}
                                         title={en.category}>
                                         {en.code}
                                         <button onClick={(e) => { e.stopPropagation(); delEntryMut.mutate(en.id); }}
@@ -442,6 +565,7 @@ export default function RosterPage() {
                       return (
                         <button key={`${day}|${d.code}`}
                           onClick={() => setSelDuty(isSel ? null : { day, code: d.code })}
+                          onContextMenu={(e) => openDutyContext(e, d)}
                           className={`w-full text-left px-2 py-1.5 rounded-lg border mb-1 flex items-center gap-2 transition-colors ${
                             isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
                           }`}>
@@ -480,6 +604,32 @@ export default function RosterPage() {
 
       {editDriver !== null && (
         <DriverEditDialog driver={editDriver === "new" ? null : editDriver} onClose={() => setEditDriver(null)} />
+      )}
+
+      {/* Dettaglio turno (tasto destro) */}
+      {ctxDuty && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setCtxDuty(null)} onContextMenu={(e) => { e.preventDefault(); setCtxDuty(null); }} />
+          <div
+            className="fixed z-50 w-64 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-3 text-[11px]"
+            style={{ left: Math.min(ctxDuty.x, window.innerWidth - 270), top: Math.min(ctxDuty.y, window.innerHeight - 200) }}
+          >
+            <div className="flex items-center gap-1.5 font-semibold text-slate-100 mb-1.5">
+              <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold" style={{ backgroundColor: resColor(ctxDuty.duty) }}>{ctxDuty.duty.code}</span>
+              <span className="text-slate-300">{ctxDuty.duty.type ?? "turno"}</span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-400">
+              <span>Orario: <span className="text-slate-200">{ctxDuty.duty.start ?? "?"}–{ctxDuty.duty.end ?? "?"}</span></span>
+              <span>Nastro: <span className="text-slate-200">{ctxDuty.duty.nastro ?? "—"}</span></span>
+              <span>Lavoro: <span className="text-slate-200">{ctxDuty.duty.work ?? "—"}</span></span>
+              <span>Interruz.: <span className="text-slate-200">{ctxDuty.duty.interruption ?? "—"}</span></span>
+              <span>Riprese: <span className="text-slate-200">{ctxDuty.duty.ripreseCount}</span></span>
+              <span>Corse: <span className="text-slate-200">{ctxDuty.duty.tripsCount}</span></span>
+              {ctxDuty.duty.residenzaName && <span className="col-span-2">Deposito: <span className="text-slate-200">{ctxDuty.duty.residenzaName}</span></span>}
+              {ctxDuty.duty.costEuro != null && <span>Costo: <span className="text-slate-200">€{ctxDuty.duty.costEuro.toFixed(0)}</span></span>}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
