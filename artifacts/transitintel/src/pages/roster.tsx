@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
-  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2,
+  Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
@@ -90,6 +90,36 @@ function dayLabel(iso: string): { dow: string; dm: string } {
 function driverLabel(d: RosterDriver): string {
   return [d.cognome, d.nome].filter(Boolean).join(" ") || d.name;
 }
+/** Pasqua (algoritmo di Meeus/Gauss) → ISO YYYY-MM-DD per l'anno dato. */
+function computusEaster(year: number): string {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+/** Festività nazionali italiane (giorno-mese fissi). */
+const FIXED_HOLIDAYS = new Set(["01-01", "01-06", "04-25", "05-01", "06-02", "08-15", "11-01", "12-08", "12-25", "12-26"]);
+const _easterCache: Record<number, string> = {};
+/** Livello festivo di un giorno: 2 = festività, 1 = domenica, 0 = feriale. */
+function festLevel(iso: string): 0 | 1 | 2 {
+  const dt = new Date(`${iso}T00:00:00Z`);
+  if (FIXED_HOLIDAYS.has(iso.slice(5))) return 2;
+  const year = dt.getUTCFullYear();
+  const easter = _easterCache[year] ?? (_easterCache[year] = computusEaster(year));
+  if (iso === easter || iso === shiftDate(easter, 1)) return 2; // Pasqua + Pasquetta
+  if (dt.getUTCDay() === 0) return 1; // domenica
+  return 0;
+}
+/** Sfondo rosso tenue per le colonne festive. */
+function festBg(iso: string): string {
+  const lvl = festLevel(iso);
+  return lvl === 2 ? "bg-rose-500/10" : lvl === 1 ? "bg-rose-500/[0.04]" : "";
+}
 /** Avatar del conducente: foto se presente, altrimenti iniziali. size=0 → nascosto. */
 function DriverAvatar({ drv, size = 28 }: { drv: RosterDriver; size?: number }) {
   if (!size) return null;
@@ -127,9 +157,12 @@ export default function RosterPage() {
     },
   });
 
+  // Vista a più settimane: il tabellone scorre orizzontalmente (barra di
+  // scorrimento) invece di navigare una settimana alla volta.
+  const RANGE_DAYS = 28;
   const boardQ = useQuery({
     queryKey: ["roster", "board", from, dssId],
-    queryFn: () => apiFetch<Board>(`/api/roster/board?from=${from}&days=7${dssId ? `&dssId=${dssId}` : ""}`),
+    queryFn: () => apiFetch<Board>(`/api/roster/board?from=${from}&days=${RANGE_DAYS}${dssId ? `&dssId=${dssId}` : ""}`),
   });
   const invalidateBoard = () => qc.invalidateQueries({ queryKey: ["roster", "board"] });
 
@@ -177,9 +210,21 @@ export default function RosterPage() {
   const [eraser, setEraser] = useState(false);
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
   const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | null>(null);
+  // Se una cella ha ≥2 attività, la gomma chiede QUALE togliere.
+  const [eraseChoice, setEraseChoice] = useState<{ driverId: string; day: string } | null>(null);
+  const removeOne = (it: { kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }) => {
+    if (it.kind === "duty") unassignMut.mutate(it.a.id); else delEntryMut.mutate(it.en.id);
+  };
   const eraseCell = (driverId: string, day: string) => {
-    for (const a of assignmentsByCell.get(`${driverId}|${day}`) ?? []) unassignMut.mutate(a.id);
-    for (const en of entriesByCell.get(`${driverId}|${day}`) ?? []) delEntryMut.mutate(en.id);
+    const assigns = assignmentsByCell.get(`${driverId}|${day}`) ?? [];
+    const entries = entriesByCell.get(`${driverId}|${day}`) ?? [];
+    const total = assigns.length + entries.length;
+    if (total === 0) return;
+    if (total === 1) { // una sola attività → togli subito
+      if (assigns[0]) unassignMut.mutate(assigns[0].id); else delEntryMut.mutate(entries[0]!.id);
+      return;
+    }
+    setEraseChoice({ driverId, day }); // ≥2 → scegli quale
   };
 
   // ── Dimensione celle (Visualizza) ──
@@ -245,7 +290,7 @@ export default function RosterPage() {
       const k = e.key.toLowerCase();
       if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
       else if (k === "w") { e.preventDefault(); doPaste(); }
-      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); setEraser(false); setOpenTopMenu(null); setCtxDuty(null); }
+      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); setEraser(false); setOpenTopMenu(null); setCtxDuty(null); setEraseChoice(null); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -264,8 +309,10 @@ export default function RosterPage() {
   const voceBigCls = cellSize === "small" ? "text-[11px]" : cellSize === "large" ? "text-lg py-0.5" : "text-sm py-0.5";
   const emptyH = cellSize === "small" ? "h-4" : cellSize === "large" ? "h-8" : "h-6";
   const dayColW = cellSize === "small" ? "min-w-[52px]" : cellSize === "large" ? "min-w-[104px]" : "min-w-[76px]";
-  const nameColW = cellSize === "small" ? "min-w-[128px]" : "min-w-[176px]";
-  const avatarSize = cellSize === "small" ? 0 : cellSize === "large" ? 28 : 22;
+  // La card del conducente mostra SEMPRE gli stessi dati: la vista "solo codice"
+  // rende compatte solo le celle-giorno, non l'anagrafica di sinistra.
+  const nameColW = "min-w-[176px]";
+  const avatarSize = 24;
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
@@ -369,10 +416,12 @@ export default function RosterPage() {
           </span>
         )}
         <div className="flex items-center gap-1 rounded-lg border border-slate-700 px-1 py-0.5">
-          <button onClick={() => setFrom(shiftDate(from, -7))} className="p-1.5 rounded hover:bg-white/10"><ChevronLeft className="w-4 h-4" /></button>
-          <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, 6)).dm}</span>
-          <button onClick={() => setFrom(shiftDate(from, 7))} className="p-1.5 rounded hover:bg-white/10"><ChevronRight className="w-4 h-4" /></button>
+          <button onClick={() => setFrom(shiftDate(from, -RANGE_DAYS))} className="p-1.5 rounded hover:bg-white/10" title="Periodo precedente"><ChevronLeft className="w-4 h-4" /></button>
+          <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, RANGE_DAYS - 1)).dm}</span>
+          <button onClick={() => setFrom(shiftDate(from, RANGE_DAYS))} className="p-1.5 rounded hover:bg-white/10" title="Periodo successivo"><ChevronRight className="w-4 h-4" /></button>
+          <button onClick={() => setFrom(mondayOf(new Date()))} className="text-[11px] px-2 py-1 rounded hover:bg-white/10 text-slate-300" title="Torna a oggi">Oggi</button>
         </div>
+        <span className="text-[10px] text-slate-500 hidden xl:inline">← scorri il tabellone per vedere le {RANGE_DAYS} giornate</span>
 
         {/* Voci Assenza / Presenza: scegli una voce → clicca una cella per inserirla */}
         {(["assenza", "presenza"] as const).map((cat) => (
@@ -470,8 +519,8 @@ export default function RosterPage() {
                     const { dow, dm } = dayLabel(day);
                     const unc = uncoveredByDay.get(day)?.length ?? 0;
                     return (
-                      <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW}`}>
-                        <span className="uppercase text-[9px] text-slate-500">{dow} </span>
+                      <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW} ${festBg(day)}`}>
+                        <span className={`uppercase text-[9px] ${festLevel(day) ? "text-rose-300/80" : "text-slate-500"}`}>{dow} </span>
                         <span className="font-semibold text-[11px]">{dm}</span>
                         {dssId && cellSize !== "small" && <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>}
                       </th>
@@ -492,9 +541,9 @@ export default function RosterPage() {
                             <div className="flex items-center gap-1">
                               {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
                               <span className="font-medium truncate text-[12px]">{driverLabel(drv)}</span>
-                              {drv.isFictitious && cellSize !== "small" && <span className="text-[8px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              {drv.isFictitious && <span className="text-[8px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
                             </div>
-                            {cellSize !== "small" && drv.abilitazioni?.length > 0 && (
+                            {drv.abilitazioni?.length > 0 && (
                               <div className="mt-0.5"><AbilitazioneBadges keys={drv.abilitazioni} size={10} /></div>
                             )}
                           </div>
@@ -516,7 +565,7 @@ export default function RosterPage() {
                         return (
                           <td key={day}
                             onClick={cellClick}
-                            className={`px-0.5 py-0.5 border-b border-slate-800/40 text-center align-middle ${
+                            className={`px-0.5 py-0.5 border-b border-slate-800/40 text-center align-middle ${festBg(day)} ${
                               armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : eraser ? "cursor-pointer hover:bg-rose-500/10" : ""
                             }`}>
                             <div className={armedVoce || eraser ? "pointer-events-none" : ""}>
@@ -587,8 +636,8 @@ export default function RosterPage() {
                 {board?.days.map((day) => {
                   const list = uncoveredByDay.get(day) ?? [];
                   return (
-                    <div key={day} className="w-40 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0">
-                      <div className="px-2 py-1 shrink-0 text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800/60 flex items-center justify-between">
+                    <div key={day} className={`w-28 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0 ${festBg(day)}`}>
+                      <div className={`px-2 py-1 shrink-0 text-[10px] uppercase tracking-wide border-b border-slate-800/60 flex items-center justify-between ${festLevel(day) ? "text-rose-300/80" : "text-slate-400"}`}>
                         <span>{dayLabel(day).dow} {dayLabel(day).dm}</span>
                         <span className={list.length ? "text-amber-400" : "text-emerald-400"}>{list.length}</span>
                       </div>
@@ -631,6 +680,54 @@ export default function RosterPage() {
       {rotDialog === "list-riposi" && <RotazioniRiposiListDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "assegna" && <AssegnaRotazioniDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "genera-riposi" && <GeneraRiposiDialog onClose={() => setRotDialog(null)} />}
+
+      {/* Gomma su cella con più attività: scegli quale togliere */}
+      {eraseChoice && (() => {
+        const key = `${eraseChoice.driverId}|${eraseChoice.day}`;
+        const drv = board?.drivers.find((d) => d.id === eraseChoice.driverId);
+        const items: Array<{ kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }> = [
+          ...(assignmentsByCell.get(key) ?? []).map((a) => ({ kind: "duty" as const, a })),
+          ...(entriesByCell.get(key) ?? []).map((en) => ({ kind: "voce" as const, en })),
+        ];
+        if (items.length === 0) return null; // cella già svuotata: niente da scegliere
+        return (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setEraseChoice(null)}>
+            <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col text-slate-100" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                <div className="text-sm font-semibold flex items-center gap-2"><Eraser className="w-4 h-4 text-rose-400" /> Cosa vuoi togliere?</div>
+                <button onClick={() => setEraseChoice(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
+              </div>
+              <div className="px-4 py-2 text-[11px] text-slate-400 border-b border-slate-800">
+                {drv ? driverLabel(drv) : "Conducente"} · {dayLabel(eraseChoice.day).dow} {dayLabel(eraseChoice.day).dm} — {items.length} attività nella cella
+              </div>
+              <div className="p-2 space-y-1 max-h-[50vh] overflow-auto">
+                {items.map((it) => {
+                  const isDuty = it.kind === "duty";
+                  const duty = isDuty ? dutyByCode.get(it.a.dutyCode) : undefined;
+                  const code = isDuty ? it.a.dutyCode : it.en.code;
+                  const sub = isDuty ? `${duty?.type ?? "turno"}${duty?.start ? ` · ${duty.start}–${duty.end}` : ""}` : (it.en.category === "assenza" ? "assenza" : "presenza");
+                  return (
+                    <button key={isDuty ? it.a.id : it.en.id}
+                      onClick={() => { removeOne(it); setEraseChoice(null); }}
+                      className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg border border-slate-800 hover:border-rose-500/50 hover:bg-rose-500/10 text-left">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold text-white shrink-0" style={{ backgroundColor: isDuty ? resColor(duty) : "#475569" }}>{code}</span>
+                      <span className="flex-1 min-w-0"><span className="block text-xs font-medium">{isDuty ? "Turno" : "Voce"} {code}</span><span className="block text-[10px] text-slate-500">{sub}</span></span>
+                      <Trash2 className="w-3.5 h-3.5 text-slate-500" />
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800">
+                <button onClick={() => setEraseChoice(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+                <button onClick={() => { for (const it of items) removeOne(it); setEraseChoice(null); }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-rose-600 text-white hover:bg-rose-500">
+                  <Trash2 className="w-4 h-4" /> Togli tutto
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Dettaglio turno (tasto destro) */}
       {ctxDuty && (
