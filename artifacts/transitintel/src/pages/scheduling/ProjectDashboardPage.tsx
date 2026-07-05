@@ -308,40 +308,71 @@ export default function ProjectDashboardPage() {
               return (
                 <div>
                   <div className="flex items-center gap-2 mb-4">
-                    <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Come procedere · segui l'ordine</p>
+                    <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">Come procedere · scegli la pipeline</p>
                     {fullyOperational && (
                       <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 inline-flex items-center gap-1">
                         <Power className="w-2.5 h-2.5" /> Scenario in esercizio
                       </span>
                     )}
                   </div>
-                  <div className="space-y-3">
-                    <GuidedStep
-                      n={1} state={s1} icon={Zap}
-                      title="Genera i turni macchina"
-                      desc="Avvia la pipeline: dalle corse dell'UDP il sistema costruisce i turni delle vetture (GTFS → vetture → cluster → fuori linea → ottimizzazione CP-SAT)."
-                      cta={hasVehicles ? "Riottimizza" : "Avvia pipeline"}
-                      onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
-                      secondary={hasVehicles ? { label: "Rivedi turni macchina", onClick: () => navigate(`/fucina/${projectId}/vehicles`) } : undefined}
-                    />
-                    <GuidedStep
-                      n={2} state={s2} icon={Truck}
-                      title="Genera i turni guida"
-                      desc="Dai turni macchina il sistema costruisce i turni degli autisti (saturazione, cambi vettura, tempi morti). Serve almeno uno scenario di vetture."
-                      cta={hasDrivers ? "Rigenera turni guida" : "Genera turni guida"}
-                      onClick={() => navigate(`/fucina/${projectId}/drivers`)}
-                      lockedHint="Prima genera i turni macchina (passo 1)."
-                      secondary={hasDrivers ? { label: "Rivedi turni guida", onClick: () => navigate(`/fucina/${projectId}/drivers`) } : undefined}
-                    />
-                    <GuidedStep
-                      n={3} state={s3} icon={Power}
-                      title="Metti in esercizio"
-                      desc="Scegli lo scenario vetture e quello turni guida definitivi e segnali «in esercizio»: diventano la soluzione ufficiale del progetto, usata da confronti, stampe e Sala Operativa."
-                      cta={fullyOperational ? "Gestisci esercizio" : "Vai agli scenari"}
-                      onClick={() => navigate(`/fucina/${projectId}/vehicles`)}
-                      lockedHint="Prima genera i turni guida (passo 2)."
-                    />
+
+                  {/* ══ SEZIONE 1 — PIPELINE CLASSICA · VSP → CSP ══ */}
+                  <div className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-950/10 to-black p-4 mb-4">
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                      <span className="text-lg">🚌</span>
+                      <p className="text-xs font-bold text-amber-300 uppercase tracking-wider">Pipeline classica · VSP → CSP</p>
+                      <span className="text-[10px] text-zinc-500">prima i mezzi, poi gli autisti — il procedimento di sempre</span>
+                    </div>
+                    <div className="space-y-3">
+                      <GuidedStep
+                        n={1} state={s1} icon={Zap}
+                        title="Genera i turni macchina (VSP)"
+                        desc="Avvia la pipeline: dalle corse dell'UDP il sistema costruisce i turni delle vetture (vetture → depositi → fuori linea → ottimizzazione CP-SAT)."
+                        cta={hasVehicles ? "Riottimizza" : "Avvia pipeline"}
+                        onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
+                        secondary={hasVehicles ? { label: "Rivedi turni macchina", onClick: () => navigate(`/fucina/${projectId}/vehicles`) } : undefined}
+                      />
+                      <GuidedStep
+                        n={2} state={s2} icon={Truck}
+                        title="Genera i turni guida (CSP)"
+                        desc="Dai turni macchina il sistema costruisce i turni degli autisti (saturazione, cambi vettura, tempi morti). Serve almeno uno scenario di vetture."
+                        cta={hasDrivers ? "Rigenera turni guida" : "Genera turni guida"}
+                        onClick={() => navigate(`/fucina/${projectId}/drivers`)}
+                        lockedHint="Prima genera i turni macchina (passo 1)."
+                        secondary={hasDrivers ? { label: "Rivedi turni guida", onClick: () => navigate(`/fucina/${projectId}/drivers`) } : undefined}
+                      />
+                    </div>
                   </div>
+
+                  {/* ══ SEZIONE 2 — PIPELINE INTEGRATA · VCSP (TM+TG insieme) ══ */}
+                  <div className="rounded-2xl border border-cyan-500/25 bg-gradient-to-br from-cyan-950/15 to-black p-4 mb-4 relative">
+                    <span className="absolute top-3 right-3 text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/40">Nuovo</span>
+                    <div className="flex items-center gap-2 mb-3 flex-wrap">
+                      <span className="text-lg">🔗</span>
+                      <p className="text-xs font-bold text-cyan-300 uppercase tracking-wider">Pipeline integrata · VCSP</p>
+                      <span className="text-[10px] text-zinc-500">mezzi e autisti ottimizzati INSIEME, in un colpo solo</span>
+                    </div>
+                    <GuidedStep
+                      n={1} state={"current" as StepState} icon={Zap}
+                      title="Avvia la pipeline integrata (turni macchina + turni guida)"
+                      desc="Stessa preparazione (vetture → depositi → fuori linea), ma l'ottimizzatore VCSP genera turni macchina e turni guida in round con feedback: i turni guida «correggono» i turni macchina fino al costo totale minimo. Al salvataggio crea ENTRAMBI gli scenari, che ritrovi nelle stesse aree di lavoro di sempre."
+                      cta="Avvia pipeline integrata"
+                      onClick={() => navigate(`/fucina/${projectId}/pipeline?mode=vcsp`)}
+                    />
+                    <p className="text-[10px] text-zinc-500 mt-2 pl-1">
+                      ⏱️ Più lenta della classica (esegue anche i turni guida a ogni round) · consigliata quando conta il costo totale mezzi + personale.
+                    </p>
+                  </div>
+
+                  {/* ══ Messa in esercizio (comune a entrambe le pipeline) ══ */}
+                  <GuidedStep
+                    n={3} state={s3} icon={Power}
+                    title="Metti in esercizio"
+                    desc="Scegli lo scenario vetture e quello turni guida definitivi e segnali «in esercizio»: diventano la soluzione ufficiale del progetto, usata da confronti, stampe e Sala Operativa."
+                    cta={fullyOperational ? "Gestisci esercizio" : "Vai agli scenari"}
+                    onClick={() => navigate(`/fucina/${projectId}/vehicles`)}
+                    lockedHint="Prima genera i turni guida (con la pipeline classica o quella integrata)."
+                  />
                 </div>
               );
             })()}
