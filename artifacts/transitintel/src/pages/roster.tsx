@@ -14,7 +14,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
-  UserPlus, Users, Pencil, Scissors, ClipboardPaste, Info, Ban, Clock, ChevronDown,
+  UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -22,11 +22,17 @@ import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverE
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
+interface DutySegment {
+  type: string; line: string | null;
+  startTime: string | null; startPlace: string | null;
+  endTime: string | null; endPlace: string | null;
+}
 interface RosterDuty {
   code: string; type: string | null; start: string | null; end: string | null;
   nastro: string | null; work: string | null;
   interruption: string | null; ripreseCount: number; tripsCount: number; costEuro: number | null;
   residenzaName?: string | null; residenzaColor?: string | null;
+  segments?: DutySegment[];
 }
 interface RosterAssignment { id: string; driverId: string; day: string; dutyCode: string; dssId: string }
 interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string }
@@ -83,13 +89,15 @@ function dayLabel(iso: string): { dow: string; dm: string } {
 function driverLabel(d: RosterDriver): string {
   return [d.cognome, d.nome].filter(Boolean).join(" ") || d.name;
 }
-/** Avatar del conducente: foto se presente, altrimenti iniziali. */
-function DriverAvatar({ drv }: { drv: RosterDriver }) {
+/** Avatar del conducente: foto se presente, altrimenti iniziali. size=0 → nascosto. */
+function DriverAvatar({ drv, size = 28 }: { drv: RosterDriver; size?: number }) {
+  if (!size) return null;
   const initials = (drv.cognome ?? drv.name ?? "?").trim().slice(0, 2).toUpperCase() || "?";
+  const st = { width: size, height: size };
   return drv.photoUrl ? (
-    <img src={drv.photoUrl} alt="" className="w-7 h-7 rounded-full object-cover border border-slate-700 shrink-0" />
+    <img src={drv.photoUrl} alt="" style={st} className="rounded-full object-cover border border-slate-700 shrink-0" />
   ) : (
-    <span className="w-7 h-7 rounded-full bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-400 flex items-center justify-center shrink-0">{initials}</span>
+    <span style={st} className="rounded-full bg-slate-800 border border-slate-700 text-[9px] font-bold text-slate-400 flex items-center justify-center shrink-0">{initials}</span>
   );
 }
 
@@ -166,9 +174,9 @@ export default function RosterPage() {
 
   // ── Gomma: cancella turno + voci di una cella (il turno torna fra gli scoperti) ──
   const [eraser, setEraser] = useState(false);
+  const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
   const eraseCell = (driverId: string, day: string) => {
-    const a = assignByCell.get(`${driverId}|${day}`);
-    if (a) unassignMut.mutate(a.id);
+    for (const a of assignmentsByCell.get(`${driverId}|${day}`) ?? []) unassignMut.mutate(a.id);
     for (const en of entriesByCell.get(`${driverId}|${day}`) ?? []) delEntryMut.mutate(en.id);
   };
 
@@ -195,9 +203,12 @@ export default function RosterPage() {
 
   const board = boardQ.data;
   const dutyByCode = useMemo(() => new Map((board?.duties ?? []).map((d) => [d.code, d])), [board?.duties]);
-  const assignByCell = useMemo(() => {
-    const m = new Map<string, RosterAssignment>();
-    for (const a of board?.assignments ?? []) m.set(`${a.driverId}|${a.day}`, a);
+  const assignmentsByCell = useMemo(() => {
+    const m = new Map<string, RosterAssignment[]>();
+    for (const a of board?.assignments ?? []) {
+      const k = `${a.driverId}|${a.day}`;
+      const arr = m.get(k); if (arr) arr.push(a); else m.set(k, [a]);
+    }
     return m;
   }, [board?.assignments]);
   const entriesByCell = useMemo(() => {
@@ -222,7 +233,7 @@ export default function RosterPage() {
   function doPaste() {
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!selDriver) { toast.info("Seleziona un conducente a sinistra"); return; }
-    if (assignByCell.has(`${selDriver}|${cut.day}`)) { toast.error("Il conducente ha già un turno quel giorno"); return; }
+    // Un conducente può avere più turni nello stesso giorno: nessun blocco.
     assignMut.mutate({ driverId: selDriver, day: cut.day, dutyCode: cut.code });
   }
   useEffect(() => {
@@ -236,21 +247,23 @@ export default function RosterPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selDuty, selDriver, cut, assignByCell]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selDuty, selDriver, cut]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selDutyDetail = selDuty ? dutyByCode.get(selDuty.code) : undefined;
   // colore turno: residenza per-turno (deposito del turno) → residenza scenario → tipo
   const resColor = (duty: RosterDuty | null | undefined) =>
     duty?.residenzaColor ?? board?.residenza?.color ?? dutyColor(duty?.type ?? null);
 
   const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
   const menuDisabledCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-600 cursor-not-allowed flex items-center gap-2";
-  // dimensione celle (Visualizza)
+  // dimensione celle (Visualizza) — compatte per vedere più autisti/giorni
   const showTimes = cellSize !== "small";   // orari solo da Media in su
   const showExtra = cellSize === "large";   // dettagli extra solo in Grande
-  const dutyBigCls = cellSize === "small" ? "px-1 py-0.5 text-[10px]" : cellSize === "large" ? "px-1.5 py-1.5 text-[13px]" : "px-1.5 py-1 text-[11px]";
-  const voceBigCls = cellSize === "small" ? "text-sm py-0.5" : cellSize === "large" ? "text-2xl py-1.5" : "text-lg py-1";
-  const emptyH = cellSize === "small" ? "h-6" : cellSize === "large" ? "h-11" : "h-9";
+  const dutyBigCls = cellSize === "small" ? "px-0.5 py-0 text-[9px]" : cellSize === "large" ? "px-1 py-1 text-[11px]" : "px-1 py-0.5 text-[10px]";
+  const voceBigCls = cellSize === "small" ? "text-[11px]" : cellSize === "large" ? "text-lg py-0.5" : "text-sm py-0.5";
+  const emptyH = cellSize === "small" ? "h-4" : cellSize === "large" ? "h-8" : "h-6";
+  const dayColW = cellSize === "small" ? "min-w-[52px]" : cellSize === "large" ? "min-w-[104px]" : "min-w-[76px]";
+  const nameColW = cellSize === "small" ? "min-w-[128px]" : "min-w-[176px]";
+  const avatarSize = cellSize === "small" ? 0 : cellSize === "large" ? 28 : 22;
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
@@ -423,9 +436,9 @@ export default function RosterPage() {
         </div>
       )}
 
-      {/* ── Due finestre ── */}
-      <div className="flex-1 min-h-0 flex">
-        {/* SINISTRA: tabellone */}
+      {/* ── Tabellone (sopra) + turni scoperti (finestra in basso) ── */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {/* Tabellone a tutta larghezza */}
         <div className="flex-1 min-w-0 overflow-auto">
           {boardQ.isLoading ? (
             <div className="p-10 text-center text-slate-500 text-sm flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico il tabellone…</div>
@@ -435,15 +448,15 @@ export default function RosterPage() {
             <table className="min-w-full text-xs border-collapse">
               <thead className="sticky top-0 bg-slate-900 z-10">
                 <tr>
-                  <th className="text-left px-3 py-2 border-b border-slate-800 sticky left-0 bg-slate-900 min-w-52">Conducente</th>
+                  <th className={`text-left px-2 py-1 border-b border-slate-800 sticky left-0 bg-slate-900 ${nameColW}`}>Conducente</th>
                   {board.days.map((day) => {
                     const { dow, dm } = dayLabel(day);
                     const unc = uncoveredByDay.get(day)?.length ?? 0;
                     return (
-                      <th key={day} className="px-2 py-2 border-b border-slate-800 text-center min-w-28">
-                        <span className="block uppercase text-[10px] text-slate-500">{dow}</span>
-                        <span className="block font-semibold">{dm}</span>
-                        {dssId && <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>}
+                      <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW}`}>
+                        <span className="uppercase text-[9px] text-slate-500">{dow} </span>
+                        <span className="font-semibold text-[11px]">{dm}</span>
+                        {dssId && cellSize !== "small" && <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>}
                       </th>
                     );
                   })}
@@ -454,61 +467,60 @@ export default function RosterPage() {
                   const isSel = selDriver === drv.id;
                   return (
                     <tr key={drv.id} className={isSel ? "bg-violet-500/10" : "odd:bg-white/[0.02]"}>
-                      <td className={`px-3 py-1.5 border-b border-slate-800/40 sticky left-0 cursor-pointer ${isSel ? "bg-violet-500/15" : "bg-slate-950"}`}
+                      <td className={`px-2 py-0.5 border-b border-slate-800/40 sticky left-0 cursor-pointer ${isSel ? "bg-violet-500/15" : "bg-slate-950"}`}
                           onClick={() => setSelDriver(isSel ? null : drv.id)}>
-                        <div className="flex items-center gap-2">
-                          <DriverAvatar drv={drv} />
+                        <div className="flex items-center gap-1.5">
+                          <DriverAvatar drv={drv} size={avatarSize} />
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1">
                               {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
-                              <span className="font-medium truncate">{driverLabel(drv)}</span>
-                              {drv.isFictitious && <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              <span className="font-medium truncate text-[12px]">{driverLabel(drv)}</span>
+                              {drv.isFictitious && cellSize !== "small" && <span className="text-[8px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
                             </div>
-                            {drv.abilitazioni?.length > 0 && (
-                              <div className="mt-0.5"><AbilitazioneBadges keys={drv.abilitazioni} size={11} /></div>
+                            {cellSize !== "small" && drv.abilitazioni?.length > 0 && (
+                              <div className="mt-0.5"><AbilitazioneBadges keys={drv.abilitazioni} size={10} /></div>
                             )}
                           </div>
                           <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv); }} className="p-0.5 rounded text-slate-500 hover:text-violet-300 shrink-0" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
                         </div>
                       </td>
                       {board.days.map((day) => {
-                        const a = assignByCell.get(`${drv.id}|${day}`);
-                        const duty = a ? dutyByCode.get(a.dutyCode) : undefined;
+                        const cellAssigns = assignmentsByCell.get(`${drv.id}|${day}`) ?? [];
                         const cellEntries = entriesByCell.get(`${drv.id}|${day}`) ?? [];
-                        // elementi della cella: turno (se assegnato) + voci; il PRIMO è primario (grande).
-                        const items: Array<{ kind: "duty" } | { kind: "voce"; en: RosterEntry }> = [
-                          ...(a ? [{ kind: "duty" as const }] : []),
+                        // una cella può contenere PIÙ turni + voci; il PRIMO è primario (grande).
+                        const items: Array<{ kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }> = [
+                          ...cellAssigns.map((a) => ({ kind: "duty" as const, a })),
                           ...cellEntries.map((en) => ({ kind: "voce" as const, en })),
                         ];
                         const hasItems = items.length > 0;
                         const cellClick = eraser ? () => eraseCell(drv.id, day)
                           : armedVoce ? () => placeVoce(drv.id, day)
-                          : (!a ? () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); } : undefined);
+                          : () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); };
                         return (
                           <td key={day}
                             onClick={cellClick}
-                            onContextMenu={(e) => { if (duty) openDutyContext(e, duty); }}
-                            className={`px-1 py-1 border-b border-slate-800/40 text-center align-middle ${
+                            className={`px-0.5 py-0.5 border-b border-slate-800/40 text-center align-middle ${
                               armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : eraser ? "cursor-pointer hover:bg-rose-500/10" : ""
                             }`}>
                             <div className={armedVoce || eraser ? "pointer-events-none" : ""}>
                               {!hasItems ? (
                                 <div className={`${emptyH} rounded border border-dashed flex items-center justify-center text-xs ${
-                                  cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300" : "border-slate-700/60 text-slate-600"
-                                }`}>{cut && cut.day === day ? "↵" : "+"}</div>
+                                  cut && cut.day === day && isSel ? "border-amber-500/70 bg-amber-500/10 text-amber-300" : "border-slate-800/50 text-slate-700"
+                                }`}>{cut && cut.day === day ? "↵" : ""}</div>
                               ) : (
                                 <div className="space-y-0.5">
                                   {items.map((it, idx) => {
                                     const big = idx === 0;
                                     if (it.kind === "duty") {
+                                      const duty = dutyByCode.get(it.a.dutyCode);
                                       return (
-                                        <button key="duty"
-                                          onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${a!.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(a!.id); }}
+                                        <button key={it.a.id}
+                                          onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${it.a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(it.a.id); }}
                                           onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty); }}
                                           title="Click: rimuovi · Tasto destro: dettaglio"
                                           className={`w-full rounded text-white font-bold leading-tight hover:opacity-80 ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"}`}
                                           style={{ backgroundColor: resColor(duty) }}>
-                                          {a!.dutyCode}
+                                          {it.a.dutyCode}
                                           {big && showTimes && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
                                           {big && showExtra && duty && (duty.tripsCount || duty.nastro) && (
                                             <span className="block font-normal opacity-80 text-[9px]">
@@ -543,63 +555,55 @@ export default function RosterPage() {
           )}
         </div>
 
-        {/* DESTRA: turni scoperti per giorno */}
-        <div className="w-96 max-w-[40vw] shrink-0 border-l border-slate-800 bg-slate-900/40 flex flex-col">
-          <div className="px-3 py-2 border-b border-slate-800 text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Turni scoperti per giorno
-          </div>
-          {!dssId ? (
-            <div className="p-4 text-[11px] text-slate-500">Scegli una fonte turni (DSS) per vedere i turni scoperti.</div>
-          ) : (
-            <div className="flex-1 overflow-auto p-2 space-y-2">
-              {board?.days.map((day) => {
-                const list = uncoveredByDay.get(day) ?? [];
-                return (
-                  <div key={day}>
-                    <div className="text-[10px] uppercase tracking-wide text-slate-500 px-1 mb-1">{dayLabel(day).dow} {dayLabel(day).dm} · {list.length}</div>
-                    {list.length === 0 ? (
-                      <div className="text-[10px] text-emerald-400/70 px-1 pb-1">tutto coperto</div>
-                    ) : list.map((d) => {
-                      const isSel = selDuty?.day === day && selDuty?.code === d.code;
-                      const isCut = cut?.day === day && cut?.code === d.code;
-                      return (
-                        <button key={`${day}|${d.code}`}
-                          onClick={() => setSelDuty(isSel ? null : { day, code: d.code })}
-                          onContextMenu={(e) => openDutyContext(e, d)}
-                          className={`w-full text-left px-2 py-1.5 rounded-lg border mb-1 flex items-center gap-2 transition-colors ${
-                            isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
-                          }`}>
-                          <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: resColor(d) }}>{d.code}</span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-[11px] text-slate-200">{d.start ?? "?"}–{d.end ?? "?"}</span>
-                            <span className="block text-[9px] text-slate-500">{d.type ?? "turno"}{d.tripsCount ? ` · ${d.tripsCount} corse` : ""}</span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                );
-              })}
+        {/* BASSO: turni scoperti — finestra con i GIORNI come colonne, scorrevole */}
+        {dssId && (
+          <div className={`shrink-0 border-t border-slate-800 bg-slate-900/50 flex flex-col ${showUncovered ? "h-44" : "h-8"}`}>
+            <div className="px-3 h-8 shrink-0 border-b border-slate-800 text-xs font-semibold text-slate-300 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Turni scoperti per giorno
+              <span className="text-[10px] font-normal text-slate-500">tasto destro per il dettaglio · Q taglia · W incolla</span>
+              <button onClick={() => setShowUncovered((v) => !v)} className="ml-auto text-[11px] text-slate-400 hover:text-slate-100">
+                {showUncovered ? "Nascondi ▾" : "Mostra ▸"}
+              </button>
             </div>
-          )}
-
-          {/* Dettaglio turno selezionato */}
-          {selDutyDetail && (
-            <div className="border-t border-slate-800 bg-slate-950 p-3 text-[11px] space-y-1 shrink-0">
-              <div className="flex items-center gap-1.5 font-semibold text-slate-200"><Info className="w-3.5 h-3.5 text-violet-400" /> {selDuty?.code} · {selDutyDetail.type ?? "turno"}</div>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-slate-400">
-                <span>Orario: <span className="text-slate-200">{selDutyDetail.start ?? "?"}–{selDutyDetail.end ?? "?"}</span></span>
-                <span>Nastro: <span className="text-slate-200">{selDutyDetail.nastro ?? "—"}</span></span>
-                <span>Lavoro: <span className="text-slate-200">{selDutyDetail.work ?? "—"}</span></span>
-                <span>Interruzione: <span className="text-slate-200">{selDutyDetail.interruption ?? "—"}</span></span>
-                <span>Riprese: <span className="text-slate-200">{selDutyDetail.ripreseCount}</span></span>
-                <span>Corse: <span className="text-slate-200">{selDutyDetail.tripsCount}</span></span>
-                {selDutyDetail.costEuro != null && <span>Costo: <span className="text-slate-200">€{selDutyDetail.costEuro.toFixed(0)}</span></span>}
+            {showUncovered && (
+              <div className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden flex">
+                {board?.days.map((day) => {
+                  const list = uncoveredByDay.get(day) ?? [];
+                  return (
+                    <div key={day} className="w-40 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0">
+                      <div className="px-2 py-1 shrink-0 text-[10px] uppercase tracking-wide text-slate-400 border-b border-slate-800/60 flex items-center justify-between">
+                        <span>{dayLabel(day).dow} {dayLabel(day).dm}</span>
+                        <span className={list.length ? "text-amber-400" : "text-emerald-400"}>{list.length}</span>
+                      </div>
+                      <div className="flex-1 overflow-y-auto p-1 space-y-1">
+                        {list.length === 0 ? (
+                          <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
+                        ) : list.map((d) => {
+                          const isSel = selDuty?.day === day && selDuty?.code === d.code;
+                          const isCut = cut?.day === day && cut?.code === d.code;
+                          return (
+                            <button key={`${day}|${d.code}`}
+                              onClick={() => setSelDuty(isSel ? null : { day, code: d.code })}
+                              onContextMenu={(e) => openDutyContext(e, d)}
+                              className={`w-full text-left px-1.5 py-1 rounded border flex items-center gap-1.5 transition-colors ${
+                                isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
+                              }`}>
+                              <span className="px-1 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: resColor(d) }}>{d.code}</span>
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-[10px] text-slate-200 leading-tight">{d.start ?? "?"}–{d.end ?? "?"}</span>
+                                <span className="block text-[9px] text-slate-500 leading-tight">{d.type ?? "turno"}{d.tripsCount ? ` · ${d.tripsCount}c` : ""}</span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="pt-1 text-[10px] text-slate-500">Q per tagliare · poi seleziona conducente · W per incollare</div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </div>
 
       {editDriver !== null && (
@@ -611,23 +615,49 @@ export default function RosterPage() {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setCtxDuty(null)} onContextMenu={(e) => { e.preventDefault(); setCtxDuty(null); }} />
           <div
-            className="fixed z-50 w-64 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-3 text-[11px]"
-            style={{ left: Math.min(ctxDuty.x, window.innerWidth - 270), top: Math.min(ctxDuty.y, window.innerHeight - 200) }}
+            className="fixed z-50 w-[340px] max-h-[70vh] overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-3 text-[11px]"
+            style={{ left: Math.min(ctxDuty.x, window.innerWidth - 350), top: Math.min(ctxDuty.y, window.innerHeight - 320) }}
           >
-            <div className="flex items-center gap-1.5 font-semibold text-slate-100 mb-1.5">
+            <div className="flex items-center gap-1.5 font-semibold text-slate-100 mb-2">
               <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold" style={{ backgroundColor: resColor(ctxDuty.duty) }}>{ctxDuty.duty.code}</span>
               <span className="text-slate-300">{ctxDuty.duty.type ?? "turno"}</span>
+              {ctxDuty.duty.residenzaName && <span className="text-[10px] text-slate-500 ml-auto">{ctxDuty.duty.residenzaName}</span>}
             </div>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-slate-400">
-              <span>Orario: <span className="text-slate-200">{ctxDuty.duty.start ?? "?"}–{ctxDuty.duty.end ?? "?"}</span></span>
-              <span>Nastro: <span className="text-slate-200">{ctxDuty.duty.nastro ?? "—"}</span></span>
-              <span>Lavoro: <span className="text-slate-200">{ctxDuty.duty.work ?? "—"}</span></span>
-              <span>Interruz.: <span className="text-slate-200">{ctxDuty.duty.interruption ?? "—"}</span></span>
-              <span>Riprese: <span className="text-slate-200">{ctxDuty.duty.ripreseCount}</span></span>
-              <span>Corse: <span className="text-slate-200">{ctxDuty.duty.tripsCount}</span></span>
-              {ctxDuty.duty.residenzaName && <span className="col-span-2">Deposito: <span className="text-slate-200">{ctxDuty.duty.residenzaName}</span></span>}
-              {ctxDuty.duty.costEuro != null && <span>Costo: <span className="text-slate-200">€{ctxDuty.duty.costEuro.toFixed(0)}</span></span>}
+            <div className="grid grid-cols-3 gap-x-2 gap-y-1 text-slate-400 mb-2">
+              <span>Inizio: <span className="text-slate-100 font-medium">{ctxDuty.duty.start ?? "?"}</span></span>
+              <span>Fine: <span className="text-slate-100 font-medium">{ctxDuty.duty.end ?? "?"}</span></span>
+              <span>Lavoro: <span className="text-slate-100 font-medium">{ctxDuty.duty.work ?? "—"}</span></span>
             </div>
+            <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1 border-t border-slate-800 pt-2">Contenuto del turno</div>
+            {(ctxDuty.duty.segments ?? []).length === 0 ? (
+              <div className="text-[10px] text-slate-500 italic">Dettaglio tratte non disponibile per questo turno.</div>
+            ) : (
+              <table className="w-full text-[10px]">
+                <thead className="text-slate-500">
+                  <tr>
+                    <th className="text-left font-medium py-0.5">Linea</th>
+                    <th className="text-left font-medium">Partenza</th>
+                    <th className="text-left font-medium">Arrivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(ctxDuty.duty.segments ?? []).map((s, i) => {
+                    const isLine = (s.type ?? "trip") === "trip";
+                    return (
+                      <tr key={i} className="border-t border-slate-800/60 align-top">
+                        <td className="py-1 pr-1">
+                          {isLine
+                            ? <span className="font-bold text-slate-100">{s.line ?? "—"}</span>
+                            : <span className="text-amber-400/90">{s.type === "deadhead" ? "fuorilinea" : (s.line ?? s.type)}</span>}
+                        </td>
+                        <td className="py-1 pr-1"><span className="text-slate-200 font-mono">{s.startTime ?? "?"}</span> <span className="text-slate-500 block">{s.startPlace ?? "—"}</span></td>
+                        <td className="py-1"><span className="text-slate-200 font-mono">{s.endTime ?? "?"}</span> <span className="text-slate-500 block">{s.endPlace ?? "—"}</span></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </>
       )}

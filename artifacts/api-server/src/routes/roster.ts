@@ -53,6 +53,10 @@ async function ensureRosterTables(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
+  // Un conducente può fare PIÙ turni nello stesso giorno: togliamo il vincolo
+  // "un turno per giorno". Resta UNIQUE(dss_id, day, duty_code): un turno è
+  // assegnabile a un solo conducente.
+  await db.execute(sql`ALTER TABLE roster_assignments DROP CONSTRAINT IF EXISTS roster_assignments_driver_id_day_key`);
   // Anagrafica conducente ricca (colonne additive, idempotenti)
   for (const col of [
     "matricola text", "cognome text", "nome text", "cf text", "cellulare text",
@@ -162,12 +166,21 @@ router.use(async (_req, _res, next) => { await ensureRosterTables(); next(); });
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+interface DutySegment {
+  type: string;                 // trip | deadhead | depot | riserva …
+  line: string | null;          // linea (route) — null per fuorilinea/attività
+  startTime: string | null; startPlace: string | null;
+  endTime: string | null;   endPlace: string | null;
+}
+const _hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
+
 /** Estrae i turni guida dal result JSON di un DSS (formato crew_scheduler_v4). */
 function extractDuties(result: any): Array<{
   code: string; type: string | null; start: string | null; end: string | null;
   nastro: string | null; work: string | null;
   interruption: string | null; ripreseCount: number; tripsCount: number; costEuro: number | null;
   residenzaName: string | null; residenzaColor: string | null;
+  segments: DutySegment[];
 }> {
   const list = result?.driverShifts ?? result?.duties ?? [];
   if (!Array.isArray(list)) return [];
@@ -177,6 +190,20 @@ function extractDuties(result: any): Array<{
       (s: number, r: any) => s + (Array.isArray(r?.trips) ? r.trips.filter((t: any) => (t?.type ?? "trip") === "trip").length : 0),
       0,
     );
+    // Contenuto del turno: ogni tratta con linea, orari e luoghi (anche fuorilinea).
+    const segments: DutySegment[] = [];
+    for (const r of riprese) {
+      for (const t of (Array.isArray(r?.trips) ? r.trips : [])) {
+        segments.push({
+          type: t?.type ?? "trip",
+          line: t?.routeName ?? t?.routeShortName ?? (t?.routeId || null),
+          startTime: t?.departureTime ?? (typeof t?.departureMin === "number" ? _hhmm(t.departureMin) : null),
+          startPlace: t?.firstStopName ?? null,
+          endTime: t?.arrivalTime ?? (typeof t?.arrivalMin === "number" ? _hhmm(t.arrivalMin) : null),
+          endPlace: t?.lastStopName ?? null,
+        });
+      }
+    }
     return {
       code: String(d.driverId ?? d.dutyId ?? d.id ?? `T${i + 1}`),
       type: d.type ?? d.dutyType ?? null,
@@ -191,6 +218,7 @@ function extractDuties(result: any): Array<{
       // Residenza per-turno (dal turno macchina, propagata dal crew scheduler)
       residenzaName: d.residenzaName ?? null,
       residenzaColor: d.residenzaColor ?? null,
+      segments,
     };
   });
 }
@@ -518,12 +546,14 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       res.status(400).json({ error: "driverId, day (YYYY-MM-DD), dutyCode e dssId richiesti" });
       return;
     }
-    // Un turno per operatore al giorno: l'upsert sostituisce l'eventuale turno precedente.
+    // Un conducente può avere più turni in un giorno. Il turno resta però
+    // assegnabile a un solo conducente (UNIQUE dss_id/day/duty_code): riassegnarlo
+    // lo sposta sul nuovo conducente.
     const r = await db.execute<any>(sql`
       INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code)
       VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode})
-      ON CONFLICT (driver_id, day)
-      DO UPDATE SET duty_code = EXCLUDED.duty_code, dss_id = EXCLUDED.dss_id
+      ON CONFLICT (dss_id, day, duty_code)
+      DO UPDATE SET driver_id = EXCLUDED.driver_id
       RETURNING id
     `);
     res.status(201).json({ ok: true, id: r.rows[0]?.id });
