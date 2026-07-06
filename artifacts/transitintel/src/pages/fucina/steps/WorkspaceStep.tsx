@@ -97,7 +97,50 @@ export default function WorkspaceStep({
       }
       const data = await resp.json().catch(() => ({}));
       const newId: string | undefined = data?.id || data?.scenario?.id;
-      toast.success("Scenario vetture salvato nel progetto", { description: scenarioName.trim() });
+
+      // ── VCSP: il salvataggio a fine procedura crea ENTRAMBI gli scenari.
+      // Turni guida del round scelto → DSS collegato allo scenario vetture.
+      const vcsp = (optimizationResult as any)?.vcsp;
+      let crewSaved: boolean | null = null;
+      if (newId && vcsp) {
+        const selR = (optimizationResult as any)?.vcspSelectedRound ?? vcsp.bestRound ?? null;
+        const rr = vcsp.roundResults?.find((x: any) => x.round === selR);
+        const crew = rr?.crew ?? vcsp.crew;
+        if (crew?.driverShifts?.length) {
+          crewSaved = false;
+          try {
+            const dssResp = await fetch(`${base}/api/driver-shifts/${newId}/scenarios`, {
+              method: "POST",
+              credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                name: `${scenarioName.trim()} · Turni guida (VCSP${selR != null ? ` round ${selR}` : ""})`,
+                result: {
+                  solver: "vcsp_crew",
+                  driverShifts: crew.driverShifts,
+                  summary: crew.summary ?? null,
+                  handovers: crew.handovers ?? [],
+                  clusters: crew.clusters ?? [],
+                  metrics: crew.metrics ?? null,
+                },
+                config: { source: "vcsp", bestRound: vcsp.bestRound ?? null, selectedRound: selR },
+              }),
+            });
+            crewSaved = dssResp.ok;
+          } catch { /* i TM sono salvati comunque; i TG si possono generare dal CSP */ }
+        }
+      }
+      if (crewSaved === null) {
+        toast.success("Scenario vetture salvato nel progetto", { description: scenarioName.trim() });
+      } else if (crewSaved) {
+        toast.success("Salvati ENTRAMBI nel progetto", {
+          description: "🚌 Turni macchina + 👥 Turni guida (VCSP): li trovi nelle due aree di lavoro.",
+        });
+      } else {
+        toast.warning("Turni macchina salvati, turni guida NO", {
+          description: "Aprili dal Workspace Turni Guida e generali dallo step CSP, oppure risalva.",
+        });
+      }
       setShowSaveDialog(false);
       onSaveAndReturn?.(newId);
     } catch (e: any) {
@@ -190,9 +233,26 @@ export default function WorkspaceStep({
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-xs text-zinc-400 mb-3">
-              Lo scenario verrà agganciato al progetto corrente e sarà disponibile per la creazione dei turni guida.
-            </p>
+            {(() => {
+              const vcsp = (optimizationResult as any)?.vcsp;
+              if (!vcsp) {
+                return (
+                  <p className="text-xs text-zinc-400 mb-3">
+                    Lo scenario verrà agganciato al progetto corrente e sarà disponibile per la creazione dei turni guida.
+                  </p>
+                );
+              }
+              const selR = (optimizationResult as any)?.vcspSelectedRound ?? vcsp.bestRound;
+              const rr = vcsp.roundResults?.find((x: any) => x.round === selR);
+              const tmN = (optimizationResult as any)?.shifts?.length ?? 0;
+              const tgN = (rr?.crew ?? vcsp.crew)?.driverShifts?.length ?? 0;
+              return (
+                <p className="text-xs text-emerald-300 mb-3">
+                  Con un solo salvataggio crei <b>ENTRAMBI</b> gli scenari del round #{selR}:
+                  {" "}🚌 {tmN} turni macchina e 👥 {tgN} turni guida — pronti nelle due aree di lavoro.
+                </p>
+              );
+            })()}
             <label className="text-[11px] text-zinc-500 font-mono uppercase tracking-widest">Nome scenario</label>
             <input
               autoFocus
