@@ -153,6 +153,7 @@ export interface PsTrip {
   validTo?: string | null;
   isActive: boolean;             // se false la corsa è disattivata
   serviceLabel?: string | null;  // etichetta libera (es. "Solo scolastico")
+  firstDeparture?: string | null; // HH:MM:SS del primo stop_time (dalla lista)
   createdAt: string;
 }
 
@@ -768,7 +769,7 @@ export interface PsRouteDetail {
     url: string | null; timezone: string | null;
   };
   variants: Array<{
-    id: string; name: string; direction: number; headsign: string | null;
+    id: string; name: string; code?: string; direction: number; headsign: string | null;
     isDefault: boolean; stopCount: number; tripCount: number; hasShape: boolean;
   }>;
   stops: Array<{
@@ -782,7 +783,7 @@ export interface PsRouteDetail {
 
 export interface PsVariantDetail {
   variant: {
-    id: string; name: string; direction: number;
+    id: string; name: string; code?: string; direction: number;
     headsign: string | null; isDefault: boolean;
     attributes: Record<string, any>;
   };
@@ -826,7 +827,7 @@ export interface PsStopDetail {
     id: string; shortName: string; longName: string | null;
     color: string | null; textColor: string | null; routeType: number;
     variants: Array<{
-      id: string; name: string; direction: number;
+      id: string; name: string; code?: string; direction: number;
       headsign: string | null; tripCount: number;
     }>;
     totalTrips: number;

@@ -9,12 +9,13 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Network, Bus, MapPin, Search, ChevronRight, Loader2,
   Calendar as CalendarIcon, Building2, Layers, Hash, Info, Route as RouteIcon,
-  ArrowLeftRight, Activity,
+  ArrowLeftRight, Activity, Pencil, Check, X as XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   getPsProject,
   listPsRoutes, type PsRoute,
@@ -22,6 +23,7 @@ import {
   getPsRouteDetail, type PsRouteDetail,
   getPsVariantDetail, type PsVariantDetail,
   getPsStopDetail, type PsStopDetail,
+  updatePsVariant,
 } from "@/lib/planning-studio-api";
 
 type Tab = "routes" | "stops";
@@ -317,6 +319,30 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
     queryKey: ["ps", projectId, "route-detail", routeId],
     queryFn: () => getPsRouteDetail(projectId, routeId),
   });
+  const queryClient = useQueryClient();
+  // Editor inline nome+verso del percorso (variante)
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDir, setEditDir] = useState<0 | 1>(0);
+  const [savingVar, setSavingVar] = useState(false);
+
+  const saveVariant = async () => {
+    if (!editingId || !editName.trim()) return;
+    setSavingVar(true);
+    try {
+      await updatePsVariant(projectId, editingId, { name: editName.trim(), direction: editDir });
+      toast.success("Percorso aggiornato", { description: `${editName.trim()} · ${editDir === 1 ? "ritorno" : "andata"}` });
+      setEditingId(null);
+      // il codice progressivo dipende da direction/nome → ricarica i dettagli
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "route-detail", routeId] });
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "variant-detail"] });
+    } catch (e: any) {
+      toast.error("Errore nel salvataggio", { description: e?.message });
+    } finally {
+      setSavingVar(false);
+    }
+  };
+
   if (q.isLoading) return <LoadingPanel />;
   if (q.isError || !q.data) return <Empty>Errore caricamento</Empty>;
   const d: PsRouteDetail = q.data;
@@ -379,27 +405,74 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
         <ul className="space-y-1">
           {d.variants.map(v => {
             const isActive = activeDrill?.kind === "variant" && activeDrill.id === v.id;
+            if (editingId === v.id) {
+              return (
+                <li key={v.id} className="p-2 rounded bg-slate-900 ring-1 ring-amber-400/40 space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500 font-mono shrink-0">{v.code ?? ""}</span>
+                    <input
+                      value={editName} autoFocus
+                      onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") saveVariant(); if (e.key === "Escape") setEditingId(null); }}
+                      className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60"
+                      placeholder="Nome del percorso"
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500">Verso:</span>
+                    {([[0, "Andata"], [1, "Ritorno"]] as const).map(([dir, label]) => (
+                      <button key={dir} onClick={() => setEditDir(dir)}
+                        className={`text-[10px] px-2 py-0.5 rounded border ${editDir === dir
+                          ? "border-amber-500/60 text-amber-300 bg-amber-500/10"
+                          : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
+                        {dir === 0 ? "→" : "←"} {label}
+                      </button>
+                    ))}
+                    <div className="flex-1" />
+                    <button onClick={saveVariant} disabled={savingVar || !editName.trim()}
+                      title="Salva" className="p-1 rounded bg-amber-500 text-black hover:bg-amber-400 disabled:opacity-50">
+                      {savingVar ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    </button>
+                    <button onClick={() => setEditingId(null)} title="Annulla"
+                      className="p-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200">
+                      <XIcon className="w-3 h-3" />
+                    </button>
+                  </div>
+                </li>
+              );
+            }
             return (
-              <li key={v.id}>
+              <li key={v.id} className={`rounded flex items-center gap-1 group ${
+                isActive ? "bg-violet-500/10 ring-1 ring-violet-400/40" : "bg-slate-900/40"
+              }`}>
                 <button
                   onClick={() => onDrillVariant(v.id)}
-                  className={`w-full text-left p-2 rounded hover:bg-slate-900 flex items-center gap-2 ${
-                    isActive ? "bg-violet-500/10 ring-1 ring-violet-400/40" : "bg-slate-900/40"
-                  }`}
+                  className="flex-1 min-w-0 text-left p-2 rounded hover:bg-slate-900 flex items-center gap-2"
                 >
                   <ArrowLeftRight className="w-3.5 h-3.5 text-slate-600 shrink-0"
                     style={{ transform: v.direction === 1 ? "scaleX(-1)" : undefined }} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-slate-200 truncate">
-                      {v.name}
-                      {v.isDefault && <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-cyan-500/20 text-cyan-300">DEFAULT</span>}
+                    <div className="text-xs text-slate-200 truncate font-mono">
+                      {v.code ?? v.name}
+                      <span className="ml-1.5 text-[9px] px-1 py-0.5 rounded bg-slate-800 text-slate-400 font-sans">
+                        {v.direction === 1 ? "ritorno" : "andata"}
+                      </span>
+                      {v.isDefault && <span className="ml-1 text-[9px] px-1 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-sans">DEFAULT</span>}
                     </div>
-                    <div className="text-[10px] text-slate-500">
-                      {v.stopCount} fermate · {v.tripCount} corse
+                    <div className="text-[10px] text-slate-500 truncate">
+                      <span className="text-slate-400">{v.name}</span>
+                      {v.headsign && v.headsign !== v.name ? <span> → {v.headsign}</span> : null} · {v.stopCount} fermate · {v.tripCount} corse
                       {!v.hasShape && <span className="text-amber-500"> · no shape</span>}
                     </div>
                   </div>
                   <ChevronRight className="w-3 h-3 text-slate-600" />
+                </button>
+                <button
+                  onClick={() => { setEditingId(v.id); setEditName(v.name); setEditDir((v.direction === 1 ? 1 : 0)); }}
+                  title="Modifica nome e verso del percorso"
+                  className="p-1.5 mr-1 rounded text-slate-600 hover:text-amber-300 hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                >
+                  <Pencil className="w-3 h-3" />
                 </button>
               </li>
             );
@@ -522,7 +595,7 @@ function StopDetailPanel({ projectId, stopId, onDrillVariant, onDrillRoute, acti
                       >
                         <ArrowLeftRight className="w-3 h-3 text-slate-600"
                           style={{ transform: v.direction === 1 ? "scaleX(-1)" : undefined }} />
-                        <span className="flex-1 text-slate-300 truncate">{v.name}</span>
+                        <span className="flex-1 text-slate-300 truncate font-mono" title={v.headsign ?? v.name}>{v.code ?? v.name}</span>
                         <span className="text-[10px] text-slate-500">{v.tripCount}c</span>
                       </button>
                     </li>
@@ -584,7 +657,7 @@ function VariantDetailPanel({ projectId, variantId, onJumpToRoute, onJumpToStop 
           </span>
           <span className="text-xs text-slate-400 truncate">{r.longName || r.shortName}</span>
         </button>
-        <h3 className="text-sm font-semibold">{d.variant.name}</h3>
+        <h3 className="text-sm font-semibold font-mono">{d.variant.code ?? d.variant.name}</h3>
         {d.variant.headsign && <div className="text-xs text-slate-500">→ {d.variant.headsign}</div>}
       </div>
 

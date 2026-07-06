@@ -139,6 +139,16 @@ async function ensurePsTables(): Promise<void> {
       )
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_variants_route ON ps_route_variants(route_id)`);
+    // Vista di compatibilità: planning-studio-network.ts interroga "ps_variants".
+    // Creata solo se non esiste già nulla con quel nome (in alcuni DB storici
+    // può esistere come oggetto creato fuori dal bootstrap).
+    await db.execute(sql`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'ps_variants') THEN
+          CREATE VIEW ps_variants AS SELECT * FROM ps_route_variants;
+        END IF;
+      END $$;
+    `);
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_variant_stops (
@@ -562,7 +572,11 @@ function rowToTrip(r: any) {
     routeId: r.route_id,
     variantId: r.variant_id,
     calendarId: r.calendar_id,
-    headsign: r.headsign,
+    // headsign della corsa, con fallback a quello del percorso (dopo import
+    // GTFS spesso vive solo sulla variante) — così la colonna non resta vuota
+    headsign: r.headsign ?? r.variant_headsign ?? null,
+    // orario di partenza (primo stop_time) quando la query lo seleziona
+    firstDeparture: r.first_departure ?? null,
     shortName: r.short_name,
     direction: r.direction,
     blockId: r.block_id,
@@ -1391,14 +1405,19 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
   // esplicitamente assegnata la categoria (coerente con la colonna "Categorie").
   const categoryId = req.query.categoryId ? String(req.query.categoryId) : null;
   const r = await db.execute(sql`
-    SELECT t.* FROM ps_trips t
+    SELECT t.*,
+           (SELECT st.departure_time FROM ps_stop_times st
+             WHERE st.trip_id = t.id ORDER BY st.stop_seq LIMIT 1) AS first_departure,
+           v.headsign AS variant_headsign
+      FROM ps_trips t
+      LEFT JOIN ps_route_variants v ON v.id = t.variant_id
      WHERE t.project_id = ${proj.id}::uuid
        AND (${routeId}::uuid IS NULL OR t.route_id = ${routeId}::uuid)
        AND (${variantId}::uuid IS NULL OR t.variant_id = ${variantId}::uuid)
        AND (${categoryId}::uuid IS NULL OR EXISTS (
              SELECT 1 FROM ps_trip_category_validity cv
               WHERE cv.trip_id = t.id AND cv.category_id = ${categoryId}::uuid))
-     ORDER BY t.created_at ASC
+     ORDER BY first_departure NULLS LAST, t.created_at ASC
      LIMIT 5000
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];

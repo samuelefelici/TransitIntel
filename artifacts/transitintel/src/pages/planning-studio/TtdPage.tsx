@@ -32,12 +32,12 @@ import {
   listPsVariants, type PsVariant,
   getPsVariant, type PsVariantStop,
   listPsStops,
-  listPsCalendars,
   listPsTrips, type PsTrip,
   getPsStopTimesBulk, type PsStopTime,
   shiftPsTripTimes,
   batchCreatePsTrips, type PsBatchTripInput,
 } from "@/lib/planning-studio-api";
+import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 
 /* ════════════════ Helper tempo / distanza ════════════════ */
 
@@ -171,11 +171,21 @@ export default function PlanningStudioTtdPage() {
     queryFn: () => listPsRoutes(projectId),
     enabled: !!projectId,
   });
+  // Calendario AZIENDALE (categorie di validità: feriale, festivo, scolastico…)
+  // — NON i service_id del GTFS: dopo l'import il filtro deve parlare la
+  // lingua dell'azienda, e l'appartenenza vive in ps_trip_category_validity.
   const calendarsQ = useQuery({
-    queryKey: ["ps", projectId, "calendars"],
-    queryFn: () => listPsCalendars(projectId),
+    queryKey: ["ps", "validity-categories"],
+    queryFn: () => listPsValidityCategories(),
     enabled: !!projectId,
   });
+  // Corse appartenenti alla categoria selezionata (set di tripId)
+  const catTripsQ = useQuery({
+    queryKey: ["ps", projectId, "trips", "by-category", calendarFilter],
+    queryFn: () => listPsTrips(projectId, { categoryId: calendarFilter }),
+    enabled: !!projectId && !!calendarFilter,
+  });
+  const catTripSet = useMemo(() => new Set((catTripsQ.data ?? []).map(t => t.id)), [catTripsQ.data]);
   const variantsQ = useQuery({
     queryKey: ["ps", projectId, "variants", routeId],
     queryFn: () => listPsVariants(projectId, routeId),
@@ -551,9 +561,9 @@ export default function PlanningStudioTtdPage() {
   // Corse base visibili (filtrate per calendario)
   const visibleTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
-    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
     return trips;
-  }, [tripsQ.data, calendarFilter]);
+  }, [tripsQ.data, calendarFilter, catTripSet]);
 
   // Ordinate per prima partenza (per il selettore della corsa base)
   const tripsSorted = useMemo(() => {
@@ -613,7 +623,7 @@ export default function PlanningStudioTtdPage() {
     createMut.mutate(multPreview.runs.map(run => ({
       routeId: bt.routeId,
       variantId: bt.variantId,
-      calendarId: bt.calendarId ?? (calendarFilter || null),
+      calendarId: bt.calendarId ?? null,
       headsign: bt.headsign ?? null,
       direction: bt.direction,
       serviceLabel: bt.serviceLabel ?? null,
@@ -679,7 +689,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) continue;
       const color = colorByRoute.get(cand.route.id) ?? routeColor(cand.route.color, "#22d3ee");
       let trips = data.trips;
-      if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
       for (const t of trips) {
         const sts = data.st[t.id];
         if (!sts || sts.length < 2) continue;
@@ -692,7 +702,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, colorByRoute]);
+  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, catTripSet, colorByRoute]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
@@ -788,7 +798,7 @@ export default function PlanningStudioTtdPage() {
     const data = overlayData[vid];
     if (!data) return [];
     let trips = data.trips;
-    if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+    if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
     return trips
       .map(t => ({ trip: t, dep: data.st[t.id]?.length ? hmsToSec(data.st[t.id][0].departureTime) : Number.POSITIVE_INFINITY }))
       .sort((a, b) => a.dep - b.dep);
@@ -832,7 +842,7 @@ export default function PlanningStudioTtdPage() {
       return changed ? next : prev;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncChain, overlayData, calendarFilter]);
+  }, [syncChain, overlayData, calendarFilter, catTripSet]);
   /** Applica la finestra oraria alla selezione di TUTTE le linee della catena. */
   function applySyncWindow() {
     const a = hmToSec(syncWinFrom), b = hmToSec(syncWinTo);
@@ -864,7 +874,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) return m;
       const sel = syncSel[it.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
-      if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
       for (const t of trips) for (const st of data.st[t.id] ?? [])
         push(st.stopId, st.stopName, hmsToSec(st.arrivalTime) + deltaSec, hmsToSec(st.departureTime) + deltaSec);
     }
@@ -966,7 +976,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) continue;
       const sel = syncSel[p.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
-      if (calendarFilter) trips = trips.filter(t => t.calendarId === calendarFilter);
+      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
       const geoms: Pt[][][] = [];
       for (const t of trips) {
         const sts = data.st[t.id];
@@ -990,7 +1000,7 @@ export default function PlanningStudioTtdPage() {
     }
     return { lines, pts, totalZ, movedLines: lines.length };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, connMin, connMax, baseGeoms, nodeOfStop]);
+  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, catTripSet, connMin, connMax, baseGeoms, nodeOfStop]);
 
   /** Applica il piano: trasla in sequenza le corse selezionate di ogni linea. */
   async function applySyncPlan() {
@@ -1061,7 +1071,7 @@ export default function PlanningStudioTtdPage() {
     const deltas = new globalThis.Map(syncPlan.map(p2 => [p2.variantId, p2.delta]));
     const calLabel = calendarFilter
       ? (calendars.find(c => c.id === calendarFilter)?.code ?? calendarFilter)
-      : "tutti i giorni/calendari";
+      : "tutte le categorie (cal. aziendale)";
     const chainNames = syncChain.map(it => chainName(it));
 
     // dettaglio corse traslate per linea (prima partenza prima → dopo)
@@ -1291,9 +1301,9 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
         <select
           value={calendarFilter} onChange={e => setCalendarFilter(e.target.value)}
           className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[140px]"
-          title="Filtro calendario/giorni"
+          title="Filtro CALENDARIO AZIENDALE (categorie di validità: feriale, festivo, scolastico…)"
         >
-          <option value="">Tutti i giorni/calendari</option>
+          <option value="">Tutte le categorie (cal. aziendale)</option>
           {calendars.map(c => (
             <option key={c.id} value={c.id}>{c.code} {c.name ? `· ${c.name}` : ""}</option>
           ))}
