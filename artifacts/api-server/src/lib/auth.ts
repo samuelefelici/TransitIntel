@@ -226,7 +226,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission]> = [
   ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
   ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
   ["/roster", "scheduling"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
-  ["/deadheads", "scheduling"], ["/depots", "scheduling"], ["/coincidence-zones", "scheduling"],
+  ["/deadheads", "scheduling"], ["/deadhead-arcs", "scheduling"], ["/depots", "scheduling"], ["/coincidence-zones", "scheduling"],
   // network (Planner Studio, rete, zonizzazione)
   ["/planning-studio", "network"], ["/zones", "network"], ["/routes", "network"],
   ["/stops", "network"], ["/clusters", "network"],
