@@ -185,9 +185,10 @@ export default function PlanningStudioTripsPage() {
     let trips = tripsQ.data ?? [];
     // route/variant/categoria sono filtrati server-side (tripsQ); qui resta solo "solo attive".
     if (onlyActive) trips = trips.filter(t => t.isActive);
-    // ordina per orario partenza se disponibile, altrimenti per shortName/headsign
+    // ordina per orario partenza se disponibile (firstDeparture arriva già
+    // dalla lista; firstTimes resta come fallback lazy), poi shortName/headsign
     return [...trips].sort((a, b) => {
-      const ta = firstTimes[a.id], tb = firstTimes[b.id];
+      const ta = a.firstDeparture ?? firstTimes[a.id], tb = b.firstDeparture ?? firstTimes[b.id];
       if (ta && tb) return ta.localeCompare(tb);
       if (ta) return -1;
       if (tb) return 1;
@@ -864,13 +865,13 @@ export default function PlanningStudioTripsPage() {
                           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[10px] font-bold not-italic">
                           ⚠ PROTO
                         </span>
-                      ) : fmtTime(firstTimes[t.id])}
+                      ) : fmtTime(t.firstDeparture ?? firstTimes[t.id])}
                     </td>
                     <td className="p-2">
                       <div className="font-medium text-slate-200">{route?.shortName || "?"}</div>
                       <div className="text-[10px] text-slate-500">{variant?.name || ""}</div>
                     </td>
-                    <td className="p-2 text-slate-300">{t.headsign || "—"}</td>
+                    <td className="p-2 text-slate-300">{t.headsign || variant?.headsign || "—"}</td>
                     <td className="p-2">
                       <div className="flex items-center gap-[3px]">
                         {WD_LABELS_ROW.map((l, i) => {

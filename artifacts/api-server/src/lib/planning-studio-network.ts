@@ -117,8 +117,13 @@ router.get("/planning-studio/projects/:id/routes/:routeId/detail", async (req, r
       attributes: route.attributes ?? {},
     },
     agency,
-    variants: ((rVariants as any).rows ?? []).map((r: any) => ({
-      id: r.id, name: r.name, direction: r.direction, headsign: r.headsign,
+    // Codice progressivo del percorso per linea: <codice linea>/<n>, con n
+    // assegnato nell'ordine di visualizzazione (direction, default, nome).
+    // La query è già ordinata così → l'indice dà il progressivo stabile.
+    variants: ((rVariants as any).rows ?? []).map((r: any, i: number) => ({
+      id: r.id, name: r.name,
+      code: `${route.short_name || route.code || "L"}/${i + 1}`,
+      direction: r.direction, headsign: r.headsign,
       isDefault: r.is_default,
       stopCount: Number(r.stop_count) || 0,
       tripCount: Number(r.trip_count) || 0,
@@ -149,10 +154,17 @@ router.get("/planning-studio/projects/:id/variants/:variantId/detail", async (re
   const variantId = req.params.variantId;
   if (!UUID_RE.test(variantId)) { res.status(400).json({ error: "variantId invalid" }); return; }
 
-  // 1. variant + route
+  // 1. variant + route (+ progressivo per linea nell'ordine di visualizzazione)
   const rV = await db.execute(sql`
     SELECT v.*, r.id AS r_id, r.short_name AS r_short, r.long_name AS r_long,
-           r.color AS r_color, r.text_color AS r_text, r.route_type AS r_type
+           r.code AS r_code,
+           r.color AS r_color, r.text_color AS r_text, r.route_type AS r_type,
+           (SELECT 1 + COUNT(*) FROM ps_variants v2
+              WHERE v2.route_id = v.route_id
+                AND (v2.direction < v.direction
+                  OR (v2.direction = v.direction AND v2.is_default AND NOT v.is_default)
+                  OR (v2.direction = v.direction AND v2.is_default = v.is_default AND v2.name < v.name))
+           ) AS variant_seq
       FROM ps_variants v
       JOIN ps_routes r ON r.id = v.route_id
      WHERE v.id = ${variantId}::uuid AND v.project_id = ${projectId}::uuid
@@ -195,7 +207,9 @@ router.get("/planning-studio/projects/:id/variants/:variantId/detail", async (re
 
   res.json({
     variant: {
-      id: v.id, name: v.name, direction: v.direction, headsign: v.headsign,
+      id: v.id, name: v.name,
+      code: `${v.r_short || v.r_code || "L"}/${v.variant_seq ?? 1}`,
+      direction: v.direction, headsign: v.headsign,
       isDefault: v.is_default, attributes: v.attributes ?? {},
     },
     route: {
@@ -250,9 +264,15 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
 
   // 2. linee + varianti che la toccano + n. corse per variante
   const rRoutes = await db.execute(sql`
-    SELECT r.id AS route_id, r.short_name, r.long_name, r.color, r.text_color, r.route_type,
+    SELECT r.id AS route_id, r.short_name, r.long_name, r.color, r.text_color, r.route_type, r.code AS route_code,
            v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign AS variant_headsign,
-           (SELECT COUNT(*) FROM ps_trips t WHERE t.variant_id = v.id)::int AS trip_count
+           (SELECT COUNT(*) FROM ps_trips t WHERE t.variant_id = v.id)::int AS trip_count,
+           (SELECT 1 + COUNT(*) FROM ps_variants v2
+              WHERE v2.route_id = v.route_id
+                AND (v2.direction < v.direction
+                  OR (v2.direction = v.direction AND v2.is_default AND NOT v.is_default)
+                  OR (v2.direction = v.direction AND v2.is_default = v.is_default AND v2.name < v.name))
+           ) AS variant_seq
       FROM ps_variant_stops vs
       JOIN ps_variants v ON v.id = vs.variant_id
       JOIN ps_routes r ON r.id = v.route_id
@@ -280,6 +300,7 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
     e.variants.push({
       id: row.variant_id,
       name: row.variant_name,
+      code: `${row.short_name || row.route_code || "L"}/${row.variant_seq ?? 1}`,
       direction: row.direction,
       headsign: row.variant_headsign,
       tripCount: row.trip_count ?? 0,
