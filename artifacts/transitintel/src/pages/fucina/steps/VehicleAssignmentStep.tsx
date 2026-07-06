@@ -35,7 +35,11 @@ interface Props {
 }
 
 export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedRouteIds, allowedRouteNames, udpInfo, onBack, onComplete }: Props) {
-  const fromUdp = !!udpInfo;
+  // Lo scope UDP può esserci anche se il dettaglio (udpInfo) non è ancora
+  // arrivato: sono due fetch indipendenti nel parent. Il filtro linee deve
+  // dipendere dallo scope, non dal dettaglio.
+  const hasUdpScope = (allowedRouteIds?.length ?? 0) > 0 || (allowedRouteNames?.length ?? 0) > 0;
+  const fromUdp = !!udpInfo || hasUdpScope;
   /* ── Date state ── */
   const [availableDates, setAvailableDates] = useState<{ date: string; services: number }[]>([]);
   const [datesMode, setDatesMode] = useState<"calendar" | "calendar_dates" | null>(null);
@@ -44,6 +48,9 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
   const [loadingDates, setLoadingDates] = useState(true);
 
   /* ── Routes state ── */
+  // Linee del feed NON filtrate: lo scope UDP viene applicato reattivamente
+  // (vedi effect sotto) perché può arrivare dopo il fetch delle linee.
+  const [feedRoutesRaw, setFeedRoutesRaw] = useState<RouteItem[]>([]);
   const [allRoutes, setAllRoutes] = useState<RouteItem[]>([]);
   const [loadingRoutes, setLoadingRoutes] = useState(true);
   const [selectedRoutes, setSelectedRoutes] = useState<Map<string, VehicleType>>(
@@ -104,33 +111,49 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
         }
       }
       if (routesData) {
-        const feedRoutes: RouteItem[] = routesData.routes || [];
-        let routes = feedRoutes;
-        // Progetto agganciato a un'UDP → restringi alle SOLE linee dell'unità.
-        // Match per route_id (feed materializzato dal PS) OPPURE per nome/short-name
-        // (feed importato con route_id reali diversi da ps_routes.id). Così si vedono
-        // solo le poche linee della UDP, non tutta la rete.
-        if (fromUdp && ((allowedRouteIds?.length ?? 0) > 0 || (allowedRouteNames?.length ?? 0) > 0)) {
-          const allowId = new Set(allowedRouteIds ?? []);
-          const allowName = new Set((allowedRouteNames ?? []).map((n) => n.trim().toLowerCase()));
-          const scoped = feedRoutes.filter(
-            (r) => allowId.has(r.routeId) || allowName.has((r.name ?? "").trim().toLowerCase()),
-          );
-          // Se qualcosa combacia usiamo il sottoinsieme; se nulla combacia
-          // lasciamo l'intero feed (il feed potrebbe essere già scoped sulla UDP).
-          if (scoped.length > 0) routes = scoped;
-        }
-        // Pre-seleziona tutte le linee mostrate quando si parte da un'UDP.
-        if (fromUdp && (!initial?.selectedRoutes || initial.selectedRoutes.size === 0)) {
-          setSelectedRoutes(new Map(routes.map((r) => [r.routeId, "12m" as VehicleType])));
-        }
-        setAllRoutes(routes);
+        setFeedRoutesRaw(routesData.routes || []);
       }
       setLoadingDates(false);
       setLoadingRoutes(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadKey]);
+
+  /* ── Scope UDP applicato in modo REATTIVO. Il vecchio filtro viveva dentro la
+     callback del fetch e usava lo stato del PRIMO render: al ri-lancio della
+     pipeline (feed già materializzato) le linee arrivavano prima dello scope
+     UDP e la lista restava TUTTO il progetto. Qui invece il filtro si riapplica
+     quando arrivano feedRoutesRaw O lo scope (allowedRouteIds/Names). ── */
+  useEffect(() => {
+    let routes = feedRoutesRaw;
+    // Match per route_id (feed materializzato dal PS) OPPURE per nome/short-name
+    // (feed importato con route_id reali diversi da ps_routes.id). Così si vedono
+    // solo le poche linee della UDP, non tutta la rete.
+    if (hasUdpScope) {
+      const allowId = new Set(allowedRouteIds ?? []);
+      const allowName = new Set((allowedRouteNames ?? []).map((n) => n.trim().toLowerCase()));
+      const scoped = feedRoutesRaw.filter(
+        (r) => allowId.has(r.routeId) || allowName.has((r.name ?? "").trim().toLowerCase()),
+      );
+      // Se qualcosa combacia usiamo il sottoinsieme; se nulla combacia
+      // lasciamo l'intero feed (il feed potrebbe essere già scoped sulla UDP).
+      if (scoped.length > 0) routes = scoped;
+    }
+    setAllRoutes(routes);
+    // Pre-selezione/riallineamento da UDP: se non c'è ancora una selezione,
+    // seleziona tutte le linee in scope; se una pre-selezione era partita
+    // PRIMA che lo scope arrivasse, butta via le linee fuori scope.
+    if (fromUdp && routes.length > 0) {
+      const inScope = new Set(routes.map((r) => r.routeId));
+      setSelectedRoutes((prev) => {
+        if (prev.size === 0) return new Map(routes.map((r) => [r.routeId, "12m" as VehicleType]));
+        const kept = new Map([...prev].filter(([id]) => inScope.has(id)));
+        if (kept.size === prev.size) return prev;
+        return kept.size > 0 ? kept : new Map(routes.map((r) => [r.routeId, "12m" as VehicleType]));
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedRoutesRaw, allowedRouteIds, allowedRouteNames, udpInfo]);
 
   /* ── Da UDP: la validità definisce la data → auto-selezione data rappresentativa ── */
   useEffect(() => {
