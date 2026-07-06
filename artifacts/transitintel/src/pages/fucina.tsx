@@ -396,7 +396,18 @@ export default function FucinaPage() {
         if (proj.validityUnitId && proj.planningStudioProjectId) {
           fetch(`${getApiBase()}/api/planning-studio/projects/${proj.planningStudioProjectId}/validity-units/${proj.validityUnitId}/detail`, { credentials: "include" })
             .then((r) => (r.ok ? r.json() : null))
-            .then((det) => { if (!cancelled && det) setUdpInfo(det); })
+            .then((det) => {
+              if (cancelled || !det) return;
+              setUdpInfo(det);
+              // Fonte AGGIUNTIVA per lo scope linee: i nomi linea delle corse
+              // risolte dell'UDP (copre feed re-importati con route_id diversi).
+              const names: string[] = Array.from(new Set(
+                ((det.trips ?? []) as any[]).map((t) => t.routeShortName).filter(Boolean),
+              ));
+              if (names.length > 0) {
+                setUdpRouteNames((prev) => Array.from(new Set([...(prev ?? []), ...names])));
+              }
+            })
             .catch(() => { /* il riepilogo UDP è best-effort */ });
         }
 
