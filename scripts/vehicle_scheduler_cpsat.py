@@ -2280,6 +2280,9 @@ def chains_to_shifts(
                         departure_time=min_to_time(depot_dep),
                         arrival_time=min_to_time(depot_arr),
                         departure_min=depot_dep, arrival_min=depot_arr,
+                        # UX: da dove a dove (rientro e nuova uscita dallo stesso deposito)
+                        first_stop_name=prev_t.last_stop_name,
+                        last_stop_name=t.first_stop_name,
                     ))
                     vs.depot_returns += 1
                 elif arc and arc.dh_km > 0.5:
@@ -2293,6 +2296,9 @@ def chains_to_shifts(
                         arrival_time=min_to_time(dh_end),
                         departure_min=dh_start, arrival_min=dh_end,
                         deadhead_km=arc.dh_km, deadhead_min=arc.dh_min,
+                        # UX: da dove a dove (capolinea arrivo → capolinea partenza)
+                        first_stop_name=prev_t.last_stop_name,
+                        last_stop_name=t.first_stop_name,
                     ))
                     vs.total_deadhead_min += arc.dh_min
                     vs.total_deadhead_km += arc.dh_km
@@ -2549,6 +2555,9 @@ def assign_depots_to_shifts(
                 departure_time=min_to_time(dep_min), arrival_time=min_to_time(first_trip.departure_min),
                 departure_min=dep_min, arrival_min=first_trip.departure_min,
                 deadhead_km=ok, deadhead_min=omin, depot_leg="out",
+                # UX: da dove a dove (deposito → primo capolinea)
+                first_stop_name=f"Deposito {info['name']}",
+                last_stop_name=first_trip.first_stop_name,
             ))
             s.total_deadhead_km += ok
             s.total_deadhead_min += omin
@@ -2560,6 +2569,9 @@ def assign_depots_to_shifts(
                 departure_time=min_to_time(last_trip.arrival_min), arrival_time=min_to_time(last_trip.arrival_min + imin),
                 departure_min=last_trip.arrival_min, arrival_min=last_trip.arrival_min + imin,
                 deadhead_km=ik, deadhead_min=imin, depot_leg="in",
+                # UX: da dove a dove (ultimo capolinea → deposito)
+                first_stop_name=last_trip.last_stop_name,
+                last_stop_name=f"Deposito {info['name']}",
             ))
             s.total_deadhead_km += ik
             s.total_deadhead_min += imin

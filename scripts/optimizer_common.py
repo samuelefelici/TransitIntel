@@ -1241,6 +1241,16 @@ def vshift_trip_to_dict(t: VShiftTrip) -> dict:
         d["deadheadMin"] = t.deadhead_min
         if t.depot_leg:
             d["depotLeg"] = t.depot_leg
+        # UX: da dove a dove anche per i fuorilinea
+        if t.first_stop_name:
+            d["firstStopName"] = t.first_stop_name
+        if t.last_stop_name:
+            d["lastStopName"] = t.last_stop_name
+    elif t.type == "depot":
+        if t.first_stop_name:
+            d["firstStopName"] = t.first_stop_name
+        if t.last_stop_name:
+            d["lastStopName"] = t.last_stop_name
     return d
 
 

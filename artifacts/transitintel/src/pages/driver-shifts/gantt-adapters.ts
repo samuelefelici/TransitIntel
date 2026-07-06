@@ -99,7 +99,7 @@ export function driverShiftsToBars(shifts: DriverShiftData[]): GanttBar[] {
           id: `${baseId}_tf`, rowId: shift.driverId,
           startMin: tStart, endMin: tStart + rip.transferMin,
           label: "↝", color: typeColor, style: "dashed",
-          tooltip: [`Trasf. deposito → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
+          tooltip: [`Trasf. Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
           locked: true,
           meta: { type: "transfer", driverId: shift.driverId, ripreseIdx: ri },
         });
@@ -129,7 +129,7 @@ export function driverShiftsToBars(shifts: DriverShiftData[]): GanttBar[] {
           id: `${baseId}_tb`, rowId: shift.driverId,
           startMin: tbStart, endMin: rip.endMin,
           label: "↜", color: typeColor, style: "dashed",
-          tooltip: [`Rientro ${rip.lastStop || "capolinea"} → deposito ${rip.transferBackMin}min`],
+          tooltip: [`Rientro ${rip.lastStop || "capolinea"} → Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} ${rip.transferBackMin}min`],
           locked: true,
           meta: { type: "transferBack", driverId: shift.driverId, ripreseIdx: ri },
         });
@@ -178,7 +178,7 @@ export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] { 
           id: `${baseId}_tf`, rowId: shift.driverId,
           startMin: tStart, endMin: tStart + rip.transferMin,
           label: "↝", color: typeColor, style: "dashed",
-          tooltip: [`Trasf. → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
+          tooltip: [`Trasf. Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
           locked: true,
           meta: { type: "transfer", driverId: shift.driverId, ripreseIdx: ri },
         });
