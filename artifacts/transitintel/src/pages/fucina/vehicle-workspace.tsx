@@ -36,6 +36,7 @@ import DeadheadEditorDialog, { type DeadheadChange } from "./DeadheadEditorDialo
 import { AddVehicleShiftDialog, createEmptyVehicleShift, nextVehicleId } from "./AddVehicleShiftDialog";
 import { useDeadheadOperations } from "./useDeadheadOperations";
 import { InlineDeadheadPopover } from "./InlineDeadheadPopover";
+import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { calculateDeadhead } from "./deadhead-calculator";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 
@@ -602,6 +603,12 @@ export default function VehicleWorkspace({
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [actionLog, setActionLog] = useState<ActionEntry[]>([]);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+
+  /* ── Finestra di lavoro: turni a colonna, spacchetta/rimpacchetta ── */
+  const [wwOpen, setWwOpen] = useState(false);
+  const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
+  const [wwUnpacked, setWwUnpacked] = useState<Set<string>>(new Set());
+  const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
   const actionIdRef = React.useRef(0);
   // FIX-REFRESH: tengo l'indice corrente in un ref per evitare race condition
   // tra setResult/setHistory/setHistoryIndex (più drag in rapida sequenza).
@@ -765,6 +772,80 @@ export default function VehicleWorkspace({
     () => result ? shiftsToBars(result.shifts, routeColorMap, depotMovementOverrides) : [],
     [result, routeColorMap, depotMovementOverrides],
   );
+  /* ── Finestra di lavoro: adapter VehicleShift → colonne attività ── */
+  const wwFmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const wwShifts = useMemo<WorkShiftView[]>(() => {
+    if (!result) return [];
+    return wwShiftIds
+      .map(id => result.shifts.find(s => s.vehicleId === id))
+      .filter((s): s is VehicleShift => !!s)
+      .map(sh => {
+        const unpacked = wwUnpacked.has(sh.vehicleId);
+        const entries = unpacked ? sh.trips.filter(t => t.type === "trip") : sh.trips;
+        return {
+          id: sh.vehicleId,
+          label: customLabels[sh.vehicleId] ?? sh.vehicleId,
+          sub: `${sh.tripCount} corse · ${VEHICLE_SHORT[sh.vehicleType] || sh.vehicleType}`,
+          unpacked,
+          activities: entries.map((t, i) => ({
+            id: t.type === "trip" ? t.tripId : `${sh.vehicleId}-x-${i}`,
+            isTrip: t.type === "trip",
+            kindLabel: t.type === "trip" ? (t.routeName || "Corsa") : t.type === "deadhead" ? "Fuorilinea" : "Deposito",
+            kindColor: t.type === "trip" ? ((routeColorMap as any)[t.routeId] ?? "#38bdf8") : "#f59e0b",
+            timeLabel: `${wwFmt(t.departureMin)}→${wwFmt(t.arrivalMin)}`,
+            desc: `${t.firstStopName ?? ""} → ${t.lastStopName ?? ""}`,
+          })),
+        };
+      });
+  }, [result, wwShiftIds, wwUnpacked, customLabels, routeColorMap]);
+
+  const wwDrop = useCallback((rowId: string) => {
+    if (!result?.shifts.some(s => s.vehicleId === rowId)) return;
+    setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
+    setWwOpen(true);
+  }, [result]);
+
+  /* Rimpacchetta (TM): corse selezionate → turno NUOVO con fuorilinea
+   * rigenerati e matricola automatica; i turni sorgente tengono le corse
+   * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti). */
+  const wwRepack = useCallback(() => {
+    if (!result || wwSelected.size === 0) return;
+    const srcIds = new Set(wwShiftIds);
+    const chosen: ShiftTripEntry[] = [];
+    for (const s of result.shifts) {
+      if (!srcIds.has(s.vehicleId)) continue;
+      for (const t of s.trips) if (t.type === "trip" && wwSelected.has(t.tripId)) chosen.push({ ...t });
+    }
+    if (!chosen.length) return;
+    chosen.sort((a, b) => a.departureMin - b.departureMin);
+    for (let i = 1; i < chosen.length; i++) {
+      if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
+        toast.error("Corse sovrapposte", {
+          description: `"${chosen[i - 1].routeName}" e "${chosen[i].routeName}" si accavallano: il turno non può chiudersi.`,
+        });
+        return;
+      }
+    }
+    const newId = nextVehicleId(result.shifts.map(s => s.vehicleId), "M");
+    const srcShift = result.shifts.find(s => srcIds.has(s.vehicleId))!;
+    const newShift = recomputeShift({ ...srcShift, vehicleId: newId, trips: chosen });
+    const remaining = result.shifts.map(s => {
+      if (!srcIds.has(s.vehicleId)) return s;
+      return recomputeShift({ ...s, trips: s.trips.filter(t => t.type === "trip" && !wwSelected.has(t.tripId)) });
+    });
+    let next: ServiceProgramResult = { ...result, shifts: [...remaining, newShift] };
+    const pr = pruneEmptyShifts(next); next = pr.result;
+    const rg = regenerateMissingDeadheads(next); next = rg.result;
+    next = recomputeSummary(next);
+    setResult(next);
+    pushHistory(next, "deadhead", `Finestra di lavoro · rimpacchettato ${newId}`,
+      `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · ${pr.removed} turni vuoti eliminati`);
+    setWwShiftIds([]); setWwSelected(new Set()); setWwUnpacked(new Set());
+    toast.success(`Turno macchina ${newId} creato`, {
+      description: `${chosen.length} corse in ordine · ${rg.added} fuorilinea rigenerati automaticamente${pr.removed ? ` · ${pr.removed} turni rimasti vuoti eliminati` : ""}.`,
+    });
+  }, [result, wwShiftIds, wwSelected, pushHistory]);
+
   const stopOptions = useMemo(() => {
     if (!result) return [] as string[];
     const set = new Set<string>();
@@ -1709,6 +1790,13 @@ export default function VehicleWorkspace({
                 <Redo2 className="w-3.5 h-3.5" />
               </button>
               <button
+                onClick={() => setWwOpen(o => !o)}
+                title="Finestra di lavoro: trascina turni interi, spacchetta e rimpacchetta"
+                className={`px-2 py-1.5 rounded hover:bg-muted/40 text-[10px] font-semibold ${wwOpen ? "text-purple-300 bg-purple-500/10" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                🪟 Finestra di lavoro{wwShiftIds.length > 0 ? ` (${wwShiftIds.length})` : ""}
+              </button>
+              <button
                 onClick={() => setHistoryPanelOpen(p => !p)}
                 title="Mostra/nascondi cronologia azioni"
                 className={`p-1.5 rounded hover:bg-muted/40 ${historyPanelOpen ? "text-orange-400 bg-orange-500/10" : "text-muted-foreground hover:text-foreground"}`}
@@ -1867,10 +1955,40 @@ export default function VehicleWorkspace({
             </span>
           </div>
 
+          {wwOpen && (
+            <div className="mb-2 shrink-0">
+              <WorkWindowPanel
+                shifts={wwShifts}
+                selected={wwSelected}
+                onToggleSelect={(id) => setWwSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+                onToggleSelectAll={(shiftId) => {
+                  const sh = wwShifts.find(s => s.id === shiftId); if (!sh) return;
+                  const tripIds = sh.activities.filter(a => a.isTrip).map(a => a.id);
+                  setWwSelected(prev => {
+                    const n = new Set(prev);
+                    const all = tripIds.every(id => n.has(id));
+                    tripIds.forEach(id => { if (all) n.delete(id); else n.add(id); });
+                    return n;
+                  });
+                }}
+                onDropShift={wwDrop}
+                onRemoveShift={(id) => {
+                  setWwShiftIds(ids => ids.filter(x => x !== id));
+                  setWwUnpacked(prev => { const n = new Set(prev); n.delete(id); return n; });
+                }}
+                onUnpack={(id) => setWwUnpacked(prev => new Set(prev).add(id))}
+                onUnpackAll={() => setWwUnpacked(new Set(wwShiftIds))}
+                onRepack={wwRepack}
+                onClose={() => setWwOpen(false)}
+                accent="amber"
+              />
+            </div>
+          )}
           <div className="flex-1 min-h-0">
             <InteractiveGantt
               rows={ganttRows}
               bars={ganttBars}
+              rowsDraggable={wwOpen}
               onBarChange={handleBarChange}
               onRowRename={handleRowRename}
               getSuggestions={getSuggestions}

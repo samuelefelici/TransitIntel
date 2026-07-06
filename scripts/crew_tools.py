@@ -170,6 +170,13 @@ def _duty_report(d: DriverDutyV3, bds, clusters) -> dict:
         "drivingMin": d.driving_min,
         "interruptionMin": d.interruption_min,
         "workCalculation": wc.to_dict() if hasattr(wc, "to_dict") else None,
+        # Fuorilinea calcolati dalla FONTE UNICA (per la Finestra di lavoro:
+        # il turno rimpacchettato riceve pre-turno/trasferimenti automatici)
+        "preTurnoMin": d.pre_turno_min,
+        "transferMin": d.transfer_min,
+        "transferBackMin": d.transfer_back_min,
+        "nastroStartMin": d.nastro_start,
+        "nastroEndMin": d.nastro_end,
     }
 
 

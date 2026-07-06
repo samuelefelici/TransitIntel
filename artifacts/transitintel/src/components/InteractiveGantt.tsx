@@ -108,6 +108,9 @@ export interface InteractiveGanttProps {
   onBarDragStart?: (bar: GanttBar) => void;
   /** Called when drag ends (commit or cancel). */
   onBarDragEnd?: () => void;
+  /** Rende trascinabile l'etichetta di riga (HTML5 dnd): il rowId viaggia in
+   *  dataTransfer "application/x-cerbero-row" — usato dalla Finestra di lavoro. */
+  rowsDraggable?: boolean;
 }
 
 export interface GanttSuggestion {
@@ -155,6 +158,7 @@ export default function InteractiveGantt({
   rowHeight = 32,
   labelWidth = 160,
   editable = true,
+  rowsDraggable = false,
   onRowRename,
   getSuggestions,
   onBarClick,
@@ -857,8 +861,15 @@ export default function InteractiveGantt({
               >
                 {/* Label */}
                 <div
-                  className="shrink-0 flex items-center gap-1.5 px-2 text-[10px] font-mono border-r border-border/20 overflow-hidden"
+                  className={`shrink-0 flex items-center gap-1.5 px-2 text-[10px] font-mono border-r border-border/20 overflow-hidden ${rowsDraggable ? "cursor-grab active:cursor-grabbing" : ""}`}
                   style={{ width: labelWidth }}
+                  draggable={rowsDraggable}
+                  onDragStart={rowsDraggable ? (e) => {
+                    e.dataTransfer.setData("application/x-cerbero-row", row.id);
+                    e.dataTransfer.setData("text/plain", row.id);
+                    e.dataTransfer.effectAllowed = "copy";
+                  } : undefined}
+                  title={rowsDraggable ? "Trascina nella Finestra di lavoro" : undefined}
                 >
                   {editable && (
                     <GripVertical className="w-3 h-3 text-muted-foreground/30 shrink-0" />
