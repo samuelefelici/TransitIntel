@@ -765,17 +765,18 @@ function DriverShiftsPageInner() {
    * 1 o 2 riprese (spezzato automatico al gap più grande ≥60'), matricola
    * automatica, poi la ri-verifica BDS assegna tipologia/fuorilinea/validità.
    * I turni sorgente tengono le corse non selezionate e vengono ri-verificati. */
-  const wwRepack = useCallback(() => {
-    if (!result || wwSelected.size === 0) return;
+  const wwRepack = useCallback((onlyIds?: string[]) => {
+    const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
+    if (!result || sel.size === 0) return;
     const srcIds = new Set(wwShiftIds);
     const chosen: RipresaTrip[] = [];
     for (const s of result.driverShifts) {
       if (!srcIds.has(s.driverId)) continue;
       for (const r of s.riprese) for (const t of r.trips) {
-        if (wwSelected.has(String(t.tripId))) chosen.push({ ...t });
+        if (sel.has(String(t.tripId))) chosen.push({ ...t });
       }
     }
-    const chosenPool = wwPool.filter(p => wwSelected.has(String(p.trip.tripId)));
+    const chosenPool = wwPool.filter(p => sel.has(String(p.trip.tripId)));
     for (const p of chosenPool) chosen.push({ ...p.trip });
     if (!chosen.length) return;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
@@ -825,7 +826,7 @@ function DriverShiftsPageInner() {
       .map(s => {
         if (!srcIds.has(s.driverId)) return s;
         const rp = s.riprese
-          .map(r => ({ ...r, trips: r.trips.filter(t => !wwSelected.has(String(t.tripId))) }))
+          .map(r => ({ ...r, trips: r.trips.filter(t => !sel.has(String(t.tripId))) }))
           .filter(r => r.trips.length > 0)
           .map(r => {
             const st = r.trips[0].departureMin, en = r.trips[r.trips.length - 1].arrivalMin;
@@ -848,7 +849,7 @@ function DriverShiftsPageInner() {
     const chosenIds = new Set(chosen.map(t => String(t.tripId)));
     const importedPacked = chosenPool.filter(p => p.importedFrom);
     setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.trip.tripId))));
-    setWwSelected(new Set());
+    setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id))));
     if (importedPacked.length) {
       void (async () => {
         const bySrc = new Map<string, string[]>();
@@ -1267,12 +1268,34 @@ function DriverShiftsPageInner() {
                 )}
               </div>
             )}
-            {/* Salva — solo se c'è risultato */}
+            {/* 💾 Salva (sovrascrive lo scenario TG caricato) */}
+            {result && loadedDssId && (
+              <button
+                onClick={async () => {
+                  try {
+                    const r = await fetch(`${getApiBase()}/api/driver-shifts/scenarios/${loadedDssId}`, {
+                      method: "PUT", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ result }),
+                    });
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    setModifiedCount(0);
+                    toast.success("Turni guida salvati", { description: "Scenario aggiornato (sovrascritto)." });
+                  } catch (e: any) {
+                    toast.error("Errore salvataggio", { description: e?.message });
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600/90 text-white hover:bg-emerald-600 transition-colors"
+                title="Salva: sovrascrive lo scenario turni guida caricato"
+              >
+                <Save className="w-3.5 h-3.5" /> Salva
+              </button>
+            )}
+            {/* Salva con nome — crea un NUOVO scenario */}
             {result && (
               <button
                 onClick={() => { setDssName(`Turni guida ${new Date().toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`); setShowSaveDialog(true); }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-600/90 text-white hover:bg-amber-600 transition-colors"
-                title={loadedDssId ? "Salva come nuovo scenario" : "Salva turni guida"}
+                title={loadedDssId ? "Salva con nome: crea un NUOVO scenario turni guida (l'originale resta)" : "Salva turni guida"}
               >
                 <Save className="w-3.5 h-3.5" /> {loadedDssId ? "Salva come nuovo" : "Salva"}
               </button>
@@ -2191,7 +2214,8 @@ function DriverShiftsPageInner() {
                   busy={wwImportBusy}
                   onUnpack={(id) => wwDissolve([id])}
                   onUnpackAll={() => wwDissolve(wwShiftIds)}
-                  onRepack={wwRepack}
+                  onRepack={() => wwRepack()}
+                  onRepackIds={(ids) => wwRepack(ids)}
                   onClose={() => setWwOpen(false)}
                   accent="purple"
                 />

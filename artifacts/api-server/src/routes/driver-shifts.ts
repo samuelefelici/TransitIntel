@@ -1779,4 +1779,26 @@ router.post("/driver-shifts/tools/turni-unici", async (req, res) => {
   }
 });
 
+/** PUT /driver-shifts/scenarios/:id — SOVRASCRIVE uno scenario TG salvato
+ *  (tasto "Salva" del workspace: aggiorna il lavoro in corso senza duplicare). */
+router.put("/driver-shifts/scenarios/:id", async (req, res) => {
+  try {
+    const { name, result, config } = (req.body ?? {}) as any;
+    if (!result && !name && config === undefined) { res.status(400).json({ error: "niente da salvare" }); return; }
+    const [row] = await db.update(driverShiftScenarios)
+      .set({
+        ...(name ? { name } : {}),
+        ...(result ? { result } : {}),
+        ...(config !== undefined ? { config } : {}),
+      })
+      .where(eq(driverShiftScenarios.id, req.params.id as string))
+      .returning();
+    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    res.json({ ok: true, id: row.id });
+  } catch (err: any) {
+    req.log.error(err, "Error updating driver shift scenario");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;
