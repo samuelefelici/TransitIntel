@@ -32,6 +32,7 @@ import {
   SwapDialog, applyPieceToShift, VerifyBadge, effectiveVerifyState,
   VincoliGlobaliEditor, VincoliReport, type SwapProposal,
 } from "./driver-shifts/bdsi-tools";
+import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./driver-shifts/bds5-costs";
 import {
   TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
   ymdToDisplay, minToTime, formatDuration,
@@ -125,6 +126,7 @@ function DriverShiftsPageInner() {
   const [searchQuery, setSearchQuery] = useState("");
   const [residenzaFilter, setResidenzaFilter] = useState<string | null>(null);
   const [vincoliGlobali, setVincoliGlobali] = useState<VincoloGlobale[]>([]);
+  const [bds5Config, setBds5Config] = useState<Bds5Config>(EMPTY_BDS5);
   const [coverageOpen, setCoverageOpen] = useState(true);
   const [swapPiece, setSwapPiece] = useState<{ vehicleId: string; vehicleType: string; trips: RipresaTrip[] } | null>(null);
   const [swapProposals, setSwapProposals] = useState<SwapProposal[]>([]);
@@ -380,10 +382,19 @@ function DriverShiftsPageInner() {
         },
         // BDSI cap. 14 — vincoli globali di soluzione (quasi-hard nel CP-SAT)
         ...(vincoliGlobali.length > 0 ? { vincoliGlobali } : {}),
+        // BDS5 — costi avanzati + estensioni generazione pezzi
+        ...(() => {
+          const b5 = bds5ToSolverConfig(bds5Config);
+          if (!b5) return {};
+          return {
+            ...(b5.costiAvanzati ? { costiAvanzati: b5.costiAvanzati } : {}),
+            ...(b5.cuts ? { cuts: { ...((operatorConfig.bds as any)?.cuts ?? {}), ...b5.cuts } } : {}),
+          };
+        })(),
       },
     };
     cpsat.start(scenarioId, timeLimit, configWithScope);
-  }, [scenarioId, cpsat, operatorConfig, selectedClusterIds, companyCars, vincoliGlobali]);
+  }, [scenarioId, cpsat, operatorConfig, selectedClusterIds, companyCars, vincoliGlobali, bds5Config]);
 
   // When switching mode, don't auto-launch; user must click explicitly
   const switchMode = useCallback((mode: "greedy" | "cpsat") => {
@@ -1161,6 +1172,13 @@ function DriverShiftsPageInner() {
                         </div>
                       )}
 
+                      {/* BDS5 — costi avanzati (scalini, quadratici, cambi, pezzi) */}
+                      {solverMode === "cpsat" && (
+                        <div className="mt-2 pt-2 border-t border-border/20">
+                          <Bds5CostsEditor cfg={bds5Config} onChange={setBds5Config} />
+                        </div>
+                      )}
+
                       {solverMode === "cpsat" && (
                         <button
                           onClick={() => setConfigOpen(true)}
@@ -1490,10 +1508,17 @@ function DriverShiftsPageInner() {
               );
             })()}
           </div>
-          {/* Report vincoli globali di soluzione (BDSI cap. 14) */}
+          {/* Report vincoli globali (BDSI cap. 14) + costi avanzati BDS5 */}
           {(() => {
             const rep = (solverMetrics as any)?.vincoliGlobali;
-            return rep?.length ? <div className="mt-2"><VincoliReport report={rep} /></div> : null;
+            const b5 = (solverMetrics as any)?.bds5;
+            if (!rep?.length && !b5) return null;
+            return (
+              <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                {rep?.length ? <VincoliReport report={rep} /> : null}
+                <Bds5Report report={b5} />
+              </div>
+            );
           })()}
         </div>
 

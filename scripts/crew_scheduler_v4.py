@@ -353,6 +353,261 @@ def apply_vincoli_globali_config(cfg: dict) -> None:
             + "; ".join(_vincolo_label(v) for v in VINCOLI_GLOBALI))
 
 
+# ----------------------------------------------------------------
+# Costi avanzati BDS5 (Manuale configurazione algoritmo, cap. 3-4)
+# ----------------------------------------------------------------
+# config.bds.costiAvanzati = {
+#   scalini: [{attributo: "nastro"|"lavoro"|"guida",
+#              scalini: [{da: minuti, costo: eur}], tipologie?: [...]}],
+#   quadratici: [{attributo: "nastro"|"lavoro"|"guida"|"durataRiprese"|
+#                             "equilibrioRiprese"|"stacco",
+#                 riferimento: min, termineNoto?: eur, lineare?: eur/min,
+#                 quadratico?: eur/min², fasciaControllo?: min, tipologie?}],
+#   cambioVettura: {coeffDeposito, coeffLinea, coeffDepLinea},   # eur/cambio
+#   cambioPatente: {costo: eur, gruppo1: [tipi], gruppo2: [tipi]},
+# }
+# config.bds.cuts (estensioni): sosteSpezzantiMin, fasceSenzaCambi
+# [{startMin,endMin}], lungPezziMin, lungPezziMinExtra
+BDS5_COSTS: dict = {}
+BDS5_FASCE_SENZA_CAMBI: list[tuple[int, int]] = []
+BDS5_SOSTE_SPEZZANTI_MIN = 0      # 0 = off
+BDS5_LUNG_PEZZI_MIN = 0           # lunghezza minima pezzi urbani (0 = off)
+BDS5_LUNG_PEZZI_MIN_EXTRA = 0     # lunghezza minima pezzi extraurbani (0 = off)
+FASCIA_SENZA_CAMBI_PENALTY = 100.0  # "preferenzialmente non ammessi" (BDS5 fascia_oraria)
+
+_BDS5_ATTR_SCALARI = {"nastro", "lavoro", "guida"}
+_BDS5_ATTR_LISTE = {"durataRiprese", "equilibrioRiprese", "stacco"}
+
+
+def apply_bds5_config(cfg: dict) -> None:
+    """Parsa config.bds.costiAvanzati + estensioni cuts BDS5 nei global."""
+    global BDS5_COSTS, BDS5_FASCE_SENZA_CAMBI, BDS5_SOSTE_SPEZZANTI_MIN
+    global BDS5_LUNG_PEZZI_MIN, BDS5_LUNG_PEZZI_MIN_EXTRA
+    BDS5_COSTS = {}
+    BDS5_FASCE_SENZA_CAMBI = []
+    BDS5_SOSTE_SPEZZANTI_MIN = 0
+    BDS5_LUNG_PEZZI_MIN = 0
+    BDS5_LUNG_PEZZI_MIN_EXTRA = 0
+
+    bds_cfg = (cfg or {}).get("bds", {}) or {}
+    ca = bds_cfg.get("costiAvanzati") or {}
+
+    def _fnum(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    scalini = []
+    for s in (ca.get("scalini") or [])[:10]:
+        if not isinstance(s, dict) or s.get("attributo") not in _BDS5_ATTR_SCALARI:
+            continue
+        steps = sorted(
+            [(int(_fnum(x.get("da"), -1)), _fnum(x.get("costo")))
+             for x in (s.get("scalini") or []) if isinstance(x, dict) and x.get("da") is not None],
+            key=lambda t: t[0])
+        steps = [(da, c) for da, c in steps if da >= 0]
+        if steps:
+            scalini.append({"attributo": s["attributo"], "steps": steps,
+                            "tipologie": set(s.get("tipologie") or []) or None})
+    if scalini:
+        BDS5_COSTS["scalini"] = scalini
+
+    quadratici = []
+    for q in (ca.get("quadratici") or [])[:10]:
+        if not isinstance(q, dict):
+            continue
+        attr = q.get("attributo")
+        if attr not in _BDS5_ATTR_SCALARI | _BDS5_ATTR_LISTE:
+            continue
+        quadratici.append({
+            "attributo": attr,
+            "riferimento": int(_fnum(q.get("riferimento"), 0)),
+            "termineNoto": _fnum(q.get("termineNoto")),
+            "lineare": _fnum(q.get("lineare")),
+            "quadratico": _fnum(q.get("quadratico")),
+            "fasciaControllo": int(_fnum(q.get("fasciaControllo"), 0)),
+            "tipologie": set(q.get("tipologie") or []) or None,
+        })
+    if quadratici:
+        BDS5_COSTS["quadratici"] = quadratici
+
+    cv = ca.get("cambioVettura")
+    if isinstance(cv, dict) and any(_fnum(cv.get(k)) for k in ("coeffDeposito", "coeffLinea", "coeffDepLinea")):
+        BDS5_COSTS["cambioVettura"] = {
+            "coeffDeposito": _fnum(cv.get("coeffDeposito")),
+            "coeffLinea": _fnum(cv.get("coeffLinea")),
+            "coeffDepLinea": _fnum(cv.get("coeffDepLinea")),
+        }
+
+    cp = ca.get("cambioPatente")
+    if (isinstance(cp, dict) and _fnum(cp.get("costo")) > 0
+            and cp.get("gruppo1") and cp.get("gruppo2")):
+        BDS5_COSTS["cambioPatente"] = {
+            "costo": _fnum(cp.get("costo")),
+            "gruppo1": set(map(str, cp["gruppo1"])),
+            "gruppo2": set(map(str, cp["gruppo2"])),
+        }
+
+    cuts = bds_cfg.get("cuts") or {}
+    try:
+        BDS5_SOSTE_SPEZZANTI_MIN = max(0, int(cuts.get("sosteSpezzantiMin") or 0))
+    except (TypeError, ValueError):
+        pass
+    for f in (cuts.get("fasceSenzaCambi") or [])[:8]:
+        try:
+            a, b = int(f.get("startMin")), int(f.get("endMin"))
+            if 0 <= a < b:
+                BDS5_FASCE_SENZA_CAMBI.append((a, b))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    try:
+        BDS5_LUNG_PEZZI_MIN = max(0, int(cuts.get("lungPezziMin") or 0))
+        BDS5_LUNG_PEZZI_MIN_EXTRA = max(0, int(cuts.get("lungPezziMinExtra") or 0))
+    except (TypeError, ValueError):
+        pass
+
+    active = list(BDS5_COSTS.keys())
+    if BDS5_SOSTE_SPEZZANTI_MIN:
+        active.append(f"sosteSpezzanti≥{BDS5_SOSTE_SPEZZANTI_MIN}'")
+    if BDS5_FASCE_SENZA_CAMBI:
+        active.append(f"fasceSenzaCambi×{len(BDS5_FASCE_SENZA_CAMBI)}")
+    if BDS5_LUNG_PEZZI_MIN or BDS5_LUNG_PEZZI_MIN_EXTRA:
+        active.append(f"lungPezzi≥{BDS5_LUNG_PEZZI_MIN}/{BDS5_LUNG_PEZZI_MIN_EXTRA}'")
+    if active:
+        log(f"[V4][BDS5] attivi: {', '.join(active)}")
+
+
+def bds5_active() -> bool:
+    return bool(BDS5_COSTS)
+
+
+def bds5_duty_cost(
+    duty_type: str,
+    nastro: int,
+    work: int,
+    driving: int,
+    riprese_durations: list[int],
+    stacchi: list[int],
+    cambi: dict[str, int] | None = None,
+    vehicle_types: set[str] | None = None,
+) -> float:
+    """Costo BDS5 (eur) di un turno candidato. Usato IDENTICO nel modello
+    CP-SAT (single/pair a build-time) e nel costo dettagliato all'estrazione."""
+    if not BDS5_COSTS:
+        return 0.0
+    cost = 0.0
+    scalar = {"nastro": nastro, "lavoro": work, "guida": driving}
+
+    for s in BDS5_COSTS.get("scalini", []):
+        if s["tipologie"] and duty_type not in s["tipologie"]:
+            continue
+        v = scalar[s["attributo"]]
+        applicabile = None
+        for da, c in s["steps"]:
+            if v >= da:
+                applicabile = c
+            else:
+                break
+        if applicabile is not None:
+            cost += applicabile
+
+    for q in BDS5_COSTS.get("quadratici", []):
+        if q["tipologie"] and duty_type not in q["tipologie"]:
+            continue
+        attr = q["attributo"]
+        if attr in _BDS5_ATTR_SCALARI:
+            values = [scalar[attr]]
+        elif attr == "durataRiprese":
+            values = riprese_durations
+        elif attr == "stacco":
+            values = stacchi
+        else:  # equilibrioRiprese: somma scarti dalla media
+            if len(riprese_durations) >= 2:
+                media = sum(riprese_durations) / len(riprese_durations)
+                values = [int(sum(abs(d - media) for d in riprese_durations))]
+            else:
+                values = []
+        for v in values:
+            if q["fasciaControllo"] and v < q["fasciaControllo"]:
+                continue
+            d = v - q["riferimento"]
+            if d > 0:
+                cost += q["termineNoto"] + d * q["lineare"] + d * d * q["quadratico"]
+
+    cv = BDS5_COSTS.get("cambioVettura")
+    if cv and cambi:
+        cost += (cv["coeffDeposito"] * cambi.get("deposito", 0)
+                 + cv["coeffLinea"] * cambi.get("linea", 0)
+                 + cv["coeffDepLinea"] * cambi.get("depLinea", 0))
+
+    cp = BDS5_COSTS.get("cambioPatente")
+    if cp and vehicle_types:
+        if vehicle_types & cp["gruppo1"] and vehicle_types & cp["gruppo2"]:
+            cost += cp["costo"]
+
+    return cost
+
+
+def _bds5_cambi_from_segments(segments: list) -> dict[str, int]:
+    """Conta i cambi di vettura tra segmenti consecutivi, per località:
+    in linea se il cambio avviene a un cluster (punto di cambio in linea),
+    deposito↔linea altrimenti (il conducente rientra/riparte dal deposito)."""
+    cambi = {"deposito": 0, "linea": 0, "depLinea": 0}
+    for a, b in zip(segments, segments[1:]):
+        if a.vehicle_id == b.vehicle_id:
+            continue
+        if a.last_cluster and b.first_cluster:
+            cambi["linea"] += 1
+        else:
+            cambi["depLinea"] += 1
+    return cambi
+
+
+def split_blocks_at_soste(blocks: list["VehicleBlock"], clusters: list) -> tuple[list["VehicleBlock"], int]:
+    """BDS5 soste_spezzanti: ogni sosta ≥ soglia nel turno macchina diventa
+    un confine OBBLIGATORIO — il blocco viene pre-spezzato in sotto-blocchi,
+    così nessun pezzo può scavalcare la sosta."""
+    if BDS5_SOSTE_SPEZZANTI_MIN <= 0:
+        return blocks, 0
+    out: list[VehicleBlock] = []
+    splits = 0
+    for b in blocks:
+        groups: list[list] = [[]]
+        for i, t in enumerate(b.trips):
+            if groups[-1]:
+                gap = t.departure_min - groups[-1][-1].arrival_min
+                if gap >= BDS5_SOSTE_SPEZZANTI_MIN:
+                    groups.append([])
+                    splits += 1
+            groups[-1].append(t)
+        if len(groups) == 1:
+            out.append(b)
+            continue
+        for gi, g in enumerate(groups):
+            driving = sum(t.arrival_min - t.departure_min for t in g)
+            out.append(VehicleBlock(
+                vehicle_id=b.vehicle_id,
+                vehicle_type=b.vehicle_type,
+                category=b.category,
+                trips=g,
+                start_min=g[0].departure_min,
+                end_min=g[-1].arrival_min,
+                nastro_min=g[-1].arrival_min - g[0].departure_min,
+                driving_min=driving,
+                work_min=g[-1].arrival_min - g[0].departure_min,
+                classification=b.classification,
+            ))
+    if splits:
+        log(f"[V4][BDS5] soste spezzanti ≥{BDS5_SOSTE_SPEZZANTI_MIN}': "
+            f"{splits} tagli obbligatori, {len(blocks)} → {len(out)} blocchi")
+    return out, splits
+
+
+def _bds5_in_fascia_senza_cambi(cut_min: int) -> bool:
+    return any(a <= cut_min <= b for a, b in BDS5_FASCE_SENZA_CAMBI)
+
+
 def _vincolo_label(v: dict) -> str:
     if v.get("label"):
         return v["label"]
@@ -876,6 +1131,10 @@ def analyze_vehicle_block(
     for t in trips:
         cum_driving.append(cum_driving[-1] + (t.arrival_min - t.departure_min))
 
+    # BDS5 lung_pezzi: lunghezza minima dei pezzi generati (per categoria)
+    min_pezzo = (BDS5_LUNG_PEZZI_MIN_EXTRA if block.category == "extraurbano"
+                 else BDS5_LUNG_PEZZI_MIN)
+
     for i in range(len(trips) - 1):
         gap = trips[i + 1].departure_min - trips[i].arrival_min
         if gap < MIN_CUT_GAP:
@@ -891,8 +1150,16 @@ def analyze_vehicle_block(
         left_work = trips[i].arrival_min - trips[0].departure_min
         right_work = trips[-1].arrival_min - trips[i + 1].departure_min
 
+        # BDS5 lung_pezzi: il taglio non deve creare pezzi sotto la lunghezza minima
+        if min_pezzo > 0 and (left_work < min_pezzo or right_work < min_pezzo):
+            continue
+
         # ── Scoring ──
         score = 0.0
+
+        # BDS5 fascia_oraria: cambi preferenzialmente non ammessi in fascia
+        if _bds5_in_fascia_senza_cambi(cut_time):
+            score -= FASCIA_SENZA_CAMBI_PENALTY
 
         # Bonus gap
         if gap >= 5:
@@ -992,8 +1259,16 @@ def analyze_vehicle_block(
             left_work_intra = cs.arrival_min - trips[0].departure_min
             right_work_intra = trips[-1].arrival_min - cs.departure_min
 
+            # BDS5 lung_pezzi anche per i tagli intra-corsa
+            if min_pezzo > 0 and (left_work_intra < min_pezzo or right_work_intra < min_pezzo):
+                continue
+
             # ── Scoring intra ──
             score_intra = INTRA_SCORE_BASE  # penalità base vs inter
+
+            # BDS5 fascia_oraria: cambi preferenzialmente non ammessi in fascia
+            if _bds5_in_fascia_senza_cambi(cut_time_intra):
+                score_intra -= FASCIA_SENZA_CAMBI_PENALTY
 
             # Bonus cluster (sempre in cluster per intra)
             score_intra += INTRA_CLUSTER_BONUS
@@ -1866,6 +2141,19 @@ def compute_duty_cost_v4(
     # score del portfolio. La fascia [target-30, target+12] resta gratuita.
     c.work_imbalance_penalty = 0.0
 
+    # 11. Costi avanzati BDS5 (scalini, quadratici, cambi vettura/patente) —
+    #     STESSA funzione usata nell'obiettivo CP-SAT (fonte unica).
+    if bds5_active():
+        segs = sorted(duty.segments, key=lambda s: s.start_min)
+        riprese_dur = [s.end_min - s.start_min for s in segs]
+        stacchi = [max(0, b.start_min - a.end_min) for a, b in zip(segs, segs[1:])]
+        c.bds5_cost = bds5_duty_cost(
+            duty.duty_type, duty.nastro_min, duty.work_min, duty.driving_min,
+            riprese_dur, stacchi,
+            _bds5_cambi_from_segments(segs),
+            {s.vehicle_type for s in segs},
+        )
+
     c.compute()
     return c
 
@@ -2210,12 +2498,19 @@ def _build_cpsat_model(
         nastro_s, work_with_overhead = single_nastro_work(s, bds, clusters)
         dev_from_target = abs(work_with_overhead - TARGET_WORK_MID)
 
+        _dtype_s = "supplemento" if nastro_s <= SUPPLEMENTO_NASTRO_MAX else "intero"
         if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
             cost_cents = int(rates.supplemento_daily * COST_SCALE * mul_suppl)
         else:
             hours = work_with_overhead / 60.0
             cost_cents = int((hours * rates.hourly_rate * mul_cost
                              + dev_from_target * rates.work_imbalance_per_min * mul_balance) * COST_SCALE)
+        # BDS5: scalini/quadratici (nessun cambio vettura su un mono-segmento)
+        if bds5_active():
+            cost_cents += int(bds5_duty_cost(
+                _dtype_s, nastro_s, work_with_overhead, s.driving_min,
+                [s.end_min - s.start_min], [], None, {s.vehicle_type},
+            ) * COST_SCALE)
             # FIX-CSP-1: penalita' idle CAPPATA per evitare doppia penalita' con
             # work_imbalance. Solo i primi IDLE_PENALTY_MAX_MIN minuti contano:
             # oltre, il segmento e' strutturalmente isolato e non c'e' alternativa.
@@ -2247,6 +2542,17 @@ def _build_cpsat_model(
         cost_cents = int((hours * rates.hourly_rate * mul_cost
                          + dev * rates.work_imbalance_per_min * mul_balance
                          + rates.company_car_per_use * mul_transfer) * COST_SCALE * pair_type_mul)
+
+        # BDS5: scalini/quadratici/cambio vettura/cambio patente sul pair
+        if bds5_active():
+            _a, _b = (s1, s2) if s1.start_min <= s2.start_min else (s2, s1)
+            cost_cents += int(bds5_duty_cost(
+                ptype, _nastro_pair, combined_work, s1.driving_min + s2.driving_min,
+                [_a.end_min - _a.start_min, _b.end_min - _b.start_min],
+                [max(0, _b.start_min - _a.end_min)],
+                _bds5_cambi_from_segments([_a, _b]),
+                {s1.vehicle_type, s2.vehicle_type},
+            ) * COST_SCALE)
 
         if scenario_noise > 0:
             noise = rng.gauss(0, scenario_noise * cost_cents)
@@ -3378,6 +3684,18 @@ def serialize_output(
             "restPoints": len(config.get("restPoints") or []),
             # Vincoli GLOBALI di soluzione (BDSI cap. 14): report soddisfacimento
             "vincoliGlobali": evaluate_vincoli_globali(duties),
+            # Costi avanzati BDS5: cosa è attivo e quanto pesa sulla soluzione
+            "bds5": ({
+                "costi": sorted(BDS5_COSTS.keys()),
+                "sosteSpezzantiMin": BDS5_SOSTE_SPEZZANTI_MIN or None,
+                "fasceSenzaCambi": len(BDS5_FASCE_SENZA_CAMBI) or None,
+                "lungPezziMin": BDS5_LUNG_PEZZI_MIN or None,
+                "lungPezziMinExtra": BDS5_LUNG_PEZZI_MIN_EXTRA or None,
+                "costoTotaleEur": round(sum(
+                    getattr(getattr(d, "cost_breakdown_obj", None), "bds5_cost", 0.0) or 0.0
+                    for d in duties), 2),
+            } if (bds5_active() or BDS5_SOSTE_SPEZZANTI_MIN or BDS5_FASCE_SENZA_CAMBI
+                  or BDS5_LUNG_PEZZI_MIN or BDS5_LUNG_PEZZI_MIN_EXTRA) else None),
         },
         "bdsConfig": bds.to_dict(),
         "clusters": [
@@ -3445,6 +3763,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     apply_fase2_overrides(config)
     # Vincoli GLOBALI di soluzione (BDSI cap. 14)
     apply_vincoli_globali_config(config)
+    # Costi avanzati + estensioni tagli BDS5 (manuale configurazione algoritmo)
+    apply_bds5_config(config)
 
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
@@ -3465,6 +3785,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     # ── Fase 1: Parsing ──
     blocks = parse_vehicle_blocks(vehicle_shifts_raw, clusters)
+    # BDS5 soste_spezzanti: pre-spezza i blocchi alle soste ≥ soglia (tagli obbligatori)
+    blocks, _bds5_splits = split_blocks_at_soste(blocks, clusters)
     log(f"Fase 1: {len(blocks)} vehicle blocks parsati")
     report_progress("parse", 10, f"{len(blocks)} blocchi")
 

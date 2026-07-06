@@ -146,6 +146,9 @@ class DutyCostBreakdown:
     fragmentation_penalty: float = 0.0
     work_imbalance_penalty: float = 0.0
 
+    # Costi avanzati BDS5 (scalini, quadratici, cambi vettura/patente)
+    bds5_cost: float = 0.0
+
     # Totale
     total: float = 0.0
 
@@ -168,6 +171,7 @@ class DutyCostBreakdown:
             + self.cambio_cost
             + self.fragmentation_penalty
             + self.work_imbalance_penalty
+            + self.bds5_cost
         )
         return self
 
@@ -186,6 +190,7 @@ class DutyCostBreakdown:
             "cambioCost": round(self.cambio_cost, 2),
             "fragmentationPenalty": round(self.fragmentation_penalty, 2),
             "workImbalancePenalty": round(self.work_imbalance_penalty, 2),
+            "bds5Cost": round(self.bds5_cost, 2),
             "total": round(self.total, 2),
             "idleSegments": self.idle_segments,
             "transferDetails": self.transfer_details,
