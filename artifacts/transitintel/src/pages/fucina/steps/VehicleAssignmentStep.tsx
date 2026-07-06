@@ -277,6 +277,14 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
               <p className="text-[10px] text-muted-foreground/70">
                 La data di esercizio non va scelta: è determinata dalla validità dell'UDP.
               </p>
+              {!hasUdpScope && !loadingRoutes && allRoutes.length > 0 && (
+                <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5">
+                  ⚠️ Non riesco a determinare le linee di questa UDP (le corse potrebbero essere
+                  state rigenerate in Planning Studio dopo la sua creazione): qui sotto vedi TUTTE
+                  le linee del feed. Per riallineare: rigenera l'UDP in Planning Studio e
+                  risincronizza il progetto.
+                </p>
+              )}
             </section>
           ) : (
             <section className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">

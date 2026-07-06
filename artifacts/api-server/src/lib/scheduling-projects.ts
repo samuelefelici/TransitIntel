@@ -508,6 +508,29 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
     const urRows = (ur as any).rows ?? [];
     validityUnitRouteIds = urRows.map((x: any) => x.route_id).filter(Boolean);
     validityUnitRouteNames = urRows.map((x: any) => x.name).filter(Boolean);
+
+    // Fallback trip_ids STANTII (corse rigenerate in PS dopo la creazione
+    // dell'UDP → il join qui sopra non trova nulla): il feed materializzato
+    // per l'UDP "ricorda" lo scope — usa le SUE linee, ma solo se il feed non
+    // contiene tutte le linee del progetto (feed non scopato = nessuna info).
+    if ((validityUnitRouteIds?.length ?? 0) === 0 && row.feed_id) {
+      try {
+        const fr = await db.execute(sql`
+          SELECT route_id,
+                 COALESCE(NULLIF(route_short_name, ''), route_long_name, route_id) AS name
+            FROM gtfs_routes WHERE feed_id = ${row.feed_id}::uuid`);
+        const frRows = (fr as any).rows ?? [];
+        const totR = await db.execute(sql`
+          SELECT count(*)::int AS c FROM ps_routes
+           WHERE project_id = ${row.planning_studio_project_id}::uuid
+             AND COALESCE(is_active, true) = true`);
+        const totalRoutes = Number((totR as any).rows?.[0]?.c) || 0;
+        if (frRows.length > 0 && (totalRoutes === 0 || frRows.length < totalRoutes)) {
+          validityUnitRouteIds = frRows.map((x: any) => String(x.route_id)).filter(Boolean);
+          validityUnitRouteNames = frRows.map((x: any) => String(x.name)).filter(Boolean);
+        }
+      } catch { /* fallback best-effort: senza scope il client mostra tutto */ }
+    }
   }
   res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames }) });
 });
