@@ -143,7 +143,7 @@ function ripresaRowHtml(row: RipresaRow): string {
 function shiftColumnHtml(shift: DriverShiftData): string {
   const typeColor = TYPE_COLORS[shift.type];
   const typeLabel = TYPE_LABELS[shift.type];
-  const allVehicles = Array.from(new Set(shift.riprese.flatMap(r => r.vehicleIds))).join(", ");
+  const allVehicles = Array.from(new Set(shift.riprese.flatMap(r => r.vehicleIds ?? []))).join(", ");
   const allClusters = Array.from(new Set(shift.riprese.map(r => r.transferToCluster).filter(Boolean))).join(", ");
 
   const ripreseHtml = shift.riprese.map((rip, idx) => {
@@ -153,7 +153,7 @@ function shiftColumnHtml(shift: DriverShiftData): string {
         <div class="ripresa-head">
           <strong>Ripresa ${idx + 1}</strong>
           <span class="ripresa-time">${escape(rip.startTime)} → ${escape(rip.endTime)}</span>
-          <span class="ripresa-meta">lav ${formatDuration(rip.workMin)} · ${rip.trips.length} corse · ${rip.vehicleIds.join(",")}</span>
+          <span class="ripresa-meta">lav ${formatDuration(rip.workMin ?? 0)} · ${(rip.trips ?? []).length} corse · ${(rip.vehicleIds ?? []).join(",")}</span>
         </div>
         <table class="trips">
           <thead>
@@ -225,14 +225,43 @@ function shiftColumnHtml(shift: DriverShiftData): string {
 
 /* ── Analisi globale ─────────────────────────────────────── */
 
+/** Summary sempre completa: i DSS misto/manuali/VCSP possono salvarla parziale
+ * o assente — l'export non deve MAI esplodere per un campo mancante (era il
+ * motivo per cui la stampa dei turni guida "non funzionava": eccezione
+ * silenziosa prima di window.open). Ricalcola i totali dai turni. */
+function safeSummary(result: DriverShiftsResult): DriverShiftsResult["summary"] {
+  const shifts = result.driverShifts ?? [];
+  const s: any = result.summary ?? {};
+  let byType: Record<string, number> = s.byType;
+  if (!byType) {
+    byType = { intero: 0, semiunico: 0, spezzato: 0, supplemento: 0 };
+    for (const d of shifts) byType[d.type] = (byType[d.type] ?? 0) + 1;
+  }
+  const sumMin = (k: "workMin" | "nastroMin") => shifts.reduce((a, d) => a + (Number((d as any)[k]) || 0), 0);
+  const princ = Math.max(1, shifts.length - (byType.supplemento ?? 0));
+  return {
+    ...s,
+    totalDriverShifts: s.totalDriverShifts ?? shifts.length,
+    totalWorkHours: Number.isFinite(s.totalWorkHours) ? s.totalWorkHours : Math.round(sumMin("workMin") / 6) / 10,
+    totalNastroHours: Number.isFinite(s.totalNastroHours) ? s.totalNastroHours : Math.round(sumMin("nastroMin") / 6) / 10,
+    avgWorkMin: s.avgWorkMin ?? 0,
+    avgNastroMin: s.avgNastroMin ?? 0,
+    byType,
+    semiunicoPct: s.semiunicoPct ?? Math.round(((byType.semiunico ?? 0) / princ) * 1000) / 10,
+    spezzatoPct: s.spezzatoPct ?? Math.round(((byType.spezzato ?? 0) / princ) * 1000) / 10,
+    totalCambi: s.totalCambi ?? 0,
+    companyCarsUsed: s.companyCarsUsed ?? 0,
+  };
+}
+
 function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
   const shifts = result.driverShifts;
-  const summary = result.summary;
+  const summary = safeSummary(result);
   const n = shifts.length;
 
   // Top linee per numero corse coperte
   const routeCounts: Record<string, { name: string; count: number }> = {};
-  for (const s of shifts) for (const r of s.riprese) for (const t of r.trips) {
+  for (const s of shifts) for (const r of (s.riprese ?? [])) for (const t of (r.trips ?? [])) {
     if (!routeCounts[t.routeId]) routeCounts[t.routeId] = { name: t.routeName, count: 0 };
     routeCounts[t.routeId].count += 1;
   }
@@ -241,7 +270,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
     .slice(0, 8);
 
   // Distribuzione nastri
-  const nastri = shifts.map(s => s.nastroMin).sort((a, b) => a - b);
+  const nastri = shifts.map(s => Number(s.nastroMin) || 0).sort((a, b) => a - b);
   const median = nastri.length ? nastri[Math.floor(nastri.length / 2)] : 0;
   const minN = nastri[0] ?? 0;
   const maxN = nastri[nastri.length - 1] ?? 0;
@@ -266,7 +295,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
       <div class="kpi"><div class="lbl">Semiunici</div><div class="val">${summary.semiunicoPct}%</div></div>
       <div class="kpi"><div class="lbl">Spezzati</div><div class="val">${summary.spezzatoPct}%</div></div>
       <div class="kpi"><div class="lbl">Cambi linea</div><div class="val">${summary.totalCambi || totalCambi}</div></div>
-      <div class="kpi"><div class="lbl">Auto aziendali</div><div class="val">${summary.companyCarsUsed}/${result.companyCars}</div></div>
+      <div class="kpi"><div class="lbl">Auto aziendali</div><div class="val">${summary.companyCarsUsed}/${result.companyCars ?? "—"}</div></div>
       ${bdsPct !== null ? `<div class="kpi ${bdsPct >= 90 ? 'ok' : bdsPct >= 70 ? 'warn' : 'ko'}"><div class="lbl">Conformità BDS</div><div class="val">${bdsPct}%</div></div>` : ""}
       ${result.unassignedBlocks > 0 ? `<div class="kpi ko"><div class="lbl">Non assegnati</div><div class="val">${result.unassignedBlocks}</div></div>` : ""}
     </div>
@@ -375,7 +404,8 @@ export interface DriverPrintOptions {
 export function exportDriverShiftsToPrint(result: DriverShiftsResult, opts: DriverPrintOptions = {}) {
   const { columnsPerPage = 2, scenarioName, orientation = "landscape" } = opts;
 
-  const sortedShifts = result.driverShifts.slice().sort((a, b) => a.nastroStartMin - b.nastroStartMin);
+  const summary = safeSummary(result);
+  const sortedShifts = result.driverShifts.slice().sort((a, b) => (a.nastroStartMin ?? 0) - (b.nastroStartMin ?? 0));
   const cols = sortedShifts.map(shiftColumnHtml).join("\n");
 
   const date = result.date || new Date().toISOString().slice(0, 10);
@@ -668,8 +698,8 @@ export function exportDriverShiftsToPrint(result: DriverShiftsResult, opts: Driv
     </div>
     <div class="summary">
       <div><strong>${result.driverShifts.length}</strong> turni guida</div>
-      <div>${result.summary.totalWorkHours.toFixed(1)}h lavoro · ${result.summary.totalNastroHours.toFixed(1)}h nastro</div>
-      <div>${result.summary.byType.intero || 0} interi · ${result.summary.byType.semiunico || 0} semi · ${result.summary.byType.spezzato || 0} spez</div>
+      <div>${summary.totalWorkHours.toFixed(1)}h lavoro · ${summary.totalNastroHours.toFixed(1)}h nastro</div>
+      <div>${summary.byType.intero || 0} interi · ${summary.byType.semiunico || 0} semi · ${summary.byType.spezzato || 0} spez</div>
     </div>
   </header>
 

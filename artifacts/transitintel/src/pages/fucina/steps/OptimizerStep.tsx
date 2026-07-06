@@ -27,6 +27,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
 import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
+// Anteprima turni guida VCSP (gantt read-only, stessi adapter del workspace TG)
+import InteractiveGantt from "@/components/InteractiveGantt";
+import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/driver-shifts/gantt-adapters";
+import { TYPE_LABELS as TG_TYPE_LABELS, TYPE_COLORS as TG_TYPE_COLORS } from "@/pages/driver-shifts/constants";
+import type { DriverShiftData } from "@/pages/driver-shifts/types";
 import type { GtfsSelection, VehicleAssignment } from "@/pages/fucina";
 import type { ServiceProgramResult, VehicleType, ServiceCategory } from "@/pages/optimizer-route/types";
 import {
@@ -673,7 +678,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <span className="text-[11px] text-muted-foreground">Round max:
                       <HelpTip testo={"Quanti giri VSP→CSP fare al massimo. Ogni round in più costa tempo di calcolo ma può trovare un compromesso mezzi/personale migliore. Il processo si ferma da solo se un round non migliora il costo totale."} className="ml-1" />
                     </span>
-                    {[2, 3, 4, 5].map(n => (
+                    {[2, 3, 4, 5, 6, 8, 10].map(n => (
                       <button key={n} onClick={() => setVcspRounds(n)}
                         className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${vcspRounds === n ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
                         {n}
@@ -1227,6 +1232,78 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         Feedback costi-ombra: {v.feedback.map((f: any) => `round ${f.afterRound}: ${f.blocksPenalized} blocchi → ${f.arcsPenalized} archi penalizzati`).join(" · ")}
                       </p>
                     )}
+
+                    {/* ── TURNI GUIDA GENERATI (simbiosi): visibili SUBITO, senza rigenerare ── */}
+                    {Array.isArray(v.crew?.driverShifts) && v.crew.driverShifts.length > 0 && (() => {
+                      const crewShifts = v.crew.driverShifts as DriverShiftData[];
+                      const byType: Record<string, number> = {};
+                      for (const s of crewShifts) byType[s.type] = (byType[s.type] ?? 0) + 1;
+                      const bounds = driverShiftsBoundsHours(crewShifts);
+                      return (
+                        <div className="pt-2 border-t border-cyan-500/20 space-y-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-cyan-300">👥 Turni guida generati (round #{bestR})</span>
+                            {Object.entries(byType).map(([t, n]) => (
+                              <span key={t} className="text-[10px] px-2 py-0.5 rounded-full border"
+                                style={{ borderColor: `${TG_TYPE_COLORS[t as keyof typeof TG_TYPE_COLORS] ?? "#888"}55`, color: TG_TYPE_COLORS[t as keyof typeof TG_TYPE_COLORS] ?? "#aaa" }}>
+                                {n} {TG_TYPE_LABELS[t as keyof typeof TG_TYPE_LABELS] ?? t}
+                              </span>
+                            ))}
+                            <span className="text-[10px] text-muted-foreground">
+                              — anteprima read-only; per modificarli salva lo scenario e apri il Workspace Turni Guida
+                            </span>
+                          </div>
+                          <div className="max-h-[420px] overflow-y-auto rounded-lg border border-border/20 bg-background/40">
+                            <InteractiveGantt
+                              rows={driverShiftsToRows(crewShifts)}
+                              bars={driverShiftsToBars(crewShifts)}
+                              minHour={bounds.min}
+                              maxHour={bounds.max}
+                              editable={false}
+                              rowHeight={26}
+                              labelWidth={120}
+                            />
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-[11px]">
+                              <thead>
+                                <tr className="text-muted-foreground border-b border-border/30">
+                                  <th className="text-left py-1 pr-2">Turno</th>
+                                  <th className="text-left px-2">Tipo</th>
+                                  <th className="text-left px-2">Orario</th>
+                                  <th className="text-right px-2">Lavoro</th>
+                                  <th className="text-right px-2">Nastro</th>
+                                  <th className="text-right px-2">Riprese</th>
+                                  <th className="text-right pl-2">BDS</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {crewShifts.slice(0, 40).map((s) => (
+                                  <tr key={s.driverId} className="border-b border-border/10">
+                                    <td className="py-1 pr-2 font-mono">{s.driverId}</td>
+                                    <td className="px-2" style={{ color: TG_TYPE_COLORS[s.type] }}>{TG_TYPE_LABELS[s.type] ?? s.type}</td>
+                                    <td className="px-2 font-mono">{(s.nastroStart ?? "").slice(0, 5)}→{(s.nastroEnd ?? "").slice(0, 5)}</td>
+                                    <td className="px-2 text-right">{s.work}</td>
+                                    <td className="px-2 text-right">{s.nastro}</td>
+                                    <td className="px-2 text-right">{s.riprese?.length ?? 0}</td>
+                                    <td className="pl-2 text-right">
+                                      {s.bdsValidation
+                                        ? (s.bdsValidation.valid
+                                          ? <span className="text-amber-300">✅</span>
+                                          : <span className="text-red-400" title={s.bdsValidation.violations?.join(", ")}>❌ {s.bdsValidation.violations?.length}</span>)
+                                        : "—"}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {crewShifts.length > 40 && (
+                              <p className="text-[10px] text-muted-foreground/60 mt-1">…e altri {crewShifts.length - 40} turni (tutti nel Workspace TG dopo il salvataggio)</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </motion.div>
                 );
               })()}

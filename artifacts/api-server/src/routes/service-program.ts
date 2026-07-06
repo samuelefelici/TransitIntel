@@ -2026,7 +2026,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         },
         crew: { config: crewConfig },
         vcsp: {
-          rounds: Number(vcspBody.rounds) || 3,
+          rounds: Math.max(1, Math.min(10, Number(vcspBody.rounds) || 3)),
           crewTimeLimit: Number(vcspBody.crewTimeLimit) || 90,
         },
         tripClusterStops,

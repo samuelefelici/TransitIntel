@@ -845,12 +845,17 @@ function DriverShiftsPageInner() {
   const handleExportPrint = useCallback(() => {
     if (!result) return;
     setExportMenuOpen(false);
-    exportDriverShiftsToPrint(result, {
-      scenarioName: result.scenarioName,
-      columnsPerPage: 2,
-      orientation: "landscape",
-    });
-    toast.success("Stampa A4 generata", { description: "Si è aperta la finestra di stampa" });
+    try {
+      exportDriverShiftsToPrint(result, {
+        scenarioName: result.scenarioName,
+        columnsPerPage: 2,
+        orientation: "landscape",
+      });
+      toast.success("Stampa A4 generata", { description: "Si è aperta la finestra di stampa: da lì puoi salvare in PDF" });
+    } catch (e: any) {
+      // prima l'errore moriva in silenzio e sembrava che il pulsante non facesse nulla
+      toast.error("Errore nella generazione della stampa", { description: e?.message ?? String(e) });
+    }
   }, [result]);
 
   const handleExportCsv = useCallback(() => {

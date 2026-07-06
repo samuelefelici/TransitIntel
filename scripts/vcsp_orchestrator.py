@@ -44,7 +44,7 @@ EXCESS_WEIGHT = 0.5          # quota dell'extra-costo guida trasferita in penali
 VIOLATION_PENALTY_EUR = 40.0  # per violazione BDS che tocca il blocco
 SUPPLEMENTO_PENALTY_EUR = 25.0  # per turno "supplemento" che tocca il blocco
 MAX_BLOCK_PENALTY_EUR = 400.0
-MAX_ROUNDS = 5
+MAX_ROUNDS = 10
 
 
 def _crew_cost_by_vehicle(crew_out: dict) -> tuple[dict, dict, dict]:
