@@ -3619,11 +3619,24 @@ function RoutesPanel({
   // Modifica metadati variante (matita sulla riga): codice es. "21A", nome, verso
   const [metaForm, setMetaForm] = useState<{ routeId: string; variantId: string; code: string; name: string; direction: number } | null>(null);
   const [metaSaving, setMetaSaving] = useState(false);
-  // Ricerca linee (codice o nome)
+  // Ricerca linee: il CODICE linea comanda. Rank: codice esatto → codice che
+  // inizia per → codice che contiene → (fallback) nome lungo che contiene.
   const [routeSearch, setRouteSearch] = useState("");
   const q = routeSearch.trim().toLowerCase();
+  const searchRank = (r: PsRoute): number => {
+    const code = (r.shortName ?? "").toLowerCase();
+    if (code === q) return 0;
+    if (code.startsWith(q)) return 1;
+    if (code.includes(q)) return 2;
+    if ((r.longName ?? "").toLowerCase().includes(q)) return 3;
+    return -1;
+  };
   const shownRoutes = q
-    ? routes.filter(r => (r.shortName ?? "").toLowerCase().includes(q) || (r.longName ?? "").toLowerCase().includes(q))
+    ? routes
+        .map(r => ({ r, rank: searchRank(r) }))
+        .filter(x => x.rank >= 0)
+        .sort((a, b) => a.rank - b.rank || (a.r.shortName ?? "").localeCompare(b.r.shortName ?? "", undefined, { numeric: true }))
+        .map(x => x.r)
     : routes;
   // Modifica di una linea esistente (matita sulla riga)
   const [routeForm, setRouteForm] = useState<{ id: string; shortName: string; longName: string; color: string } | null>(null);
@@ -3668,7 +3681,7 @@ function RoutesPanel({
       <div className="relative">
         <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
         <input value={routeSearch} onChange={e => setRouteSearch(e.target.value)}
-          placeholder={`Cerca tra ${routes.length} linee…`}
+          placeholder={`Codice linea (es. 21) — ${routes.length} linee`}
           className="w-full pl-8 pr-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs focus:outline-none focus:border-emerald-500/50" />
       </div>
 

@@ -595,6 +595,71 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     }
   }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, crewTimeLimit, robustness, normativa]);
 
+  /** Result con i TURNI MACCHINA del round scelto (VCSP): tutto ciò che esce
+   *  da questo step — salvataggio E area di lavoro — usa QUESTO, così lo
+   *  scenario che l'operatore ha cliccato è davvero quello che lavora/salva. */
+  const resultWithSelectedRound = useCallback((): ServiceProgramResult => {
+    if (!result) return result as any;
+    const v = (result as any).vcsp;
+    if (!v) return result;
+    const selR = selectedRound ?? v.bestRound ?? null;
+    const rr = v.roundResults?.find((x: any) => x.round === selR);
+    if (!rr?.vehicleShifts?.length) return result;
+    return {
+      ...result,
+      shifts: rr.vehicleShifts,
+      summary: { ...result.summary, totalVehicles: rr.vehicleShifts.length },
+      vcspSelectedRound: selR,
+    } as any;
+  }, [result, selectedRound]);
+
+  /** Salva i TURNI GUIDA del round scelto come DSS collegato allo scenario
+   *  vetture. Estratto da saveScenario così, se fallisce, l'operatore ha un
+   *  pulsante "Riprova" esplicito invece di un toast perso. */
+  const lastSavedNameRef = React.useRef("");
+  const [crewRetrying, setCrewRetrying] = useState(false);
+  const saveCrewShifts = useCallback(async (scenarioId: string, name: string): Promise<boolean> => {
+    const v = (result as any)?.vcsp;
+    if (!v) return false;
+    const selR: number | null = selectedRound ?? v.bestRound ?? null;
+    const rr = v.roundResults?.find((x: any) => x.round === selR);
+    const crew = rr?.crew ?? v.crew;
+    if (!crew?.driverShifts?.length) return false;
+    try {
+      const dssResp = await fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: `${name} · Turni guida (VCSP${selR != null ? ` round ${selR}` : ""})`,
+          result: {
+            solver: "vcsp_crew",
+            driverShifts: crew.driverShifts,
+            summary: crew.summary ?? null,
+            handovers: crew.handovers ?? [],
+            clusters: crew.clusters ?? [],
+            metrics: crew.metrics ?? null,
+          },
+          config: { source: "vcsp", bestRound: v.bestRound ?? null, selectedRound: selR },
+        }),
+      });
+      if (!dssResp.ok) return false;
+      const dssRow = await dssResp.json().catch(() => null);
+      if (dssRow?.id) setSavedDssId(dssRow.id);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [result, selectedRound]);
+
+  const retryCrewSave = useCallback(async () => {
+    if (!savedScenarioId) return;
+    setCrewRetrying(true);
+    const ok = await saveCrewShifts(savedScenarioId, lastSavedNameRef.current || "Scenario");
+    setCrewRetrying(false);
+    if (ok) toast.success("Turni guida salvati", { description: "Ora entrambe le aree di lavoro sono pronte." });
+    else toast.error("Salvataggio turni guida fallito di nuovo", { description: "Puoi comunque generarli dal Workspace Turni Guida (step CSP)." });
+  }, [savedScenarioId, saveCrewShifts]);
+
   const saveScenario = useCallback(async () => {
     if (!result || !scenarioName.trim()) return;
     setSaving(true);
@@ -610,17 +675,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
       // ── Round selezionato dall'operatore (default: best round del VCSP).
       // Sia i turni macchina che i turni guida salvati provengono da QUESTO round.
-      const vcspAll = (result as any).vcsp;
-      const selRound: number | null = vcspAll ? (selectedRound ?? vcspAll.bestRound ?? null) : null;
-      const rrSel = vcspAll?.roundResults?.find((x: any) => x.round === selRound);
-      const resultToSave = rrSel?.vehicleShifts?.length
-        ? {
-            ...result,
-            shifts: rrSel.vehicleShifts,
-            summary: { ...result.summary, totalVehicles: rrSel.vehicleShifts.length },
-            vcspSelectedRound: selRound,
-          }
-        : result;
+      const resultToSave = resultWithSelectedRound();
 
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
@@ -639,32 +694,10 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       // ── Pipeline integrata VCSP: salva ANCHE i turni guida del round scelto
       // come DSS collegato allo scenario vetture appena creato. Così entrambe
       // le aree di lavoro (Vetture e Turni Guida) sono subito pronte.
-      const vcspCrew = rrSel?.crew ?? vcspAll?.crew;
+      lastSavedNameRef.current = scenarioName.trim();
       let savedCrew = false;
-      if (result.solver === "vcsp" && vcspCrew?.driverShifts?.length) {
-        try {
-          const dssResp = await fetch(`${base}/api/driver-shifts/${data.id}/scenarios`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: `${scenarioName.trim()} · Turni guida (VCSP${selRound != null ? ` round ${selRound}` : ""})`,
-              result: {
-                solver: "vcsp_crew",
-                driverShifts: vcspCrew.driverShifts,
-                summary: vcspCrew.summary ?? null,
-                handovers: vcspCrew.handovers ?? [],
-                clusters: vcspCrew.clusters ?? [],
-                metrics: vcspCrew.metrics ?? null,
-              },
-              config: { source: "vcsp", bestRound: vcspAll?.bestRound ?? null, selectedRound: selRound },
-            }),
-          });
-          savedCrew = dssResp.ok;
-          if (dssResp.ok) {
-            const dssRow = await dssResp.json().catch(() => null);
-            if (dssRow?.id) setSavedDssId(dssRow.id);
-          }
-        } catch { /* il TM è salvato comunque; i TG si possono rigenerare dal CSP */ }
+      if (result.solver === "vcsp") {
+        savedCrew = await saveCrewShifts(data.id, scenarioName.trim());
       }
 
       setShowSaveDialog(false);
@@ -683,7 +716,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment, projectId, depotId, depots, serviceType, selectedRound]);
+  }, [result, scenarioName, assignment, projectId, depotId, depots, serviceType, saveCrewShifts, resultWithSelectedRound]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {
@@ -894,8 +927,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     className="w-full flex items-center justify-between px-4 py-3 hover:bg-indigo-500/10 transition-colors rounded-t-xl border-b border-border/20">
                     <div className="flex items-center gap-2">
                       <SlidersHorizontal className="w-4 h-4 text-indigo-400" />
-                      <span className="text-xs font-semibold text-indigo-300">Parametri & Regole (tutti · profili)
-                        <HelpTip testo={"Cosa succede: apre il pannello con TUTTI i parametri del VSP — costi fissi per tipo mezzo, costi al minuto di attesa, finestre di concatenamento, intensità del solver, riduzione iterativa. Ogni modifica manda lo stato del profilo su 'personalizzato'."} className="ml-1" />
+                      <span className="text-xs font-semibold text-indigo-300">Tutti i parametri turni macchina (pannello completo)
+                        <HelpTip testo={"Cosa succede: apre il pannello con TUTTI i parametri del VSP — costi fissi per tipo mezzo, costi al minuto di attesa, finestre di concatenamento, riduzione iterativa. Qui NON si salva nulla: per salvare la configurazione usa la sezione Algoritmo in cima."} className="ml-1" />
                       </span>
                     </div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -1088,6 +1121,46 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     </>
   );
 
+  // Algoritmo: l'UNICA sezione dove si sceglie un algoritmo salvato e si salva
+  // quello attuale (tutta la config: macchina + guida + ottimizzatore).
+  const cfgAlgoritmo = solverMode !== "greedy" && (
+    <div className="bg-gradient-to-br from-fuchsia-500/5 to-purple-500/5 border border-fuchsia-500/30 rounded-xl p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Save className="w-4 h-4 text-fuchsia-400" />
+        <p className="text-xs font-semibold text-fuchsia-300">Algoritmo — riusa o salva
+          <HelpTip testo={"Un algoritmo salvato contiene TUTTA la configurazione di questa pagina: parametri turni macchina, turni guida e ottimizzatore. Cliccane uno per applicarlo subito; oppure regola gli step qui sotto e salva la configurazione con un nome. Questa è l'unica sezione di salvataggio."} className="ml-1" />
+        </p>
+      </div>
+      {algoPresets.length > 0 ? (
+        <div className="space-y-1.5">
+          <p className="text-[10px] text-muted-foreground">Riparti da un algoritmo salvato (un click lo applica):</p>
+          <div className="flex flex-wrap gap-1.5">
+            {algoPresets.map((p) => (
+              <span key={p.id} className="inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-lg border border-fuchsia-500/25 bg-fuchsia-500/8 text-[11px] text-fuchsia-200">
+                <button onClick={() => applyAlgoPreset(p)} className="font-semibold hover:underline" title="Applica questo algoritmo">{p.name}</button>
+                <button onClick={() => void removeAlgoPreset(p.id)} className="p-0.5 rounded hover:bg-fuchsia-500/20" title="Elimina algoritmo">
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <p className="text-[10px] text-muted-foreground">Nessun algoritmo salvato ancora: regola gli step qui sotto e salva la configurazione con un nome.</p>
+      )}
+      <div className="flex items-center gap-2">
+        <input value={algoName} onChange={(e) => setAlgoName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void saveAlgoPreset(); }}
+          placeholder="Nome per salvare la configurazione attuale (es. Urbano feriale · min bus)"
+          className="flex-1 bg-background/60 border border-border/40 rounded-lg px-2.5 py-1.5 text-xs text-foreground" />
+        <button onClick={() => void saveAlgoPreset()} disabled={algoSaving || !algoName.trim()}
+          className="flex items-center gap-1.5 text-[11px] font-semibold text-fuchsia-200 px-3 py-1.5 rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/15 hover:bg-fuchsia-500/25 transition-all disabled:opacity-40">
+          {algoSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Salva
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       {/* Sub-header */}
@@ -1121,7 +1194,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   Salva Scenario
                 </button>
               )}
-              <button onClick={() => onComplete(result, savedScenarioId ?? undefined)}
+              <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
                 className="flex items-center gap-1.5 text-[11px] text-black font-semibold px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_12px_rgba(251,146,60,0.3)] transition-shadow">
                 Apri Area di Lavoro <ChevronRight className="w-3.5 h-3.5" />
               </button>
@@ -1170,6 +1243,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   <AlgoGuide titolo="Come funziona il VCSP, passo per passo" accent="cyan"
                     sottotitolo="mezzi e personale ottimizzati INSIEME, in un giro solo" steps={VCSP_GUIDE} />
                 </div>
+
+                  {/* ── STEP 0 · Algoritmo (riusa o salva) ── */}
+                  <div className="flex items-center gap-2.5 pt-2">
+                    <span className="w-6 h-6 shrink-0 flex items-center justify-center rounded-full bg-fuchsia-500/15 border border-fuchsia-500/50 text-fuchsia-300 text-xs font-black">0</span>
+                    <div>
+                      <p className="text-xs font-bold text-foreground">Algoritmo</p>
+                      <p className="text-[10px] text-muted-foreground">riparti da una configurazione salvata — oppure configura gli step 1·2·3 e salvala</p>
+                    </div>
+                  </div>
+                  {cfgAlgoritmo}
 
                   {/* ── STEP 1 · Parametri turni macchina ── */}
                   <div className="flex items-center gap-2.5 pt-2">
@@ -1249,6 +1332,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 </>
               ) : (
                 <>
+                  {cfgAlgoritmo}
                   {cfgServizio}
                 {/* ── PIPELINE CLASSICA · VSP (i Turni Guida CSP arrivano dopo) ── */}
                 <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-3">
@@ -1304,41 +1388,6 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 </>
               )}
 
-              {/* ── SALVA L'ALGORITMO: preset nominati con tutta la configurazione ── */}
-              {solverMode !== "greedy" && (
-                <div className="bg-gradient-to-br from-fuchsia-500/5 to-purple-500/5 border border-fuchsia-500/30 rounded-xl p-4 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Save className="w-4 h-4 text-fuchsia-400" />
-                    <p className="text-xs font-semibold text-fuchsia-300">Salva l'algoritmo
-                      <HelpTip testo={"Salva con un nome TUTTA la configurazione di questa pagina (parametri turni macchina, turni guida e ottimizzatore) e ricaricala con un click nelle prossime ottimizzazioni. I preset sono personali e non toccano i profili-regole di default."} className="ml-1" />
-                    </p>
-                  </div>
-                  {algoPresets.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {algoPresets.map((p) => (
-                        <span key={p.id} className="inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-lg border border-fuchsia-500/25 bg-fuchsia-500/8 text-[11px] text-fuchsia-200">
-                          <button onClick={() => applyAlgoPreset(p)} className="font-semibold hover:underline" title="Applica questo algoritmo">{p.name}</button>
-                          <button onClick={() => void removeAlgoPreset(p.id)} className="p-0.5 rounded hover:bg-fuchsia-500/20" title="Elimina algoritmo">
-                            <X className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-muted-foreground">Nessun algoritmo salvato: configura gli step qui sopra e salvali con un nome.</p>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <input value={algoName} onChange={(e) => setAlgoName(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") void saveAlgoPreset(); }}
-                      placeholder="Nome algoritmo (es. Urbano feriale · min bus)"
-                      className="flex-1 bg-background/60 border border-border/40 rounded-lg px-2.5 py-1.5 text-xs text-foreground" />
-                    <button onClick={() => void saveAlgoPreset()} disabled={algoSaving || !algoName.trim()}
-                      className="flex items-center gap-1.5 text-[11px] font-semibold text-fuchsia-200 px-3 py-1.5 rounded-lg border border-fuchsia-500/40 bg-fuchsia-500/15 hover:bg-fuchsia-500/25 transition-all disabled:opacity-40">
-                      {algoSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Salva
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* ── Intermodalità: spostata DOPO l'ottimizzazione ──
                 * L'opt-in intermodale è stato rimosso da qui per scelta UX:
@@ -1407,21 +1456,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   className="flex items-center gap-1.5 text-[11px] text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/8 hover:bg-amber-500/15 transition-all">
                   <RefreshCw className="w-3.5 h-3.5" /> Ri-ottimizza
                 </button>
-                {savedScenarioId && (
-                  /* Doppia area di lavoro: lo scenario salvato contiene i TURNI
-                     MACCHINA del round scelto; il link ?dss= apre i TURNI GUIDA
-                     dello stesso round, già generati, senza rilanciare nulla. */
-                  <>
-                    <button onClick={() => onComplete(result, savedScenarioId ?? undefined)}
-                      className="flex items-center gap-1.5 text-[11px] text-cyan-300 px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-500/8 hover:bg-cyan-500/15 transition-all">
-                      <Bus className="w-3.5 h-3.5" /> Apri Workspace Vetture
-                    </button>
-                    <a href={`/driver-shifts/${savedScenarioId}${savedDssId ? `?dss=${savedDssId}` : ""}`}
-                      className="flex items-center gap-1.5 text-[11px] text-purple-300 px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
-                      <Users className="w-3.5 h-3.5" /> {savedDssId ? "Apri Turni Guida (già generati)" : "Turni Guida"}
-                    </a>
-                  </>
-                )}
+                {/* Le due aree di lavoro si aprono dal box "esito salvataggio"
+                    qui sotto: un solo punto d'accesso, niente doppioni. */}
               </div>
 
               {/* ── VCSP: round e trade-off mezzi ↔ personale ── */}
@@ -1592,31 +1628,73 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 );
               })()}
 
-              {/* Save dialog */}
+              {/* Save dialog: in VCSP dice ESPLICITAMENTE che salva entrambi */}
               {showSaveDialog && (
                 <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-                  className="bg-green-500/5 border border-green-500/30 rounded-xl p-3 flex items-center gap-3">
-                  <Save className="w-4 h-4 text-green-400 shrink-0" />
-                  <input value={scenarioName} onChange={e => setScenarioName(e.target.value)}
-                    placeholder="Nome scenario…"
-                    className="flex-1 bg-background border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-green-500/50"
-                    autoFocus
-                    onKeyDown={e => { if (e.key === "Enter") saveScenario(); if (e.key === "Escape") setShowSaveDialog(false); }} />
-                  <button onClick={saveScenario} disabled={saving || !scenarioName.trim()}
-                    className="flex items-center gap-1.5 bg-green-500/20 text-green-400 border border-green-500/30 px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-green-500/30 disabled:opacity-40">
-                    {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Salva
-                  </button>
-                  <button onClick={() => setShowSaveDialog(false)} className="text-muted-foreground hover:text-foreground p-1">
-                    <X className="w-4 h-4" />
-                  </button>
+                  className="bg-green-500/5 border border-green-500/30 rounded-xl p-3 space-y-2">
+                  {result.solver === "vcsp" && (() => {
+                    const v = (result as any).vcsp;
+                    const rN = selectedRound ?? v?.bestRound;
+                    const rr = v?.roundResults?.find((x: any) => x.round === rN);
+                    const tmN = rr?.vehicleShifts?.length ?? (result as any).shifts?.length ?? 0;
+                    const tgN = (rr?.crew ?? v?.crew)?.driverShifts?.length ?? 0;
+                    return (
+                      <p className="text-[11px] text-green-300 flex items-center gap-3 flex-wrap">
+                        <span className="font-bold">Con un solo salvataggio crei ENTRAMBI (round #{rN}):</span>
+                        <span>🚌 {tmN} turni macchina</span>
+                        <span>👥 {tgN} turni guida</span>
+                      </p>
+                    );
+                  })()}
+                  <div className="flex items-center gap-3">
+                    <Save className="w-4 h-4 text-green-400 shrink-0" />
+                    <input value={scenarioName} onChange={e => setScenarioName(e.target.value)}
+                      placeholder="Nome scenario…"
+                      className="flex-1 bg-background border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-green-500/50"
+                      autoFocus
+                      onKeyDown={e => { if (e.key === "Enter") saveScenario(); if (e.key === "Escape") setShowSaveDialog(false); }} />
+                    <button onClick={saveScenario} disabled={saving || !scenarioName.trim()}
+                      className="flex items-center gap-1.5 bg-green-500/20 text-green-400 border border-green-500/30 px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-green-500/30 disabled:opacity-40">
+                      {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                      {result.solver === "vcsp" ? "Salva entrambi" : "Salva"}
+                    </button>
+                    <button onClick={() => setShowSaveDialog(false)} className="text-muted-foreground hover:text-foreground p-1">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </motion.div>
               )}
 
-              {/* Saved badge */}
+              {/* Esito salvataggio: riga per i TM e riga per i TG, ciascuna col suo workspace */}
               {savedScenarioId && !showSaveDialog && (
-                <div className="flex items-center gap-2 text-xs text-green-400 bg-green-500/5 border border-green-500/20 rounded-xl px-4 py-2.5">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Scenario salvato</span>
+                <div className="bg-green-500/5 border border-green-500/20 rounded-xl px-4 py-2.5 space-y-1.5">
+                  <div className="flex items-center gap-2 text-xs text-green-400 flex-wrap">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span className="flex-1 min-w-0">🚌 Turni macchina salvati{result.solver === "vcsp" ? ` (round #${selectedRound ?? (result as any).vcsp?.bestRound})` : ""}</span>
+                    <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
+                      className="text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all">
+                      Apri Workspace Vetture
+                    </button>
+                  </div>
+                  {result.solver === "vcsp" && (savedDssId ? (
+                    <div className="flex items-center gap-2 text-xs text-green-400 flex-wrap">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span className="flex-1 min-w-0">👥 Turni guida salvati</span>
+                      <a href={`/driver-shifts/${savedScenarioId}?dss=${savedDssId}`}
+                        className="text-[11px] px-2.5 py-1 rounded-lg border border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15 transition-all">
+                        Apri Workspace Turni Guida
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-amber-400 flex-wrap">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span className="flex-1 min-w-0">👥 Turni guida NON salvati</span>
+                      <button onClick={() => void retryCrewSave()} disabled={crewRetrying}
+                        className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/8 text-amber-300 hover:bg-amber-500/15 transition-all disabled:opacity-40">
+                        {crewRetrying && <Loader2 className="w-3 h-3 animate-spin" />} Riprova salvataggio turni guida
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -1912,7 +1990,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per spostare le corse tra i turni.</>
                   )}
                 </p>
-                <button onClick={() => onComplete(result, savedScenarioId ?? undefined)}
+                <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.35)] transition-shadow shrink-0">
                   <Truck className="w-4 h-4" />
                   Apri Area di Lavoro
@@ -1926,13 +2004,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         </AnimatePresence>
       </div>
 
-      {/* Pannello completo Parametri & Regole turni macchina */}
+      {/* Pannello completo Parametri & Regole turni macchina.
+          showProfiles=false: il salvataggio della configurazione vive SOLO
+          nella sezione "Algoritmo" in cima al pannello di configurazione. */}
       <VspRulesPanel
         isOpen={rulesOpen}
         onClose={() => setRulesOpen(false)}
         config={vspConfig}
         onChange={setVspConfig}
         projectId={psProjectId}
+        showProfiles={false}
       />
     </div>
   );
