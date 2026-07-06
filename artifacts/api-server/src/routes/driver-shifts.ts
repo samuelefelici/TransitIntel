@@ -114,7 +114,7 @@ function depotTransfer(stopName: string | undefined | null): number {
  * Carica i cluster dal DB. Se non ce ne sono, restituisce i cluster hardcoded
  * (CLUSTERS) convertiti nel formato Python-compatibile.
  */
-async function loadClustersForPython(): Promise<any[]> {
+export async function loadClustersForPython(): Promise<any[]> {
   try {
     const dbClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
     if (dbClusters.length === 0) {
@@ -172,7 +172,7 @@ async function loadClustersForPython(): Promise<any[]> {
  * (cfr planning-studio-materialize). hasFacilities determina il contributo
  * della sosta all'orario (12% con strutture, 25% senza).
  */
-async function loadRestPointsForScenario(scenarioProjectId: string | null | undefined): Promise<any[]> {
+export async function loadRestPointsForScenario(scenarioProjectId: string | null | undefined): Promise<any[]> {
   if (!scenarioProjectId) return [];
   try {
     const r = await db.execute(sql`
@@ -208,7 +208,7 @@ async function loadRestPointsForScenario(scenarioProjectId: string | null | unde
 }
 
 /** Carica il numero di autovetture aziendali dal DB */
-async function loadCompanyCars(): Promise<number> {
+export async function loadCompanyCars(): Promise<number> {
   try {
     const [row] = await db.select().from(appSettings).where(eq(appSettings.key, "company_cars"));
     if (row) {

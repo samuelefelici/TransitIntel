@@ -34,6 +34,9 @@ interface Props {
   onServiceTypeChange: (t: ServiceType) => void;
   /** progetto Planning Studio per lo scope dei profili (opzionale) */
   projectId?: string | null;
+  /** false = nasconde i "Profili regole" interni (il salvataggio vive altrove,
+   *  es. nella sezione "Algoritmo" dell'ottimizzatore VCSP). */
+  showProfiles?: boolean;
 }
 
 const SERVICE_LABELS: { key: ServiceType; label: string }[] = [
@@ -43,7 +46,7 @@ const SERVICE_LABELS: { key: ServiceType; label: string }[] = [
 ];
 
 export function OptimizerRulesPanel({
-  isOpen, onClose, config, onChange, serviceType, onServiceTypeChange, projectId,
+  isOpen, onClose, config, onChange, serviceType, onServiceTypeChange, projectId, showProfiles = true,
 }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -162,12 +165,14 @@ export function OptimizerRulesPanel({
           </div>
 
           <div className="flex items-center justify-between gap-2">
-            <button
-              onClick={() => setProfilesOpen((v) => !v)}
-              className="flex items-center gap-1.5 text-xs text-zinc-300 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 hover:bg-zinc-800"
-            >
-              <FolderOpen className="w-3.5 h-3.5" /> Profili regole {profiles.length > 0 && `(${profiles.length})`}
-            </button>
+            {showProfiles && (
+              <button
+                onClick={() => setProfilesOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-xs text-zinc-300 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 hover:bg-zinc-800"
+              >
+                <FolderOpen className="w-3.5 h-3.5" /> Profili regole {profiles.length > 0 && `(${profiles.length})`}
+              </button>
+            )}
             <label className="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
               <input type="checkbox" className="accent-indigo-500" checked={showAdvanced} onChange={(e) => setShowAdvanced(e.target.checked)} />
               Mostra avanzate
@@ -177,7 +182,7 @@ export function OptimizerRulesPanel({
             </button>
           </div>
 
-          {profilesOpen && (
+          {showProfiles && profilesOpen && (
             <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2 space-y-2">
               {profiles.length === 0 && <div className="text-[11px] text-zinc-500">Nessun profilo salvato.</div>}
               {profiles.map((p) => (
