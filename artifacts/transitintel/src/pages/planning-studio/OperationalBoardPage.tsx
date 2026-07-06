@@ -233,6 +233,10 @@ function Board({ psId }: { psId: string }) {
     queryFn: () => getPsOperationalBoard(psId),
     enabled: !!psId,
     retry: false, // 404 "non accessibile" → niente retry storm
+    // Lo stato delle UDP DEVE riflettere il DB a ogni ingresso: scenari
+    // creati/cancellati altrove renderebbero stantia la cache dei 5 minuti.
+    staleTime: 0,
+    refetchOnMount: "always",
   });
   const projectQ = useQuery({
     queryKey: ["ps", "project", psId],
