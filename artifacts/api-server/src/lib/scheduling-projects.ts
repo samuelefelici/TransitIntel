@@ -240,6 +240,9 @@ function rowToProject(r: any) {
     // dall'UDP: presente solo nel GET singolo (vedi handler). Filtra le linee.
     validityUnitRouteIds: r.validity_unit_route_ids ?? undefined,
     validityUnitRouteNames: r.validity_unit_route_names ?? undefined,
+    // false = il feed materializzato contiene linee FUORI dall'UDP (o scope
+    // non determinabile): il client ri-materializza scopato prima della pipeline
+    udpFeedScoped: r.udp_feed_scoped ?? undefined,
     depotConfig: r.depot_config ?? {},
     clusterConfig: r.cluster_config ?? {},
     deadheadConfig: r.deadhead_config ?? {},
@@ -532,7 +535,29 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
       } catch { /* fallback best-effort: senza scope il client mostra tutto */ }
     }
   }
-  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames }) });
+
+  // Coerenza feed↔UDP: true solo se OGNI linea del feed appartiene allo scope
+  // dell'unità. Se false, il client ri-materializza il feed scopato prima di
+  // entrare in pipeline (auto-guarigione dei progetti con feed vecchi/non
+  // scopati o scope che non matcha più).
+  let udpFeedScoped: boolean | undefined;
+  if (row.validity_unit_id && row.feed_id) {
+    try {
+      const fr2 = await db.execute(sql`
+        SELECT route_id,
+               COALESCE(NULLIF(route_short_name, ''), route_long_name, route_id) AS name
+          FROM gtfs_routes WHERE feed_id = ${row.feed_id}::uuid`);
+      const frRows2 = (fr2 as any).rows ?? [];
+      const idSet = new Set(validityUnitRouteIds ?? []);
+      const nameSet = new Set((validityUnitRouteNames ?? []).map((n) => n.trim().toLowerCase()));
+      udpFeedScoped = frRows2.length > 0
+        && (idSet.size > 0 || nameSet.size > 0)
+        && frRows2.every((x: any) =>
+          idSet.has(String(x.route_id)) || nameSet.has(String(x.name ?? "").trim().toLowerCase()));
+    } catch { /* indeterminato: non forzare re-sync */ }
+  }
+
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */

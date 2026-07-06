@@ -502,7 +502,19 @@ export function startSyncJob(
         if (vuId) {
           const tR: any = await db.execute(sql`SELECT trip_ids FROM ps_validity_units WHERE id = ${vuId}::uuid LIMIT 1`);
           const arr = tR.rows?.[0]?.trip_ids;
-          if (Array.isArray(arr) && arr.length > 0) tripIds = arr.map((x: any) => String(x));
+          if (Array.isArray(arr) && arr.length > 0) {
+            // Interseca con le corse ESISTENTI: trip_ids stantii (corse
+            // rigenerate in PS) produrrebbero un feed scopato VUOTO.
+            const raw = arr.map((x: any) => String(x));
+            const exR: any = await db.execute(sql`
+              SELECT id::text AS id FROM ps_trips WHERE id = ANY(${`{${raw.join(",")}}`}::uuid[])`);
+            const existing = ((exR.rows ?? []) as any[]).map((r) => String(r.id));
+            if (existing.length < raw.length) {
+              logger?.warn?.({ projectId, vuId, requested: raw.length, existing: existing.length },
+                "UDP trip_ids parzialmente stantii: scoping sulle corse ancora esistenti");
+            }
+            tripIds = existing.length > 0 ? existing : null;
+          }
         }
       } catch (scopeErr: any) {
         logger?.warn?.({ err: scopeErr, projectId }, "UDP scope lookup failed, materializzo tutto il progetto");
