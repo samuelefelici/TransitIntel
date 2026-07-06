@@ -1208,13 +1208,21 @@ export default function ServiceProgramPage() {
                                         <Home className="w-3 h-3 text-amber-500 shrink-0" />
                                         <span className="text-amber-400 font-medium">{entry.departureTime.slice(0, 5)} → {entry.arrivalTime.slice(0, 5)}</span>
                                         <span className="text-amber-400/70">Rientro deposito</span>
+                                        {(entry as any).firstStopName && (entry as any).lastStopName && (
+                                          <span className="text-amber-400/50 truncate">da {(entry as any).firstStopName} a {(entry as any).lastStopName}</span>
+                                        )}
                                       </div>
                                     );
                                     if (entry.type === "deadhead") return (
                                       <div key={i} className="flex items-center gap-2 text-xs bg-muted/10 border border-border/10 rounded px-2 py-1">
                                         <MapPin className="w-3 h-3 text-muted-foreground shrink-0" />
                                         <span className="text-muted-foreground">{entry.departureTime.slice(0, 5)} → {entry.arrivalTime.slice(0, 5)}</span>
-                                        <span className="text-muted-foreground/70">↝ Vuoto {entry.deadheadKm} km ({entry.deadheadMin} min)</span>
+                                        <span className="text-muted-foreground/70">
+                                          ↝ {(entry as any).depotLeg === "out" ? "Uscita deposito" : (entry as any).depotLeg === "in" ? "Rientro deposito" : "Vuoto"} {entry.deadheadKm} km ({entry.deadheadMin} min)
+                                        </span>
+                                        {(entry as any).firstStopName && (entry as any).lastStopName && (
+                                          <span className="text-muted-foreground/50 truncate">da {(entry as any).firstStopName} a {(entry as any).lastStopName}</span>
+                                        )}
                                       </div>
                                     );
                                     return (

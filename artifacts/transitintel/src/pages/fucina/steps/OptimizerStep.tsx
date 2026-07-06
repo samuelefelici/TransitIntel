@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
+import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
 import type { GtfsSelection, VehicleAssignment } from "@/pages/fucina";
 import type { ServiceProgramResult, VehicleType, ServiceCategory } from "@/pages/optimizer-route/types";
 import {
@@ -369,6 +370,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [scenarioName, setScenarioName] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedScenarioId, setSavedScenarioId] = useState<string | null>(null);
+  // VCSP: id del DSS turni guida creato al salvataggio — permette di aprire il
+  // Workspace TG con i turni GIÀ generati (niente rilancio del CSP).
+  const [savedDssId, setSavedDssId] = useState<string | null>(null);
 
   /* ── Auto-run on mount if no initialResult ── */
   useEffect(() => {
@@ -522,6 +526,10 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
             }),
           });
           savedCrew = dssResp.ok;
+          if (dssResp.ok) {
+            const dssRow = await dssResp.json().catch(() => null);
+            if (dssRow?.id) setSavedDssId(dssRow.id);
+          }
         } catch { /* il TM è salvato comunque; i TG si possono rigenerare dal CSP */ }
       }
 
@@ -659,8 +667,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     e i turni macchina si riorganizzano. Al salvataggio vengono creati <b className="text-cyan-300">entrambi
                     gli scenari</b> — li ritrovi nelle due aree di lavoro (Vetture e Turni Guida) come sempre.
                   </p>
+                  <AlgoGuide titolo="Come funziona il VCSP, passo per passo" accent="cyan"
+                    sottotitolo="mezzi e personale ottimizzati INSIEME, in un giro solo" steps={VCSP_GUIDE} />
                   <div className="flex items-center gap-3 pt-1">
-                    <span className="text-[11px] text-muted-foreground">Round max:</span>
+                    <span className="text-[11px] text-muted-foreground">Round max:
+                      <HelpTip testo={"Quanti giri VSP→CSP fare al massimo. Ogni round in più costa tempo di calcolo ma può trovare un compromesso mezzi/personale migliore. Il processo si ferma da solo se un round non migliora il costo totale."} className="ml-1" />
+                    </span>
                     {[2, 3, 4, 5].map(n => (
                       <button key={n} onClick={() => setVcspRounds(n)}
                         className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${vcspRounds === n ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
@@ -670,7 +682,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <span className="text-[10px] text-muted-foreground/70">si ferma prima se non migliora</span>
                   </div>
                   <div className="flex items-center gap-3 pt-1 flex-wrap">
-                    <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:</span>
+                    <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:
+                      <HelpTip testo={"Aggiunge un margine tra una corsa e la successiva calcolato dai ritardi REALI della tua rete (30 giorni di traffico TomTom, ora per ora). Media = margine prudente, Alta = margine largo. Costa qualche veicolo/turno in più ma il piano regge i ritardi veri."} className="ml-1" />
+                    </span>
                     {([["off", "Off"], ["media", "Media"], ["alta", "Alta"]] as const).map(([k, label]) => (
                       <button key={k} onClick={() => setRobustness(k)}
                         className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${robustness === k ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
@@ -692,8 +706,11 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   <p className="text-[11px] text-muted-foreground">
                     Pipeline classica: qui ottimizzi i <b>mezzi</b>. I <b>Turni Guida (CSP)</b> si generano dopo, nel loro step dedicato.
                   </p>
+                  <AlgoGuide titolo="Come funziona il VSP, passo per passo" accent="purple"
+                    sottotitolo="dal grafo delle corse ai blocchi vettura" steps={VSP_GUIDE} />
                   <div className="flex items-center gap-2">
                     <button onClick={() => setSolverMode("cpsat")}
+                      title="Cosa succede: costruisce il modello matematico completo (grafo corse + costi + normativa) e lo risolve con Google OR-Tools in più scenari. Più lento del Greedy ma trova il minimo di veicoli/costi. Tempo: da 1 a 15 minuti secondo l'intensità."
                       className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all relative ${solverMode === "cpsat" ? "bg-purple-500/15 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                       <span className="absolute top-1.5 right-2 text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">CONSIGLIATO</span>
                       <span className="text-xl">🧠</span>
@@ -701,6 +718,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       <span className="text-[10px] opacity-70">il vero ottimizzatore</span>
                     </button>
                     <button onClick={() => setSolverMode("greedy")}
+                      title="Cosa succede: concatena le corse in ordine di orario al primo veicolo disponibile, in circa un secondo. Utile come anteprima veloce dei numeri; NON applica normativa, robustezza né costi avanzati."
                       className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl border text-xs font-medium transition-all ${solverMode === "greedy" ? "bg-orange-500/15 border-orange-500/50 text-orange-300" : "border-border/30 text-muted-foreground hover:border-border/60 hover:text-foreground"}`}>
                       <span className="text-xl">⚡</span>
                       <span className="font-bold">Greedy</span>
@@ -709,7 +727,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   </div>
                   {solverMode !== "greedy" && (
                     <div className="flex items-center gap-3 pt-1 flex-wrap">
-                      <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:</span>
+                      <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:
+                        <HelpTip testo={"Aggiunge un margine tra una corsa e la successiva calcolato dai ritardi REALI della tua rete (30 giorni di traffico TomTom, ora per ora). Media = margine prudente, Alta = margine largo. Costa qualche veicolo in più ma il piano regge i ritardi veri."} className="ml-1" />
+                      </span>
                       {([["off", "Off"], ["media", "Media"], ["alta", "Alta"]] as const).map(([k, label]) => (
                         <button key={k} onClick={() => setRobustness(k)}
                           className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${robustness === k ? "bg-emerald-500/20 border-emerald-500/50 text-emerald-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
@@ -736,6 +756,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <div className="flex items-center gap-2">
                       <span className="text-base">📏</span>
                       <span className="text-xs font-semibold text-amber-300">Normativa turni macchina</span>
+                      <HelpTip testo={"Regole aziendali sulla composizione dei blocchi vettura (stile MAIOR): cambi di linea, blocchi troppo corti, numero di pezzi, soste massime, vuoti interni. I divieti eliminano gli archi dal grafo; i cap vengono garantiti spezzando i blocchi in violazione."} />
                       {normativaActiveCount > 0 && (
                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                           {normativaActiveCount} regol{normativaActiveCount === 1 ? "a attiva" : "e attive"}
@@ -833,7 +854,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   className="bg-gradient-to-br from-emerald-500/5 to-cyan-500/5 border border-emerald-500/30 rounded-xl p-4 space-y-3">
                   <div className="flex items-center gap-2">
                     <Award className="w-4 h-4 text-emerald-400" />
-                    <p className="text-xs font-semibold text-emerald-300">Profilo di ottimizzazione</p>
+                    <p className="text-xs font-semibold text-emerald-300">Profilo di ottimizzazione
+                      <HelpTip testo={"Cosa succede: cliccando un profilo vengono impostati insieme tutti i parametri tecnici (priorità veicoli, intensità, finestre archi, soste, cluster). È il modo consigliato di configurare il VSP: scegli l'obiettivo, non i numeri. Puoi comunque rifinire ogni parametro dal pannello sotto."} className="ml-1" />
+                    </p>
                   </div>
                   <p className="text-[10px] text-muted-foreground -mt-1">
                     Scegli un obiettivo: i parametri tecnici si configurano da soli. Puoi sempre rifinirli sotto.
@@ -876,7 +899,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     className="w-full flex items-center justify-between px-4 py-3 hover:bg-indigo-500/10 transition-colors rounded-t-xl border-b border-border/20">
                     <div className="flex items-center gap-2">
                       <SlidersHorizontal className="w-4 h-4 text-indigo-400" />
-                      <span className="text-xs font-semibold text-indigo-300">Parametri & Regole (tutti · profili)</span>
+                      <span className="text-xs font-semibold text-indigo-300">Parametri & Regole (tutti · profili)
+                        <HelpTip testo={"Cosa succede: apre il pannello con TUTTI i parametri del VSP — costi fissi per tipo mezzo, costi al minuto di attesa, finestre di concatenamento, intensità del solver, riduzione iterativa. Ogni modifica manda lo stato del profilo su 'personalizzato'."} className="ml-1" />
+                      </span>
                     </div>
                     <ChevronRight className="w-4 h-4 text-muted-foreground" />
                   </button>
@@ -1129,14 +1154,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     {solverMetrics?.totalSolveTimeSec && ` · ${solverMetrics.totalSolveTimeSec}s`}
                   </p>
                 </div>
-                <button onClick={() => { setResult(null); setError(null); setSolverMetrics(null); setSavedScenarioId(null); }}
+                <button onClick={() => { setResult(null); setError(null); setSolverMetrics(null); setSavedScenarioId(null); setSavedDssId(null); }}
                   className="flex items-center gap-1.5 text-[11px] text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/8 hover:bg-amber-500/15 transition-all">
                   <RefreshCw className="w-3.5 h-3.5" /> Ri-ottimizza
                 </button>
                 {savedScenarioId && (
-                  <a href={`/driver-shifts/${savedScenarioId}`}
+                  /* VCSP: il link porta il ?dss= → il workspace TG si apre con i
+                     turni guida GIÀ generati dal giro integrato, senza rilanciare. */
+                  <a href={`/driver-shifts/${savedScenarioId}${savedDssId ? `?dss=${savedDssId}` : ""}`}
                     className="flex items-center gap-1.5 text-[11px] text-purple-300 px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
-                    <Users className="w-3.5 h-3.5" /> Turni Guida
+                    <Users className="w-3.5 h-3.5" /> {savedDssId ? "Apri Turni Guida (già generati)" : "Turni Guida"}
                   </a>
                 )}
               </div>
@@ -1191,7 +1218,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         Round migliore: <b className="text-cyan-300">{crewSum.totalShifts} turni guida</b> ({crewSum.totalSupplementi} supplementi) ·
                         €{(crewSum.totalDailyCost ?? 0).toLocaleString("it-IT")}/giorno personale ·
                         {" "}{crewSum.validation?.totalViolations ?? 0} violazioni BDS.
-                        {" "}I turni macchina mostrati sotto sono quelli del round migliore: salvali come scenario e apri i Turni Guida per rifinire.
+                        {" "}<b className="text-cyan-300">Turni macchina E turni guida sono già pronti</b>: al salvataggio vengono
+                        creati entrambi gli scenari e il pulsante "Apri Turni Guida (già generati)" li apre senza rilanciare nulla.
                       </p>
                     )}
                     {Array.isArray(v.feedback) && v.feedback.length > 0 && (

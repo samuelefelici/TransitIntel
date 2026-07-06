@@ -166,7 +166,7 @@ export function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
                       {rip.transferMin > 0 && (
                         <div className="absolute top-0.5 h-5 text-[7px] text-white/60 flex items-center justify-center"
                           style={{ left: `${transferLeft}%`, width: `${transferWidth}%`, backgroundColor: typeColor, opacity: 0.5 }}
-                          title={`Trasf. deposito → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`}
+                          title={`Trasf. Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`}
                         >{transferWidth > 1.5 ? "↝" : ""}</div>
                       )}
 
@@ -180,7 +180,7 @@ export function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
                       {(rip.transferBackMin || 0) > 0 && (
                         <div className="absolute top-0.5 h-5 rounded-r-sm text-[7px] text-white/60 flex items-center justify-center"
                           style={{ left: `${transferBackLeft}%`, width: `${transferBackWidth}%`, backgroundColor: typeColor, opacity: 0.5 }}
-                          title={`Rientro ${rip.lastStop || "capolinea"} → deposito ${rip.transferBackMin}min`}
+                          title={`Rientro ${rip.lastStop || "capolinea"} → Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} ${rip.transferBackMin}min`}
                         >{transferBackWidth > 1.5 ? "↜" : ""}</div>
                       )}
 

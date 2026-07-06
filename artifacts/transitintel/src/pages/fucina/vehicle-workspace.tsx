@@ -118,10 +118,18 @@ function shiftsToBars(
         if (entry.downsized) tooltip.push(`⚠ Mezzo ridotto (richiesto: ${VEHICLE_LABELS[entry.originalVehicle!]})`);
         if ((entry as any).onDemand) tooltip.push("📞 CORSA A CHIAMATA (su prenotazione)");
       } else if (entry.type === "deadhead") {
-        tooltip.push(`Vuoto ${entry.deadheadKm ?? 0} km`);
+        const dhLabel = (entry as any).depotLeg === "out" ? "Uscita deposito"
+          : (entry as any).depotLeg === "in" ? "Rientro deposito" : "Vuoto";
+        tooltip.push(`${dhLabel} ${entry.deadheadKm ?? 0} km`);
+        if (entry.firstStopName) tooltip.push(`Da: ${entry.firstStopName}`);
+        if (entry.lastStopName) tooltip.push(`A: ${entry.lastStopName}`);
       } else {
         const dur = entry.arrivalMin - entry.departureMin;
         tooltip.push(`🏠 Rientro in deposito (fermo ${dur} min)`);
+        if (entry.firstStopName && entry.lastStopName) {
+          tooltip.push(`Da: ${entry.firstStopName}`);
+          tooltip.push(`A: ${entry.lastStopName} (via deposito)`);
+        }
       }
 
       bars.push({

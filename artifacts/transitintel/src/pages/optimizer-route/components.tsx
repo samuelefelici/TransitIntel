@@ -130,21 +130,28 @@ export function GanttChart({ shifts, routeColorMap }: { shifts: VehicleShift[]; 
                 const left = ((entry.departureMin - minHour * 60) / totalMin) * 100;
                 const width = Math.max(0.2, ((entry.arrivalMin - entry.departureMin) / totalMin) * 100);
                 if (entry.type === "depot") {
+                  const fromToDep = (entry as any).firstStopName && (entry as any).lastStopName
+                    ? ` | da ${(entry as any).firstStopName} a ${(entry as any).lastStopName} (via deposito)` : "";
                   return (
                     <div key={i}
                       className="absolute top-1 h-3 rounded-sm flex items-center justify-center text-[7px] text-muted-foreground cursor-default"
                       style={{ left: `${left}%`, width: `${width}%`, backgroundColor: "rgba(255,255,255,0.05)", border: "1px dashed rgba(255,255,255,0.15)" }}
-                      title={`🏠 Deposito ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}`}
+                      title={`🏠 Rientro in deposito ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}${fromToDep}`}
                     >{width > 2 ? "🏠" : ""}</div>
                   );
                 }
                 if (entry.type === "deadhead") {
+                  const from = (entry as any).firstStopName;
+                  const to = (entry as any).lastStopName;
+                  const fromTo = from && to ? ` | da ${from} a ${to}` : "";
+                  const label = (entry as any).depotLeg === "out" ? "Uscita deposito"
+                    : (entry as any).depotLeg === "in" ? "Rientro deposito" : "Vuoto";
                   return (
                     <div key={i}
                       className="absolute top-1.5 h-2 rounded-full cursor-default"
                       style={{ left: `${left}%`, width: `${width}%`, backgroundColor: "rgba(255,255,255,0.12)",
                         backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.2) 3px, rgba(255,255,255,0.2) 6px)" }}
-                      title={`↝ Vuoto ${entry.deadheadKm}km | ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}`}
+                      title={`↝ ${label} ${entry.deadheadKm}km | ${entry.departureTime.slice(0, 5)}→${entry.arrivalTime.slice(0, 5)}${fromTo}`}
                     />
                   );
                 }

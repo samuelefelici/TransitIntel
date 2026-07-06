@@ -33,6 +33,7 @@ import {
   VincoliGlobaliEditor, VincoliReport, type SwapProposal,
 } from "./driver-shifts/bdsi-tools";
 import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./driver-shifts/bds5-costs";
+import { AlgoGuide, HelpTip, CSP_GUIDE } from "@/components/StepGuide";
 import {
   TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
   ymdToDisplay, minToTime, formatDuration,
@@ -464,7 +465,7 @@ function DriverShiftsPageInner() {
             id: `${baseId}_tf`, rowId: shift.driverId,
             startMin: tStart, endMin: tStart + rip.transferMin,
             label: "↝", color: typeColor, style: "dashed",
-            tooltip: [`Trasf. deposito → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
+            tooltip: [`Trasf. Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} → ${rip.transferToStop || "capolinea"} ${rip.transferMin}min`],
             locked: true,
             meta: { type: "transfer", driverId: shift.driverId, ripreseIdx: ri },
           });
@@ -494,7 +495,7 @@ function DriverShiftsPageInner() {
             id: `${baseId}_tb`, rowId: shift.driverId,
             startMin: tbStart, endMin: rip.endMin,
             label: "↜", color: typeColor, style: "dashed",
-            tooltip: [`Rientro ${rip.lastStop || "capolinea"} → deposito ${rip.transferBackMin}min`],
+            tooltip: [`Rientro ${rip.lastStop || "capolinea"} → Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} ${rip.transferBackMin}min`],
             locked: true,
             meta: { type: "transferBack", driverId: shift.driverId, ripreseIdx: ri },
           });
@@ -1056,6 +1057,11 @@ function DriverShiftsPageInner() {
                   transition={{ duration: 0.2 }}
                   className="overflow-hidden"
                 >
+                  {/* Guida: come funziona il CSP passo per passo */}
+                  <div className="pt-2">
+                    <AlgoGuide titolo="Come funziona il CSP (turni guida), passo per passo" accent="orange"
+                      sottotitolo="dai blocchi vettura ai turni legali RD 131/1938" steps={CSP_GUIDE} />
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
 
                     {/* ── Step 1: Normativa ── */}
@@ -1104,6 +1110,7 @@ function DriverShiftsPageInner() {
                           <span className="text-[10px] font-medium text-muted-foreground flex items-center gap-1">
                             <Grip className="w-3 h-3 text-orange-400" />
                             Cluster di scambio
+                            <HelpTip testo={"Cosa succede: i cluster selezionati sono i PUNTI DI CAMBIO dove un conducente può passare il bus a un collega. Meno cluster = meno tagli possibili = turni più rigidi; più cluster = più flessibilità ma più cambi. Il numero accanto è il tempo di trasferimento dal deposito."} />
                             <span className="text-orange-400 font-mono font-bold ml-0.5">{selectedClusterIds.size}/{clustersInfo.length}</span>
                           </span>
                           <div className="flex gap-1">
@@ -1149,6 +1156,7 @@ function DriverShiftsPageInner() {
                         <label className="text-[10px] font-medium text-muted-foreground flex items-center gap-1 mb-1">
                           <Car className="w-3 h-3 text-amber-400" />
                           Autovetture aziendali disponibili
+                          <HelpTip testo={"Cosa succede: è un limite RIGIDO. Ogni turno a due riprese che rientra in deposito occupa un'auto durante l'interruzione: il solver non potrà mai usare più auto simultanee di questo numero."} />
                         </label>
                         <div className="flex items-center gap-1.5">
                           <button onClick={() => setCompanyCars(n => Math.max(0, n - 1))}
@@ -1199,10 +1207,12 @@ function DriverShiftsPageInner() {
                       <div className="space-y-1.5">
                         <div className="flex gap-1">
                           <button onClick={() => switchMode("greedy")}
+                            title="Cosa succede: taglia i blocchi in modo semplice e assegna un conducente per pezzo, in pochi secondi. Anteprima veloce: NON applica vincoli globali, costi BDS5 né multi-scenario."
                             className={`flex-1 px-2 py-1.5 rounded text-[11px] font-medium transition-colors ${solverMode === "greedy" ? "bg-orange-600 text-white" : "bg-muted/30 text-muted-foreground hover:text-foreground"}`}>
                             ⚡ Greedy
                           </button>
                           <button onClick={() => switchMode("cpsat")}
+                            title="Cosa succede: risolve il modello matematico completo (segmenti + accoppiamenti + normativa RD 131/1938) in più scenari e sceglie il migliore. Tempo: da 1.5 a 15 minuti secondo l'intensità in Config avanzata."
                             className={`flex-1 px-2 py-1.5 rounded text-[11px] font-medium transition-colors ${solverMode === "cpsat" ? "bg-gradient-to-r from-orange-600 to-red-600 text-white" : "bg-muted/30 text-muted-foreground hover:text-foreground"}`}>
                             🧠 CP-SAT
                           </button>
@@ -1210,6 +1220,7 @@ function DriverShiftsPageInner() {
                         <button
                           onClick={solverMode === "cpsat" ? launchCPSAT : launchGreedy}
                           disabled={loading || cpsat.state === "running" || cpsat.state === "starting"}
+                          title="Cosa succede: legge i turni macchina dello scenario, li taglia nei punti di cambio (cluster selezionati) e costruisce i turni guida secondo la guida qui sopra. Al termine vedrai gantt, KPI, violazioni BDS e la classifica degli scenari."
                           className={`w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-md text-xs font-semibold transition-colors disabled:opacity-50 ${
                             solverMode === "cpsat"
                               ? "bg-gradient-to-r from-orange-600 to-red-600 text-white hover:from-orange-700 hover:to-red-700"
@@ -1391,6 +1402,30 @@ function DriverShiftsPageInner() {
             <AlertTriangle className="w-4 h-4 inline mr-2" />{error}
           </div>
         )}
+
+        {/* VCSP/salvati: se ci sono turni guida già pronti e non caricati, NON
+            serve rigenerare — banner ben visibile con caricamento a un click. */}
+        {!result && !loading && cpsat.state !== "running" && cpsat.state !== "starting" && savedDss.length > 0 && (() => {
+          const latest = savedDss[0];
+          const isVcsp = /vcsp/i.test(latest?.name ?? "");
+          return (
+            <div className="flex items-center gap-3 bg-cyan-500/8 border border-cyan-500/30 rounded-xl p-4">
+              <span className="text-2xl">✅</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-cyan-300">
+                  {isVcsp ? "Turni guida già generati dalla pipeline VCSP" : "Turni guida già salvati per questo scenario"}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  "{latest.name}" · {latest.summary?.totalDriverShifts ?? "—"} autisti — caricali, non serve rigenerare.
+                </p>
+              </div>
+              <a href={`/driver-shifts/${scenarioId}?dss=${latest.id}`}
+                className="shrink-0 text-xs font-bold px-3 py-2 rounded-lg bg-cyan-500 text-black hover:bg-cyan-400 transition-all">
+                Carica l'ultimo
+              </a>
+            </div>
+          );
+        })()}
 
         {/* Idle placeholder — when no result and not running */}
         {!result && !loading && cpsat.state !== "running" && cpsat.state !== "starting" && (
@@ -2078,7 +2113,7 @@ function DriverShiftsPageInner() {
                             if (rip.transferMin > 0) {
                               const end = cursor + rip.transferMin;
                               const dest = rip.transferToStop || "capolinea";
-                              let transferDetail = `Guidi dal Deposito a ${dest} con auto aziendale (${rip.transferMin} min)`;
+                              let transferDetail = `Guidi dal Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} a ${dest} con auto aziendale (${rip.transferMin} min)`;
                               if (incomingH) {
                                 transferDetail = `Arrivi a ${dest} con auto aziendale per prendere bus ${incomingH.vehicleId}`;
                               }
@@ -2176,7 +2211,7 @@ function DriverShiftsPageInner() {
                               const returnFrom = rip.lastStop || lastTrip?.lastStopName || "capolinea";
                               const returnDur = transferBack > 0 ? transferBack : rip.endMin - cursor;
                               const returnEnd = cursor + returnDur;
-                              let returnDetail = `Guidi auto aziendale da ${returnFrom} al Deposito (${returnDur} min)`;
+                              let returnDetail = `Guidi auto aziendale da ${returnFrom} al Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} (${returnDur} min)`;
                               if (outgoingH) {
                                 returnDetail = `Bus ${outgoingH.vehicleId} lasciato a ${outgoingH.otherDriver} — rientri al deposito con auto aziendale`;
                               }
