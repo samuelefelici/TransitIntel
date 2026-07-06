@@ -356,12 +356,26 @@ async function ensurePsTables(): Promise<void> {
     /* §2.4 — Varianti: campi estesi */
     await db.execute(sql`
       ALTER TABLE ps_route_variants
+        ADD COLUMN IF NOT EXISTS code text,
         ADD COLUMN IF NOT EXISTS variant_kind text NOT NULL DEFAULT 'standard',
         ADD COLUMN IF NOT EXISTS valid_from date,
         ADD COLUMN IF NOT EXISTS valid_to date,
         ADD COLUMN IF NOT EXISTS distance_m_cached double precision,
         ADD COLUMN IF NOT EXISTS duration_s_cached double precision,
         ADD COLUMN IF NOT EXISTS notes text
+    `);
+    /* La vista di compatibilità ps_variants è SELECT *: le colonne sono
+     * congelate alla creazione. Dopo gli ALTER additivi va RICREATA, o le
+     * nuove colonne (es. code) non arrivano alle query che la usano. */
+    await db.execute(sql`
+      DO $$ BEGIN
+        IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'ps_variants' AND relkind = 'v') THEN
+          DROP VIEW ps_variants;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'ps_variants') THEN
+          CREATE VIEW ps_variants AS SELECT * FROM ps_route_variants;
+        END IF;
+      END $$;
     `);
 
     /* §2.5 — Validità per singola corsa */
@@ -524,6 +538,7 @@ function rowToVariant(r: any) {
     projectId: r.project_id,
     routeId: r.route_id,
     name: r.name,
+    code: r.code ?? null,
     direction: r.direction,
     headsign: r.headsign,
     isDefault: !!r.is_default,
@@ -1178,6 +1193,10 @@ router.patch("/planning-studio/projects/:id/variants/:variantId", async (req, re
   const b = req.body || {};
   const sets: any[] = [];
   if (b.name !== undefined) sets.push(sql`name = ${b.name}`);
+  if (b.code !== undefined) {
+    const c = typeof b.code === "string" ? b.code.trim().slice(0, 40) : null;
+    sets.push(sql`code = ${c || null}`);
+  }
   if (b.direction !== undefined) sets.push(sql`direction = ${Number(b.direction)}`);
   if (b.headsign !== undefined) sets.push(sql`headsign = ${b.headsign}`);
   if (b.isDefault !== undefined) sets.push(sql`is_default = ${!!b.isDefault}`);
