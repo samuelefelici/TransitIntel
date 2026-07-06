@@ -873,16 +873,17 @@ export default function VehicleWorkspace({
   /* Rimpacchetta (TM): corse selezionate → turno NUOVO con fuorilinea
    * rigenerati e matricola automatica; i turni sorgente tengono le corse
    * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti). */
-  const wwRepack = useCallback(() => {
-    if (!result || wwSelected.size === 0) return;
+  const wwRepack = useCallback((onlyIds?: string[]) => {
+    const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
+    if (!result || sel.size === 0) return;
     const srcIds = new Set(wwShiftIds);
     const chosen: ShiftTripEntry[] = [];
     for (const s of result.shifts) {
       if (!srcIds.has(s.vehicleId)) continue;
-      for (const t of s.trips) if (t.type === "trip" && wwSelected.has(t.tripId)) chosen.push({ ...t });
+      for (const t of s.trips) if (t.type === "trip" && sel.has(t.tripId)) chosen.push({ ...t });
     }
     // + corse sciolte selezionate (nell'ORDINE delle card)
-    const chosenPool = wwPool.filter(p => wwSelected.has(String(p.entry.tripId)));
+    const chosenPool = wwPool.filter(p => sel.has(String(p.entry.tripId)));
     for (const p of chosenPool) chosen.push({ ...p.entry });
     if (!chosen.length) return;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
@@ -899,7 +900,7 @@ export default function VehicleWorkspace({
     const newShift = recomputeShift({ ...srcShift, vehicleId: newId, trips: chosen });
     const remaining = result.shifts.map(s => {
       if (!srcIds.has(s.vehicleId)) return s;
-      return recomputeShift({ ...s, trips: s.trips.filter(t => t.type === "trip" && !wwSelected.has(t.tripId)) });
+      return recomputeShift({ ...s, trips: s.trips.filter(t => t.type === "trip" && !sel.has(t.tripId)) });
     });
     const chosenIds = new Set(chosen.map(t => String(t.tripId)));
     let next: ServiceProgramResult = {
@@ -918,7 +919,7 @@ export default function VehicleWorkspace({
     // le importate rimpacchettate vanno tolte dalle scoperte della UDP sorgente
     const importedPacked = chosenPool.filter(p => p.importedFrom);
     setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.entry.tripId))));
-    setWwSelected(new Set());
+    setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id))));
     if (importedPacked.length) {
       void (async () => {
         const bySrc = new Map<string, string[]>();
@@ -2093,7 +2094,8 @@ export default function VehicleWorkspace({
                 busy={wwImportBusy}
                 onUnpack={(id) => wwDissolve([id])}
                 onUnpackAll={() => wwDissolve(wwShiftIds)}
-                onRepack={wwRepack}
+                onRepack={() => wwRepack()}
+                onRepackIds={(ids) => wwRepack(ids)}
                 onClose={() => setWwOpen(false)}
                 accent="amber"
               />
