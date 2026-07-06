@@ -609,6 +609,10 @@ export default function VehicleWorkspace({
   const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
   const [wwUnpacked, setWwUnpacked] = useState<Set<string>>(new Set());
   const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
+  /** pool corse sciolte: locali (= scoperte di QUESTO scenario) + importate da
+   *  altre UDP (restano scoperte alla fonte finché non vengono rimpacchettate) */
+  const [wwPool, setWwPool] = useState<Array<{ entry: ShiftTripEntry; importedFrom?: string; udpName?: string }>>([]);
+  const [wwImportBusy, setWwImportBusy] = useState(false);
   const actionIdRef = React.useRef(0);
   // FIX-REFRESH: tengo l'indice corrente in un ref per evitare race condition
   // tra setResult/setHistory/setHistoryIndex (più drag in rapida sequenza).
@@ -799,6 +803,67 @@ export default function VehicleWorkspace({
       });
   }, [result, wwShiftIds, wwUnpacked, customLabels, routeColorMap]);
 
+  // Apertura finestra: le corse scoperte dello scenario entrano nel pool
+  useEffect(() => {
+    if (!wwOpen || !result) return;
+    setWwPool(prev => {
+      const have = new Set(prev.map(p => String(p.entry.tripId)));
+      const extra = (result.unassigned ?? [])
+        .filter((u: any) => u && u.tripId && !have.has(String(u.tripId)))
+        .map((u: any) => ({ entry: { type: "trip", ...u } as ShiftTripEntry }));
+      return extra.length ? [...prev, ...extra] : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wwOpen]);
+
+  /* Spacchetta = DISSOLVE il turno: sparisce dal gantt, le sue corse diventano
+   * card sciolte (scoperte finché non rimpacchettate → finiscono in unassigned). */
+  const wwDissolve = useCallback((shiftIds: string[]) => {
+    if (!result) return;
+    const ids = new Set(shiftIds);
+    const freed: ShiftTripEntry[] = [];
+    for (const s of result.shifts) {
+      if (!ids.has(s.vehicleId)) continue;
+      for (const t of s.trips) if (t.type === "trip") freed.push({ ...t });
+    }
+    if (!freed.length) return;
+    const next = recomputeSummary({
+      ...result,
+      shifts: result.shifts.filter(s => !ids.has(s.vehicleId)),
+      unassigned: [...(result.unassigned ?? []), ...freed],
+    });
+    setResult(next);
+    pushHistory(next, "deadhead", `Finestra di lavoro · spacchettati ${shiftIds.length} turni`, `${freed.length} corse ora scoperte`);
+    setWwPool(prev => [...prev, ...freed.map(entry => ({ entry }))]);
+    setWwShiftIds(prev => prev.filter(id => !ids.has(id)));
+  }, [result, pushHistory]);
+
+  /* Import corse scoperte da UDP sorelle con la stessa validità */
+  const wwImport = useCallback(async () => {
+    if (!projectIdFromUrl) { toast.info("Import disponibile solo nei progetti UDP"); return; }
+    setWwImportBusy(true);
+    try {
+      const r = await fetch(`${getApiBase()}/api/scheduling/projects/${projectIdFromUrl}/uncovered-imports`, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const sources: any[] = data.sources ?? [];
+      const have = new Set(wwPool.map(p => String(p.entry.tripId)));
+      let added = 0;
+      const cards: Array<{ entry: ShiftTripEntry; importedFrom?: string; udpName?: string }> = [];
+      for (const s of sources) for (const t of (s.trips ?? [])) {
+        if (!t?.tripId || have.has(String(t.tripId))) continue;
+        have.add(String(t.tripId));
+        cards.push({ entry: { type: "trip", ...t } as ShiftTripEntry, importedFrom: s.scenarioId, udpName: s.udpName });
+        added++;
+      }
+      if (!added) { toast.info("Nessuna corsa scoperta nelle UDP con la stessa validità"); return; }
+      setWwPool(prev => [...prev, ...cards]);
+      toast.success(`${added} corse scoperte importate`, { description: sources.map((s: any) => `${s.udpName}: ${(s.trips ?? []).length}`).join(" · ") });
+    } catch (e: any) {
+      toast.error("Import scoperte fallito", { description: e?.message });
+    } finally { setWwImportBusy(false); }
+  }, [wwPool]);
+
   const wwDrop = useCallback((rowId: string) => {
     if (!result?.shifts.some(s => s.vehicleId === rowId)) return;
     setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
@@ -816,6 +881,9 @@ export default function VehicleWorkspace({
       if (!srcIds.has(s.vehicleId)) continue;
       for (const t of s.trips) if (t.type === "trip" && wwSelected.has(t.tripId)) chosen.push({ ...t });
     }
+    // + corse sciolte selezionate (nell'ORDINE delle card)
+    const chosenPool = wwPool.filter(p => wwSelected.has(String(p.entry.tripId)));
+    for (const p of chosenPool) chosen.push({ ...p.entry });
     if (!chosen.length) return;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
     for (let i = 1; i < chosen.length; i++) {
@@ -833,14 +901,48 @@ export default function VehicleWorkspace({
       if (!srcIds.has(s.vehicleId)) return s;
       return recomputeShift({ ...s, trips: s.trips.filter(t => t.type === "trip" && !wwSelected.has(t.tripId)) });
     });
-    let next: ServiceProgramResult = { ...result, shifts: [...remaining, newShift] };
+    const chosenIds = new Set(chosen.map(t => String(t.tripId)));
+    let next: ServiceProgramResult = {
+      ...result,
+      shifts: [...remaining, newShift],
+      // invariante: la corsa rimpacchettata NON è più scoperta
+      unassigned: (result.unassigned ?? []).filter((u: any) => !chosenIds.has(String(u?.tripId))),
+    };
     const pr = pruneEmptyShifts(next); next = pr.result;
     const rg = regenerateMissingDeadheads(next); next = rg.result;
     next = recomputeSummary(next);
     setResult(next);
     pushHistory(next, "deadhead", `Finestra di lavoro · rimpacchettato ${newId}`,
       `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · ${pr.removed} turni vuoti eliminati`);
-    setWwShiftIds([]); setWwSelected(new Set()); setWwUnpacked(new Set());
+    // il pool tiene le corse NON usate (restano nell'area, requisito 2);
+    // le importate rimpacchettate vanno tolte dalle scoperte della UDP sorgente
+    const importedPacked = chosenPool.filter(p => p.importedFrom);
+    setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.entry.tripId))));
+    setWwSelected(new Set());
+    if (importedPacked.length) {
+      void (async () => {
+        const bySrc = new Map<string, string[]>();
+        for (const p of importedPacked) {
+          bySrc.set(p.importedFrom!, [...(bySrc.get(p.importedFrom!) ?? []), String(p.entry.tripId)]);
+        }
+        for (const [scenId, tripIds] of bySrc) {
+          try {
+            const base = getApiBase();
+            const gr = await fetch(`${base}/api/service-program/scenarios/${scenId}`, { credentials: "include" });
+            if (!gr.ok) continue;
+            const sc = await gr.json();
+            const rm = new Set(tripIds);
+            const newUn = ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId)));
+            await fetch(`${base}/api/service-program/scenarios/${scenId}`, {
+              method: "PUT", credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: newUn } }),
+            });
+          } catch { /* best-effort: la fonte resta da riallineare a mano */ }
+        }
+        toast.info(`Scoperte aggiornate nelle UDP di origine (${bySrc.size})`);
+      })();
+    }
     toast.success(`Turno macchina ${newId} creato`, {
       description: `${chosen.length} corse in ordine · ${rg.added} fuorilinea rigenerati automaticamente${pr.removed ? ` · ${pr.removed} turni rimasti vuoti eliminati` : ""}.`,
     });
@@ -1976,8 +2078,21 @@ export default function VehicleWorkspace({
                   setWwShiftIds(ids => ids.filter(x => x !== id));
                   setWwUnpacked(prev => { const n = new Set(prev); n.delete(id); return n; });
                 }}
-                onUnpack={(id) => setWwUnpacked(prev => new Set(prev).add(id))}
-                onUnpackAll={() => setWwUnpacked(new Set(wwShiftIds))}
+                loose={wwPool.map((p, i) => ({
+                  id: String(p.entry.tripId),
+                  isTrip: true,
+                  kindLabel: p.entry.routeName || "Corsa",
+                  kindColor: p.importedFrom ? "#fb7185" : ((routeColorMap as any)[p.entry.routeId] ?? "#38bdf8"),
+                  timeLabel: `${wwFmt(p.entry.departureMin)}→${wwFmt(p.entry.arrivalMin)}`,
+                  desc: `${p.entry.firstStopName ?? ""} → ${p.entry.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                }))}
+                onReorderLoose={(from, to) => setWwPool(prev => {
+                  const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n;
+                })}
+                onImport={wwImport}
+                busy={wwImportBusy}
+                onUnpack={(id) => wwDissolve([id])}
+                onUnpackAll={() => wwDissolve(wwShiftIds)}
                 onRepack={wwRepack}
                 onClose={() => setWwOpen(false)}
                 accent="amber"

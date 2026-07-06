@@ -102,6 +102,10 @@ function DriverShiftsPageInner() {
   const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
   const [wwUnpacked, setWwUnpacked] = useState<Set<string>>(new Set());
   const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
+  /** pool corse sciolte: spacchettate qui (scoperte, la Copertura le vede) +
+   *  importate da UDP sorelle (scoperte alla fonte finché non rimpacchettate) */
+  const [wwPool, setWwPool] = useState<Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }>>([]);
+  const [wwImportBusy, setWwImportBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   // ── Solver mode ──
@@ -707,6 +711,50 @@ function DriverShiftsPageInner() {
       });
   }, [result, wwShiftIds, wwUnpacked]);
 
+  /* Spacchetta = DISSOLVE il turno guida: le sue corse diventano card sciolte
+   * (SCOPERTE: la vista Copertura le segnala finché non vengono rimpacchettate). */
+  const wwDissolve = useCallback((shiftIds: string[]) => {
+    if (!result) return;
+    const ids = new Set(shiftIds);
+    const freed: RipresaTrip[] = [];
+    for (const s of result.driverShifts) {
+      if (!ids.has(s.driverId)) continue;
+      for (const r of s.riprese) for (const t of r.trips) freed.push({ ...t });
+    }
+    if (!freed.length) return;
+    const newRes: DriverShiftsResult = { ...result, driverShifts: result.driverShifts.filter(s => !ids.has(s.driverId)) };
+    setResult(newRes);
+    pushHistory(newRes, `Finestra di lavoro · spacchettati ${shiftIds.length} turni (${freed.length} corse ora scoperte)`);
+    setWwPool(prev => [...prev, ...freed.map(trip => ({ trip }))]);
+    setWwShiftIds(prev => prev.filter(id => !ids.has(id)));
+  }, [result, pushHistory]);
+
+  /* Import corse scoperte da UDP sorelle con la stessa validità */
+  const wwImport = useCallback(async () => {
+    const spId = new URLSearchParams(window.location.search).get("sp") || null;
+    // il progetto scheduling non è noto qui: usa l'endpoint by-scenario
+    setWwImportBusy(true);
+    try {
+      const r = await fetch(`${getApiBase()}/api/scheduling/vehicle-scenarios/${scenarioId}/uncovered-imports`, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const sources: any[] = data.sources ?? [];
+      const have = new Set(wwPool.map(p => String(p.trip.tripId)));
+      const cards: Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }> = [];
+      for (const s of sources) for (const t of (s.trips ?? [])) {
+        if (!t?.tripId || have.has(String(t.tripId))) continue;
+        have.add(String(t.tripId));
+        cards.push({ trip: { ...t, vehicleId: t.vehicleId ?? "", vehicleType: t.vehicleType ?? "12m" } as RipresaTrip, importedFrom: s.scenarioId, udpName: s.udpName });
+      }
+      if (!cards.length) { toast.info("Nessuna corsa scoperta nelle UDP con la stessa validità"); return; }
+      setWwPool(prev => [...prev, ...cards]);
+      toast.success(`${cards.length} corse scoperte importate`, { description: sources.map((s: any) => `${s.udpName}: ${(s.trips ?? []).length}`).join(" · ") });
+    } catch (e: any) {
+      toast.error("Import scoperte fallito", { description: e?.message });
+    } finally { setWwImportBusy(false); }
+    void spId;
+  }, [wwPool, scenarioId]);
+
   const wwDrop = useCallback((rowId: string) => {
     if (!result?.driverShifts.some(s => s.driverId === rowId)) return;
     setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
@@ -727,6 +775,8 @@ function DriverShiftsPageInner() {
         if (wwSelected.has(String(t.tripId))) chosen.push({ ...t });
       }
     }
+    const chosenPool = wwPool.filter(p => wwSelected.has(String(p.trip.tripId)));
+    for (const p of chosenPool) chosen.push({ ...p.trip });
     if (!chosen.length) return;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
     for (let i = 1; i < chosen.length; i++) {
@@ -793,7 +843,34 @@ function DriverShiftsPageInner() {
     // ri-verifica BDS: assegna tipologia, fuorilinea/pre-turno e validità
     const touched = [newId, ...kept.filter(s => srcIds.has(s.driverId)).map(s => s.driverId)];
     queueRevalidate(touched);
-    setWwShiftIds([]); setWwSelected(new Set()); setWwUnpacked(new Set());
+    // il pool tiene le corse NON usate (restano nell'area); le importate
+    // rimpacchettate vengono tolte dalle scoperte della UDP di origine
+    const chosenIds = new Set(chosen.map(t => String(t.tripId)));
+    const importedPacked = chosenPool.filter(p => p.importedFrom);
+    setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.trip.tripId))));
+    setWwSelected(new Set());
+    if (importedPacked.length) {
+      void (async () => {
+        const bySrc = new Map<string, string[]>();
+        for (const p of importedPacked) bySrc.set(p.importedFrom!, [...(bySrc.get(p.importedFrom!) ?? []), String(p.trip.tripId)]);
+        for (const [scenId, tripIds] of bySrc) {
+          try {
+            const base = getApiBase();
+            const gr = await fetch(`${base}/api/service-program/scenarios/${scenId}`, { credentials: "include" });
+            if (!gr.ok) continue;
+            const sc = await gr.json();
+            const rm = new Set(tripIds);
+            const newUn = ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId)));
+            await fetch(`${base}/api/service-program/scenarios/${scenId}`, {
+              method: "PUT", credentials: "include",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: newUn } }),
+            });
+          } catch { /* best-effort */ }
+        }
+        toast.info(`Scoperte aggiornate nelle UDP di origine (${bySrc.size})`);
+      })();
+    }
     toast.success(`Turno guida ${newId} creato`, {
       description: `${chosen.length} corse in ${riprese.length === 2 ? "2 riprese (spezzato al gap più grande)" : "1 ripresa"} · tipologia e fuorilinea in verifica automatica${removedCount ? ` · ${removedCount} turni rimasti vuoti eliminati` : ""}.`,
     });
@@ -2099,8 +2176,21 @@ function DriverShiftsPageInner() {
                     setWwShiftIds(ids => ids.filter(x => x !== id));
                     setWwUnpacked(prev => { const n = new Set(prev); n.delete(id); return n; });
                   }}
-                  onUnpack={(id) => setWwUnpacked(prev => new Set(prev).add(id))}
-                  onUnpackAll={() => setWwUnpacked(new Set(wwShiftIds))}
+                  loose={wwPool.map((p) => ({
+                    id: String(p.trip.tripId),
+                    isTrip: true,
+                    kindLabel: p.trip.routeName || "Corsa",
+                    kindColor: p.importedFrom ? "#fb7185" : "#a78bfa",
+                    timeLabel: `${wwFmtH(p.trip.departureMin)}→${wwFmtH(p.trip.arrivalMin)}`,
+                    desc: `${p.trip.firstStopName ?? ""} → ${p.trip.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                  }))}
+                  onReorderLoose={(from, to) => setWwPool(prev => {
+                    const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n;
+                  })}
+                  onImport={wwImport}
+                  busy={wwImportBusy}
+                  onUnpack={(id) => wwDissolve([id])}
+                  onUnpackAll={() => wwDissolve(wwShiftIds)}
                   onRepack={wwRepack}
                   onClose={() => setWwOpen(false)}
                   accent="purple"
