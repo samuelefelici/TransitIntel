@@ -1672,4 +1672,111 @@ router.post("/driver-shifts/misto", async (req, res) => {
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════
+ *  STRUMENTI BDSI (crew_tools.py) — verifica turni, scambia con
+ *  pezzo, turni unici. Stessa validazione BDS del solver v4.
+ * ═══════════════════════════════════════════════════════════════ */
+
+function runCrewTools(input: any): Promise<any> {
+  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_tools.py");
+  return new Promise((resolve, reject) => {
+    const py = spawn("python3", [scriptPath], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+    let stdout = "", stderr = "";
+    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
+    py.on("error", (err) => reject(err));
+    py.on("close", (code) => {
+      if (code !== 0) reject(new Error(`crew_tools exit ${code}: ${stderr.slice(0, 500)}`));
+      else { try { resolve(JSON.parse(stdout)); } catch (e: any) { reject(new Error(`parse crew_tools: ${e.message}`)); } }
+    });
+    py.stdin.on("error", () => { /* EPIPE guard */ });
+    py.stdin.write(JSON.stringify(input)); py.stdin.end();
+  });
+}
+
+/** Config comune per crew_tools: cluster reali dal DB + bds del client. */
+async function crewToolsConfig(clientConfig: any): Promise<Record<string, any>> {
+  const clusters = await loadClustersForPython().catch(() => []);
+  return {
+    ...(clientConfig && typeof clientConfig === "object" ? clientConfig : {}),
+    ...(clusters.length ? { clusters } : {}),
+  };
+}
+
+/**
+ * POST /driver-shifts/tools/validate — ri-verifica BDS di turni guida
+ * modificati a mano (BDSI §10.1). Body: { shifts: [...], config? }
+ * Ritorna per ogni driverId: {type, bdsValidation, nastroMin, workMin, ...}
+ */
+router.post("/driver-shifts/tools/validate", async (req, res) => {
+  try {
+    const { shifts, config } = (req.body ?? {}) as any;
+    if (!Array.isArray(shifts) || shifts.length === 0) {
+      res.status(400).json({ error: "shifts richiesto (array non vuoto)" }); return;
+    }
+    if (shifts.length > 500) { res.status(400).json({ error: "max 500 turni per verifica" }); return; }
+    const out = await runCrewTools({
+      mode: "validate",
+      shifts,
+      config: await crewToolsConfig(config),
+    });
+    res.json(out);
+  } catch (err: any) {
+    req.log.error(err, "Error in driver shift validate");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /driver-shifts/tools/swap — euristica "Scambia con pezzo..."
+ * (BDSI §12.2). Body: { piece: {vehicleId?, vehicleType?, trips:[...]},
+ * shifts: [...], config?, maxProposals? }
+ */
+router.post("/driver-shifts/tools/swap", async (req, res) => {
+  try {
+    const { piece, shifts, config, maxProposals } = (req.body ?? {}) as any;
+    if (!piece || !Array.isArray(piece.trips) || piece.trips.length === 0) {
+      res.status(400).json({ error: "piece.trips richiesto" }); return;
+    }
+    if (!Array.isArray(shifts)) { res.status(400).json({ error: "shifts richiesto" }); return; }
+    const out = await runCrewTools({
+      mode: "swap",
+      piece,
+      shifts,
+      maxProposals: Number(maxProposals) > 0 ? Number(maxProposals) : 10,
+      config: await crewToolsConfig(config),
+    });
+    res.json(out);
+  } catch (err: any) {
+    req.log.error(err, "Error in scambia con pezzo");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /driver-shifts/tools/turni-unici — euristica "Turni unici"
+ * (BDSI §12.1). Body: { pieces: [{vehicleId, vehicleType, trips}],
+ * fasciaStartMin?, fasciaEndMin?, config? }
+ */
+router.post("/driver-shifts/tools/turni-unici", async (req, res) => {
+  try {
+    const { pieces, fasciaStartMin, fasciaEndMin, config, dutyPrefix } = (req.body ?? {}) as any;
+    if (!Array.isArray(pieces) || pieces.length === 0) {
+      res.status(400).json({ error: "pieces richiesto (array non vuoto)" }); return;
+    }
+    const out = await runCrewTools({
+      mode: "turni_unici",
+      pieces,
+      ...(Number.isFinite(Number(fasciaStartMin)) ? { fasciaStartMin: Number(fasciaStartMin) } : {}),
+      ...(Number.isFinite(Number(fasciaEndMin)) ? { fasciaEndMin: Number(fasciaEndMin) } : {}),
+      ...(dutyPrefix ? { dutyPrefix: String(dutyPrefix).slice(0, 4) } : {}),
+      config: await crewToolsConfig(config),
+    });
+    res.json(out);
+  } catch (err: any) {
+    req.log.error(err, "Error in turni unici");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

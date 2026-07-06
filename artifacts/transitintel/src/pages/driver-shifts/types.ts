@@ -131,6 +131,36 @@ export interface DriverShiftData {
     sosteFraRipreseIR: number;
     sosteFraRipreseFR: number;
   };
+  /* Residenza di servizio ereditata dal turno macchina (per riassunti) */
+  residenzaDepotId?: string | null;
+  residenzaName?: string | null;
+  residenzaColor?: string | null;
+  /* BDSI §10.1 — stato di verifica del turno:
+   *   da_verificare (grigio) → modificato a mano, non ancora ri-verificato
+   *   conforme (verde)      → verifica superata
+   *   scorretto (rosso)     → almeno un vincolo violato
+   *   forzato (blu)         → scorretto ma accettato dall'operatore
+   * Assente = risultato del solver mai toccato (usa bdsValidation.valid). */
+  verifyState?: "da_verificare" | "conforme" | "scorretto" | "forzato";
+  forcedReason?: string;
+}
+
+/** BDSI cap. 14 — vincolo GLOBALE di soluzione per il CSP. */
+export interface VincoloGlobale {
+  tipo: "numerico" | "percentuale" | "media";
+  tipologie: DriverShiftType[];
+  label?: string;
+  perResidenza?: boolean;
+  /* numerico */
+  min?: number | null;
+  max?: number | null;
+  /* percentuale */
+  minPct?: number | null;
+  maxPct?: number | null;
+  /* media */
+  misura?: "lavoro" | "nastro" | "guida";
+  minMin?: number | null;
+  maxMin?: number | null;
 }
 
 export interface DriverShiftSummary {

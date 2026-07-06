@@ -25,8 +25,13 @@ import { ExportReportButton } from "@/components/SchedulingReportExport";
 
 import type {
   DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult,
-  OptimizationAnalysis, DriverShiftSummary,
+  OptimizationAnalysis, DriverShiftSummary, RipresaTrip, VincoloGlobale,
 } from "./driver-shifts/types";
+import {
+  SearchChipsBar, matchShiftQuery, RiassuntiTable, CoveragePanel, buildCoverage,
+  SwapDialog, applyPieceToShift, VerifyBadge, effectiveVerifyState,
+  VincoliGlobaliEditor, VincoliReport, type SwapProposal,
+} from "./driver-shifts/bdsi-tools";
 import {
   TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
   ymdToDisplay, minToTime, formatDuration,
@@ -116,6 +121,16 @@ function DriverShiftsPageInner() {
 
   // ── Saved driver-shift scenarios ──
   interface SavedDss { id: string; name: string; createdAt: string; summary: any; }
+  /* ── Strumenti BDSI ── */
+  const [searchQuery, setSearchQuery] = useState("");
+  const [residenzaFilter, setResidenzaFilter] = useState<string | null>(null);
+  const [vincoliGlobali, setVincoliGlobali] = useState<VincoloGlobale[]>([]);
+  const [coverageOpen, setCoverageOpen] = useState(true);
+  const [swapPiece, setSwapPiece] = useState<{ vehicleId: string; vehicleType: string; trips: RipresaTrip[] } | null>(null);
+  const [swapProposals, setSwapProposals] = useState<SwapProposal[]>([]);
+  const [swapLoading, setSwapLoading] = useState(false);
+  const revalidateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [savedDss, setSavedDss] = useState<SavedDss[]>([]);
   const [loadedDssId, setLoadedDssId] = useState<string | null>(null);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -263,7 +278,7 @@ function DriverShiftsPageInner() {
         body: JSON.stringify({
           name: dssName.trim(),
           result,
-          config: { ...operatorConfig, normativa, solverMode },
+          config: { ...operatorConfig, normativa, solverMode, ...(vincoliGlobali.length ? { vincoliGlobali } : {}) },
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -277,7 +292,7 @@ function DriverShiftsPageInner() {
     } finally {
       setSavingDss(false);
     }
-  }, [scenarioId, result, dssName, operatorConfig, normativa, solverMode, refetchSavedDss]);
+  }, [scenarioId, result, dssName, operatorConfig, normativa, solverMode, vincoliGlobali, refetchSavedDss]);
 
   const deleteDss = useCallback(async (id: string) => {
     if (!scenarioId) return;
@@ -363,10 +378,12 @@ function DriverShiftsPageInner() {
           ...(operatorConfig.bds?.optimizer ?? {}),
           maxCompanyCars: companyCars,
         },
+        // BDSI cap. 14 — vincoli globali di soluzione (quasi-hard nel CP-SAT)
+        ...(vincoliGlobali.length > 0 ? { vincoliGlobali } : {}),
       },
     };
     cpsat.start(scenarioId, timeLimit, configWithScope);
-  }, [scenarioId, cpsat, operatorConfig, selectedClusterIds, companyCars]);
+  }, [scenarioId, cpsat, operatorConfig, selectedClusterIds, companyCars, vincoliGlobali]);
 
   // When switching mode, don't auto-launch; user must click explicitly
   const switchMode = useCallback((mode: "greedy" | "cpsat") => {
@@ -378,9 +395,13 @@ function DriverShiftsPageInner() {
 
   const filteredShifts = useMemo(() => {
     if (!result) return [];
-    if (typeFilter === "all") return result.driverShifts;
-    return result.driverShifts.filter(s => s.type === typeFilter);
-  }, [result, typeFilter]);
+    let out = result.driverShifts;
+    if (typeFilter !== "all") out = out.filter(s => s.type === typeFilter);
+    // BDSI: drill-down riassunti (residenza) + ricerca a chips
+    if (residenzaFilter) out = out.filter(s => (s.residenzaName || null) === residenzaFilter);
+    if (searchQuery.trim()) out = out.filter(s => matchShiftQuery(s, searchQuery));
+    return out;
+  }, [result, typeFilter, residenzaFilter, searchQuery]);
 
   // ── InteractiveGantt adapters for driver shifts ──
   const driverGanttRows = useMemo<GanttRow[]>(() =>
@@ -544,6 +565,170 @@ function DriverShiftsPageInner() {
     setModifiedCount(c => c + 1);
   }, [historyIdx]);
 
+  /* ── BDSI §10.1: ri-verifica automatica dopo ogni modifica manuale ──
+   * Marca subito i turni toccati come "da verificare" (grigio), poi con un
+   * debounce chiama /driver-shifts/tools/validate che riusa la STESSA
+   * validazione BDS del solver e aggiorna badge, tipologia e violazioni. */
+  const resultRef = useRef<DriverShiftsResult | null>(null);
+  useEffect(() => { resultRef.current = result; }, [result]);
+
+  const queueRevalidate = useCallback((driverIds: string[]) => {
+    const ids = Array.from(new Set(driverIds)).filter(Boolean);
+    if (!ids.length) return;
+    setResult(cur => cur ? {
+      ...cur,
+      driverShifts: cur.driverShifts.map(s =>
+        ids.includes(s.driverId) && s.verifyState !== "forzato"
+          ? { ...s, verifyState: "da_verificare" as const } : s),
+    } : cur);
+    if (revalidateTimer.current) clearTimeout(revalidateTimer.current);
+    revalidateTimer.current = setTimeout(() => {
+      const cur = resultRef.current;
+      if (!cur) return;
+      const shifts = cur.driverShifts.filter(s => ids.includes(s.driverId) && s.riprese.some(r => r.trips.length > 0));
+      if (!shifts.length) return;
+      fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shifts, config: operatorConfig }),
+      })
+        .then(r => (r.ok ? r.json() : null))
+        .then(data => {
+          if (!data?.results) return;
+          setResult(c2 => c2 ? {
+            ...c2,
+            driverShifts: c2.driverShifts.map(s => {
+              const r = data.results[s.driverId];
+              if (!r || r.error || !ids.includes(s.driverId)) return s;
+              const forced = s.verifyState === "forzato";
+              return {
+                ...s,
+                type: forced ? s.type : ((r.type as DriverShiftType) ?? s.type),
+                bdsValidation: r.bdsValidation ?? s.bdsValidation,
+                workCalculation: r.workCalculation ?? s.workCalculation,
+                verifyState: forced ? ("forzato" as const)
+                  : (r.bdsValidation?.valid ? ("conforme" as const) : ("scorretto" as const)),
+              };
+            }),
+          } : c2);
+        })
+        .catch(() => { /* verifica fallita → resta "da verificare" */ });
+    }, 700);
+  }, [operatorConfig]);
+
+  /* BDSI §10.1.3 — forzatura: il turno scorretto viene considerato conforme. */
+  const forzaTurno = useCallback((driverId: string) => {
+    const motivo = window.prompt(
+      "Forzatura correttezza (BDSI): il turno scorretto sarà considerato conforme a tutti gli effetti.\nMotivo (opzionale):",
+      "");
+    if (motivo === null) return;
+    setResult(cur => cur ? {
+      ...cur,
+      driverShifts: cur.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: "forzato" as const, forcedReason: motivo || undefined } : s),
+    } : cur);
+    setModifiedCount(c => c + 1);
+    toast.info(`Turno ${driverId} forzato`, { description: "Considerato conforme (badge blu). Le violazioni restano tracciate." });
+  }, []);
+
+  const sbloccaTurno = useCallback((driverId: string) => {
+    setResult(cur => cur ? {
+      ...cur,
+      driverShifts: cur.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: undefined, forcedReason: undefined } : s),
+    } : cur);
+    queueRevalidate([driverId]);
+  }, [queueRevalidate]);
+
+  /* ── BDSI §12.2 "Scambia con pezzo…" — proposte dal backend ── */
+  const openSwapDialog = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    setSwapPiece({ vehicleId, vehicleType, trips: piece.trips });
+    setSwapLoading(true);
+    setSwapProposals([]);
+    fetch(`${getApiBase()}/api/driver-shifts/tools/swap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        piece: { vehicleId, vehicleType, trips: piece.trips },
+        shifts: result.driverShifts,
+        config: operatorConfig,
+        maxProposals: 12,
+      }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => setSwapProposals(data?.proposals ?? []))
+      .catch(() => toast.error("Errore nella valutazione degli scambi"))
+      .finally(() => setSwapLoading(false));
+  }, [result, operatorConfig]);
+
+  const applySwapProposal = useCallback((p: SwapProposal) => {
+    if (!result || !swapPiece) return;
+    const released = new Set((p.releasedTrips ?? []).map((t: any) => String(t.tripId)));
+    const { shifts } = applyPieceToShift(
+      result.driverShifts, p.driverId, { trips: swapPiece.trips },
+      swapPiece.vehicleId, swapPiece.vehicleType, released,
+    );
+    const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+    setResult(newResult);
+    pushHistory(newResult, `🔁 pezzo ${swapPiece.vehicleId} → ${p.driverId}${released.size ? ` (rilascia ${released.size} corse)` : ""}`);
+    queueRevalidate([p.driverId]);
+    setSwapPiece(null);
+    toast.success("Pezzo assorbito", {
+      description: released.size
+        ? `${p.driverId} ha rilasciato ${released.size} corse: ora sono scoperte (vedi Copertura).`
+        : `${p.driverId} copre ora il pezzo di ${swapPiece.vehicleId}.`,
+    });
+  }, [result, swapPiece, pushHistory, queueRevalidate]);
+
+  /* ── BDSI §12.1 "Turni unici" — crea un turno mono-pezzo dal pezzo scoperto ── */
+  const createTurnoUnico = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    fetch(`${getApiBase()}/api/driver-shifts/tools/turni-unici`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pieces: [{ vehicleId, vehicleType, trips: piece.trips }], config: operatorConfig }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        const d = data?.duties?.[0];
+        if (!d) {
+          toast.error("Nessun turno unico conforme possibile", {
+            description: data?.skipped?.[0]?.reason ?? "il pezzo viola la normativa anche da solo",
+          });
+          return;
+        }
+        const existing = new Set(result.driverShifts.map(s => s.driverId));
+        let did: string = d.driverId;
+        let k = 1;
+        while (existing.has(did)) did = `TU${String(++k).padStart(3, "0")}`;
+        const fmt = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m) % 60).padStart(2, "0")}`;
+        const rip0 = d.riprese[0];
+        const newShift: DriverShiftData = {
+          driverId: did, type: d.type,
+          nastroStart: minToTime(rip0.startMin), nastroEnd: minToTime(rip0.endMin),
+          nastroStartMin: rip0.startMin, nastroEndMin: rip0.endMin,
+          nastroMin: d.nastroMin, nastro: fmt(d.nastroMin),
+          workMin: d.workMin, work: fmt(d.workMin),
+          interruptionMin: 0, interruption: null,
+          transferMin: rip0.transferMin ?? 0, transferBackMin: rip0.transferBackMin ?? 0,
+          preTurnoMin: rip0.preTurnoMin ?? 0, cambiCount: 0,
+          riprese: d.riprese,
+          bdsValidation: d.bdsValidation,
+          verifyState: d.bdsValidation?.valid ? "conforme" : "scorretto",
+        };
+        const shifts = [...result.driverShifts, newShift];
+        const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+        setResult(newResult);
+        pushHistory(newResult, `🪄 Turno unico ${did} da ${vehicleId}`);
+        const nLeft = (d.leftoverTrips ?? []).length;
+        toast.success(`Turno unico ${did} creato (${TYPE_LABELS[d.type as DriverShiftType] ?? d.type})`, {
+          description: nLeft ? `${nLeft} corse del pezzo restano scoperte (oltre il limite di lavoro).` : undefined,
+        });
+      })
+      .catch(() => toast.error("Errore nella creazione del turno unico"));
+  }, [result, operatorConfig, pushHistory]);
+
   /** Aggiunge manualmente un nuovo turno guida vuoto (#NEW). */
   const handleAddDriverShift = useCallback((opts: {
     driverId: string;
@@ -597,8 +782,10 @@ function DriverShiftsPageInner() {
     const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts };
     setResult(newResult);
     pushHistory(newResult, desc);
+    // BDSI: i turni toccati vanno ri-verificati (badge grigio → verde/rosso)
+    queueRevalidate([change.fromRowId, change.toRowId]);
     toast.success("Corsa spostata", { description: desc });
-  }, [result, driverGanttBars, pushHistory]);
+  }, [result, driverGanttBars, pushHistory, queueRevalidate]);
 
   const canUndo = historyIdx > 0;
   const canRedo = historyIdx >= 0 && historyIdx < history.length - 1;
@@ -967,6 +1154,13 @@ function DriverShiftsPageInner() {
                         </p>
                       </div>
 
+                      {/* BDSI cap. 14 — vincoli globali di soluzione */}
+                      {solverMode === "cpsat" && (
+                        <div className="mt-2 pt-2 border-t border-border/20">
+                          <VincoliGlobaliEditor vincoli={vincoliGlobali} onChange={setVincoliGlobali} />
+                        </div>
+                      )}
+
                       {solverMode === "cpsat" && (
                         <button
                           onClick={() => setConfigOpen(true)}
@@ -1152,6 +1346,16 @@ function DriverShiftsPageInner() {
           />
         )}
 
+        {/* BDSI §12.2 — "Scambia con pezzo…" */}
+        <SwapDialog
+          open={!!swapPiece}
+          piece={swapPiece}
+          proposals={swapProposals}
+          loading={swapLoading}
+          onApply={applySwapProposal}
+          onClose={() => setSwapPiece(null)}
+        />
+
         {/* CP-SAT Progress Panel — visible during optimization even without result */}
         {solverMode === "cpsat" && (cpsat.state === "starting" || cpsat.state === "running" || cpsat.state === "stopped" || (cpsat.state === "failed" && !result)) && (
           <OptimizationProgressPanel
@@ -1271,16 +1475,26 @@ function DriverShiftsPageInner() {
             {result.unassignedBlocks > 0 && (
               <SummaryCard icon={<AlertTriangle className="w-4 h-4" />} label="Non assegnati" value={result.unassignedBlocks.toString()} color="#ef4444" sub="blocchi rimasti" />
             )}
-            {/* BDS conformity summary */}
+            {/* BDS conformity summary — i FORZATI contano come conformi (BDSI §10.1.3) */}
             {result.driverShifts.some(s => s.bdsValidation) && (() => {
               const withBds = result.driverShifts.filter(s => s.bdsValidation);
-              const conformi = withBds.filter(s => s.bdsValidation!.valid).length;
+              const forzati = result.driverShifts.filter(s => effectiveVerifyState(s) === "forzato").length;
+              const daVerificare = result.driverShifts.filter(s => effectiveVerifyState(s) === "da_verificare").length;
+              const conformi = withBds.filter(s => s.bdsValidation!.valid || effectiveVerifyState(s) === "forzato").length;
               const pct = Math.round((conformi / withBds.length) * 100);
+              const subParts = [`${conformi}/${withBds.length} conformi`];
+              if (forzati) subParts.push(`${forzati} forzati`);
+              if (daVerificare) subParts.push(`${daVerificare} da verificare`);
               return (
-                <SummaryCard icon={<Shield className="w-4 h-4" />} label="Conformità BDS" value={`${pct}%`} color={pct >= 90 ? "#fbbf24" : pct >= 70 ? "#f59e0b" : "#ef4444"} sub={`${conformi}/${withBds.length} turni conformi`} />
+                <SummaryCard icon={<Shield className="w-4 h-4" />} label="Conformità BDS" value={`${pct}%`} color={pct >= 90 ? "#fbbf24" : pct >= 70 ? "#f59e0b" : "#ef4444"} sub={subParts.join(" · ")} />
               );
             })()}
           </div>
+          {/* Report vincoli globali di soluzione (BDSI cap. 14) */}
+          {(() => {
+            const rep = (solverMetrics as any)?.vincoliGlobali;
+            return rep?.length ? <div className="mt-2"><VincoliReport report={rep} /></div> : null;
+          })()}
         </div>
 
         {/* ══════════ ANALISI OTTIMIZZAZIONE (sintesi del processo) ══════════ */}
@@ -1675,10 +1889,66 @@ function DriverShiftsPageInner() {
           </CardContent>
         </Card>
 
+        {/* ══════════ BDSI: COPERTURA TURNI MACCHINA (§2.2) ══════════ */}
+        {vehicleScenario && (() => {
+          const vShifts = (vehicleScenario as any)?.result?.shifts ?? (vehicleScenario as any)?.shifts ?? [];
+          if (!Array.isArray(vShifts) || vShifts.length === 0) return null;
+          const coverage = buildCoverage(vShifts, result.driverShifts);
+          return (
+            <Card className="bg-muted/30 border-border/30">
+              <CardContent className="p-4">
+                <button onClick={() => setCoverageOpen(o => !o)} className="w-full flex items-center gap-1.5 text-sm font-semibold">
+                  <Bus className="w-4 h-4 text-orange-400" /> Copertura turni macchina
+                  <span className="text-[10px] text-muted-foreground font-normal">— quali corse sono coperte da quali turni guida, e i pezzi scoperti</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">{coverageOpen ? "▲" : "▼"}</span>
+                </button>
+                {coverageOpen && (
+                  <div className="mt-3">
+                    <CoveragePanel
+                      coverage={coverage}
+                      onFocusDriver={(d) => { setSearchQuery(d); setTypeFilter("all"); setResidenzaFilter(null); }}
+                      onSwapPiece={(vid, vt, piece) => openSwapDialog(vid, vt, piece)}
+                      onTurnoUnico={(vid, vt, piece) => createTurnoUnico(vid, vt, piece)}
+                    />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })()}
+
+        {/* ══════════ BDSI: RIASSUNTI tipologia × residenza (cap. 15) ══════════ */}
+        <Card className="bg-muted/30 border-border/30">
+          <CardContent className="p-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
+              <BarChart3 className="w-4 h-4 text-orange-400" /> Riassunti per tipologia e residenza
+            </h3>
+            <RiassuntiTable
+              shifts={result.driverShifts}
+              onDrill={(res, tipo) => {
+                setResidenzaFilter(res);
+                setTypeFilter(tipo ?? "all");
+                setSearchQuery("");
+                toast.info("Filtro applicato", { description: `${tipo ? TYPE_LABELS[tipo] : "Tutti i tipi"}${res ? ` · ${res}` : ""} — vedi Dettaglio Turni` });
+              }}
+            />
+          </CardContent>
+        </Card>
+
         {/* Shift list */}
         <Card className="bg-muted/30 border-border/30">
           <CardContent className="p-4">
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5"><Users className="w-4 h-4 text-orange-400" /> Dettaglio Turni ({filteredShifts.length})</h3>
+            {/* BDSI cap. 7 — ricerca a chips (filtra lista E gantt) */}
+            <div className="mb-3 space-y-1.5">
+              <SearchChipsBar query={searchQuery} onChange={setSearchQuery} />
+              {residenzaFilter && (
+                <button onClick={() => setResidenzaFilter(null)}
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/15 border border-orange-500/40 text-orange-300">
+                  Residenza: {residenzaFilter} ✕
+                </button>
+              )}
+            </div>
             <div className="space-y-1">
               {filteredShifts.map(shift => {
                 const isExpanded = expandedShifts.has(shift.driverId);
@@ -1705,17 +1975,41 @@ function DriverShiftsPageInner() {
                         {shift.riprese.length > 0 && <> · {shift.riprese.reduce((s, r) => s + r.trips.length, 0)} corse</>}
                         {shift.costEuro != null && shift.costEuro > 0 && <> · <span className="text-amber-400 font-medium">€{shift.costEuro.toFixed(0)}</span></>}
                       </span>
-                      {/* BDS validation badge */}
-                      {shift.bdsValidation && (
-                        <span title={shift.bdsValidation.valid ? "Conforme BDS" : shift.bdsValidation.violations.join(", ")} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${shift.bdsValidation.valid ? "bg-amber-500/15 text-amber-300" : "bg-red-500/15 text-red-400"}`}>
-                          {shift.bdsValidation.valid ? "✅ BDS" : `❌ BDS (${shift.bdsValidation.violations.length})`}
-                        </span>
-                      )}
+                      {/* Stato di verifica BDSI (grigio/verde/rosso/blu) */}
+                      <VerifyBadge shift={shift} />
                       {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                     </button>
                     <AnimatePresence>
                       {isExpanded && (
                         <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="px-3 pb-3">
+                          {/* BDSI §10.1.3 — forzatura correttezza */}
+                          {(() => {
+                            const st = effectiveVerifyState(shift);
+                            if (st === "scorretto") return (
+                              <div className="flex items-center gap-2 mb-2 bg-red-500/5 border border-red-500/20 rounded-lg px-2.5 py-1.5">
+                                <span className="text-[10px] text-red-400 flex-1">
+                                  {shift.bdsValidation?.violations.slice(0, 2).join(" · ")}
+                                </span>
+                                <button onClick={() => forzaTurno(shift.driverId)}
+                                  className="text-[10px] font-semibold px-2 py-1 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30 hover:bg-blue-500/25 shrink-0">
+                                  🔵 Forza correttezza
+                                </button>
+                              </div>
+                            );
+                            if (st === "forzato") return (
+                              <div className="flex items-center gap-2 mb-2 bg-blue-500/5 border border-blue-500/20 rounded-lg px-2.5 py-1.5">
+                                <span className="text-[10px] text-blue-300 flex-1">
+                                  Turno forzato dall'operatore{shift.forcedReason ? `: "${shift.forcedReason}"` : ""} — considerato conforme
+                                  {(shift.bdsValidation?.violations.length ?? 0) > 0 && ` (${shift.bdsValidation!.violations.length} violazioni ignorate)`}
+                                </span>
+                                <button onClick={() => sbloccaTurno(shift.driverId)}
+                                  className="text-[10px] font-semibold px-2 py-1 rounded border border-border/40 text-muted-foreground hover:text-foreground shrink-0">
+                                  Rimuovi forzatura
+                                </button>
+                              </div>
+                            );
+                            return null;
+                          })()}
                           {/* LASCIA / PRENDE vettura labels */}
                           {shift.vehicleHandoverLabels && shift.vehicleHandoverLabels.length > 0 && (
                             <div className="flex flex-wrap gap-2 mb-2">
