@@ -36,6 +36,9 @@ export interface SchedulingProject {
   /** nomi/short-name delle linee dell'UDP: fallback di match quando il feed usa
    *  route_id diversi (es. GTFS importato) anziché ps_routes.id */
   validityUnitRouteNames?: string[];
+  /** false = il feed materializzato contiene linee FUORI dall'UDP (o scope non
+   *  determinabile): la pipeline lo ri-materializza scopato prima di partire */
+  udpFeedScoped?: boolean;
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */
   isShared?: boolean;
   /** info arricchite dalla list/get */

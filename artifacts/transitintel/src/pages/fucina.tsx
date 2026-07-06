@@ -427,7 +427,11 @@ export default function FucinaPage() {
           }
         };
 
-        if (proj.feedId) {
+        // Feed usabile SOLO se coerente con l'UDP (udpFeedScoped !== false):
+        // un feed vecchio/non scopato con linee fuori dall'unità viene
+        // ri-materializzato scopato qui sotto (auto-guarigione), così la
+        // pipeline vede SOLO le linee dell'UDP senza dipendere dai filtri.
+        if (proj.feedId && proj.udpFeedScoped !== false) {
           const sel = await buildSelection(proj.feedId, proj.feedLabel || `PS · ${proj.name}`);
           if (cancelled || !sel) return;
           setGtfsSelection(sel);
@@ -435,6 +439,11 @@ export default function FucinaPage() {
           // Avanza allo step 1 solo se sei ancora allo step 0
           setStep(s => (s === 0 ? 1 : s));
         } else {
+          if (proj.feedId && proj.udpFeedScoped === false) {
+            toast.info("Riallineo il pacchetto dati dell'UDP", {
+              description: "Il feed conteneva linee fuori dall'unità: lo rigenero scopato sulle sole linee dell'UDP.",
+            });
+          }
           // Manca il feed: tentiamo l'auto-sync silenzioso (la materializzazione
           // viene avviata fire-and-forget alla creazione del progetto, ma può
           // non essere ancora completata; rilanciandola qui chiudiamo la race).
