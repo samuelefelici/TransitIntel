@@ -36,7 +36,7 @@ import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
   listPsRoutes, createPsRoute, updatePsRoute, deletePsRoute, type PsRoute,
-  listPsVariants, createPsVariant, getPsVariant, deletePsVariant,
+  listPsVariants, createPsVariant, getPsVariant, deletePsVariant, updatePsVariant,
   setPsVariantStops, setPsVariantShape, type PsVariant, type PsVariantStop,
   type PsWaypoint, type PsShape,
   routeSnap,
@@ -998,6 +998,27 @@ export default function PlanningStudioEditorPage() {
     } catch (e: any) {
       toast.error("Errore", { description: e?.message });
       return undefined;
+    }
+  }
+
+  /** Modifica METADATI variante (codice es. "21A", nome, verso) — non il tracciato. */
+  async function handleUpdateVariantMeta(
+    routeId: string, variantId: string,
+    patch: { code?: string | null; name?: string; direction?: number },
+  ): Promise<boolean> {
+    try {
+      const v = await updatePsVariant(projectId, variantId, patch);
+      setRouteVariants(prev => ({
+        ...prev,
+        [routeId]: (prev[routeId] || []).map(x => (x.id === variantId ? { ...x, ...v } : x)),
+      }));
+      toast.success("Percorso aggiornato", {
+        description: `${v.code || "codice auto"} · ${v.name} · ${v.direction === 1 ? "ritorno" : "andata"}`,
+      });
+      return true;
+    } catch (e: any) {
+      toast.error("Errore aggiornamento percorso", { description: e?.message });
+      return false;
     }
   }
 
@@ -3028,6 +3049,7 @@ export default function PlanningStudioEditorPage() {
                     onCreateVariant={handleCreateVariant}
                     onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
+                    onUpdateVariantMeta={handleUpdateVariantMeta}
                     onDeleteVariant={async (id) => {
                       if (!confirm("Eliminare il percorso (variante)? La linea resta comunque.")) return;
                       try {
@@ -3527,6 +3549,7 @@ function RoutesPanel({
   routes, variantsByRoute, openRouteId,
   onToggleRoute, onCreateRoute, onUpdateRoute, onDeleteRoute,
   onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
+  onUpdateVariantMeta,
 }: {
   routes: PsRoute[];
   variantsByRoute: Record<string, PsVariant[]>;
@@ -3536,6 +3559,8 @@ function RoutesPanel({
   onUpdateRoute: (id: string, patch: { shortName?: string; longName?: string | null; color?: string }) => Promise<boolean>;
   onDeleteRoute: (id: string) => void;
   onCreateVariant: (routeId: string, name: string, dir: number) => Promise<PsVariant | undefined>;
+  /** Salva codice/nome/verso di una variante (metadati, non tracciato) */
+  onUpdateVariantMeta: (routeId: string, variantId: string, patch: { code?: string | null; name?: string; direction?: number }) => Promise<boolean>;
   /** Selezione percorso: apre la vista con fermate ordinate + tracciato evidenziato */
   onSelectVariant?: (routeId: string, variantId: string) => void;
   onEditVariant: (routeId: string, variantId: string) => void;
@@ -3547,6 +3572,9 @@ function RoutesPanel({
   const [newColor, setNewColor] = useState("#10b981");
 
   const [varForm, setVarForm] = useState<{ routeId: string; name: string; direction: number } | null>(null);
+  // Modifica metadati variante (matita sulla riga): codice es. "21A", nome, verso
+  const [metaForm, setMetaForm] = useState<{ routeId: string; variantId: string; code: string; name: string; direction: number } | null>(null);
+  const [metaSaving, setMetaSaving] = useState(false);
   // Modifica di una linea esistente (matita sulla riga)
   const [routeForm, setRouteForm] = useState<{ id: string; shortName: string; longName: string; color: string } | null>(null);
   const normColor = (c: string | null | undefined) => {
@@ -3655,7 +3683,46 @@ function RoutesPanel({
                       Nessun percorso: la linea resta comunque. Creane uno con «+ variante» qui sotto.
                     </p>
                   )}
-                  {variants.map(v => (
+                  {variants.map(v => metaForm?.variantId === v.id ? (
+                    /* ─── Modifica metadati percorso: codice (es. 21A), nome, verso ─── */
+                    <div key={v.id} className="py-1.5 px-2 -mx-1 rounded bg-slate-800/70 border border-emerald-500/30 space-y-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <input value={metaForm.code} autoFocus
+                          onChange={e => setMetaForm({ ...metaForm, code: e.target.value })}
+                          placeholder={`es. ${r.shortName}A`}
+                          title="Codice del percorso (vuoto = codice automatico)"
+                          className="w-16 px-1.5 py-1 rounded bg-slate-900 text-xs font-mono text-emerald-300 border border-slate-700" />
+                        <input value={metaForm.name}
+                          onChange={e => setMetaForm({ ...metaForm, name: e.target.value })}
+                          placeholder="Nome percorso"
+                          className="flex-1 min-w-0 px-1.5 py-1 rounded bg-slate-900 text-xs border border-slate-700" />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <select value={metaForm.direction}
+                          onChange={e => setMetaForm({ ...metaForm, direction: Number(e.target.value) })}
+                          className="px-1 py-1 rounded bg-slate-900 text-xs border border-slate-700">
+                          <option value={0}>→ Andata</option><option value={1}>← Ritorno</option>
+                        </select>
+                        <div className="flex-1" />
+                        <button disabled={metaSaving || !metaForm.name.trim()}
+                          onClick={async () => {
+                            setMetaSaving(true);
+                            const ok = await onUpdateVariantMeta(r.id, v.id, {
+                              code: metaForm.code.trim() || null,
+                              name: metaForm.name.trim(),
+                              direction: metaForm.direction,
+                            });
+                            setMetaSaving(false);
+                            if (ok) setMetaForm(null);
+                          }}
+                          className="px-2 py-1 rounded bg-emerald-500 hover:bg-emerald-400 text-white text-xs font-medium disabled:opacity-50 inline-flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Salva
+                        </button>
+                        <button onClick={() => setMetaForm(null)}
+                          className="px-1.5 py-1 rounded bg-slate-900 text-slate-400 hover:text-slate-200 text-xs">Annulla</button>
+                      </div>
+                    </div>
+                  ) : (
                     <div key={v.id}
                       className="group flex items-center gap-2 py-1.5 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-800/50"
                       title="Mostra percorso e fermate sulla mappa"
@@ -3663,12 +3730,22 @@ function RoutesPanel({
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${v.direction === 0 ? "bg-blue-500/20 text-blue-300" : "bg-purple-500/20 text-purple-300"}`}>
                         {v.direction === 0 ? "→" : "←"}
                       </span>
+                      {v.code && <span className="text-[10px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-mono shrink-0">{v.code}</span>}
                       <span className="text-xs flex-1 truncate">{v.name}</span>
                       <span className="text-[10px] text-slate-500">{v.stopCount ?? 0} ferm.</span>
                       {v.hasShape && <span className="text-[10px] text-emerald-400">●</span>}
+                      <button onClick={(e) => {
+                          e.stopPropagation();
+                          setMetaForm({ routeId: r.id, variantId: v.id, code: v.code ?? "", name: v.name, direction: v.direction === 1 ? 1 : 0 });
+                        }}
+                        title="Modifica codice (es. 21A), nome e verso del percorso"
+                        className="p-0.5 rounded text-slate-500 hover:text-emerald-300 opacity-0 group-hover:opacity-100">
+                        <Pencil className="w-3 h-3" />
+                      </button>
                       <button onClick={(e) => { e.stopPropagation(); onEditVariant(r.id, v.id); }}
+                        title="Modifica il TRACCIATO del percorso (fermate e shape sulla mappa)"
                         className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/80 hover:bg-emerald-500 text-white opacity-0 group-hover:opacity-100">
-                        Edita
+                        Tracciato
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); onDeleteVariant(v.id); }}
                         className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-500 hover:text-red-400">
