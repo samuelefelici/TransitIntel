@@ -809,7 +809,24 @@ router.patch("/planning-studio/projects/:id", async (req, res): Promise<void> =>
 router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!isOwner(proj, req.user!.id)) { res.status(403).json({ error: "Solo l'owner può eliminare" }); return; }
-  await db.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
+  // La sola cascata da ps_projects NON basta: tre FK sono ON DELETE RESTRICT
+  // (ps_variant_stops.stop_id, ps_trips.variant_id, ps_stop_times.stop_id) e
+  // Postgres le verifica subito durante la cascata → la DELETE nuda dava 500.
+  // Cancellazione ORDINATA in transazione: prima chi blocca, poi il progetto
+  // (che cascata il resto: routes, stops, calendars, membri, log, ecc.).
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      DELETE FROM ps_stop_times
+       WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${proj.id}::uuid)
+    `);
+    await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${proj.id}::uuid`);
+    await tx.execute(sql`
+      DELETE FROM ps_variant_stops
+       WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${proj.id}::uuid)
+    `);
+    await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${proj.id}::uuid`);
+    await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
+  });
   res.json({ ok: true });
 });
 
