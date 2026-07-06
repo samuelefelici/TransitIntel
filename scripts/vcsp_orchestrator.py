@@ -166,6 +166,7 @@ def main() -> None:
     arc_penalties: dict[str, float] = {}
     rounds_kpi: list[dict] = []
     feedback_diag: list[dict] = []
+    round_results: list[dict] = []               # per-round: shifts TM + crew (scelta operatore)
     best: tuple[dict, dict, int] | None = None   # (vsp_out, crew_out, round)
 
     for r in range(1, rounds + 1):
@@ -201,6 +202,19 @@ def main() -> None:
         report_progress("VCSP", base_pct + int(100 / rounds * 0.9),
                         f"Round {r}/{rounds}: €{kpi['totalCostEur']} totale "
                         f"({kpi['vehicles']} mezzi + {kpi['duties']} turni)")
+
+        # Risultato completo del round: l'operatore potrà scegliere QUESTO
+        # scenario dalla tabella round anche se non è il migliore per costo.
+        round_results.append({
+            "round": r,
+            "vehicleShifts": vsp_out.get("vehicleShifts", []),
+            "crew": {
+                "summary": crew_out.get("summary"),
+                "driverShifts": crew_out.get("driverShifts"),
+                "handovers": crew_out.get("handovers"),
+                "clusters": crew_out.get("clusters"),
+            },
+        })
 
         if best is None or kpi["totalCostEur"] < _round_kpi(best[2], best[0], best[1])["totalCostEur"]:
             best = (vsp_out, crew_out, r)
@@ -243,6 +257,9 @@ def main() -> None:
             "handovers": best_crew.get("handovers"),
             "clusters": best_crew.get("clusters"),
         },
+        # Risultati COMPLETI per round (TM + TG): la tabella round diventa una
+        # scelta di scenario, non solo un resoconto.
+        "roundResults": round_results,
     }
     write_output(output)
 

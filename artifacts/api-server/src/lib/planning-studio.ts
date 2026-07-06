@@ -805,10 +805,23 @@ router.patch("/planning-studio/projects/:id", async (req, res): Promise<void> =>
   res.json({ project: rowToProject({ ...row, my_role: proj.my_role }) });
 });
 
-// DELETE /api/planning-studio/projects/:id (solo owner)
+// DELETE /api/planning-studio/projects/:id (owner, o chiunque se il progetto è ORFANO)
 router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
-  if (!isOwner(proj, req.user!.id)) { res.status(403).json({ error: "Solo l'owner può eliminare" }); return; }
+  if (!isOwner(proj, req.user!.id)) {
+    // Progetti VECCHI: se l'owner non esiste più nel sistema (account rimosso,
+    // import storici) il progetto sarebbe ineliminabile per sempre → chi lo
+    // vede può eliminarlo. Se l'owner esiste, 403 ma dicendo CHI è.
+    const rOwner = await db.execute<any>(sql`
+      SELECT email FROM users WHERE id = ${proj.owner_user_id}::uuid LIMIT 1
+    `);
+    const owner = (rOwner as any).rows?.[0];
+    if (owner) {
+      res.status(403).json({ error: `Solo l'owner può eliminare (owner: ${owner.email ?? "altro utente"})` });
+      return;
+    }
+    req.log?.warn({ projectId: proj.id }, "progetto ORFANO (owner inesistente): eliminazione consentita");
+  }
   // La sola cascata da ps_projects NON basta: tre FK sono ON DELETE RESTRICT
   // (ps_variant_stops.stop_id, ps_trips.variant_id, ps_stop_times.stop_id) e
   // Postgres le verifica subito durante la cascata → la DELETE nuda dava 500.
@@ -826,6 +839,29 @@ router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> =
          WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${proj.id}::uuid)
       `);
       await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${proj.id}::uuid`);
+      // Passata DINAMICA: sui DB storici possono esistere tabelle figlie
+      // fuori dal codice attuale. Trova ogni FK diretta verso ps_projects e
+      // svuota le righe del progetto (2 passate per dipendenze tra figlie).
+      const rFks = await tx.execute<any>(sql`
+        SELECT c.conrelid::regclass::text AS child_table,
+               a.attname AS child_col
+          FROM pg_constraint c
+          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+         WHERE c.contype = 'f' AND c.confrelid = 'ps_projects'::regclass
+      `);
+      const fkRows: any[] = (rFks as any).rows ?? [];
+      for (let pass = 0; pass < 2; pass++) {
+        for (const fk of fkRows) {
+          try {
+            await tx.execute(sql.raw(
+              `DELETE FROM ${fk.child_table} WHERE ${fk.child_col} = '${proj.id}'`,
+            ));
+          } catch (e: any) {
+            if ((e?.cause ?? e)?.code !== "23503" || pass === 1) throw e;
+            // prima passata: una figlia con RESTRICT verso un'altra figlia — riprova dopo
+          }
+        }
+      }
       await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
     });
   } catch (e: any) {

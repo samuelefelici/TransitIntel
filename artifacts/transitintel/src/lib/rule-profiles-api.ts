@@ -6,7 +6,7 @@ import { apiFetch } from "@/lib/api";
 import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 
 export type RuleProfileScope = "company" | "project";
-export type RuleProfileDomain = "crew" | "vsp";
+export type RuleProfileDomain = "crew" | "vsp" | "vcsp";
 
 export interface RuleProfile {
   id: string;
