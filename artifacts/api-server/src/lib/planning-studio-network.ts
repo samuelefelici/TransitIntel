@@ -122,7 +122,7 @@ router.get("/planning-studio/projects/:id/routes/:routeId/detail", async (req, r
     // La query è già ordinata così → l'indice dà il progressivo stabile.
     variants: ((rVariants as any).rows ?? []).map((r: any, i: number) => ({
       id: r.id, name: r.name,
-      code: `${route.short_name || route.code || "L"}/${i + 1}`,
+      code: r.code || `${route.short_name || route.code || "L"}/${i + 1}`,
       direction: r.direction, headsign: r.headsign,
       isDefault: r.is_default,
       stopCount: Number(r.stop_count) || 0,
@@ -208,7 +208,7 @@ router.get("/planning-studio/projects/:id/variants/:variantId/detail", async (re
   res.json({
     variant: {
       id: v.id, name: v.name,
-      code: `${v.r_short || v.r_code || "L"}/${v.variant_seq ?? 1}`,
+      code: v.code || `${v.r_short || v.r_code || "L"}/${v.variant_seq ?? 1}`,
       direction: v.direction, headsign: v.headsign,
       isDefault: v.is_default, attributes: v.attributes ?? {},
     },
@@ -265,7 +265,7 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
   // 2. linee + varianti che la toccano + n. corse per variante
   const rRoutes = await db.execute(sql`
     SELECT r.id AS route_id, r.short_name, r.long_name, r.color, r.text_color, r.route_type, r.code AS route_code,
-           v.id AS variant_id, v.name AS variant_name, v.direction, v.headsign AS variant_headsign,
+           v.id AS variant_id, v.name AS variant_name, v.code AS variant_code, v.direction, v.headsign AS variant_headsign,
            (SELECT COUNT(*) FROM ps_trips t WHERE t.variant_id = v.id)::int AS trip_count,
            (SELECT 1 + COUNT(*) FROM ps_variants v2
               WHERE v2.route_id = v.route_id
@@ -300,7 +300,7 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
     e.variants.push({
       id: row.variant_id,
       name: row.variant_name,
-      code: `${row.short_name || row.route_code || "L"}/${row.variant_seq ?? 1}`,
+      code: row.variant_code || `${row.short_name || row.route_code || "L"}/${row.variant_seq ?? 1}`,
       direction: row.direction,
       headsign: row.variant_headsign,
       tripCount: row.trip_count ?? 0,

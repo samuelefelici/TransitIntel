@@ -323,6 +323,7 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
   // Editor inline nome+verso del percorso (variante)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [editCode, setEditCode] = useState("");
   const [editDir, setEditDir] = useState<0 | 1>(0);
   const [savingVar, setSavingVar] = useState(false);
 
@@ -330,8 +331,14 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
     if (!editingId || !editName.trim()) return;
     setSavingVar(true);
     try {
-      await updatePsVariant(projectId, editingId, { name: editName.trim(), direction: editDir });
-      toast.success("Percorso aggiornato", { description: `${editName.trim()} · ${editDir === 1 ? "ritorno" : "andata"}` });
+      await updatePsVariant(projectId, editingId, {
+        name: editName.trim(),
+        code: editCode.trim() || null,
+        direction: editDir,
+      });
+      toast.success("Percorso aggiornato", {
+        description: `${editCode.trim() || "codice automatico"} · ${editName.trim()} · ${editDir === 1 ? "ritorno" : "andata"}`,
+      });
       setEditingId(null);
       // il codice progressivo dipende da direction/nome → ricarica i dettagli
       queryClient.invalidateQueries({ queryKey: ["ps", projectId, "route-detail", routeId] });
@@ -409,9 +416,16 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
               return (
                 <li key={v.id} className="p-2 rounded bg-slate-900 ring-1 ring-amber-400/40 space-y-1.5">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-slate-500 font-mono shrink-0">{v.code ?? ""}</span>
                     <input
-                      value={editName} autoFocus
+                      value={editCode} autoFocus
+                      onChange={e => setEditCode(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") saveVariant(); if (e.key === "Escape") setEditingId(null); }}
+                      className="w-24 shrink-0 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-amber-300 focus:outline-none focus:border-amber-500/60"
+                      placeholder={v.code ?? "codice"}
+                      title="Codice del percorso (vuoto = codice automatico progressivo)"
+                    />
+                    <input
+                      value={editName}
                       onChange={e => setEditName(e.target.value)}
                       onKeyDown={e => { if (e.key === "Enter") saveVariant(); if (e.key === "Escape") setEditingId(null); }}
                       className="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60"
@@ -468,7 +482,7 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
                   <ChevronRight className="w-3 h-3 text-slate-600" />
                 </button>
                 <button
-                  onClick={() => { setEditingId(v.id); setEditName(v.name); setEditDir((v.direction === 1 ? 1 : 0)); }}
+                  onClick={() => { setEditingId(v.id); setEditName(v.name); setEditCode(v.code ?? ""); setEditDir((v.direction === 1 ? 1 : 0)); }}
                   title="Modifica nome e verso del percorso"
                   className="p-1.5 mr-1 rounded text-slate-600 hover:text-amber-300 hover:bg-slate-800 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                 >

@@ -79,6 +79,8 @@ export interface PsVariant {
   projectId: string;
   routeId: string;
   name: string;
+  /** codice del percorso: modificabile; se assente le viste mostrano il progressivo */
+  code?: string | null;
   direction: number;
   headsign?: string | null;
   isDefault: boolean;
