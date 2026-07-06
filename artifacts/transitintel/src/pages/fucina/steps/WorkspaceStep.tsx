@@ -216,7 +216,7 @@ export default function WorkspaceStep({
 
       {/* Workspace */}
       <div className="flex-1 overflow-hidden">
-        <VehicleWorkspace initialResult={optimizationResult} deadheadMatrix={deadheadMatrix} />
+        <VehicleWorkspace initialResult={optimizationResult} deadheadMatrix={deadheadMatrix} initialSavedId={savedScenarioId ?? null} />
       </div>
 
       {/* Save dialog (modalità progetto) */}

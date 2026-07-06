@@ -44,6 +44,7 @@ import {
 } from "./driver-shifts/components";
 import { DssCompareDialog } from "./driver-shifts/DssCompareDialog";
 import { AddDriverShiftDialog } from "./driver-shifts/AddDriverShiftDialog";
+import { AddActivityDialog } from "./driver-shifts/AddActivityDialog";
 import {
   driverShiftsToTripBars,
   applyDriverTripChange,
@@ -114,6 +115,10 @@ function DriverShiftsPageInner() {
 
   // ── Operator config panel ──
   const [configOpen, setConfigOpen] = useState(false);
+  /* Il pannello ottimizzatore (BDS/CSP) è visibile solo senza risultato o su
+   * richiesta esplicita ("🔄 Riottimizza"): il workspace resta pulito. */
+  const [showOptimizer, setShowOptimizer] = useState(false);
+  const [showAddActivityDialog, setShowAddActivityDialog] = useState(false);
   const [operatorConfig, setOperatorConfig] = useState<OperatorConfig>({
     solverIntensity: 2,
     maxRounds: 5,
@@ -755,6 +760,8 @@ function DriverShiftsPageInner() {
     void spId;
   }, [wwPool, scenarioId]);
 
+  useEffect(() => { if (result) setShowOptimizer(false); }, [result]);
+
   const wwDrop = useCallback((rowId: string) => {
     if (!result?.driverShifts.some(s => s.driverId === rowId)) return;
     setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
@@ -1268,6 +1275,16 @@ function DriverShiftsPageInner() {
                 )}
               </div>
             )}
+            {/* 🔄 Riottimizza: riapre la schermata parametri BDS/CSP */}
+            {result && !showOptimizer && (
+              <button
+                onClick={() => { setShowOptimizer(true); setSetupOpen(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-orange-500/40 text-orange-300 hover:bg-orange-500/10 transition-colors"
+                title="Riapri i parametri dell'ottimizzatore turni guida (BDS/CSP) per rigenerare"
+              >
+                <Play className="w-3.5 h-3.5" /> Riottimizza
+              </button>
+            )}
             {/* 💾 Salva (sovrascrive lo scenario TG caricato) */}
             {result && loadedDssId && (
               <button
@@ -1308,7 +1325,8 @@ function DriverShiftsPageInner() {
           </div>
         </div>
 
-        {/* ──────────── Setup Wizard (Normativa → Cluster/Auto → Lancia) ──────────── */}
+        {/* ──────────── Setup Wizard: visibile solo senza risultato o via "Riottimizza" ──────────── */}
+        {(!result || showOptimizer) && (
         <Card className="bg-gradient-to-br from-orange-500/10 via-card/40 to-card/20 border-orange-500/30">
           <CardContent className="p-4">
             <button
@@ -1519,6 +1537,7 @@ function DriverShiftsPageInner() {
             </AnimatePresence>
           </CardContent>
         </Card>
+        )}
 
         {/* ──────────── Save dialog ──────────── */}
         <AnimatePresence>
@@ -1638,6 +1657,26 @@ function DriverShiftsPageInner() {
             defaultLeftId={loadedDssId ?? savedDss[0]?.id}
             defaultRightId={savedDss.find(s => s.id !== (loadedDssId ?? savedDss[0]?.id))?.id ?? savedDss[1]?.id}
             onClose={() => setShowCompareDialog(false)}
+          />
+        )}
+
+        {/* Aggiungi attività non di guida (riserva/presidio/verifica) */}
+        {showAddActivityDialog && result && (
+          <AddActivityDialog
+            driverIds={result.driverShifts.map(s => s.driverId)}
+            onClose={() => setShowAddActivityDialog(false)}
+            onConfirm={({ driverId, type, startMin, endMin, note }) => {
+              const newRes = {
+                ...result,
+                driverShifts: result.driverShifts.map(s => s.driverId === driverId
+                  ? { ...s, activities: [...(s.activities ?? []), { id: `act-${driverId}-${startMin}-${endMin}`, type, startMin, endMin, note }] }
+                  : s),
+              };
+              setResult(newRes);
+              pushHistory(newRes, `Attività ${type} aggiunta a ${driverId}`);
+              setShowAddActivityDialog(false);
+              toast.success(`Attività "${type}" aggiunta a ${driverId}`);
+            }}
           />
         )}
 
@@ -2111,6 +2150,15 @@ function DriverShiftsPageInner() {
                     title="Aggiungi un nuovo turno guida vuoto, poi trascina le corse per riempirlo"
                   >
                     ➕ Turno guida
+                  </button>
+                )}
+                {ganttMode === "exploded" && (
+                  <button
+                    onClick={() => setShowAddActivityDialog(true)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20 transition"
+                    title="Aggiungi un'attività non di guida (riserva, presidio, verifica) a un turno"
+                  >
+                    ➕ Attività
                   </button>
                 )}
                 {/* Filtro tipo */}
