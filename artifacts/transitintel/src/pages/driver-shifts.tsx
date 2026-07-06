@@ -30,8 +30,9 @@ import type {
 import {
   SearchChipsBar, matchShiftQuery, RiassuntiTable, CoveragePanel, buildCoverage,
   SwapDialog, applyPieceToShift, VerifyBadge, effectiveVerifyState,
-  VincoliGlobaliEditor, VincoliReport, type SwapProposal,
+  VincoliGlobaliEditor, VincoliReport, mkRipresaFromTrips, type SwapProposal,
 } from "./driver-shifts/bdsi-tools";
+import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./driver-shifts/bds5-costs";
 import { AlgoGuide, HelpTip, CSP_GUIDE } from "@/components/StepGuide";
 import {
@@ -95,6 +96,12 @@ function DriverShiftsPageInner() {
   const [history, setHistory] = useState<Array<{ result: DriverShiftsResult; description: string; ts: number }>>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
+
+  /* ── Finestra di lavoro: turni guida a colonna, spacchetta/rimpacchetta ── */
+  const [wwOpen, setWwOpen] = useState(false);
+  const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
+  const [wwUnpacked, setWwUnpacked] = useState<Set<string>>(new Set());
+  const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
   // ── Solver mode ──
@@ -613,11 +620,37 @@ function DriverShiftsPageInner() {
               const r = data.results[s.driverId];
               if (!r || r.error || !ids.includes(s.driverId)) return s;
               const forced = s.verifyState === "forzato";
+              // Fuorilinea automatici dalla FONTE UNICA: pre-turno/trasferimenti
+              // calcolati dal validatore finiscono su turno e prima/ultima ripresa
+              // (essenziale per i turni rimpacchettati dalla Finestra di lavoro).
+              const hasTransfers = typeof r.transferMin === "number";
+              const riprese = hasTransfers
+                ? s.riprese.map((rp, i, arr) => ({
+                    ...rp,
+                    ...(i === 0 ? {
+                      preTurnoMin: r.preTurnoMin ?? rp.preTurnoMin,
+                      transferMin: r.transferMin ?? rp.transferMin,
+                      transferType: (r.transferMin ?? 0) > 0 ? "depot_to_start" : rp.transferType,
+                    } : {}),
+                    ...(i === arr.length - 1 ? {
+                      transferBackMin: r.transferBackMin ?? rp.transferBackMin,
+                      transferBackType: (r.transferBackMin ?? 0) > 0 ? "end_to_depot" : rp.transferBackType,
+                    } : {}),
+                  }))
+                : s.riprese;
               return {
                 ...s,
                 type: forced ? s.type : ((r.type as DriverShiftType) ?? s.type),
                 bdsValidation: r.bdsValidation ?? s.bdsValidation,
                 workCalculation: r.workCalculation ?? s.workCalculation,
+                ...(typeof r.workMin === "number" ? { workMin: r.workMin, work: formatDuration(r.workMin) } : {}),
+                ...(typeof r.nastroMin === "number" ? { nastroMin: r.nastroMin, nastro: formatDuration(r.nastroMin) } : {}),
+                ...(hasTransfers ? {
+                  preTurnoMin: r.preTurnoMin ?? s.preTurnoMin,
+                  transferMin: r.transferMin ?? s.transferMin,
+                  transferBackMin: r.transferBackMin ?? s.transferBackMin,
+                } : {}),
+                riprese,
                 verifyState: forced ? ("forzato" as const)
                   : (r.bdsValidation?.valid ? ("conforme" as const) : ("scorretto" as const)),
               };
@@ -627,6 +660,144 @@ function DriverShiftsPageInner() {
         .catch(() => { /* verifica fallita → resta "da verificare" */ });
     }, 700);
   }, [operatorConfig]);
+
+  /* ── Finestra di lavoro: adapter DriverShiftData → colonne attività ── */
+  const wwFmtH = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
+  const wwShifts = useMemo<WorkShiftView[]>(() => {
+    if (!result) return [];
+    return wwShiftIds
+      .map(id => result.driverShifts.find(s => s.driverId === id))
+      .filter((s): s is DriverShiftData => !!s)
+      .map(sh => {
+        const unpacked = wwUnpacked.has(sh.driverId);
+        const acts: WorkShiftView["activities"] = [];
+        sh.riprese.forEach((r, ri) => {
+          if (!unpacked && (r.preTurnoMin > 0 || r.transferMin > 0)) {
+            acts.push({ id: `${sh.driverId}-pre-${ri}`, isTrip: false, kindLabel: r.transferMin > 0 ? "Fuorilinea" : "Pre-turno", kindColor: "#f59e0b",
+              timeLabel: `${wwFmtH(r.startMin - r.transferMin - r.preTurnoMin)}→${wwFmtH(r.startMin)}`,
+              desc: r.transferMin > 0 ? `trasferimento ${r.transferMin}' + pre-turno ${r.preTurnoMin}'` : `pre-turno ${r.preTurnoMin}'` });
+          }
+          for (const t of r.trips) {
+            acts.push({ id: String(t.tripId), isTrip: true, kindLabel: t.routeName || "Corsa", kindColor: "#a78bfa",
+              timeLabel: `${wwFmtH(t.departureMin)}→${wwFmtH(t.arrivalMin)}`,
+              desc: `${t.firstStopName ?? ""} → ${t.lastStopName ?? ""}${t.vehicleId ? ` · vett. ${t.vehicleId}` : ""}` });
+          }
+          if (!unpacked && r.transferBackMin > 0) {
+            acts.push({ id: `${sh.driverId}-back-${ri}`, isTrip: false, kindLabel: "Fuorilinea", kindColor: "#f59e0b",
+              timeLabel: `${wwFmtH(r.endMin)}→${wwFmtH(r.endMin + r.transferBackMin)}`, desc: `rientro ${r.transferBackMin}'` });
+          }
+          if (!unpacked && (r.carPoolOut || r.carPoolReturn)) {
+            acts.push({ id: `${sh.driverId}-car-${ri}`, isTrip: false, kindLabel: "Auto/Taxi", kindColor: "#fb7185",
+              timeLabel: "", desc: (r.carPoolOut?.description || r.carPoolReturn?.description || "spostamento") });
+          }
+        });
+        if (!unpacked) {
+          for (const a of sh.activities ?? []) {
+            acts.push({ id: `${sh.driverId}-act-${(a as any).id ?? Math.random()}`, isTrip: false, kindLabel: (a as any).kind ?? "Attività", kindColor: "#38bdf8",
+              timeLabel: `${wwFmtH((a as any).startMin ?? 0)}→${wwFmtH((a as any).endMin ?? 0)}`, desc: (a as any).note ?? "" });
+          }
+        }
+        return {
+          id: sh.driverId,
+          label: sh.driverId,
+          sub: `${TYPE_LABELS[sh.type] ?? sh.type} · ${sh.riprese.reduce((n, r) => n + r.trips.length, 0)} corse`,
+          unpacked,
+          activities: acts,
+        };
+      });
+  }, [result, wwShiftIds, wwUnpacked]);
+
+  const wwDrop = useCallback((rowId: string) => {
+    if (!result?.driverShifts.some(s => s.driverId === rowId)) return;
+    setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
+    setWwOpen(true);
+  }, [result]);
+
+  /* Rimpacchetta (TG): le corse selezionate diventano un turno guida NUOVO —
+   * 1 o 2 riprese (spezzato automatico al gap più grande ≥60'), matricola
+   * automatica, poi la ri-verifica BDS assegna tipologia/fuorilinea/validità.
+   * I turni sorgente tengono le corse non selezionate e vengono ri-verificati. */
+  const wwRepack = useCallback(() => {
+    if (!result || wwSelected.size === 0) return;
+    const srcIds = new Set(wwShiftIds);
+    const chosen: RipresaTrip[] = [];
+    for (const s of result.driverShifts) {
+      if (!srcIds.has(s.driverId)) continue;
+      for (const r of s.riprese) for (const t of r.trips) {
+        if (wwSelected.has(String(t.tripId))) chosen.push({ ...t });
+      }
+    }
+    if (!chosen.length) return;
+    chosen.sort((a, b) => a.departureMin - b.departureMin);
+    for (let i = 1; i < chosen.length; i++) {
+      if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
+        toast.error("Corse sovrapposte", {
+          description: `"${chosen[i - 1].routeName}" e "${chosen[i].routeName}" si accavallano: il turno non può chiudersi.`,
+        });
+        return;
+      }
+    }
+    // matricola automatica: prefisso FL + primo numero libero
+    const used = new Set(result.driverShifts.map(s => s.driverId));
+    let n = 1; while (used.has(`FL${String(n).padStart(2, "0")}`)) n++;
+    const newId = `FL${String(n).padStart(2, "0")}`;
+    // spezzato automatico: gap più grande ≥ 60' → 2 riprese
+    let split = -1, gmax = 0;
+    for (let i = 0; i < chosen.length - 1; i++) {
+      const g = chosen[i + 1].departureMin - chosen[i].arrivalMin;
+      if (g > gmax) { gmax = g; split = i; }
+    }
+    const chunks = gmax >= 60 && split >= 0
+      ? [chosen.slice(0, split + 1), chosen.slice(split + 1)]
+      : [chosen];
+    const vehId = String((chosen[0] as any).vehicleId ?? "");
+    const vehType = String((chosen[0] as any).vehicleType ?? "12m");
+    const riprese = chunks.map(c => mkRipresaFromTrips(c, String((c[0] as any).vehicleId ?? vehId), String((c[0] as any).vehicleType ?? vehType)));
+    const allStart = riprese[0].startMin;
+    const allEnd = riprese[riprese.length - 1].endMin;
+    const newShift: DriverShiftData = {
+      driverId: newId,
+      type: "intero",
+      nastroStart: wwFmtH(allStart), nastroEnd: wwFmtH(allEnd),
+      nastroStartMin: allStart, nastroEndMin: allEnd,
+      nastroMin: allEnd - allStart, nastro: formatDuration(allEnd - allStart),
+      workMin: riprese.reduce((a, r) => a + r.workMin, 0),
+      work: formatDuration(riprese.reduce((a, r) => a + r.workMin, 0)),
+      interruptionMin: riprese.length === 2 ? Math.max(0, riprese[1].startMin - riprese[0].endMin) : 0,
+      interruption: riprese.length === 2 ? formatDuration(Math.max(0, riprese[1].startMin - riprese[0].endMin)) : null,
+      transferMin: 0, transferBackMin: 0, preTurnoMin: 0,
+      cambiCount: 0,
+      riprese,
+      verifyState: "da_verificare",
+    } as DriverShiftData;
+    // turni sorgente: tengono le corse NON selezionate; vuoti → eliminati
+    const kept = result.driverShifts
+      .map(s => {
+        if (!srcIds.has(s.driverId)) return s;
+        const rp = s.riprese
+          .map(r => ({ ...r, trips: r.trips.filter(t => !wwSelected.has(String(t.tripId))) }))
+          .filter(r => r.trips.length > 0)
+          .map(r => {
+            const st = r.trips[0].departureMin, en = r.trips[r.trips.length - 1].arrivalMin;
+            return { ...r, startMin: st, endMin: en, startTime: wwFmtH(st), endTime: wwFmtH(en) };
+          });
+        if (rp.length === 0) return null;
+        const aS = Math.min(...rp.map(r => r.startMin)), aE = Math.max(...rp.map(r => r.endMin));
+        return { ...s, riprese: rp, nastroStartMin: aS, nastroEndMin: aE, nastroStart: wwFmtH(aS), nastroEnd: wwFmtH(aE), nastroMin: aE - aS, verifyState: "da_verificare" as const };
+      })
+      .filter((s): s is DriverShiftData => !!s);
+    const removedCount = result.driverShifts.length - kept.length;
+    const newRes: DriverShiftsResult = { ...result, driverShifts: [...kept, newShift] };
+    setResult(newRes);
+    pushHistory(newRes, `Finestra di lavoro · rimpacchettato ${newId} (${chosen.length} corse)`);
+    // ri-verifica BDS: assegna tipologia, fuorilinea/pre-turno e validità
+    const touched = [newId, ...kept.filter(s => srcIds.has(s.driverId)).map(s => s.driverId)];
+    queueRevalidate(touched);
+    setWwShiftIds([]); setWwSelected(new Set()); setWwUnpacked(new Set());
+    toast.success(`Turno guida ${newId} creato`, {
+      description: `${chosen.length} corse in ${riprese.length === 2 ? "2 riprese (spezzato al gap più grande)" : "1 ripresa"} · tipologia e fuorilinea in verifica automatica${removedCount ? ` · ${removedCount} turni rimasti vuoti eliminati` : ""}.`,
+    });
+  }, [result, wwShiftIds, wwSelected, pushHistory, queueRevalidate]);
 
   /* BDSI §10.1.3 — forzatura: il turno scorretto viene considerato conforme. */
   const forzaTurno = useCallback((driverId: string) => {
@@ -1741,6 +1912,13 @@ function DriverShiftsPageInner() {
                 )}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={() => setWwOpen(o => !o)}
+                  title="Finestra di lavoro: trascina turni interi, spacchetta e rimpacchetta"
+                  className={`px-2 py-1 rounded border text-[10px] font-semibold transition ${wwOpen ? "border-purple-500/50 bg-purple-500/20 text-purple-200" : "border-purple-500/30 text-purple-300/70 hover:bg-purple-500/10"}`}
+                >
+                  🪟 Finestra di lavoro{wwShiftIds.length > 0 ? ` (${wwShiftIds.length})` : ""}
+                </button>
                 {/* Toggle vista esplosa / aggregata */}
                 <div className="flex rounded-md overflow-hidden border border-orange-500/30 text-[10px]">
                   <button
@@ -1900,10 +2078,40 @@ function DriverShiftsPageInner() {
                 </ol>
               </div>
             )}
+            {wwOpen && (
+              <div className="mb-2">
+                <WorkWindowPanel
+                  shifts={wwShifts}
+                  selected={wwSelected}
+                  onToggleSelect={(id) => setWwSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+                  onToggleSelectAll={(shiftId) => {
+                    const sh = wwShifts.find(s => s.id === shiftId); if (!sh) return;
+                    const tripIds = sh.activities.filter(a => a.isTrip).map(a => a.id);
+                    setWwSelected(prev => {
+                      const n = new Set(prev);
+                      const all = tripIds.every(id => n.has(id));
+                      tripIds.forEach(id => { if (all) n.delete(id); else n.add(id); });
+                      return n;
+                    });
+                  }}
+                  onDropShift={wwDrop}
+                  onRemoveShift={(id) => {
+                    setWwShiftIds(ids => ids.filter(x => x !== id));
+                    setWwUnpacked(prev => { const n = new Set(prev); n.delete(id); return n; });
+                  }}
+                  onUnpack={(id) => setWwUnpacked(prev => new Set(prev).add(id))}
+                  onUnpackAll={() => setWwUnpacked(new Set(wwShiftIds))}
+                  onRepack={wwRepack}
+                  onClose={() => setWwOpen(false)}
+                  accent="purple"
+                />
+              </div>
+            )}
             {filteredShifts.length > 0 ? (
               <InteractiveGantt
                 rows={driverGanttRows}
                 bars={displayBars}
+                rowsDraggable={wwOpen}
                 editable={ganttMode === "exploded"}
                 onBarChange={ganttMode === "exploded" ? handleDriverGanttChange : undefined}
                 onBarClick={(bar) => {

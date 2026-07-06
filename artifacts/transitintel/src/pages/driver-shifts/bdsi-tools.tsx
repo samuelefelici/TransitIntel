@@ -415,7 +415,7 @@ export function CoveragePanel({ coverage, onFocusDriver, onSwapPiece, onTurnoUni
  *  per aggiungere i turni unici). Client-side, poi si ri-verifica.
  * ─────────────────────────────────────────────────────────────── */
 
-function mkRipresaFromTrips(trips: RipresaTrip[], vehicleId: string, vehicleType: string): Ripresa {
+export function mkRipresaFromTrips(trips: RipresaTrip[], vehicleId: string, vehicleType: string): Ripresa {
   const sorted = [...trips].sort((a, b) => a.departureMin - b.departureMin);
   const start = sorted[0].departureMin;
   const end = sorted[sorted.length - 1].arrivalMin;
