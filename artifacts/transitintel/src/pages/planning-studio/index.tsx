@@ -62,13 +62,15 @@ export default function PlanningStudioListPage() {
   }
 
   async function handleDelete(p: PsProject) {
-    if (!confirm(`Eliminare il progetto "${p.name}"?\nL'azione è irreversibile.`)) return;
+    // NB: niente window.confirm — il browser può sopprimerlo ("impedisci
+    // altre finestre di dialogo") e il click diventava un no-op silenzioso.
+    // La conferma è il doppio click sul cestino (vedi ProjectCard).
     try {
       await deletePsProject(p.id);
-      toast.success("Progetto eliminato");
+      toast.success("Progetto eliminato", { description: p.name });
       refresh();
     } catch (e: any) {
-      toast.error("Errore eliminazione", { description: e?.message });
+      toast.error("Errore eliminazione", { description: e?.message || "errore sconosciuto" });
     }
   }
 
@@ -224,6 +226,14 @@ function ProjectCard({
   project: p, onOpen, onDelete, onShare, onActivate,
 }: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void }) {
   const isOwner = p.myRole === "owner";
+  // Eliminazione a DUE CLICK: il primo arma (cestino rosso "Confermi?"),
+  // il secondo elimina. Si disarma da solo dopo 4 secondi.
+  const [delArmed, setDelArmed] = useState(false);
+  useEffect(() => {
+    if (!delArmed) return;
+    const t = setTimeout(() => setDelArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [delArmed]);
   const canActivate = (p.myRole === "owner" || p.myRole === "editor") && !p.isOperational;
   return (
     <motion.div
@@ -322,11 +332,21 @@ function ProjectCard({
               <Share2 className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              className="p-1 rounded hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition"
-              title="Elimina"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!delArmed) { setDelArmed(true); return; }
+                setDelArmed(false);
+                onDelete();
+              }}
+              className={`p-1 rounded transition flex items-center gap-1 ${
+                delArmed
+                  ? "bg-red-500/20 text-red-300 ring-1 ring-red-500/50"
+                  : "hover:bg-red-500/10 text-slate-500 hover:text-red-400"
+              }`}
+              title={delArmed ? "Clicca di nuovo per ELIMINARE definitivamente" : "Elimina (doppio click di conferma)"}
             >
               <Trash2 className="w-3.5 h-3.5" />
+              {delArmed && <span className="text-[10px] font-bold">Confermi?</span>}
             </button>
           </div>
         )}

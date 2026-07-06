@@ -814,19 +814,35 @@ router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> =
   // Postgres le verifica subito durante la cascata → la DELETE nuda dava 500.
   // Cancellazione ORDINATA in transazione: prima chi blocca, poi il progetto
   // (che cascata il resto: routes, stops, calendars, membri, log, ecc.).
-  await db.transaction(async (tx) => {
-    await tx.execute(sql`
-      DELETE FROM ps_stop_times
-       WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${proj.id}::uuid)
-    `);
-    await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${proj.id}::uuid`);
-    await tx.execute(sql`
-      DELETE FROM ps_variant_stops
-       WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${proj.id}::uuid)
-    `);
-    await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${proj.id}::uuid`);
-    await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
-  });
+  try {
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        DELETE FROM ps_stop_times
+         WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${proj.id}::uuid)
+      `);
+      await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${proj.id}::uuid`);
+      await tx.execute(sql`
+        DELETE FROM ps_variant_stops
+         WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${proj.id}::uuid)
+      `);
+      await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${proj.id}::uuid`);
+      await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
+    });
+  } catch (e: any) {
+    // FK violation (23503): di' QUALE tabella blocca invece del 500 muto —
+    // sui DB storici possono esistere referenze fuori dal codice attuale.
+    const cause = e?.cause ?? e;
+    if (cause?.code === "23503") {
+      req.log?.error({ constraint: cause.constraint, table: cause.table, detail: cause.detail },
+        "DELETE progetto PS bloccata da FK");
+      res.status(409).json({
+        error: `Impossibile eliminare: dati collegati in "${cause.table ?? "?"}" ` +
+               `(vincolo ${cause.constraint ?? "?"}). Segnala questo messaggio per il fix.`,
+      });
+      return;
+    }
+    throw e;
+  }
   res.json({ ok: true });
 });
 
