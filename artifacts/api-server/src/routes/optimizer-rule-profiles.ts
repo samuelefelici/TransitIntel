@@ -71,7 +71,8 @@ function rowToProfile(r: any) {
 
 function domainOf(req: Request): string {
   const d = String((req.query.domain ?? (req.body && req.body.domain) ?? "crew")).toLowerCase();
-  return d === "vsp" ? "vsp" : "crew";
+  // 'vcsp' = preset "algoritmo" completo della pipeline integrata (macchina+guida)
+  return d === "vsp" || d === "vcsp" ? d : "crew";
 }
 
 /** Deep-merge: override sovrascrive base (oggetti uniti ricorsivamente, scalari/array rimpiazzati). */

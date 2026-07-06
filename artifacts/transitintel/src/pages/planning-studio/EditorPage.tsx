@@ -439,6 +439,33 @@ export default function PlanningStudioEditorPage() {
 
   // ── Vista percorso (selezione variante → fermate + tracciato) ──────
   const [routeView, setRouteView] = useState<RouteViewState | null>(null);
+  // ── Multi-visualizzazione LINEE: routeId → tracciati di tutte le varianti ──
+  const [multiShown, setMultiShown] = useState<Record<string, { color: string; features: any[] }>>({});
+  const [multiLoading, setMultiLoading] = useState<string | null>(null);
+  async function toggleShowRoute(route: PsRoute) {
+    if (multiShown[route.id]) {
+      setMultiShown(prev => { const n = { ...prev }; delete n[route.id]; return n; });
+      return;
+    }
+    setMultiLoading(route.id);
+    try {
+      const vs = await listPsVariants(projectId, route.id);
+      const features: any[] = [];
+      for (const v of vs) {
+        try {
+          const d = await getPsVariant(projectId, v.id);
+          if (d.shape?.geometry) features.push({ type: "Feature", properties: { variant: v.name }, geometry: d.shape.geometry });
+        } catch { /* variante senza shape */ }
+      }
+      if (!features.length) { toast.info(`"${route.shortName}": nessun tracciato disegnato`); return; }
+      const color = (route.color || "#10b981").startsWith("#") ? (route.color || "#10b981") : `#${route.color}`;
+      setMultiShown(prev => ({ ...prev, [route.id]: { color, features } }));
+    } catch (e: any) {
+      toast.error("Errore caricamento tracciati", { description: e?.message });
+    } finally {
+      setMultiLoading(null);
+    }
+  }
   // Edit tracciato: copia di lavoro della LineString (null = non in edit)
   const [shapeEdit, setShapeEdit] = useState<ShapeEditState | null>(null);
   const [shapeEditBusy, setShapeEditBusy] = useState(false);   // snap OSRM in corso
@@ -2206,6 +2233,16 @@ export default function PlanningStudioEditorPage() {
           {mapReady && (
           <>
           {/* ─── Zone vietate bus: poligoni rossi (visibili in editor/toggle/disegno) ─── */}
+          {/* Multi-visualizzazione linee (toggle occhio nel pannello Linee) */}
+          {Object.entries(multiShown).map(([rid, m]) => (
+            <Source key={`multi-${rid}`} id={`multi-route-${rid}`} type="geojson"
+              data={{ type: "FeatureCollection", features: m.features } as any}>
+              <Layer id={`multi-route-casing-${rid}`} type="line"
+                paint={{ "line-color": "#000", "line-width": 5, "line-opacity": 0.35 }} />
+              <Layer id={`multi-route-line-${rid}`} type="line"
+                paint={{ "line-color": m.color, "line-width": 3, "line-opacity": 0.85 }} />
+            </Source>
+          ))}
           {(showNoGo || !!editor || !!zoneDraw) && noGoZonesGeoJSON.features.length > 0 && (
             <Source id="ps-nogo-src" type="geojson" data={noGoZonesGeoJSON}>
               <Layer id="ps-nogo-fill" type="fill"
@@ -3050,6 +3087,9 @@ export default function PlanningStudioEditorPage() {
                     onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
                     onUpdateVariantMeta={handleUpdateVariantMeta}
+                    shownRouteIds={new Set(Object.keys(multiShown))}
+                    loadingShowRouteId={multiLoading}
+                    onToggleShowRoute={toggleShowRoute}
                     onDeleteVariant={async (id) => {
                       if (!confirm("Eliminare il percorso (variante)? La linea resta comunque.")) return;
                       try {
@@ -3549,7 +3589,7 @@ function RoutesPanel({
   routes, variantsByRoute, openRouteId,
   onToggleRoute, onCreateRoute, onUpdateRoute, onDeleteRoute,
   onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
-  onUpdateVariantMeta,
+  onUpdateVariantMeta, shownRouteIds, loadingShowRouteId, onToggleShowRoute,
 }: {
   routes: PsRoute[];
   variantsByRoute: Record<string, PsVariant[]>;
@@ -3561,6 +3601,10 @@ function RoutesPanel({
   onCreateVariant: (routeId: string, name: string, dir: number) => Promise<PsVariant | undefined>;
   /** Salva codice/nome/verso di una variante (metadati, non tracciato) */
   onUpdateVariantMeta: (routeId: string, variantId: string, patch: { code?: string | null; name?: string; direction?: number }) => Promise<boolean>;
+  /** Multi-visualizzazione: linee attualmente mostrate sulla mappa */
+  shownRouteIds: Set<string>;
+  loadingShowRouteId: string | null;
+  onToggleShowRoute: (route: PsRoute) => void;
   /** Selezione percorso: apre la vista con fermate ordinate + tracciato evidenziato */
   onSelectVariant?: (routeId: string, variantId: string) => void;
   onEditVariant: (routeId: string, variantId: string) => void;
@@ -3575,6 +3619,12 @@ function RoutesPanel({
   // Modifica metadati variante (matita sulla riga): codice es. "21A", nome, verso
   const [metaForm, setMetaForm] = useState<{ routeId: string; variantId: string; code: string; name: string; direction: number } | null>(null);
   const [metaSaving, setMetaSaving] = useState(false);
+  // Ricerca linee (codice o nome)
+  const [routeSearch, setRouteSearch] = useState("");
+  const q = routeSearch.trim().toLowerCase();
+  const shownRoutes = q
+    ? routes.filter(r => (r.shortName ?? "").toLowerCase().includes(q) || (r.longName ?? "").toLowerCase().includes(q))
+    : routes;
   // Modifica di una linea esistente (matita sulla riga)
   const [routeForm, setRouteForm] = useState<{ id: string; shortName: string; longName: string; color: string } | null>(null);
   const normColor = (c: string | null | undefined) => {
@@ -3614,9 +3664,20 @@ function RoutesPanel({
         </div>
       )}
 
+      {/* Ricerca linee */}
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+        <input value={routeSearch} onChange={e => setRouteSearch(e.target.value)}
+          placeholder={`Cerca tra ${routes.length} linee…`}
+          className="w-full pl-8 pr-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs focus:outline-none focus:border-emerald-500/50" />
+      </div>
+
       <div className="space-y-1">
         {routes.length === 0 && <p className="text-center text-xs text-slate-500 py-8">Nessuna linea</p>}
-        {routes.map(r => {
+        {shownRoutes.length === 0 && routes.length > 0 && (
+          <p className="text-center text-xs text-slate-500 py-4">Nessuna linea corrisponde a "{routeSearch}"</p>
+        )}
+        {shownRoutes.map(r => {
           const open = openRouteId === r.id;
           const variants = variantsByRoute[r.id] || [];
           return (
@@ -3663,6 +3724,16 @@ function RoutesPanel({
                 <span className="w-3 h-3 rounded-full shrink-0" style={{ background: r.color || "#10b981" }} />
                 <span className="text-sm font-bold">{r.shortName}</span>
                 <span className="text-xs text-slate-400 truncate flex-1">{r.longName}</span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToggleShowRoute(r); }}
+                  title={shownRouteIds.has(r.id) ? "Nascondi i tracciati della linea dalla mappa" : "Mostra i tracciati sulla mappa (puoi mostrare più linee insieme)"}
+                  className={`p-1 rounded transition ${shownRouteIds.has(r.id)
+                    ? "text-emerald-300 bg-emerald-500/15"
+                    : "text-slate-500 hover:text-slate-200 hover:bg-slate-800 opacity-0 group-hover:opacity-100"}`}>
+                  {loadingShowRouteId === r.id
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : shownRouteIds.has(r.id) ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                </button>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
