@@ -412,6 +412,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               // (/planning-studio/:id/clusters). La vecchia pagina globale
               // /cluster era un duplicato e generava confusione.
               { href: "/depots", label: "Depositi", icon: Building2, desc: "Rimessaggio · rifornimento" },
+              { href: "/deadhead-arcs", label: "Archi Fuorilinea", icon: Route, desc: "Percorsi a vuoto · tempi modificabili" },
             ].map((item) => {
               const isActive = location === item.href;
               const Icon = item.icon;

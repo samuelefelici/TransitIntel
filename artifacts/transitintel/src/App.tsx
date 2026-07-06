@@ -44,6 +44,7 @@ const StopsClassificationPage = lazy(() => import("@/pages/stops-classification"
 const FaresEnginePage = lazy(() => import("@/pages/fares-engine"));
 const TripPlannerPage = lazy(() => import("@/pages/trip-planner"));
 const DepotsPage = lazy(() => import("@/pages/depots"));
+const DeadheadArcsPage = lazy(() => import("@/pages/deadhead-arcs"));
 const PlanningListPage = lazy(() => import("@/pages/planning"));
 const PlanningNewPage = lazy(() => import("@/pages/planning/new"));
 const PlanningWorkspacePage = lazy(() => import("@/pages/planning/workspace"));
@@ -268,6 +269,9 @@ function Router() {
             <Route path="/cluster-management"><Redirect to="/planning-studio" /></Route>
             <Route path="/depots">
               <Gated perm="scheduling"><DepotsPage /></Gated>
+            </Route>
+            <Route path="/deadhead-arcs">
+              <Gated perm="scheduling"><DeadheadArcsPage /></Gated>
             </Route>
             <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
 
