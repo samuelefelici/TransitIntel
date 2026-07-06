@@ -25,6 +25,9 @@ import {
   resolveRuleProfile, listRuleProfiles, createRuleProfile, deleteRuleProfile,
   type RuleProfile, type RuleProfileDomain,
 } from "@/lib/rule-profiles-api";
+import { OptimizerRulesPanel } from "@/components/OptimizerRulesPanel";
+import { buildDefaultConfig as buildDefaultCrewConfig } from "@/lib/optimizer-rules";
+import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -428,6 +431,39 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   // VCSP: secondi dedicati al CSP (turni guida) in ogni round
   const [crewTimeLimit, setCrewTimeLimit] = useState(90);
 
+  /* ── VCSP: config COMPLETA turni guida (stessi parametri del CSP standalone:
+   *    BDS, costi, scalini, vincoli globali…). Default dal tipo di servizio;
+   *    se esiste un profilo-regole crew di default (azienda/progetto) parte
+   *    da quello. Il pannello di modifica è lo STESSO dell'area Turni Guida. */
+  const [crewConfig, setCrewConfig] = useState<OperatorConfig>(() => buildDefaultCrewConfig("urbano"));
+  const [crewCfgTouched, setCrewCfgTouched] = useState(false);
+  const [crewRulesOpen, setCrewRulesOpen] = useState(false);
+  const crewProfileLoadedRef = React.useRef(false);
+  useEffect(() => {
+    if (crewProfileLoadedRef.current) return;
+    crewProfileLoadedRef.current = true;
+    resolveRuleProfile(psProjectId, "crew")
+      .then((r) => {
+        if (!r?.config) return;
+        const base: any = buildDefaultCrewConfig("urbano");
+        const merged: any = { ...base };
+        for (const k of Object.keys(r.config)) {
+          merged[k] = base[k] && typeof base[k] === "object" && !Array.isArray(base[k])
+            ? { ...base[k], ...r.config[k] }
+            : r.config[k];
+        }
+        setCrewConfig(merged);
+        setCrewCfgTouched(true);
+      })
+      .catch(() => { /* nessun profilo → default */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [psProjectId]);
+  // Cambio tipo di servizio → riallinea i preset TG (solo se non modificati a mano)
+  useEffect(() => {
+    if (!crewCfgTouched) setCrewConfig(buildDefaultCrewConfig(serviceType));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceType]);
+
   /* ── "Salva l'algoritmo": preset nominati con TUTTA la config ottimizzatore.
    *    Riusa optimizer_rule_profiles con domain dedicato (vcsp | vsp), sempre
    *    isDefault=false così NON interferisce con la catena resolve dei profili
@@ -451,7 +487,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         name, scope: "company", domain: algoDomain, serviceType,
         config: {
           solverMode, solverIntensity, serviceType, robustness, normativa, vspConfig,
-          ...(pipelineMode === "vcsp" ? { vcspRounds, crewTimeLimit } : {}),
+          ...(pipelineMode === "vcsp" ? { vcspRounds, crewTimeLimit, crewConfig } : {}),
         },
       });
       setAlgoPresets((prev) => [...prev, created]);
@@ -462,7 +498,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setAlgoSaving(false);
     }
-  }, [algoName, algoDomain, serviceType, solverMode, solverIntensity, robustness, normativa, vspConfig, pipelineMode, vcspRounds, crewTimeLimit]);
+  }, [algoName, algoDomain, serviceType, solverMode, solverIntensity, robustness, normativa, vspConfig, pipelineMode, vcspRounds, crewTimeLimit, crewConfig]);
 
   const applyAlgoPreset = useCallback((p: RuleProfile) => {
     const c = p.config ?? {};
@@ -471,6 +507,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     if (c.robustness === "off" || c.robustness === "media" || c.robustness === "alta") setRobustness(c.robustness);
     if (typeof c.vcspRounds === "number") setVcspRounds(c.vcspRounds);
     if (typeof c.crewTimeLimit === "number") setCrewTimeLimit(c.crewTimeLimit);
+    if (c.crewConfig && typeof c.crewConfig === "object") { setCrewConfig(c.crewConfig); setCrewCfgTouched(true); }
     if (c.normativa && typeof c.normativa === "object") setNormativa(c.normativa);
     if (c.vspConfig) {
       const base = buildDefaultVspConfig();
@@ -541,6 +578,11 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         if (solverMode === "vcsp") {
           // VCSP: budget per round — il VSP usa timeLimit/round, il CSP ha il suo
           bodyPayload.vcsp = { rounds: vcspRounds, crewTimeLimit };
+          // Parità col CSP standalone: TUTTI i parametri turni guida
+          // (BDS, costi, scalini, vincoli…) viaggiano nel giro integrato.
+          bodyPayload.crewConfig = { ...crewConfig, bds: { ...(crewConfig as any).bds, serviceType } };
+          // Per i nodi di sosta (restPoints) del progetto corrente
+          if (projectId) bodyPayload.projectId = projectId;
         }
         // Robustezza ai ritardi (buffer δ dal traffico reale): off/media/alta
         if (robustness !== "off") bodyPayload.robustness = robustness;
@@ -593,7 +635,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, crewTimeLimit, robustness, normativa]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, crewTimeLimit, crewConfig, projectId, robustness, normativa]);
 
   /** Result con i TURNI MACCHINA del round scelto (VCSP): tutto ciò che esce
    *  da questo step — salvataggio E area di lavoro — usa QUESTO, così lo
@@ -1184,20 +1226,23 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           </button>
           {result && !running && (
             <>
-              {/* In modalità progetto il salvataggio avviene SOLO nel
-                  Workspace Turni Macchina (dopo le eventuali rifiniture
-                  manuali sul Gantt). Qui mostriamo solo l'apertura. */}
-              {!projectId && (
+              {/* VCSP: il flusso finisce QUI — si salva (entrambi gli scenari)
+                  e le aree di lavoro si aprono dagli scenari appena generati.
+                  Pipeline classica: salvataggio nel Workspace (modalità
+                  progetto) o qui, poi apertura dell'area di lavoro. */}
+              {(!projectId || result.solver === "vcsp") && (
                 <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
                   className="flex items-center gap-1.5 text-[11px] text-green-300 font-medium px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/8 hover:bg-green-500/15 transition-all">
                   <Save className="w-3.5 h-3.5" />
-                  Salva Scenario
+                  {result.solver === "vcsp" ? "Salva entrambi gli scenari" : "Salva Scenario"}
                 </button>
               )}
-              <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
-                className="flex items-center gap-1.5 text-[11px] text-black font-semibold px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_12px_rgba(251,146,60,0.3)] transition-shadow">
-                Apri Area di Lavoro <ChevronRight className="w-3.5 h-3.5" />
-              </button>
+              {result.solver !== "vcsp" && (
+                <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
+                  className="flex items-center gap-1.5 text-[11px] text-black font-semibold px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_12px_rgba(251,146,60,0.3)] transition-shadow">
+                  Apri Area di Lavoro <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              )}
             </>
           )}
         </div>
@@ -1275,22 +1320,37 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     </div>
                   </div>
                   {cfgServizio}
-                  <div className="bg-card/40 border border-border/30 rounded-xl p-4 space-y-2">
-                    <p className="text-[11px] font-semibold text-purple-300">⏱️ Tempo CSP per round
-                      <HelpTip testo={"Secondi dedicati al solver dei turni guida in OGNI round del VCSP. Più tempo = spezzamenti in turni legali più accurati per round, ma il giro completo dura di più."} className="ml-1" />
-                    </p>
-                    <div className="flex items-center gap-2">
-                      {([[60, "60s"], [90, "90s"], [180, "3 min"], [300, "5 min"]] as const).map(([s, label]) => (
-                        <button key={s} onClick={() => setCrewTimeLimit(s)}
-                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${crewTimeLimit === s ? "bg-purple-500/20 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
-                          {label}
-                        </button>
-                      ))}
+                  <div className="bg-card/40 border border-border/30 rounded-xl">
+                    <button onClick={() => setCrewRulesOpen(true)}
+                      className="w-full flex items-center justify-between px-4 py-3 hover:bg-purple-500/10 transition-colors rounded-t-xl border-b border-border/20">
+                      <div className="flex items-center gap-2">
+                        <SlidersHorizontal className="w-4 h-4 text-purple-400" />
+                        <span className="text-xs font-semibold text-purple-300">Tutti i parametri turni guida (pannello completo)
+                          <HelpTip testo={"Cosa succede: apre lo STESSO pannello dell'area Turni Guida con TUTTI i parametri del CSP — regole BDS (nastro, guida, pause, spezzato), costi e scalini, soste spezzanti, vincoli globali. Il VCSP usa ESATTAMENTE questa configurazione in ogni round. Qui non si salva nulla: per salvare usa la sezione Algoritmo in cima."} className="ml-1" />
+                          {crewCfgTouched && (
+                            <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">personalizzati</span>
+                          )}
+                        </span>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                    </button>
+                    <div className="px-4 py-3 space-y-2">
+                      <p className="text-[11px] font-semibold text-purple-300">⏱️ Tempo CSP per round
+                        <HelpTip testo={"Secondi dedicati al solver dei turni guida in OGNI round del VCSP. Più tempo = spezzamenti in turni legali più accurati per round, ma il giro completo dura di più."} className="ml-1" />
+                      </p>
+                      <div className="flex items-center gap-2">
+                        {([[60, "60s"], [90, "90s"], [180, "3 min"], [300, "5 min"]] as const).map(([s, label]) => (
+                          <button key={s} onClick={() => setCrewTimeLimit(s)}
+                            className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${crewTimeLimit === s ? "bg-purple-500/20 border-purple-500/50 text-purple-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Il tipo di servizio scelto sopra imposta i preset normativi; dal pannello completo
+                        puoi rifinire ogni regola BDS, costo e vincolo — identico all'area Turni Guida.
+                      </p>
                     </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      Le regole fini dei turni guida (BDS, costi, vincoli aziendali) restano quelle dell'area
-                      Turni Guida: il VCSP le applica in automatico secondo il tipo di servizio scelto sopra.
-                    </p>
                   </div>
 
                   {/* ── STEP 3 · Ottimizzatore in generale ── */}
@@ -1671,10 +1731,18 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   <div className="flex items-center gap-2 text-xs text-green-400 flex-wrap">
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
                     <span className="flex-1 min-w-0">🚌 Turni macchina salvati{result.solver === "vcsp" ? ` (round #${selectedRound ?? (result as any).vcsp?.bestRound})` : ""}</span>
-                    <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
-                      className="text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all">
-                      Apri Workspace Vetture
-                    </button>
+                    {result.solver === "vcsp" ? (
+                      /* VCSP: il workspace si apre dallo SCENARIO salvato (deep-link) */
+                      <a href={projectId ? `/fucina/${projectId}/vehicles/${savedScenarioId}` : `/fucina?scenario=${savedScenarioId}`}
+                        className="text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all">
+                        Apri Workspace Vetture
+                      </a>
+                    ) : (
+                      <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
+                        className="text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all">
+                        Apri Workspace Vetture
+                      </button>
+                    )}
                   </div>
                   {result.solver === "vcsp" && (savedDssId ? (
                     <div className="flex items-center gap-2 text-xs text-green-400 flex-wrap">
@@ -1982,21 +2050,41 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
               })()}
 
               {/* ──── CTA bottom ──── */}
-              <div className="flex items-center justify-between py-4 border-t border-border/20">
-                <p className="text-xs text-muted-foreground">
-                  {projectId ? (
-                    <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per rifinire i turni e salvare lo scenario nel progetto.</>
-                  ) : (
-                    <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per spostare le corse tra i turni.</>
+              {result.solver === "vcsp" ? (
+                /* VCSP: niente salto all'area di lavoro — qui si vede TUTTO
+                   (round, gantt macchina e guida). Si salva e le aree di
+                   lavoro si aprono dagli scenari appena generati. */
+                <div className="flex items-center justify-between py-4 border-t border-border/20">
+                  <p className="text-xs text-muted-foreground">
+                    Scegli il round che preferisci qui sopra, poi <strong className="text-green-300/90">salva</strong>:
+                    verranno creati <strong className="text-cyan-300/90">entrambi gli scenari</strong> (macchina + guida)
+                    e potrai aprirli nelle rispettive aree di lavoro.
+                  </p>
+                  {!savedScenarioId && (
+                    <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-emerald-400 to-teal-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-shadow shrink-0">
+                      <Save className="w-4 h-4" />
+                      Salva entrambi gli scenari
+                    </button>
                   )}
-                </p>
-                <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
-                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.35)] transition-shadow shrink-0">
-                  <Truck className="w-4 h-4" />
-                  Apri Area di Lavoro
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between py-4 border-t border-border/20">
+                  <p className="text-xs text-muted-foreground">
+                    {projectId ? (
+                      <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per rifinire i turni e salvare lo scenario nel progetto.</>
+                    ) : (
+                      <>Soddisfatto del risultato? Apri l'<strong className="text-orange-300/80">Area di Lavoro</strong> per spostare le corse tra i turni.</>
+                    )}
+                  </p>
+                  <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.35)] transition-shadow shrink-0">
+                    <Truck className="w-4 h-4" />
+                    Apri Area di Lavoro
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
 
             </motion.div>
           )}
@@ -2012,6 +2100,19 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         onClose={() => setRulesOpen(false)}
         config={vspConfig}
         onChange={setVspConfig}
+        projectId={psProjectId}
+        showProfiles={false}
+      />
+
+      {/* Pannello completo Parametri turni guida (CSP) — lo STESSO dell'area
+          Turni Guida: nel giro VCSP la config viaggia in crewConfig. */}
+      <OptimizerRulesPanel
+        isOpen={crewRulesOpen}
+        onClose={() => setCrewRulesOpen(false)}
+        config={crewConfig}
+        onChange={(c) => { setCrewConfig(c); setCrewCfgTouched(true); }}
+        serviceType={serviceType}
+        onServiceTypeChange={setServiceType}
         projectId={psProjectId}
         showProfiles={false}
       />

@@ -19,7 +19,9 @@ import {
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, type DHNode } from "../lib/deadhead-matrix";
-import { enrichTripsWithClusterStops } from "./driver-shifts";
+import {
+  enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
+} from "./driver-shifts";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -2013,8 +2015,28 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         if (Array.isArray(t.clusterStops) && t.clusterStops.length > 0) tripClusterStops[t.tripId] = t.clusterStops;
       }
       const vcspBody = (body as any).vcsp || {};
-      const crewConfig = (body as any).crewConfig
+      // ── Parità col CSP standalone: la config turni guida della UI viene
+      // arricchita con gli stessi dati DB (cluster di stacco, autovetture
+      // aziendali, nodi di sosta) che riceve il CSP lanciato dall'area TG.
+      const operatorCfg = (body as any).crewConfig
         ?? { bds: { serviceType: (body as any).serviceType || "urbano" } };
+      const [allDbClusters, dbCompanyCars, crewRestPoints] = await Promise.all([
+        loadClustersForPython(),
+        loadCompanyCars(),
+        loadRestPointsForScenario((body as any).projectId ?? null),
+      ]);
+      const selClusterIds = Array.isArray(operatorCfg?.selectedClusterIds) ? (operatorCfg.selectedClusterIds as string[]) : null;
+      const crewDbClusters = selClusterIds && selClusterIds.length > 0
+        ? allDbClusters.filter((c: any) => selClusterIds.includes(c.id))
+        : allDbClusters;
+      const crewCompanyCars = typeof operatorCfg?.companyCars === "number" ? operatorCfg.companyCars : dbCompanyCars;
+      const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorCfg } = operatorCfg || {};
+      const crewConfig = {
+        ...restOperatorCfg,
+        clusters: crewDbClusters,
+        companyCars: crewCompanyCars,
+        restPoints: crewRestPoints,
+      };
       cpResult = await runVcspOrchestrator(req.log, {
         vsp: {
           trips: buildPyTrips(tripBlocks),
