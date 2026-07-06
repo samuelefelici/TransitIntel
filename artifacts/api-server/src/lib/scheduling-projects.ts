@@ -1043,6 +1043,68 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
 });
 
 /* ────────────────────────────────────────────────────────────
+ * Finestra di lavoro: import corse SCOPERTE da UDP "sorelle"
+ * (stesso progetto PS, stessa validità = stesso day_type +
+ * stessa categoria). Fonte: result.unassigned dello scenario TM
+ * in esercizio (o più recente) di ciascuna UDP sorella.
+ * ──────────────────────────────────────────────────────────── */
+async function uncoveredImportsForProject(spRow: any): Promise<any[]> {
+  if (!spRow?.validity_unit_id || !spRow?.planning_studio_project_id) return [];
+  const uR = await db.execute(sql`
+    SELECT day_type_id, category_id FROM ps_validity_units WHERE id = ${spRow.validity_unit_id}::uuid LIMIT 1`);
+  const unit: any = (uR as any).rows?.[0];
+  if (!unit) return [];
+  const sibR = await db.execute(sql`
+    SELECT u.id, u.name FROM ps_validity_units u
+     WHERE u.project_id = ${spRow.planning_studio_project_id}::uuid
+       AND u.id <> ${spRow.validity_unit_id}::uuid
+       AND u.day_type_id IS NOT DISTINCT FROM ${unit.day_type_id ?? null}::uuid
+       AND u.category_id IS NOT DISTINCT FROM ${unit.category_id ?? null}::uuid`);
+  const out: any[] = [];
+  for (const sib of ((sibR as any).rows ?? [])) {
+    try {
+      const scR = await db.execute(sql`
+        SELECT s.id, s.name, s.result->'unassigned' AS unassigned
+          FROM service_program_scenarios s
+          JOIN scheduling_projects sp ON sp.id = s.project_id
+         WHERE sp.validity_unit_id = ${sib.id}::uuid
+         ORDER BY COALESCE(s.is_operational, false) DESC, s.created_at DESC
+         LIMIT 1`);
+      const sc: any = (scR as any).rows?.[0];
+      const trips = Array.isArray(sc?.unassigned) ? sc.unassigned : [];
+      if (sc && trips.length > 0) {
+        out.push({ udpName: sib.name, scenarioId: sc.id, scenarioName: sc.name, trips });
+      }
+    } catch { /* scenario tables assenti o result senza unassigned: salta */ }
+  }
+  return out;
+}
+
+/* GET /scheduling/projects/:id/uncovered-imports */
+router.get("/scheduling/projects/:id/uncovered-imports", async (req: Request, res: Response): Promise<void> => {
+  const id = String(req.params.id || "");
+  if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+  const row = await loadProjectAccessible(id, req.user!.id);
+  if (!row) { res.status(404).json({ error: "Progetto non trovato" }); return; }
+  res.json({ sources: await uncoveredImportsForProject(row) });
+});
+
+/* GET /scheduling/vehicle-scenarios/:scenarioId/uncovered-imports
+   Variante per il workspace Turni Guida, che conosce lo scenario TM ma non
+   il progetto scheduling: risale al progetto dallo scenario. */
+router.get("/scheduling/vehicle-scenarios/:scenarioId/uncovered-imports", async (req: Request, res: Response): Promise<void> => {
+  const sid = String(req.params.scenarioId || "");
+  if (!UUID_RE.test(sid)) { res.status(400).json({ error: "ID non valido" }); return; }
+  const pR = await db.execute(sql`
+    SELECT project_id FROM service_program_scenarios WHERE id = ${sid}::uuid LIMIT 1`);
+  const pid: string | null = (pR as any).rows?.[0]?.project_id ?? null;
+  if (!pid) { res.json({ sources: [] }); return; }
+  const row = await loadProjectAccessible(pid, req.user!.id);
+  if (!row) { res.json({ sources: [] }); return; }
+  res.json({ sources: await uncoveredImportsForProject(row) });
+});
+
+/* ────────────────────────────────────────────────────────────
  * Membri del progetto (condivisione)
  * ──────────────────────────────────────────────────────────── */
 
