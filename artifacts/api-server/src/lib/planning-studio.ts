@@ -384,7 +384,8 @@ async function ensurePsTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS valid_from date,
         ADD COLUMN IF NOT EXISTS valid_to date,
         ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true,
-        ADD COLUMN IF NOT EXISTS service_label text
+        ADD COLUMN IF NOT EXISTS service_label text,
+        ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_validity ON ps_trips(project_id, valid_from, valid_to)`);
 
@@ -1574,6 +1575,15 @@ router.put("/planning-studio/projects/:id/calendars/:calId/dates", async (req, r
 
 router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
+  // AUTO-REFRESH del calendario aziendale: prima di rispondere risincronizza
+  // le categorie delle corse create/modificate dopo l'ultimo sync (senza
+  // bisogno di reimport GTFS) — così filtro e chip di Corse e TTD sono freschi.
+  try {
+    const { ensureCategoriesFresh } = await import("./planning-studio-validity");
+    await ensureCategoriesFresh(proj.id);
+  } catch (e: any) {
+    req.log?.warn?.({ err: e?.message }, "auto-refresh categorie fallito (non bloccante)");
+  }
   const routeId = req.query.routeId ? String(req.query.routeId) : null;
   const variantId = req.query.variantId ? String(req.query.variantId) : null;
   // Filtro per CATEGORIA del calendario aziendale (validità): corse a cui è
@@ -1616,6 +1626,24 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
       }
       for (const t of trips as any[]) t.dayTypeCodes = byTrip.get(t.id) ?? [];
     } catch { /* validità non configurata */ }
+    // Categorie del calendario aziendale per corsa (chip in Corse e TTD)
+    try {
+      const idsLiteral = `{${trips.map((t: any) => t.id).join(",")}}`;
+      const cv = await db.execute(sql`
+        SELECT cv.trip_id, c.id, c.code, c.name, c.color
+          FROM ps_trip_category_validity cv
+          JOIN ps_validity_categories c ON c.id = cv.category_id
+         WHERE cv.trip_id = ANY(${idsLiteral}::uuid[])
+         ORDER BY c.sort_order, c.name
+      `);
+      const catsByTrip = new Map<string, any[]>();
+      for (const row of ((cv as any).rows ?? []) as any[]) {
+        const a = catsByTrip.get(row.trip_id) ?? [];
+        a.push({ id: row.id, code: row.code, name: row.name, color: row.color });
+        catsByTrip.set(row.trip_id, a);
+      }
+      for (const t of trips as any[]) t.categories = catsByTrip.get(t.id) ?? [];
+    } catch { /* categorie non configurate */ }
   }
   res.json({ trips });
 });

@@ -1637,9 +1637,24 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           )}
           {selectedTripId && baseAxis && (() => {
             const g = baseGeoms.find(x => x.trip.id === selectedTripId);
+            const selTrip = visibleTrips.find(t => t.id === selectedTripId);
             return (
               <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl">
                 <span className="text-amber-300 font-semibold">Corsa: {g?.label ?? selectedTripId.slice(0, 8)}</span>
+                {/* card validità: categorie del calendario aziendale + giorni */}
+                {(selTrip?.categories ?? []).map(c => (
+                  <span key={c.id} className="px-1.5 py-0.5 rounded text-[10px] font-semibold border"
+                    style={{ color: c.color ?? "#94a3b8", borderColor: `${c.color ?? "#94a3b8"}66`, background: `${c.color ?? "#94a3b8"}1a` }}
+                    title="Categoria dal calendario aziendale">
+                    {c.name}
+                  </span>
+                ))}
+                {(selTrip?.dayTypeCodes?.length ?? 0) > 0 && (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono border border-slate-600 text-slate-300"
+                    title="Giorni di validità (day-type)">
+                    {selTrip!.dayTypeCodes!.map(c => c === "festivo" ? "dom" : c.slice(0, 3)).join("·")}
+                  </span>
+                )}
                 <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>
                 <button
                   onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}

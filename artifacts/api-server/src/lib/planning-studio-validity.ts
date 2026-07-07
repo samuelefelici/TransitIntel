@@ -1175,7 +1175,7 @@ const SEED_VALIDITY_CATEGORIES = [
 
 export async function syncValidityCategoriesFromProfile(
   projectId: string,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; onlyTripIds?: string[] } = {},
 ): Promise<{ categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number; from: string | null; to: string | null }> {
   const dryRun = !!opts.dryRun;
   const empty = { categoryDates: 0, tripCategoryUpserts: 0, tripsWithCategories: 0, from: null, to: null };
@@ -1203,7 +1203,13 @@ export async function syncValidityCategoriesFromProfile(
            to_char(valid_to,   'YYYY-MM-DD') AS valid_to
       FROM ps_trips WHERE project_id = ${projectId}::uuid AND is_active = true
   `);
-  const trips: any[] = (tripsR as any).rows ?? [];
+  let trips: any[] = (tripsR as any).rows ?? [];
+  // Sync MIRATO (auto-refresh): tocca solo le corse indicate — le assegnazioni
+  // delle altre (incluse eventuali curatele manuali) restano intatte.
+  if (opts.onlyTripIds) {
+    const only = new Set(opts.onlyTripIds);
+    trips = trips.filter((t) => only.has(t.id));
+  }
   if (trips.length === 0 && cals.length === 0) return empty;
 
   const exR = await db.execute(sql`
@@ -1391,7 +1397,85 @@ export async function syncValidityCategoriesFromProfile(
     }
   }
 
+  if (!dryRun) await touchCategoriesSyncedAt(projectId);
+
   return { categoryDates, tripCategoryUpserts, tripsWithCategories, from, to };
+}
+
+/* ════════════════════════════════════════════════════════════
+ *  Auto-refresh categorie (usato dalla lista corse di Corse e TTD)
+ *  ────────────────────────────────────────────────────────────
+ *  Il calendario aziendale deve restare aggiornato SENZA reimport GTFS:
+ *  un marcatore per progetto (ps_calendar_profiles.categories_synced_at)
+ *  registra l'ultimo sync; alla lettura delle corse si risincronizzano
+ *  SOLO le corse create/modificate dopo (calendario/date/eccezioni) — le
+ *  assegnazioni delle altre corse, incluse le curatele manuali, restano.
+ * ════════════════════════════════════════════════════════════ */
+
+let syncMarkerColumnReady = false;
+async function ensureSyncMarkerColumn(): Promise<void> {
+  if (syncMarkerColumnReady) return;
+  await db.execute(sql`
+    ALTER TABLE IF EXISTS ps_calendar_profiles
+      ADD COLUMN IF NOT EXISTS categories_synced_at timestamptz
+  `);
+  syncMarkerColumnReady = true;
+}
+
+async function touchCategoriesSyncedAt(projectId: string): Promise<void> {
+  try {
+    await ensureSyncMarkerColumn();
+    await db.execute(sql`
+      INSERT INTO ps_calendar_profiles (project_id, categories_synced_at)
+      VALUES (${projectId}::uuid, now())
+      ON CONFLICT (project_id) DO UPDATE SET categories_synced_at = now()
+    `);
+  } catch (e: any) {
+    console.warn("[validity] marcatore sync categorie non aggiornabile:", e?.message || e);
+  }
+}
+
+export async function ensureCategoriesFresh(projectId: string): Promise<void> {
+  await ensureSyncMarkerColumn();
+  const mR = await db.execute<any>(sql`
+    SELECT categories_synced_at FROM ps_calendar_profiles
+     WHERE project_id = ${projectId}::uuid LIMIT 1
+  `);
+  const syncedAt: string | null = mR.rows?.[0]?.categories_synced_at ?? null;
+
+  if (syncedAt == null) {
+    // Mai sincronizzato: riempi solo i BUCHI (corse senza alcuna categoria),
+    // senza toccare le assegnazioni esistenti (possibili curatele manuali).
+    const gapsR = await db.execute<any>(sql`
+      SELECT t.id FROM ps_trips t
+       WHERE t.project_id = ${projectId}::uuid AND COALESCE(t.is_active, true) = true
+         AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity cv WHERE cv.trip_id = t.id)
+    `);
+    const gaps = (gapsR.rows ?? []).map((r: any) => r.id);
+    if (gaps.length) await syncValidityCategoriesFromProfile(projectId, { onlyTripIds: gaps });
+    else await touchCategoriesSyncedAt(projectId);
+    return;
+  }
+
+  // Calendari (pattern/date di servizio) cambiati dopo l'ultimo sync →
+  // possono spostare i giorni di TUTTE le corse: sync completo.
+  const calR = await db.execute<any>(sql`
+    SELECT max(updated_at) AS m FROM ps_calendars WHERE project_id = ${projectId}::uuid
+  `);
+  const calMax = calR.rows?.[0]?.m ?? null;
+  if (calMax && new Date(calMax) > new Date(syncedAt)) {
+    await syncValidityCategoriesFromProfile(projectId);
+    return;
+  }
+
+  // Corse nuove o modificate (calendario/validità/eccezioni) → sync mirato.
+  const stR = await db.execute<any>(sql`
+    SELECT id FROM ps_trips
+     WHERE project_id = ${projectId}::uuid
+       AND GREATEST(created_at, COALESCE(updated_at, created_at)) > ${syncedAt}::timestamptz
+  `);
+  const stale = (stR.rows ?? []).map((r: any) => r.id);
+  if (stale.length) await syncValidityCategoriesFromProfile(projectId, { onlyTripIds: stale });
 }
 
 /* ════════════════════════════════════════════════════════════

@@ -218,6 +218,9 @@ router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Pr
 
   const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
   if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
+  // marca le corse come modificate: l'auto-refresh delle categorie del
+  // calendario aziendale risincronizza solo le corse toccate dopo l'ultimo sync
+  parts.push(sql`updated_at = now()`);
   const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
@@ -271,6 +274,9 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
   const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
   if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
+  // marca le corse come modificate: l'auto-refresh delle categorie del
+  // calendario aziendale risincronizza solo le corse toccate dopo l'ultimo sync
+  parts.push(sql`updated_at = now()`);
   const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
@@ -546,6 +552,8 @@ router.post("/planning-studio/projects/:id/trips/:tripId/exceptions", async (req
       SET exception_type = EXCLUDED.exception_type,
           reason = EXCLUDED.reason
   `);
+  // le eccezioni cambiano i giorni di circolazione → categorie da risincronizzare
+  await db.execute(sql`UPDATE ps_trips SET updated_at = now() WHERE id = ${req.params.tripId}::uuid`);
   await logActivity(req.params.id, userId, "trip.exception.add", "trip", req.params.tripId, { date, exceptionType });
   res.status(201).json({ ok: true });
 });
@@ -564,6 +572,7 @@ router.delete("/planning-studio/projects/:id/trips/:tripId/exceptions/:date", as
     DELETE FROM ps_trip_exceptions
      WHERE trip_id = ${req.params.tripId}::uuid AND date = ${date}
   `);
+  await db.execute(sql`UPDATE ps_trips SET updated_at = now() WHERE id = ${req.params.tripId}::uuid`);
   await logActivity(req.params.id, userId, "trip.exception.remove", "trip", req.params.tripId, { date });
   res.json({ ok: true });
 });
