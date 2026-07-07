@@ -321,6 +321,13 @@ export async function createPsVariant(projectId: string, routeId: string, input:
 export async function getPsVariant(projectId: string, variantId: string): Promise<{ variant: PsVariant; stops: PsVariantStop[]; shape: PsShape | null }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/variants/${variantId}`);
 }
+/** Tutte le varianti del progetto con la sequenza fermate in UNA chiamata (per il TTD). */
+export async function listPsVariantsWithStops(projectId: string): Promise<{ variant: PsVariant; stops: PsVariantStop[] }[]> {
+  const r = await apiFetch<{ variants: { variant: PsVariant; stops: PsVariantStop[] }[] }>(
+    `/api/planning-studio/projects/${projectId}/variants-with-stops`
+  );
+  return r.variants;
+}
 export async function updatePsVariant(projectId: string, variantId: string, patch: Partial<PsVariant>): Promise<PsVariant> {
   const r = await apiFetch<{ variant: PsVariant }>(
     `/api/planning-studio/projects/${projectId}/variants/${variantId}`,
