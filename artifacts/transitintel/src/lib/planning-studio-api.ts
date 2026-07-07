@@ -590,6 +590,30 @@ export async function batchCreatePsTrips(
   );
 }
 
+/* ─── Unifica corse gemelle ─── */
+export interface MergeTwinGroup {
+  primaryId: string; removeIds: string[];
+  variantId: string; headsign: string | null; departure: string; count: number;
+  unionWeekdays: boolean[]; unionWeekdaysLabel: string;
+  unionStart: string | null; unionEnd: string | null; anyCal: boolean;
+  validFrom: string | null; validTo: string | null;
+}
+export interface MergeTwinsResult {
+  dryRun: boolean; groups: MergeTwinGroup[];
+  tripsBefore: number; tripsAfter: number; removed: number;
+}
+/** Anteprima (dryRun) o applica la fusione delle corse gemelle (stessa variante,
+ *  stessi orari a tutte le fermate, stesso headsign) in una sola corsa con
+ *  validità unione + calendario-unione. */
+export async function mergePsTwins(
+  projectId: string, opts?: { dryRun?: boolean; routeId?: string },
+): Promise<MergeTwinsResult> {
+  const dry = opts?.dryRun ? "?dryRun=1" : "";
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/merge-twins${dry}`, {
+    method: "POST", body: JSON.stringify({ routeId: opts?.routeId }),
+  });
+}
+
 /* ─── Import GTFS ─── */
 
 export interface PsImportCounts {

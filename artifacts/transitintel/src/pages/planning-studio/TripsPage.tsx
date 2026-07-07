@@ -18,6 +18,7 @@ import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
+  Pencil, Copy, Merge,
 } from "lucide-react";
 import {
   getPsProject,
@@ -27,6 +28,7 @@ import {
   listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, type PsTrip,
   getPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
+  mergePsTwins, type MergeTwinsResult,
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
@@ -615,6 +617,35 @@ export default function PlanningStudioTripsPage() {
     () => filteredTrips.find(t => t.id === detailTripId) ?? null,
     [detailTripId, filteredTrips],
   );
+  const [copyTripId, setCopyTripId] = useState<string | null>(null);
+  const copyTrip = useMemo(
+    () => filteredTrips.find(t => t.id === copyTripId) ?? null,
+    [copyTripId, filteredTrips],
+  );
+  /* Unifica corse gemelle: anteprima (dryRun) + applica */
+  const [mergePreview, setMergePreview] = useState<MergeTwinsResult | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  async function openMergePreview() {
+    setMergeBusy(true);
+    try {
+      const r = await mergePsTwins(projectId, { dryRun: true, routeId: routeId || undefined });
+      if (r.removed === 0) { toast.info("Nessuna corsa gemella", { description: "Non ci sono corse identiche (stesso percorso, orari e headsign) da unificare." }); return; }
+      setMergePreview(r);
+    } catch (e: any) { toast.error("Errore anteprima", { description: e?.message }); }
+    finally { setMergeBusy(false); }
+  }
+  async function applyMerge() {
+    setMergeBusy(true);
+    try {
+      const r = await mergePsTwins(projectId, { dryRun: false, routeId: routeId || undefined });
+      toast.success("Corse gemelle unificate", { description: `${r.removed} corse fuse · ${r.tripsAfter} corse totali` });
+      setMergePreview(null);
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "calendars"] });
+    } catch (e: any) { toast.error("Errore unificazione", { description: e?.message }); }
+    finally { setMergeBusy(false); }
+  }
 
   /* ─── Render ─── */
   const project = projectQ.data;
@@ -720,6 +751,14 @@ export default function PlanningStudioTripsPage() {
         >
           <Timer className="w-3.5 h-3.5" /> Genera a cadenza
         </button>
+        <button
+          onClick={openMergePreview}
+          disabled={mergeBusy}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors disabled:opacity-50"
+          title="Unifica le corse gemelle (stessa variante, stessi orari a tutte le fermate, stesso headsign) in una sola corsa con validità unione. Anteprima prima di applicare."
+        >
+          {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
+        </button>
 
         <div className="flex-1" />
 
@@ -743,13 +782,18 @@ export default function PlanningStudioTripsPage() {
             >
               <PowerOff className="w-3 h-3" /> Disattiva
             </button>
+            {selected.size === 1 && (
+              <button
+                onClick={() => setCopyTripId([...selected][0])}
+                disabled={bulkMut.isPending}
+                className="px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1"
+                title="Crea una copia della corsa: scegli orario di partenza, periodo, giorni e categorie"
+              >
+                <Copy className="w-3 h-3" /> Crea copia
+              </button>
+            )}
             <BulkValiditySetter
               onApply={(vf, vt) => bulkMut.mutate({ patch: { validFrom: vf || null, validTo: vt || null } })}
-              disabled={bulkMut.isPending}
-            />
-            <BulkCalendarSetter
-              calendars={calendars}
-              onApply={(cid) => bulkMut.mutate({ patch: { calendarId: cid || null } })}
               disabled={bulkMut.isPending}
             />
             <BulkDaysCatsSetter
@@ -954,9 +998,9 @@ export default function PlanningStudioTripsPage() {
                       <button
                         onClick={() => setDetailTripId(t.id)}
                         className="p-1 rounded text-cyan-400 hover:bg-cyan-500/10"
-                        title="Dettaglio + eccezioni"
+                        title="Modifica corsa: giorni, validità, categorie, eccezioni, copia"
                       >
-                        <CalendarIcon className="w-3.5 h-3.5" />
+                        <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => {
@@ -982,6 +1026,69 @@ export default function PlanningStudioTripsPage() {
           trip={detailTrip}
           onClose={() => setDetailTripId(null)}
           onChange={() => qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] })}
+          onRequestCopy={() => { setCopyTripId(detailTrip.id); setDetailTripId(null); }}
+          onToggleActive={() => updateMut.mutate({ id: detailTrip.id, patch: { isActive: !detailTrip.isActive } })}
+          onDelete={() => { if (confirm("Eliminare questa corsa?")) { deleteMut.mutate(detailTrip.id); setDetailTripId(null); } }}
+        />
+      )}
+      {/* ─── Dialog: anteprima Unifica corse gemelle ─── */}
+      {mergePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !mergeBusy && setMergePreview(null)}>
+          <div className="w-full max-w-2xl mx-4 rounded-xl border border-slate-600 bg-slate-950 shadow-2xl max-h-[88vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Merge className="w-4 h-4 text-cyan-400" /> Unifica corse gemelle — anteprima
+              </h3>
+              <button onClick={() => !mergeBusy && setMergePreview(null)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-800 text-xs text-slate-300">
+              Sto per fondere <b className="text-cyan-300">{mergePreview.groups.length}</b> gruppi di corse identiche:
+              <b className="text-cyan-300"> {mergePreview.tripsBefore}</b> corse →
+              <b className="text-emerald-300"> {mergePreview.tripsAfter}</b> ({mergePreview.removed} rimosse).
+              Ogni corsa fusa prende la <b>validità unione</b> e un <b>calendario-unione</b> (i giorni sommati). Reversibile ri-generando/re-importando.
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              <table className="w-full text-[11px]">
+                <thead className="text-slate-500">
+                  <tr><th className="p-1.5 text-left">Partenza</th><th className="p-1.5 text-left">Headsign</th><th className="p-1.5 text-center">Corse</th><th className="p-1.5 text-left">Giorni risultanti</th><th className="p-1.5 text-left">Periodo</th></tr>
+                </thead>
+                <tbody>
+                  {mergePreview.groups.map((g, i) => (
+                    <tr key={i} className="border-t border-slate-800/60">
+                      <td className="p-1.5 font-mono text-slate-200">{g.departure || "—"}</td>
+                      <td className="p-1.5 text-slate-400 truncate max-w-[160px]">{g.headsign || "—"}</td>
+                      <td className="p-1.5 text-center"><span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">{g.count} → 1</span></td>
+                      <td className="p-1.5 text-emerald-300 font-medium">{g.unionWeekdaysLabel || (g.anyCal ? "—" : "(nessun calendario)")}</td>
+                      <td className="p-1.5 text-slate-500 font-mono">{g.unionStart ? `${g.unionStart.slice(5)}→${(g.unionEnd ?? "").slice(5)}` : "illimitato"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800">
+              <button onClick={() => !mergeBusy && setMergePreview(null)} className="px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">Annulla</button>
+              <button onClick={applyMerge} disabled={mergeBusy}
+                className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
+                {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica {mergePreview.removed} corse
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Dialog: Crea copia corsa (orario, periodo, giorni, categorie) ─── */}
+      {copyTrip && (
+        <CopyTripDialog
+          projectId={projectId}
+          trip={copyTrip}
+          dayTypes={dayTypesQ.data ?? []}
+          categories={categoriesQ.data ?? []}
+          onClose={() => setCopyTripId(null)}
+          onDone={() => {
+            setCopyTripId(null); setSelected(new Set());
+            qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+            qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+          }}
         />
       )}
 
@@ -1506,50 +1613,156 @@ function BulkDaysCatsSetter({ dayTypes, categories, disabled, onApplyDays, onApp
   );
 }
 
-/* ─── Bulk calendar setter ─── */
-function BulkCalendarSetter({ calendars, onApply, disabled }: {
-  calendars: PsCalendar[];
-  onApply: (calendarId: string) => void;
-  disabled?: boolean;
+/* ─── Dialog: crea una copia della corsa (orario, periodo, giorni, categorie) ─── */
+function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone }: {
+  projectId: string;
+  trip: PsTrip;
+  dayTypes: PsDayType[];
+  categories: PsValidityCategory[];
+  onClose: () => void;
+  onDone: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const stQ = useQuery({
+    queryKey: ["ps", projectId, "trip-stop-times", trip.id],
+    queryFn: () => getPsStopTimes(projectId, trip.id),
+  });
+  const baseDep = stQ.data?.[0]?.departureTime ?? null;
+  const [dep, setDep] = useState("");
+  useEffect(() => { if (baseDep) setDep(baseDep.slice(0, 5)); }, [baseDep]);
+  const [vf, setVf] = useState(trip.validFrom || "");
+  const [vt, setVt] = useState(trip.validTo || "");
+  const [dtIds, setDtIds] = useState<Set<string>>(new Set());
+  const [catIds, setCatIds] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const dtKinds = useMemo(() => classifyDayTypes(dayTypes), [dayTypes]);
+
+  async function create() {
+    const sts = stQ.data ?? [];
+    if (sts.length < 2) { toast.error("La corsa non ha orari da copiare"); return; }
+    const target = dep.trim();
+    if (!/^\d{1,2}:\d{2}$/.test(target)) { toast.error("Orario di partenza non valido (HH:MM)"); return; }
+    setBusy(true);
+    try {
+      // trasla l'intera corsa così la prima partenza = orario scelto
+      const shift = genToSec(`${target}:00`) - genToSec(sts[0].departureTime);
+      const stopTimes = sts.map(st => ({
+        stopId: st.stopId,
+        arrivalTime: genSecToHms(genToSec(st.arrivalTime) + shift),
+        departureTime: genSecToHms(genToSec(st.departureTime) + shift),
+        timepoint: st.timepoint,
+      }));
+      // maschera settimanale dai giorni scelti (così i bollini sono coerenti)
+      const weekdays = dtIds.size > 0
+        ? Array.from({ length: 7 }, (_, i) => { const dt = dtKinds[wdTypicalCode(i)]; return !!dt && dtIds.has(dt.id); })
+        : undefined;
+      const res = await batchCreatePsTrips(projectId, [{
+        routeId: trip.routeId, variantId: trip.variantId,
+        calendarId: trip.calendarId ?? null,
+        headsign: trip.headsign ?? null, shortName: trip.shortName ?? null,
+        direction: trip.direction, serviceLabel: trip.serviceLabel ?? null,
+        ...(weekdays ? { attributes: { weekdays } } : {}),
+        stopTimes,
+      } as PsBatchTripInput]);
+      const newId = res.tripIds?.[0];
+      if (!newId) throw new Error("creazione copia non riuscita");
+      if (vf || vt) await updatePsTrip(projectId, newId, { validFrom: vf || null, validTo: vt || null });
+      if (dtIds.size > 0) await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [newId], dayTypeIds: [...dtIds], isValid: true });
+      if (catIds.size > 0) await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [newId], categoryIds: [...catIds], mode: "replace" });
+      toast.success("Copia creata", { description: `Partenza ${target}${vf || vt ? ` · ${vf || "…"}→${vt || "…"}` : ""}` });
+      onDone();
+    } catch (e: any) {
+      toast.error("Errore nella copia", { description: e?.message });
+    } finally { setBusy(false); }
+  }
+
   return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        disabled={disabled}
-        className="px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white flex items-center gap-1"
-      >
-        <CalendarIcon className="w-3 h-3" /> Calendario
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded p-1 z-20 min-w-[180px]">
-          <button
-            onClick={() => { onApply(""); setOpen(false); }}
-            className="w-full text-left px-2 py-1 text-xs rounded hover:bg-slate-700 text-slate-400"
-          >
-            (rimuovi calendario)
-          </button>
-          {calendars.map(c => (
-            <button key={c.id}
-              onClick={() => { onApply(c.id); setOpen(false); }}
-              className="w-full text-left px-2 py-1 text-xs rounded hover:bg-slate-700"
-            >
-              {c.code} {c.name ? `· ${c.name}` : ""}
-            </button>
-          ))}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !busy && onClose()}>
+      <div className="w-full max-w-lg mx-4 rounded-xl border border-cyan-500/30 bg-slate-950 shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+            <Copy className="w-4 h-4 text-cyan-400" /> Crea copia della corsa
+          </h3>
+          <button onClick={() => !busy && onClose()} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
         </div>
-      )}
+        <div className="p-4 space-y-4 text-sm">
+          <div className="text-[11px] text-slate-500">
+            Da: <span className="text-slate-300">{trip.headsign || trip.shortName || trip.id.slice(0, 8)}</span>
+            {baseDep && <> · partenza originale <span className="font-mono text-slate-300">{baseDep.slice(0, 5)}</span></>}
+          </div>
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Ora di partenza della copia</label>
+            <input type="time" value={dep} onChange={e => setDep(e.target.value)}
+              className="w-40 px-2 py-1.5 rounded bg-slate-800 border border-slate-700 font-mono" />
+            <p className="text-[10px] text-slate-500 mt-1">Tutta la corsa viene traslata così la prima partenza è questa.</p>
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Periodo — da</label>
+              <input type="date" value={vf} onChange={e => setVf(e.target.value)}
+                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
+            </div>
+            <div className="flex-1">
+              <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Periodo — a</label>
+              <input type="date" value={vt} onChange={e => setVt(e.target.value)}
+                className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Giorni di validità</label>
+            <div className="flex flex-wrap gap-1.5">
+              {dayTypes.map(dt => {
+                const on = dtIds.has(dt.id);
+                return (
+                  <button key={dt.id} type="button"
+                    onClick={() => setDtIds(s => { const n = new Set(s); n.has(dt.id) ? n.delete(dt.id) : n.add(dt.id); return n; })}
+                    className={`text-[11px] px-2 py-1 rounded border ${on ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" : "bg-slate-800 border-slate-700 text-slate-400"}`}>
+                    {dt.name}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">Nessuno = eredita i giorni della corsa originale.</p>
+          </div>
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Categorie (calendario aziendale)</label>
+            <div className="flex flex-wrap gap-1.5">
+              {categories.map(c => {
+                const on = catIds.has(c.id);
+                return (
+                  <button key={c.id} type="button"
+                    onClick={() => setCatIds(s => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })}
+                    className="text-[11px] px-2 py-1 rounded border"
+                    style={{ borderColor: on ? (c.color || "#3b82f6") : "#334155", background: on ? `${c.color || "#3b82f6"}22` : "transparent", color: on ? undefined : "#94a3b8" }}>
+                    {c.name}
+                  </button>
+                );
+              })}
+              {categories.length === 0 && <span className="text-[11px] text-slate-500">Nessuna categoria definita.</span>}
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">Nessuna = vale in ogni periodo.</p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800">
+          <button onClick={() => !busy && onClose()} className="px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">Annulla</button>
+          <button onClick={create} disabled={busy || stQ.isLoading}
+            className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />} Crea copia
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 /* ─── Drawer dettaglio corsa con validità + eccezioni ─── */
-function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
+function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, onToggleActive, onDelete }: {
   projectId: string;
   trip: PsTrip;
   onClose: () => void;
   onChange: () => void;
+  onRequestCopy: () => void;
+  onToggleActive: () => void;
+  onDelete: () => void;
 }) {
   const qc = useQueryClient();
   const exQ = useQuery({
@@ -1698,11 +1911,31 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange }: {
       <div className="flex-1 bg-black/40" onClick={onClose} />
       <div className="w-[420px] h-full bg-slate-900 border-l border-slate-800 flex flex-col shadow-2xl">
         <div className="p-4 border-b border-slate-800 flex items-center gap-2">
-          <CalendarIcon className="w-4 h-4 text-cyan-400" />
-          <h3 className="font-semibold text-sm">Dettaglio corsa</h3>
+          <Pencil className="w-4 h-4 text-cyan-400" />
+          <h3 className="font-semibold text-sm">Modifica corsa</h3>
           <div className="flex-1" />
           <button onClick={onClose} className="p-1 rounded hover:bg-slate-800">
             <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Azioni rapide (stessi strumenti della barra in alto, per la corsa) */}
+        <div className="px-4 py-2 border-b border-slate-800 flex items-center gap-1.5">
+          <button onClick={onRequestCopy}
+            className="px-2 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs flex items-center gap-1"
+            title="Crea una copia: scegli orario, periodo, giorni e categorie">
+            <Copy className="w-3 h-3" /> Crea copia
+          </button>
+          <button onClick={onToggleActive}
+            className={`px-2 py-1 rounded text-xs flex items-center gap-1 ${trip.isActive ? "bg-slate-700 hover:bg-slate-600 text-white" : "bg-emerald-600 hover:bg-emerald-500 text-white"}`}
+            title={trip.isActive ? "Disattiva la corsa" : "Attiva la corsa"}>
+            {trip.isActive ? <><PowerOff className="w-3 h-3" /> Disattiva</> : <><Power className="w-3 h-3" /> Attiva</>}
+          </button>
+          <div className="flex-1" />
+          <button onClick={onDelete}
+            className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-xs flex items-center gap-1"
+            title="Elimina la corsa">
+            <Trash2 className="w-3 h-3" /> Elimina
           </button>
         </div>
 
