@@ -470,6 +470,32 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
       tripIds.push(tripId);
     }
   });
+
+  // EREDITÀ VALIDITÀ: le corse generate dal grafico (copia/cadenzamento)
+  // ereditano day-type (feriale/sabato/festivo) e macro-categorie del
+  // calendario aziendale dalla corsa base — altrimenti nascono "senza
+  // validità" e spariscono da tutte le viste filtrate (Corse, TTD, stampe).
+  // Best-effort fuori transazione: le tabelle possono non esistere ancora.
+  for (let i = 0; i < trips.length; i++) {
+    const baseId = String(trips[i]?.baseTripId ?? "");
+    if (!UUID_RE.test(baseId)) continue;
+    try {
+      const own = await db.execute(sql`
+        SELECT 1 FROM ps_trips WHERE id = ${baseId}::uuid AND project_id = ${projId}::uuid LIMIT 1`);
+      if (!((own as any).rows?.length)) continue;
+      await db.execute(sql`
+        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+        SELECT ${tripIds[i]}::uuid, day_type_id, is_valid
+          FROM ps_trip_day_validity WHERE trip_id = ${baseId}::uuid
+        ON CONFLICT DO NOTHING`);
+      await db.execute(sql`
+        INSERT INTO ps_trip_category_validity (trip_id, category_id)
+        SELECT ${tripIds[i]}::uuid, category_id
+          FROM ps_trip_category_validity WHERE trip_id = ${baseId}::uuid
+        ON CONFLICT DO NOTHING`);
+    } catch { /* validità non configurata sul progetto: nessuna eredità */ }
+  }
+
   await logActivity(req.params.id, userId, "trip.batch_create", "trip", null, { count: tripIds.length });
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
