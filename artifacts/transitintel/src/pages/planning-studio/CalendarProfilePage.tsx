@@ -84,14 +84,31 @@ export default function CalendarProfilePage() {
         summerPeriod: null,
         extraHolidays: profile.extraHolidays,
       };
-      return apiFetch(`/api/planning-studio/projects/${projectId}/calendar-profile`, {
+      return apiFetch<{
+        ok: boolean;
+        sync?: { categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number } | null;
+        syncError?: string | null;
+      }>(`/api/planning-studio/projects/${projectId}/calendar-profile`, {
         method: "PUT", body: JSON.stringify(normalized),
       });
     },
-    onSuccess: () => {
-      toast.success("Calendario aziendale salvato");
+    onSuccess: (r) => {
+      if (r?.sync) {
+        toast.success("Calendario aziendale salvato", {
+          description: `Categorie risincronizzate: ${r.sync.categoryDates} date classificate · ${r.sync.tripsWithCategories} corse aggiornate.`,
+        });
+      } else {
+        toast.success("Calendario aziendale salvato", {
+          description: r?.syncError ? `Attenzione: sync categorie non riuscita (${r.syncError})` : undefined,
+        });
+      }
       setDraft(null);
       qc.invalidateQueries({ queryKey: ["ps", projectId, "day-classification"] });
+      // il sync ha ricalcolato categorie-per-data e corsa→categoria: aggiorna
+      // filtro/colonna Categorie in Corse, filtro categorie del TTD e liste
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", "validity-categories"] });
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });

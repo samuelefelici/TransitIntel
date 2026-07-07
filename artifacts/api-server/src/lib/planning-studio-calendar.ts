@@ -98,7 +98,22 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
         extra_holidays = EXCLUDED.extra_holidays,
         updated_at = now()
     `);
-    res.json({ ok: true, profile: { closedPeriods, summerPeriod, extraHolidays } });
+    // RISINCRONIZZA subito le categorie dal profilo appena salvato: senza
+    // questo passo il calendario categorie-per-data (ps_validity_category_
+    // calendar) e le assegnazioni corsa→categoria (ps_trip_category_validity)
+    // restavano sulla classificazione VECCHIA finché non si rilanciava a mano
+    // l'auto-import — e il filtro corse per categoria usava periodi superati.
+    // Import dinamico per evitare il ciclo (validity importa da questo modulo).
+    let sync: { categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number } | null = null;
+    let syncError: string | null = null;
+    try {
+      const { syncValidityCategoriesFromProfile } = await import("./planning-studio-validity");
+      sync = await syncValidityCategoriesFromProfile(id);
+    } catch (e: any) {
+      syncError = e?.message ?? String(e);
+      console.error("[calendar-profile] sync categorie fallito:", syncError);
+    }
+    res.json({ ok: true, profile: { closedPeriods, summerPeriod, extraHolidays }, sync, syncError });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
