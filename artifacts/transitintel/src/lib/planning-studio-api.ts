@@ -510,6 +510,18 @@ export async function bulkDeletePsTrips(
     { method: "POST", body: JSON.stringify({ tripIds }) },
   );
 }
+/** Crea una Corsa ZERO (prototipo) per ogni percorso (variante) con ≥2 fermate
+ *  e nessuna corsa. Serve a ripartire con «Genera a cadenza» quando un progetto
+ *  ha i percorsi ma non le corse (es. GTFS importato e corse cancellate). */
+export async function prototypeMissingPsTrips(
+  projectId: string,
+  opts: { variantIds?: string[]; speedKmh?: number; dwellSec?: number; dayTypeCode?: string } = {},
+): Promise<{ ok: boolean; created: number; tripIds: string[]; variants: { variantId: string; name: string; tripId: string; stops: number; giroMin: number }[] }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/prototype-missing`,
+    { method: "POST", body: JSON.stringify(opts) },
+  );
+}
 export async function listPsTripExceptions(projectId: string, tripId: string): Promise<PsTripException[]> {
   const r = await apiFetch<{ exceptions: PsTripException[] }>(
     `/api/planning-studio/projects/${projectId}/trips/${tripId}/exceptions`,

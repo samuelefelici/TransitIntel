@@ -18,14 +18,14 @@ import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
-  Pencil, Copy, Merge,
+  Pencil, Copy, Merge, Wand2,
 } from "lucide-react";
 import {
   getPsProject,
   listPsRoutes, type PsRoute,
   listPsVariants, type PsVariant,
   listPsCalendars, type PsCalendar,
-  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, type PsTrip,
+  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, prototypeMissingPsTrips, type PsTrip,
   getPsStopTimes, setPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
   mergePsTwins, type MergeTwinsResult,
@@ -547,6 +547,26 @@ export default function PlanningStudioTripsPage() {
     onError: (e: any) => toast.error(e?.message || "Errore eliminazione"),
   });
 
+  /* ─── Prototipi automatici per i percorsi senza corse ───
+   * Crea una Corsa ZERO per ogni variante con ≥2 fermate e nessuna corsa, così
+   * si può ripartire con «Genera a cadenza». Se è filtrata una singola variante
+   * agisce solo su quella; altrimenti su tutto il progetto. */
+  const protoMissingMut = useMutation({
+    mutationFn: () => prototypeMissingPsTrips(projectId, variantId ? { variantIds: [variantId] } : {}),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      if (r.created === 0) {
+        toast.info("Nessun prototipo creato", { description: "Tutti i percorsi (con ≥2 fermate) hanno già almeno una corsa." });
+      } else {
+        toast.success(`✅ ${r.created} prototipi creati`, {
+          description: "Una Corsa ZERO per ogni percorso che era senza corse. Ora usa «Genera a cadenza» per crearne le corse reali.",
+          duration: 8000,
+        });
+      }
+    },
+    onError: (e: any) => toast.error("Creazione prototipi fallita", { description: e?.message }),
+  });
+
   /* ─── Giorni + categorie di TUTTE le corse visibili (colonne di riga) ─── */
   const tripsValQ = useQuery({
     queryKey: ["ps", projectId, "trips", "validity-bulk", filteredTrips.map(t => t.id).join(",")],
@@ -758,6 +778,22 @@ export default function PlanningStudioTripsPage() {
           title="Unifica le corse gemelle (stessa variante, stessi orari a tutte le fermate, stesso headsign) in una sola corsa con validità unione. Anteprima prima di applicare."
         >
           {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
+        </button>
+        <button
+          onClick={() => {
+            const scope = variantId ? "il percorso selezionato" : "TUTTI i percorsi del progetto";
+            if (!confirm(
+              `Creare un PROTOTIPO (Corsa ZERO) per ${scope} che non ha ancora corse?\n\n` +
+              `Per ogni percorso senza corse viene creata una corsa senza orario reale, ` +
+              `con i tempi di percorrenza calcolati dalle distanze. Serve come template per «Genera a cadenza».`
+            )) return;
+            protoMissingMut.mutate();
+          }}
+          disabled={protoMissingMut.isPending}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50"
+          title="Crea una Corsa ZERO (prototipo) per ogni percorso senza corse: utile quando hai i percorsi ma non le corse (es. GTFS importato e corse cancellate). Poi genera le corse reali con «Genera a cadenza»."
+        >
+          {protoMissingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />} Prototipi mancanti
         </button>
 
         <div className="flex-1" />
