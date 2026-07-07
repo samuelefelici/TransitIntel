@@ -187,6 +187,7 @@ export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] { 
       for (const t of rip.trips) {
         const tip: string[] = [
           `${t.routeName || t.routeId}${t.headsign ? ` → ${t.headsign}` : ""}`,
+          ...(t.variantCode ? [`Percorso ${t.variantCode}`] : []),
           `${t.departureTime || minToTime(t.departureMin)} → ${t.arrivalTime || minToTime(t.arrivalMin)}`,
         ];
         if (t.firstStopName) tip.push(`Da: ${t.firstStopName}`);

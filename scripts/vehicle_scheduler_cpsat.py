@@ -2317,6 +2317,7 @@ def chains_to_shifts(
                 downsized=is_down,
                 original_vehicle=t.required_vehicle if is_down else None,
                 on_demand=getattr(t, "on_demand", False),
+                variant_code=getattr(t, "variant_code", ""),
             ))
             if is_down:
                 vs.downsized_trips += 1

@@ -18,6 +18,8 @@ export interface RipresaTrip {
   tripId: string;
   routeId: string;
   routeName: string;
+  /** codice percorso (ps_route_variants.code): relazione corsa→percorso→linea */
+  variantCode?: string | null;
   headsign: string | null;
   departureTime: string;
   arrivalTime: string;

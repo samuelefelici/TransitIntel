@@ -110,6 +110,9 @@ function shiftsToBars(
       }
 
       const tooltip: string[] = [];
+      if (entry.type === "trip" && (entry as any).variantCode) {
+        tooltip.push(`Percorso ${(entry as any).variantCode}`);
+      }
       if (entry.type === "trip") {
         tooltip.push(`${entry.routeName} → ${entry.headsign || "?"}`);
         tooltip.push(`${entry.departureTime?.slice(0, 5)} → ${entry.arrivalTime?.slice(0, 5)}`);

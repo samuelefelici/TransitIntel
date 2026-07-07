@@ -666,7 +666,7 @@ export default function PlanningStudioTripsPage() {
         >
           <option value="">Tutte le varianti</option>
           {variants.map(v => (
-            <option key={v.id} value={v.id}>{v.name} ({v.direction === 0 ? "→" : "←"})</option>
+            <option key={v.id} value={v.id}>{(v as any).code ? `${(v as any).code} · ` : ""}{v.name} ({v.direction === 0 ? "→" : "←"})</option>
           ))}
         </select>
 

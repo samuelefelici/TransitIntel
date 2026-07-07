@@ -137,6 +137,41 @@ export default function DriverWorkspace({
     p.trip ? String(p.trip.tripId) : (p.activity?.id ?? "");
   /* form "nuova attività" della Finestra di lavoro */
   const [wwActOpen, setWwActOpen] = useState(false);
+  /* nodi selezionabili per le attività: TUTTE le fermate del sistema + depositi */
+  const [wwNodes, setWwNodes] = useState<string[]>([]);
+  useEffect(() => {
+    if (!wwActOpen || wwNodes.length > 0) return;
+    void (async () => {
+      const names = new Set<string>();
+      try {
+        const r = await fetch(`${getApiBase()}/api/gtfs/stops/all`, { credentials: "include" });
+        if (r.ok) {
+          const data = await r.json();
+          for (const st of (data?.stops ?? data?.data ?? data ?? [])) {
+            const n = st?.stopName ?? st?.stop_name ?? st?.name;
+            if (n) names.add(String(n));
+          }
+        }
+      } catch { /* fallback sotto */ }
+      try {
+        const r = await fetch(`${getApiBase()}/api/depots`, { credentials: "include" });
+        if (r.ok) {
+          const data = await r.json();
+          for (const d of (data?.depots ?? data?.data ?? data ?? [])) {
+            const n = d?.name ?? d?.label;
+            if (n) names.add(`Deposito ${n}`);
+          }
+        }
+      } catch { /* opzionale */ }
+      // fallback: capolinea presenti nel risultato corrente
+      if (result) for (const s of result.driverShifts) for (const rp of s.riprese) for (const tp of rp.trips) {
+        if (tp.firstStopName) names.add(tp.firstStopName);
+        if (tp.lastStopName) names.add(tp.lastStopName);
+      }
+      setWwNodes(Array.from(names).sort((a, b) => a.localeCompare(b)));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wwActOpen]);
   const [wwActForm, setWwActForm] = useState({ type: "riserva" as DriverActivityType, start: "08:00", end: "09:00", fromNode: "", toNode: "" });
   const [wwImportBusy, setWwImportBusy] = useState(false);
 
@@ -1603,13 +1638,16 @@ export default function DriverWorkspace({
                           className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 font-mono" />
                       </label>
                       <label className="text-[10px] text-zinc-400">Nodo inizio
-                        <input value={wwActForm.fromNode} onChange={e => setWwActForm(f => ({ ...f, fromNode: e.target.value }))} placeholder="es. Deposito Jesi"
+                        <input list="ww-nodes" value={wwActForm.fromNode} onChange={e => setWwActForm(f => ({ ...f, fromNode: e.target.value }))} placeholder="cerca fermata o deposito…"
                           className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100" />
                       </label>
                       <label className="text-[10px] text-zinc-400">Nodo fine
-                        <input value={wwActForm.toNode} onChange={e => setWwActForm(f => ({ ...f, toNode: e.target.value }))} placeholder="es. Stazione"
+                        <input list="ww-nodes" value={wwActForm.toNode} onChange={e => setWwActForm(f => ({ ...f, toNode: e.target.value }))} placeholder="cerca fermata o deposito…"
                           className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100" />
                       </label>
+                      <datalist id="ww-nodes">
+                        {wwNodes.map(n => <option key={n} value={n} />)}
+                      </datalist>
                     </div>
                     <div className="flex justify-end gap-2 pt-1">
                       <button onClick={() => setWwActOpen(false)} className="text-xs px-3 py-1.5 rounded text-zinc-400 hover:text-zinc-100">Annulla</button>

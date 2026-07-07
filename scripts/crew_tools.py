@@ -82,6 +82,7 @@ def _trip_from_dict(t: dict) -> VShiftTrip | None:
         first_stop_name=str(t.get("firstStopName", "") or ""),
         last_stop_name=str(t.get("lastStopName", "") or ""),
         duration_min=max(0, arr - dep),
+        variant_code=str(t.get("variantCode", "") or ""),
     )
 
 
@@ -377,6 +378,7 @@ def run_turni_unici(raw: dict) -> dict:
                 "cambi": [],
                 "trips": [{
                     "tripId": t.trip_id, "routeId": t.route_id, "routeName": t.route_name,
+                    **({"variantCode": t.variant_code} if getattr(t, "variant_code", "") else {}),
                     "headsign": t.headsign, "departureTime": t.departure_time,
                     "arrivalTime": t.arrival_time, "departureMin": t.departure_min,
                     "arrivalMin": t.arrival_min, "firstStopName": t.first_stop_name,

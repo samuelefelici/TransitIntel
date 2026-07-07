@@ -760,6 +760,7 @@ class Trip:
     forced: bool                  # solo tipo esatto
     duration_min: int = 0
     on_demand: bool = False       # corsa a chiamata (DRT)
+    variant_code: str = ""        # codice percorso (ps_route_variants.code, es. "1/4")
 
 
 @dataclass
@@ -798,6 +799,7 @@ class VShiftTrip:
     downsized: bool = False
     original_vehicle: str | None = None
     on_demand: bool = False       # corsa a chiamata (DRT)
+    variant_code: str = ""        # codice percorso (relazione corsa→percorso→linea)
     cluster_stops: list[ClusterStop] = field(default_factory=list)  # fermate intermedie in cluster
     depot_leg: str | None = None  # "out" (uscita deposito) | "in" (rientro) — solo per deadhead
 
@@ -1210,6 +1212,7 @@ def trip_from_dict(d: dict, idx: int) -> Trip:
         forced=d.get("forced", False),
         duration_min=max(1, arr_min - dep_min),
         on_demand=bool(d.get("onDemand", False)),
+        variant_code=str(d.get("variantCode", "") or ""),
     )
 
 
@@ -1251,6 +1254,8 @@ def vshift_trip_to_dict(t: VShiftTrip) -> dict:
             d["firstStopName"] = t.first_stop_name
         if t.last_stop_name:
             d["lastStopName"] = t.last_stop_name
+    if getattr(t, "variant_code", ""):
+        d["variantCode"] = t.variant_code
     return d
 
 

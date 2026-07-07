@@ -53,6 +53,8 @@ export interface ShiftTripEntry {
   downsized?: boolean;
   /** Original required vehicle type (set when downsized) */
   originalVehicle?: VehicleType;
+  /** codice percorso (ps_route_variants.code): relazione corsa→percorso→linea */
+  variantCode?: string | null;
 }
 
 export interface VehicleShift {
