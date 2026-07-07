@@ -193,6 +193,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
 
     const rowsQ = await db.execute<any>(sql.raw(`
       SELECT t.id AS trip_id, COALESCE(t.headsign, v.headsign) AS headsign, t.direction,
+             t.attributes AS attributes,
              st.stop_id, st.stop_seq, st.departure_time, st.arrival_time,
              s.name AS stop_name
       FROM ps_trips t
@@ -206,11 +207,11 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       ORDER BY t.id, st.stop_seq
     `));
 
-    interface TripRow { tripId: string; headsign: string | null; directionId: number | null; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
+    interface TripRow { tripId: string; headsign: string | null; directionId: number | null; attributes: any; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
     const trips = new Map<string, TripRow>();
     for (const r of rowsQ.rows as any[]) {
       let t = trips.get(r.trip_id);
-      if (!t) { t = { tripId: r.trip_id, headsign: r.headsign, directionId: r.direction, stops: [] }; trips.set(r.trip_id, t); }
+      if (!t) { t = { tripId: r.trip_id, headsign: r.headsign, directionId: r.direction, attributes: r.attributes ?? {}, stops: [] }; trips.set(r.trip_id, t); }
       t.stops.push({ stopId: r.stop_id, stopName: r.stop_name, time: (r.departure_time ?? r.arrival_time ?? null) });
     }
 
@@ -291,6 +292,9 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
           times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
           dayTypeCodes: dayCodesByTrip.get(t.tripId) ?? [],
           categoryIds: categoryIdsByTrip.get(t.tripId) ?? [],
+          onDemand: !!t.attributes?.onDemand,
+          weekdays: Array.isArray(t.attributes?.weekdays) && t.attributes.weekdays.length === 7
+            ? t.attributes.weekdays.map((x: any) => x !== false) : null,
         };
       })
       .sort((a, b) => a.firstTime.localeCompare(b.firstTime));
