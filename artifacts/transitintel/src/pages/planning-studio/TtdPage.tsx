@@ -163,6 +163,11 @@ export default function PlanningStudioTtdPage() {
   const [routeId, setRouteId] = useState("");
   const [variantId, setVariantId] = useState("");
   const [calendarFilter, setCalendarFilter] = useState("");
+  /* filtro per GIORNO dal calendario aziendale: feriale / sabato / festivo.
+   * Le corse senza validità configurata restano sempre visibili. */
+  const [dayFilter, setDayFilter] = useState<"" | "feriale" | "sabato" | "festivo">("");
+  const dayMatch = useCallback((t: { dayTypeCodes?: string[] }) =>
+    !dayFilter || !(t.dayTypeCodes?.length) || t.dayTypeCodes.includes(dayFilter), [dayFilter]);
 
   const projectQ = useQuery({
     queryKey: ["ps", "project", projectId],
@@ -579,7 +584,10 @@ export default function PlanningStudioTtdPage() {
     try {
       // 1. eliminazioni
       for (const id of deletedTripIds) await deletePsTrip(projectId, id);
-      // 2. copie → batch create con gli orari locali
+      // 2. copie → batch create con gli orari locali; baseTripId = corsa
+      //    d'origine così la copia EREDITA validità (day-type + categorie)
+      const baseByTemp = new Map<string, string>();
+      for (const op of pendingOps) if (op.kind === "copy") baseByTemp.set(op.tempId, op.baseTripId);
       const copies = localCopies.filter(t => !deletedTripIds.has(t.id));
       if (copies.length > 0) {
         await batchCreatePsTrips(projectId, copies.map(t => ({
@@ -587,6 +595,7 @@ export default function PlanningStudioTtdPage() {
           calendarId: (t as any).calendarId ?? null,
           headsign: t.headsign ?? null, shortName: t.shortName ?? null,
           direction: (t as any).direction ?? 0,
+          baseTripId: baseByTemp.get(t.id),
           stopTimes: (stMap[t.id] ?? []).map(st => ({
             stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
           })),
@@ -606,7 +615,9 @@ export default function PlanningStudioTtdPage() {
         })));
       }
       setPendingOps([]); setDeletedTripIds(new Set()); setLocalCopies([]); setSelectedTripId(null);
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips", "", variantId] });
+      // invalidate AMPIA: aggiorna anche la sezione Corse (chiavi con routeId/
+      // categoria) e il filtro per categoria del TTD, non solo questa variante
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
       toast.success("Modifiche salvate", {
         description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${deletedTripIds.size} eliminate`,
       });
@@ -735,9 +746,10 @@ export default function PlanningStudioTtdPage() {
   const visibleTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
     if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
+    if (dayFilter) trips = trips.filter(dayMatch);
     trips = trips.filter(t => !deletedTripIds.has(t.id));
     return [...trips, ...localCopies.filter(t => !deletedTripIds.has(t.id))];
-  }, [tripsQ.data, calendarFilter, catTripSet, deletedTripIds, localCopies]);
+  }, [tripsQ.data, calendarFilter, catTripSet, dayMatch, deletedTripIds, localCopies]);
 
   /* Ctrl+C copia la corsa selezionata · Ctrl+V la incolla alla posizione del
    * mouse (o +60') come COPIA LOCALE · Ctrl+Z annulla l'ultima modifica */
@@ -842,6 +854,7 @@ export default function PlanningStudioTtdPage() {
       headsign: bt.headsign ?? null,
       direction: bt.direction,
       serviceLabel: bt.serviceLabel ?? null,
+      baseTripId: bt.id, // eredita validità (day-type + categorie) dalla corsa base
       stopTimes: run.stopTimes,
     })));
   }
@@ -909,6 +922,7 @@ export default function PlanningStudioTtdPage() {
       const color = colorByRoute.get(cand.route.id) ?? routeColor(cand.route.color, "#22d3ee");
       let trips = data.trips;
       if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
+    if (dayFilter) trips = trips.filter(dayMatch);
       for (const t of trips) {
         const sts = data.st[t.id];
         if (!sts || sts.length < 2) continue;
@@ -921,7 +935,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, catTripSet, colorByRoute]);
+  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, catTripSet, dayMatch, colorByRoute]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
@@ -1018,6 +1032,7 @@ export default function PlanningStudioTtdPage() {
     if (!data) return [];
     let trips = data.trips;
     if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
+    if (dayFilter) trips = trips.filter(dayMatch);
     return trips
       .map(t => ({ trip: t, dep: data.st[t.id]?.length ? hmsToSec(data.st[t.id][0].departureTime) : Number.POSITIVE_INFINITY }))
       .sort((a, b) => a.dep - b.dep);
@@ -1061,7 +1076,7 @@ export default function PlanningStudioTtdPage() {
       return changed ? next : prev;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncChain, overlayData, calendarFilter, catTripSet]);
+  }, [syncChain, overlayData, calendarFilter, catTripSet, dayMatch]);
   /** Applica la finestra oraria alla selezione di TUTTE le linee della catena. */
   function applySyncWindow() {
     const a = hmToSec(syncWinFrom), b = hmToSec(syncWinTo);
@@ -1094,6 +1109,7 @@ export default function PlanningStudioTtdPage() {
       const sel = syncSel[it.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
       if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
+    if (dayFilter) trips = trips.filter(dayMatch);
       for (const t of trips) for (const st of data.st[t.id] ?? [])
         push(st.stopId, st.stopName, hmsToSec(st.arrivalTime) + deltaSec, hmsToSec(st.departureTime) + deltaSec);
     }
@@ -1196,6 +1212,7 @@ export default function PlanningStudioTtdPage() {
       const sel = syncSel[p.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
       if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
+    if (dayFilter) trips = trips.filter(dayMatch);
       const geoms: Pt[][][] = [];
       for (const t of trips) {
         const sts = data.st[t.id];
@@ -1219,7 +1236,7 @@ export default function PlanningStudioTtdPage() {
     }
     return { lines, pts, totalZ, movedLines: lines.length };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, catTripSet, connMin, connMax, baseGeoms, nodeOfStop]);
+  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, catTripSet, dayMatch, connMin, connMax, baseGeoms, nodeOfStop]);
 
   /** Applica il piano: trasla in sequenza le corse selezionate di ogni linea. */
   async function applySyncPlan() {
@@ -1526,6 +1543,16 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           {calendars.map(c => (
             <option key={c.id} value={c.id}>{c.code} {c.name ? `· ${c.name}` : ""}</option>
           ))}
+        </select>
+        <select
+          value={dayFilter} onChange={e => setDayFilter(e.target.value as typeof dayFilter)}
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700"
+          title="Filtro per GIORNO (validità dal calendario aziendale). Le corse senza validità configurata restano visibili."
+        >
+          <option value="">Tutti i giorni</option>
+          <option value="feriale">Feriale</option>
+          <option value="sabato">Sabato</option>
+          <option value="festivo">Domenica / Festivo</option>
         </select>
 
         <div className="h-5 w-px bg-slate-800 mx-1" />

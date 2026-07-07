@@ -156,6 +156,8 @@ export interface PsTrip {
   isActive: boolean;             // se false la corsa è disattivata
   serviceLabel?: string | null;  // etichetta libera (es. "Solo scolastico")
   firstDeparture?: string | null; // HH:MM:SS del primo stop_time (dalla lista)
+  /** day-type validi dal calendario aziendale (feriale/sabato/festivo/…) */
+  dayTypeCodes?: string[];
   createdAt: string;
 }
 
@@ -566,6 +568,8 @@ export interface PsBatchTripInput {
   direction?: number;
   serviceLabel?: string | null;
   attributes?: Record<string, any>;
+  /** corsa da cui EREDITARE la validità (day-type + categorie calendario aziendale) */
+  baseTripId?: string;
   stopTimes: { stopId: string; arrivalTime: string; departureTime: string; timepoint?: number }[];
 }
 

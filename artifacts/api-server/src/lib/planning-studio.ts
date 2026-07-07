@@ -1556,7 +1556,28 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
      LIMIT 5000
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
-  res.json({ trips: rows.map(rowToTrip) });
+  const trips = rows.map(rowToTrip);
+  // Day-type validi per corsa (feriale/sabato/festivo/…): servono ai filtri
+  // per giorno di TTD e Corse. Best-effort: le tabelle possono non esistere.
+  if (trips.length) {
+    try {
+      const idsLiteral = `{${trips.map((t: any) => t.id).join(",")}}`;
+      const dv = await db.execute(sql`
+        SELECT v.trip_id, dt.code
+          FROM ps_trip_day_validity v
+          JOIN ps_day_types dt ON dt.id = v.day_type_id
+         WHERE v.is_valid = true AND v.trip_id = ANY(${idsLiteral}::uuid[])
+      `);
+      const byTrip = new Map<string, string[]>();
+      for (const row of ((dv as any).rows ?? []) as any[]) {
+        const a = byTrip.get(row.trip_id) ?? [];
+        if (!a.includes(row.code)) a.push(row.code);
+        byTrip.set(row.trip_id, a);
+      }
+      for (const t of trips as any[]) t.dayTypeCodes = byTrip.get(t.id) ?? [];
+    } catch { /* validità non configurata */ }
+  }
+  res.json({ trips });
 });
 
 router.post("/planning-studio/projects/:id/trips", async (req, res): Promise<void> => {
