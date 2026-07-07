@@ -733,28 +733,34 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
 router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
-  if (!proj.materialized_feed_id) {
-    res.status(400).json({
-      error: "Il programma non è ancora materializzato: esegui prima la sincronizzazione (PS → feed GTFS), poi mettilo in esercizio.",
-    });
-    return;
-  }
-  const feedCheck = await db.execute(sql`SELECT id FROM gtfs_feeds WHERE id = ${proj.materialized_feed_id}::uuid LIMIT 1`);
-  if (!((feedCheck as any).rows?.[0] ?? (feedCheck as any)[0])) {
-    res.status(409).json({ error: "Il feed materializzato non esiste più: rimaterializza il programma e riprova." });
+
+  // "Metti in esercizio" materializza SEMPRE l'INTERO programma (tutte le corse
+  // attive) e poi lo promuove a feed operativo. Prima serviva un passaggio
+  // manuale nascosto (generare e mandare una UDP dalla Fucina) e, peggio, il
+  // feed materializzato via UDP è SCOPATO → in esercizio finiva un programma
+  // PARZIALE. Rimaterializzando qui a colpo pieno il feed operativo riflette il
+  // progetto corrente e completo.
+  let feedId: string;
+  try {
+    const { materializePsToFeed } = await import("./planning-studio-materialize");
+    const r = await materializePsToFeed(proj.id, req.user!.id); // nessuno scope → tutto il progetto
+    feedId = r.feedId;
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, projectId: proj.id }, "materializzazione in attivazione fallita");
+    res.status(500).json({ error: `Materializzazione fallita: ${e?.message ?? "errore"}` });
     return;
   }
 
   await db.execute(sql`
     UPDATE gtfs_feeds
-       SET is_active = (id = ${proj.materialized_feed_id}::uuid),
-           is_default = (id = ${proj.materialized_feed_id}::uuid)
+       SET is_active = (id = ${feedId}::uuid),
+           is_default = (id = ${feedId}::uuid)
   `);
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
-    targetType: "feed", targetId: proj.materialized_feed_id,
+    targetType: "feed", targetId: feedId,
     payload: { name: proj.name },
   });
-  res.json({ ok: true, feedId: proj.materialized_feed_id });
+  res.json({ ok: true, feedId });
 });
 
 // GET /api/planning-studio/projects/:id — dettaglio + counts

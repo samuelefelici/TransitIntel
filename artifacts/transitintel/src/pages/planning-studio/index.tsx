@@ -77,15 +77,19 @@ export default function PlanningStudioListPage() {
   async function handleActivate(p: PsProject) {
     if (!confirm(
       `Mettere in esercizio "${p.name}"?\n\n` +
-      `Diventerà il programma operativo unico: Sala Operativa, AVM, GTFS-RT e ` +
-      `tariffe punteranno al suo feed. Gli altri programmi restano modificabili ma non operativi.`,
+      `Il programma verrà materializzato (tutte le corse attive) e diventerà il ` +
+      `programma operativo unico: Sala Operativa, AVM, GTFS-RT e tariffe punteranno ` +
+      `al suo feed. Gli altri programmi restano modificabili ma non operativi.`,
     )) return;
+    const tid = toast.loading(`Metto in esercizio "${p.name}"…`, {
+      description: "Materializzazione del programma in corso…",
+    });
     try {
       await activatePsProject(p.id);
-      toast.success(`"${p.name}" è ora il programma di esercizio operativo`);
+      toast.success(`"${p.name}" è ora il programma di esercizio operativo`, { id: tid });
       refresh();
     } catch (e: any) {
-      toast.error("Messa in esercizio fallita", { description: e?.message });
+      toast.error("Messa in esercizio fallita", { id: tid, description: e?.message });
     }
   }
 
@@ -308,18 +312,9 @@ function ProjectCard({
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
             {canActivate && (
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!p.materializedFeedId) {
-                    toast.info("Prima materializza il programma", {
-                      description: "Apri il progetto ed esegui la sincronizzazione PS → feed GTFS, poi mettilo in esercizio.",
-                    });
-                    return;
-                  }
-                  onActivate();
-                }}
+                onClick={(e) => { e.stopPropagation(); onActivate(); }}
                 className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
-                title={p.materializedFeedId ? "Metti in esercizio (diventa il programma operativo)" : "Da materializzare prima della messa in esercizio"}
+                title="Metti in esercizio (materializza il programma e lo rende operativo)"
               >
                 <Power className="w-3.5 h-3.5" />
               </button>
