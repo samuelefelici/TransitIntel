@@ -1209,6 +1209,53 @@ router.post("/planning-studio/projects/:id/routes/:routeId/variants", async (req
   res.json({ variant: rowToVariant(row) });
 });
 
+/**
+ * BULK per il grafico TTD: TUTTE le varianti del progetto con la sequenza
+ * fermate in UNA chiamata. Prima il client faceva 1 GET per linea
+ * (variants) + 1 GET per variante (dettaglio): su reti reali erano centinaia
+ * di richieste al mount del grafico → il rate limiter rispondeva 429 su
+ * tutta l'API, /auth/me compreso.
+ */
+router.get("/planning-studio/projects/:id/variants-with-stops", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  const vr = await db.execute(sql`
+    SELECT v.* FROM ps_route_variants v
+     WHERE v.project_id = ${proj.id}::uuid
+     ORDER BY v.route_id, v.direction ASC, v.is_default DESC, v.created_at ASC
+  `);
+  const variantRows: any[] = (vr as any).rows ?? (vr as any) ?? [];
+  const sr = await db.execute(sql`
+    SELECT vs.variant_id, vs.seq, vs.stop_id, vs.pickup_type, vs.drop_off_type,
+           vs.timepoint, vs.shape_dist_traveled,
+           s.name AS stop_name, s.code AS stop_code, s.lat AS stop_lat, s.lon AS stop_lon
+      FROM ps_variant_stops vs
+      JOIN ps_stops s ON s.id = vs.stop_id
+      JOIN ps_route_variants v ON v.id = vs.variant_id
+     WHERE v.project_id = ${proj.id}::uuid
+     ORDER BY vs.variant_id, vs.seq ASC
+  `);
+  const stopRows: any[] = (sr as any).rows ?? (sr as any) ?? [];
+  const byVariant = new Map<string, any[]>();
+  for (const s of stopRows) {
+    let arr = byVariant.get(s.variant_id);
+    if (!arr) { arr = []; byVariant.set(s.variant_id, arr); }
+    arr.push({
+      seq: s.seq,
+      stopId: s.stop_id,
+      stopName: s.stop_name,
+      stopCode: s.stop_code,
+      lat: Number(s.stop_lat), lon: Number(s.stop_lon),
+      pickupType: s.pickup_type,
+      dropOffType: s.drop_off_type,
+      shapeDistTraveled: s.shape_dist_traveled,
+      timepoint: s.timepoint,
+    });
+  }
+  res.json({
+    variants: variantRows.map(v => ({ variant: rowToVariant(v), stops: byVariant.get(v.id) ?? [] })),
+  });
+});
+
 router.get("/planning-studio/projects/:id/variants/:variantId", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   const variantId = String(req.params.variantId);

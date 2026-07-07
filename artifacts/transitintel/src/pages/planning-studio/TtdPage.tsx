@@ -31,6 +31,7 @@ import {
   listPsRoutes, type PsRoute,
   listPsVariants, type PsVariant,
   getPsVariant, type PsVariantStop,
+  listPsVariantsWithStops,
   listPsStops,
   listPsTrips, type PsTrip,
   getPsStopTimesBulk, type PsStopTime,
@@ -276,25 +277,19 @@ export default function PlanningStudioTtdPage() {
     staleTime: 60_000,
     queryFn: async () => {
       const baseStopIds = new Set((baseVariantQ.data?.stops ?? []).map(s => s.stopId));
-      const all: { route: PsRoute; variant: PsVariant }[] = [];
-      for (const r of routesQ.data ?? []) {
-        const vs = await listPsVariants(projectId, r.id);
-        for (const v of vs) if (v.id !== variantId) all.push({ route: r, variant: v });
-      }
+      const routesById = new Map((routesQ.data ?? []).map(r => [r.id, r]));
+      // UNA sola chiamata bulk: la versione linea-per-linea + variante-per-
+      // variante generava centinaia di richieste al mount → 429 su tutta l'API.
+      const all = await listPsVariantsWithStops(projectId);
       const out: { route: PsRoute; variant: PsVariant; stops: PsVariantStop[]; shared: number }[] = [];
-      const list = all.slice(0, 200); // cap difensivo su reti grandi
-      for (let i = 0; i < list.length; i += 6) {
-        const chunk = list.slice(i, i + 6);
-        const res = await Promise.all(chunk.map(async c => {
-          try {
-            const d = await getPsVariant(projectId, c.variant.id);
-            const shared = d.stops.filter(s => baseStopIds.has(s.stopId)).length;
-            // NIENTE filtro: si possono accendere anche linee SENZA fermate in
-            // comune (il conteggio resta come indicatore di coincidenza).
-            return { ...c, stops: d.stops, shared };
-          } catch { return null; }
-        }));
-        for (const r of res) if (r) out.push(r);
+      for (const { variant, stops } of all) {
+        if (variant.id === variantId) continue;
+        const route = routesById.get(variant.routeId);
+        if (!route) continue;
+        // NIENTE filtro: si possono accendere anche linee SENZA fermate in
+        // comune (il conteggio resta come indicatore di coincidenza).
+        const shared = stops.filter(s => baseStopIds.has(s.stopId)).length;
+        out.push({ route, variant, stops, shared });
       }
       out.sort((x, y) => y.shared - x.shared);
       return out;

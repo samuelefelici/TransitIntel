@@ -81,7 +81,7 @@ app.use(cookieParser());
 app.use(express.json({ limit: "4mb" }));
 app.use(express.urlencoded({ extended: true, limit: "4mb" }));
 
-// Rate limiting — 100 req/min per IP
+// Rate limiting — bucket per utente autenticato (3000/min) o per IP (600/min)
 app.use(globalLimiter);
 
 app.use("/api", router);
