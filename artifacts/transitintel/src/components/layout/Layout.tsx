@@ -14,6 +14,7 @@ import { useAuth, type Permission } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { getApiBase, apiFetch } from "@/lib/api";
 import CopilotSidebar from "@/components/CopilotSidebar";
+import ArgosSidebar from "@/components/ArgosSidebar";
 import logoImg from "/logo.png";
 import logoSidebarImg from "/logosidebar.png";
 
@@ -125,6 +126,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }, [hasPermission]);
 
   const isSchedulingZone = location.startsWith("/fucina") || location.startsWith("/driver-shifts");
+  // Planning Studio: qui il copilot è Argos (non Virgilio). Se siamo dentro un
+  // progetto specifico ne estraiamo l'id (uuid) da passare ad Argos come contesto.
+  const isPlanningStudio = location === "/planning-studio" || location.startsWith("/planning-studio/");
+  const planningStudioProjectId =
+    location.match(/^\/planning-studio\/([0-9a-f-]{36})/i)?.[1];
   const isNetworkZone =
     location === "/network-engine" ||
     location.startsWith("/network-engine/") ||
@@ -892,8 +898,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </main>
 
-      {/* AI Copilot — disponibile su ogni pagina */}
-      <CopilotSidebar />
+      {/* AI Copilot: Virgilio ovunque, ma dentro Planning Studio lo sostituisce
+          Argos, che legge i dati del PROGETTO aperto (ps_*) via /api/ai/argos/chat. */}
+      {isPlanningStudio
+        ? <ArgosSidebar projectId={planningStudioProjectId} />
+        : <CopilotSidebar />}
     </div>
   );
 }
