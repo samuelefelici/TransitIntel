@@ -9,59 +9,90 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import VirgilioController from "@/components/VirgilioController";
 // VirgilioTentacles disabilitato — mantenuto solo l'highlight CSS sui target
 
+/**
+ * lazy() resiliente al DEPLOY. Dopo un rilascio i chunk vecchi spariscono dal
+ * server: se l'utente ha in cache l'index vecchio, l'import() di una pagina
+ * fallisce con "Importing a module script failed" (404 sul chunk) e la pagina
+ * crasha. Qui, al primo fallimento, ricarichiamo UNA volta la pagina così il
+ * browser riscarica index.html e il manifest aggiornato. Guardia in
+ * sessionStorage per non entrare in loop se il problema è reale (offline, ecc).
+ */
+function lazyWithRetry<T extends { default: React.ComponentType<any> }>(
+  factory: () => Promise<T>,
+): React.LazyExoticComponent<T["default"]> {
+  return lazy(async () => {
+    const KEY = "chunk-reload-once";
+    try {
+      const m = await factory();
+      sessionStorage.removeItem(KEY);
+      return m;
+    } catch (err) {
+      const isChunkError = err instanceof Error
+        && /import|module script|dynamically imported|Failed to fetch|chunk/i.test(err.message);
+      if (isChunkError && sessionStorage.getItem(KEY) !== "1") {
+        sessionStorage.setItem(KEY, "1");
+        window.location.reload();
+        // ritorna una Promise che non risolve: la pagina si sta ricaricando
+        return await new Promise<T>(() => {});
+      }
+      throw err;
+    }
+  });
+}
+
 // Lazy-loaded pages — each is code-split into its own chunk
-const LoginPage = lazy(() => import("@/pages/login"));
-const Dashboard = lazy(() => import("@/pages/dashboard"));
-const OperationsPage = lazy(() => import("@/pages/operations"));
-const TimetablesPage = lazy(() => import("@/pages/timetables"));
-const NetworkSharePage = lazy(() => import("@/pages/network-share"));
-const RuntimesPage = lazy(() => import("@/pages/runtimes"));
-const RosterPage = lazy(() => import("@/pages/roster"));
-const MistoPage = lazy(() => import("@/pages/misto"));
-const ServiceDbPage = lazy(() => import("@/pages/service-db"));
-const Traffic = lazy(() => import("@/pages/traffic"));
-const Territory = lazy(() => import("@/pages/territory"));
-const NetworkPage = lazy(() => import("@/pages/network"));
-const DataPage = lazy(() => import("@/pages/data"));
-const ScenariosPage = lazy(() => import("@/pages/scenarios"));
-const IntermodalPage = lazy(() => import("@/pages/intermodal"));
-const OptimizationPage = lazy(() => import("@/pages/optimization"));
-const FucinaPage = lazy(() => import("@/pages/fucina"));
-const SchedulingProjectDashboardPage = lazy(() => import("@/pages/scheduling/ProjectDashboardPage"));
-const VehicleScenariosPage = lazy(() => import("@/pages/scheduling/VehicleScenariosPage"));
-const DriverScenariosPage = lazy(() => import("@/pages/scheduling/DriverScenariosPage"));
+const LoginPage = lazyWithRetry(() => import("@/pages/login"));
+const Dashboard = lazyWithRetry(() => import("@/pages/dashboard"));
+const OperationsPage = lazyWithRetry(() => import("@/pages/operations"));
+const TimetablesPage = lazyWithRetry(() => import("@/pages/timetables"));
+const NetworkSharePage = lazyWithRetry(() => import("@/pages/network-share"));
+const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
+const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
+const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
+const ServiceDbPage = lazyWithRetry(() => import("@/pages/service-db"));
+const Traffic = lazyWithRetry(() => import("@/pages/traffic"));
+const Territory = lazyWithRetry(() => import("@/pages/territory"));
+const NetworkPage = lazyWithRetry(() => import("@/pages/network"));
+const DataPage = lazyWithRetry(() => import("@/pages/data"));
+const ScenariosPage = lazyWithRetry(() => import("@/pages/scenarios"));
+const IntermodalPage = lazyWithRetry(() => import("@/pages/intermodal"));
+const OptimizationPage = lazyWithRetry(() => import("@/pages/optimization"));
+const FucinaPage = lazyWithRetry(() => import("@/pages/fucina"));
+const SchedulingProjectDashboardPage = lazyWithRetry(() => import("@/pages/scheduling/ProjectDashboardPage"));
+const VehicleScenariosPage = lazyWithRetry(() => import("@/pages/scheduling/VehicleScenariosPage"));
+const DriverScenariosPage = lazyWithRetry(() => import("@/pages/scheduling/DriverScenariosPage"));
 // ClusterPage rimosso: i cluster ora vivono in Planner Studio
 // (/planning-studio/:id/clusters). Le rotte /cluster e /cluster-management
 // sono mantenute solo come Redirect per non rompere link esterni.
-const DriverShiftsPage = lazy(() => import("@/pages/driver-shifts"));
-const CoincidenceZonesPage = lazy(() => import("@/pages/coincidence-zones"));
-const FaresPage = lazy(() => import("@/pages/fares"));
-const FaresPolimetrichePage = lazy(() => import("@/pages/fares-polimetriche"));
-const FareAnalyticsPage = lazy(() => import("@/pages/fare-analytics"));
-const FareDocsPage = lazy(() => import("@/pages/fare-docs"));
-const FareSimulatorPage = lazy(() => import("@/pages/fare-simulator"));
-const StopsClassificationPage = lazy(() => import("@/pages/stops-classification"));
-const FaresEnginePage = lazy(() => import("@/pages/fares-engine"));
-const TripPlannerPage = lazy(() => import("@/pages/trip-planner"));
-const DepotsPage = lazy(() => import("@/pages/depots"));
-const DeadheadArcsPage = lazy(() => import("@/pages/deadhead-arcs"));
-const PlanningListPage = lazy(() => import("@/pages/planning"));
-const PlanningNewPage = lazy(() => import("@/pages/planning/new"));
-const PlanningWorkspacePage = lazy(() => import("@/pages/planning/workspace"));
-const PlanningStudioListPage = lazy(() => import("@/pages/planning-studio"));
-const PlanningStudioEditorPage = lazy(() => import("@/pages/planning-studio/EditorPage"));
-const PlanningStudioClustersPage = lazy(() => import("@/pages/planning-studio/ClustersPage"));
-const PlanningStudioTripsPage = lazy(() => import("@/pages/planning-studio/TripsPage"));
-const PlanningStudioNetworkPage = lazy(() => import("@/pages/planning-studio/NetworkPage"));
-const PlanningStudioValidityPage = lazy(() => import("@/pages/planning-studio/ValidityPage"));
-const PlanningStudioValidityUnitsPage = lazy(() => import("@/pages/planning-studio/ValidityUnitsPage"));
-const PlanningStudioCalendarProfilePage = lazy(() => import("@/pages/planning-studio/CalendarProfilePage"));
-const PlanningStudioOperationalBoardPage = lazy(() => import("@/pages/planning-studio/OperationalBoardPage"));
-const PlanningStudioTtdPage = lazy(() => import("@/pages/planning-studio/TtdPage"));
-const PlanningStudioZonesPage = lazy(() => import("@/pages/planning-studio/ZonesPage"));
-const NetworkEngineHub = lazy(() => import("@/pages/network-engine"));
-const AdminUsersPage = lazy(() => import("@/pages/admin-users"));
-const NotFound = lazy(() => import("@/pages/not-found"));
+const DriverShiftsPage = lazyWithRetry(() => import("@/pages/driver-shifts"));
+const CoincidenceZonesPage = lazyWithRetry(() => import("@/pages/coincidence-zones"));
+const FaresPage = lazyWithRetry(() => import("@/pages/fares"));
+const FaresPolimetrichePage = lazyWithRetry(() => import("@/pages/fares-polimetriche"));
+const FareAnalyticsPage = lazyWithRetry(() => import("@/pages/fare-analytics"));
+const FareDocsPage = lazyWithRetry(() => import("@/pages/fare-docs"));
+const FareSimulatorPage = lazyWithRetry(() => import("@/pages/fare-simulator"));
+const StopsClassificationPage = lazyWithRetry(() => import("@/pages/stops-classification"));
+const FaresEnginePage = lazyWithRetry(() => import("@/pages/fares-engine"));
+const TripPlannerPage = lazyWithRetry(() => import("@/pages/trip-planner"));
+const DepotsPage = lazyWithRetry(() => import("@/pages/depots"));
+const DeadheadArcsPage = lazyWithRetry(() => import("@/pages/deadhead-arcs"));
+const PlanningListPage = lazyWithRetry(() => import("@/pages/planning"));
+const PlanningNewPage = lazyWithRetry(() => import("@/pages/planning/new"));
+const PlanningWorkspacePage = lazyWithRetry(() => import("@/pages/planning/workspace"));
+const PlanningStudioListPage = lazyWithRetry(() => import("@/pages/planning-studio"));
+const PlanningStudioEditorPage = lazyWithRetry(() => import("@/pages/planning-studio/EditorPage"));
+const PlanningStudioClustersPage = lazyWithRetry(() => import("@/pages/planning-studio/ClustersPage"));
+const PlanningStudioTripsPage = lazyWithRetry(() => import("@/pages/planning-studio/TripsPage"));
+const PlanningStudioNetworkPage = lazyWithRetry(() => import("@/pages/planning-studio/NetworkPage"));
+const PlanningStudioValidityPage = lazyWithRetry(() => import("@/pages/planning-studio/ValidityPage"));
+const PlanningStudioValidityUnitsPage = lazyWithRetry(() => import("@/pages/planning-studio/ValidityUnitsPage"));
+const PlanningStudioCalendarProfilePage = lazyWithRetry(() => import("@/pages/planning-studio/CalendarProfilePage"));
+const PlanningStudioOperationalBoardPage = lazyWithRetry(() => import("@/pages/planning-studio/OperationalBoardPage"));
+const PlanningStudioTtdPage = lazyWithRetry(() => import("@/pages/planning-studio/TtdPage"));
+const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-studio/ZonesPage"));
+const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
+const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
+const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
 const queryClient = new QueryClient({
