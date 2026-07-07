@@ -35,6 +35,8 @@ import {
   listPsTrips, type PsTrip,
   getPsStopTimesBulk, type PsStopTime,
   shiftPsTripTimes,
+  setPsStopTimes,
+  deletePsTrip,
   batchCreatePsTrips, type PsBatchTripInput,
 } from "@/lib/planning-studio-api";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
@@ -303,6 +305,8 @@ export default function PlanningStudioTtdPage() {
   const [overlayData, setOverlayData] = useState<Record<string, { trips: PsTrip[]; st: Record<string, PsStopTime[]> }>>({});
   /* ─── Area di lavoro: strumento attivo nella barra laterale (un pannello alla volta) ─── */
   const [activeTool, setActiveTool] = useState<null | "layers" | "conn" | "sync" | "mult">(null);
+  /* ricerca nel pannello Linee (codice linea o codice percorso) */
+  const [lineSearch, setLineSearch] = useState("");
   const toggleTool = (t: NonNullable<typeof activeTool>) => setActiveTool(cur => (cur === t ? null : t));
   useEffect(() => { setOverlayOn(new Set()); setOverlayData({}); }, [variantId]);
   useEffect(() => {
@@ -467,11 +471,18 @@ export default function PlanningStudioTtdPage() {
   const dragRef = useRef<
     | { mode: "pan"; startX: number; t0: number; t1: number }
     | { mode: "trip"; tripId: string; startX: number }
+    | { mode: "node"; tripId: string; stIdx: number; startX: number }
     | null
   >(null);
   const [tripDrag, setTripDrag] = useState<{ tripId: string; deltaSec: number } | null>(null);
   const tripDragRef = useRef(tripDrag);
   tripDragRef.current = tripDrag;
+  /* corsa selezionata col DOPPIO CLICK: evidenziata + azioni elimina/moltiplica */
+  const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
+  /* drag di un SINGOLO nodo (fermata × orario): sposta l'orario di transito */
+  const [nodeDrag, setNodeDrag] = useState<{ tripId: string; stIdx: number; deltaSec: number } | null>(null);
+  const nodeDragRef = useRef(nodeDrag);
+  nodeDragRef.current = nodeDrag;
 
   const [hover, setHover] = useState<{ x: number; y: number; lines: string[] } | null>(null);
 
@@ -501,6 +512,40 @@ export default function PlanningStudioTtdPage() {
     },
   });
 
+  /* Applica lo spostamento di UN nodo: orario di transito a quella fermata */
+  const nodeMut = useMutation({
+    mutationFn: async ({ tripId, stIdx, deltaMin }: { tripId: string; stIdx: number; deltaMin: number }) => {
+      const sts = stMap[tripId] ?? [];
+      const next = sts.map((st, i) => i === stIdx ? {
+        ...st,
+        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+      } : st);
+      await setPsStopTimes(projectId, tripId, next.map(st => ({
+        stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
+      })));
+      return next;
+    },
+    onSuccess: (next, vars) => {
+      setStMap(prev => ({ ...prev, [vars.tripId]: next }));
+      setNodeDrag(null);
+      toast.success(`Orario di transito spostato di ${vars.deltaMin > 0 ? "+" : ""}${vars.deltaMin} min`);
+    },
+    onError: (e: any) => { setNodeDrag(null); toast.error(e?.message || "Errore nello spostamento del nodo"); },
+  });
+
+  /* Elimina la corsa selezionata */
+  const delTripMut = useMutation({
+    mutationFn: (tripId: string) => deletePsTrip(projectId, tripId),
+    onSuccess: (_r, tripId) => {
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips", "", variantId] });
+      setStMap(prev => { const n = { ...prev }; delete n[tripId]; return n; });
+      setSelectedTripId(null);
+      toast.success("Corsa eliminata");
+    },
+    onError: (e: any) => toast.error(e?.message || "Errore nell'eliminazione della corsa"),
+  });
+
   function svgPos(e: React.PointerEvent): { x: number; y: number } {
     const rect = svgRef.current?.getBoundingClientRect();
     return rect ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : { x: 0, y: 0 };
@@ -509,9 +554,14 @@ export default function PlanningStudioTtdPage() {
   function onPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
     const pos = svgPos(e);
+    const nodeEl = (e.target as Element).closest?.("[data-node]");
+    const nodeAttr = nodeEl?.getAttribute("data-node");
     const tripEl = (e.target as Element).closest?.("[data-trip]");
     const tripId = tripEl?.getAttribute("data-trip");
-    if (tripId && stMap[tripId]) {
+    if (nodeAttr) {
+      const [nTrip, nIdx] = nodeAttr.split("|");
+      if (stMap[nTrip]) dragRef.current = { mode: "node", tripId: nTrip, stIdx: Number(nIdx), startX: pos.x };
+    } else if (tripId && stMap[tripId]) {
       dragRef.current = { mode: "trip", tripId, startX: pos.x };
     } else {
       dragRef.current = { mode: "pan", startX: pos.x, t0: tDomain.t0, t1: tDomain.t1 };
@@ -526,6 +576,11 @@ export default function PlanningStudioTtdPage() {
       const span = d.t1 - d.t0;
       const dSec = ((d.startX - pos.x) / innerW) * span;
       setDomainClamped(d.t0 + dSec, d.t1 + dSec);
+    } else if (d.mode === "node") {
+      const span = tDomain.t1 - tDomain.t0;
+      const deltaSec = ((pos.x - d.startX) / innerW) * span;
+      setNodeDrag({ tripId: d.tripId, stIdx: d.stIdx, deltaSec });
+      setHover(null);
     } else {
       const span = tDomain.t1 - tDomain.t0;
       const deltaSec = ((pos.x - d.startX) / innerW) * span;
@@ -536,6 +591,26 @@ export default function PlanningStudioTtdPage() {
   function onPointerUp() {
     const d = dragRef.current;
     dragRef.current = null;
+    if (d?.mode === "node") {
+      const preview = nodeDragRef.current;
+      const deltaMin = Math.round((preview?.deltaSec ?? 0) / 60);
+      if (!preview || deltaMin === 0) { setNodeDrag(null); return; }
+      const sts = stMap[d.tripId] ?? [];
+      const st = sts[d.stIdx];
+      if (!st) { setNodeDrag(null); return; }
+      const newArr = hmsToSec(st.arrivalTime) + deltaMin * 60;
+      const newDep = hmsToSec(st.departureTime) + deltaMin * 60;
+      const prevDep = d.stIdx > 0 ? hmsToSec(sts[d.stIdx - 1].departureTime) : -1;
+      const nextArr = d.stIdx < sts.length - 1 ? hmsToSec(sts[d.stIdx + 1].arrivalTime) : Infinity;
+      if (newArr < 0) { setNodeDrag(null); toast.error("Orario prima di 00:00"); return; }
+      if (newArr <= prevDep || newDep >= nextArr) {
+        setNodeDrag(null);
+        toast.error("Ordine fermate violato", { description: "L'orario deve restare tra la fermata precedente e la successiva." });
+        return;
+      }
+      nodeMut.mutate({ tripId: d.tripId, stIdx: d.stIdx, deltaMin });
+      return;
+    }
     if (d?.mode !== "trip") return;
     const preview = tripDragRef.current;
     const deltaMinutes = Math.round((preview?.deltaSec ?? 0) / 60);
@@ -1374,6 +1449,28 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             </div>
           )}
 
+          {selectedTripId && baseAxis && (() => {
+            const g = baseGeoms.find(x => x.trip.id === selectedTripId);
+            return (
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl">
+                <span className="text-amber-300 font-semibold">Corsa: {g?.label ?? selectedTripId.slice(0, 8)}</span>
+                <button
+                  onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}
+                  title="Copia questa corsa più volte (cadenzamento): scegli intervallo e fascia"
+                  className="px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10">
+                  ⧉ Copia più volte
+                </button>
+                <button
+                  onClick={() => { if (window.confirm("Eliminare definitivamente questa corsa?")) delTripMut.mutate(selectedTripId); }}
+                  title="Elimina la corsa dal progetto"
+                  className="px-2 py-0.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
+                  🗑 Elimina
+                </button>
+                <button onClick={() => setSelectedTripId(null)}
+                  className="px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-100">✕</button>
+              </div>
+            );
+          })()}
           {baseAxis && (
             <svg
               ref={svgRef}
@@ -1384,6 +1481,11 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerLeave={() => setHover(null)}
+              onDoubleClick={(e) => {
+                const el = (e.target as Element).closest?.("[data-trip],[data-node]");
+                const id = el?.getAttribute("data-trip") || el?.getAttribute("data-node")?.split("|")[0] || null;
+                setSelectedTripId(cur => (id && id !== cur ? id : null));
+              }}
             >
               <defs>
                 <clipPath id="ttd-clip">
@@ -1472,14 +1574,41 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           strokeWidth={dragging || isMultBase ? 2.5 : 1.6}
                           strokeLinejoin="round" />
                       ))}
-                      {/* punti fermata (solo se zoom sufficiente) */}
-                      {(tDomain.t1 - tDomain.t0) < 4 * 3600 && g.segs.map((seg, i) => (
-                        <g key={`pts${i}`}>
-                          {seg.map((p, j) => (
-                            <circle key={j} cx={xOf(p.sec)} cy={yOf(p.dist)} r={1.8} fill={g.color} />
-                          ))}
-                        </g>
+                      {/* evidenzia la corsa SELEZIONATA (doppio click) */}
+                      {selectedTripId === g.trip.id && g.segs.map((seg, i) => (
+                        <polyline key={`sel${i}`}
+                          points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
+                          fill="none" stroke="#fbbf24" strokeWidth={3.5} opacity={0.55}
+                          strokeLinejoin="round" pointerEvents="none" />
                       ))}
+                      {/* PUNTINI interattivi fermata×orario: hover = orario+nodo,
+                          drag orizzontale = modifica l'orario di transito */}
+                      {(tDomain.t1 - tDomain.t0) < 6 * 3600 && g.sts.map((st, si) => {
+                        const dd = axis!.byStop.get(st.stopId);
+                        if (dd == null) return null;
+                        const extra = (nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si ? nodeDrag.deltaSec : 0)
+                          + (tripDrag?.tripId === g.trip.id ? tripDrag.deltaSec : 0);
+                        const sec = hmsToSec(st.departureTime) + extra;
+                        const nodeName = (axis!.stops.find(x => x.stopId === st.stopId) as any)?.stopName
+                          ?? (axis!.stops.find(x => x.stopId === st.stopId) as any)?.name ?? st.stopId;
+                        const isDraggingNode = nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si;
+                        return (
+                          <g key={`nd${si}`}>
+                            <circle cx={xOf(sec)} cy={yOf(dd)} r={isDraggingNode ? 5 : 3.5}
+                              fill={isDraggingNode ? "#fbbf24" : g.color} stroke="#0f172a" strokeWidth={1}
+                              data-node={`${g.trip.id}|${si}`}
+                              style={{ cursor: "ew-resize" }}>
+                              <title>{`${nodeName}\narr ${st.arrivalTime.slice(0, 5)} · part ${st.departureTime.slice(0, 5)}\n(trascina ←→ per spostare l'orario di transito)`}</title>
+                            </circle>
+                            {isDraggingNode && (
+                              <text x={xOf(sec) + 8} y={yOf(dd) - 8}
+                                fill="#fbbf24" fontSize={11} fontFamily="monospace" fontWeight="bold">
+                                {Math.round(nodeDrag!.deltaSec / 60) > 0 ? "+" : ""}{Math.round(nodeDrag!.deltaSec / 60)} min · {secToHm(sec)}
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
                       {/* fascia invisibile larga: hover + drag handle */}
                       {g.segs.map((seg, i) => (
                         <polyline key={`h${i}`}
@@ -1602,6 +1731,11 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               <p className="px-2 pb-2 text-[10px] text-slate-500">
                 Accendi altre linee per confrontarle con la <strong>{baseRoute?.shortName ?? "base"}</strong>: ogni linea ha un colore, le fermate comuni diventano interscambi ◆ sull'asse.
               </p>
+              <div className="px-2 pb-2">
+                <input value={lineSearch} onChange={e => setLineSearch(e.target.value)}
+                  placeholder="Cerca codice linea o percorso…"
+                  className="w-full px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-[11px] focus:outline-none focus:border-purple-500/50" />
+              </div>
               {candidatesQ.isLoading && (
                 <div className="px-2 py-2 text-slate-500 flex items-center gap-2">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" /> Ricerca varianti compatibili…
@@ -1612,8 +1746,15 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               )}
               {(() => {
                 // Raggruppa per LINEA: checkbox di linea (tutte le varianti) + varianti singole
+                const q = lineSearch.trim().toLowerCase();
+                const visCand = q
+                  ? sharedCandidates.filter(c =>
+                      (c.route.shortName ?? "").toLowerCase().includes(q)
+                      || String((c.variant as any).code ?? "").toLowerCase().includes(q)
+                      || (c.variant.name ?? "").toLowerCase().includes(q))
+                  : sharedCandidates;
                 const byRoute = new Map<string, { route: PsRoute; items: typeof sharedCandidates }>();
-                for (const c of sharedCandidates) {
+                for (const c of visCand) {
                   if (!byRoute.has(c.route.id)) byRoute.set(c.route.id, { route: c.route, items: [] as any });
                   byRoute.get(c.route.id)!.items.push(c);
                 }
