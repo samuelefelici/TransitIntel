@@ -10,10 +10,10 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy,
 } from "lucide-react";
 import {
-  listPsProjects, createPsProject, deletePsProject, activatePsProject,
+  listPsProjects, createPsProject, deletePsProject, activatePsProject, duplicatePsProject,
   type PsProject,
 } from "@/lib/planning-studio-api";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
@@ -71,6 +71,19 @@ export default function PlanningStudioListPage() {
       refresh();
     } catch (e: any) {
       toast.error("Errore eliminazione", { description: e?.message || "errore sconosciuto" });
+    }
+  }
+
+  async function handleDuplicate(p: PsProject) {
+    const name = prompt("Nome della copia:", `${p.name} (copia)`);
+    if (name === null) return;
+    const tid = toast.loading(`Duplico "${p.name}"…`, { description: "Copia del programma in corso…" });
+    try {
+      const copy = await duplicatePsProject(p.id, name.trim() || undefined);
+      toast.success(`Copia creata: "${copy.name}"`, { id: tid });
+      refresh();
+    } catch (e: any) {
+      toast.error("Duplicazione fallita", { id: tid, description: e?.message });
     }
   }
 
@@ -139,6 +152,7 @@ export default function PlanningStudioListPage() {
                 onDelete={() => handleDelete(p)}
                 onShare={() => setShareProject(p)}
                 onActivate={() => handleActivate(p)}
+                onDuplicate={() => handleDuplicate(p)}
               />
             ))}
           </div>
@@ -227,8 +241,8 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 }
 
 function ProjectCard({
-  project: p, onOpen, onDelete, onShare, onActivate,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void }) {
+  project: p, onOpen, onDelete, onShare, onActivate, onDuplicate,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void }) {
   const isOwner = p.myRole === "owner";
   // Eliminazione a DUE CLICK: il primo arma (cestino rosso "Confermi?"),
   // il secondo elimina. Si disarma da solo dopo 4 secondi.
@@ -319,6 +333,13 @@ function ProjectCard({
                 <Power className="w-3.5 h-3.5" />
               </button>
             )}
+            <button
+              onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+              className="p-1 rounded hover:bg-indigo-500/10 text-slate-500 hover:text-indigo-400 transition"
+              title="Duplica il progetto (copia completa: fermate, linee, corse, calendari, validità)"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
             <button
               onClick={(e) => { e.stopPropagation(); onShare(); }}
               className="p-1 rounded hover:bg-cyan-500/10 text-slate-500 hover:text-cyan-400 transition"

@@ -722,6 +722,141 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
   res.json({ project: rowToProject({ ...row, my_role: "owner" }) });
 });
 
+/* POST /api/planning-studio/projects/:id/duplicate — copia profonda del progetto.
+ *
+ * Duplica un intero programma di esercizio in un progetto nuovo (di proprietà
+ * dell'utente): fermate, cluster, linee, percorsi, orari, calendari, corse,
+ * transiti, validità (giorni + categorie), eccezioni, no-go, periodi, profilo
+ * calendario aziendale. NON copia il feed materializzato (la copia nasce non
+ * operativa) né le UDP/scenari (artefatti generati). Copia GENERICA e set-based:
+ * mappe id vecchio→nuovo in tabelle temporanee + lista colonne da
+ * information_schema (così prende anche le colonne aggiunte da ALTER). */
+router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  const userId = req.user!.id;
+  const src = proj.id as string;
+  const name = typeof req.body?.name === "string" && req.body.name.trim()
+    ? req.body.name.trim() : `${proj.name} (copia)`;
+
+  try {
+    const newId = await db.transaction(async (tx) => {
+      // 1) progetto nuovo = riga sorgente clonata (id nuovo, owner utente,
+      //    nome scelto, NON materializzato/operativo, non condiviso)
+      const pr = await tx.execute<any>(sql`
+        INSERT INTO ps_projects
+          (owner_user_id, name, description, agency_name, agency_url, agency_timezone,
+           default_lang, agency_settings, status, is_shared)
+        SELECT ${userId}::uuid, ${name}, description, agency_name, agency_url, agency_timezone,
+               default_lang, agency_settings, 'draft', false
+          FROM ps_projects WHERE id = ${src}::uuid
+        RETURNING id`);
+      const dst: string = pr.rows[0].id;
+
+      // helper: crea la mappa id vecchio→nuovo per una tabella (con scope)
+      const mkMap = async (tmp: string, table: string, scope: any) => {
+        await tx.execute(sql`CREATE TEMP TABLE ${sql.raw(tmp)} ON COMMIT DROP AS
+          SELECT id AS old_id, gen_random_uuid() AS new_id FROM ${sql.raw(table)} s WHERE ${scope}`);
+      };
+      // helper generico: copia una tabella rimappando id/project_id/FK.
+      // idCol=null per tabelle senza id proprio (child con solo FK).
+      const copy = async (table: string, opts: {
+        idMap?: string;                    // temp map per l'id proprio
+        genId?: boolean;                   // id proprio non referenziato → uuid nuovo
+        projectCol?: string | null;        // colonna project_id da riscrivere (default 'project_id')
+        fks?: Array<{ col: string; map: string }>;
+        scope: any;                        // WHERE per selezionare le righe sorgente
+      }) => {
+        const projectCol = opts.projectCol === undefined ? "project_id" : opts.projectCol;
+        const colsR = await tx.execute<any>(sql`
+          SELECT column_name FROM information_schema.columns
+           WHERE table_schema='public' AND table_name=${table} ORDER BY ordinal_position`);
+        const cols: string[] = colsR.rows.map((r: any) => r.column_name);
+        const fkByCol = new Map((opts.fks ?? []).map(f => [f.col, f.map]));
+        const exprs = cols.map((c) => {
+          if (opts.idMap && c === "id") return `ms.new_id`;
+          if (opts.genId && c === "id") return `gen_random_uuid()`;
+          if (projectCol && c === projectCol) return `'${dst}'::uuid`;
+          if (fkByCol.has(c)) return `f_${c}.new_id`;
+          return `s.${c}`;
+        });
+        const joins: string[] = [];
+        if (opts.idMap) joins.push(`JOIN ${opts.idMap} ms ON ms.old_id = s.id`);
+        for (const f of opts.fks ?? []) joins.push(`LEFT JOIN ${f.map} f_${f.col} ON f_${f.col}.old_id = s.${f.col}`);
+        await tx.execute(sql`
+          INSERT INTO ${sql.raw(table)} (${sql.raw(cols.join(", "))})
+          SELECT ${sql.raw(exprs.join(", "))}
+            FROM ${sql.raw(table)} s ${sql.raw(joins.join(" "))}
+           WHERE ${opts.scope}`);
+      };
+
+      const byProj = sql`s.project_id = ${src}::uuid`;
+      const tripScope = sql`s.trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${src}::uuid)`;
+
+      // 2) mappe id per le entità con id proprio (scope = progetto sorgente)
+      await mkMap("m_clu", "ps_stop_clusters", sql`s.project_id = ${src}::uuid`);
+      await mkMap("m_stp", "ps_stops", sql`s.project_id = ${src}::uuid`);
+      await mkMap("m_rte", "ps_routes", sql`s.project_id = ${src}::uuid`);
+      await mkMap("m_var", "ps_route_variants", sql`s.project_id = ${src}::uuid`);
+      await mkMap("m_cal", "ps_calendars", sql`s.project_id = ${src}::uuid`);
+      await mkMap("m_trp", "ps_trips", sql`s.project_id = ${src}::uuid`);
+      // day-type CUSTOM del progetto (i globali restano condivisi, non si copiano)
+      await mkMap("m_dt", "ps_day_types", sql`s.project_id = ${src}::uuid`);
+
+      // 3) copia in ordine di dipendenza
+      await copy("ps_stop_clusters", { idMap: "m_clu", scope: byProj });
+      await copy("ps_stops", { idMap: "m_stp", fks: [{ col: "cluster_id", map: "m_clu" }, { col: "parent_station", map: "m_stp" }], scope: byProj });
+      await copy("ps_routes", { idMap: "m_rte", scope: byProj });
+      await copy("ps_route_variants", { idMap: "m_var", fks: [{ col: "route_id", map: "m_rte" }], scope: byProj });
+      await copy("ps_variant_stops", { projectCol: null, fks: [{ col: "variant_id", map: "m_var" }, { col: "stop_id", map: "m_stp" }], scope: sql`s.variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${src}::uuid)` });
+      await copy("ps_shapes", { genId: true /* shapes.id non è referenziato */, fks: [{ col: "variant_id", map: "m_var" }], scope: byProj });
+      await copy("ps_calendars", { idMap: "m_cal", scope: byProj });
+      await copy("ps_calendar_dates", { projectCol: null, fks: [{ col: "calendar_id", map: "m_cal" }], scope: sql`s.calendar_id IN (SELECT id FROM ps_calendars WHERE project_id = ${src}::uuid)` });
+      await copy("ps_day_types", { idMap: "m_dt", scope: byProj });
+      await copy("ps_trips", { idMap: "m_trp", fks: [{ col: "route_id", map: "m_rte" }, { col: "variant_id", map: "m_var" }, { col: "calendar_id", map: "m_cal" }], scope: byProj });
+      await copy("ps_stop_times", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }, { col: "stop_id", map: "m_stp" }], scope: tripScope });
+      // validità giorni: trip rimappato; day_type rimappato se custom, altrimenti globale (LEFT JOIN → resta l'originale se non in mappa)
+      await copyDayValidity(tx, src);
+      await copy("ps_trip_category_validity", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
+      await copy("ps_trip_exceptions", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
+      await copy("ps_no_go_zones", { genId: true, scope: byProj });
+      await copy("ps_service_periods", { genId: true, scope: byProj });
+      // profilo calendario aziendale (PK = project_id, niente id). La tabella ha
+      // bootstrap lazy (creata al primo accesso al modulo calendario): copiamo
+      // solo se già esiste, così un progetto senza calendario aziendale non
+      // fa abortire la transazione.
+      const hasProfiles = await tx.execute<any>(sql`SELECT to_regclass('public.ps_calendar_profiles') AS t`);
+      if (hasProfiles.rows[0]?.t) {
+        await tx.execute(sql`
+          INSERT INTO ps_calendar_profiles (project_id, closed_periods, summer_period, extra_holidays)
+          SELECT ${dst}::uuid, closed_periods, summer_period, extra_holidays
+            FROM ps_calendar_profiles WHERE project_id = ${src}::uuid`);
+      }
+
+      return dst;
+    });
+
+    await logActivity(newId, userId, "ps.project.duplicate", { targetId: newId, payload: { from: src, name } });
+    const nr = await db.execute<any>(sql`SELECT *, 'owner' AS my_role FROM ps_projects WHERE id = ${newId}::uuid`);
+    res.json({ project: rowToProject(nr.rows[0]) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, src }, "duplicazione progetto fallita");
+    res.status(500).json({ error: `Duplicazione fallita: ${e?.message ?? "errore"}` });
+  }
+});
+
+/** ps_trip_day_validity: rimappa trip_id (sempre) e day_type_id SOLO se è un
+ *  day-type custom del progetto (i globali restano condivisi). */
+async function copyDayValidity(tx: any, src: string): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+    SELECT ft.new_id, COALESCE(fd.new_id, s.day_type_id), s.is_valid
+      FROM ps_trip_day_validity s
+      JOIN m_trp ft ON ft.old_id = s.trip_id
+      LEFT JOIN m_dt fd ON fd.old_id = s.day_type_id
+     WHERE s.trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${src}::uuid)
+    ON CONFLICT DO NOTHING`);
+}
+
 /* POST /api/planning-studio/projects/:id/activate — "Metti in esercizio".
  *
  * Il flusso aziendale prevede più programmi di esercizio ma UNO SOLO operativo:

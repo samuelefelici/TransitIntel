@@ -237,6 +237,15 @@ export async function deletePsProject(id: string): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${id}`, { method: "DELETE" });
 }
 
+/** Duplica un progetto (copia profonda: fermate, linee, percorsi, orari,
+ *  calendari, corse, validità…). La copia nasce non operativa. */
+export async function duplicatePsProject(id: string, name?: string): Promise<PsProject> {
+  const r = await apiFetch<{ project: PsProject }>(`/api/planning-studio/projects/${id}/duplicate`, {
+    method: "POST", body: JSON.stringify(name ? { name } : {}),
+  });
+  return r.project;
+}
+
 /** "Metti in esercizio": promuove il feed materializzato a feed attivo unico.
  * Da quel momento Sala Operativa, AVM, GTFS-RT e tariffe puntano a questo
  * programma. Richiede progetto già materializzato (sync PS → feed). */
