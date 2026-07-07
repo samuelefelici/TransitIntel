@@ -56,7 +56,9 @@ import {
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
-import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType } from "@/pages/driver-shifts/types";
+import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
+import { mkRipresaFromTrips } from "@/pages/driver-shifts/bdsi-tools";
+import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS } from "@/pages/driver-shifts/constants";
 import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
 import { AddActivityDialog } from "@/pages/driver-shifts/AddActivityDialog";
@@ -119,6 +121,15 @@ export default function DriverWorkspace({
   const [history, setHistory] = useState<Array<{ result: DriverShiftsResult; description: string; ts: number }>>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
   const [modifiedCount, setModifiedCount] = useState(0);
+  /* L'ottimizzatore (solver, parametri, config) è visibile solo senza
+   * risultato o dopo "Riottimizza": il workspace resta pulito. */
+  const [showOptimizer, setShowOptimizer] = useState(false);
+  /* ── Finestra di lavoro (bozze, spacchetta/rimpacchetta) ── */
+  const [wwOpen, setWwOpen] = useState(false);
+  const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
+  const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
+  const [wwPool, setWwPool] = useState<Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }>>([]);
+  const [wwImportBusy, setWwImportBusy] = useState(false);
 
   /* ── Baseline KPI per modalità what-if ── */
   const baselineSummaryRef = useRef<DriverShiftSummary | null>(
@@ -473,6 +484,7 @@ export default function DriverWorkspace({
   );
 
   /* ── History + drag handler ─────────────────────────── */
+  const wwFmtH = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
   const pushHistory = useCallback((newRes: DriverShiftsResult, description: string) => {
     setHistory(prev => {
       // Tronca eventuali "future" se siamo in mezzo
@@ -545,6 +557,167 @@ export default function DriverWorkspace({
     setActivityPrefill(null);
     toast.success("Attività aggiunta", { description: `${ACTIVITY_LABELS[opts.type]} su ${opts.driverId}` });
   }, [result, pushHistory]);
+
+  /* ── Finestra di lavoro: adapter + spacchetta/rimpacchetta/import ── */
+  useEffect(() => { if (result) setShowOptimizer(false); }, [result]);
+
+  const wwShifts = useMemo<WorkShiftView[]>(() => {
+    if (!result) return [];
+    return wwShiftIds
+      .map(id => result.driverShifts.find(s => s.driverId === id))
+      .filter((s): s is DriverShiftData => !!s)
+      .map(sh => ({
+        id: sh.driverId,
+        label: sh.driverId,
+        sub: `${TYPE_LABELS[sh.type] ?? sh.type} · ${sh.riprese.reduce((n, r) => n + r.trips.length, 0)} corse`,
+        unpacked: false,
+        activities: sh.riprese.flatMap((r) => r.trips.map(tp => ({
+          id: String(tp.tripId), isTrip: true, kindLabel: tp.routeName || "Corsa", kindColor: "#a78bfa",
+          timeLabel: `${wwFmtH(tp.departureMin)}→${wwFmtH(tp.arrivalMin)}`,
+          desc: `${tp.firstStopName ?? ""} → ${tp.lastStopName ?? ""}`,
+        }))),
+      }));
+  }, [result, wwShiftIds]);
+
+  const wwDrop = useCallback((rowId: string) => {
+    if (!result?.driverShifts.some(s => s.driverId === rowId)) return;
+    setWwShiftIds(ids => (ids.includes(rowId) ? ids : [...ids, rowId]));
+    setWwOpen(true);
+  }, [result]);
+
+  const wwDissolve = useCallback((shiftIds: string[]) => {
+    if (!result) return;
+    const ids = new Set(shiftIds);
+    const freed: RipresaTrip[] = [];
+    for (const s of result.driverShifts) {
+      if (!ids.has(s.driverId)) continue;
+      for (const r of s.riprese) for (const tp of r.trips) freed.push({ ...tp });
+    }
+    if (!freed.length) return;
+    const newRes: DriverShiftsResult = { ...result, driverShifts: result.driverShifts.filter(s => !ids.has(s.driverId)) };
+    setResult(newRes);
+    pushHistory(newRes, `Finestra di lavoro · spacchettati ${shiftIds.length} turni (${freed.length} corse scoperte)`);
+    setWwPool(prev => [...prev, ...freed.map(trip => ({ trip }))]);
+    setWwShiftIds(prev => prev.filter(id => !ids.has(id)));
+  }, [result, pushHistory]);
+
+  const wwImport = useCallback(async () => {
+    setWwImportBusy(true);
+    try {
+      const r = await fetch(`${getApiBase()}/api/scheduling/vehicle-scenarios/${vehicleScenarioId}/uncovered-imports`, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const have = new Set(wwPool.map(p => String(p.trip.tripId)));
+      const cards: Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }> = [];
+      for (const s of (data.sources ?? [])) for (const tp of (s.trips ?? [])) {
+        if (!tp?.tripId || have.has(String(tp.tripId))) continue;
+        have.add(String(tp.tripId));
+        cards.push({ trip: { ...tp, vehicleId: tp.vehicleId ?? "", vehicleType: tp.vehicleType ?? "12m" } as RipresaTrip, importedFrom: s.scenarioId, udpName: s.udpName });
+      }
+      if (!cards.length) { toast.info("Nessuna corsa scoperta nelle UDP con la stessa validità"); return; }
+      setWwPool(prev => [...prev, ...cards]);
+      toast.success(`${cards.length} corse scoperte importate`);
+    } catch (e: any) {
+      toast.error("Import scoperte fallito", { description: e?.message });
+    } finally { setWwImportBusy(false); }
+  }, [wwPool, vehicleScenarioId]);
+
+  const wwRepack = useCallback((onlyIds?: string[]) => {
+    const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
+    if (!result || sel.size === 0) return;
+    const srcIds = new Set(wwShiftIds);
+    const chosen: RipresaTrip[] = [];
+    for (const s of result.driverShifts) {
+      if (!srcIds.has(s.driverId)) continue;
+      for (const r of s.riprese) for (const tp of r.trips) if (sel.has(String(tp.tripId))) chosen.push({ ...tp });
+    }
+    const chosenPool = wwPool.filter(p => sel.has(String(p.trip.tripId)));
+    for (const p of chosenPool) chosen.push({ ...p.trip });
+    if (!chosen.length) return;
+    chosen.sort((a, b) => a.departureMin - b.departureMin);
+    for (let i = 1; i < chosen.length; i++) {
+      if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
+        toast.error("Corse sovrapposte", { description: `"${chosen[i - 1].routeName}" e "${chosen[i].routeName}" si accavallano.` });
+        return;
+      }
+    }
+    const newId = nextDriverId(result.driverShifts, "FL");
+    let split = -1, gmax = 0;
+    for (let i = 0; i < chosen.length - 1; i++) {
+      const g = chosen[i + 1].departureMin - chosen[i].arrivalMin;
+      if (g > gmax) { gmax = g; split = i; }
+    }
+    const chunks = gmax >= 60 && split >= 0 ? [chosen.slice(0, split + 1), chosen.slice(split + 1)] : [chosen];
+    const riprese = chunks.map(c => mkRipresaFromTrips(c, String((c[0] as any).vehicleId ?? ""), String((c[0] as any).vehicleType ?? "12m")));
+    const aS = riprese[0].startMin, aE = riprese[riprese.length - 1].endMin;
+    const newShift = {
+      driverId: newId, type: "intero" as DriverShiftType,
+      nastroStart: wwFmtH(aS), nastroEnd: wwFmtH(aE), nastroStartMin: aS, nastroEndMin: aE,
+      nastroMin: aE - aS, nastro: formatDuration(aE - aS),
+      workMin: riprese.reduce((a, r) => a + r.workMin, 0), work: formatDuration(riprese.reduce((a, r) => a + r.workMin, 0)),
+      interruptionMin: riprese.length === 2 ? Math.max(0, riprese[1].startMin - riprese[0].endMin) : 0,
+      interruption: riprese.length === 2 ? formatDuration(Math.max(0, riprese[1].startMin - riprese[0].endMin)) : null,
+      transferMin: 0, transferBackMin: 0, preTurnoMin: 0, cambiCount: 0, riprese,
+      verifyState: "da_verificare" as const,
+    } as DriverShiftData;
+    const chosenIds = new Set(chosen.map(tp => String(tp.tripId)));
+    const kept = result.driverShifts
+      .map(s => {
+        if (!srcIds.has(s.driverId)) return s;
+        const rp = s.riprese
+          .map(r => ({ ...r, trips: r.trips.filter(tp => !chosenIds.has(String(tp.tripId))) }))
+          .filter(r => r.trips.length > 0);
+        return rp.length === 0 ? null : { ...s, riprese: rp };
+      })
+      .filter((s): s is DriverShiftData => !!s);
+    const newRes: DriverShiftsResult = { ...result, driverShifts: [...kept, newShift] };
+    setResult(newRes);
+    pushHistory(newRes, `Finestra di lavoro · rimpacchettato ${newId} (${chosen.length} corse)`);
+    setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.trip.tripId))));
+    setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id))));
+    // ri-verifica FONTE UNICA: tipologia + fuorilinea automatici sul turno nuovo
+    void fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shifts: [newShift], config: operatorConfig }),
+    }).then(r => (r.ok ? r.json() : null)).then(data => {
+      const rr = data?.results?.[newId];
+      if (!rr || rr.error) return;
+      setResult(cur => cur ? {
+        ...cur,
+        driverShifts: cur.driverShifts.map(s => s.driverId === newId ? {
+          ...s,
+          type: (rr.type as DriverShiftType) ?? s.type,
+          bdsValidation: rr.bdsValidation ?? s.bdsValidation,
+          ...(typeof rr.transferMin === "number" ? { preTurnoMin: rr.preTurnoMin ?? 0, transferMin: rr.transferMin ?? 0, transferBackMin: rr.transferBackMin ?? 0 } : {}),
+          riprese: s.riprese.map((rp2, i, arr) => ({
+            ...rp2,
+            ...(i === 0 ? { preTurnoMin: rr.preTurnoMin ?? rp2.preTurnoMin, transferMin: rr.transferMin ?? rp2.transferMin, transferType: (rr.transferMin ?? 0) > 0 ? "depot_to_start" : rp2.transferType } : {}),
+            ...(i === arr.length - 1 ? { transferBackMin: rr.transferBackMin ?? rp2.transferBackMin, transferBackType: (rr.transferBackMin ?? 0) > 0 ? "end_to_depot" : rp2.transferBackType } : {}),
+          })),
+        } : s),
+      } : cur);
+    }).catch(() => { /* la tipologia resta da verificare */ });
+    const importedPacked = chosenPool.filter(p => p.importedFrom);
+    if (importedPacked.length) {
+      void (async () => {
+        const bySrc = new Map<string, string[]>();
+        for (const p of importedPacked) bySrc.set(p.importedFrom!, [...(bySrc.get(p.importedFrom!) ?? []), String(p.trip.tripId)]);
+        for (const [scenId, tripIds] of bySrc) {
+          try {
+            const gr = await fetch(`${getApiBase()}/api/service-program/scenarios/${scenId}`, { credentials: "include" });
+            if (!gr.ok) continue;
+            const sc = await gr.json();
+            const rm = new Set(tripIds);
+            await fetch(`${getApiBase()}/api/service-program/scenarios/${scenId}`, {
+              method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId))) } }),
+            });
+          } catch { /* best-effort */ }
+        }
+      })();
+    }
+    toast.success(`Turno guida ${newId} creato`, { description: `${chosen.length} corse · tipologia e fuorilinea in verifica automatica.` });
+  }, [result, wwShiftIds, wwSelected, wwPool, pushHistory, operatorConfig]);
 
   // Tipi di segmento eliminabili dal Gantt (tutto tranne le corse: fuori linea,
   // taxi/auto aziendale, pre-turno, attività).
@@ -669,7 +842,8 @@ export default function DriverWorkspace({
       <div className="shrink-0 px-4 py-2 border-b border-purple-500/15 bg-purple-950/15 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <Users className="w-4 h-4 text-purple-300/70" />
-          <span className="text-xs font-medium text-purple-200">Solver:</span>
+          <span className="text-xs font-medium text-purple-200">{(!result || showOptimizer) ? "Solver:" : "Area di Lavoro"}</span>
+          {(!result || showOptimizer) && (
           <div className="flex rounded-md overflow-hidden border border-purple-500/30">
             <button
               onClick={() => setSolverMode("greedy")}
@@ -692,6 +866,7 @@ export default function DriverWorkspace({
               <Brain className="w-3 h-3" /> CP-SAT
             </button>
           </div>
+          )}
           {scenarioLabel && (
             <span className="text-[10px] text-purple-300/40 font-mono px-1.5 py-0.5 bg-purple-500/5 rounded border border-purple-500/10 ml-1 truncate max-w-[200px]">
               {scenarioLabel}
@@ -701,7 +876,7 @@ export default function DriverWorkspace({
 
         <div className="flex items-center gap-2 flex-wrap">
           {/* Quick view dei parametri optimizer attivi */}
-          {solverMode === "cpsat" && optimizerCfg && (
+          {(!result || showOptimizer) && solverMode === "cpsat" && optimizerCfg && (
             <div className="hidden lg:flex items-center gap-1.5 text-[10px] text-purple-300/60 px-2 py-1 rounded border border-purple-500/15 bg-purple-500/5">
               <span title="Min lavoro/turno">⏱ {optimizerCfg.minWorkPerDuty ?? 360}min</span>
               <span className="text-purple-500/30">·</span>
@@ -712,6 +887,8 @@ export default function DriverWorkspace({
               <span title="Score per duty">+{optimizerCfg.scorePerDuty ?? 100}/duty</span>
             </div>
           )}
+          {(!result || showOptimizer) && (
+          <>
           <button
             onClick={() => setRulesOpen(true)}
             className="flex items-center gap-1.5 text-[11px] text-indigo-300 px-2.5 py-1 rounded border border-indigo-500/30 bg-indigo-500/8 hover:bg-indigo-500/15 transition"
@@ -724,8 +901,20 @@ export default function DriverWorkspace({
           >
             <Settings className="w-3 h-3" /> Config CSP
           </button>
+          </>
+          )}
           <button
-            onClick={runOptimization}
+            onClick={() => setWwOpen(o => !o)}
+            title="Finestra di lavoro: trascina turni interi, spacchetta, componi bozze e rimpacchetta"
+            className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition ${wwOpen ? "border-purple-500/50 bg-purple-500/20 text-purple-200" : "border-purple-500/30 text-purple-300/70 hover:bg-purple-500/10"}`}
+          >
+            🪟 Finestra di lavoro{wwShiftIds.length > 0 ? ` (${wwShiftIds.length})` : ""}
+          </button>
+          <button
+            onClick={() => {
+              if (result && !showOptimizer) { setShowOptimizer(true); toast.info("Parametri ottimizzatore riaperti", { description: "Regola solver e parametri, poi premi di nuovo per rilanciare." }); return; }
+              runOptimization();
+            }}
             disabled={loading || cpsat.state === "starting" || cpsat.state === "running"}
             className="flex items-center gap-1.5 text-[11px] font-medium text-white px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition"
           >
@@ -1393,9 +1582,47 @@ export default function DriverWorkspace({
                   </ol>
                 </div>
               )}
+              {wwOpen && (
+                <div className="mb-2">
+                  <WorkWindowPanel
+                    shifts={wwShifts}
+                    loose={wwPool.map((p) => ({
+                      id: String(p.trip.tripId), isTrip: true,
+                      kindLabel: p.trip.routeName || "Corsa",
+                      kindColor: p.importedFrom ? "#fb7185" : "#a78bfa",
+                      timeLabel: `${wwFmtH(p.trip.departureMin)}→${wwFmtH(p.trip.arrivalMin)}`,
+                      desc: `${p.trip.firstStopName ?? ""} → ${p.trip.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                    }))}
+                    onReorderLoose={(from, to) => setWwPool(prev => { const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n; })}
+                    onImport={wwImport}
+                    selected={wwSelected}
+                    onToggleSelect={(id) => setWwSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+                    onToggleSelectAll={(shiftId) => {
+                      const sh = wwShifts.find(s => s.id === shiftId); if (!sh) return;
+                      const tripIds = sh.activities.filter(a => a.isTrip).map(a => a.id);
+                      setWwSelected(prev => {
+                        const n = new Set(prev);
+                        const all = tripIds.every(id => n.has(id));
+                        tripIds.forEach(id => { if (all) n.delete(id); else n.add(id); });
+                        return n;
+                      });
+                    }}
+                    onDropShift={wwDrop}
+                    onRemoveShift={(id) => setWwShiftIds(ids => ids.filter(x => x !== id))}
+                    onUnpack={(id) => wwDissolve([id])}
+                    onUnpackAll={() => wwDissolve(wwShiftIds)}
+                    onRepack={() => wwRepack()}
+                    onRepackIds={(ids) => wwRepack(ids)}
+                    onClose={() => setWwOpen(false)}
+                    busy={wwImportBusy}
+                    accent="purple"
+                  />
+                </div>
+              )}
               <InteractiveGantt
                 rows={shownRows}
                 bars={shownBars}
+                rowsDraggable={wwOpen}
                 minHour={ganttBounds.min}
                 maxHour={ganttBounds.max}
                 editable={ganttMode === "exploded"}
