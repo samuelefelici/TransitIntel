@@ -806,7 +806,7 @@ export default function PlanningStudioTtdPage() {
   const chainName = (it: ChainItem) =>
     it.kind === "base"
       ? `${baseRoute?.shortName ?? "base"} (riferimento)`
-      : (() => { const c = sharedCandidates.find(x => x.variant.id === it.variantId); return c ? `${c.route.shortName} · ${c.variant.name}` : "?"; })();
+      : (() => { const c = sharedCandidates.find(x => x.variant.id === it.variantId); return c ? `${c.route.shortName} · ${(c.variant as any).code ? `${(c.variant as any).code} · ` : ""}${c.variant.name}` : "?"; })();
   const chainColor = (it: ChainItem) =>
     it.kind === "base"
       ? baseColor
@@ -1295,7 +1295,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
         >
           <option value="">Variante…</option>
           {variants.map(v => (
-            <option key={v.id} value={v.id}>{v.name} ({v.direction === 0 ? "andata" : "ritorno"})</option>
+            <option key={v.id} value={v.id}>{(v as any).code ? `${(v as any).code} · ` : ""}{v.name} ({v.direction === 0 ? "andata" : "ritorno"})</option>
           ))}
         </select>
         <select
@@ -1658,7 +1658,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                             })}
                             className="accent-cyan-500"
                           />
-                          <span className="flex-1 truncate text-slate-300">{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
+                          <span className="flex-1 truncate text-slate-300">{(c.variant as any).code ? `${(c.variant as any).code} · ` : ""}{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
                           <span className="text-[10px] text-slate-500">{c.shared} ferm. comuni</span>
                         </label>
                       ))}
@@ -1752,7 +1752,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                         className="w-full px-2 py-1.5 rounded bg-slate-800 border border-slate-700">
                         <option value="">+ aggiungi una linea accesa alla catena…</option>
                         {addable.map(c => (
-                          <option key={c.variant.id} value={c.variant.id}>{c.route.shortName} · {c.variant.name}</option>
+                          <option key={c.variant.id} value={c.variant.id}>{c.route.shortName} · {(c.variant as any).code ? `${(c.variant as any).code} · ` : ""}{c.variant.name}</option>
                         ))}
                       </select>
                       {overlayOn.size === 0 && (
