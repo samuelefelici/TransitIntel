@@ -158,6 +158,8 @@ export interface PsTrip {
   firstDeparture?: string | null; // HH:MM:SS del primo stop_time (dalla lista)
   /** day-type validi dal calendario aziendale (feriale/sabato/festivo/…) */
   dayTypeCodes?: string[];
+  /** macro-categorie del calendario aziendale (es. Scuole Aperte) */
+  categories?: Array<{ id: string; code: string; name: string; color: string | null }>;
   createdAt: string;
 }
 
