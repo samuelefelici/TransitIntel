@@ -61,7 +61,13 @@ interface RouteTimetable {
     clusterLogical?: boolean; clusterLat?: number | null; clusterLon?: number | null;
   }>;
   cityNodes?: Array<{ name: string; lat: number; lon: number }>;
-  trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[] }>;
+  /** macro-categorie del calendario aziendale usate dalle corse (es. Scuole aperte) */
+  categories?: Array<{ id: string; code: string; name: string; color: string | null }>;
+  trips: Array<{
+    tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[];
+    /** validità dal calendario aziendale PS: day-type (feriale/sabato/festivo/…) e categorie */
+    dayTypeCodes?: string[]; categoryIds?: string[];
+  }>;
 }
 
 interface PsRoute {
@@ -481,12 +487,20 @@ const POSTER_CSS = `
   table.mx thead th { background: var(--c); color: #fff; font-weight: 800; }
   table.mx tbody tr:nth-child(even) td { background: #fafafa; }
   table.mx td.term { font-weight: 700; }
+  /* marcature sabato (fuso nel gruppo Feriale): colonna evidenziata */
+  table.mx thead tr th.exclsat { background: #f59e0b; color: #111; }
+  table.mx tbody tr td.exclsat { background: #fde68a; }
+  table.mx thead tr th.solosat { background: #06b6d4; color: #111; }
+  table.mx tbody tr td.solosat { background: #a5f3fc; }
+  .legend { font-size: 8.5px; color: #444; margin: 1px 0 4px; display: flex; gap: 12px; align-items: center; }
+  .legend .sw { display: inline-block; width: 9px; height: 9px; border: 1px solid #999; margin-right: 3px; vertical-align: -1px; }
 `;
 
 interface PosterDir {
   dirLabel: string;
-  nodes: Array<{ name: string; term: boolean }>;   // righe = fermate principali, in ordine
-  days: Array<{ name: string; trips: Array<{ dep: string; cells: string[] }> }>; // colonne = corse; cells[i] = transito al nodo i
+  nodes: Array<{ name: string; term: boolean }>;   // righe = TUTTE le fermate, in ordine
+  // colonne = corse; cells[i] = transito al nodo i; flag = marcatura sabato
+  days: Array<{ name: string; trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat" }> }>;
 }
 interface PosterLine {
   route: RouteTimetable["route"];
@@ -512,19 +526,23 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
     ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: line.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? line.cityNodes : undefined })}</svg>`
     : "<div class='diagram'></div>";
 
-  // MATRICE: righe = fermate, colonne = corse (orario di partenza), valori = transito.
+  // MATRICE: righe = TUTTE le fermate, colonne = corse (orario di partenza), valori = transito.
   const dirsHtml = line.directions.map((dir) =>
     dir.days.map((day) => {
-      if (!day.trips.length) return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)}</h4><p style="font-size:10px;color:#666">Nessuna corsa.</p></div>`;
+      if (!day.trips.length) return "";
       const chunks: Array<typeof day.trips> = [];
       for (let i = 0; i < day.trips.length; i += PER) chunks.push(day.trips.slice(i, i + PER));
       const tables = chunks.map((ch) => {
-        const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => `<th>${esc(t.dep)}</th>`).join("")}</tr>`;
+        const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => `<th class="${t.flag ?? ""}">${esc(t.dep)}</th>`).join("")}</tr>`;
         const rows = dir.nodes.map((nd, i) =>
-          `<tr><th class="stop${nd.term ? " term" : ""}">${esc(nd.name)}</th>${ch.map((t) => `<td class="${nd.term ? "term" : ""}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
+          `<tr><th class="stop${nd.term ? " term" : ""}">${esc(nd.name)}</th>${ch.map((t) => `<td class="${[nd.term ? "term" : "", t.flag ?? ""].filter(Boolean).join(" ")}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
         return `<table class="mx"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
       }).join("");
-      return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)} · ${day.trips.length} corse</h4>${tables}</div>`;
+      const legends: string[] = [];
+      if (day.trips.some((t) => t.flag === "exclsat")) legends.push(`<span><span class="sw" style="background:#fde68a"></span>Escluso il sabato</span>`);
+      if (day.trips.some((t) => t.flag === "solosat")) legends.push(`<span><span class="sw" style="background:#a5f3fc"></span>Solo il sabato</span>`);
+      const legend = legends.length ? `<div class="legend">${legends.join("")}</div>` : "";
+      return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)} · ${day.trips.length} corse</h4>${tables}${legend}</div>`;
     }).join(""),
   ).join("");
 
@@ -800,14 +818,17 @@ export default function TimetablesPage() {
     } finally { setPrinting(false); }
   }
 
-  // Stampa "locandine di linea": una locandina per linea × direzione, con le
-  // PARTENZE di TUTTE le corse divise per tipo di giorno (colonne).
+  // Stampa "locandine di linea": una locandina per linea × direzione.
+  // Righe = TUTTE le fermate della linea; gruppi per VALIDITÀ dal calendario
+  // aziendale di Planner Studio: per ogni macro-categoria (es. Scuole aperte)
+  // → "Feriale" (con il SABATO fuso: le corse feriali non effettuate il sabato
+  // sono evidenziate "Escluso il sabato", quelle solo del sabato "Solo il
+  // sabato") e "Festivo"; gli eventuali day-type custom restano gruppi propri.
   async function printPosters() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
-    const dtName = new Map(dayTypes.map((d) => [d.id, d.name]));
+    const dtByCode = new Map(dayTypes.map((d) => [d.code, d]));
     setPrinting(true);
     try {
       const lines: PosterLine[] = [];
@@ -816,56 +837,86 @@ export default function TimetablesPage() {
         let pathStops: RouteTimetable["pathStops"]; let cityNodes: RouteTimetable["cityNodes"];
         const directions: PosterDir[] = [];
         for (const dir of dirs) {
-          // scarico la linea per ogni tipo di giorno (stessa direzione)
-          const rts: RouteTimetable[] = [];
-          for (const dt of routeDayTypeIds) {
-            const rt = await apiFetch<RouteTimetable>(`${ptt}/route/${encodeURIComponent(rid)}?dayTypeId=${encodeURIComponent(dt)}&directionId=${dir}`);
-            rts.push(rt);
-            if (!route) { route = rt.route; pathStops = rt.pathStops; cityNodes = rt.cityNodes; }
+          // UNA chiamata per direzione, SENZA filtro day-type: tutte le corse
+          // attive con la loro validità (dayTypeCodes + categoryIds).
+          const rt = await apiFetch<RouteTimetable>(`${ptt}/route/${encodeURIComponent(rid)}?directionId=${dir}`);
+          if (!route) { route = rt.route; pathStops = rt.pathStops; cityNodes = rt.cityNodes; }
+          if (!rt.trips.length) continue;
+
+          // righe = TUTTE le fermate della matrice master (in ordine di percorso)
+          const nodes = rt.stops.map((s, i) => ({
+            name: s.stopName, term: i === 0 || i === rt.stops.length - 1,
+          }));
+
+          // colonna per corsa: transiti a tutte le fermate
+          const cols = rt.trips.map((t) => {
+            const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
+            const dep = cells.find((c) => c) ?? "";
+            return {
+              dep, cells, sort: hhmmToMin(dep) ?? 9999,
+              dayCodes: new Set(t.dayTypeCodes ?? []),
+              catIds: (t.categoryIds ?? []),
+            };
+          }).filter((c) => c.cells.some((x) => x));
+
+          // sezioni per macro-categoria (calendario aziendale); se il progetto
+          // non usa le categorie → un'unica sezione senza prefisso
+          const cats: Array<{ id: string | null; name: string }> = (rt.categories?.length)
+            ? rt.categories.map((c) => ({ id: c.id, name: c.name }))
+            : [{ id: null, name: "" }];
+          if (rt.categories?.length && cols.some((c) => c.catIds.length === 0)) {
+            cats.push({ id: "__none", name: "Senza categoria" });
           }
-          if (!rts.length) continue;
-          // nodi principali (in ordine): cluster logici + capilinea, dal giorno con più fermate
-          const base = rts.reduce((a, b) => (b.stops.length > a.stops.length ? b : a), rts[0]);
-          const seen = new Set<string>();
-          const nodeKeys: Array<{ key: string; name: string; kind: "cluster" | "stop"; ref: string; term: boolean }> = [];
-          base.stops.forEach((s, i) => {
-            const term = i === 0 || i === base.stops.length - 1;
-            if (s.clusterLogical && s.clusterId) {
-              const k = `c:${s.clusterId}`;
-              if (!seen.has(k)) { seen.add(k); nodeKeys.push({ key: k, name: s.clusterName || s.stopName, kind: "cluster", ref: s.clusterId, term }); }
-            } else if (term) {
-              const k = `s:${s.stopId}`;
-              if (!seen.has(k)) { seen.add(k); nodeKeys.push({ key: k, name: s.stopName, kind: "stop", ref: s.stopId, term: true }); }
-            }
-          });
-          const days = rts.map((rt, di) => {
-            const idxByStop = new Map<string, number>();
-            const idxByCluster = new Map<string, number[]>();
-            rt.stops.forEach((s, i) => {
-              idxByStop.set(s.stopId, i);
-              if (s.clusterId) { const a = idxByCluster.get(s.clusterId) ?? []; a.push(i); idxByCluster.set(s.clusterId, a); }
-            });
-            const idxsOf = (nk: typeof nodeKeys[number]) =>
-              nk.kind === "cluster" ? (idxByCluster.get(nk.ref) ?? []) : (idxByStop.has(nk.ref) ? [idxByStop.get(nk.ref)!] : []);
-            // una colonna per corsa: transito a ciascun nodo + orario di partenza
-            const trips = rt.trips.map((t) => {
-              const cells = nodeKeys.map((nk) => {
-                for (const i of idxsOf(nk)) { const v = t.times[i]; if (v) return v.slice(0, 5); }
-                return "";
-              });
-              const depIdx = cells.findIndex((c) => c);
-              return { dep: depIdx >= 0 ? cells[depIdx] : "", cells, sort: hhmmToMin(cells.find((c) => c)) ?? 9999 };
-            })
-              .filter((t) => t.cells.some((c) => c))
+
+          const days: PosterDir["days"] = [];
+          const pushGroup = (name: string, trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat"; sort: number }>) => {
+            if (!trips.length) return;
+            // CONTROLLO RIPETIZIONI: colonne identiche (stessi transiti e
+            // stessa marcatura) collassate in una sola
+            const seen = new Set<string>();
+            const unique = trips
               .sort((a, b) => a.sort - b.sort)
+              .filter((t) => {
+                const k = `${t.flag ?? ""}|${t.cells.join("|")}`;
+                if (seen.has(k)) return false;
+                seen.add(k); return true;
+              })
               .map(({ sort: _s, ...t }) => t);
-            return { name: rt.dayTypeName ?? dtName.get(routeDayTypeIds[di]) ?? "—", trips };
-          });
-          directions.push({
-            dirLabel: dir === "0" ? "Andata" : "Ritorno",
-            nodes: nodeKeys.map((n) => ({ name: n.name, term: n.term })),
-            days,
-          });
+            days.push({ name, trips: unique });
+          };
+
+          for (const cat of cats) {
+            const inCat = cols.filter((c) =>
+              cat.id === null ? true : cat.id === "__none" ? c.catIds.length === 0 : c.catIds.includes(cat.id));
+            if (!inCat.length) continue;
+            const pfx = cat.name ? `${cat.name} · ` : "";
+            // FERIALE con sabato fuso
+            pushGroup(`${pfx}Feriale`, inCat
+              .filter((c) => c.dayCodes.has("feriale") || c.dayCodes.has("sabato"))
+              .map((c) => ({
+                dep: c.dep, cells: c.cells, sort: c.sort,
+                flag: c.dayCodes.has("feriale") && !c.dayCodes.has("sabato") ? "exclsat" as const
+                  : !c.dayCodes.has("feriale") && c.dayCodes.has("sabato") ? "solosat" as const : undefined,
+              })));
+            // FESTIVO
+            pushGroup(`${pfx}Festivo`, inCat
+              .filter((c) => c.dayCodes.has("festivo"))
+              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+            // eventuali day-type CUSTOM del progetto (tutte le altre validità)
+            const customCodes = [...new Set(inCat.flatMap((c) => [...c.dayCodes]))]
+              .filter((code) => code !== "feriale" && code !== "sabato" && code !== "festivo").sort();
+            for (const code of customCodes) {
+              pushGroup(`${pfx}${dtByCode.get(code)?.name ?? code}`, inCat
+                .filter((c) => c.dayCodes.has(code))
+                .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+            }
+            // CONTROLLO DATI: corse senza alcuna validità giorno → gruppo dedicato
+            pushGroup(`${pfx}⚠ Senza validità giorno`, inCat
+              .filter((c) => c.dayCodes.size === 0)
+              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+          }
+
+          directions.push({ dirLabel: dir === "0" ? "Andata" : "Ritorno", nodes, days });
         }
         if (route) lines.push({ route: { ...route, color: effColor(route.routeId, route.color) }, pathStops, cityNodes, directions });
       }
@@ -1051,9 +1102,9 @@ export default function TimetablesPage() {
               </button>
               <button
                 onClick={printPosters}
-                disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
+                disabled={printing || selectedRouteIds.length === 0}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Locandina: percorso stilizzato + partenze cadenzate, per direzione"
+                title="Locandina per direzione: tutte le fermate come righe; validità dal calendario aziendale (per macro-categoria: Feriale con sabato fuso + Festivo). Le corse feriali non effettuate il sabato sono evidenziate."
               >
                 {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapIcon className="w-4 h-4" />}
                 Stampa locandine
