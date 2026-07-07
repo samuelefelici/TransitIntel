@@ -506,6 +506,227 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
 
+/* ─── UNIFICA CORSE GEMELLE (merge-twins) ─────────────────────────────────
+ * Dopo un import GTFS la stessa partenza (stesso percorso, stessi orari a tutte
+ * le fermate, stesso headsign) può esistere come PIÙ corse, una per service_id
+ * (es. lun-ven + sabato). Sono un artefatto dell'import: nel modello a valle
+ * (matrice di validità + UDP) una sola corsa può valere su più giorni, e la
+ * UDP la distribuisce da sola sui vari tipi-giorno.
+ *
+ * Fondere è corretto E sicuro purché la corsa fusa punti a un CALENDARIO
+ * UNIONE (lun-ven ∪ sabato = lun-sab): così restano coerenti la
+ * materializzazione UDP→feed (service = calendar_id → pattern ps_calendars),
+ * la sync categorie (usa il pattern del calendario) e le UDP.
+ *
+ * ?dryRun=1 (o body.dryRun) → SOLO anteprima, nessuna scrittura.
+ * ────────────────────────────────────────────────────────────────────────── */
+router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+  const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true" || req.body?.dryRun === true;
+  const routeId = typeof req.body?.routeId === "string" && UUID_RE.test(req.body.routeId) ? req.body.routeId : null;
+
+  // 1. Corse candidate (attive, non prototipo) + orari
+  const tripsR = await db.execute<any>(sql`
+    SELECT t.id, t.variant_id, t.calendar_id, t.headsign, t.short_name, t.direction,
+           to_char(t.valid_from,'YYYY-MM-DD') AS valid_from,
+           to_char(t.valid_to,'YYYY-MM-DD') AS valid_to,
+           t.attributes, t.created_at
+      FROM ps_trips t
+     WHERE t.project_id = ${projId}::uuid
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+       ${routeId ? sql`AND t.route_id = ${routeId}::uuid` : sql``}
+     ORDER BY t.created_at ASC, t.id ASC
+  `);
+  const trips: any[] = tripsR.rows ?? [];
+  if (trips.length === 0) { res.json({ dryRun, groups: [], tripsBefore: 0, tripsAfter: 0, removed: 0 }); return; }
+
+  const tripIds = trips.map(t => t.id);
+  const stR = await db.execute<any>(sql`
+    SELECT trip_id, stop_seq, stop_id, arrival_time, departure_time
+      FROM ps_stop_times
+     WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+     ORDER BY trip_id, stop_seq ASC
+  `);
+  const stByTrip = new Map<string, string[]>();
+  for (const r of stR.rows ?? []) {
+    const arr = stByTrip.get(r.trip_id) ?? [];
+    arr.push(`${r.stop_id}@${String(r.arrival_time).slice(0, 8)}/${String(r.departure_time).slice(0, 8)}`);
+    stByTrip.set(r.trip_id, arr);
+  }
+
+  // 2. Raggruppa per FIRMA: variante + headsign + orari esatti a tutte le fermate
+  const groups = new Map<string, any[]>();
+  for (const t of trips) {
+    const sts = stByTrip.get(t.id);
+    if (!sts || sts.length < 2) continue; // senza orari non è gemella affidabile
+    const sig = `${t.variant_id}|${(t.headsign ?? "").trim().toLowerCase()}|${sts.join(">")}`;
+    const arr = groups.get(sig) ?? [];
+    arr.push(t);
+    groups.set(sig, arr);
+  }
+  const mergeGroups = [...groups.values()].filter(g => g.length >= 2);
+
+  // 3. Calendari sorgente (pattern effettivo per l'unione)
+  const calIds = new Set<string>();
+  for (const g of mergeGroups) for (const t of g) if (t.calendar_id) calIds.add(t.calendar_id);
+  const calById = new Map<string, any>();
+  if (calIds.size > 0) {
+    const cR = await db.execute<any>(sql`
+      SELECT id, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
+             to_char(start_date,'YYYY-MM-DD') AS start_date, to_char(end_date,'YYYY-MM-DD') AS end_date
+        FROM ps_calendars WHERE id = ANY(${`{${[...calIds].join(",")}}`}::uuid[])
+    `);
+    for (const c of cR.rows ?? []) calById.set(c.id, c);
+  }
+  const DOW = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] as const;
+  const WD_LABEL = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"];
+
+  // costruisce la descrizione del gruppo + il piano di unione
+  const plans = mergeGroups.map(g => {
+    const primary = g[0]; // già ordinato per created_at, id
+    const others = g.slice(1);
+    // unione pattern settimanale
+    const wd = [false, false, false, false, false, false, false];
+    let minStart: string | null = null, maxEnd: string | null = null;
+    let anyCal = false;
+    for (const t of g) {
+      const c = t.calendar_id ? calById.get(t.calendar_id) : null;
+      if (!c) continue;
+      anyCal = true;
+      DOW.forEach((d, i) => { if (c[d]) wd[i] = true; });
+      if (c.start_date && (!minStart || c.start_date < minStart)) minStart = c.start_date;
+      if (c.end_date && (!maxEnd || c.end_date > maxEnd)) maxEnd = c.end_date;
+    }
+    // periodo di validità corsa (valid_from/to): null in QUALSIASI sorgente = illimitato
+    const anyNullFrom = g.some(t => !t.valid_from);
+    const anyNullTo = g.some(t => !t.valid_to);
+    const vFrom = anyNullFrom ? null : g.map(t => t.valid_from).sort()[0];
+    const vTo = anyNullTo ? null : g.map(t => t.valid_to).sort().slice(-1)[0];
+    const st0 = stByTrip.get(primary.id)![0];
+    const dep = st0.split("@")[1]?.split("/")[1]?.slice(0, 5) ?? "";
+    return {
+      primaryId: primary.id,
+      removeIds: others.map(t => t.id),
+      variantId: primary.variant_id,
+      headsign: primary.headsign,
+      departure: dep,
+      count: g.length,
+      unionWeekdays: wd,
+      unionWeekdaysLabel: wd.map((on, i) => on ? WD_LABEL[i] : null).filter(Boolean).join(" "),
+      unionStart: minStart, unionEnd: maxEnd, anyCal,
+      validFrom: vFrom, validTo: vTo,
+    };
+  });
+
+  if (dryRun) {
+    res.json({
+      dryRun: true,
+      groups: plans,
+      tripsBefore: trips.length,
+      tripsAfter: trips.length - plans.reduce((s, p) => s + p.removeIds.length, 0),
+      removed: plans.reduce((s, p) => s + p.removeIds.length, 0),
+    });
+    return;
+  }
+
+  // 4. APPLICA in transazione
+  let removed = 0;
+  const unionCalCache = new Map<string, string>(); // firma pattern+range → calendarId
+  await db.transaction(async (tx) => {
+    for (const p of plans) {
+      const g = mergeGroups.find(gr => gr[0].id === p.primaryId)!;
+      const srcCalIds = [...new Set(g.map(t => t.calendar_id).filter(Boolean))] as string[];
+      let unionCalId: string | null = null;
+
+      if (p.anyCal) {
+        const sigCal = `${p.unionWeekdays.map(b => b ? 1 : 0).join("")}|${p.unionStart ?? ""}|${p.unionEnd ?? ""}`;
+        unionCalId = unionCalCache.get(sigCal) ?? null;
+        if (!unionCalId) {
+          const ins = await tx.execute<any>(sql`
+            INSERT INTO ps_calendars (project_id, code, name, monday, tuesday, wednesday,
+                                      thursday, friday, saturday, sunday, start_date, end_date)
+            VALUES (${projId}::uuid, ${`U-${sigCal.slice(0, 7)}-${p.departure.replace(":", "")}`}, ${"Unione corse gemelle"},
+                    ${p.unionWeekdays[0]}, ${p.unionWeekdays[1]}, ${p.unionWeekdays[2]}, ${p.unionWeekdays[3]},
+                    ${p.unionWeekdays[4]}, ${p.unionWeekdays[5]}, ${p.unionWeekdays[6]},
+                    ${p.unionStart ?? p.validFrom ?? "2020-01-01"}::date, ${p.unionEnd ?? p.validTo ?? "2030-12-31"}::date)
+            RETURNING id
+          `);
+          unionCalId = ins.rows[0].id;
+          unionCalCache.set(sigCal, unionCalId!);
+          // union delle eccezioni-calendario (calendar_dates) delle sorgenti
+          if (srcCalIds.length > 0) {
+            await tx.execute(sql`
+              INSERT INTO ps_calendar_dates (calendar_id, date, exception_type)
+              SELECT ${unionCalId}::uuid, date, MIN(exception_type)
+                FROM ps_calendar_dates
+               WHERE calendar_id = ANY(${`{${srcCalIds.join(",")}}`}::uuid[])
+               GROUP BY date
+              ON CONFLICT (calendar_id, date) DO NOTHING
+            `);
+          }
+        }
+      }
+
+      const removeLit = `{${p.removeIds.join(",")}}`;
+      // union ps_trip_day_validity (is_valid=true da QUALSIASI sorgente)
+      await tx.execute(sql`
+        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+        SELECT ${p.primaryId}::uuid, day_type_id, true
+          FROM ps_trip_day_validity
+         WHERE trip_id = ANY(${removeLit}::uuid[]) AND is_valid = true
+         GROUP BY day_type_id
+        ON CONFLICT (trip_id, day_type_id) DO UPDATE SET is_valid = true
+      `);
+      // union ps_trip_category_validity
+      await tx.execute(sql`
+        INSERT INTO ps_trip_category_validity (trip_id, category_id)
+        SELECT ${p.primaryId}::uuid, category_id
+          FROM ps_trip_category_validity
+         WHERE trip_id = ANY(${removeLit}::uuid[])
+         GROUP BY category_id
+        ON CONFLICT (trip_id, category_id) DO NOTHING
+      `);
+      // union eccezioni corsa (add vince: MIN(exception_type) → 1 se presente)
+      await tx.execute(sql`
+        INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+        SELECT ${p.primaryId}::uuid, date, MIN(exception_type), NULL
+          FROM ps_trip_exceptions
+         WHERE trip_id = ANY(${removeLit}::uuid[])
+         GROUP BY date
+        ON CONFLICT (trip_id, date) DO NOTHING
+      `);
+      // aggiorna la primaria: calendario-unione, periodo più ampio, maschera unione
+      await tx.execute(sql`
+        UPDATE ps_trips
+           SET calendar_id = COALESCE(${unionCalId}::uuid, calendar_id),
+               valid_from = ${p.validFrom}::date,
+               valid_to = ${p.validTo}::date,
+               attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ weekdays: p.unionWeekdays })}::jsonb,
+               updated_at = now()
+         WHERE id = ${p.primaryId}::uuid
+      `);
+      // elimina le corse fuse (ps_trip_category_validity non ha FK con cascata)
+      await tx.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${removeLit}::uuid[])`);
+      await tx.execute(sql`DELETE FROM ps_trips WHERE id = ANY(${removeLit}::uuid[]) AND project_id = ${projId}::uuid`);
+      removed += p.removeIds.length;
+    }
+  });
+
+  await logActivity(projId, userId, "trip.merge_twins", "trip", null, { groups: plans.length, removed });
+  res.json({
+    dryRun: false,
+    groups: plans,
+    tripsBefore: trips.length,
+    tripsAfter: trips.length - removed,
+    removed,
+  });
+});
+
 /* ─── Eccezioni date ─── */
 
 router.get("/planning-studio/projects/:id/trips/:tripId/exceptions", async (req, res): Promise<void> => {

@@ -18,7 +18,7 @@ import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
-  Pencil, Copy,
+  Pencil, Copy, Merge,
 } from "lucide-react";
 import {
   getPsProject,
@@ -28,6 +28,7 @@ import {
   listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, type PsTrip,
   getPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
+  mergePsTwins, type MergeTwinsResult,
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
@@ -621,6 +622,30 @@ export default function PlanningStudioTripsPage() {
     () => filteredTrips.find(t => t.id === copyTripId) ?? null,
     [copyTripId, filteredTrips],
   );
+  /* Unifica corse gemelle: anteprima (dryRun) + applica */
+  const [mergePreview, setMergePreview] = useState<MergeTwinsResult | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  async function openMergePreview() {
+    setMergeBusy(true);
+    try {
+      const r = await mergePsTwins(projectId, { dryRun: true, routeId: routeId || undefined });
+      if (r.removed === 0) { toast.info("Nessuna corsa gemella", { description: "Non ci sono corse identiche (stesso percorso, orari e headsign) da unificare." }); return; }
+      setMergePreview(r);
+    } catch (e: any) { toast.error("Errore anteprima", { description: e?.message }); }
+    finally { setMergeBusy(false); }
+  }
+  async function applyMerge() {
+    setMergeBusy(true);
+    try {
+      const r = await mergePsTwins(projectId, { dryRun: false, routeId: routeId || undefined });
+      toast.success("Corse gemelle unificate", { description: `${r.removed} corse fuse · ${r.tripsAfter} corse totali` });
+      setMergePreview(null);
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "calendars"] });
+    } catch (e: any) { toast.error("Errore unificazione", { description: e?.message }); }
+    finally { setMergeBusy(false); }
+  }
 
   /* ─── Render ─── */
   const project = projectQ.data;
@@ -725,6 +750,14 @@ export default function PlanningStudioTripsPage() {
           title="Genera corse a cadenza costante da una corsa template (even headway)"
         >
           <Timer className="w-3.5 h-3.5" /> Genera a cadenza
+        </button>
+        <button
+          onClick={openMergePreview}
+          disabled={mergeBusy}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors disabled:opacity-50"
+          title="Unifica le corse gemelle (stessa variante, stessi orari a tutte le fermate, stesso headsign) in una sola corsa con validità unione. Anteprima prima di applicare."
+        >
+          {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
         </button>
 
         <div className="flex-1" />
@@ -998,6 +1031,51 @@ export default function PlanningStudioTripsPage() {
           onDelete={() => { if (confirm("Eliminare questa corsa?")) { deleteMut.mutate(detailTrip.id); setDetailTripId(null); } }}
         />
       )}
+      {/* ─── Dialog: anteprima Unifica corse gemelle ─── */}
+      {mergePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !mergeBusy && setMergePreview(null)}>
+          <div className="w-full max-w-2xl mx-4 rounded-xl border border-slate-600 bg-slate-950 shadow-2xl max-h-[88vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Merge className="w-4 h-4 text-cyan-400" /> Unifica corse gemelle — anteprima
+              </h3>
+              <button onClick={() => !mergeBusy && setMergePreview(null)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="px-4 py-3 border-b border-slate-800 text-xs text-slate-300">
+              Sto per fondere <b className="text-cyan-300">{mergePreview.groups.length}</b> gruppi di corse identiche:
+              <b className="text-cyan-300"> {mergePreview.tripsBefore}</b> corse →
+              <b className="text-emerald-300"> {mergePreview.tripsAfter}</b> ({mergePreview.removed} rimosse).
+              Ogni corsa fusa prende la <b>validità unione</b> e un <b>calendario-unione</b> (i giorni sommati). Reversibile ri-generando/re-importando.
+            </div>
+            <div className="flex-1 overflow-auto p-2">
+              <table className="w-full text-[11px]">
+                <thead className="text-slate-500">
+                  <tr><th className="p-1.5 text-left">Partenza</th><th className="p-1.5 text-left">Headsign</th><th className="p-1.5 text-center">Corse</th><th className="p-1.5 text-left">Giorni risultanti</th><th className="p-1.5 text-left">Periodo</th></tr>
+                </thead>
+                <tbody>
+                  {mergePreview.groups.map((g, i) => (
+                    <tr key={i} className="border-t border-slate-800/60">
+                      <td className="p-1.5 font-mono text-slate-200">{g.departure || "—"}</td>
+                      <td className="p-1.5 text-slate-400 truncate max-w-[160px]">{g.headsign || "—"}</td>
+                      <td className="p-1.5 text-center"><span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">{g.count} → 1</span></td>
+                      <td className="p-1.5 text-emerald-300 font-medium">{g.unionWeekdaysLabel || (g.anyCal ? "—" : "(nessun calendario)")}</td>
+                      <td className="p-1.5 text-slate-500 font-mono">{g.unionStart ? `${g.unionStart.slice(5)}→${(g.unionEnd ?? "").slice(5)}` : "illimitato"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-slate-800">
+              <button onClick={() => !mergeBusy && setMergePreview(null)} className="px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">Annulla</button>
+              <button onClick={applyMerge} disabled={mergeBusy}
+                className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
+                {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica {mergePreview.removed} corse
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── Dialog: Crea copia corsa (orario, periodo, giorni, categorie) ─── */}
       {copyTrip && (
         <CopyTripDialog
