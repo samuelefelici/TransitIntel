@@ -236,9 +236,10 @@ router.get("/ai/argos/health", async (_req, res) => {
 // Eventi Argos (data: {...}): {t} testo · {reset} · {error} · {done, sources, budget, tokens}
 // ─────────────────────────────────────────────────────────────
 router.post("/ai/argos/chat", async (req, res) => {
-  const { messages, projectId } = req.body as {
+  const { messages, projectId, deep } = req.body as {
     messages: Array<{ role: "user" | "assistant"; content: string }>;
     projectId?: string;
+    deep?: boolean;
   };
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -304,6 +305,7 @@ router.post("/ai/argos/chat", async (req, res) => {
         question,
         history,
         planning_studio_project_id: psProjectId,
+        deep: !!deep, // ragionamento profondo (Opus, più giri/verifica) — opt-in dal pannello
       }),
       signal: ctrl.signal,
     });

@@ -14,7 +14,7 @@
  */
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Eye, X, Send, Loader2, User, Trash2, Sparkles, Route, Clock, CalendarDays } from "lucide-react";
+import { Eye, X, Send, Loader2, User, Trash2, Sparkles, Route, Clock, CalendarDays, Brain } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getApiBase } from "@/lib/api";
@@ -38,6 +38,9 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  // Ragionamento profondo: Argos passa a Opus, più giri di tool e verifica (deep).
+  // Opt-in perché costa di più sul budget di Argos: si accende solo quando serve.
+  const [deep, setDeep] = React.useState(false);
   const [health, setHealth] = React.useState<{ configured: boolean; reachable?: boolean; cerbero?: boolean } | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -75,7 +78,7 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
       const r = await fetch(`${getApiBase()}/api/ai/argos/chat`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: history, projectId }),
+        body: JSON.stringify({ messages: history, projectId, deep }),
         signal: ctrl.signal,
       });
       if (!r.ok || !r.body) {
@@ -189,6 +192,19 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
                 </div>
               </div>
               <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setDeep(v => !v)}
+                  className={`p-1.5 rounded-lg transition ${
+                    deep
+                      ? "text-violet-200 bg-violet-500/20 ring-1 ring-violet-400/50 drop-shadow-[0_0_6px_rgba(139,92,246,0.6)]"
+                      : "text-zinc-400 hover:bg-white/5 hover:text-violet-300"
+                  }`}
+                  title={deep
+                    ? "Ragionamento profondo ATTIVO — Argos usa Opus, più analisi e verifica (più lento e costoso). Clic per disattivare."
+                    : "Ragionamento profondo — analisi passo-passo con verifica (più lento). Clic per attivare."}
+                >
+                  <Brain className="w-4 h-4" />
+                </button>
                 {msgs.length > 0 && (
                   <button onClick={clear} className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-400 hover:text-rose-300 transition" title="Cancella chat">
                     <Trash2 className="w-4 h-4" />
@@ -272,6 +288,7 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
                 </button>
               </form>
               <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
+                {deep && <span className="text-violet-300 font-semibold">🧠 ragionamento profondo · </span>}
                 ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
               </p>
             </div>
