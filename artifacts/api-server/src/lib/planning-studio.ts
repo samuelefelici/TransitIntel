@@ -1336,11 +1336,51 @@ router.delete("/planning-studio/projects/:id/variants/:variantId", async (req, r
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const variantId = String(req.params.variantId);
   if (!UUID_RE.test(variantId)) { badId(res, "variantId"); return; }
-  await db.execute(sql`
-    DELETE FROM ps_route_variants WHERE id = ${variantId}::uuid AND project_id = ${proj.id}::uuid
+  const vq = await db.execute(sql`
+    SELECT id FROM ps_route_variants WHERE id = ${variantId}::uuid AND project_id = ${proj.id}::uuid LIMIT 1
   `);
-  await logActivity(proj.id, req.user!.id, "ps.variant.delete", { targetId: variantId });
-  res.json({ ok: true });
+  if (!(((vq as any).rows ?? (vq as any))?.length)) { res.status(404).json({ error: "Percorso non trovato" }); return; }
+  // ps_trips.variant_id è ON DELETE RESTRICT: la DELETE nuda su un percorso
+  // CON corse violava la FK → 500 "Internal server error" e il percorso
+  // risultava ineliminabile. Ora: senza conferma rispondiamo 409 parlante
+  // (con il numero di corse); con ?force=1 eliminiamo PRIMA le corse (la cui
+  // cascata copre stop_times/validità/eccezioni) e poi il percorso (cascata
+  // su sequenza fermate e shape).
+  const tq = await db.execute<any>(sql`
+    SELECT count(*)::int AS n FROM ps_trips
+     WHERE variant_id = ${variantId}::uuid AND project_id = ${proj.id}::uuid
+  `);
+  const tripCount = Number(((tq as any).rows?.[0] ?? (tq as any)[0])?.n ?? 0);
+  const force = req.query.force === "1" || req.query.force === "true";
+  if (tripCount > 0 && !force) {
+    res.status(409).json({
+      error: `Il percorso ha ${tripCount} corse collegate: conferma per eliminarle insieme, oppure spostale prima su un altro percorso.`,
+      tripCount,
+    });
+    return;
+  }
+  if (tripCount > 0) {
+    // ps_trip_category_validity non ha FK con cascata: pulizia esplicita,
+    // best-effort (la tabella può non esistere sui progetti mai validati)
+    try {
+      await db.execute(sql`
+        DELETE FROM ps_trip_category_validity
+         WHERE trip_id IN (SELECT id FROM ps_trips WHERE variant_id = ${variantId}::uuid)
+      `);
+    } catch { /* tabella assente */ }
+  }
+  await db.transaction(async (tx) => {
+    if (tripCount > 0) {
+      await tx.execute(sql`
+        DELETE FROM ps_trips WHERE variant_id = ${variantId}::uuid AND project_id = ${proj.id}::uuid
+      `);
+    }
+    await tx.execute(sql`
+      DELETE FROM ps_route_variants WHERE id = ${variantId}::uuid AND project_id = ${proj.id}::uuid
+    `);
+  });
+  await logActivity(proj.id, req.user!.id, "ps.variant.delete", { targetId: variantId, payload: { deletedTrips: tripCount } });
+  res.json({ ok: true, deletedTrips: tripCount });
 });
 
 /** PUT /variants/:variantId/stops — sostituisce l'intera sequenza.

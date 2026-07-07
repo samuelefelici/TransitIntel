@@ -3093,7 +3093,16 @@ export default function PlanningStudioEditorPage() {
                     onDeleteVariant={async (id) => {
                       if (!confirm("Eliminare il percorso (variante)? La linea resta comunque.")) return;
                       try {
-                        await deletePsVariant(projectId, id);
+                        try {
+                          await deletePsVariant(projectId, id);
+                        } catch (e: any) {
+                          // 409 = il percorso ha corse collegate: serve la
+                          // conferma esplicita per eliminarle insieme
+                          if (e?.status !== 409) throw e;
+                          const n = e?.body?.tripCount;
+                          if (!confirm(`Il percorso ha ${n ?? "delle"} corse collegate.\nEliminare ANCHE le corse insieme al percorso?`)) return;
+                          await deletePsVariant(projectId, id, { force: true });
+                        }
                         let ownerRouteId: string | null = null;
                         setRouteVariants(prev => {
                           const next = { ...prev };
