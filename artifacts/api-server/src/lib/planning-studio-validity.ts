@@ -1161,12 +1161,6 @@ export async function runValidityAutoImportFromCalendars(
  *     effettivamente toccati. Alimenta filtro e colonna "Categorie" in Corse.
  * ════════════════════════════════════════════════════════════ */
 
-const CLASS_TO_CATEGORY_CODE: Record<string, string> = {
-  scuole_aperte: "scuole_aperte",
-  scuole_chiuse: "scuole_chiuse",
-  festivo: "festivita",
-};
-
 const SEED_VALIDITY_CATEGORIES = [
   { code: "scuole_aperte", name: "Scuole Aperte", color: "#3b82f6", sort: 10 },
   { code: "scuole_chiuse", name: "Scuole Chiuse", color: "#f59e0b", sort: 20 },
@@ -1243,16 +1237,40 @@ export async function syncValidityCategoriesFromProfile(
     }
   }
 
-  /* ── Classificazione per data (una volta sola) ── */
+  /* ── Classificazione per data (una volta sola) ──
+   * Ogni data viene mappata direttamente al CODICE categoria:
+   *   scuole_aperte | festivita | scuole_chiuse_<periodo>
+   * I giorni di scuole chiuse NON finiscono in un calderone unico: ogni
+   * PERIODO NOMINATO del calendario aziendale (es. "Estate", "Inverno
+   * Natale", "Inverno Pasqua") diventa una categoria propria, così Corse,
+   * TTD e stampe mostrano e filtrano la classificazione reale. */
+  const slugify = (s: string) =>
+    s.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "periodo";
   const profile = await loadCalendarProfile(projectId);
   const holidaysByYear = new Map<number, Set<string>>();
-  const classByDate = new Map<string, string>(); // iso → level1
+  const classByDate = new Map<string, string>(); // iso → codice categoria
+  const periodCats = new Map<string, { name: string; color: string }>(); // code → meta
   for (let t = new Date(`${from}T00:00:00Z`).getTime(); ; t += 86_400_000) {
     const iso = new Date(t).toISOString().slice(0, 10);
     if (iso > to) break;
     const y = Number(iso.slice(0, 4));
     if (!holidaysByYear.has(y)) holidaysByYear.set(y, classifierHolidays(y));
-    classByDate.set(iso, classifyDate(iso, profile, holidaysByYear.get(y)).level1);
+    const dc = classifyDate(iso, profile, holidaysByYear.get(y));
+    let code: string;
+    if (dc.level1 === "scuole_aperte") code = "scuole_aperte";
+    else if (dc.level1 === "festivo") code = "festivita";
+    else {
+      const per = (profile.closedPeriods ?? []).find((p) => iso >= p.from && iso <= p.to);
+      const label = per?.label?.trim();
+      const kind = dc.level2 === "estivo" ? "estivo" : "invernale";
+      const name = label || (kind === "estivo" ? "Scuole Chiuse Estivo" : "Scuole Chiuse Invernale");
+      code = `scuole_chiuse_${slugify(name)}`;
+      if (!periodCats.has(code)) {
+        periodCats.set(code, { name, color: kind === "estivo" ? "#f59e0b" : "#38bdf8" });
+      }
+    }
+    classByDate.set(iso, code);
   }
 
   /* ── Categorie (tabelle globali + seed idempotenti, lookup id per codice) ── */
@@ -1281,18 +1299,34 @@ export async function syncValidityCategoriesFromProfile(
       WHERE NOT EXISTS (SELECT 1 FROM ps_validity_categories WHERE code = ${c.code})
     `);
   }
+  // UPSERT delle categorie per PERIODO nominato (es. "Estate", "Inverno
+  // Natale"): il nome segue sempre quello corrente del periodo, così un
+  // rename nel calendario aziendale si propaga a filtri e card.
+  {
+    let sortIdx = 0;
+    for (const [code, meta] of periodCats) {
+      await db.execute(sql`
+        INSERT INTO ps_validity_categories (code, name, color, sort_order)
+        VALUES (${code}, ${meta.name}, ${meta.color}, ${21 + sortIdx++})
+        ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, color = EXCLUDED.color, updated_at = now()
+      `);
+    }
+  }
+  const neededCodes = ["scuole_aperte", "scuole_chiuse", "festivita", ...periodCats.keys()];
   const catR = await db.execute(sql`
     SELECT id, code FROM ps_validity_categories
-     WHERE code IN ('scuole_aperte', 'scuole_chiuse', 'festivita')
+     WHERE code = ANY(${`{${neededCodes.join(",")}}`}::text[])
   `);
   const catIdByCode = new Map<string, string>();
   for (const r of ((catR as any).rows ?? [])) catIdByCode.set(r.code, r.id);
 
-  /* ── Fase A: calendario categorie per data ── */
+  /* ── Fase A: calendario categorie per data ──
+   * classByDate ora contiene già il CODICE categoria (scuole_aperte /
+   * festivita / scuole_chiuse_<periodo>): niente mappatura da level1. */
   let categoryDates = 0;
   const dateEntries: Array<{ iso: string; catId: string }> = [];
-  for (const [iso, level1] of classByDate) {
-    const catId = catIdByCode.get(CLASS_TO_CATEGORY_CODE[level1] ?? "");
+  for (const [iso, code] of classByDate) {
+    const catId = catIdByCode.get(code);
     if (catId) dateEntries.push({ iso, catId });
   }
   categoryDates = dateEntries.length;
@@ -1361,9 +1395,9 @@ export async function syncValidityCategoriesFromProfile(
     if (days.size === 0) continue;
     const catIds = new Set<string>();
     for (const d of days) {
-      const level1 = classByDate.get(d);
-      if (!level1) continue;
-      const catId = catIdByCode.get(CLASS_TO_CATEGORY_CODE[level1] ?? "");
+      const code = classByDate.get(d);
+      if (!code) continue;
+      const catId = catIdByCode.get(code);
       if (catId) catIds.add(catId);
     }
     if (catIds.size === 0) continue;
@@ -1397,7 +1431,23 @@ export async function syncValidityCategoriesFromProfile(
     }
   }
 
-  if (!dryRun) await touchCategoriesSyncedAt(projectId);
+  if (!dryRun) {
+    // Pulizia categorie-periodo ORFANE: quando un periodo di scuole chiuse
+    // viene rimosso o RINOMINATO, la vecchia categoria scuole_chiuse_<slug>
+    // resta senza date e senza corse → va tolta dall'elenco/filtro. Sicura:
+    // cancella SOLO le categorie di periodo prive di qualsiasi riferimento.
+    try {
+      await db.execute(sql`
+        DELETE FROM ps_validity_categories c
+         WHERE c.code LIKE 'scuole_chiuse\\_%'
+           AND NOT EXISTS (SELECT 1 FROM ps_validity_category_calendar cc WHERE cc.category_id = c.id)
+           AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity tc WHERE tc.category_id = c.id)
+      `);
+    } catch (e: any) {
+      console.warn("[validity] pulizia categorie-periodo orfane:", e?.message || e);
+    }
+    await touchCategoriesSyncedAt(projectId);
+  }
 
   return { categoryDates, tripCategoryUpserts, tripsWithCategories, from, to };
 }
