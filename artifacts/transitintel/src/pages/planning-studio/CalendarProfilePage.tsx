@@ -107,7 +107,6 @@ export default function CalendarProfilePage() {
       // il sync ha ricalcolato categorie-per-data e corsa→categoria: aggiorna
       // filtro/colonna Categorie in Corse, filtro categorie del TTD e liste
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
-      qc.invalidateQueries({ queryKey: ["ps", "validity-categories"] });
       qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
     },
     onError: (e: Error) => toast.error(e.message),

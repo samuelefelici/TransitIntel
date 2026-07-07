@@ -183,7 +183,7 @@ export default function PlanningStudioTtdPage() {
   // — NON i service_id del GTFS: dopo l'import il filtro deve parlare la
   // lingua dell'azienda, e l'appartenenza vive in ps_trip_category_validity.
   const calendarsQ = useQuery({
-    queryKey: ["ps", "validity-categories"],
+    queryKey: ["ps-validity-categories"],
     queryFn: () => listPsValidityCategories(),
     enabled: !!projectId,
   });

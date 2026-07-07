@@ -2067,7 +2067,7 @@ function CategoryEditorDialog(props: {
       setDraftName("");
       setDraftCode("");
       setDraftColor("#6366f1");
-      qc.invalidateQueries({ queryKey: ["validity-categories"] });
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
     },
   });
 
@@ -2146,14 +2146,14 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
     mutationFn: () => updatePsValidityCategory(category.id, { name, color }),
     onSuccess: () => {
       setEditing(false);
-      qc.invalidateQueries({ queryKey: ["validity-categories"] });
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
     },
   });
   const deleteMut = useMutation({
     mutationFn: () => deletePsValidityCategory(category.id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["validity-categories"] });
-      qc.invalidateQueries({ queryKey: ["validity-category-calendar"] });
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
+      qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
     },
   });
 
