@@ -488,6 +488,18 @@ export default function PlanningStudioTtdPage() {
   const [clipboardTripId, setClipboardTripId] = useState<string | null>(null);
   const [savingOps, setSavingOps] = useState(false);
   const lastPointerSecRef = useRef<number | null>(null);
+  /* doppio click manuale (tempo+posizione): e.detail non è affidabile sui pointer events */
+  const lastClickRef = useRef<{ t: number; x: number; y: number; key: string } | null>(null);
+
+  /* corse con modifiche locali NON salvate: disegnate tratteggiate */
+  const modifiedTripIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const op of pendingOps) {
+      if (op.kind === "shift" || op.kind === "node") s.add(op.tripId);
+      else if (op.kind === "copy") s.add(op.tempId);
+    }
+    return s;
+  }, [pendingOps]);
 
   const shiftStMapLocal = (tripId: string, deltaMin: number) => {
     setStMap(prev => {
@@ -619,11 +631,20 @@ export default function PlanningStudioTtdPage() {
     const nodeAttr = nodeEl?.getAttribute("data-node");
     const tripEl = (e.target as Element).closest?.("[data-trip]");
     const tripId = tripEl?.getAttribute("data-trip");
-    // DOPPIO CLICK (secondo click): seleziona la corsa, niente drag
-    if (e.detail >= 2) {
-      const id = tripId || nodeAttr?.split("|")[0] || null;
+    // DOPPIO CLICK: seleziona la corsa, niente drag. Rilevato A MANO
+    // (tempo+posizione): sui pointerdown e.detail è sempre 0 in Chromium,
+    // quindi e.detail>=2 non scattava mai.
+    const clickKey = nodeAttr?.split("|")[0] || tripId || "";
+    const prevClick = lastClickRef.current;
+    lastClickRef.current = { t: Date.now(), x: pos.x, y: pos.y, key: clickKey };
+    const isDouble = !!clickKey && !!prevClick && prevClick.key === clickKey
+      && Date.now() - prevClick.t < 450
+      && Math.hypot(pos.x - prevClick.x, pos.y - prevClick.y) < 8;
+    if (isDouble || e.detail >= 2) {
+      const id = clickKey || null;
       setSelectedTripId(cur => (id && id !== cur ? id : null));
       dragRef.current = null;
+      lastClickRef.current = null;
       return;
     }
     if (nodeAttr) {
@@ -860,11 +881,15 @@ export default function PlanningStudioTtdPage() {
   const baseGeoms: TripGeom[] = useMemo(() => {
     if (!axis) return [];
     const out: TripGeom[] = [];
+    const seen = new Set<string>();
     for (const t of visibleTrips) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
       const sts = stMap[t.id];
       if (!sts || sts.length < 2) continue;
-      const shift = tripDrag?.tripId === t.id ? tripDrag.deltaSec : 0;
-      const segs = buildSegments(sts, axis.byStop, shift);
+      // durante il drag la corsa ORIGINALE resta ferma: la posizione nuova è
+      // mostrata da un'anteprima tratteggiata (vedi render)
+      const segs = buildSegments(sts, axis.byStop);
       if (segs.length === 0) continue;
       out.push({
         trip: t, sts, segs, color: baseColor, isOverlay: false,
@@ -872,7 +897,7 @@ export default function PlanningStudioTtdPage() {
       });
     }
     return out;
-  }, [visibleTrips, stMap, axis, tripDrag, baseColor, baseRoute]);
+  }, [visibleTrips, stMap, axis, baseColor, baseRoute]);
 
   const overlayGeoms: TripGeom[] = useMemo(() => {
     if (!axis) return [];
@@ -1611,6 +1636,10 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               </div>
             );
           })()}
+          {/* NB: niente onDoubleClick nativo: col pointer capture l'evento
+              arriva retargettato sull'svg (target senza data-trip) e
+              annullava la selezione fatta dal rilevatore manuale in
+              onPointerDown. */}
           {baseAxis && (
             <svg
               ref={svgRef}
@@ -1621,11 +1650,6 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerLeave={() => setHover(null)}
-              onDoubleClick={(e) => {
-                const el = (e.target as Element).closest?.("[data-trip],[data-node]");
-                const id = el?.getAttribute("data-trip") || el?.getAttribute("data-node")?.split("|")[0] || null;
-                setSelectedTripId(cur => (id && id !== cur ? id : null));
-              }}
             >
               <defs>
                 <clipPath id="ttd-clip">
@@ -1704,6 +1728,8 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                 {baseGeoms.map(g => {
                   const dragging = tripDrag?.tripId === g.trip.id;
                   const isMultBase = multOpen && multBaseTripId === g.trip.id;
+                  /* modifiche locali non salvate → linea tratteggiata */
+                  const unsaved = modifiedTripIds.has(g.trip.id);
                   return (
                     <g key={g.trip.id} opacity={g.trip.isActive ? 1 : 0.35}>
                       {g.segs.map((seg, i) => (
@@ -1712,8 +1738,35 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           fill="none"
                           stroke={dragging ? "#fbbf24" : isMultBase ? "#34d399" : g.color}
                           strokeWidth={dragging || isMultBase ? 2.5 : 1.6}
+                          strokeDasharray={unsaved ? "6 4" : undefined}
                           strokeLinejoin="round" />
                       ))}
+                      {/* anteprima TRASLAZIONE corsa: tratteggiata alla nuova posizione,
+                          l'originale resta ferma finché non rilasci */}
+                      {dragging && tripDrag && g.segs.map((seg, i) => (
+                        <polyline key={`drag${i}`}
+                          points={seg.map(p => `${xOf(p.sec + tripDrag.deltaSec)},${yOf(p.dist)}`).join(" ")}
+                          fill="none" stroke="#fbbf24" strokeWidth={2}
+                          strokeDasharray="5 4" strokeLinejoin="round" pointerEvents="none" />
+                      ))}
+                      {/* anteprima SPOSTAMENTO nodo: tratto variato tratteggiato
+                          (fermata prima → nodo trascinato → fermata dopo) */}
+                      {nodeDrag?.tripId === g.trip.id && (() => {
+                        const si = nodeDrag.stIdx;
+                        const pts: string[] = [];
+                        for (const [idx, off] of [[si - 1, 0], [si, nodeDrag.deltaSec], [si + 1, 0]] as const) {
+                          const st = g.sts[idx];
+                          if (!st) continue;
+                          const dd = axis!.byStop.get(st.stopId);
+                          if (dd == null) continue;
+                          pts.push(`${xOf(hmsToSec(st.arrivalTime) + off)},${yOf(dd)}`);
+                          if (st.departureTime !== st.arrivalTime) pts.push(`${xOf(hmsToSec(st.departureTime) + off)},${yOf(dd)}`);
+                        }
+                        return pts.length >= 2 ? (
+                          <polyline points={pts.join(" ")} fill="none" stroke="#fbbf24"
+                            strokeWidth={2} strokeDasharray="5 4" strokeLinejoin="round" pointerEvents="none" />
+                        ) : null;
+                      })()}
                       {/* evidenzia la corsa SELEZIONATA (doppio click) */}
                       {selectedTripId === g.trip.id && g.segs.map((seg, i) => (
                         <polyline key={`sel${i}`}
@@ -1736,8 +1789,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                       {(tDomain.t1 - tDomain.t0) < 6 * 3600 && g.sts.map((st, si) => {
                         const dd = axis!.byStop.get(st.stopId);
                         if (dd == null) return null;
-                        const extra = (nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si ? nodeDrag.deltaSec : 0)
-                          + (tripDrag?.tripId === g.trip.id ? tripDrag.deltaSec : 0);
+                        const extra = nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si ? nodeDrag.deltaSec : 0;
                         const sec = hmsToSec(st.departureTime) + extra;
                         const nodeName = (axis!.stops.find(x => x.stopId === st.stopId) as any)?.stopName
                           ?? (axis!.stops.find(x => x.stopId === st.stopId) as any)?.name ?? st.stopId;
@@ -1759,12 +1811,12 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           </g>
                         );
                       })}
-                      {/* etichetta delta durante il drag */}
+                      {/* etichetta delta + NUOVO orario di partenza durante il drag */}
                       {dragging && tripDrag && (
                         <text
-                          x={xOf(g.segs[0][0].sec)} y={yOf(g.segs[0][0].dist) - 8}
+                          x={xOf(g.segs[0][0].sec + tripDrag.deltaSec)} y={yOf(g.segs[0][0].dist) - 8}
                           fill="#fbbf24" fontSize={11} fontFamily="monospace" fontWeight="bold">
-                          {Math.round(tripDrag.deltaSec / 60) > 0 ? "+" : ""}{Math.round(tripDrag.deltaSec / 60)} min
+                          {Math.round(tripDrag.deltaSec / 60) > 0 ? "+" : ""}{Math.round(tripDrag.deltaSec / 60)} min · parte {secToHm(hmsToSec(g.sts[0].departureTime) + tripDrag.deltaSec)}
                         </text>
                       )}
                     </g>
