@@ -55,6 +55,13 @@ export default function DeadheadArcsPage() {
   const [routesList, setRoutesList] = useState<{ routeId: string; shortName: string }[]>([]);
   const [genRouteIds, setGenRouteIds] = useState<Set<string>>(new Set());
   const [genTTKm, setGenTTKm] = useState<number>(0);
+  /* Rete su cui generare: SELETTORE ESPLICITO del feed (in Planner Studio il
+   * "feed più recente" del tenant può essere un'altra rete → generazione vuota). */
+  const [feedsList, setFeedsList] = useState<{ id: string; label: string }[]>([]);
+  const [genFeedId, setGenFeedId] = useState<string>("");
+  /* Filtro per comune (zonizzazione): tiene gli archi con ALMENO un nodo dentro */
+  const [zonesList, setZonesList] = useState<{ id: string; name: string; geometry: any }[]>([]);
+  const [comuneId, setComuneId] = useState<string>("");
 
   /* editor arco selezionato */
   const [editMin, setEditMin] = useState<string>("");
@@ -81,11 +88,30 @@ export default function DeadheadArcsPage() {
       const list = Array.isArray(d) ? d : d?.data ?? [];
       setDepotsList(list.map((x: any) => ({ id: x.id, name: x.name })));
     }).catch(() => { /* opzionale */ });
-    fetch(`${base}/api/gtfs/routes/list`).then(r => r.json()).then((d: any) => {
-      const list = Array.isArray(d) ? d : d?.routes ?? d?.data ?? [];
-      setRoutesList(list.map((x: any) => ({ routeId: x.routeId ?? x.route_id ?? x.id, shortName: x.shortName ?? x.routeShortName ?? x.route_short_name ?? x.routeId ?? "?" })));
+    fetch(`${base}/api/gtfs/feeds`).then(r => r.json()).then((d: any) => {
+      const list = (Array.isArray(d) ? d : d?.data ?? []).map((f: any) => ({
+        id: f.id, label: f.agencyName || f.filename || f.id,
+      }));
+      setFeedsList(list);
+      if (list.length > 0) setGenFeedId((cur: string) => cur || list[0].id);
     }).catch(() => { /* opzionale */ });
+    fetch(`${base}/api/zones`).then(r => (r.ok ? r.json() : null)).then((d: any) => {
+      if (d?.zones) setZonesList(d.zones.filter((z: any) => z.geometry));
+    }).catch(() => { /* zonizzazione non importata: filtro nascosto */ });
   }, [base]);
+
+  /* linee del feed scelto (per il filtro linee della generazione) */
+  useEffect(() => {
+    if (!genFeedId) return;
+    fetch(`${base}/api/service-program/routes?feedId=${encodeURIComponent(genFeedId)}`)
+      .then(r => r.json())
+      .then((d: any) => {
+        const list = d?.routes ?? [];
+        setRoutesList(list.map((x: any) => ({ routeId: x.routeId, shortName: x.name ?? x.routeId })));
+        setGenRouteIds(new Set());
+      })
+      .catch(() => setRoutesList([]));
+  }, [base, genFeedId]);
 
   /* sync editor con l'arco selezionato */
   useEffect(() => {
@@ -115,6 +141,7 @@ export default function DeadheadArcsPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        feedId: genFeedId || undefined,
         depotIds: [...genDepotIds],
         routeIds: [...genRouteIds],
         terminalPairsMaxKm: genTTKm || 0,
@@ -187,12 +214,51 @@ export default function DeadheadArcsPage() {
   }, [editingPath]);
 
   /* geojson: tutti gli archi (grigi) + selezionato (evidenziato) */
+  /* Point-in-polygon (ray casting) su Polygon/MultiPolygon GeoJSON */
+  const pip = useCallback((lat: number, lon: number, geom: any): boolean => {
+    if (!geom) return false;
+    const inRing = (ring: [number, number][]) => {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i], [xj, yj] = ring[j];
+        if (((yi > lat) !== (yj > lat)) && (lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)) inside = !inside;
+      }
+      return inside;
+    };
+    const inPoly = (poly: [number, number][][]) => {
+      if (!poly.length || !inRing(poly[0])) return false;
+      for (let h = 1; h < poly.length; h++) if (inRing(poly[h])) return false; // buchi
+      return true;
+    };
+    if (geom.type === "Polygon") return inPoly(geom.coordinates);
+    if (geom.type === "MultiPolygon") return geom.coordinates.some((p: [number, number][][]) => inPoly(p));
+    return false;
+  }, []);
+
+  /* Archi visibili: filtro testo + filtro COMUNE (almeno un nodo dentro) */
+  const comuneGeom = useMemo(
+    () => zonesList.find(z => z.id === comuneId)?.geometry ?? null,
+    [zonesList, comuneId],
+  );
+  const filtered = useMemo(() => {
+    let list = arcs;
+    if (comuneGeom) {
+      list = list.filter(a => pip(a.from.lat, a.from.lon, comuneGeom) || pip(a.to.lat, a.to.lon, comuneGeom));
+    }
+    const q = filter.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter(a => `${a.from.name} ${a.to.name}`.toLowerCase().includes(q));
+  }, [arcs, filter, comuneGeom, pip]);
+
   const allGeojson = useMemo(() => ({
     type: "FeatureCollection" as const,
-    features: arcs.filter(a => a.geometry && a.id !== selectedId).map(a => ({
+    features: (comuneGeom
+      ? arcs.filter(a => pip(a.from.lat, a.from.lon, comuneGeom) || pip(a.to.lat, a.to.lon, comuneGeom))
+      : arcs
+    ).filter(a => a.geometry && a.id !== selectedId).map(a => ({
       type: "Feature" as const, properties: { id: a.id }, geometry: a.geometry,
     })),
-  }), [arcs, selectedId]);
+  }), [arcs, selectedId, comuneGeom, pip]);
   const selGeojson = useMemo(() => (selected?.geometry ? {
     type: "FeatureCollection" as const,
     features: [{ type: "Feature" as const, properties: {}, geometry: selected.geometry }],
@@ -200,16 +266,15 @@ export default function DeadheadArcsPage() {
 
   /* nodi unici per i marker */
   const nodes = useMemo(() => {
+    const src = comuneGeom
+      ? arcs.filter(a => pip(a.from.lat, a.from.lon, comuneGeom) || pip(a.to.lat, a.to.lon, comuneGeom))
+      : arcs;
     const m = new globalThis.Map<string, ArcNode>();
-    for (const a of arcs) { m.set(a.from.key, a.from); m.set(a.to.key, a.to); }
+    for (const a of src) { m.set(a.from.key, a.from); m.set(a.to.key, a.to); }
     return [...m.values()];
-  }, [arcs]);
+  }, [arcs, comuneGeom, pip]);
 
-  const filtered = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return arcs;
-    return arcs.filter(a => `${a.from.name} ${a.to.name}`.toLowerCase().includes(q));
-  }, [arcs, filter]);
+
 
   const fmt = (v: number | null) => (v == null ? "—" : v.toLocaleString("it-IT"));
 
@@ -380,6 +445,14 @@ export default function DeadheadArcsPage() {
           <div className="p-2 border-b border-border/20 shrink-0">
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              {zonesList.length > 0 && (
+                <select value={comuneId} onChange={e => setComuneId(e.target.value)}
+                  title="Filtra gli archi con ALMENO un nodo nel comune (dati dalla zonizzazione)"
+                  className="bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px] max-w-[140px]">
+                  <option value="">Tutti i comuni</option>
+                  {zonesList.map(z => <option key={z.id} value={z.id}>{z.name}</option>)}
+                </select>
+              )}
               <input value={filter} onChange={e => setFilter(e.target.value)} placeholder={`Cerca tra ${arcs.length} archi…`}
                 className="w-full bg-background/60 border border-border/40 rounded-lg pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:border-amber-500/50" />
             </div>
@@ -452,6 +525,12 @@ export default function DeadheadArcsPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              <label className="text-[10px] text-muted-foreground w-full">Rete (feed GTFS)
+                <select value={genFeedId} onChange={e => setGenFeedId(e.target.value)}
+                  className="w-full mt-0.5 bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px]">
+                  {feedsList.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                </select>
+              </label>
               <label className="text-[10px] text-muted-foreground">Anche capolinea↔capolinea entro</label>
               <input type="number" min={0} max={30} step={1} value={genTTKm || ""}
                 placeholder="0"
