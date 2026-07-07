@@ -337,8 +337,13 @@ export async function updatePsVariant(projectId: string, variantId: string, patc
   );
   return r.variant;
 }
-export async function deletePsVariant(projectId: string, variantId: string): Promise<void> {
-  await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${projectId}/variants/${variantId}`, { method: "DELETE" });
+/** Elimina un percorso. Se ha corse collegate il server risponde 409 con
+ *  { tripCount }: ripetere con force=true per eliminare ANCHE le corse. */
+export async function deletePsVariant(projectId: string, variantId: string, opts?: { force?: boolean }): Promise<void> {
+  await apiFetch<{ ok: boolean }>(
+    `/api/planning-studio/projects/${projectId}/variants/${variantId}${opts?.force ? "?force=1" : ""}`,
+    { method: "DELETE" },
+  );
 }
 export async function setPsVariantStops(projectId: string, variantId: string, stops: { stopId: string }[]): Promise<void> {
   await apiFetch<{ ok: boolean; count: number }>(
