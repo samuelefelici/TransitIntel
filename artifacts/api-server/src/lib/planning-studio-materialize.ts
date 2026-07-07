@@ -273,14 +273,20 @@ export async function materializePsToFeed(
   await db.execute(sql`
     ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
   `);
+  // codice percorso (relazione corsa→percorso→linea): visibile su Corse, TM e TG
+  await db.execute(sql`
+    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text
+  `);
   await db.execute(sql`
     INSERT INTO gtfs_trips
            (feed_id, trip_id, route_id, service_id,
-            trip_headsign, direction_id, shape_id, on_demand)
+            trip_headsign, direction_id, shape_id, on_demand, variant_code)
     SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
            COALESCE(t.calendar_id::text, ${fallbackServiceId}),
            t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
-           COALESCE((t.attributes->>'onDemand')::boolean, false)
+           COALESCE((t.attributes->>'onDemand')::boolean, false),
+           (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
+              FROM ps_route_variants v WHERE v.id = t.variant_id)
       FROM ps_trips t
      WHERE t.project_id = ${psProjectId}::uuid
        AND COALESCE(t.is_active, true) = true

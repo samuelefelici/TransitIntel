@@ -34,6 +34,17 @@ import {
 
 const router: IRouter = Router();
 
+// Colonna additiva variant_code su gtfs_trips (feed storici senza colonna):
+// il codice percorso viaggia corsa→turni macchina→turni guida.
+let variantColReady = false;
+async function ensureVariantCodeColumn(): Promise<void> {
+  if (variantColReady) return;
+  try {
+    await db.execute(sql`ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text`);
+  } catch { /* la SELECT fallirebbe comunque con errore chiaro */ }
+  variantColReady = true;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  VEHICLE TYPES & HIERARCHY
  * ═══════════════════════════════════════════════════════════════ */
@@ -213,6 +224,8 @@ interface TripBlock {
   lastStopName: string;
   requiredVehicle: VehicleType;
   category: ServiceCategory;
+  /** codice percorso (ps_route_variants.code): relazione corsa→percorso→linea */
+  variantCode?: string | null;
   /** When true, this trip MUST run on the exact requiredVehicle type — no flexibility */
   forced: boolean;
   /** Corsa A CHIAMATA (DRT): identificabile lungo tutta la pipeline TM/TG */
@@ -224,6 +237,8 @@ interface ShiftTripEntry {
   tripId: string;
   routeId: string;
   routeName: string;
+  /** codice percorso (relazione corsa→percorso→linea) */
+  variantCode?: string | null;
   headsign: string | null;
   departureTime: string;
   arrivalTime: string;
@@ -882,6 +897,7 @@ function buildServiceProgram(
         downsized: isDownsized || undefined,
         originalVehicle: isDownsized ? trip.requiredVehicle : undefined,
         onDemand: trip.onDemand || undefined,
+        variantCode: trip.variantCode ?? undefined,
       });
       if (isDownsized) shift.downsizedTrips++;
       shift.endMin = trip.arrivalMin;
@@ -1048,6 +1064,7 @@ router.get("/service-program/trips", async (req, res) => {
     }
 
     // 2. Get trips for selected routes + active services
+    await ensureVariantCodeColumn();
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,
@@ -1055,6 +1072,7 @@ router.get("/service-program/trips", async (req, res) => {
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
       onDemand: gtfsTrips.onDemand,
+      variantCode: gtfsTrips.variantCode,
     }).from(gtfsTrips)
       .where(eq(gtfsTrips.feedId, feedId));
 
@@ -1188,6 +1206,7 @@ router.post("/service-program", async (req, res) => {
     }
 
     // 2. Load trips
+    await ensureVariantCodeColumn();
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,
@@ -1195,6 +1214,7 @@ router.post("/service-program", async (req, res) => {
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
       onDemand: gtfsTrips.onDemand,
+      variantCode: gtfsTrips.variantCode,
     }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
 
     const trips = allTrips.filter(t =>
@@ -1260,6 +1280,7 @@ router.post("/service-program", async (req, res) => {
         routeId: t.routeId,
         routeName,
         headsign: t.headsign,
+        variantCode: (t as any).variantCode ?? null,
         directionId: t.directionId ?? 0,
         departureTime: firstDep,
         arrivalTime: lastArr,
@@ -1452,6 +1473,7 @@ function buildPyTrips(tripBlocks: TripBlock[]) {
     lastStopName: t.lastStopName,
     stopCount: t.stopCount,
     requiredVehicle: t.requiredVehicle,
+    variantCode: t.variantCode ?? undefined,
     category: t.category,
     forced: t.forced,
     onDemand: t.onDemand,
@@ -1738,6 +1760,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     }
 
     // 2. Load trips (same as greedy endpoint)
+    await ensureVariantCodeColumn();
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,
@@ -1745,6 +1768,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       headsign: gtfsTrips.tripHeadsign,
       directionId: gtfsTrips.directionId,
       onDemand: gtfsTrips.onDemand,
+      variantCode: gtfsTrips.variantCode,
     }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
 
     const trips = allTrips.filter(t =>
@@ -1817,6 +1841,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         routeId: t.routeId,
         routeName,
         headsign: t.headsign,
+        variantCode: (t as any).variantCode ?? null,
         directionId: t.directionId ?? 0,
         departureTime: finalDepartureTime,
         arrivalTime: finalArrivalTime,

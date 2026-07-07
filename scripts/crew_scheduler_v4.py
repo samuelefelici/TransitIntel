@@ -1082,6 +1082,7 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
                 duration_min=t.get("durationMin", 0),
                 direction_id=t.get("directionId", 0),
                 cluster_stops=cluster_stops,
+                variant_code=str(t.get("variantCode", "") or ""),
             ))
 
         if not trips:
@@ -3413,6 +3414,7 @@ def _segment_to_ripresa(
             "tripId": t.trip_id,
             "routeId": t.route_id,
             "routeName": t.route_name,
+            **({"variantCode": t.variant_code} if getattr(t, "variant_code", "") else {}),
             "headsign": t.headsign,
             "departureTime": t.departure_time,
             "arrivalTime": t.arrival_time,
