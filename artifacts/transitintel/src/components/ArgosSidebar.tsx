@@ -217,7 +217,7 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
             </div>
 
             {/* Body */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 text-sm">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-3.5 space-y-3 text-[13px]">
               {notReady && (
                 <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-200 text-xs">
                   <p className="font-bold mb-1">⚙️ Argos non raggiungibile</p>
@@ -312,13 +312,13 @@ function MessageBubble({ msg }: { msg: Msg }) {
       </div>
       <div className={`flex-1 min-w-0 ${isUser ? "text-right" : ""}`}>
         {msg.content && (
-          <div className={`inline-block max-w-full text-left rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed
+          <div className={`inline-block max-w-full text-left rounded-2xl px-3 py-1.5 text-[11.5px] leading-snug
             ${isUser
               ? "bg-violet-500/15 border border-violet-400/30 text-violet-100"
               : "bg-zinc-900/70 border border-white/5 text-zinc-100"}`}>
             {isUser
               ? <p className="whitespace-pre-wrap">{msg.content}</p>
-              : <div className="prose prose-sm prose-invert max-w-none prose-headings:text-violet-200 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-xs">
+              : <div className="prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>}
           </div>
