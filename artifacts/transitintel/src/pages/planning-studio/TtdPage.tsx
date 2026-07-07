@@ -16,7 +16,7 @@
  * Tutto SVG custom, nessuna libreria grafica aggiuntiva.
  * Gli orari supportano valori > 24:00 (corse dopo mezzanotte).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -479,6 +479,59 @@ export default function PlanningStudioTtdPage() {
   tripDragRef.current = tripDrag;
   /* corsa selezionata col DOPPIO CLICK: evidenziata + azioni elimina/moltiplica */
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
+  /* ── EDITING LOCALE: le modifiche (trasla corsa, sposta nodo, elimina,
+   *    copia) restano in memoria; "Annulla" le ripercorre a ritroso e
+   *    "Salva modifiche" le applica al server in un colpo. ── */
+  type TtdOp =
+    | { kind: "shift"; tripId: string; deltaMin: number }
+    | { kind: "node"; tripId: string; stIdx: number; deltaMin: number }
+    | { kind: "delete"; tripId: string }
+    | { kind: "copy"; tempId: string; baseTripId: string };
+  const [pendingOps, setPendingOps] = useState<TtdOp[]>([]);
+  const [deletedTripIds, setDeletedTripIds] = useState<Set<string>>(new Set());
+  const [localCopies, setLocalCopies] = useState<PsTrip[]>([]);
+  const [clipboardTripId, setClipboardTripId] = useState<string | null>(null);
+  const [savingOps, setSavingOps] = useState(false);
+  const lastPointerSecRef = useRef<number | null>(null);
+
+  const shiftStMapLocal = (tripId: string, deltaMin: number) => {
+    setStMap(prev => {
+      const sts = prev[tripId];
+      if (!sts) return prev;
+      return { ...prev, [tripId]: sts.map(st => ({
+        ...st,
+        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+      })) };
+    });
+  };
+  const shiftNodeLocal = (tripId: string, stIdx: number, deltaMin: number) => {
+    setStMap(prev => {
+      const sts = prev[tripId];
+      if (!sts) return prev;
+      return { ...prev, [tripId]: sts.map((st, i) => i === stIdx ? {
+        ...st,
+        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+      } : st) };
+    });
+  };
+
+  const undoLast = useCallback(() => {
+    setPendingOps(prev => {
+      const op = prev[prev.length - 1];
+      if (!op) return prev;
+      if (op.kind === "shift") shiftStMapLocal(op.tripId, -op.deltaMin);
+      else if (op.kind === "node") shiftNodeLocal(op.tripId, op.stIdx, -op.deltaMin);
+      else if (op.kind === "delete") setDeletedTripIds(d => { const n = new Set(d); n.delete(op.tripId); return n; });
+      else if (op.kind === "copy") {
+        setLocalCopies(c => c.filter(t => t.id !== op.tempId));
+        setStMap(m => { const n = { ...m }; delete n[op.tempId]; return n; });
+        setSelectedTripId(cur => (cur === op.tempId ? null : cur));
+      }
+      return prev.slice(0, -1);
+    });
+  }, []);
   /* drag di un SINGOLO nodo (fermata × orario): sposta l'orario di transito */
   const [nodeDrag, setNodeDrag] = useState<{ tripId: string; stIdx: number; deltaSec: number } | null>(null);
   const nodeDragRef = useRef(nodeDrag);
@@ -512,39 +565,52 @@ export default function PlanningStudioTtdPage() {
     },
   });
 
-  /* Applica lo spostamento di UN nodo: orario di transito a quella fermata */
-  const nodeMut = useMutation({
-    mutationFn: async ({ tripId, stIdx, deltaMin }: { tripId: string; stIdx: number; deltaMin: number }) => {
-      const sts = stMap[tripId] ?? [];
-      const next = sts.map((st, i) => i === stIdx ? {
-        ...st,
-        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
-        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
-      } : st);
-      await setPsStopTimes(projectId, tripId, next.map(st => ({
-        stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
-      })));
-      return next;
-    },
-    onSuccess: (next, vars) => {
-      setStMap(prev => ({ ...prev, [vars.tripId]: next }));
-      setNodeDrag(null);
-      toast.success(`Orario di transito spostato di ${vars.deltaMin > 0 ? "+" : ""}${vars.deltaMin} min`);
-    },
-    onError: (e: any) => { setNodeDrag(null); toast.error(e?.message || "Errore nello spostamento del nodo"); },
-  });
-
-  /* Elimina la corsa selezionata */
-  const delTripMut = useMutation({
-    mutationFn: (tripId: string) => deletePsTrip(projectId, tripId),
-    onSuccess: (_r, tripId) => {
+  /* 💾 Salva TUTTE le modifiche locali (elimina, copie, orari) in un colpo */
+  const saveAllOps = useCallback(async () => {
+    if (pendingOps.length === 0) return;
+    setSavingOps(true);
+    try {
+      // 1. eliminazioni
+      for (const id of deletedTripIds) await deletePsTrip(projectId, id);
+      // 2. copie → batch create con gli orari locali
+      const copies = localCopies.filter(t => !deletedTripIds.has(t.id));
+      if (copies.length > 0) {
+        await batchCreatePsTrips(projectId, copies.map(t => ({
+          routeId: (t as any).routeId, variantId: (t as any).variantId,
+          calendarId: (t as any).calendarId ?? null,
+          headsign: t.headsign ?? null, shortName: t.shortName ?? null,
+          direction: (t as any).direction ?? 0,
+          stopTimes: (stMap[t.id] ?? []).map(st => ({
+            stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
+          })),
+        })));
+      }
+      // 3. orari modificati (corse reali toccate da shift/node, non eliminate)
+      const touched = new Set<string>();
+      for (const op of pendingOps) {
+        if ((op.kind === "shift" || op.kind === "node")
+            && !deletedTripIds.has(op.tripId)
+            && !localCopies.some(c => c.id === op.tripId)) touched.add(op.tripId);
+      }
+      for (const id of touched) {
+        const sts = stMap[id] ?? [];
+        if (sts.length) await setPsStopTimes(projectId, id, sts.map(st => ({
+          stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
+        })));
+      }
+      setPendingOps([]); setDeletedTripIds(new Set()); setLocalCopies([]); setSelectedTripId(null);
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips", "", variantId] });
-      setStMap(prev => { const n = { ...prev }; delete n[tripId]; return n; });
-      setSelectedTripId(null);
-      toast.success("Corsa eliminata");
-    },
-    onError: (e: any) => toast.error(e?.message || "Errore nell'eliminazione della corsa"),
-  });
+      toast.success("Modifiche salvate", {
+        description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${deletedTripIds.size} eliminate`,
+      });
+    } catch (e: any) {
+      toast.error("Errore nel salvataggio", { description: e?.message });
+    } finally {
+      setSavingOps(false);
+    }
+  }, [pendingOps, deletedTripIds, localCopies, stMap, projectId, variantId, qc]);
+
+
 
   function svgPos(e: React.PointerEvent): { x: number; y: number } {
     const rect = svgRef.current?.getBoundingClientRect();
@@ -558,6 +624,13 @@ export default function PlanningStudioTtdPage() {
     const nodeAttr = nodeEl?.getAttribute("data-node");
     const tripEl = (e.target as Element).closest?.("[data-trip]");
     const tripId = tripEl?.getAttribute("data-trip");
+    // DOPPIO CLICK (secondo click): seleziona la corsa, niente drag
+    if (e.detail >= 2) {
+      const id = tripId || nodeAttr?.split("|")[0] || null;
+      setSelectedTripId(cur => (id && id !== cur ? id : null));
+      dragRef.current = null;
+      return;
+    }
     if (nodeAttr) {
       const [nTrip, nIdx] = nodeAttr.split("|");
       if (stMap[nTrip]) dragRef.current = { mode: "node", tripId: nTrip, stIdx: Number(nIdx), startX: pos.x };
@@ -569,6 +642,11 @@ export default function PlanningStudioTtdPage() {
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   }
   function onPointerMove(e: React.PointerEvent) {
+    {
+      const p = svgPos(e);
+      const span = tDomain.t1 - tDomain.t0;
+      lastPointerSecRef.current = tDomain.t0 + ((p.x - ML) / innerW) * span;
+    }
     const d = dragRef.current;
     if (!d) return;
     const pos = svgPos(e);
@@ -608,7 +686,9 @@ export default function PlanningStudioTtdPage() {
         toast.error("Ordine fermate violato", { description: "L'orario deve restare tra la fermata precedente e la successiva." });
         return;
       }
-      nodeMut.mutate({ tripId: d.tripId, stIdx: d.stIdx, deltaMin });
+      shiftNodeLocal(d.tripId, d.stIdx, deltaMin);
+      setPendingOps(prev => [...prev, { kind: "node", tripId: d.tripId, stIdx: d.stIdx, deltaMin }]);
+      setNodeDrag(null);
       return;
     }
     if (d?.mode !== "trip") return;
@@ -622,7 +702,9 @@ export default function PlanningStudioTtdPage() {
       toast.error("Lo shift porterebbe orari prima di 00:00");
       return;
     }
-    shiftMut.mutate({ tripId: d.tripId, deltaMinutes });
+    shiftStMapLocal(d.tripId, deltaMinutes);
+    setPendingOps(prev => [...prev, { kind: "shift", tripId: d.tripId, deltaMin: deltaMinutes }]);
+    setTripDrag(null);
   }
 
   /* ─── Moltiplica corsa (cadenzamento) ─── */
@@ -637,8 +719,50 @@ export default function PlanningStudioTtdPage() {
   const visibleTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
     if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    return trips;
-  }, [tripsQ.data, calendarFilter, catTripSet]);
+    trips = trips.filter(t => !deletedTripIds.has(t.id));
+    return [...trips, ...localCopies.filter(t => !deletedTripIds.has(t.id))];
+  }, [tripsQ.data, calendarFilter, catTripSet, deletedTripIds, localCopies]);
+
+  /* Ctrl+C copia la corsa selezionata · Ctrl+V la incolla alla posizione del
+   * mouse (o +60') come COPIA LOCALE · Ctrl+Z annulla l'ultima modifica */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key.toLowerCase() === "z") { e.preventDefault(); undoLast(); return; }
+      if (e.key.toLowerCase() === "c" && selectedTripId) {
+        e.preventDefault();
+        setClipboardTripId(selectedTripId);
+        toast.info("Corsa copiata", { description: "Ctrl+V per incollarla dove si trova il mouse." });
+        return;
+      }
+      if (e.key.toLowerCase() === "v" && clipboardTripId) {
+        e.preventDefault();
+        const base = visibleTrips.find(t => t.id === clipboardTripId);
+        const sts = stMap[clipboardTripId];
+        if (!base || !sts || sts.length === 0) { toast.error("Niente da incollare"); return; }
+        const firstDep = hmsToSec(sts[0].departureTime);
+        const target = lastPointerSecRef.current;
+        const deltaMin = target != null ? Math.round((target - firstDep) / 60) : 60;
+        if (firstDep + deltaMin * 60 < 0) { toast.error("Orario prima di 00:00"); return; }
+        const tempId = `copy-${Date.now()}`;
+        const copy: PsTrip = { ...base, id: tempId } as PsTrip;
+        setLocalCopies(prev => [...prev, copy]);
+        setStMap(prev => ({ ...prev, [tempId]: sts.map(st => ({
+          ...st, tripId: tempId,
+          arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+          departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+        })) }));
+        setPendingOps(prev => [...prev, { kind: "copy", tempId, baseTripId: clipboardTripId }]);
+        setSelectedTripId(tempId);
+        toast.success(`Corsa incollata (${deltaMin > 0 ? "+" : ""}${deltaMin} min)`, { description: "Copia locale: Salva modifiche per confermarla." });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedTripId, clipboardTripId, visibleTrips, stMap, undoLast]);
 
   // Ordinate per prima partenza (per il selettore della corsa base)
   const tripsSorted = useMemo(() => {
@@ -1449,11 +1573,27 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             </div>
           )}
 
+          {pendingOps.length > 0 && baseAxis && (
+            <div className="absolute top-2 right-3 z-20 flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-slate-900/95 px-2.5 py-1.5 text-xs shadow-xl">
+              <span className="text-emerald-300 font-semibold">{pendingOps.length} modific{pendingOps.length === 1 ? "a" : "he"}</span>
+              <button onClick={undoLast} disabled={savingOps}
+                title="Annulla l'ultima modifica (Ctrl+Z)"
+                className="px-2 py-0.5 rounded border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400 disabled:opacity-40">
+                ↶ Annulla
+              </button>
+              <button onClick={saveAllOps} disabled={savingOps}
+                title="Applica TUTTE le modifiche locali al progetto"
+                className="px-2.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold disabled:opacity-50">
+                {savingOps ? "Salvataggio…" : "💾 Salva modifiche"}
+              </button>
+            </div>
+          )}
           {selectedTripId && baseAxis && (() => {
             const g = baseGeoms.find(x => x.trip.id === selectedTripId);
             return (
               <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl">
                 <span className="text-amber-300 font-semibold">Corsa: {g?.label ?? selectedTripId.slice(0, 8)}</span>
+                <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>
                 <button
                   onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}
                   title="Copia questa corsa più volte (cadenzamento): scegli intervallo e fascia"
@@ -1461,8 +1601,13 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   ⧉ Copia più volte
                 </button>
                 <button
-                  onClick={() => { if (window.confirm("Eliminare definitivamente questa corsa?")) delTripMut.mutate(selectedTripId); }}
-                  title="Elimina la corsa dal progetto"
+                  onClick={() => {
+                    setDeletedTripIds(d => new Set(d).add(selectedTripId));
+                    setPendingOps(prev => [...prev, { kind: "delete", tripId: selectedTripId }]);
+                    setSelectedTripId(null);
+                    toast.info("Corsa eliminata (in locale)", { description: "Annulla per ripristinarla · Salva modifiche per confermare." });
+                  }}
+                  title="Elimina la corsa (modifica locale: si conferma con Salva modifiche)"
                   className="px-2 py-0.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
                   🗑 Elimina
                 </button>
@@ -1581,6 +1726,16 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           fill="none" stroke="#fbbf24" strokeWidth={3.5} opacity={0.55}
                           strokeLinejoin="round" pointerEvents="none" />
                       ))}
+                      {/* fascia invisibile larga: hover + drag handle */}
+                      {g.segs.map((seg, i) => (
+                        <polyline key={`h${i}`}
+                          data-trip={g.trip.id}
+                          points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
+                          fill="none" stroke="transparent" strokeWidth={10}
+                          style={{ cursor: "ew-resize" }}
+                          onPointerMove={e => onTripHover(e, g)}
+                          onPointerLeave={() => setHover(null)} />
+                      ))}
                       {/* PUNTINI interattivi fermata×orario: hover = orario+nodo,
                           drag orizzontale = modifica l'orario di transito */}
                       {(tDomain.t1 - tDomain.t0) < 6 * 3600 && g.sts.map((st, si) => {
@@ -1609,16 +1764,6 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           </g>
                         );
                       })}
-                      {/* fascia invisibile larga: hover + drag handle */}
-                      {g.segs.map((seg, i) => (
-                        <polyline key={`h${i}`}
-                          data-trip={g.trip.id}
-                          points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
-                          fill="none" stroke="transparent" strokeWidth={10}
-                          style={{ cursor: "ew-resize" }}
-                          onPointerMove={e => onTripHover(e, g)}
-                          onPointerLeave={() => setHover(null)} />
-                      ))}
                       {/* etichetta delta durante il drag */}
                       {dragging && tripDrag && (
                         <text
