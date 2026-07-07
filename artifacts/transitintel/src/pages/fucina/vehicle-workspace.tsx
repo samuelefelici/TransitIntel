@@ -514,9 +514,14 @@ function rebuildOptimizeRequest(result: ServiceProgramResult): {
 export default function VehicleWorkspace({
   initialResult,
   deadheadMatrix,
+  initialSavedId,
+  initialName,
 }: {
   initialResult?: ServiceProgramResult;
   deadheadMatrix?: DeadheadMatrix | null;
+  /** scenario già salvato da cui è stato aperto il workspace: abilita "💾 Salva" */
+  initialSavedId?: number | string | null;
+  initialName?: string;
 }) {
   // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
   //    dopo il salvataggio dello scenario. Pattern coperti:
@@ -553,8 +558,8 @@ export default function VehicleWorkspace({
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
   const [modifications, setModifications] = useState<TripReassignment[]>([]);
-  const [scenarioName, setScenarioName] = useState("");
-  const [savedId, setSavedId] = useState<number | null>(null);
+  const [scenarioName, setScenarioName] = useState(initialName ?? "");
+  const [savedId, setSavedId] = useState<number | string | null>(initialSavedId ?? null);
   const [customLabels, setCustomLabels] = useState<Record<string, string>>({});
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
@@ -1837,8 +1842,47 @@ export default function VehicleWorkspace({
             />
           </div>
 
-          {/* ── Save controls ── */}
-          <div className="flex items-center gap-2">
+          {/* ── Toolbar: 1 salvataggio · 2 modifica · 3 cronologia · 4 analisi/stampa ── */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Salva (overwrite): visibile solo se lo scenario è già stato salvato.
+             * Auto-elimina turni vuoti e genera trasferimenti a vuoto mancanti. */}
+            {savedId != null && (
+              <Button
+                size="sm"
+                onClick={handleOverwriteSave}
+                disabled={overwriteSaving || !result}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-[11px]"
+                title="Sovrascrivi il file dello scenario corrente, eliminando i turni vuoti e generando i trasferimenti a vuoto mancanti"
+              >
+                {overwriteSaving
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                  : <Save className="w-3.5 h-3.5 mr-1" />}
+                Salva
+              </Button>
+            )}
+
+            <Button
+              size="sm"
+              onClick={() => setSaveDialogOpen(true)}
+              disabled={saving || !result}
+              title={savedId
+                ? "Crea un nuovo scenario separato (variante) senza toccare quello corrente"
+                : "Salva questo scenario di turni macchina con un nome"}
+              className={savedId
+                ? "bg-green-600/70 hover:bg-green-700 text-white"
+                : "bg-orange-500 hover:bg-orange-600 text-white"
+              }
+            >
+              {saving ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+              ) : savedId ? (
+                <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+              ) : (
+                <Save className="w-3.5 h-3.5 mr-1" />
+              )}
+              {savedId ? "Salva come nuovo…" : "Salva con nome…"}
+            </Button>
+            <div className="w-px h-6 bg-border/40" />
             {hasModifications && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.9 }}
@@ -1944,17 +1988,6 @@ export default function VehicleWorkspace({
               ➕ Turno macchina
             </Button>
 
-            {/* Carica scenario salvato */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setLoadDialogOpen(true)}
-              className="border-orange-500/40 text-orange-300 hover:bg-orange-500/10 h-8 text-[11px]"
-              title="Carica uno scenario salvato in precedenza"
-            >
-              <FolderOpen className="w-3.5 h-3.5 mr-1" />
-              Carica
-            </Button>
 
             {/* Stampa scenario */}
             <Button
@@ -1990,44 +2023,6 @@ export default function VehicleWorkspace({
               Ri-ottimizza
             </Button>
 
-            {/* Salva (overwrite): visibile solo se lo scenario è già stato salvato.
-             * Auto-elimina turni vuoti e genera trasferimenti a vuoto mancanti. */}
-            {savedId != null && (
-              <Button
-                size="sm"
-                onClick={handleOverwriteSave}
-                disabled={overwriteSaving || !result}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-[11px]"
-                title="Sovrascrivi il file dello scenario corrente, eliminando i turni vuoti e generando i trasferimenti a vuoto mancanti"
-              >
-                {overwriteSaving
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                  : <Save className="w-3.5 h-3.5 mr-1" />}
-                Salva modifiche
-              </Button>
-            )}
-
-            <Button
-              size="sm"
-              onClick={() => setSaveDialogOpen(true)}
-              disabled={saving || !result}
-              title={savedId
-                ? "Crea un nuovo scenario separato (variante) senza toccare quello corrente"
-                : "Salva questo scenario di turni macchina con un nome"}
-              className={savedId
-                ? "bg-green-600/70 hover:bg-green-700 text-white"
-                : "bg-orange-500 hover:bg-orange-600 text-white"
-              }
-            >
-              {saving ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-              ) : savedId ? (
-                <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-              ) : (
-                <Save className="w-3.5 h-3.5 mr-1" />
-              )}
-              {savedId ? "Salva come nuovo…" : "Salva con nome…"}
-            </Button>
           </div>
         </div>
       </div>
