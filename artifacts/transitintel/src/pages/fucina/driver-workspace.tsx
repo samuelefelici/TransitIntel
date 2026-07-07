@@ -59,7 +59,7 @@ import {
 import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
 import { mkRipresaFromTrips } from "@/pages/driver-shifts/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
-import { TYPE_LABELS, ACTIVITY_LABELS } from "@/pages/driver-shifts/constants";
+import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/driver-shifts/constants";
 import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
 import { AddActivityDialog } from "@/pages/driver-shifts/AddActivityDialog";
 
@@ -128,7 +128,16 @@ export default function DriverWorkspace({
   const [wwOpen, setWwOpen] = useState(false);
   const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
   const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
-  const [wwPool, setWwPool] = useState<Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }>>([]);
+  const [wwPool, setWwPool] = useState<Array<{
+    trip?: RipresaTrip;
+    activity?: { id: string; type: DriverActivityType; startMin: number; endMin: number; fromNode?: string; toNode?: string };
+    importedFrom?: string; udpName?: string;
+  }>>([]);
+  const wwPoolId = (p: { trip?: RipresaTrip; activity?: { id: string } }) =>
+    p.trip ? String(p.trip.tripId) : (p.activity?.id ?? "");
+  /* form "nuova attività" della Finestra di lavoro */
+  const [wwActOpen, setWwActOpen] = useState(false);
+  const [wwActForm, setWwActForm] = useState({ type: "riserva" as DriverActivityType, start: "08:00", end: "09:00", fromNode: "", toNode: "" });
   const [wwImportBusy, setWwImportBusy] = useState(false);
 
   /* ── Baseline KPI per modalità what-if ── */
@@ -607,7 +616,7 @@ export default function DriverWorkspace({
       const r = await fetch(`${getApiBase()}/api/scheduling/vehicle-scenarios/${vehicleScenarioId}/uncovered-imports`, { credentials: "include" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
-      const have = new Set(wwPool.map(p => String(p.trip.tripId)));
+      const have = new Set(wwPool.map(wwPoolId));
       const cards: Array<{ trip: RipresaTrip; importedFrom?: string; udpName?: string }> = [];
       for (const s of (data.sources ?? [])) for (const tp of (s.trips ?? [])) {
         if (!tp?.tripId || have.has(String(tp.tripId))) continue;
@@ -631,9 +640,10 @@ export default function DriverWorkspace({
       if (!srcIds.has(s.driverId)) continue;
       for (const r of s.riprese) for (const tp of r.trips) if (sel.has(String(tp.tripId))) chosen.push({ ...tp });
     }
-    const chosenPool = wwPool.filter(p => sel.has(String(p.trip.tripId)));
-    for (const p of chosenPool) chosen.push({ ...p.trip });
-    if (!chosen.length) return;
+    const chosenPool = wwPool.filter(p => sel.has(wwPoolId(p)));
+    for (const p of chosenPool) if (p.trip) chosen.push({ ...p.trip });
+    const chosenActs = chosenPool.filter(p => p.activity).map(p => p.activity!);
+    if (!chosen.length) { if (chosenActs.length) toast.info("Seleziona anche almeno una corsa: un turno non può essere fatto di sole attività"); return; }
     chosen.sort((a, b) => a.departureMin - b.departureMin);
     for (let i = 1; i < chosen.length; i++) {
       if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
@@ -658,6 +668,11 @@ export default function DriverWorkspace({
       interruptionMin: riprese.length === 2 ? Math.max(0, riprese[1].startMin - riprese[0].endMin) : 0,
       interruption: riprese.length === 2 ? formatDuration(Math.max(0, riprese[1].startMin - riprese[0].endMin)) : null,
       transferMin: 0, transferBackMin: 0, preTurnoMin: 0, cambiCount: 0, riprese,
+      // attività standard (riserva/presidio = verde, taxi = giallo) inserite dal pool
+      ...(chosenActs.length ? { activities: chosenActs.map(a => ({
+        id: a.id, type: a.type, startMin: a.startMin, endMin: a.endMin,
+        note: [a.fromNode, a.toNode].filter(Boolean).join(" → ") || undefined,
+      })) } : {}),
       verifyState: "da_verificare" as const,
     } as DriverShiftData;
     const chosenIds = new Set(chosen.map(tp => String(tp.tripId)));
@@ -673,8 +688,9 @@ export default function DriverWorkspace({
     const newRes: DriverShiftsResult = { ...result, driverShifts: [...kept, newShift] };
     setResult(newRes);
     pushHistory(newRes, `Finestra di lavoro · rimpacchettato ${newId} (${chosen.length} corse)`);
-    setWwPool(prev => prev.filter(p => !chosenIds.has(String(p.trip.tripId))));
-    setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id))));
+    const usedActIds = new Set(chosenActs.map(a => a.id));
+    setWwPool(prev => prev.filter(p => !chosenIds.has(wwPoolId(p)) && !usedActIds.has(wwPoolId(p))));
+    setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id) && !usedActIds.has(id))));
     // ri-verifica FONTE UNICA: tipologia + fuorilinea automatici sul turno nuovo
     void fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -697,11 +713,11 @@ export default function DriverWorkspace({
         } : s),
       } : cur);
     }).catch(() => { /* la tipologia resta da verificare */ });
-    const importedPacked = chosenPool.filter(p => p.importedFrom);
+    const importedPacked = chosenPool.filter(p => p.importedFrom && p.trip);
     if (importedPacked.length) {
       void (async () => {
         const bySrc = new Map<string, string[]>();
-        for (const p of importedPacked) bySrc.set(p.importedFrom!, [...(bySrc.get(p.importedFrom!) ?? []), String(p.trip.tripId)]);
+        for (const p of importedPacked) bySrc.set(p.importedFrom!, [...(bySrc.get(p.importedFrom!) ?? []), String(p.trip!.tripId)]);
         for (const [scenId, tripIds] of bySrc) {
           try {
             const gr = await fetch(`${getApiBase()}/api/service-program/scenarios/${scenId}`, { credentials: "include" });
@@ -1511,26 +1527,8 @@ export default function DriverWorkspace({
                     )}
                   </div>
                 )}
-                {/* Aggiungi turno guida manuale (#NEW) */}
-                {ganttMode === "exploded" && (
-                  <button
-                    onClick={() => setShowAddDriverDialog(true)}
-                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition"
-                    title="Aggiungi un nuovo turno guida vuoto, poi trascina le corse per riempirlo"
-                  >
-                    ➕ Turno guida
-                  </button>
-                )}
-                {/* Aggiungi attività non di guida (Riserva/Presidio/Verifica) */}
-                {result && result.driverShifts.length > 0 && (
-                  <button
-                    onClick={() => { setActivityPrefill(null); setShowAddActivityDialog(true); }}
-                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded border border-teal-500/40 bg-teal-500/10 text-teal-300 hover:bg-teal-500/20 transition"
-                    title="Inserisci un'attività non di guida (Riserva, Presidio, Verifica). Suggerimento: click destro sul Gantt per inserirla in un punto preciso."
-                  >
-                    ➕ Attività
-                  </button>
-                )}
+                {/* "+ Turno guida" e "+ Attività" vivono nella Finestra di lavoro:
+                    i turni si creano con le bozze, le attività come card. */}
                 <span className="text-[10px] text-purple-300/40 italic hidden xl:inline">
                   {ganttMode === "exploded" ? "Trascina le corse tra gli autisti" : "Vista compatta — passa a 'Corse' per modificare"}
                 </span>
@@ -1582,17 +1580,77 @@ export default function DriverWorkspace({
                   </ol>
                 </div>
               )}
+              {wwActOpen && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwActOpen(false)}>
+                  <div className="w-full max-w-sm rounded-xl border border-emerald-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-emerald-300">➕ Nuova attività</p>
+                    <div className="flex gap-1.5">
+                      {(["riserva", "presidio", "taxi"] as DriverActivityType[]).map(k => (
+                        <button key={k} onClick={() => setWwActForm(f => ({ ...f, type: k }))}
+                          className={`flex-1 px-2 py-1.5 rounded-lg border text-[11px] font-semibold ${wwActForm.type === k ? "" : "opacity-50"}`}
+                          style={{ borderColor: (ACTIVITY_COLORS[k] ?? "#22c55e") + "88", color: ACTIVITY_COLORS[k] ?? "#22c55e", backgroundColor: wwActForm.type === k ? (ACTIVITY_COLORS[k] ?? "#22c55e") + "22" : "transparent" }}>
+                          {ACTIVITY_LABELS[k]}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-[10px] text-zinc-400">Inizio
+                        <input value={wwActForm.start} onChange={e => setWwActForm(f => ({ ...f, start: e.target.value }))} placeholder="08:00"
+                          className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 font-mono" />
+                      </label>
+                      <label className="text-[10px] text-zinc-400">Fine
+                        <input value={wwActForm.end} onChange={e => setWwActForm(f => ({ ...f, end: e.target.value }))} placeholder="09:00"
+                          className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100 font-mono" />
+                      </label>
+                      <label className="text-[10px] text-zinc-400">Nodo inizio
+                        <input value={wwActForm.fromNode} onChange={e => setWwActForm(f => ({ ...f, fromNode: e.target.value }))} placeholder="es. Deposito Jesi"
+                          className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100" />
+                      </label>
+                      <label className="text-[10px] text-zinc-400">Nodo fine
+                        <input value={wwActForm.toNode} onChange={e => setWwActForm(f => ({ ...f, toNode: e.target.value }))} placeholder="es. Stazione"
+                          className="w-full mt-0.5 px-2 py-1.5 rounded bg-zinc-900 border border-zinc-700 text-xs text-zinc-100" />
+                      </label>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button onClick={() => setWwActOpen(false)} className="text-xs px-3 py-1.5 rounded text-zinc-400 hover:text-zinc-100">Annulla</button>
+                      <button onClick={() => {
+                        const sMin = timeToMin(wwActForm.start), eMin = timeToMin(wwActForm.end);
+                        if (sMin == null || eMin == null || eMin <= sMin) { toast.error("Orari non validi", { description: "Formato HH:MM, fine dopo inizio." }); return; }
+                        setWwPool(prev => [...prev, { activity: {
+                          id: `act-${Date.now()}`, type: wwActForm.type, startMin: sMin, endMin: eMin,
+                          fromNode: wwActForm.fromNode.trim() || undefined, toNode: wwActForm.toNode.trim() || undefined,
+                        } }]);
+                        setWwActOpen(false); setWwOpen(true);
+                        toast.success(`Attività ${ACTIVITY_LABELS[wwActForm.type]} creata`, { description: "È una card nella Finestra di lavoro: mettila in una bozza e chiudi il turno." });
+                      }}
+                        className="text-xs font-bold px-4 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white">Crea card</button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {wwOpen && (
                 <div className="mb-2">
                   <WorkWindowPanel
                     shifts={wwShifts}
-                    loose={wwPool.map((p) => ({
+                    loose={wwPool.map((p) => p.trip ? ({
                       id: String(p.trip.tripId), isTrip: true,
                       kindLabel: p.trip.routeName || "Corsa",
                       kindColor: p.importedFrom ? "#fb7185" : "#a78bfa",
                       timeLabel: `${wwFmtH(p.trip.departureMin)}→${wwFmtH(p.trip.arrivalMin)}`,
                       desc: `${p.trip.firstStopName ?? ""} → ${p.trip.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                    }) : ({
+                      id: p.activity!.id, isTrip: true,
+                      kindLabel: ACTIVITY_LABELS[p.activity!.type] ?? p.activity!.type,
+                      kindColor: ACTIVITY_COLORS[p.activity!.type] ?? "#22c55e",
+                      timeLabel: `${wwFmtH(p.activity!.startMin)}→${wwFmtH(p.activity!.endMin)}`,
+                      desc: [p.activity!.fromNode, p.activity!.toNode].filter(Boolean).join(" → ") || "attività",
+                      deletable: true,
                     }))}
+                    onAddActivity={() => setWwActOpen(true)}
+                    onDeleteLoose={(id) => {
+                      setWwPool(prev => prev.filter(p => wwPoolId(p) !== id));
+                      setWwSelected(prev => { const n = new Set(prev); n.delete(id); return n; });
+                    }}
                     onReorderLoose={(from, to) => setWwPool(prev => { const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n; })}
                     onImport={wwImport}
                     selected={wwSelected}

@@ -26,6 +26,8 @@ export interface WorkActivity {
   timeLabel: string;
   /** descrizione (origine → destinazione, note) */
   desc: string;
+  /** card eliminabile (es. attività create a mano) */
+  deletable?: boolean;
 }
 
 export interface WorkShiftView {
@@ -46,6 +48,10 @@ interface Props {
   onReorderLoose?: (fromIdx: number, toIdx: number) => void;
   /** apre l'import di corse scoperte da altre UDP con la stessa validità */
   onImport?: () => void;
+  /** apre il form "nuova attività" (riserva/presidio/taxi) come card nel pool */
+  onAddActivity?: () => void;
+  /** elimina una card dal pool (solo card deletable) */
+  onDeleteLoose?: (id: string) => void;
   /** id corse selezionate (globali alla finestra) */
   selected: Set<string>;
   onToggleSelect: (activityId: string) => void;
@@ -67,7 +73,7 @@ interface Props {
 }
 
 export default function WorkWindowPanel({
-  shifts, loose = [], onReorderLoose, onImport,
+  shifts, loose = [], onReorderLoose, onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onToggleSelectAll, onDropShift, onRemoveShift,
   onUnpack, onUnpackAll, onRepack, onRepackIds, onClose, busy, accent = "purple",
 }: Props) {
@@ -110,6 +116,13 @@ export default function WorkWindowPanel({
         <span className={`text-xs font-bold ${ac.text}`}>🪟 Finestra di lavoro</span>
         <span className="text-[10px] text-muted-foreground">{shifts.length} turni · {loose.length} corse sciolte · {nSel} selezionate</span>
         <div className="ml-auto flex items-center gap-1.5">
+          {onAddActivity && (
+            <button onClick={onAddActivity} disabled={busy}
+              title="Crea un'attività (riserva/presidio = verde, taxi = giallo): diventa una card da mettere in un turno"
+              className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40">
+              ➕ Attività
+            </button>
+          )}
           {onImport && (
             <button onClick={onImport} disabled={busy}
               title="Importa corse scoperte da altre UDP con la stessa validità"
@@ -173,6 +186,12 @@ export default function WorkWindowPanel({
                 <span className="font-semibold" style={{ color: a.kindColor ?? "#94a3b8" }}>{a.kindLabel}</span>
                 <span className="font-mono text-muted-foreground">{a.timeLabel}</span>
                 <span className="max-w-[180px] truncate text-foreground/80">{a.desc}</span>
+                {a.deletable && onDeleteLoose && (
+                  <button onClick={(e) => { e.stopPropagation(); onDeleteLoose(a.id); }}
+                    title="Elimina questa attività" className="ml-0.5 text-muted-foreground hover:text-rose-400">
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                )}
               </div>
             ))}
           </div>

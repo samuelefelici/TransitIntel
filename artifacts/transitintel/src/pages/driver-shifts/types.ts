@@ -5,7 +5,7 @@
 export type DriverShiftType = "intero" | "semiunico" | "spezzato" | "supplemento" | "invalido";
 
 /* Attività NON di guida inseribili manualmente in un turno (lavoro ma non guida). */
-export type DriverActivityType = "riserva" | "presidio" | "verifica";
+export type DriverActivityType = "riserva" | "presidio" | "verifica" | "taxi";
 export interface DriverActivity {
   id: string;
   type: DriverActivityType;

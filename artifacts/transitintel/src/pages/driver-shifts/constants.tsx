@@ -51,16 +51,19 @@ export const ACTIVITY_LABELS: Record<DriverActivityType, string> = {
   riserva: "Riserva",
   presidio: "Presidio",
   verifica: "Verifica",
+  taxi: "Taxi",
 };
 export const ACTIVITY_SHORT: Record<DriverActivityType, string> = {
   riserva: "RIS",
   presidio: "PRE",
   verifica: "VER",
+  taxi: "TAX",
 };
 export const ACTIVITY_COLORS: Record<DriverActivityType, string> = {
-  riserva: "#14b8a6",  // teal
-  presidio: "#6366f1", // indigo
-  verifica: "#d97706", // amber-700
+  riserva: "#22c55e",  // VERDE (standard attività)
+  presidio: "#16a34a", // VERDE (standard attività)
+  verifica: "#22c55e", // VERDE (standard attività)
+  taxi: "#eab308",     // GIALLO (standard attività)
 };
 
 /** Converte "HH:MM" → minuti dalla mezzanotte (null se non valido). */
