@@ -583,22 +583,60 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     `);
     for (const c of cR.rows ?? []) calById.set(c.id, c);
   }
+  // giorni-settimana EFFETTIVI dei calendari "solo date" (flag tutti false ma
+  // con calendar_dates): senza questo la maschera unione uscirebbe vuota per i
+  // feed GTFS a date → la corsa fusa perderebbe TUTTI i giorni.
+  const dowByCal = new Map<string, boolean[]>();
+  if (calIds.size > 0) {
+    const dR = await db.execute<any>(sql`
+      SELECT calendar_id, EXTRACT(ISODOW FROM date)::int AS isodow
+        FROM ps_calendar_dates
+       WHERE calendar_id = ANY(${`{${[...calIds].join(",")}}`}::uuid[]) AND exception_type = 1
+       GROUP BY calendar_id, EXTRACT(ISODOW FROM date)
+    `);
+    for (const r of dR.rows ?? []) {
+      const arr = dowByCal.get(r.calendar_id) ?? [false, false, false, false, false, false, false];
+      arr[(Number(r.isodow) - 1) % 7] = true; // ISODOW 1=Lun … 7=Dom → idx 0..6
+      dowByCal.set(r.calendar_id, arr);
+    }
+  }
   const DOW = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] as const;
   const WD_LABEL = ["Lun","Mar","Mer","Gio","Ven","Sab","Dom"];
+  /** copertura settimanale EFFETTIVA di una corsa: maschera esplicita, oppure
+   *  flag del calendario, oppure giorni dei calendar_dates, oppure tutti. */
+  const effWeekdaysOf = (t: any): boolean[] => {
+    const m = (t.attributes as any)?.weekdays;
+    if (Array.isArray(m) && m.length === 7) return m.map((x: any) => x !== false);
+    const c = t.calendar_id ? calById.get(t.calendar_id) : null;
+    if (c) {
+      const flags = DOW.map(d => !!c[d]);
+      if (flags.some(Boolean)) return flags;
+      const dow = dowByCal.get(t.calendar_id);
+      if (dow && dow.some(Boolean)) return dow;
+    }
+    return [true, true, true, true, true, true, true]; // nessuna info → non restringere
+  };
 
   // costruisce la descrizione del gruppo + il piano di unione
   const plans = mergeGroups.map(g => {
     const primary = g[0]; // già ordinato per created_at, id
     const others = g.slice(1);
-    // unione pattern settimanale
-    const wd = [false, false, false, false, false, false, false];
+    // effWd = copertura settimanale EFFETTIVA unione (per la maschera della
+    // corsa fusa; mai tutta spenta). calFlags = solo FLAG dei calendari (per il
+    // calendario-unione, così i feed a date restano a date, non diventano
+    // settimanali). minStart/maxEnd/anyCal per il calendario-unione.
+    const effWd = [false, false, false, false, false, false, false];
+    const calFlags = [false, false, false, false, false, false, false];
     let minStart: string | null = null, maxEnd: string | null = null;
     let anyCal = false;
+    const srcCalIds = new Set<string>();
     for (const t of g) {
+      effWeekdaysOf(t).forEach((on, i) => { if (on) effWd[i] = true; });
       const c = t.calendar_id ? calById.get(t.calendar_id) : null;
       if (!c) continue;
       anyCal = true;
-      DOW.forEach((d, i) => { if (c[d]) wd[i] = true; });
+      srcCalIds.add(t.calendar_id);
+      DOW.forEach((d, i) => { if (c[d]) calFlags[i] = true; });
       if (c.start_date && (!minStart || c.start_date < minStart)) minStart = c.start_date;
       if (c.end_date && (!maxEnd || c.end_date > maxEnd)) maxEnd = c.end_date;
     }
@@ -616,8 +654,10 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
       headsign: primary.headsign,
       departure: dep,
       count: g.length,
-      unionWeekdays: wd,
-      unionWeekdaysLabel: wd.map((on, i) => on ? WD_LABEL[i] : null).filter(Boolean).join(" "),
+      unionWeekdays: effWd,
+      calFlags,
+      srcCalIds: [...srcCalIds].sort(),
+      unionWeekdaysLabel: effWd.map((on, i) => on ? WD_LABEL[i] : null).filter(Boolean).join(" "),
       unionStart: minStart, unionEnd: maxEnd, anyCal,
       validFrom: vFrom, validTo: vTo,
     };
@@ -639,20 +679,21 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
   const unionCalCache = new Map<string, string>(); // firma pattern+range → calendarId
   await db.transaction(async (tx) => {
     for (const p of plans) {
-      const g = mergeGroups.find(gr => gr[0].id === p.primaryId)!;
-      const srcCalIds = [...new Set(g.map(t => t.calendar_id).filter(Boolean))] as string[];
+      const srcCalIds = p.srcCalIds;
       let unionCalId: string | null = null;
 
       if (p.anyCal) {
-        const sigCal = `${p.unionWeekdays.map(b => b ? 1 : 0).join("")}|${p.unionStart ?? ""}|${p.unionEnd ?? ""}`;
+        // riusa lo stesso calendario-unione per gruppi con gli STESSI calendari
+        // sorgente (evita di crearne uno per ogni gruppo)
+        const sigCal = srcCalIds.join(",");
         unionCalId = unionCalCache.get(sigCal) ?? null;
         if (!unionCalId) {
           const ins = await tx.execute<any>(sql`
             INSERT INTO ps_calendars (project_id, code, name, monday, tuesday, wednesday,
                                       thursday, friday, saturday, sunday, start_date, end_date)
-            VALUES (${projId}::uuid, ${`U-${sigCal.slice(0, 7)}-${p.departure.replace(":", "")}`}, ${"Unione corse gemelle"},
-                    ${p.unionWeekdays[0]}, ${p.unionWeekdays[1]}, ${p.unionWeekdays[2]}, ${p.unionWeekdays[3]},
-                    ${p.unionWeekdays[4]}, ${p.unionWeekdays[5]}, ${p.unionWeekdays[6]},
+            VALUES (${projId}::uuid, ${`U-${p.calFlags.map(b => b ? 1 : 0).join("")}-${p.departure.replace(":", "")}`}, ${"Unione corse gemelle"},
+                    ${p.calFlags[0]}, ${p.calFlags[1]}, ${p.calFlags[2]}, ${p.calFlags[3]},
+                    ${p.calFlags[4]}, ${p.calFlags[5]}, ${p.calFlags[6]},
                     ${p.unionStart ?? p.validFrom ?? "2020-01-01"}::date, ${p.unionEnd ?? p.validTo ?? "2030-12-31"}::date)
             RETURNING id
           `);
@@ -700,13 +741,20 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
          GROUP BY date
         ON CONFLICT (trip_id, date) DO NOTHING
       `);
-      // aggiorna la primaria: calendario-unione, periodo più ampio, maschera unione
+      // aggiorna la primaria: calendario-unione, periodo più ampio, maschera
+      // settimanale = copertura EFFETTIVA unione. Se (caso degenere) fosse
+      // tutta spenta, RIMUOVE la chiave weekdays così la corsa NON perde i
+      // giorni (ricade su calendario + validità per tipo-giorno).
+      const maskOk = p.unionWeekdays.some(Boolean);
+      const attrExpr = maskOk
+        ? sql`COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ weekdays: p.unionWeekdays })}::jsonb`
+        : sql`COALESCE(attributes, '{}'::jsonb) - 'weekdays'`;
       await tx.execute(sql`
         UPDATE ps_trips
            SET calendar_id = COALESCE(${unionCalId}::uuid, calendar_id),
                valid_from = ${p.validFrom}::date,
                valid_to = ${p.validTo}::date,
-               attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ weekdays: p.unionWeekdays })}::jsonb,
+               attributes = ${attrExpr},
                updated_at = now()
          WHERE id = ${p.primaryId}::uuid
       `);
