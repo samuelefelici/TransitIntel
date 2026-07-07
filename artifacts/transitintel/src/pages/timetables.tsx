@@ -67,6 +67,8 @@ interface RouteTimetable {
     tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[];
     /** validità dal calendario aziendale PS: day-type (feriale/sabato/festivo/…) e categorie */
     dayTypeCodes?: string[]; categoryIds?: string[];
+    /** corsa a chiamata (su prenotazione) e maschera settimanale L…D (per le note) */
+    onDemand?: boolean; weekdays?: boolean[] | null;
   }>;
 }
 
@@ -478,13 +480,15 @@ const POSTER_CSS = `
   .diagram { }
   /* matrice orari: righe = fermate, colonne = corse (orario di partenza) */
   .daygrp { margin-bottom: 10px; break-inside: avoid; }
-  .daygrp h4 { font-size: 11px; font-weight: 800; color: #fff; background: var(--c); padding: 3px 8px; border-radius: 4px; margin: 0 0 3px; letter-spacing: .03em; }
+  /* intestazioni NEUTRE (grigio scuro), non del colore della linea */
+  .daygrp h4 { font-size: 11px; font-weight: 800; color: #fff; background: #334155; padding: 3px 8px; border-radius: 4px; margin: 0 0 3px; letter-spacing: .03em; }
   table.mx { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
   table.mx th, table.mx td { border: 1px solid #bbb; font-size: 9px; padding: 1px 3px; text-align: center; font-variant-numeric: tabular-nums; }
   table.mx th.stop { text-align: left; background: #f1f1f1; font-weight: 700; max-width: 46mm; min-width: 30mm; }
-  table.mx th.stop.head { background: #111; color: #fff; }
+  table.mx th.stop.head { background: #334155; color: #fff; }
   table.mx th.stop.term { background: #e2e8f0; }
-  table.mx thead th { background: var(--c); color: #fff; font-weight: 800; }
+  table.mx thead th { background: #475569; color: #fff; font-weight: 800; }
+  table.mx thead th sup { font-size: 7px; font-weight: 800; }
   table.mx tbody tr:nth-child(even) td { background: #fafafa; }
   table.mx td.term { font-weight: 700; }
   /* marcature sabato (fuso nel gruppo Feriale): colonna evidenziata */
@@ -499,8 +503,9 @@ const POSTER_CSS = `
 interface PosterDir {
   dirLabel: string;
   nodes: Array<{ name: string; term: boolean }>;   // righe = TUTTE le fermate, in ordine
-  // colonne = corse; cells[i] = transito al nodo i; flag = marcatura sabato
-  days: Array<{ name: string; trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat" }> }>;
+  // colonne = corse; cells[i] = transito al nodo i; flag = marcatura sabato;
+  // notes = testi nota (a chiamata, escluso venerdì…) → simbolo + legenda
+  days: Array<{ name: string; trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat"; notes?: string[] }> }>;
 }
 interface PosterLine {
   route: RouteTimetable["route"];
@@ -526,6 +531,17 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
     ? `<svg viewBox="0 0 460 1020" width="100%" style="max-height:185mm">${schematicInnerSvg([{ color: line.route.color, stops: schemStops }], 460, 1020, 52, { nameSize: 8, nodesOnly, cityNodes: cityBg ? line.cityNodes : undefined })}</svg>`
     : "<div class='diagram'></div>";
 
+  // Registro NOTE a livello di linea: ogni testo-nota distinto → simbolo (a,b,c…),
+  // così la stessa nota ha lo stesso simbolo in tutte le tabelle e la legenda è unica.
+  const noteSym = new Map<string, string>();
+  const SYM = "abcdefghijklmnopqrstuvwxyz";
+  for (const dir of line.directions) for (const day of dir.days) for (const t of day.trips)
+    for (const n of (t.notes ?? [])) if (!noteSym.has(n)) noteSym.set(n, SYM[noteSym.size] ?? "*");
+  const supOf = (t: { notes?: string[] }) => {
+    const s = (t.notes ?? []).map((n) => noteSym.get(n)).filter(Boolean).join("");
+    return s ? `<sup>${s}</sup>` : "";
+  };
+
   // MATRICE: righe = TUTTE le fermate, colonne = corse (orario di partenza), valori = transito.
   const dirsHtml = line.directions.map((dir) =>
     dir.days.map((day) => {
@@ -533,7 +549,7 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
       const chunks: Array<typeof day.trips> = [];
       for (let i = 0; i < day.trips.length; i += PER) chunks.push(day.trips.slice(i, i + PER));
       const tables = chunks.map((ch) => {
-        const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => `<th class="${t.flag ?? ""}">${esc(t.dep)}</th>`).join("")}</tr>`;
+        const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => `<th class="${t.flag ?? ""}">${esc(t.dep)}${supOf(t)}</th>`).join("")}</tr>`;
         const rows = dir.nodes.map((nd, i) =>
           `<tr><th class="stop${nd.term ? " term" : ""}">${esc(nd.name)}</th>${ch.map((t) => `<td class="${[nd.term ? "term" : "", t.flag ?? ""].filter(Boolean).join(" ")}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
         return `<table class="mx"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
@@ -541,6 +557,10 @@ function linePosterPage(line: PosterLine, nodesOnly = false, cityBg = false): st
       const legends: string[] = [];
       if (day.trips.some((t) => t.flag === "exclsat")) legends.push(`<span><span class="sw" style="background:#fde68a"></span>Escluso il sabato</span>`);
       if (day.trips.some((t) => t.flag === "solosat")) legends.push(`<span><span class="sw" style="background:#a5f3fc"></span>Solo il sabato</span>`);
+      // note usate in questo gruppo → simbolo = testo
+      const usedNotes = new Set<string>();
+      for (const t of day.trips) for (const n of (t.notes ?? [])) usedNotes.add(n);
+      for (const n of usedNotes) legends.push(`<span><b>${noteSym.get(n)}</b> = ${esc(n)}</span>`);
       const legend = legends.length ? `<div class="legend">${legends.join("")}</div>` : "";
       return `<div class="daygrp"><h4>${esc(dir.dirLabel)} · ${esc(day.name)} · ${day.trips.length} corse</h4>${tables}${legend}</div>`;
     }).join(""),
@@ -848,14 +868,23 @@ export default function TimetablesPage() {
             name: s.stopName, term: i === 0 || i === rt.stops.length - 1,
           }));
 
-          // colonna per corsa: transiti a tutte le fermate
+          // colonna per corsa: transiti a tutte le fermate + NOTE automatiche
+          const WD_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
           const cols = rt.trips.map((t) => {
             const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
             const dep = cells.find((c) => c) ?? "";
+            const dayCodes = new Set(t.dayTypeCodes ?? []);
+            // note: "a chiamata" + giorni feriali esclusi (es. non il venerdì)
+            const notes: string[] = [];
+            if (t.onDemand) notes.push("Su prenotazione (a chiamata)");
+            if (Array.isArray(t.weekdays) && dayCodes.has("feriale")) {
+              const excl: string[] = [];
+              for (let i = 0; i < 5; i++) if (t.weekdays[i] === false) excl.push(WD_IT[i]);
+              if (excl.length && excl.length < 5) notes.push(`Escluso il ${excl.join(", ")}`);
+            }
             return {
               dep, cells, sort: hhmmToMin(dep) ?? 9999,
-              dayCodes: new Set(t.dayTypeCodes ?? []),
-              catIds: (t.categoryIds ?? []),
+              dayCodes, catIds: (t.categoryIds ?? []), notes,
             };
           }).filter((c) => c.cells.some((x) => x));
 
@@ -869,15 +898,15 @@ export default function TimetablesPage() {
           }
 
           const days: PosterDir["days"] = [];
-          const pushGroup = (name: string, trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat"; sort: number }>) => {
+          const pushGroup = (name: string, trips: Array<{ dep: string; cells: string[]; flag?: "exclsat" | "solosat"; notes?: string[]; sort: number }>) => {
             if (!trips.length) return;
-            // CONTROLLO RIPETIZIONI: colonne identiche (stessi transiti e
-            // stessa marcatura) collassate in una sola
+            // CONTROLLO RIPETIZIONI: colonne identiche (stessi transiti, stessa
+            // marcatura e stesse note) collassate in una sola
             const seen = new Set<string>();
             const unique = trips
               .sort((a, b) => a.sort - b.sort)
               .filter((t) => {
-                const k = `${t.flag ?? ""}|${t.cells.join("|")}`;
+                const k = `${t.flag ?? ""}|${(t.notes ?? []).join(",")}|${t.cells.join("|")}`;
                 if (seen.has(k)) return false;
                 seen.add(k); return true;
               })
@@ -894,26 +923,26 @@ export default function TimetablesPage() {
             pushGroup(`${pfx}Feriale`, inCat
               .filter((c) => c.dayCodes.has("feriale") || c.dayCodes.has("sabato"))
               .map((c) => ({
-                dep: c.dep, cells: c.cells, sort: c.sort,
+                dep: c.dep, cells: c.cells, sort: c.sort, notes: c.notes,
                 flag: c.dayCodes.has("feriale") && !c.dayCodes.has("sabato") ? "exclsat" as const
                   : !c.dayCodes.has("feriale") && c.dayCodes.has("sabato") ? "solosat" as const : undefined,
               })));
             // FESTIVO
             pushGroup(`${pfx}Festivo`, inCat
               .filter((c) => c.dayCodes.has("festivo"))
-              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort, notes: c.notes })));
             // eventuali day-type CUSTOM del progetto (tutte le altre validità)
             const customCodes = [...new Set(inCat.flatMap((c) => [...c.dayCodes]))]
               .filter((code) => code !== "feriale" && code !== "sabato" && code !== "festivo").sort();
             for (const code of customCodes) {
               pushGroup(`${pfx}${dtByCode.get(code)?.name ?? code}`, inCat
                 .filter((c) => c.dayCodes.has(code))
-                .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+                .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort, notes: c.notes })));
             }
             // CONTROLLO DATI: corse senza alcuna validità giorno → gruppo dedicato
             pushGroup(`${pfx}⚠ Senza validità giorno`, inCat
               .filter((c) => c.dayCodes.size === 0)
-              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort })));
+              .map((c) => ({ dep: c.dep, cells: c.cells, sort: c.sort, notes: c.notes })));
           }
 
           directions.push({ dirLabel: dir === "0" ? "Andata" : "Ritorno", nodes, days });
