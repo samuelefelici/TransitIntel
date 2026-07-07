@@ -300,7 +300,7 @@ router.post("/planning-studio/projects/:id/trips/bulk-delete", async (req, res):
 
   const tripIds: string[] = Array.isArray(req.body?.tripIds) ? req.body.tripIds : [];
   if (tripIds.length === 0) { res.status(400).json({ error: "tripIds required" }); return; }
-  if (tripIds.length > 500) { res.status(400).json({ error: "max 500 corse per richiesta" }); return; }
+  if (tripIds.length > 5000) { res.status(400).json({ error: "max 5000 corse per richiesta" }); return; }
   if (tripIds.some(id => !UUID_RE.test(String(id)))) { res.status(400).json({ error: "tripIds invalid" }); return; }
 
   const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
