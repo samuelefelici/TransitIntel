@@ -242,6 +242,46 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       };
     });
 
+    // Validità per corsa dal calendario aziendale di Planner Studio:
+    // day-type (feriale/sabato/festivo/custom) + macro-categoria (es. Scuole
+    // aperte). Servono alla stampa locandine per raggruppare e per marcare le
+    // corse feriali NON effettuate il sabato ("Escluso il sabato").
+    const tripIdsList = uuidList([...trips.keys()]);
+    const dayCodesByTrip = new Map<string, string[]>();
+    const categoryIdsByTrip = new Map<string, string[]>();
+    const categoriesInfo: Array<{ id: string; code: string; name: string; color: string | null }> = [];
+    if (tripIdsList) {
+      try {
+        const dv = await db.execute<any>(sql.raw(`
+          SELECT v.trip_id, dt.code
+          FROM ps_trip_day_validity v
+          JOIN ps_day_types dt ON dt.id = v.day_type_id
+          WHERE v.is_valid = true AND v.trip_id IN (${tripIdsList})
+        `));
+        for (const r of dv.rows as any[]) {
+          const a = dayCodesByTrip.get(r.trip_id) ?? [];
+          if (!a.includes(r.code)) a.push(r.code);
+          dayCodesByTrip.set(r.trip_id, a);
+        }
+      } catch { /* tabelle validità non ancora create sul progetto */ }
+      try {
+        const cv = await db.execute<any>(sql.raw(`
+          SELECT cv.trip_id, c.id, c.code, c.name, c.color, c.sort_order
+          FROM ps_trip_category_validity cv
+          JOIN ps_validity_categories c ON c.id = cv.category_id
+          WHERE cv.trip_id IN (${tripIdsList})
+          ORDER BY c.sort_order, c.name
+        `));
+        const seenCat = new Set<string>();
+        for (const r of cv.rows as any[]) {
+          const a = categoryIdsByTrip.get(r.trip_id) ?? [];
+          if (!a.includes(r.id)) a.push(r.id);
+          categoryIdsByTrip.set(r.trip_id, a);
+          if (!seenCat.has(r.id)) { seenCat.add(r.id); categoriesInfo.push({ id: r.id, code: r.code, name: r.name, color: r.color }); }
+        }
+      } catch { /* tabelle categorie non ancora create */ }
+    }
+
     const tripList = [...trips.values()]
       .map((t) => {
         const timeBy = new Map(t.stops.map((s2) => [s2.stopId, s2.time]));
@@ -249,6 +289,8 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
           tripId: t.tripId, headsign: t.headsign, directionId: t.directionId,
           firstTime: t.stops.find((s2) => s2.time)?.time ?? "99:99:99",
           times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
+          dayTypeCodes: dayCodesByTrip.get(t.tripId) ?? [],
+          categoryIds: categoryIdsByTrip.get(t.tripId) ?? [],
         };
       })
       .sort((a, b) => a.firstTime.localeCompare(b.firstTime));
@@ -292,6 +334,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       stops: masterWithCoords,
       pathStops,
       cityNodes: await loadCityNodes(projectId),
+      categories: categoriesInfo,
       trips: tripList.map(({ firstTime: _f, ...t }) => t),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
