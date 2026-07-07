@@ -506,6 +506,135 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
 
+/* ─── PROTOTIPI PER I PERCORSI SENZA CORSE ─────────────────────────────────
+ * Caso d'uso: import GTFS con TUTTE le corse poi cancellate (o percorsi
+ * disegnati a mano). Le varianti restano senza alcuna corsa: manca il template
+ * da cui far partire «Genera a cadenza».
+ *
+ * Questo endpoint crea automaticamente una CORSA ZERO (prototipo) per OGNI
+ * variante del progetto che ha ≥2 fermate e NESSUNA corsa. I tempi per arco
+ * sono calcolati dalle distanze (shape_dist_traveled se coerente, altrimenti
+ * Haversine da lat/lon) a una velocità commerciale di default; gli orari sono
+ * ancorati a 00:00 (è un prototipo: nessun orario reale, non genera km, escluso
+ * dalle UDP) e la validità è impostata a feriale. Da qui l'utente genera le
+ * corse reali con «Genera a cadenza».
+ *
+ * Body (tutti opzionali): { variantIds?, speedKmh=18, dwellSec=0, dayTypeCode="feriale" }
+ * ──────────────────────────────────────────────────────────────────────── */
+router.post("/planning-studio/projects/:id/trips/prototype-missing", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+
+  const speedKmh = Math.min(120, Math.max(3, Number(req.body?.speedKmh) || 18));
+  const dwellSec = Math.min(600, Math.max(0, Math.round(Number(req.body?.dwellSec) || 0)));
+  const dayTypeCode = typeof req.body?.dayTypeCode === "string" && req.body.dayTypeCode.trim()
+    ? req.body.dayTypeCode.trim() : "feriale";
+  const restrict: string[] | null = Array.isArray(req.body?.variantIds)
+    ? req.body.variantIds.filter((x: any) => UUID_RE.test(String(x))) : null;
+  const restrictLit = restrict && restrict.length ? `{${restrict.join(",")}}` : null;
+
+  // varianti del progetto con ≥2 fermate e NESSUNA corsa
+  const cand = await db.execute(sql`
+    SELECT v.id, v.route_id, v.name, v.headsign, v.direction
+      FROM ps_route_variants v
+     WHERE v.project_id = ${projId}::uuid
+       ${restrictLit ? sql`AND v.id = ANY(${restrictLit}::uuid[])` : sql``}
+       AND (SELECT count(*) FROM ps_variant_stops vs WHERE vs.variant_id = v.id) >= 2
+       AND NOT EXISTS (SELECT 1 FROM ps_trips t WHERE t.variant_id = v.id AND t.project_id = ${projId}::uuid)
+     ORDER BY v.name`);
+  const variants: any[] = (cand as any).rows ?? [];
+  if (variants.length === 0) { res.json({ ok: true, created: 0, tripIds: [], variants: [] }); return; }
+
+  // feriale: day-type custom del progetto se esiste, altrimenti globale
+  const dtR = await db.execute(sql`
+    SELECT id FROM ps_day_types
+     WHERE code = ${dayTypeCode} AND (project_id = ${projId}::uuid OR project_id IS NULL)
+     ORDER BY (project_id IS NOT NULL) DESC LIMIT 1`);
+  const dayTypeId: string | null = (dtR as any).rows?.[0]?.id ?? null;
+
+  const mps = Math.max(1, speedKmh * 1000 / 3600);
+  const hms = (s: number) => {
+    const t = Math.max(0, Math.round(s));
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), ss = t % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
+  };
+  const R = 6371000, rad = (d: number) => d * Math.PI / 180;
+
+  const createdTripIds: string[] = [];
+  const perVariant: { variantId: string; name: string; tripId: string; stops: number; giroMin: number }[] = [];
+
+  await db.transaction(async (tx) => {
+    for (const v of variants) {
+      const sr = await tx.execute(sql`
+        SELECT vs.seq, vs.stop_id, vs.timepoint, vs.shape_dist_traveled AS sdt, s.lat, s.lon
+          FROM ps_variant_stops vs JOIN ps_stops s ON s.id = vs.stop_id
+         WHERE vs.variant_id = ${v.id}::uuid ORDER BY vs.seq`);
+      const st: any[] = (sr as any).rows ?? [];
+      if (st.length < 2) continue;
+
+      // distanze cumulate: shape_dist_traveled se valido e monotòno, altrimenti Haversine
+      const sdt = st.map(r => (r.sdt == null ? null : Number(r.sdt)));
+      const sdtOk = sdt.every(d => d != null && Number.isFinite(d))
+        && sdt.every((d, i) => i === 0 || (d as number) >= (sdt[i - 1] as number))
+        && (sdt[sdt.length - 1] as number) > (sdt[0] as number);
+      const cum: number[] = [0];
+      if (sdtOk) {
+        const base = sdt[0] as number;
+        for (let i = 0; i < st.length; i++) cum[i] = (sdt[i] as number) - base;
+      } else {
+        for (let i = 1; i < st.length; i++) {
+          const a = st[i - 1], b = st[i];
+          const dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+          const hv = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+          cum[i] = cum[i - 1] + 2 * R * Math.atan2(Math.sqrt(hv), Math.sqrt(1 - hv));
+        }
+      }
+      // tempi ancorati a 00:00 (arco ≥ 30s), sosta solo alle fermate intermedie
+      const arr: number[] = [0], dep: number[] = [0];
+      for (let i = 1; i < st.length; i++) {
+        const arcSec = Math.max(30, Math.round((cum[i] - cum[i - 1]) / mps));
+        arr[i] = dep[i - 1] + arcSec;
+        dep[i] = (i === st.length - 1) ? arr[i] : arr[i] + dwellSec;
+      }
+
+      const ins = await tx.execute(sql`
+        INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id, headsign, direction, attributes)
+        VALUES (${projId}::uuid, ${v.route_id}::uuid, ${v.id}::uuid, NULL,
+                ${v.headsign ?? null}, ${v.direction ?? 0}, ${JSON.stringify({ prototype: true })}::jsonb)
+        RETURNING id`);
+      const tripId: string = (ins as any).rows?.[0]?.id;
+      let seq = 1;
+      for (let i = 0; i < st.length; i++) {
+        await tx.execute(sql`
+          INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time, timepoint)
+          VALUES (${tripId}::uuid, ${seq}, ${String(st[i].stop_id)}::uuid,
+                  ${hms(arr[i])}, ${hms(dep[i])}, ${st[i].timepoint ?? 1})`);
+        seq++;
+      }
+      createdTripIds.push(tripId);
+      perVariant.push({ variantId: v.id, name: v.name, tripId, stops: st.length, giroMin: Math.round(arr[st.length - 1] / 60) });
+    }
+  });
+
+  // validità feriale: best-effort FUORI transazione (la matrice di validità ha
+  // bootstrap lazy → non deve far abortire la creazione dei prototipi).
+  if (dayTypeId && createdTripIds.length) {
+    try {
+      const lit = `{${createdTripIds.join(",")}}`;
+      await db.execute(sql`
+        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+        SELECT tid, ${dayTypeId}::uuid, true FROM unnest(${lit}::uuid[]) AS tid
+        ON CONFLICT DO NOTHING`);
+    } catch { /* matrice validità non ancora inizializzata sul progetto */ }
+  }
+
+  await logActivity(projId, userId, "trip.prototype_missing", "trip", null, { created: createdTripIds.length });
+  res.status(201).json({ ok: true, created: createdTripIds.length, tripIds: createdTripIds, variants: perVariant });
+});
+
 /* ─── UNIFICA CORSE GEMELLE (merge-twins) ─────────────────────────────────
  * Dopo un import GTFS la stessa partenza (stesso percorso, stessi orari a tutte
  * le fermate, stesso headsign) può esistere come PIÙ corse, una per service_id
