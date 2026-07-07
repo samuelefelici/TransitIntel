@@ -203,10 +203,10 @@ function StatCard({ icon, label, value, sub, color }: {
   icon: React.ReactNode; label: string; value: string; sub?: string; color?: string;
 }) {
   return (
-    <div className="bg-muted/30 rounded-xl px-4 py-3 border border-border/30 min-w-[130px]">
-      <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground mb-1">{icon} {label}</div>
-      <div className="text-lg font-bold font-mono" style={color ? { color } : undefined}>{value}</div>
-      {sub && <div className="text-[9px] text-muted-foreground mt-0.5">{sub}</div>}
+    <div className="bg-muted/30 rounded-lg px-2.5 py-1.5 border border-border/30 min-w-[88px] flex items-center gap-2">
+      <div className="flex items-center gap-1 text-[9px] text-muted-foreground">{icon} {label}</div>
+      <div className="text-sm font-bold font-mono leading-none" style={color ? { color } : undefined}>{value}</div>
+      {sub && <div className="text-[8px] text-muted-foreground">{sub}</div>}
     </div>
   );
 }
@@ -1974,18 +1974,6 @@ export default function VehicleWorkspace({
             >
               <Wind className="w-3.5 h-3.5 mr-1" />
               Vuoti
-            </Button>
-
-            {/* Aggiungi turno macchina manuale (#NEW) */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowAddVehicleDialog(true)}
-              disabled={!result}
-              className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 h-8 text-[11px]"
-              title="Aggiungi un nuovo turno macchina vuoto, poi trascina le corse per riempirlo"
-            >
-              ➕ Turno macchina
             </Button>
 
 
