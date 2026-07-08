@@ -655,12 +655,42 @@ export interface PsImportCounts {
  */
 export async function importPsGtfs(
   projectId: string,
-  file: File
+  file: File,
+  routeIds?: string[],
 ): Promise<{ ok: boolean; counts: PsImportCounts }> {
   const fd = new FormData();
   fd.append("file", file);
+  // routeIds assente → importa tutte le linee (comportamento storico)
+  if (routeIds && routeIds.length) fd.append("routeIds", JSON.stringify(routeIds));
   const res = await fetch(
     `${getApiBase()}/api/planning-studio/projects/${projectId}/import-gtfs`,
+    { method: "POST", credentials: "include", body: fd }
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error((body as { error?: string })?.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export interface PsGtfsPreviewRoute {
+  routeId: string;
+  shortName: string;
+  longName: string | null;
+  routeType: number;
+  color: string | null;
+  trips: number;
+}
+/** Legge lo zip GTFS e restituisce l'elenco linee (senza scrivere nulla),
+ *  così l'utente può scegliere quali importare. */
+export async function previewPsGtfs(
+  projectId: string,
+  file: File,
+): Promise<{ routes: PsGtfsPreviewRoute[]; totalRoutes: number; totalTrips: number }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(
+    `${getApiBase()}/api/planning-studio/projects/${projectId}/import-gtfs/preview`,
     { method: "POST", credentials: "include", body: fd }
   );
   if (!res.ok) {

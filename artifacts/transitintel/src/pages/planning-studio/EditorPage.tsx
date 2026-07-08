@@ -42,7 +42,7 @@ import {
   routeSnap,
   listPsNoGoZones, createPsNoGoZone, deletePsNoGoZone, type PsNoGoZone,
   listPsCalendars, type PsCalendar,
-  importPsGtfs, type PsImportCounts,
+  importPsGtfs, previewPsGtfs, type PsImportCounts, type PsGtfsPreviewRoute,
   listPsClusters, createPsCluster, updatePsCluster, deletePsCluster,
   setPsClusterStops, suggestPsClusters,
   type PsCluster, type PsClusterKind, type PsClusterSuggestion,
@@ -415,6 +415,11 @@ export default function PlanningStudioEditorPage() {
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<PsImportCounts | null>(null);
+  // Fase intermedia: dopo la LETTURA del file si sceglie QUALI linee importare.
+  const [previewing, setPreviewing] = useState(false);
+  const [previewRoutes, setPreviewRoutes] = useState<PsGtfsPreviewRoute[] | null>(null);
+  const [selectedRouteIds, setSelectedRouteIds] = useState<Set<string>>(new Set());
+  const [routeSearch, setRouteSearch] = useState("");
 
   const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
   const [editingStop, setEditingStop] = useState<PsStop | null>(null);
@@ -1800,11 +1805,31 @@ export default function PlanningStudioEditorPage() {
 
   /* ─── Import GTFS ─── */
   const isEmpty = !loading && stops.length === 0 && routes.length === 0;
+
+  /** Fase 1 → 2: legge lo zip e mostra l'elenco linee da scegliere. */
+  async function handlePreview() {
+    if (!importFile) return;
+    setPreviewing(true);
+    try {
+      const r = await previewPsGtfs(projectId, importFile);
+      if (r.routes.length === 0) { toast.error("Nessuna linea trovata nel file"); return; }
+      setPreviewRoutes(r.routes);
+      setSelectedRouteIds(new Set(r.routes.map(x => x.routeId))); // tutte selezionate di default
+    } catch (e: any) {
+      toast.error("Lettura GTFS fallita", { description: e?.message });
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
   async function handleImport() {
     if (!importFile) return;
+    // Se ho letto le linee, importo SOLO quelle spuntate. Senza preview → tutte.
+    const routeIds = previewRoutes ? [...selectedRouteIds] : undefined;
+    if (previewRoutes && routeIds!.length === 0) { toast.error("Seleziona almeno una linea"); return; }
     setImporting(true);
     try {
-      const r = await importPsGtfs(projectId, importFile);
+      const r = await importPsGtfs(projectId, importFile, routeIds);
       setImportResult(r.counts);
       toast.success("Import completato", {
         description: `${r.counts.stops} fermate · ${r.counts.routes} linee · ${r.counts.trips} corse`,
@@ -1831,10 +1856,13 @@ export default function PlanningStudioEditorPage() {
     }
   }
   function closeImport() {
-    if (importing) return;
+    if (importing || previewing) return;
     setImportOpen(false);
     setImportFile(null);
     setImportResult(null);
+    setPreviewRoutes(null);
+    setSelectedRouteIds(new Set());
+    setRouteSearch("");
   }
 
   if (loading) {
@@ -3372,7 +3400,7 @@ export default function PlanningStudioEditorPage() {
                 <p className="text-xs text-slate-500 mt-0.5">Progetto: <span className="text-slate-300">{project.name}</span></p>
               </div>
               <div className="px-6 py-5 space-y-4">
-                {!importResult && (
+                {!importResult && !previewRoutes && (
                   <>
                     {!isEmpty && (
                       <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
@@ -3387,7 +3415,7 @@ export default function PlanningStudioEditorPage() {
                       <label className="block text-xs font-medium text-slate-400 mb-1.5">File GTFS (.zip)</label>
                       <label className="block cursor-pointer">
                         <input type="file" accept=".zip,application/zip"
-                          onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                          onChange={(e) => { setImportFile(e.target.files?.[0] || null); setPreviewRoutes(null); setSelectedRouteIds(new Set()); }}
                           disabled={importing} className="hidden" />
                         <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border-2 border-dashed transition ${
                           importFile ? "border-emerald-500/50 bg-emerald-500/5" : "border-slate-700 bg-slate-800/40 hover:border-slate-600"
@@ -3411,6 +3439,61 @@ export default function PlanningStudioEditorPage() {
                     </div>
                   </>
                 )}
+                {!importResult && previewRoutes && (() => {
+                  const filtered = previewRoutes.filter(r => {
+                    const q = routeSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return r.shortName.toLowerCase().includes(q) || (r.longName || "").toLowerCase().includes(q);
+                  });
+                  const allSel = filtered.length > 0 && filtered.every(r => selectedRouteIds.has(r.routeId));
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs text-slate-400">
+                          <strong className="text-slate-200">{selectedRouteIds.size}</strong> di {previewRoutes.length} linee selezionate — scegli quali importare.
+                        </p>
+                        <button
+                          onClick={() => setSelectedRouteIds(prev => {
+                            const n = new Set(prev);
+                            if (allSel) filtered.forEach(r => n.delete(r.routeId));
+                            else filtered.forEach(r => n.add(r.routeId));
+                            return n;
+                          })}
+                          className="text-[11px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800 shrink-0">
+                          {allSel ? "Deseleziona" : "Seleziona"} {routeSearch ? "visibili" : "tutte"}
+                        </button>
+                      </div>
+                      <input
+                        value={routeSearch} onChange={e => setRouteSearch(e.target.value)}
+                        placeholder="Cerca linea per codice o nome…"
+                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm" />
+                      <div className="max-h-[46vh] overflow-auto rounded-lg border border-slate-800 divide-y divide-slate-800/60">
+                        {filtered.length === 0 && (
+                          <div className="px-3 py-6 text-center text-xs text-slate-500">Nessuna linea corrisponde.</div>
+                        )}
+                        {filtered.map(r => {
+                          const sel = selectedRouteIds.has(r.routeId);
+                          return (
+                            <label key={r.routeId}
+                              className={`flex items-center gap-3 px-3 py-2 cursor-pointer transition ${sel ? "bg-emerald-500/5" : "hover:bg-slate-800/40"}`}>
+                              <input type="checkbox" checked={sel}
+                                onChange={() => setSelectedRouteIds(prev => {
+                                  const n = new Set(prev);
+                                  if (n.has(r.routeId)) n.delete(r.routeId); else n.add(r.routeId);
+                                  return n;
+                                })}
+                                className="accent-emerald-500 shrink-0" />
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: r.color || "#64748b" }} />
+                              <span className="font-semibold text-slate-100 shrink-0 min-w-[2.5rem]">{r.shortName}</span>
+                              <span className="text-xs text-slate-400 truncate flex-1">{r.longName || ""}</span>
+                              <span className="text-[11px] text-slate-500 tabular-nums shrink-0">{r.trips.toLocaleString("it-IT")} corse</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {importResult && (
                   <div className="space-y-3">
                     <div className="text-center py-2">
@@ -3442,23 +3525,35 @@ export default function PlanningStudioEditorPage() {
                 )}
               </div>
               <div className="px-6 py-4 border-t border-slate-800 flex justify-end gap-2">
-                {!importResult ? (
-                  <>
-                    <button onClick={closeImport} disabled={importing}
-                      className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50">
-                      Annulla
-                    </button>
-                    <button onClick={handleImport} disabled={!importFile || importing}
-                      className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2">
-                      {importing && <Loader2 className="w-4 h-4 animate-spin" />}
-                      {importing ? "Importazione…" : (isEmpty ? "Importa" : "Importa e sovrascrivi")}
-                    </button>
-                  </>
-                ) : (
+                {importResult ? (
                   <button onClick={closeImport}
                     className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium">
                     Inizia a lavorare
                   </button>
+                ) : previewRoutes ? (
+                  <>
+                    <button onClick={() => { setPreviewRoutes(null); setSelectedRouteIds(new Set()); setRouteSearch(""); }} disabled={importing}
+                      className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50">
+                      Indietro
+                    </button>
+                    <button onClick={handleImport} disabled={importing || selectedRouteIds.size === 0}
+                      className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+                      {importing && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {importing ? "Importazione…" : `Importa ${selectedRouteIds.size} ${selectedRouteIds.size === 1 ? "linea" : "linee"}`}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={closeImport} disabled={importing || previewing}
+                      className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50">
+                      Annulla
+                    </button>
+                    <button onClick={handlePreview} disabled={!importFile || previewing}
+                      className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+                      {previewing && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {previewing ? "Lettura…" : "Leggi e scegli le linee"}
+                    </button>
+                  </>
                 )}
               </div>
             </motion.div>
