@@ -79,14 +79,19 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "chart.js": "^4.4.6",
     "d3-axis": "^3.0.0",
     "d3-scale": "^4.0.2",
     "d3-selection": "^3.0.0",
     "d3-shape": "^3.2.0",
     "fflate": "^0.8.3",
+    "katex": "^0.16.11",
     "mapbox-gl": "^3.20.0",
+    "mermaid": "^11.4.0",
     "react-map-gl": "^8.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   }
 }

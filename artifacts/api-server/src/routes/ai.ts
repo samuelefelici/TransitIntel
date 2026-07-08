@@ -337,6 +337,31 @@ router.post("/ai/argos/chat", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/ai/argos/geo — geometria delle linee GTFS per i blocchi ```map
+// che Argos inserisce nelle risposte. Passthrough verso Argos /geo/routes.
+// ─────────────────────────────────────────────────────────────
+router.get("/ai/argos/geo", async (req, res) => {
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  const qs = new URLSearchParams();
+  for (const k of ["search", "area", "routes", "pois", "limit"]) {
+    const v = req.query[k];
+    if (v !== undefined && v !== null && String(v) !== "") qs.set(k, String(v));
+  }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/geo/routes?${qs.toString()}`, {
+      signal: AbortSignal.timeout(12000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    res.status(upstream.ok ? 200 : 502).json(data);
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || "geometria non disponibile" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // Storico chat Argos — persistente per PROGETTO e per UTENTE.
 // La chat di un progetto è unica e sopravvive a chiusura/riapertura e ricarichi.
 // ─────────────────────────────────────────────────────────────
