@@ -775,9 +775,22 @@ export default function PlanningStudioTripsPage() {
           className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[180px]"
         >
           <option value="">Tutte le categorie (Cal. Aziendale)</option>
-          {(categoriesQ.data ?? []).map(c => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
+          {(() => {
+            const cats = categoriesQ.data ?? [];
+            const subs = cats.filter(c => c.code?.startsWith("scuole_chiuse_"));
+            const tops = cats.filter(c => !c.code?.startsWith("scuole_chiuse_") && c.code !== "scuole_chiuse");
+            const chiuse = cats.find(c => c.code === "scuole_chiuse");
+            return (
+              <>
+                {tops.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {subs.length > 0
+                  ? <optgroup label={chiuse?.name || "Scuole Chiuse"}>
+                      {subs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </optgroup>
+                  : chiuse && <option key={chiuse.id} value={chiuse.id}>{chiuse.name}</option>}
+              </>
+            );
+          })()}
         </select>
 
         <label className="flex items-center gap-1.5 text-slate-400">
@@ -1286,19 +1299,10 @@ export default function PlanningStudioTripsPage() {
               <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (calendario aziendale) — anche più di una</label>
                 {categoriesQ.isLoading && <p className="text-[11px] text-slate-500">Caricamento validità…</p>}
-                {!categoriesQ.isLoading && (categoriesQ.data ?? []).length === 0 && (
-                  <p className="text-[11px] text-slate-500">Nessuna validità definita nel Calendario aziendale.</p>
+                {!categoriesQ.isLoading && (
+                  <CategoryChips categories={categoriesQ.data ?? []} selected={newCategoryIds} onChange={setNewCategoryIds}
+                    emptyHint="Nessuna validità definita nel Calendario aziendale." />
                 )}
-                <div className="flex flex-wrap gap-2">
-                  {(categoriesQ.data ?? []).map(c => (
-                    <label key={c.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
-                      style={{ borderColor: newCategoryIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: newCategoryIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
-                      <input type="checkbox" className="hidden" checked={newCategoryIds.has(c.id)}
-                        onChange={() => setNewCategoryIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
-                      {c.name}
-                    </label>
-                  ))}
-                </div>
                 <p className="text-[10px] text-slate-500 mt-1">Se ne selezioni ≥1, la corsa vale SOLO nei giorni di quei periodi (es. Scuole Aperte). Nessuna = vale in tutti i periodi.</p>
               </div>
               <div>
@@ -1412,16 +1416,7 @@ export default function PlanningStudioTripsPage() {
               </div>
               <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (calendario aziendale) — anche più di una</label>
-                <div className="flex flex-wrap gap-2">
-                  {(categoriesQ.data ?? []).map(c => (
-                    <label key={c.id} className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border cursor-pointer select-none"
-                      style={{ borderColor: genCategoryIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: genCategoryIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
-                      <input type="checkbox" className="hidden" checked={genCategoryIds.has(c.id)}
-                        onChange={() => setGenCategoryIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
-                      {c.name}
-                    </label>
-                  ))}
-                </div>
+                <CategoryChips categories={categoriesQ.data ?? []} selected={genCategoryIds} onChange={setGenCategoryIds} />
               </div>
               <div>
                 <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (tipi giorno)</label>
@@ -1632,6 +1627,66 @@ function BulkValiditySetter({ onApply, disabled }: {
 /* ─── Bulk: proroga GIORNI (tipi giorno) e CATEGORIE (calendario aziendale) ───
  * Per estendere corse esistenti: es. nate "feriale · scuole chiuse", prorogate
  * anche a "sabato" o ad altre categorie SENZA rifarle. */
+/** Picker categorie del calendario aziendale con RAGGRUPPAMENTO: i periodi di
+ *  scuole chiuse (codice `scuole_chiuse_<periodo>`: Estivo, Inverno Natale,
+ *  Pasqua…) sono annidati sotto un'intestazione "Scuole Chiuse" che fa da
+ *  seleziona-tutti. Il codice "scuole_chiuse" nudo NON è assegnabile: non ha
+ *  date proprie (ogni giorno di scuola chiusa appartiene a un periodo), quindi
+ *  è solo il contenitore. Così si evita la ridondanza «Scuole Chiuse + Estivo»
+ *  in un elenco piatto. */
+function CategoryChips({ categories, selected, onChange, disabled, emptyHint }: {
+  categories: PsValidityCategory[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+  disabled?: boolean;
+  emptyHint?: string;
+}) {
+  const isSub = (c: PsValidityCategory) => !!c.code && c.code.startsWith("scuole_chiuse_");
+  const subs = [...categories].filter(isSub).sort((a, b) => a.name.localeCompare(b.name, "it", { numeric: true }));
+  const rank = (c: PsValidityCategory) =>
+    c.code === "scuole_aperte" ? 0 : c.code === "scuole_chiuse" ? 1 : c.code === "festivita" ? 3 : 2;
+  const tops = [...categories].filter(c => !isSub(c)).sort((a, b) => rank(a) - rank(b) || a.sortOrder - b.sortOrder);
+  const set = (ids: string[], next: boolean) => {
+    const n = new Set(selected);
+    for (const id of ids) { if (next) n.add(id); else n.delete(id); }
+    onChange(n);
+  };
+  const chip = (c: PsValidityCategory, sel: boolean) => (
+    <label key={c.id} className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border select-none ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+      style={{ borderColor: sel ? (c.color || "#3b82f6") : "#334155", background: sel ? `${c.color || "#3b82f6"}22` : "transparent", color: sel ? undefined : "#94a3b8" }}>
+      <input type="checkbox" className="hidden" checked={sel} disabled={disabled} onChange={() => set([c.id], !sel)} />
+      {c.name}
+    </label>
+  );
+  if (categories.length === 0) return <span className="text-[11px] text-slate-500">{emptyHint ?? "Nessuna categoria definita."}</span>;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {tops.map(c => {
+        if (c.code === "scuole_chiuse" && subs.length > 0) {
+          const allSel = subs.every(s => selected.has(s.id));
+          const someSel = subs.some(s => selected.has(s.id));
+          return (
+            <div key={c.id} className="basis-full">
+              <label className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border select-none font-medium ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                style={{ borderColor: someSel ? (c.color || "#f59e0b") : "#334155", background: someSel ? `${c.color || "#f59e0b"}22` : "transparent", color: someSel ? undefined : "#94a3b8" }}
+                title="Seleziona/deseleziona tutti i periodi di scuole chiuse">
+                <input type="checkbox" className="hidden" checked={allSel} disabled={disabled}
+                  ref={el => { if (el) el.indeterminate = someSel && !allSel; }}
+                  onChange={() => set(subs.map(s => s.id), !allSel)} />
+                {c.name} <span className="opacity-60 font-normal">· tutti i periodi</span>
+              </label>
+              <div className="mt-1 ml-3 pl-2 border-l border-slate-700 flex flex-wrap gap-1.5">
+                {subs.map(s => chip(s, selected.has(s.id)))}
+              </div>
+            </div>
+          );
+        }
+        return chip(c, selected.has(c.id));
+      })}
+    </div>
+  );
+}
+
 function BulkDaysCatsSetter({ dayTypes, categories, disabled, onApplyDays, onApplyCats }: {
   dayTypes: PsDayType[];
   categories: PsValidityCategory[];
@@ -1688,15 +1743,8 @@ function BulkDaysCatsSetter({ dayTypes, categories, disabled, onApplyDays, onApp
           </div>
           <div className="border-t border-slate-700 pt-2">
             <p className="text-[11px] text-slate-300 font-medium mb-1">Categorie (calendario aziendale)</p>
-            <div className="flex flex-wrap gap-1.5 mb-1.5">
-              {categories.map(c => (
-                <label key={c.id} className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border cursor-pointer select-none"
-                  style={{ borderColor: catIds.has(c.id) ? (c.color || "#3b82f6") : "#334155", background: catIds.has(c.id) ? `${c.color || "#3b82f6"}22` : "transparent" }}>
-                  <input type="checkbox" className="hidden" checked={catIds.has(c.id)}
-                    onChange={() => setCatIds(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })} />
-                  {c.name}
-                </label>
-              ))}
+            <div className="mb-1.5">
+              <CategoryChips categories={categories} selected={catIds} onChange={setCatIds} />
             </div>
             <div className="flex items-center gap-2 mb-1.5 text-[10px] text-slate-400">
               <label className="flex items-center gap-1 cursor-pointer">
@@ -1836,18 +1884,7 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
           <div>
             <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Categorie (calendario aziendale)</label>
             <div className="flex flex-wrap gap-1.5">
-              {categories.map(c => {
-                const on = catIds.has(c.id);
-                return (
-                  <button key={c.id} type="button"
-                    onClick={() => setCatIds(s => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })}
-                    className="text-[11px] px-2 py-1 rounded border"
-                    style={{ borderColor: on ? (c.color || "#3b82f6") : "#334155", background: on ? `${c.color || "#3b82f6"}22` : "transparent", color: on ? undefined : "#94a3b8" }}>
-                    {c.name}
-                  </button>
-                );
-              })}
-              {categories.length === 0 && <span className="text-[11px] text-slate-500">Nessuna categoria definita.</span>}
+              <CategoryChips categories={categories} selected={catIds} onChange={setCatIds} />
             </div>
             <p className="text-[10px] text-slate-500 mt-1">Nessuna = vale in ogni periodo.</p>
           </div>
@@ -2046,13 +2083,11 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
       toast.error("Errore aggiornamento giorni", { description: e?.message });
     } finally { setWdBusy(false); }
   }
-  async function toggleCategory(catId: string) {
+  async function applyCategories(nextIds: string[]) {
     if (wdBusy || !tripValQ.data) return;
     setWdBusy(true);
     try {
-      const cur = new Set(tripValQ.data.categoryIds);
-      cur.has(catId) ? cur.delete(catId) : cur.add(catId);
-      await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [trip.id], categoryIds: [...cur], mode: "replace" });
+      await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: [trip.id], categoryIds: nextIds, mode: "replace" });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-validity", trip.id] });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
       onChange();
@@ -2220,19 +2255,12 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
           </p>
 
           <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide pt-1">Categorie calendario aziendale</div>
-          <div className="flex flex-wrap gap-1.5">
-            {(categoriesDrawerQ.data ?? []).map(c => {
-              const on = (tripValQ.data?.categoryIds ?? []).includes(c.id);
-              return (
-                <button key={c.id} onClick={() => toggleCategory(c.id)} disabled={wdBusy || tripValQ.isLoading}
-                  className="text-[11px] px-2 py-1 rounded border transition-colors disabled:opacity-50"
-                  style={{ borderColor: on ? (c.color || "#3b82f6") : "#334155", background: on ? `${c.color || "#3b82f6"}22` : "transparent", color: on ? undefined : "#94a3b8" }}>
-                  {c.name}
-                </button>
-              );
-            })}
-            {(categoriesDrawerQ.data ?? []).length === 0 && <span className="text-[11px] text-slate-500">Nessuna categoria definita.</span>}
-          </div>
+          <CategoryChips
+            categories={categoriesDrawerQ.data ?? []}
+            selected={new Set(tripValQ.data?.categoryIds ?? [])}
+            disabled={wdBusy || tripValQ.isLoading}
+            onChange={(next) => applyCategories([...next])}
+          />
           <p className="text-[10px] text-slate-500 leading-tight">
             Nessuna categoria accesa = la corsa vale in ogni periodo; con ≥1 accese vale SOLO nei giorni di quelle categorie.
           </p>
