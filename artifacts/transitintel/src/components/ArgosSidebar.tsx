@@ -59,6 +59,20 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [msgs]);
 
+  // Chat persistente per progetto: al cambio di progetto carico lo storico
+  // dell'utente dal server. Resetta anche i messaggi (niente "bleed" tra progetti).
+  React.useEffect(() => {
+    if (!projectId) { setMsgs([]); return; }
+    let cancelled = false;
+    fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}`)
+      .then(r => (r.ok ? r.json() : { messages: [] }))
+      .then(d => {
+        if (!cancelled) setMsgs((d.messages || []).map((m: any) => ({ id: String(m.id), role: m.role, content: m.content })));
+      })
+      .catch(() => { if (!cancelled) setMsgs([]); });
+    return () => { cancelled = true; };
+  }, [projectId]);
+
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
     if (!text || loading) return;
@@ -69,10 +83,15 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
     const assistantMsg: Msg = { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true };
     setMsgs(prev => [...prev, userMsg, assistantMsg]);
 
-    const history = [...msgs, userMsg].map(m => ({ role: m.role, content: m.content }));
+    // Al proxy mando solo gli ultimi turni (Argos tronca comunque lo storico):
+    // la persistenza completa vive sul server, non serve rispedire tutto.
+    const history = [...msgs, userMsg].slice(-20).map(m => ({ role: m.role, content: m.content }));
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+
+    // Accumulo il testo della risposta per salvarlo (oltre che mostrarlo).
+    let assistantAccum = "";
 
     try {
       const r = await fetch(`${getApiBase()}/api/ai/argos/chat`, {
@@ -120,10 +139,12 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
           try { payload = JSON.parse(data); } catch { continue; }
 
           if (typeof payload.t === "string") {
+            assistantAccum += payload.t;
             patchLast(m => ({ ...m, content: m.content + payload.t }));
           } else if (payload.reset) {
             // Argos ha prodotto testo interlocutorio prima di consultare i dati:
             // azzera il parziale, la risposta finale arriva dopo.
+            assistantAccum = "";
             patchLast(m => ({ ...m, content: "" }));
           } else if (payload.error) {
             patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${payload.error}`, streaming: false }));
@@ -146,10 +167,26 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
     } finally {
       setLoading(false);
       abortRef.current = null;
+      // Persistenza server: salvo la domanda e (se c'è) la risposta nel thread del
+      // progetto. Fire-and-forget: non blocca l'UI. Solo dentro un progetto.
+      if (projectId) {
+        const toSave: { role: string; content: string }[] = [{ role: "user", content: text }];
+        if (assistantAccum.trim()) toSave.push({ role: "assistant", content: assistantAccum });
+        fetch(`${getApiBase()}/api/ai/argos/history`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId, messages: toSave }),
+        }).catch(() => {});
+      }
     }
   };
 
-  const clear = () => setMsgs([]);
+  const clear = () => {
+    setMsgs([]);
+    if (projectId) {
+      fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}`, { method: "DELETE" }).catch(() => {});
+    }
+  };
   const notReady = health !== null && (!health.configured || health.reachable === false);
 
   return (
