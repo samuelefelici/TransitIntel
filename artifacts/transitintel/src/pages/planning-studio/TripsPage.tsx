@@ -54,6 +54,37 @@ function cumDistsOf(vStops: PsVariantStop[]): number[] {
   return out;
 }
 
+/** Gruppo-giorno del profilo traffico usato nella moltiplicazione delle corse. */
+type TrafficGroup = "feriale" | "sabato" | "domenica";
+const TRAFFIC_GROUP_LABEL: Record<TrafficGroup, string> = {
+  feriale: "Lun–Ven", sabato: "Sabato", domenica: "Domenica",
+};
+/** Profilo di default dei coefficienti di rallentamento per fascia oraria,
+ * distinto per gruppo-giorno (il traffico è molto diverso tra feriale, sabato e
+ * domenica). Proposta modificabile in anteprima. */
+function defaultCoeffForHour(h: number, group: TrafficGroup = "feriale"): number {
+  const hh = ((h % 24) + 24) % 24;
+  if (group === "domenica") {
+    // domenica: traffico quasi assente, lievissimi picchi tarda mattina/sera
+    if (hh === 11 || hh === 19) return 1.05;
+    return 1.0;
+  }
+  if (group === "sabato") {
+    // sabato: niente picco pendolare, picco commerciale mattina + pomeriggio
+    if (hh === 10 || hh === 11) return 1.12;
+    if (hh === 17 || hh === 18) return 1.15;
+    if (hh === 12 || hh === 16 || hh === 19) return 1.08;
+    return 1.0;
+  }
+  // feriale (lun-ven): picchi pendolari mattina e sera
+  if (hh === 7 || hh === 8) return 1.25;
+  if (hh === 18) return 1.3;
+  if (hh === 17) return 1.2;
+  if (hh === 9 || hh === 13) return 1.15;
+  if (hh === 12 || hh === 14 || hh === 19) return 1.1;
+  return 1.0;
+}
+
 function fmtTime(t?: string | null) {
   if (!t) return "—";
   return t.length >= 5 ? t.slice(0, 5) : t;
@@ -227,18 +258,11 @@ export default function PlanningStudioTripsPage() {
   }>(null);
   const [genCoeff, setGenCoeff] = useState<Record<number, number>>({});
   const [genApplyTraffic, setGenApplyTraffic] = useState(true);
-  useEffect(() => { if (!genOpen) { setGenStep("params"); setGenProfile(null); } }, [genOpen]);
-  /** Profilo di default dei coefficienti di rallentamento per fascia oraria
-   * (proposta modificabile; agganciabile ai dati Analytics quando disponibili). */
-  function defaultCoeffForHour(h: number): number {
-    const hh = ((h % 24) + 24) % 24;
-    if (hh === 7 || hh === 8) return 1.25;
-    if (hh === 18) return 1.3;
-    if (hh === 17) return 1.2;
-    if (hh === 9 || hh === 13) return 1.15;
-    if (hh === 12 || hh === 14 || hh === 19) return 1.1;
-    return 1.0;
-  }
+  // Gruppo-giorno del profilo traffico usato nella moltiplicazione: il traffico
+  // cambia molto tra feriale (picchi pendolari), sabato (picco commerciale) e
+  // domenica (quasi assente). L'utente sceglie quale applicare.
+  const [genTrafficGroup, setGenTrafficGroup] = useState<TrafficGroup>("feriale");
+  useEffect(() => { if (!genOpen) { setGenStep("params"); setGenProfile(null); setGenTrafficGroup("feriale"); } }, [genOpen]);
 
   const [newOpen, setNewOpen] = useState(false);
   const [newStart, setNewStart] = useState("07:00");
@@ -419,7 +443,7 @@ export default function PlanningStudioTripsPage() {
       const h1 = Math.floor((deps[deps.length - 1] + relArr[relArr.length - 1]) / 3600);
       setGenCoeff(prev => {
         const next: Record<number, number> = { ...prev };
-        for (let h = h0; h <= h1; h++) if (next[h] == null) next[h] = defaultCoeffForHour(h);
+        for (let h = h0; h <= h1; h++) if (next[h] == null) next[h] = defaultCoeffForHour(h, genTrafficGroup);
         return next;
       });
       setGenProfile({
@@ -449,6 +473,20 @@ export default function PlanningStudioTripsPage() {
       depT[i] = arr[i] + dwell;
     }
     return { arr, dep: depT };
+  }
+
+  /** Cambia il gruppo-giorno del traffico e ri-applica il relativo profilo di
+   * default alle fasce coperte (sovrascrive: è una scelta esplicita dell'utente). */
+  function applyTrafficGroup(g: TrafficGroup) {
+    setGenTrafficGroup(g);
+    if (!genProfile) return;
+    const h0 = Math.floor(genProfile.deps[0] / 3600);
+    const h1 = Math.floor((genProfile.deps[genProfile.deps.length - 1] + genProfile.relArr[genProfile.relArr.length - 1]) / 3600);
+    setGenCoeff(() => {
+      const next: Record<number, number> = {};
+      for (let h = h0; h <= h1; h++) next[h] = defaultCoeffForHour(h, g);
+      return next;
+    });
   }
 
   /** Step 2 → salvataggio definitivo (con o senza variazione traffico). */
@@ -496,7 +534,7 @@ export default function PlanningStudioTripsPage() {
         catch { toast.warning("Corse create, ma il prototipo non è stato rimosso", { description: "Eliminalo manualmente dall'elenco corse." }); }
       }
       toast.success(`✅ ${r.count} corse generate e salvate`, {
-        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? "variazione traffico applicata" : "senza variazione traffico"}${protoRemoved ? " · prototipo rimosso" : ""}`,
+        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? `traffico ${TRAFFIC_GROUP_LABEL[genTrafficGroup]}` : "senza variazione traffico"}${protoRemoved ? " · prototipo rimosso" : ""}`,
         duration: 6000,
       });
       setGenOpen(false);
@@ -933,18 +971,26 @@ export default function PlanningStudioTripsPage() {
                 return (
                   <tr key={t.id} className={`border-b border-slate-800/60 hover:bg-slate-900/50 ${
                     isSel ? "bg-amber-500/5" : ""
-                  } ${t.attributes?.prototype ? "bg-amber-500/10" : ""} ${!t.isActive ? "opacity-50" : ""}`}>
+                  } ${t.attributes?.prototype ? (t.attributes?.prototypeReady ? "bg-violet-500/10" : "bg-amber-500/10") : ""} ${!t.isActive ? "opacity-50" : ""}`}>
                     <td className="p-2">
                       <input type="checkbox" checked={isSel} onChange={() => toggleSel(t.id)}
                         className="accent-amber-500" />
                     </td>
                     <td className="p-2 font-mono text-slate-300">
                       {t.attributes?.prototype ? (
-                        <span
-                          title="CORSA ZERO (prototipo): nessun orario, solo tempi per arco, durata e validità. Non genera km e NON entra nelle UDP. Crea le corse reali con «Genera a cadenza»."
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[10px] font-bold not-italic">
-                          ⚠ PROTO
-                        </span>
+                        t.attributes?.prototypeReady ? (
+                          <span
+                            title="CORSA MADRE: prototipo con orari reali, pronto da moltiplicare con «Genera a cadenza». Non genera km e NON entra nelle UDP."
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-violet-500/20 border border-violet-500/50 text-violet-300 text-[10px] font-bold not-italic">
+                            ★ MADRE
+                          </span>
+                        ) : (
+                          <span
+                            title="CORSA ZERO (prototipo): nessun orario, solo tempi per arco, durata e validità. Inserisci i transiti alle fermate per promuoverla a Corsa MADRE."
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 text-[10px] font-bold not-italic">
+                            ⚠ ZERO
+                          </span>
+                        )
                       ) : fmtTime(t.firstDeparture ?? firstTimes[t.id])}
                     </td>
                     <td className="p-2">
@@ -1329,7 +1375,7 @@ export default function PlanningStudioTripsPage() {
                   <option value="">— scegli la corsa da replicare —</option>
                   {filteredTrips.map(t => (
                     <option key={t.id} value={t.id}>
-                      {t.attributes?.prototype ? "★ PROTOTIPO" : fmtTime(firstTimes[t.id])} · {t.shortName || t.headsign || t.id.slice(0, 8)}
+                      {t.attributes?.prototype ? (t.attributes?.prototypeReady ? "★ MADRE" : "⚠ ZERO") : fmtTime(firstTimes[t.id])} · {t.shortName || t.headsign || t.id.slice(0, 8)}
                       {t.serviceLabel ? ` · ${t.serviceLabel}` : ""}
                     </option>
                   ))}
@@ -1413,6 +1459,23 @@ export default function PlanningStudioTripsPage() {
                       <input type="checkbox" checked={genApplyTraffic} onChange={e => setGenApplyTraffic(e.target.checked)} className="accent-amber-500" />
                       Applica variazione traffico
                     </label>
+                  </div>
+                  {/* Scelta del profilo traffico per gruppo-giorno: il traffico è
+                      molto diverso tra feriale, sabato e domenica. */}
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <span className="text-slate-400">Dati di traffico:</span>
+                    <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden">
+                      {(["feriale", "sabato", "domenica"] as TrafficGroup[]).map(g => (
+                        <button key={g}
+                          onClick={() => applyTrafficGroup(g)}
+                          disabled={!genApplyTraffic}
+                          className={`px-2.5 py-1 transition-colors disabled:opacity-40 ${genTrafficGroup === g ? "bg-amber-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}
+                          title={`Applica il profilo traffico ${TRAFFIC_GROUP_LABEL[g]}`}>
+                          {TRAFFIC_GROUP_LABEL[g]}
+                        </button>
+                      ))}
+                    </div>
+                    <span className="text-slate-500">— scegli in base ai giorni in cui circoleranno le corse generate.</span>
                   </div>
                   <div className="overflow-auto max-h-[52vh] rounded border border-slate-800">
                     <table className="text-[11px] border-collapse w-full">
@@ -1791,8 +1854,11 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
 }
 
 /* ─── Editor tabellare dei transiti alle fermate di una corsa ─── */
-function TripStopTimesEditor({ projectId, tripId, onSaved }: {
+function TripStopTimesEditor({ projectId, tripId, onSaved, promoteZeroPrototype = false }: {
   projectId: string; tripId: string; onSaved: () => void;
+  /** true se la corsa è una CORSA ZERO (prototipo senza orario): salvando i
+   *  transiti passa allo step successivo «Corsa MADRE», pronta da moltiplicare. */
+  promoteZeroPrototype?: boolean;
 }) {
   const qc = useQueryClient();
   const stQ = useQuery({
@@ -1825,7 +1891,14 @@ function TripStopTimesEditor({ projectId, tripId, onSaved }: {
       await setPsStopTimes(projectId, tripId, rows.map(r => ({
         stopId: r.stopId, arrivalTime: `${r.arr}:00`, departureTime: `${r.dep}:00`,
       })));
-      toast.success("Transiti aggiornati");
+      // CORSA ZERO → CORSA MADRE: inseriti gli orari reali, il prototipo passa
+      // allo step successivo, pronto per «Genera a cadenza».
+      if (promoteZeroPrototype) {
+        try { await updatePsTrip(projectId, tripId, { attributesMerge: { prototypeReady: true } }); } catch { /* non blocca il salvataggio orari */ }
+        toast.success("Orari salvati → Corsa MADRE", { description: "Il prototipo ora ha orari reali: pronto da moltiplicare con «Genera a cadenza»." });
+      } else {
+        toast.success("Transiti aggiornati");
+      }
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-stop-times", tripId] });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
       onSaved();
@@ -2065,12 +2138,19 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
         <div className="p-4 border-b border-slate-800 space-y-1 text-xs">
           <div className="text-slate-400">{trip.headsign || trip.shortName || "—"}</div>
           <div className="text-slate-600 font-mono">{trip.id.slice(0, 8)}…</div>
-          {!!trip.attributes?.prototype && (
+          {!!trip.attributes?.prototype && !trip.attributes?.prototypeReady && (
             <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200 leading-snug">
               ⚠ <strong>CORSA ZERO (prototipo)</strong> — nessun orario di partenza/arrivo:
               contiene solo i tempi per arco, la durata del giro e la validità.
-              Non genera km e NON entra nelle Unità di Progettazione.
-              Crea le corse reali con <strong>«Genera a cadenza»</strong> usando questo prototipo come template.
+              Inserisci i <strong>transiti alle fermate</strong> qui sotto e salva: la corsa passerà
+              allo step successivo, la <strong>Corsa MADRE</strong>, pronta da moltiplicare.
+            </div>
+          )}
+          {!!trip.attributes?.prototype && !!trip.attributes?.prototypeReady && (
+            <div className="mt-2 rounded border border-violet-500/50 bg-violet-500/10 px-2.5 py-2 text-[11px] text-violet-200 leading-snug">
+              ★ <strong>CORSA MADRE</strong> — prototipo con orari reali. Non genera km e NON entra
+              nelle Unità di Progettazione: aspetta solo di essere moltiplicata con
+              <strong> «Genera a cadenza»</strong>, che la userà come template e poi la rimuoverà.
             </div>
           )}
         </div>
@@ -2104,10 +2184,12 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
           </p>
         </div>
 
-        {/* Transiti alle fermate (editor tabellare) */}
-        {!trip.attributes?.prototype && (
-          <TripStopTimesEditor projectId={projectId} tripId={trip.id} onSaved={onChange} />
-        )}
+        {/* Transiti alle fermate (editor tabellare). Anche per i prototipi: su una
+            CORSA ZERO l'inserimento degli orari la promuove a CORSA MADRE. */}
+        <TripStopTimesEditor
+          projectId={projectId} tripId={trip.id} onSaved={onChange}
+          promoteZeroPrototype={!!trip.attributes?.prototype && !trip.attributes?.prototypeReady}
+        />
 
         {/* Giorni validità (L…D) + categorie + a chiamata */}
         <div className="p-4 border-b border-slate-800 space-y-3">
