@@ -361,25 +361,35 @@ export default function PlanningStudioTripsPage() {
     if (!protoTimes) { toast.error("Tempi del grafo non pronti"); return; }
     setNewBusy(true);
     try {
-      // CORSA ZERO: nessun orario reale — i tempi del grafo vengono salvati
-      // ANCORATI a 00:00 (solo tempi per arco + soste). Le corse vere nascono
-      // con "Genera a cadenza" a partire da questo prototipo.
-      const t0 = protoTimes.arr[0];
+      // CORSA MADRE: il calcolatore definisce gli orari REALI di transito (all'ora
+      // di partenza scelta). Il prototipo è ora pronto da moltiplicare con
+      // «Genera a cadenza». Non genera km e resta escluso dalle UDP finché è
+      // prototipo, ma NON è più una Corsa ZERO senza orario.
       const stopTimes = vStops.map((st, i) => ({
         stopId: st.stopId,
-        arrivalTime: genSecToHms(protoTimes.arr[i] - t0),
-        departureTime: genSecToHms(protoTimes.dep[i] - t0),
+        arrivalTime: genSecToHms(protoTimes.arr[i]),
+        departureTime: genSecToHms(protoTimes.dep[i]),
         timepoint: st.timepoint ?? 1,
       }));
-      const r = await batchCreatePsTrips(projectId, [{
-        routeId, variantId,
-        calendarId: newCalendarId || null,
-        headsign: null, direction: 0,
-        attributes: { prototype: true }, // corsa ZERO: non genera km, esclusa dalle UDP
-        stopTimes,
-      }]);
+      // Se la variante ha GIÀ un prototipo (Corsa ZERO creata da «Prototipi
+      // mancanti»), lo si PROMUOVE in place a Corsa MADRE — niente doppioni.
+      const existingProto = (tripsQ.data ?? []).find(t => t.variantId === variantId && t.attributes?.prototype);
+      let tripId: string | undefined;
+      if (existingProto) {
+        await setPsStopTimes(projectId, existingProto.id, stopTimes.map(s => ({ stopId: s.stopId, arrivalTime: s.arrivalTime, departureTime: s.departureTime })));
+        await updatePsTrip(projectId, existingProto.id, { calendarId: newCalendarId || null, attributesMerge: { prototype: true, prototypeReady: true } });
+        tripId = existingProto.id;
+      } else {
+        const r = await batchCreatePsTrips(projectId, [{
+          routeId, variantId,
+          calendarId: newCalendarId || null,
+          headsign: null, direction: 0,
+          attributes: { prototype: true, prototypeReady: true }, // Corsa MADRE
+          stopTimes,
+        }]);
+        tripId = r.tripIds?.[0];
+      }
       // Giorni di validità (matrice): best-effort, non blocca la creazione.
-      const tripId = r.tripIds?.[0];
       if (tripId) {
         try {
           if (newDayTypeIds.size > 0) {
@@ -392,8 +402,8 @@ export default function PlanningStudioTripsPage() {
           toast.warning("Corsa creata, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
         }
       }
-      toast.success("✅ Corsa ZERO (prototipo) creata", {
-        description: `${vStops.length} fermate · giro ${protoTimes.totalMin} min. È solo un PROTOTIPO senza orario e non genera km: crea le corse reali con "Genera a cadenza".`,
+      toast.success("✅ Corsa MADRE pronta", {
+        description: `${vStops.length} fermate · giro ${protoTimes.totalMin} min · partenza ${newStart}. Ora moltiplicala con «Genera a cadenza».`,
         duration: 8000,
       });
       setNewOpen(false);
@@ -1180,15 +1190,16 @@ export default function PlanningStudioTripsPage() {
           <div className="w-full max-w-2xl mx-4 rounded-xl border border-emerald-500/30 bg-slate-950 shadow-2xl max-h-[92vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
-                <Plus className="w-4 h-4 text-emerald-400" /> Corsa ZERO (prototipo)
+                <Plus className="w-4 h-4 text-emerald-400" /> Nuova corsa — calcolo orari (Corsa MADRE)
               </h3>
               <button onClick={() => !newBusy && setNewOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-4 space-y-3 text-sm">
               <p className="text-[11px] text-slate-400">
-                Il <strong>grafo della linea</strong>: i tempi di percorrenza per <strong>arco</strong> sono calcolati
+                Definisci gli <strong>orari di transito</strong> del percorso: i tempi per <strong>arco</strong> sono calcolati
                 automaticamente (dai km e dalla velocità di default) e <strong>sovrascrivibili</strong>; su ogni fermata
-                imposti la <strong>sosta</strong>. Gli orari si aggiornano in tempo reale.
+                imposti la <strong>sosta</strong>. Al salvataggio la corsa diventa una <strong>Corsa MADRE</strong> (se il
+                percorso aveva una Corsa ZERO, viene promossa senza doppioni), pronta da moltiplicare con «Genera a cadenza».
               </p>
               <div className="grid grid-cols-4 gap-2 items-end">
                 <div>
@@ -1312,7 +1323,7 @@ export default function PlanningStudioTripsPage() {
               <button onClick={runCreateFirstTrip} disabled={newBusy}
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 inline-flex items-center gap-1.5">
                 {newBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                Crea corsa prototipo
+                Salva orari → Corsa MADRE
               </button>
             </div>
           </div>
@@ -1853,12 +1864,9 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
   );
 }
 
-/* ─── Editor tabellare dei transiti alle fermate di una corsa ─── */
-function TripStopTimesEditor({ projectId, tripId, onSaved, promoteZeroPrototype = false }: {
+/* ─── Editor tabellare dei transiti alle fermate di una corsa (corse reali) ─── */
+function TripStopTimesEditor({ projectId, tripId, onSaved }: {
   projectId: string; tripId: string; onSaved: () => void;
-  /** true se la corsa è una CORSA ZERO (prototipo senza orario): salvando i
-   *  transiti passa allo step successivo «Corsa MADRE», pronta da moltiplicare. */
-  promoteZeroPrototype?: boolean;
 }) {
   const qc = useQueryClient();
   const stQ = useQuery({
@@ -1891,14 +1899,7 @@ function TripStopTimesEditor({ projectId, tripId, onSaved, promoteZeroPrototype 
       await setPsStopTimes(projectId, tripId, rows.map(r => ({
         stopId: r.stopId, arrivalTime: `${r.arr}:00`, departureTime: `${r.dep}:00`,
       })));
-      // CORSA ZERO → CORSA MADRE: inseriti gli orari reali, il prototipo passa
-      // allo step successivo, pronto per «Genera a cadenza».
-      if (promoteZeroPrototype) {
-        try { await updatePsTrip(projectId, tripId, { attributesMerge: { prototypeReady: true } }); } catch { /* non blocca il salvataggio orari */ }
-        toast.success("Orari salvati → Corsa MADRE", { description: "Il prototipo ora ha orari reali: pronto da moltiplicare con «Genera a cadenza»." });
-      } else {
-        toast.success("Transiti aggiornati");
-      }
+      toast.success("Transiti aggiornati");
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-stop-times", tripId] });
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
       onSaved();
@@ -2142,8 +2143,8 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
             <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200 leading-snug">
               ⚠ <strong>CORSA ZERO (prototipo)</strong> — nessun orario di partenza/arrivo:
               contiene solo i tempi per arco, la durata del giro e la validità.
-              Inserisci i <strong>transiti alle fermate</strong> qui sotto e salva: la corsa passerà
-              allo step successivo, la <strong>Corsa MADRE</strong>, pronta da moltiplicare.
+              Per darle gli orari usa <strong>«Nuova corsa»</strong> (il calcolatore automatico):
+              diventerà una <strong>Corsa MADRE</strong>, pronta da moltiplicare con «Genera a cadenza».
             </div>
           )}
           {!!trip.attributes?.prototype && !!trip.attributes?.prototypeReady && (
@@ -2184,12 +2185,11 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
           </p>
         </div>
 
-        {/* Transiti alle fermate (editor tabellare). Anche per i prototipi: su una
-            CORSA ZERO l'inserimento degli orari la promuove a CORSA MADRE. */}
-        <TripStopTimesEditor
-          projectId={projectId} tripId={trip.id} onSaved={onChange}
-          promoteZeroPrototype={!!trip.attributes?.prototype && !trip.attributes?.prototypeReady}
-        />
+        {/* Transiti alle fermate (editor tabellare) — solo per le corse reali.
+            I prototipi ricevono gli orari dal calcolatore di «Nuova corsa». */}
+        {!trip.attributes?.prototype && (
+          <TripStopTimesEditor projectId={projectId} tripId={trip.id} onSaved={onChange} />
+        )}
 
         {/* Giorni validità (L…D) + categorie + a chiamata */}
         <div className="p-4 border-b border-slate-800 space-y-3">
