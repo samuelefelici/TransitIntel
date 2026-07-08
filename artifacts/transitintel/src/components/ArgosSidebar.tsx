@@ -15,8 +15,7 @@
 import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Eye, X, Send, Loader2, User, Trash2, Sparkles, Route, Clock, CalendarDays, Brain } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { getApiBase } from "@/lib/api";
 
 type Msg = {
@@ -355,9 +354,7 @@ function MessageBubble({ msg }: { msg: Msg }) {
               : "bg-zinc-900/70 border border-white/5 text-zinc-100"}`}>
             {isUser
               ? <p className="whitespace-pre-wrap">{msg.content}</p>
-              : <div className="prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-                </div>}
+              : <ArgosMarkdown className="prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]">{msg.content}</ArgosMarkdown>}
           </div>
         )}
         {msg.streaming && !msg.content && (
