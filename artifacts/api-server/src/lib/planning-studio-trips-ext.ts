@@ -29,6 +29,9 @@ function sanitizeAttrMerge(input: any): Record<string, any> | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return null;
   const out: Record<string, any> = {};
   if ("prototype" in input) out.prototype = !!input.prototype;
+  // prototypeReady: il prototipo ha orari reali inseriti a mano → "Corsa MADRE",
+  // lo step successivo in attesa di essere moltiplicato a cadenza.
+  if ("prototypeReady" in input) out.prototypeReady = !!input.prototypeReady;
   if ("onDemand" in input) out.onDemand = !!input.onDemand;
   if ("weekdays" in input && Array.isArray(input.weekdays) && input.weekdays.length === 7) {
     out.weekdays = input.weekdays.map((x: any) => x !== false);
