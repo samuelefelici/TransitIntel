@@ -128,6 +128,60 @@ async function bulkInsert(
   }
 }
 
+/* ─── Preview: leggi lo zip e restituisci l'elenco linee (senza scrivere) ───
+ * Serve alla UI per far scegliere QUALI linee importare prima dell'import vero.
+ * Parsa solo routes.txt e trips.txt: veloce anche su feed grandi. */
+router.post(
+  "/planning-studio/projects/:id/import-gtfs/preview",
+  upload.single("file"),
+  async (req: Request, res: Response): Promise<void> => {
+    const userId = req.user!.id;
+    const projectId = String(req.params.id || "");
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "ID progetto non valido" }); return; }
+    if (!req.file?.buffer) { res.status(400).json({ error: "Nessun file ricevuto." }); return; }
+    const project = await loadProjectWritable(projectId, userId);
+    if (!project) { res.status(403).json({ error: "Progetto non trovato o senza permessi di scrittura" }); return; }
+
+    let zip: AdmZip;
+    try { zip = new AdmZip(req.file.buffer); }
+    catch (e: any) { res.status(400).json({ error: "ZIP non valido: " + (e?.message || "errore parsing") }); return; }
+
+    const routesCsv = readZipFile(zip, "routes.txt");
+    const tripsCsv  = readZipFile(zip, "trips.txt");
+    if (!routesCsv || !tripsCsv) {
+      res.status(400).json({ error: "GTFS incompleto: mancano routes.txt e/o trips.txt" }); return;
+    }
+    const routeRows = parseCsv(routesCsv);
+    const tripRows  = parseCsv(tripsCsv);
+
+    // corse per route_id
+    const tripsByRoute = new Map<string, number>();
+    for (const t of tripRows) {
+      const rid = t.route_id?.trim();
+      if (!rid) continue;
+      tripsByRoute.set(rid, (tripsByRoute.get(rid) || 0) + 1);
+    }
+    const routes = routeRows
+      .map(r => {
+        const routeId = r.route_id?.trim();
+        if (!routeId) return null;
+        return {
+          routeId,
+          shortName: (r.route_short_name || "").trim() || routeId,
+          longName: (r.route_long_name || "").trim() || null,
+          routeType: int(r.route_type, 3),
+          color: color(r.route_color),
+          trips: tripsByRoute.get(routeId) || 0,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null)
+      // ordina per codice linea in modo naturale (10 dopo 9)
+      .sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
+
+    res.json({ routes, totalRoutes: routes.length, totalTrips: tripRows.length });
+  },
+);
+
 /* ─── Endpoint principale ─────────────────────────────────── */
 
 router.post(
@@ -183,6 +237,42 @@ router.post(
     const calDateRows  = calDatesCsv ? parseCsv(calDatesCsv) : [];
     const agencyRows   = agencyCsv ? parseCsv(agencyCsv) : [];
 
+    /* ─── Filtro linee (opzionale): importa solo le route_id scelte dall'utente.
+     * Assente/vuoto → importa tutto (compatibile con il comportamento storico).
+     * Da un feed parziale importiamo SOLO le fermate e i calendari effettivamente
+     * usati dalle linee scelte, così il progetto non si riempie di orfani. */
+    let keepRoutes: Set<string> | null = null;
+    try {
+      const raw = req.body?.routeIds;
+      const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (Array.isArray(arr) && arr.length > 0) {
+        keepRoutes = new Set(arr.map((x: any) => String(x).trim()).filter(Boolean));
+      }
+    } catch { /* routeIds malformato → importa tutto */ }
+
+    let usedStopGtfs: Set<string> | null = null;
+    let usedServiceGtfs: Set<string> | null = null;
+    if (keepRoutes) {
+      const keptTripGtfs = new Set<string>();
+      usedServiceGtfs = new Set<string>();
+      for (const t of tripRows) {
+        const rid = t.route_id?.trim();
+        if (!rid || !keepRoutes.has(rid)) continue;
+        const tid = t.trip_id?.trim();
+        if (tid) keptTripGtfs.add(tid);
+        const sid = t.service_id?.trim();
+        if (sid) usedServiceGtfs.add(sid);
+      }
+      usedStopGtfs = new Set<string>();
+      for (const st of stopTimeRows) {
+        const tid = st.trip_id?.trim();
+        if (tid && keptTripGtfs.has(tid)) {
+          const s = st.stop_id?.trim();
+          if (s) usedStopGtfs.add(s);
+        }
+      }
+    }
+
     try {
       /* ─── 2. Wipe ─── */
       await wipeProjectData(projectId);
@@ -204,6 +294,7 @@ router.post(
       for (const s of stopRows) {
         const gtfsId = s.stop_id?.trim();
         if (!gtfsId) continue;
+        if (usedStopGtfs && !usedStopGtfs.has(gtfsId)) continue; // import parziale: solo fermate usate
         const lat = num(s.stop_lat, NaN);
         const lon = num(s.stop_lon, NaN);
         if (!isFinite(lat) || !isFinite(lon)) continue;
@@ -229,6 +320,7 @@ router.post(
       for (const r of routeRows) {
         const gtfsId = r.route_id?.trim();
         if (!gtfsId) continue;
+        if (keepRoutes && !keepRoutes.has(gtfsId)) continue; // importa solo le linee scelte
         const id = crypto.randomUUID();
         routeGtfsToUuid.set(gtfsId, id);
         routeValues.push([
@@ -256,6 +348,7 @@ router.post(
       for (const c of calRows) {
         const gtfsId = c.service_id?.trim();
         if (!gtfsId) continue;
+        if (usedServiceGtfs && !usedServiceGtfs.has(gtfsId)) continue; // solo calendari usati dalle linee scelte
         const start = gtfsDate(c.start_date);
         const end = gtfsDate(c.end_date);
         if (!start || !end) continue;
@@ -283,6 +376,7 @@ router.post(
       for (const cd of calDateRows) {
         const sid = cd.service_id?.trim();
         if (!sid) continue;
+        if (usedServiceGtfs && !usedServiceGtfs.has(sid)) continue; // solo servizi usati dalle linee scelte
         if (!calGtfsToUuid.has(sid)) {
           if (!stubByService.has(sid)) stubByService.set(sid, { dates: [] });
           const d = gtfsDate(cd.date);
