@@ -416,6 +416,20 @@ async function ensurePsTables(): Promise<void> {
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_sp_project ON ps_service_periods(project_id)`);
 
+    /* Chat di Argos, persistente per PROGETTO e per UTENTE: una conversazione
+       continua che sopravvive a chiusura/riapertura del progetto e ricarichi. */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_argos_messages (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,  -- ordine di inserimento
+        project_id uuid NOT NULL REFERENCES ps_projects(id) ON DELETE CASCADE,
+        user_id uuid NOT NULL,
+        role text NOT NULL,             -- 'user' | 'assistant'
+        content text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_argos_msgs ON ps_argos_messages(project_id, user_id, id)`);
+
     /* Programma di esercizio: feed materializzato + flag operativo sui feed.
        (le stesse ALTER vivono anche in planning-studio-materialize.ts e
        gtfs-upload: qui garantiamo che la lista progetti non dipenda

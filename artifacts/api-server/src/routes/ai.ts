@@ -336,4 +336,81 @@ router.post("/ai/argos/chat", async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────
+// Storico chat Argos — persistente per PROGETTO e per UTENTE.
+// La chat di un progetto è unica e sopravvive a chiusura/riapertura e ricarichi.
+// ─────────────────────────────────────────────────────────────
+
+/** Verifica projectId valido + utente autenticato + accesso al progetto.
+ *  Ritorna lo userId, oppure risponde con l'errore giusto e ritorna null. */
+async function requireProjectMember(req: any, res: any, projectId: string): Promise<string | null> {
+  if (!UUID_RE.test(projectId || "")) {
+    res.status(400).json({ error: "projectId non valido" });
+    return null;
+  }
+  const userId = getUserId(req);
+  if (!userId) {
+    res.status(401).json({ error: "Non autenticato" });
+    return null;
+  }
+  const proj = await loadProjectAccess(projectId, userId).catch(() => null);
+  if (!proj) {
+    res.status(404).json({ error: "Progetto non trovato o accesso negato" });
+    return null;
+  }
+  return userId;
+}
+
+// GET /api/ai/argos/history?projectId=... → thread dell'utente per quel progetto
+router.get("/ai/argos/history", async (req, res) => {
+  const projectId = String(req.query.projectId || "");
+  const userId = await requireProjectMember(req, res, projectId);
+  if (!userId) return;
+  const r = await db.execute(sql`
+    SELECT id, role, content, created_at
+      FROM ps_argos_messages
+     WHERE project_id = ${projectId}::uuid AND user_id = ${userId}::uuid
+     ORDER BY id
+     LIMIT 2000
+  `);
+  res.json({ messages: (r as any).rows ?? [] });
+});
+
+// POST /api/ai/argos/history  { projectId, messages:[{role,content}] } → append
+router.post("/ai/argos/history", async (req, res) => {
+  const { projectId, messages } = req.body as {
+    projectId?: string;
+    messages?: Array<{ role: string; content: string }>;
+  };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: "messages richiesto" });
+    return;
+  }
+  // Insert in ordine: l'id IDENTITY preserva la sequenza dei turni.
+  for (const m of messages) {
+    const role = m?.role === "assistant" ? "assistant" : "user";
+    const content = (m?.content || "").slice(0, 100_000);
+    if (!content) continue;
+    await db.execute(sql`
+      INSERT INTO ps_argos_messages (project_id, user_id, role, content)
+      VALUES (${projectId}::uuid, ${userId}::uuid, ${role}, ${content})
+    `);
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /api/ai/argos/history?projectId=... → svuota il thread dell'utente
+router.delete("/ai/argos/history", async (req, res) => {
+  const projectId = String(req.query.projectId || "");
+  const userId = await requireProjectMember(req, res, projectId);
+  if (!userId) return;
+  await db.execute(sql`
+    DELETE FROM ps_argos_messages
+     WHERE project_id = ${projectId}::uuid AND user_id = ${userId}::uuid
+  `);
+  res.json({ ok: true });
+});
+
 export default router;
