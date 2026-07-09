@@ -25,7 +25,7 @@ import {
   listPsRoutes, type PsRoute,
   listPsVariants, type PsVariant,
   listPsCalendars, type PsCalendar,
-  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, prototypeMissingPsTrips, type PsTrip,
+  listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, prototypeMissingPsTrips, splitPsTripByCategories, type PsTrip,
   getPsStopTimes, setPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
   mergePsTwins, type MergeTwinsResult,
@@ -2082,6 +2082,27 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
     staleTime: 60_000,
   });
   const [wdBusy, setWdBusy] = useState(false);
+  // Sdoppia per validità: split della corsa in due (una per le validità scelte)
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitSel, setSplitSel] = useState<Set<string>>(new Set());
+  const [splitBusy, setSplitBusy] = useState(false);
+  async function doSplit() {
+    if (splitSel.size === 0) return;
+    setSplitBusy(true);
+    try {
+      const r = await splitPsTripByCategories(projectId, trip.id, [...splitSel]);
+      toast.success("Corsa sdoppiata", {
+        description: `Creata una corsa separata per le validità scelte (stesso orario). Ora spostala nel TTD a un altro orario.`,
+        duration: 8000,
+      });
+      setSplitOpen(false); setSplitSel(new Set());
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-validity", trip.id] });
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+      onChange();
+    } catch (e: any) { toast.error("Sdoppiamento non riuscito", { description: e?.message }); }
+    finally { setSplitBusy(false); }
+  }
   const WD_LABELS = WD_LABELS_ROW;
   // Fallback: pattern del calendario collegato (per corse importate da GTFS
   // senza maschera esplicita), così i bollini riflettono la circolazione reale.
@@ -2310,6 +2331,38 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
           <p className="text-[10px] text-slate-500 leading-tight">
             Nessuna categoria accesa = la corsa vale in ogni periodo; con ≥1 accese vale SOLO nei giorni di quelle categorie.
           </p>
+
+          {(tripValQ.data?.categoryIds?.length ?? 0) >= 2 && (
+            <div className="pt-1">
+              {!splitOpen ? (
+                <button onClick={() => { setSplitOpen(true); setSplitSel(new Set()); }}
+                  title="Spacca la corsa in due: una nuova corsa (stesso orario) prende le validità scelte, l'originale tiene le altre. Serve per spostare l'orario solo in una validità."
+                  className="text-[11px] px-2 py-1 rounded border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 inline-flex items-center gap-1">
+                  <Copy className="w-3 h-3" /> Sdoppia per validità
+                </button>
+              ) : (
+                <div className="space-y-2 rounded border border-amber-500/30 bg-amber-500/5 p-2">
+                  <p className="text-[11px] text-amber-200 leading-tight">
+                    Scegli le validità da <strong>spostare su una nuova corsa</strong> (stesso orario): l'originale resta con le altre.
+                    Poi sposti la nuova corsa nel TTD a un altro orario, in modo indipendente.
+                  </p>
+                  <CategoryChips
+                    categories={(categoriesDrawerQ.data ?? []).filter(c => (tripValQ.data?.categoryIds ?? []).includes(c.id))}
+                    selected={splitSel} onChange={setSplitSel} />
+                  <div className="flex items-center justify-end gap-2">
+                    <button onClick={() => { setSplitOpen(false); setSplitSel(new Set()); }} disabled={splitBusy}
+                      className="text-[11px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+                    <button onClick={doSplit}
+                      disabled={splitBusy || splitSel.size === 0 || splitSel.size >= (tripValQ.data?.categoryIds?.length ?? 0)}
+                      title={splitSel.size >= (tripValQ.data?.categoryIds?.length ?? 0) ? "Non puoi spostare TUTTE le validità: lasciane almeno una sull'originale" : undefined}
+                      className="text-[11px] px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 inline-flex items-center gap-1">
+                      {splitBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />} Sdoppia
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <label className="flex items-center gap-2 pt-1 cursor-pointer select-none text-xs text-slate-200">
             <input type="checkbox" checked={!!trip.attributes?.onDemand} onChange={toggleOnDemand} disabled={wdBusy}
