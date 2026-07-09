@@ -16,7 +16,7 @@ import {
   Truck, Bus, Clock, MapPin, Home, Fuel, TrendingUp, Zap, BarChart3,
   Timer, Navigation, CheckCircle2, AlertTriangle, RefreshCw, X, Users,
   Flame, ArrowRightLeft, TrainFront, Building2, GraduationCap, Pencil,
-  SlidersHorizontal,
+  SlidersHorizontal, Car,
 } from "lucide-react";
 import { VspRulesPanel } from "@/components/VspRulesPanel";
 import { buildDefaultVspConfig, type VspConfig } from "@/lib/vsp-rules";
@@ -438,6 +438,14 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [crewConfig, setCrewConfig] = useState<OperatorConfig>(() => buildDefaultCrewConfig("urbano"));
   const [crewCfgTouched, setCrewCfgTouched] = useState(false);
   const [crewRulesOpen, setCrewRulesOpen] = useState(false);
+  // Autovetture aziendali dal DB (default per il vincolo rigido turni guida VCSP):
+  // finché l'operatore non lo cambia, il backend usa comunque questo valore.
+  const [dbCars, setDbCars] = useState<number | null>(null);
+  useEffect(() => {
+    fetch(`${getApiBase()}/api/settings/company-cars`).then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && typeof d.companyCars === "number") setDbCars(d.companyCars); })
+      .catch(() => { /* default */ });
+  }, []);
   const crewProfileLoadedRef = React.useRef(false);
   useEffect(() => {
     if (crewProfileLoadedRef.current) return;
@@ -1346,6 +1354,37 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                           </button>
                         ))}
                       </div>
+                      {/* Autovetture aziendali — vincolo RIGIDO turni guida (come nel CSP) */}
+                      {(() => {
+                        const crewCars = (crewConfig as any).companyCars
+                          ?? (crewConfig as any).bds?.optimizer?.maxCompanyCars ?? dbCars ?? 5;
+                        const setCrewCars = (n: number) => {
+                          const v = Math.max(0, Math.min(50, n | 0));
+                          setCrewConfig(prev => ({
+                            ...prev,
+                            companyCars: v,
+                            bds: { ...(prev as any).bds, optimizer: { ...((prev as any).bds?.optimizer ?? {}), maxCompanyCars: v } },
+                          } as OperatorConfig));
+                          setCrewCfgTouched(true);
+                        };
+                        return (
+                          <div className="pt-1 border-t border-border/20">
+                            <p className="text-[11px] font-semibold text-amber-300 flex items-center gap-1">
+                              <Car className="w-3.5 h-3.5 text-amber-400" /> Autovetture aziendali disponibili
+                              <HelpTip testo={"Limite RIGIDO per i turni guida: ogni turno a due riprese che rientra in deposito occupa un'auto durante l'interruzione. Il VCSP non userà mai più auto simultanee di questo numero. È lo stesso vincolo del CSP (propagato a bds.optimizer.maxCompanyCars)."} className="ml-1" />
+                            </p>
+                            <div className="flex items-center gap-1.5 mt-1 max-w-[220px]">
+                              <button onClick={() => setCrewCars(crewCars - 1)}
+                                className="w-6 h-6 rounded border border-border/40 hover:border-amber-500/40 hover:text-amber-400 text-xs font-bold">−</button>
+                              <input type="number" min={0} max={50} value={crewCars}
+                                onChange={e => setCrewCars(parseInt(e.target.value || "0", 10))}
+                                className="flex-1 px-2 py-1 text-xs text-center font-mono rounded border border-border/40 bg-background/50 focus:border-amber-500/40 outline-none" />
+                              <button onClick={() => setCrewCars(crewCars + 1)}
+                                className="w-6 h-6 rounded border border-border/40 hover:border-amber-500/40 hover:text-amber-400 text-xs font-bold">+</button>
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <p className="text-[10px] text-muted-foreground">
                         Il tipo di servizio scelto sopra imposta i preset normativi; dal pannello completo
                         puoi rifinire ogni regola BDS, costo e vincolo — identico all'area Turni Guida.
