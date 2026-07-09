@@ -18,7 +18,7 @@ import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
-  Pencil, Copy, Merge, Wand2,
+  Pencil, Copy, Merge, Wand2, Printer,
 } from "lucide-react";
 import {
   getPsProject,
@@ -153,6 +153,107 @@ function genToSec(t: string): number {
 function genSecToHms(x: number): string {
   const h = Math.floor(x / 3600), m = Math.floor((x % 3600) / 60), sec = Math.round(x % 60);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+/* ─── Stampa: elenco corse per linea → codice percorso ─────────────────────
+ * Costruisce l'HTML stampabile con, per ogni corsa: partenza, giorni di
+ * validità (pallini verdi L…D), categorie del calendario aziendale e "a
+ * chiamata". Raggruppa per linea e per variante (codice percorso). */
+function buildCorseListHtml(p: {
+  projectName: string;
+  routes: PsRoute[];                 // linee scelte (ordinate)
+  trips: PsTrip[];                   // corse reali (no prototipi) delle linee scelte
+  variantById: Map<string, PsVariant>;
+  dayValidity: Record<string, Record<string, boolean>>;
+  categoriesByTrip: Record<string, string[]>;
+  catById: Map<string, PsValidityCategory>;
+  dtKinds: Record<string, PsDayType>;
+  calWdById: Map<string, boolean[]>;
+}): string {
+  const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
+  const dayOn = (t: PsTrip, i: number): boolean => {
+    const mask = wdMaskOf(t, t.calendarId ? p.calWdById.get(t.calendarId) : null);
+    if (!mask[i]) return false;
+    const dv = p.dayValidity[t.id];
+    if (!dv) return true;
+    const dt = p.dtKinds[wdTypicalCode(i)];
+    if (!dt) return true;
+    return dv[dt.id] !== false;
+  };
+  const dotsHtml = (t: PsTrip) => WD_LABELS_ROW
+    .map((l, i) => `<span class="dot ${dayOn(t, i) ? "on" : ""}">${l}</span>`).join("");
+  // categorie: raggruppa i periodi di scuole chiuse sotto un'unica voce
+  const catsHtml = (t: PsTrip) => {
+    const ids = p.categoriesByTrip[t.id] ?? [];
+    if (ids.length === 0) return `<span class="muted">tutte</span>`;
+    const cats = ids.map(id => p.catById.get(id)).filter(Boolean) as PsValidityCategory[];
+    const chiuse = cats.filter(c => isChiuseSub(c.code));
+    const others = cats.filter(c => !isChiuseSub(c.code) && c.code !== "scuole_chiuse");
+    const parts: string[] = others.map(c => `<span class="cat">${esc(c.name)}</span>`);
+    if (chiuse.length) {
+      const per = chiuse.map(c => esc(c.name)).join(", ");
+      parts.push(`<span class="cat chiuse">Scuole Chiuse <em>(${per})</em></span>`);
+    }
+    return parts.join(" ");
+  };
+  const fmtDep = (t: PsTrip) => (t.firstDeparture ? String(t.firstDeparture).slice(0, 5) : "—");
+
+  // raggruppa: route → variant → corse (ordinate per partenza)
+  const routesSorted = [...p.routes].sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
+  let body = "";
+  for (const r of routesSorted) {
+    const rTrips = p.trips.filter(t => t.routeId === r.id);
+    if (rTrips.length === 0) continue;
+    body += `<section class="line"><h2>Linea ${esc(r.shortName)}${r.longName ? ` · ${esc(r.longName)}` : ""} <span class="count">${rTrips.length} corse</span></h2>`;
+    // varianti presenti in queste corse
+    const varIds = [...new Set(rTrips.map(t => t.variantId))];
+    const vars = varIds.map(id => p.variantById.get(id)).filter(Boolean) as PsVariant[];
+    vars.sort((a, b) => String(a.code || a.name).localeCompare(String(b.code || b.name), "it", { numeric: true }));
+    for (const v of vars) {
+      const vTrips = rTrips.filter(t => t.variantId === v.id)
+        .sort((a, b) => (a.firstDeparture || "").localeCompare(b.firstDeparture || ""));
+      const arrow = v.direction === 1 ? "←" : "→";
+      const code = v.code ? `${esc(v.code)} · ` : "";
+      body += `<h3>${code}${esc(v.name)} <span class="dir">${arrow}</span> <span class="count">${vTrips.length}</span></h3>`;
+      body += `<table><thead><tr><th class="c-dep">Partenza</th><th class="c-days">Giorni di validità</th><th class="c-cat">Categorie validità</th><th class="c-dem">A chiamata</th></tr></thead><tbody>`;
+      for (const t of vTrips) {
+        body += `<tr><td class="c-dep">${fmtDep(t)}</td><td class="c-days"><span class="dots">${dotsHtml(t)}</span></td><td class="c-cat">${catsHtml(t)}</td><td class="c-dem">${t.attributes?.onDemand ? "📞 Sì" : "—"}</td></tr>`;
+      }
+      body += `</tbody></table>`;
+    }
+    body += `</section>`;
+  }
+
+  const now = new Date();
+  const dateStr = `${String(now.getDate()).padStart(2, "0")}/${String(now.getMonth() + 1).padStart(2, "0")}/${now.getFullYear()}`;
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Elenco corse — ${esc(p.projectName)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111827; margin: 18px; font-size: 12px; }
+  header { border-bottom: 2px solid #111827; padding-bottom: 8px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: baseline; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: #6b7280; font-size: 11px; }
+  section.line { margin-bottom: 18px; break-inside: avoid; }
+  h2 { font-size: 15px; margin: 14px 0 6px; border-bottom: 1px solid #d1d5db; padding-bottom: 3px; }
+  h3 { font-size: 12.5px; margin: 10px 0 4px; color: #374151; }
+  h3 .dir { color: #9ca3af; } .count { color: #9ca3af; font-weight: 400; font-size: 11px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 6px; }
+  th, td { border: 1px solid #e5e7eb; padding: 3px 6px; text-align: left; vertical-align: middle; }
+  th { background: #f3f4f6; font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: #374151; }
+  .c-dep { width: 70px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .c-days { width: 190px; } .c-dem { width: 80px; text-align: center; }
+  .dots { display: inline-flex; gap: 2px; }
+  .dot { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%;
+         background: #e5e7eb; color: #9ca3af; font-size: 9px; font-weight: 700; }
+  .dot.on { background: #16a34a; color: #fff; }
+  .cat { display: inline-block; border: 1px solid #cbd5e1; border-radius: 4px; padding: 1px 5px; font-size: 10px; margin: 1px 2px 1px 0; }
+  .cat.chiuse { border-color: #f59e0b; } .cat em { color: #6b7280; font-style: normal; }
+  .muted { color: #9ca3af; }
+  @media print { body { margin: 0; } @page { margin: 12mm; } }
+</style></head><body>
+<header><h1>Elenco corse</h1><div class="meta">${esc(p.projectName)} · ${dateStr} · ${p.routes.length} linee · ${p.trips.length} corse</div></header>
+${body || '<p class="muted">Nessuna corsa da stampare.</p>'}
+</body></html>`;
 }
 
 export default function PlanningStudioTripsPage() {
@@ -730,6 +831,40 @@ export default function PlanningStudioTripsPage() {
     finally { setMergeBusy(false); }
   }
 
+  /* ─── Stampa elenco corse ─── */
+  const [printOpen, setPrintOpen] = useState(false);
+  const [printSel, setPrintSel] = useState<Set<string>>(new Set());
+  const [printBusy, setPrintBusy] = useState(false);
+  async function runPrintCorse() {
+    const routeIds = [...printSel];
+    if (routeIds.length === 0) { toast.error("Seleziona almeno una linea"); return; }
+    setPrintBusy(true);
+    try {
+      const allTrips = await listPsTrips(projectId);
+      const trips = allTrips.filter(t => routeIds.includes(t.routeId) && !t.attributes?.prototype && (!onlyActive || t.isActive));
+      if (trips.length === 0) { toast.info("Nessuna corsa da stampare per le linee scelte"); return; }
+      const val = await getPsTripsValidityBulk(projectId, trips.map(t => t.id));
+      const variantById = new Map<string, PsVariant>();
+      const vlists = await Promise.all(routeIds.map(rid => listPsVariants(projectId, rid).catch(() => [] as PsVariant[])));
+      for (const vs of vlists) for (const v of vs) variantById.set(v.id, v);
+      const selRoutes = (routesQ.data ?? []).filter(r => routeIds.includes(r.id));
+      const calWd = new Map<string, boolean[]>();
+      for (const c of calendarsQ.data ?? []) { const m = calWeekdays(c); if (m) calWd.set(c.id, m); }
+      const html = buildCorseListHtml({
+        projectName: projectQ.data?.name ?? "Planner Studio",
+        routes: selRoutes, trips, variantById,
+        dayValidity: val.dayValidity ?? {}, categoriesByTrip: val.categories ?? {},
+        catById, dtKinds, calWdById: calWd,
+      });
+      const w = window.open("", "_blank");
+      if (!w) { toast.error("Consenti i popup per stampare"); return; }
+      w.document.write(html); w.document.close();
+      setTimeout(() => { try { w.focus(); w.print(); } catch { /* utente stampa a mano */ } }, 400);
+      setPrintOpen(false);
+    } catch (e: any) { toast.error("Stampa non riuscita", { description: e?.message }); }
+    finally { setPrintBusy(false); }
+  }
+
   /* ─── Render ─── */
   const project = projectQ.data;
   const routes = routesQ.data ?? [];
@@ -870,6 +1005,13 @@ export default function PlanningStudioTripsPage() {
           title="Crea una Corsa ZERO (prototipo) per ogni percorso senza corse: utile quando hai i percorsi ma non le corse (es. GTFS importato e corse cancellate). Poi genera le corse reali con «Genera a cadenza»."
         >
           {protoMissingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />} Prototipi mancanti
+        </button>
+        <button
+          onClick={() => { setPrintSel(new Set((routesQ.data ?? []).map(r => r.id))); setPrintOpen(true); }}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors"
+          title="Stampa l'elenco delle corse delle linee scelte: diviso per linea e codice percorso, con giorni di validità, categorie e a chiamata."
+        >
+          <Printer className="w-3.5 h-3.5" /> Stampa elenco
         </button>
 
         <div className="flex-1" />
@@ -1169,6 +1311,54 @@ export default function PlanningStudioTripsPage() {
           onDelete={() => { if (confirm("Eliminare questa corsa?")) { deleteMut.mutate(detailTrip.id); setDetailTripId(null); } }}
         />
       )}
+      {/* ─── Dialog: Stampa elenco corse — scelta linee ─── */}
+      {printOpen && (() => {
+        const routesList = [...(routesQ.data ?? [])].sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
+        const allSel = routesList.length > 0 && routesList.every(r => printSel.has(r.id));
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !printBusy && setPrintOpen(false)}>
+            <div className="w-full max-w-md mx-4 rounded-xl border border-slate-700 bg-slate-950 shadow-2xl max-h-[88vh] flex flex-col" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2"><Printer className="w-4 h-4 text-slate-300" /> Stampa elenco corse</h3>
+                <button onClick={() => !printBusy && setPrintOpen(false)} className="text-slate-500 hover:text-slate-200"><X className="w-4 h-4" /></button>
+              </div>
+              <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+                <span className="text-xs text-slate-400"><strong className="text-slate-200">{printSel.size}</strong> di {routesList.length} linee</span>
+                <button onClick={() => setPrintSel(allSel ? new Set() : new Set(routesList.map(r => r.id)))}
+                  className="text-[11px] px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                  {allSel ? "Deseleziona tutte" : "Seleziona tutte"}
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto divide-y divide-slate-800/60">
+                {routesList.length === 0 && <div className="px-4 py-6 text-center text-xs text-slate-500">Nessuna linea nel progetto.</div>}
+                {routesList.map(r => {
+                  const sel = printSel.has(r.id);
+                  return (
+                    <label key={r.id} className={`flex items-center gap-3 px-4 py-2 cursor-pointer ${sel ? "bg-slate-800/40" : "hover:bg-slate-900/60"}`}>
+                      <input type="checkbox" checked={sel} className="accent-emerald-500 shrink-0"
+                        onChange={() => setPrintSel(prev => { const n = new Set(prev); n.has(r.id) ? n.delete(r.id) : n.add(r.id); return n; })} />
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: r.color || "#64748b" }} />
+                      <span className="font-semibold text-slate-100 min-w-[2.5rem] shrink-0">{r.shortName}</span>
+                      <span className="text-xs text-slate-400 truncate flex-1">{r.longName || ""}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                  <input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} className="accent-amber-500" />
+                  Solo corse attive
+                </label>
+                <button onClick={runPrintCorse} disabled={printBusy || printSel.size === 0}
+                  className="px-4 py-2 rounded-lg bg-slate-200 hover:bg-white text-slate-900 text-sm font-semibold disabled:opacity-50 inline-flex items-center gap-2">
+                  {printBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+                  {printBusy ? "Preparo…" : `Stampa ${printSel.size} ${printSel.size === 1 ? "linea" : "linee"}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {/* ─── Dialog: anteprima Unifica corse gemelle ─── */}
       {mergePreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => !mergeBusy && setMergePreview(null)}>
