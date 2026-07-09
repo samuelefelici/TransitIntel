@@ -433,16 +433,53 @@ function schematicInnerSvg(
   // Spessore tratto calibrato sul numero di linee disegnate: con poche linee il
   // tratto resta pieno (7), con tante si assottiglia per non impastare la mappa.
   const nLines = usable.length;
-  const strokeW = Math.max(2.4, Math.min(7, 7 - (nLines - 3) * 0.42));
 
-  // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi
-  const polys = usable.map((l) => {
-    const sp = l.stops.map((s) => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); });
-    if (!sp.length) return "";
-    let d = `${sp[0].x.toFixed(1)},${sp[0].y.toFixed(1)}`;
-    for (let i = 1; i < sp.length; i++) {
-      for (const e of elbow(sp[i - 1].x, sp[i - 1].y, sp[i].x, sp[i].y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
+  // Corridoi condivisi: per ogni COPPIA di nodi consecutivi registriamo quali
+  // linee la percorrono. Dove più linee si sovrappongono le AFFIANCHIAMO (offset
+  // perpendicolare) invece di disegnarle una sopra l'altra, così si distinguono.
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const pairLines = new Map<string, number[]>();
+  usable.forEach((l, li) => {
+    for (let i = 1; i < l.stops.length; i++) {
+      const ka = keyOf(l.stops[i - 1]), kb = keyOf(l.stops[i]);
+      if (ka === kb) continue;
+      const pk = pairKey(ka, kb);
+      const arr = pairLines.get(pk) ?? [];
+      if (!arr.includes(li)) { arr.push(li); pairLines.set(pk, arr); }
     }
+  });
+  let maxOverlap = 1;
+  for (const arr of pairLines.values()) if (arr.length > maxOverlap) maxOverlap = arr.length;
+
+  // con corridoi condivisi si assottiglia il tratto per fare spazio all'affiancamento
+  const baseW = Math.max(2.4, Math.min(7, 7 - (nLines - 3) * 0.42));
+  const strokeW = maxOverlap > 1 ? Math.max(2.0, Math.min(baseW, 4.2)) : baseW;
+  const gap = Math.max(2.6, strokeW * 0.95); // distanza tra due linee affiancate
+
+  // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi,
+  // con offset perpendicolare per le linee che condividono lo stesso corridoio.
+  const polys = usable.map((l, li) => {
+    const pts = l.stops.map((s) => ({ k: keyOf(s), p: (() => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); })() }));
+    if (!pts.length) return "";
+    let d = "";
+    let prevEnd: { x: number; y: number } | null = null;
+    for (let i = 1; i < pts.length; i++) {
+      const A = pts[i - 1].p, B = pts[i].p;
+      if (pts[i - 1].k === pts[i].k) continue; // stesso nodo → nessun tratto
+      const arr = pairLines.get(pairKey(pts[i - 1].k, pts[i].k)) ?? [li];
+      const rank = arr.indexOf(li);
+      const off = (rank - (arr.length - 1) / 2) * gap; // 0 se linea unica sul corridoio
+      const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1;
+      const ox = (-dy / len) * off, oy = (dx / len) * off;
+      const A2 = { x: A.x + ox, y: A.y + oy }, B2 = { x: B.x + ox, y: B.y + oy };
+      if (!d) { d = `${A2.x.toFixed(1)},${A2.y.toFixed(1)}`; }
+      else if (prevEnd && (Math.abs(prevEnd.x - A2.x) > 0.1 || Math.abs(prevEnd.y - A2.y) > 0.1)) {
+        d += ` ${A2.x.toFixed(1)},${A2.y.toFixed(1)}`; // raccordo al nuovo offset sul nodo condiviso
+      }
+      for (const e of elbow(A2.x, A2.y, B2.x, B2.y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
+      prevEnd = B2;
+    }
+    if (!d) { const e0 = node.get(keyOf(l.stops[0]))!; const p0 = P(e0.lon, e0.lat); d = `${p0.x.toFixed(1)},${p0.y.toFixed(1)}`; }
     return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="${strokeW.toFixed(1)}" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
   }).join("");
 
@@ -457,8 +494,13 @@ function schematicInnerSvg(
     // fermate restano un pallino senza etichetta (meno caos).
     const showName = e.logical || labelMode === "all";
     if (major) {
-      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="#fff" stroke="#111" stroke-width="3"/>`;
-      if (showName) names += `<text x="${(x + 10).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111" stroke="#fff" stroke-width="0.6" paint-order="stroke">${esc(e.name)}</text>`;
+      // Raggio del cluster proporzionale al numero di linee che vi transitano:
+      // cluster con più linee = cerchio più grande, con una sola = più piccolo.
+      const nl = e.lines.size;
+      const r = Math.min(12, 4.5 + (nl - 1) * 2);
+      const sw = nl >= 2 ? 3 : 2.2;
+      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#fff" stroke="#111" stroke-width="${sw}"/>`;
+      if (showName) names += `<text x="${(x + r + 3).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111" stroke="#fff" stroke-width="0.6" paint-order="stroke">${esc(e.name)}</text>`;
     } else {
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#fff" stroke="#111" stroke-width="1.6"/>`;
       if (showName) {
@@ -607,7 +649,7 @@ interface NetworkLine {
 }
 interface NetworkData { projectId: string; lines: NetworkLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
-function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyles: Record<string, NetLineStyle> = {}, nodeLabels: NetNodeLabels = "logical"): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyles: Record<string, NetLineStyle> = {}, nodeLabels: NetNodeLabels = "logical", rotate = 0): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -625,10 +667,19 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
 
   const W = 1000, H = 1414, M = 90;
   const legendH = lines.length * 20 + 12;
-  const svgBody = schematicInnerSvg(
+  const Hd = H - legendH - 16;                 // altezza area schema (sopra la legenda)
+  const rot = (((Math.round(rotate / 90) * 90) % 360) + 360) % 360; // 0/90/180/270
+  const swap = rot === 90 || rot === 270;
+  const dW = swap ? Hd : W, dH = swap ? W : Hd; // dimensioni con cui disegnare lo schema
+  const svgInner = schematicInnerSvg(
     lines.map((l) => ({ color: l.color, stops: l.stops, style: lineStyles[l.routeId] ?? "solid" })),
-    W, H - legendH - 16, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, labelMode: nodeLabels },
+    dW, dH, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, labelMode: nodeLabels },
   );
+  // Rotazione della mappa in stampa: ruota il contenuto attorno al proprio centro
+  // e lo ricentra nell'area schema (legenda ed header restano fissi e leggibili).
+  const svgBody = rot === 0
+    ? svgInner
+    : `<g transform="translate(${(W / 2).toFixed(1)},${(Hd / 2).toFixed(1)}) rotate(${rot}) translate(${(-dW / 2).toFixed(1)},${(-dH / 2).toFixed(1)})">${svgInner}</g>`;
   const legendRows = lines.map((l, i) =>
     `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
     + `<text x="22" y="9" font-size="11" fill="#111"><tspan font-weight="800">${esc(l.shortName ?? "?")}</tspan> ${esc(l.longName ?? "")}</text></g>`).join("");
@@ -701,6 +752,7 @@ export default function TimetablesPage() {
   const [show3d, setShow3d] = useState(false);         // anteprima mappa 3D interattiva
   const [lineStyles, setLineStyles] = useState<Record<string, NetLineStyle>>({}); // stile tratto PER-LINEA (mappa rete + 3D)
   const [nodeLabels, setNodeLabels] = useState<NetNodeLabels>("logical"); // nomi: solo nodi logici (default) o tutte le fermate
+  const [mapRotate, setMapRotate] = useState(0);       // rotazione mappa rete in stampa (0/90/180/270)
   const [colorOverrides, setColorOverrides] = useState<Record<string, string>>({}); // colore linee (override locale + persistito)
 
   const effColor = (routeId: string, fallback: string | null | undefined): string | null => colorOverrides[routeId] ?? fallback ?? null;
@@ -967,7 +1019,7 @@ export default function TimetablesPage() {
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
       const data2 = { ...data, lines: (data.lines ?? []).map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) };
       const logoUrl = `${window.location.origin}/logo.png`;
-      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels));
+      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels, mapRotate));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -1099,6 +1151,17 @@ export default function TimetablesPage() {
               >
                 <MapIcon className="w-4 h-4" /> Mappa 3D
               </button>
+              <select
+                value={mapRotate}
+                onChange={(e) => setMapRotate(Number(e.target.value))}
+                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60 cursor-pointer"
+                title="Ruota la mappa di rete in stampa (per adattarla meglio al foglio)"
+              >
+                <option value={0}>Rotazione: 0°</option>
+                <option value={90}>Rotazione: 90°</option>
+                <option value={180}>Rotazione: 180°</option>
+                <option value={270}>Rotazione: 270°</option>
+              </select>
               <button
                 onClick={printNetwork}
                 disabled={printing || selectedRouteIds.length === 0}
