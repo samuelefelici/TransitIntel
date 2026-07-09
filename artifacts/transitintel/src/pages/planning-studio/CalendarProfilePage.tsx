@@ -157,6 +157,23 @@ export default function CalendarProfilePage() {
             <p className="text-xs font-semibold">Periodi scuole chiuse (vacanze)</p>
             <div className="flex items-center gap-1.5">
               <button
+                onClick={() => {
+                  // Calendario scolastico tipico italiano — base da aggiustare.
+                  // Le date esatte non devono combaciare con i tag delle corse:
+                  // la validità "Scuole Chiuse" delle corse copre TUTTI i periodi.
+                  const std: ClosedPeriod[] = [
+                    { from: `${year}-01-01`, to: `${year}-01-06`, kind: "invernale", label: "Epifania" },
+                    { from: `${year}-04-02`, to: `${year}-04-08`, kind: "invernale", label: "Pasqua" },
+                    { from: `${year}-06-08`, to: `${year}-09-14`, kind: "estivo", label: "Estivo" },
+                    { from: `${year}-12-23`, to: `${year}-12-31`, kind: "invernale", label: "Natale" },
+                  ];
+                  edit({ ...profile, closedPeriods: std });
+                  toast.info("Precaricato un calendario scolastico standard: aggiusta le date e premi Salva");
+                }}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-fuchsia-500/15 hover:bg-fuchsia-500/25 text-fuchsia-300 text-[11px] font-medium"
+                title="Precarica un calendario scolastico tipico (Estivo, Natale, Pasqua, Epifania) da modificare"
+              ><CalendarRange className="w-3 h-3" /> Standard</button>
+              <button
                 onClick={() => edit({ ...profile, closedPeriods: [...profile.closedPeriods, { from: `${year}-06-08`, to: `${year}-09-14`, kind: "estivo", label: "Estivo" }] })}
                 className="flex items-center gap-1 px-2 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-[11px] font-medium"
                 title="Aggiungi un periodo estivo di scuole chiuse"
