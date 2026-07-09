@@ -288,8 +288,11 @@ function buildCorseListHtml(p: {
   const dateStr = `${String(now.getDate()).padStart(2, "0")}/${String(now.getMonth() + 1).padStart(2, "0")}/${now.getFullYear()}`;
   return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Elenco corse — ${esc(p.projectName)}</title>
 <style>
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111827; margin: 18px; font-size: 12px; }
+  /* forza la stampa dei colori di sfondo (bollini verdi, chip categoria,
+     intestazioni colorate): i browser altrimenti li omettono per default */
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111827; margin: 18px; font-size: 12px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   header { border-bottom: 2px solid #111827; padding-bottom: 8px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: baseline; }
   header h1 { font-size: 18px; margin: 0; }
   header .meta { color: #6b7280; font-size: 11px; }
@@ -323,7 +326,11 @@ function buildCorseListHtml(p: {
   table.km.eur td.tot, table.km.eur tr.sum td { color: #065f46; }
   .kmsum h3.eurh { font-size: 12.5px; margin: 12px 0 4px; color: #065f46; }
   .note { color: #6b7280; font-size: 10px; margin: 2px 0 0; }
-  @media print { body { margin: 0; } @page { margin: 12mm; } }
+  @media print {
+    body { margin: 0; }
+    @page { margin: 12mm; }
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  }
 </style></head><body>
 <header><h1>Elenco corse</h1><div class="meta">${esc(p.projectName)} · ${dateStr} · ${p.routes.length} linee · ${p.trips.length} corse</div></header>
 ${kmSection}
