@@ -232,18 +232,25 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
   const dayTypeOf = (catCode: string, w: number): "feriale" | "sabato" | "festivo" =>
     (catCode === "festivita" || w === 6) ? "festivo" : (w === 5 ? "sabato" : "feriale");
 
-  // 7) aggrega
+  // 7) aggrega — km "programmati" e km "potenziali a chiamata" (onDemand) separati
   const allCats = [...catMeta.keys()];
-  const lineMap = new Map<string, { routeId: string; shortName: string; longName: string | null; color: string | null; kmByCat: Record<string, number>; kmTotal: number }>();
+  type LineAgg = {
+    routeId: string; shortName: string; longName: string | null; color: string | null;
+    kmByCat: Record<string, number>; kmTotal: number;
+    odByCat: Record<string, number>; odTotal: number;
+  };
+  const lineMap = new Map<string, LineAgg>();
   const totalsByCat: Record<string, number> = {};
-  let grandTotal = 0;
+  const odTotalsByCat: Record<string, number> = {};
+  let grandTotal = 0, odGrandTotal = 0;
   for (const t of trips) {
     const lenKm = (lenByVar.get(t.variant_id) || 0) / 1000;
     if (lenKm <= 0) continue;
+    const onDemand = !!(t.attributes as any)?.onDemand;
     const mask = effMask(t);
     const dv = dvByTrip.get(t.id) ?? {};
     const cats = catByTrip.get(t.id) ?? null; // null = tutte
-    const line = lineMap.get(t.route_id) ?? { routeId: t.route_id, shortName: t.short_name, longName: t.long_name, color: t.color, kmByCat: {} as Record<string, number>, kmTotal: 0 };
+    const line = lineMap.get(t.route_id) ?? { routeId: t.route_id, shortName: t.short_name, longName: t.long_name, color: t.color, kmByCat: {} as Record<string, number>, kmTotal: 0, odByCat: {} as Record<string, number>, odTotal: 0 };
     for (const catCode of allCats) {
       if (cats && !cats.has(catCode)) continue;
       const perWd = dayCount.get(catCode)!;
@@ -256,31 +263,44 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
       }
       if (days === 0) continue;
       const km = lenKm * days;
-      line.kmByCat[catCode] = (line.kmByCat[catCode] || 0) + km;
-      line.kmTotal += km;
-      totalsByCat[catCode] = (totalsByCat[catCode] || 0) + km;
-      grandTotal += km;
+      if (onDemand) {
+        line.odByCat[catCode] = (line.odByCat[catCode] || 0) + km;
+        line.odTotal += km;
+        odTotalsByCat[catCode] = (odTotalsByCat[catCode] || 0) + km;
+        odGrandTotal += km;
+      } else {
+        line.kmByCat[catCode] = (line.kmByCat[catCode] || 0) + km;
+        line.kmTotal += km;
+        totalsByCat[catCode] = (totalsByCat[catCode] || 0) + km;
+        grandTotal += km;
+      }
     }
     lineMap.set(t.route_id, line);
   }
 
   const round = (x: number) => Math.round(x * 10) / 10;
+  const roundMap = (m: Record<string, number>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, round(v)]));
   const categories = allCats
     .map(code => ({ code, name: catMeta.get(code)!.name, color: catMeta.get(code)!.color, sort: catMeta.get(code)!.sort }))
     .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "it"));
-  const lines = [...lineMap.values()].map(l => ({
-    routeId: l.routeId, shortName: l.shortName, longName: l.longName, color: l.color,
-    kmByCategory: Object.fromEntries(Object.entries(l.kmByCat).map(([k, v]) => [k, round(v)])),
-    kmTotal: round(l.kmTotal),
-  })).sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
+  const lines = [...lineMap.values()]
+    .filter(l => l.kmTotal > 0 || l.odTotal > 0)
+    .map(l => ({
+      routeId: l.routeId, shortName: l.shortName, longName: l.longName, color: l.color,
+      kmByCategory: roundMap(l.kmByCat), kmTotal: round(l.kmTotal),
+      onDemandByCategory: roundMap(l.odByCat), onDemandTotal: round(l.odTotal),
+    })).sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
 
   res.json({
     from: dmin, to: dmax,
     hasCalendar: catMeta.size > 0,
+    hasOnDemand: odGrandTotal > 0,
     categories,
     lines,
-    totalsByCategory: Object.fromEntries(Object.entries(totalsByCat).map(([k, v]) => [k, round(v)])),
+    totalsByCategory: roundMap(totalsByCat),
     grandTotal: round(grandTotal),
+    onDemandTotalsByCategory: roundMap(odTotalsByCat),
+    onDemandGrandTotal: round(odGrandTotal),
   });
 });
 
@@ -1163,6 +1183,12 @@ router.post("/planning-studio/projects/:id/trips/:tripId/split-categories", asyn
       ON CONFLICT DO NOTHING`);
     await tx.execute(sql`
       DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid AND category_id = ANY(${moveLit}::uuid[])`);
+    // Sdoppiare è una curatela manuale: proteggi entrambe le corse dall'auto-sync
+    // del calendario, altrimenti le categorie verrebbero ri-derivate e rifuse.
+    await tx.execute(sql`
+      UPDATE ps_trips
+         SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+       WHERE id IN (${tripId}::uuid, ${newTripId}::uuid)`);
   });
 
   await logActivity(projId, userId, "trip.split_categories", "trip", tripId, { newTripId, moved: move.length });
