@@ -29,6 +29,7 @@ import {
   getPsStopTimes, setPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
   mergePsTwins, type MergeTwinsResult,
+  getPsCorseKm, type PsCorseKm,
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
@@ -169,6 +170,7 @@ function buildCorseListHtml(p: {
   catById: Map<string, PsValidityCategory>;
   dtKinds: Record<string, PsDayType>;
   calWdById: Map<string, boolean[]>;
+  km?: PsCorseKm | null;
 }): string {
   const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
   const dayOn = (t: PsTrip, i: number): boolean => {
@@ -189,10 +191,15 @@ function buildCorseListHtml(p: {
     const cats = ids.map(id => p.catById.get(id)).filter(Boolean) as PsValidityCategory[];
     const chiuse = cats.filter(c => isChiuseSub(c.code));
     const others = cats.filter(c => !isChiuseSub(c.code) && c.code !== "scuole_chiuse");
-    const parts: string[] = others.map(c => `<span class="cat">${esc(c.name)}</span>`);
+    const chip = (name: string, color?: string | null) => {
+      const col = color || "#64748b";
+      return `<span class="cat" style="border-color:${col}; background:${col}22">${name}</span>`;
+    };
+    const parts: string[] = others.map(c => chip(esc(c.name), c.color));
     if (chiuse.length) {
-      const per = chiuse.map(c => esc(c.name)).join(", ");
-      parts.push(`<span class="cat chiuse">Scuole Chiuse <em>(${per})</em></span>`);
+      // una card "Scuole Chiuse" con i periodi, ognuno col suo colore
+      const inner = chiuse.map(c => `<span class="per" style="color:${c.color || "#f59e0b"}">${esc(c.name)}</span>`).join(", ");
+      parts.push(`<span class="cat chiuse" style="border-color:#f59e0b; background:#f59e0b18">Scuole Chiuse <em>(${inner})</em></span>`);
     }
     return parts.join(" ");
   };
@@ -204,7 +211,8 @@ function buildCorseListHtml(p: {
   for (const r of routesSorted) {
     const rTrips = p.trips.filter(t => t.routeId === r.id);
     if (rTrips.length === 0) continue;
-    body += `<section class="line"><h2>Linea ${esc(r.shortName)}${r.longName ? ` · ${esc(r.longName)}` : ""} <span class="count">${rTrips.length} corse</span></h2>`;
+    const rColor = r.color || "#334155";
+    body += `<section class="line"><h2 style="border-left:6px solid ${rColor}; padding-left:8px"><span class="swatch" style="background:${rColor}"></span>Linea ${esc(r.shortName)}${r.longName ? ` · ${esc(r.longName)}` : ""} <span class="count">${rTrips.length} corse</span></h2>`;
     // varianti presenti in queste corse
     const varIds = [...new Set(rTrips.map(t => t.variantId))];
     const vars = varIds.map(id => p.variantById.get(id)).filter(Boolean) as PsVariant[];
@@ -222,6 +230,22 @@ function buildCorseListHtml(p: {
       body += `</tbody></table>`;
     }
     body += `</section>`;
+  }
+
+  // Riepilogo km/anno per linea × categoria (dal calendario aziendale)
+  let kmSection = "";
+  if (p.km && p.km.hasCalendar && p.km.lines.length) {
+    const km = p.km;
+    const fmtKm = (v?: number) => (v == null || v === 0) ? `<span class="muted">—</span>` : v.toLocaleString("it-IT", { maximumFractionDigits: 1 });
+    const cats = km.categories;
+    const period = (km.from && km.to) ? ` · ${km.from} → ${km.to}` : "";
+    kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
+      <div class="scroll"><table class="km"><thead><tr><th class="l">Linea</th>${cats.map(c => `<th style="background:${(c.color || "#64748b")}22">${esc(c.name)}</th>`).join("")}<th class="tot">Totale</th></tr></thead>
+      <tbody>${km.lines.map(l => `<tr><td class="l"><span class="swatch" style="background:${l.color || "#334155"}"></span>${esc(l.shortName)}${l.longName ? ` · ${esc(l.longName)}` : ""}</td>${cats.map(c => `<td>${fmtKm(l.kmByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(l.kmTotal)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td class="l">Totale</td>${cats.map(c => `<td>${fmtKm(km.totalsByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(km.grandTotal)}</td></tr></tfoot>
+      </table></div>
+      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni di circolazione di ogni corsa (esclusi i prototipi; senza limitare al «Periodo» di validità della corsa).</p>
+    </section>`;
   }
 
   const now = new Date();
@@ -247,11 +271,21 @@ function buildCorseListHtml(p: {
          background: #e5e7eb; color: #9ca3af; font-size: 9px; font-weight: 700; }
   .dot.on { background: #16a34a; color: #fff; }
   .cat { display: inline-block; border: 1px solid #cbd5e1; border-radius: 4px; padding: 1px 5px; font-size: 10px; margin: 1px 2px 1px 0; }
-  .cat.chiuse { border-color: #f59e0b; } .cat em { color: #6b7280; font-style: normal; }
+  .cat.chiuse em { font-style: normal; } .cat .per { font-weight: 600; }
   .muted { color: #9ca3af; }
+  .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+  h2 .swatch { width: 10px; height: 10px; }
+  section.kmsum { margin-bottom: 20px; break-inside: avoid; }
+  .scroll { overflow-x: auto; }
+  table.km td, table.km th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.km td.l, table.km th.l { text-align: left; }
+  table.km td.tot, table.km th.tot { font-weight: 700; background: #f9fafb; }
+  table.km tfoot td { font-weight: 700; background: #eef2ff; border-top: 2px solid #94a3b8; }
+  .note { color: #6b7280; font-size: 10px; margin: 2px 0 0; }
   @media print { body { margin: 0; } @page { margin: 12mm; } }
 </style></head><body>
 <header><h1>Elenco corse</h1><div class="meta">${esc(p.projectName)} · ${dateStr} · ${p.routes.length} linee · ${p.trips.length} corse</div></header>
+${kmSection}
 ${body || '<p class="muted">Nessuna corsa da stampare.</p>'}
 </body></html>`;
 }
@@ -843,7 +877,10 @@ export default function PlanningStudioTripsPage() {
       const allTrips = await listPsTrips(projectId);
       const trips = allTrips.filter(t => routeIds.includes(t.routeId) && !t.attributes?.prototype && (!onlyActive || t.isActive));
       if (trips.length === 0) { toast.info("Nessuna corsa da stampare per le linee scelte"); return; }
-      const val = await getPsTripsValidityBulk(projectId, trips.map(t => t.id));
+      const [val, km] = await Promise.all([
+        getPsTripsValidityBulk(projectId, trips.map(t => t.id)),
+        getPsCorseKm(projectId, routeIds).catch(() => null),
+      ]);
       const variantById = new Map<string, PsVariant>();
       const vlists = await Promise.all(routeIds.map(rid => listPsVariants(projectId, rid).catch(() => [] as PsVariant[])));
       for (const vs of vlists) for (const v of vs) variantById.set(v.id, v);
@@ -854,7 +891,7 @@ export default function PlanningStudioTripsPage() {
         projectName: projectQ.data?.name ?? "Planner Studio",
         routes: selRoutes, trips, variantById,
         dayValidity: val.dayValidity ?? {}, categoriesByTrip: val.categories ?? {},
-        catById, dtKinds, calWdById: calWd,
+        catById, dtKinds, calWdById: calWd, km,
       });
       const w = window.open("", "_blank");
       if (!w) { toast.error("Consenti i popup per stampare"); return; }
