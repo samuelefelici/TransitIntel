@@ -624,11 +624,17 @@ export async function splitPsTripByCategories(
 
 /* ─── KM annui per linea e categoria (stampa elenco corse) ─── */
 export interface PsCorseKm {
-  from: string | null; to: string | null; hasCalendar: boolean;
+  from: string | null; to: string | null; hasCalendar: boolean; hasOnDemand: boolean;
   categories: { code: string; name: string; color: string | null; sort: number }[];
-  lines: { routeId: string; shortName: string; longName: string | null; color: string | null; kmByCategory: Record<string, number>; kmTotal: number }[];
+  lines: {
+    routeId: string; shortName: string; longName: string | null; color: string | null;
+    kmByCategory: Record<string, number>; kmTotal: number;
+    onDemandByCategory: Record<string, number>; onDemandTotal: number;
+  }[];
   totalsByCategory: Record<string, number>;
   grandTotal: number;
+  onDemandTotalsByCategory: Record<string, number>;
+  onDemandGrandTotal: number;
 }
 /** km annui (dal calendario aziendale, ignorando il periodo delle corse),
  *  per linea e ripartiti per categoria di validità, con i totali. */

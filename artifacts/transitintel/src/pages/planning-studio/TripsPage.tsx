@@ -171,6 +171,7 @@ function buildCorseListHtml(p: {
   dtKinds: Record<string, PsDayType>;
   calWdById: Map<string, boolean[]>;
   km?: PsCorseKm | null;
+  rate?: number;                     // corrispettivo €/km (0/undefined = nascondi ricavi)
 }): string {
   const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
   const dayOn = (t: PsTrip, i: number): boolean => {
@@ -236,15 +237,50 @@ function buildCorseListHtml(p: {
   let kmSection = "";
   if (p.km && p.km.hasCalendar && p.km.lines.length) {
     const km = p.km;
+    const rate = p.rate && p.rate > 0 ? p.rate : 0;
     const fmtKm = (v?: number) => (v == null || v === 0) ? `<span class="muted">—</span>` : v.toLocaleString("it-IT", { maximumFractionDigits: 1 });
+    const fmtEur = (v?: number) => (v == null || v === 0) ? `<span class="muted">—</span>` : `€ ${v.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const cats = km.categories;
+    const nCols = cats.length + 2;
     const period = (km.from && km.to) ? ` · ${km.from} → ${km.to}` : "";
+    const catHead = cats.map(c => `<th style="background:${(c.color || "#64748b")}22">${esc(c.name)}</th>`).join("");
+    const lineLabel = (l: { shortName: string; longName: string | null; color: string | null }) =>
+      `<td class="l"><span class="swatch" style="background:${l.color || "#334155"}"></span>${esc(l.shortName)}${l.longName ? ` · ${esc(l.longName)}` : ""}</td>`;
+    // righe km programmati per linea
+    const progRows = km.lines.map(l => `<tr>${lineLabel(l)}${cats.map(c => `<td>${fmtKm(l.kmByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(l.kmTotal)}</td></tr>`).join("");
+    // sezione "potenziali a chiamata" (solo se presenti)
+    let odRows = "";
+    if (km.hasOnDemand) {
+      const odLines = km.lines.filter(l => l.onDemandTotal > 0);
+      odRows = `<tr class="grp"><td class="l" colspan="${nCols}">📞 Potenziali km a chiamata (servizio erogato su richiesta)</td></tr>`
+        + odLines.map(l => `<tr class="od">${lineLabel(l)}${cats.map(c => `<td>${fmtKm(l.onDemandByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(l.onDemandTotal)}</td></tr>`).join("")
+        + `<tr class="sum od"><td class="l">Totale a chiamata</td>${cats.map(c => `<td>${fmtKm(km.onDemandTotalsByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(km.onDemandGrandTotal)}</td></tr>`;
+    }
+    const kmTable = `<div class="scroll"><table class="km"><thead><tr><th class="l">Linea</th>${catHead}<th class="tot">Totale</th></tr></thead>
+      <tbody>${progRows}
+      <tr class="sum"><td class="l">Totale programmato</td>${cats.map(c => `<td>${fmtKm(km.totalsByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(km.grandTotal)}</td></tr>
+      ${odRows}</tbody></table></div>`;
+    // ricavi: km × corrispettivo €/km, per categoria e totale
+    let eurTable = "";
+    if (rate > 0) {
+      const eurRow = (label: string, byCat: Record<string, number>, tot: number, cls = "") =>
+        `<tr class="${cls}"><td class="l">${label}</td>${cats.map(c => `<td>${fmtEur((byCat[c.code] || 0) * rate)}</td>`).join("")}<td class="tot">${fmtEur(tot * rate)}</td></tr>`;
+      const odTot = km.onDemandTotalsByCategory ?? {};
+      const combByCat: Record<string, number> = {};
+      for (const c of cats) combByCat[c.code] = (km.totalsByCategory[c.code] || 0) + (odTot[c.code] || 0);
+      const combTot = km.grandTotal + (km.onDemandGrandTotal || 0);
+      eurTable = `<h3 class="eurh">Corrispettivo · € ${rate.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/km</h3>
+        <div class="scroll"><table class="km eur"><thead><tr><th class="l">Voce</th>${catHead}<th class="tot">Totale</th></tr></thead>
+        <tbody>
+        ${eurRow("Programmato", km.totalsByCategory, km.grandTotal)}
+        ${km.hasOnDemand ? eurRow("A chiamata (potenziale)", km.onDemandTotalsByCategory, km.onDemandGrandTotal, "od") : ""}
+        ${km.hasOnDemand ? eurRow("Totale potenziale", combByCat, combTot, "sum") : ""}
+        </tbody></table></div>`;
+    }
     kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
-      <div class="scroll"><table class="km"><thead><tr><th class="l">Linea</th>${cats.map(c => `<th style="background:${(c.color || "#64748b")}22">${esc(c.name)}</th>`).join("")}<th class="tot">Totale</th></tr></thead>
-      <tbody>${km.lines.map(l => `<tr><td class="l"><span class="swatch" style="background:${l.color || "#334155"}"></span>${esc(l.shortName)}${l.longName ? ` · ${esc(l.longName)}` : ""}</td>${cats.map(c => `<td>${fmtKm(l.kmByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(l.kmTotal)}</td></tr>`).join("")}</tbody>
-      <tfoot><tr><td class="l">Totale</td>${cats.map(c => `<td>${fmtKm(km.totalsByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(km.grandTotal)}</td></tr></tfoot>
-      </table></div>
-      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni di circolazione di ogni corsa (esclusi i prototipi; senza limitare al «Periodo» di validità della corsa).</p>
+      ${kmTable}
+      ${eurTable}
+      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni di circolazione di ogni corsa (esclusi i prototipi; senza limitare al «Periodo» di validità della corsa).${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati come se la corsa circolasse ogni giorno utile, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
     </section>`;
   }
 
@@ -280,7 +316,12 @@ function buildCorseListHtml(p: {
   table.km td, table.km th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.km td.l, table.km th.l { text-align: left; }
   table.km td.tot, table.km th.tot { font-weight: 700; background: #f9fafb; }
-  table.km tfoot td { font-weight: 700; background: #eef2ff; border-top: 2px solid #94a3b8; }
+  table.km tr.sum td { font-weight: 700; background: #eef2ff; border-top: 2px solid #94a3b8; }
+  table.km tr.grp td { text-align: left; background: #fff7ed; color: #9a3412; font-weight: 600; font-size: 10.5px; border-top: 2px solid #fdba74; }
+  table.km tr.od td { color: #b45309; }
+  table.km tr.sum.od td { background: #fff7ed; border-top: 1px solid #fdba74; color: #9a3412; }
+  table.km.eur td.tot, table.km.eur tr.sum td { color: #065f46; }
+  .kmsum h3.eurh { font-size: 12.5px; margin: 12px 0 4px; color: #065f46; }
   .note { color: #6b7280; font-size: 10px; margin: 2px 0 0; }
   @media print { body { margin: 0; } @page { margin: 12mm; } }
 </style></head><body>
@@ -869,6 +910,7 @@ export default function PlanningStudioTripsPage() {
   const [printOpen, setPrintOpen] = useState(false);
   const [printSel, setPrintSel] = useState<Set<string>>(new Set());
   const [printBusy, setPrintBusy] = useState(false);
+  const [printRate, setPrintRate] = useState("");   // corrispettivo €/km
   async function runPrintCorse() {
     const routeIds = [...printSel];
     if (routeIds.length === 0) { toast.error("Seleziona almeno una linea"); return; }
@@ -892,6 +934,7 @@ export default function PlanningStudioTripsPage() {
         routes: selRoutes, trips, variantById,
         dayValidity: val.dayValidity ?? {}, categoriesByTrip: val.categories ?? {},
         catById, dtKinds, calWdById: calWd, km,
+        rate: Number(String(printRate).replace(",", ".")) || 0,
       });
       const w = window.open("", "_blank");
       if (!w) { toast.error("Consenti i popup per stampare"); return; }
@@ -1381,11 +1424,18 @@ export default function PlanningStudioTripsPage() {
                   );
                 })}
               </div>
-              <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-2">
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                  <input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} className="accent-amber-500" />
-                  Solo corse attive
-                </label>
+              <div className="px-4 py-3 border-t border-slate-800 flex items-center justify-between gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)} className="accent-amber-500" />
+                    Solo corse attive
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-400" title="Corrispettivo chilometrico: calcola l'incasso per categoria e totale">
+                    Corrispettivo €/km
+                    <input type="text" inputMode="decimal" value={printRate} onChange={e => setPrintRate(e.target.value.replace(/[^\d.,]/g, ""))}
+                      placeholder="es. 2,50" className="w-20 px-2 py-1 rounded border border-slate-700 bg-slate-900 text-slate-100 text-[11px] tabular-nums" />
+                  </label>
+                </div>
                 <button onClick={runPrintCorse} disabled={printBusy || printSel.size === 0}
                   className="px-4 py-2 rounded-lg bg-slate-200 hover:bg-white text-slate-900 text-sm font-semibold disabled:opacity-50 inline-flex items-center gap-2">
                   {printBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
