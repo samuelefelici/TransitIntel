@@ -1183,12 +1183,12 @@ export default function PlanningStudioTripsPage() {
               Sto per fondere <b className="text-cyan-300">{mergePreview.groups.length}</b> gruppi di corse identiche:
               <b className="text-cyan-300"> {mergePreview.tripsBefore}</b> corse →
               <b className="text-emerald-300"> {mergePreview.tripsAfter}</b> ({mergePreview.removed} rimosse).
-              Ogni corsa fusa prende la <b>validità unione</b> e un <b>calendario-unione</b> (i giorni sommati). Reversibile ri-generando/re-importando.
+              Ogni corsa fusa prende la <b>validità unione</b>, un <b>calendario-unione</b> (i giorni sommati) e l'<b>unione delle categorie</b> del calendario aziendale. Reversibile ri-generando/re-importando.
             </div>
             <div className="flex-1 overflow-auto p-2">
               <table className="w-full text-[11px]">
                 <thead className="text-slate-500">
-                  <tr><th className="p-1.5 text-left">Partenza</th><th className="p-1.5 text-left">Headsign</th><th className="p-1.5 text-center">Corse</th><th className="p-1.5 text-left">Giorni risultanti</th><th className="p-1.5 text-left">Periodo</th></tr>
+                  <tr><th className="p-1.5 text-left">Partenza</th><th className="p-1.5 text-left">Headsign</th><th className="p-1.5 text-center">Corse</th><th className="p-1.5 text-left">Giorni risultanti</th><th className="p-1.5 text-left">Categorie unione</th><th className="p-1.5 text-left">Periodo</th></tr>
                 </thead>
                 <tbody>
                   {mergePreview.groups.map((g, i) => (
@@ -1197,6 +1197,19 @@ export default function PlanningStudioTripsPage() {
                       <td className="p-1.5 text-slate-400 truncate max-w-[160px]">{g.headsign || "—"}</td>
                       <td className="p-1.5 text-center"><span className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300">{g.count} → 1</span></td>
                       <td className="p-1.5 text-emerald-300 font-medium">{g.unionWeekdaysLabel || (g.anyCal ? "—" : "(nessun calendario)")}</td>
+                      <td className="p-1.5">
+                        {(g.unionCategories ?? []).length === 0
+                          ? <span className="text-slate-600">tutte</span>
+                          : <div className="flex flex-wrap gap-1">
+                              {(g.unionCategories ?? []).map(c => (
+                                <span key={c.code} title={c.name}
+                                  className="px-1 py-0.5 rounded text-[9px] font-medium border whitespace-nowrap"
+                                  style={{ borderColor: c.color || "#3b82f6", background: `${c.color || "#3b82f6"}22` }}>
+                                  {c.name.length > 12 ? c.name.slice(0, 11) + "…" : c.name}
+                                </span>
+                              ))}
+                            </div>}
+                      </td>
                       <td className="p-1.5 text-slate-500 font-mono">{g.unionStart ? `${g.unionStart.slice(5)}→${(g.unionEnd ?? "").slice(5)}` : "illimitato"}</td>
                     </tr>
                   ))}

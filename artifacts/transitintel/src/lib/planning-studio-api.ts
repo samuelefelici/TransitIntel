@@ -618,6 +618,7 @@ export interface MergeTwinGroup {
   unionWeekdays: boolean[]; unionWeekdaysLabel: string;
   unionStart: string | null; unionEnd: string | null; anyCal: boolean;
   validFrom: string | null; validTo: string | null;
+  unionCategories?: Array<{ name: string; code: string; color: string | null }>;
 }
 export interface MergeTwinsResult {
   dryRun: boolean; groups: MergeTwinGroup[];

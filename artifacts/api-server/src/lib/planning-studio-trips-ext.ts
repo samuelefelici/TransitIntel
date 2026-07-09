@@ -691,6 +691,22 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     stByTrip.set(r.trip_id, arr);
   }
 
+  // Categorie di validità (calendario aziendale) per corsa → per mostrare nel
+  // preview l'UNIONE che risulterà sulla corsa fusa.
+  const catByTrip = new Map<string, Array<{ name: string; code: string; color: string | null }>>();
+  {
+    const tcR = await db.execute<any>(sql`
+      SELECT tc.trip_id, c.name, c.code, c.color
+        FROM ps_trip_category_validity tc
+        JOIN ps_validity_categories c ON c.id = tc.category_id
+       WHERE tc.trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])`);
+    for (const r of tcR.rows ?? []) {
+      const arr = catByTrip.get(r.trip_id) ?? [];
+      arr.push({ name: r.name, code: r.code, color: r.color });
+      catByTrip.set(r.trip_id, arr);
+    }
+  }
+
   // 2. Raggruppa per FIRMA: variante + headsign + orari esatti a tutte le fermate
   const groups = new Map<string, any[]>();
   for (const t of trips) {
@@ -779,8 +795,13 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     const vTo = anyNullTo ? null : g.map(t => t.valid_to).sort().slice(-1)[0];
     const st0 = stByTrip.get(primary.id)![0];
     const dep = st0.split("@")[1]?.split("/")[1]?.slice(0, 5) ?? "";
+    // unione categorie di validità di tutte le corse del gruppo (dedup per codice)
+    const catMap = new Map<string, { name: string; code: string; color: string | null }>();
+    for (const t of g) for (const c of catByTrip.get(t.id) ?? []) if (!catMap.has(c.code)) catMap.set(c.code, c);
+    const unionCategories = [...catMap.values()].sort((a, b) => a.name.localeCompare(b.name, "it"));
     return {
       primaryId: primary.id,
+      unionCategories,
       removeIds: others.map(t => t.id),
       variantId: primary.variant_id,
       headsign: primary.headsign,
