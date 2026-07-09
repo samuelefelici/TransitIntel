@@ -691,6 +691,22 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     stByTrip.set(r.trip_id, arr);
   }
 
+  // Categorie di validità (calendario aziendale) per corsa → per mostrare nel
+  // preview l'UNIONE che risulterà sulla corsa fusa.
+  const catByTrip = new Map<string, Array<{ name: string; code: string; color: string | null }>>();
+  {
+    const tcR = await db.execute<any>(sql`
+      SELECT tc.trip_id, c.name, c.code, c.color
+        FROM ps_trip_category_validity tc
+        JOIN ps_validity_categories c ON c.id = tc.category_id
+       WHERE tc.trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])`);
+    for (const r of tcR.rows ?? []) {
+      const arr = catByTrip.get(r.trip_id) ?? [];
+      arr.push({ name: r.name, code: r.code, color: r.color });
+      catByTrip.set(r.trip_id, arr);
+    }
+  }
+
   // 2. Raggruppa per FIRMA: variante + headsign + orari esatti a tutte le fermate
   const groups = new Map<string, any[]>();
   for (const t of trips) {
@@ -779,8 +795,13 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     const vTo = anyNullTo ? null : g.map(t => t.valid_to).sort().slice(-1)[0];
     const st0 = stByTrip.get(primary.id)![0];
     const dep = st0.split("@")[1]?.split("/")[1]?.slice(0, 5) ?? "";
+    // unione categorie di validità di tutte le corse del gruppo (dedup per codice)
+    const catMap = new Map<string, { name: string; code: string; color: string | null }>();
+    for (const t of g) for (const c of catByTrip.get(t.id) ?? []) if (!catMap.has(c.code)) catMap.set(c.code, c);
+    const unionCategories = [...catMap.values()].sort((a, b) => a.name.localeCompare(b.name, "it"));
     return {
       primaryId: primary.id,
+      unionCategories,
       removeIds: others.map(t => t.id),
       variantId: primary.variant_id,
       headsign: primary.headsign,
@@ -905,6 +926,78 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
     tripsAfter: trips.length - removed,
     removed,
   });
+});
+
+/* ─── SDOPPIA PER VALIDITÀ (split-categories) ──────────────────────────────
+ * Una corsa valida in più categorie (es. Scuole Aperte + Scuole Chiuse) non può
+ * avere due orari diversi. Per spostare l'orario SOLO in una delle validità va
+ * SDOPPIATA: si crea una copia identica (stesso orario) a cui si assegnano le
+ * categorie scelte, togliendole all'originale. Da lì, nel TTD, si sposta la
+ * copia a un altro orario in modo indipendente.
+ *
+ * Body: { categoryIds: string[] } — le categorie da spostare sulla NUOVA corsa.
+ * Vincolo: 1 ≤ scelte < totali (spostarle TUTTE lascerebbe l'originale senza
+ * validità = "vale in ogni periodo", che non è ciò che si vuole).
+ * ──────────────────────────────────────────────────────────────────────── */
+router.post("/planning-studio/projects/:id/trips/:tripId/split-categories", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+  const tripId = String(req.params.tripId || "");
+  if (!UUID_RE.test(tripId)) { res.status(400).json({ error: "tripId non valido" }); return; }
+  const catIds: string[] = Array.isArray(req.body?.categoryIds)
+    ? req.body.categoryIds.map((x: any) => String(x)).filter((x: string) => UUID_RE.test(x)) : [];
+  if (catIds.length === 0) { res.status(400).json({ error: "categoryIds obbligatorio" }); return; }
+
+  const own = await db.execute<any>(sql`SELECT 1 FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${projId}::uuid LIMIT 1`);
+  if (!own.rows?.length) { res.status(404).json({ error: "corsa non trovata nel progetto" }); return; }
+
+  const curR = await db.execute<any>(sql`SELECT category_id FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid`);
+  const cur = new Set<string>((curR.rows ?? []).map((r: any) => r.category_id));
+  const move = catIds.filter(c => cur.has(c));
+  if (move.length === 0) { res.status(400).json({ error: "Le categorie scelte non sono assegnate a questa corsa" }); return; }
+  if (move.length >= cur.size) { res.status(400).json({ error: "Non puoi spostare TUTTE le categorie: la corsa originale resterebbe senza validità" }); return; }
+
+  const moveLit = `{${move.join(",")}}`;
+  let newTripId = "";
+  await db.transaction(async (tx) => {
+    // copia riga corsa (tutte le colonne tranne id/created_at → prese da schema)
+    const colsR = await tx.execute<any>(sql`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema='public' AND table_name='ps_trips'
+         AND column_name NOT IN ('id','created_at') ORDER BY ordinal_position`);
+    const cols: string[] = colsR.rows.map((r: any) => r.column_name);
+    const ins = await tx.execute<any>(sql`
+      INSERT INTO ps_trips (id, ${sql.raw(cols.join(", "))})
+      SELECT gen_random_uuid(), ${sql.raw(cols.join(", "))} FROM ps_trips WHERE id = ${tripId}::uuid
+      RETURNING id`);
+    newTripId = ins.rows[0].id;
+    await tx.execute(sql`
+      INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time, pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+      SELECT ${newTripId}::uuid, stop_seq, stop_id, arrival_time, departure_time, pickup_type, drop_off_type, timepoint, shape_dist_traveled
+        FROM ps_stop_times WHERE trip_id = ${tripId}::uuid`);
+    await tx.execute(sql`
+      INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+      SELECT ${newTripId}::uuid, day_type_id, is_valid FROM ps_trip_day_validity WHERE trip_id = ${tripId}::uuid
+      ON CONFLICT DO NOTHING`);
+    // eccezioni della corsa (best-effort: la copia eredita le stesse date)
+    await tx.execute(sql`
+      INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+      SELECT ${newTripId}::uuid, date, exception_type, reason FROM ps_trip_exceptions WHERE trip_id = ${tripId}::uuid
+      ON CONFLICT DO NOTHING`);
+    // categorie: le scelte vanno alla NUOVA corsa e si tolgono dall'originale
+    await tx.execute(sql`
+      INSERT INTO ps_trip_category_validity (trip_id, category_id)
+      SELECT ${newTripId}::uuid, tid FROM unnest(${moveLit}::uuid[]) AS tid
+      ON CONFLICT DO NOTHING`);
+    await tx.execute(sql`
+      DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid AND category_id = ANY(${moveLit}::uuid[])`);
+  });
+
+  await logActivity(projId, userId, "trip.split_categories", "trip", tripId, { newTripId, moved: move.length });
+  res.status(201).json({ ok: true, newTripId, moved: move.length });
 });
 
 /* ─── Eccezioni date ─── */

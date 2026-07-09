@@ -611,6 +611,17 @@ export async function batchCreatePsTrips(
   );
 }
 
+/** Sdoppia una corsa per validità: crea una copia (stesso orario) con le
+ *  categorie scelte, togliendole all'originale. Poi si sposta la copia nel TTD. */
+export async function splitPsTripByCategories(
+  projectId: string, tripId: string, categoryIds: string[],
+): Promise<{ ok: boolean; newTripId: string; moved: number }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/${tripId}/split-categories`,
+    { method: "POST", body: JSON.stringify({ categoryIds }) },
+  );
+}
+
 /* ─── Unifica corse gemelle ─── */
 export interface MergeTwinGroup {
   primaryId: string; removeIds: string[];
@@ -618,6 +629,7 @@ export interface MergeTwinGroup {
   unionWeekdays: boolean[]; unionWeekdaysLabel: string;
   unionStart: string | null; unionEnd: string | null; anyCal: boolean;
   validFrom: string | null; validTo: string | null;
+  unionCategories?: Array<{ name: string; code: string; color: string | null }>;
 }
 export interface MergeTwinsResult {
   dryRun: boolean; groups: MergeTwinGroup[];
