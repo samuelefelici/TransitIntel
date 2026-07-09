@@ -1183,6 +1183,12 @@ router.post("/planning-studio/projects/:id/trips/:tripId/split-categories", asyn
       ON CONFLICT DO NOTHING`);
     await tx.execute(sql`
       DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid AND category_id = ANY(${moveLit}::uuid[])`);
+    // Sdoppiare è una curatela manuale: proteggi entrambe le corse dall'auto-sync
+    // del calendario, altrimenti le categorie verrebbero ri-derivate e rifuse.
+    await tx.execute(sql`
+      UPDATE ps_trips
+         SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+       WHERE id IN (${tripId}::uuid, ${newTripId}::uuid)`);
   });
 
   await logActivity(projId, userId, "trip.split_categories", "trip", tripId, { newTripId, moved: move.length });

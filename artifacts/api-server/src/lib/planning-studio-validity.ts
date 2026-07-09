@@ -899,6 +899,14 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
           count++;
         }
       }
+      // Curatela MANUALE: da qui in poi le categorie di queste corse vincono sul
+      // calendario aziendale — l'auto-sync non le sovrascrive più (protegge la
+      // doppia validità inserita a mano e le validità azzerate volontariamente).
+      await db.execute(sql`
+        UPDATE ps_trips
+           SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+         WHERE id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+      `);
       await logActivity(req.params.id, userId, "validity.bulk.trip-categories", "trip", tripIds[0], { trips: tripIds.length, categories: categoryIds.length });
       telemetry("bulk.trip-categories", req.params.id, { trips: tripIds.length, categories: categoryIds.length });
       res.json({ ok: true, count });
@@ -1169,7 +1177,7 @@ const SEED_VALIDITY_CATEGORIES = [
 
 export async function syncValidityCategoriesFromProfile(
   projectId: string,
-  opts: { dryRun?: boolean; onlyTripIds?: string[] } = {},
+  opts: { dryRun?: boolean; onlyTripIds?: string[]; includeManual?: boolean } = {},
 ): Promise<{ categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number; from: string | null; to: string | null }> {
   const dryRun = !!opts.dryRun;
   const empty = { categoryDates: 0, tripCategoryUpserts: 0, tripsWithCategories: 0, from: null, to: null };
@@ -1192,7 +1200,7 @@ export async function syncValidityCategoriesFromProfile(
   const cdates: any[] = (cdR as any).rows ?? [];
 
   const tripsR = await db.execute(sql`
-    SELECT id, calendar_id,
+    SELECT id, calendar_id, attributes,
            to_char(valid_from, 'YYYY-MM-DD') AS valid_from,
            to_char(valid_to,   'YYYY-MM-DD') AS valid_to
       FROM ps_trips WHERE project_id = ${projectId}::uuid AND is_active = true
@@ -1203,6 +1211,13 @@ export async function syncValidityCategoriesFromProfile(
   if (opts.onlyTripIds) {
     const only = new Set(opts.onlyTripIds);
     trips = trips.filter((t) => only.has(t.id));
+  }
+  // Corse con categorie CURATE A MANO (attributes.categoriesManual): la spunta
+  // dell'operatore vince sulla derivazione dal calendario. Non le si tocca né in
+  // cancellazione né in riassegnazione, così la "doppia validità" inserita a mano
+  // (es. Scuole Aperte + Scuole Chiuse) e le corse sdoppiate restano salvate.
+  if (!opts.includeManual) {
+    trips = trips.filter((t) => (t.attributes as any)?.categoriesManual !== true);
   }
   if (trips.length === 0 && cals.length === 0) return empty;
 
@@ -1499,6 +1514,7 @@ export async function ensureCategoriesFresh(projectId: string): Promise<void> {
     const gapsR = await db.execute<any>(sql`
       SELECT t.id FROM ps_trips t
        WHERE t.project_id = ${projectId}::uuid AND COALESCE(t.is_active, true) = true
+         AND COALESCE((t.attributes->>'categoriesManual')::boolean, false) = false
          AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity cv WHERE cv.trip_id = t.id)
     `);
     const gaps = (gapsR.rows ?? []).map((r: any) => r.id);
