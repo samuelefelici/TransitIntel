@@ -496,16 +496,17 @@ function schematicInnerSvg(
     if (major) {
       // Raggio del cluster proporzionale al numero di linee che vi transitano:
       // cluster con più linee = cerchio più grande, con una sola = più piccolo.
+      // Tenuto compatto per non coprire la mappa.
       const nl = e.lines.size;
-      const r = Math.min(12, 4.5 + (nl - 1) * 2);
-      const sw = nl >= 2 ? 3 : 2.2;
+      const r = Math.min(7.5, 3 + (nl - 1) * 1.3);
+      const sw = nl >= 2 ? 2 : 1.5;
       dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r.toFixed(1)}" fill="#fff" stroke="#111" stroke-width="${sw}"/>`;
       if (showName) names += `<text x="${(x + r + 3).toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="${nameSize + 1.5}" font-weight="800" fill="#111" stroke="#fff" stroke-width="0.6" paint-order="stroke">${esc(e.name)}</text>`;
     } else {
-      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="#fff" stroke="#111" stroke-width="1.6"/>`;
+      dots += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.1" fill="#fff" stroke="#111" stroke-width="1.2"/>`;
       if (showName) {
         const up = idx % 2 === 0;
-        names += `<text x="${(x + 6).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333" stroke="#fff" stroke-width="0.5" paint-order="stroke">${esc(e.name)}</text>`;
+        names += `<text x="${(x + 5).toFixed(1)}" y="${(y + (up ? -5 : 9)).toFixed(1)}" font-size="${nameSize}" fill="#333" stroke="#fff" stroke-width="0.5" paint-order="stroke">${esc(e.name)}</text>`;
       }
     }
     idx++;
@@ -665,9 +666,9 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   }
   const interCount = [...byStop.values()].filter((r) => r.size >= 2).length;
 
-  const W = 1000, H = 1414, M = 90;
-  const legendH = lines.length * 20 + 12;
-  const Hd = H - legendH - 16;                 // altezza area schema (sopra la legenda)
+  const W = 1000, H = 1414, M = 42;            // margine interno ridotto → mappa più ampia
+  const legendH = lines.length * 18 + 10;
+  const Hd = H - legendH - 12;                 // altezza area schema (sopra la legenda)
   const rot = (((Math.round(rotate / 90) * 90) % 360) + 360) % 360; // 0/90/180/270
   const swap = rot === 90 || rot === 270;
   const dW = swap ? Hd : W, dH = swap ? W : Hd; // dimensioni con cui disegnare lo schema
@@ -681,8 +682,8 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
     ? svgInner
     : `<g transform="translate(${(W / 2).toFixed(1)},${(Hd / 2).toFixed(1)}) rotate(${rot}) translate(${(-dW / 2).toFixed(1)},${(-dH / 2).toFixed(1)})">${svgInner}</g>`;
   const legendRows = lines.map((l, i) =>
-    `<g transform="translate(0,${i * 20})"><rect width="16" height="10" rx="2" fill="${lineColor(l.color)}"/>`
-    + `<text x="22" y="9" font-size="11" fill="#111"><tspan font-weight="800">${esc(l.shortName ?? "?")}</tspan> ${esc(l.longName ?? "")}</text></g>`).join("");
+    `<g transform="translate(0,${i * 18})"><rect width="14" height="9" rx="2" fill="${lineColor(l.color)}"/>`
+    + `<text x="20" y="8" font-size="9.5" fill="#111"><tspan font-weight="800">${esc(l.shortName ?? "?")}</tspan> ${esc(l.longName ?? "")}</text></g>`).join("");
 
   const hero = `<div class="hero">
       ${logoUrl ? `<img src="${logoUrl}" alt="logo" />` : ""}
@@ -700,14 +701,14 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
     ${PRINT_BASE_CSS}
     @page{size:A4 portrait;margin:8mm}
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .hero { color:#0f172a; padding:4px 2px 10px; border-bottom:2px solid #e2e8f0; margin-bottom:8px; display:flex; align-items:center; gap:16px; }
-    .hero img { height:56px; width:auto; }
-    .hero .t h1 { margin:0; font-size:20px; font-weight:800; }
-    .hero .t .sub { font-size:10px; color:#64748b; }
-    .hero .t .powered { font-size:9px; font-weight:800; color:#475569; letter-spacing:.3px; margin-top:1px; }
-    .hero .meta { margin-left:auto; text-align:right; font-size:9.5px; color:#475569; line-height:1.6; }
-    .brandfoot { margin-top:8px; padding-top:8px; border-top:1px solid #e2e8f0; display:flex; align-items:center; gap:10px; font-size:9px; color:#94a3b8; }
-    .brandfoot img { height:18px; opacity:.85; }
+    .hero { color:#0f172a; padding:1px 2px 4px; border-bottom:1px solid #e2e8f0; margin-bottom:3px; display:flex; align-items:center; gap:10px; }
+    .hero img { height:30px; width:auto; }
+    .hero .t h1 { margin:0; font-size:13px; font-weight:800; }
+    .hero .t .sub { font-size:8px; color:#64748b; }
+    .hero .t .powered { font-size:7px; font-weight:800; color:#475569; letter-spacing:.3px; margin-top:0; }
+    .hero .meta { margin-left:auto; text-align:right; font-size:8px; color:#475569; line-height:1.5; }
+    .brandfoot { margin-top:3px; padding-top:3px; border-top:1px solid #e2e8f0; display:flex; align-items:center; gap:8px; font-size:7.5px; color:#94a3b8; }
+    .brandfoot img { height:12px; opacity:.85; }
     .brandfoot .powered { font-weight:800; color:#475569; letter-spacing:.3px; }
   </style></head>
   <body><section class="page">
