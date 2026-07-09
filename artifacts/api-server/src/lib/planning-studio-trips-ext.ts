@@ -221,9 +221,15 @@ router.patch("/planning-studio/projects/:id/trips/:tripId", async (req, res): Pr
 
   const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
   if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
-  // marca le corse come modificate: l'auto-refresh delle categorie del
-  // calendario aziendale risincronizza solo le corse toccate dopo l'ultimo sync
-  parts.push(sql`updated_at = now()`);
+  // updated_at è letto SOLO dall'auto-refresh delle categorie del calendario
+  // aziendale (risincronizza le corse "toccate" dopo l'ultimo sync). Va bumpato
+  // SOLO quando cambia qualcosa che sposta i GIORNI di circolazione → calendario
+  // o periodo di validità. NON per modifiche ininfluenti sui giorni (a chiamata,
+  // etichetta, headsign, attivo…), altrimenti il re-sync sovrascriverebbe le
+  // categorie curate a mano (era il bug: spuntando "A chiamata" spariva una
+  // categoria di validità).
+  const catRelevant = "calendarId" in req.body || "validFrom" in req.body || "validTo" in req.body;
+  if (catRelevant) parts.push(sql`updated_at = now()`);
   const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
@@ -277,9 +283,11 @@ router.post("/planning-studio/projects/:id/trips/bulk-update", async (req, res):
   const idsSql = sql.join(tripIds.map(id => sql`${id}::uuid`), sql`, `);
   const parts = fields.map((f, i) => sql`${sql.raw(f)} = ${vals[i]}`);
   if (attrMerge) parts.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify(attrMerge)}::jsonb`);
-  // marca le corse come modificate: l'auto-refresh delle categorie del
-  // calendario aziendale risincronizza solo le corse toccate dopo l'ultimo sync
-  parts.push(sql`updated_at = now()`);
+  // updated_at solo per modifiche che spostano i GIORNI di circolazione
+  // (calendario/periodo): così l'auto-refresh categorie non sovrascrive le
+  // categorie curate a mano quando cambi solo "a chiamata"/etichetta/attivo.
+  const catRelevant = "calendarId" in patch || "validFrom" in patch || "validTo" in patch;
+  if (catRelevant) parts.push(sql`updated_at = now()`);
   const setSql = sql.join(parts, sql`, `);
   const r = await db.execute(sql`
     UPDATE ps_trips
