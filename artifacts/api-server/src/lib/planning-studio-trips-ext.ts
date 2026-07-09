@@ -123,6 +123,167 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
   });
 });
 
+/* ─── KM ANNUI per LINEA e per CATEGORIA di validità (stampa elenco corse) ───
+ * Per ogni giorno dell'anno classificato dal CALENDARIO AZIENDALE (categoria per
+ * data) conta i km delle corse che circolano quel giorno e li attribuisce alla
+ * categoria del giorno. Circolazione = maschera settimanale effettiva della
+ * corsa ∩ matrice di validità (tipo-giorno) ∩ eventuali categorie assegnate.
+ * Si IGNORA il "Periodo" (valid_from/valid_to) della corsa, come richiesto:
+ * il riferimento è l'anno solare del calendario aziendale.
+ * ──────────────────────────────────────────────────────────────────────── */
+router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: Response): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const projId = String(req.params.id);
+  const proj = await loadProject(projId, userId, false);
+  if (!proj) { res.status(403).json({ error: "no access" }); return; }
+  const routeIdsParam = typeof req.query.routeIds === "string" && req.query.routeIds.trim()
+    ? req.query.routeIds.split(",").map(s => s.trim()).filter(s => UUID_RE.test(s)) : null;
+
+  // aggiorna le categorie del calendario aziendale prima del calcolo
+  try { const { ensureCategoriesFresh } = await import("./planning-studio-validity"); await ensureCategoriesFresh(projId); } catch { /* non bloccante */ }
+
+  // 1) calendario categorie (data → categoria) + meta categorie
+  const ccR = await db.execute<any>(sql`
+    SELECT EXTRACT(ISODOW FROM cc.date)::int AS isodow, c.code, c.name, c.color, c.sort_order,
+           to_char(min(cc.date) OVER (), 'YYYY-MM-DD') AS dmin, to_char(max(cc.date) OVER (), 'YYYY-MM-DD') AS dmax
+      FROM ps_validity_category_calendar cc
+      JOIN ps_validity_categories c ON c.id = cc.category_id`);
+  const catMeta = new Map<string, { name: string; color: string | null; sort: number }>();
+  const dayCount = new Map<string, number[]>(); // catCode → [7] per weekday (0=Lun..6=Dom)
+  let dmin: string | null = null, dmax: string | null = null;
+  for (const r of ccR.rows ?? []) {
+    dmin = r.dmin; dmax = r.dmax;
+    if (!catMeta.has(r.code)) catMeta.set(r.code, { name: r.name, color: r.color, sort: Number(r.sort_order) || 0 });
+    const arr = dayCount.get(r.code) ?? [0, 0, 0, 0, 0, 0, 0];
+    arr[(Number(r.isodow) - 1) % 7] += 1;
+    dayCount.set(r.code, arr);
+  }
+
+  // 2) lunghezza (m) per variante
+  const vlenR = await db.execute<any>(sql`
+    SELECT v.id AS variant_id, COALESCE(sh.distance_m, vs.max_dist, 0) AS len_m
+      FROM ps_route_variants v
+      LEFT JOIN ps_shapes sh ON sh.variant_id = v.id
+      LEFT JOIN (SELECT variant_id, MAX(shape_dist_traveled) AS max_dist FROM ps_variant_stops GROUP BY variant_id) vs ON vs.variant_id = v.id
+     WHERE v.project_id = ${projId}::uuid`);
+  const lenByVar = new Map<string, number>();
+  for (const r of vlenR.rows ?? []) lenByVar.set(r.variant_id, Number(r.len_m) || 0);
+
+  // 3) corse (attive, no prototipo), + linee
+  const tR = await db.execute<any>(sql`
+    SELECT t.id, t.route_id, t.variant_id, t.calendar_id, t.attributes,
+           r.short_name, r.long_name, r.color
+      FROM ps_trips t JOIN ps_routes r ON r.id = t.route_id
+     WHERE t.project_id = ${projId}::uuid
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+       ${routeIdsParam ? sql`AND t.route_id = ANY(${`{${routeIdsParam.join(",")}}`}::uuid[])` : sql``}`);
+  const trips: any[] = tR.rows ?? [];
+
+  // 4) calendari (flag) + calendar_dates DOW per la maschera settimanale effettiva
+  const calIds = [...new Set(trips.map(t => t.calendar_id).filter(Boolean))];
+  const calFlags = new Map<string, boolean[]>();
+  const calDow = new Map<string, boolean[]>();
+  if (calIds.length) {
+    const cR = await db.execute<any>(sql`
+      SELECT id, monday, tuesday, wednesday, thursday, friday, saturday, sunday
+        FROM ps_calendars WHERE id = ANY(${`{${calIds.join(",")}}`}::uuid[])`);
+    const DOW = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] as const;
+    for (const c of cR.rows ?? []) calFlags.set(c.id, DOW.map(d => !!c[d]));
+    const dR = await db.execute<any>(sql`
+      SELECT calendar_id, EXTRACT(ISODOW FROM date)::int AS isodow
+        FROM ps_calendar_dates WHERE calendar_id = ANY(${`{${calIds.join(",")}}`}::uuid[]) AND exception_type = 1
+        GROUP BY calendar_id, EXTRACT(ISODOW FROM date)`);
+    for (const r of dR.rows ?? []) { const a = calDow.get(r.calendar_id) ?? [false,false,false,false,false,false,false]; a[(Number(r.isodow)-1)%7] = true; calDow.set(r.calendar_id, a); }
+  }
+
+  // 5) tipi-giorno (classificati) + validità per corsa
+  const dtR = await db.execute<any>(sql`SELECT id, code, name FROM ps_day_types WHERE project_id = ${projId}::uuid OR project_id IS NULL`);
+  const dtKind: Record<string, string> = {}; // feriale/sabato/festivo → id
+  for (const d of dtR.rows ?? []) {
+    const c = `${d.code || d.name || ""}`.toLowerCase();
+    if (/^fer/.test(c) && !dtKind.feriale) dtKind.feriale = d.id;
+    else if (/^sab/.test(c) && !dtKind.sabato) dtKind.sabato = d.id;
+    else if (/^fes|^dom/.test(c) && !dtKind.festivo) dtKind.festivo = d.id;
+  }
+  const tripIds = trips.map(t => t.id);
+  const dvByTrip = new Map<string, Record<string, boolean>>();
+  const catByTrip = new Map<string, Set<string>>();
+  if (tripIds.length) {
+    const lit = `{${tripIds.join(",")}}`;
+    const dvR = await db.execute<any>(sql`SELECT trip_id, day_type_id, is_valid FROM ps_trip_day_validity WHERE trip_id = ANY(${lit}::uuid[])`);
+    for (const r of dvR.rows ?? []) { const m = dvByTrip.get(r.trip_id) ?? {}; m[r.day_type_id] = !!r.is_valid; dvByTrip.set(r.trip_id, m); }
+    const tcR = await db.execute<any>(sql`SELECT tc.trip_id, c.code FROM ps_trip_category_validity tc JOIN ps_validity_categories c ON c.id = tc.category_id WHERE tc.trip_id = ANY(${lit}::uuid[])`);
+    for (const r of tcR.rows ?? []) { const s = catByTrip.get(r.trip_id) ?? new Set<string>(); s.add(r.code); catByTrip.set(r.trip_id, s); }
+  }
+
+  // 6) effettiva maschera settimanale della corsa
+  const effMask = (t: any): boolean[] => {
+    const m = (t.attributes as any)?.weekdays;
+    if (Array.isArray(m) && m.length === 7) return m.map((x: any) => x !== false);
+    const f = t.calendar_id ? calFlags.get(t.calendar_id) : null;
+    if (f && f.some(Boolean)) return f;
+    const d = t.calendar_id ? calDow.get(t.calendar_id) : null;
+    if (d && d.some(Boolean)) return d;
+    return [true, true, true, true, true, true, true];
+  };
+  // tipo-giorno di (categoria, weekday): festivo se festività o domenica; sabato il sab; feriale altrimenti
+  const dayTypeOf = (catCode: string, w: number): "feriale" | "sabato" | "festivo" =>
+    (catCode === "festivita" || w === 6) ? "festivo" : (w === 5 ? "sabato" : "feriale");
+
+  // 7) aggrega
+  const allCats = [...catMeta.keys()];
+  const lineMap = new Map<string, { routeId: string; shortName: string; longName: string | null; color: string | null; kmByCat: Record<string, number>; kmTotal: number }>();
+  const totalsByCat: Record<string, number> = {};
+  let grandTotal = 0;
+  for (const t of trips) {
+    const lenKm = (lenByVar.get(t.variant_id) || 0) / 1000;
+    if (lenKm <= 0) continue;
+    const mask = effMask(t);
+    const dv = dvByTrip.get(t.id) ?? {};
+    const cats = catByTrip.get(t.id) ?? null; // null = tutte
+    const line = lineMap.get(t.route_id) ?? { routeId: t.route_id, shortName: t.short_name, longName: t.long_name, color: t.color, kmByCat: {} as Record<string, number>, kmTotal: 0 };
+    for (const catCode of allCats) {
+      if (cats && !cats.has(catCode)) continue;
+      const perWd = dayCount.get(catCode)!;
+      let days = 0;
+      for (let w = 0; w < 7; w++) {
+        if (!mask[w]) continue;
+        const dtId = dtKind[dayTypeOf(catCode, w)];
+        if (dtId && dv[dtId] === false) continue; // tipo-giorno esplicitamente spento
+        days += perWd[w];
+      }
+      if (days === 0) continue;
+      const km = lenKm * days;
+      line.kmByCat[catCode] = (line.kmByCat[catCode] || 0) + km;
+      line.kmTotal += km;
+      totalsByCat[catCode] = (totalsByCat[catCode] || 0) + km;
+      grandTotal += km;
+    }
+    lineMap.set(t.route_id, line);
+  }
+
+  const round = (x: number) => Math.round(x * 10) / 10;
+  const categories = allCats
+    .map(code => ({ code, name: catMeta.get(code)!.name, color: catMeta.get(code)!.color, sort: catMeta.get(code)!.sort }))
+    .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name, "it"));
+  const lines = [...lineMap.values()].map(l => ({
+    routeId: l.routeId, shortName: l.shortName, longName: l.longName, color: l.color,
+    kmByCategory: Object.fromEntries(Object.entries(l.kmByCat).map(([k, v]) => [k, round(v)])),
+    kmTotal: round(l.kmTotal),
+  })).sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
+
+  res.json({
+    from: dmin, to: dmax,
+    hasCalendar: catMeta.size > 0,
+    categories,
+    lines,
+    totalsByCategory: Object.fromEntries(Object.entries(totalsByCat).map(([k, v]) => [k, round(v)])),
+    grandTotal: round(grandTotal),
+  });
+});
+
 /* ─── Validità di UNA corsa: giorni (tipi giorno) + categorie ───
  * Alimenta la sezione "Giorni validità" del dettaglio corsa. */
 

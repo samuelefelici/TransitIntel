@@ -622,6 +622,21 @@ export async function splitPsTripByCategories(
   );
 }
 
+/* ─── KM annui per linea e categoria (stampa elenco corse) ─── */
+export interface PsCorseKm {
+  from: string | null; to: string | null; hasCalendar: boolean;
+  categories: { code: string; name: string; color: string | null; sort: number }[];
+  lines: { routeId: string; shortName: string; longName: string | null; color: string | null; kmByCategory: Record<string, number>; kmTotal: number }[];
+  totalsByCategory: Record<string, number>;
+  grandTotal: number;
+}
+/** km annui (dal calendario aziendale, ignorando il periodo delle corse),
+ *  per linea e ripartiti per categoria di validità, con i totali. */
+export async function getPsCorseKm(projectId: string, routeIds?: string[]): Promise<PsCorseKm> {
+  const q = routeIds && routeIds.length ? `?routeIds=${encodeURIComponent(routeIds.join(","))}` : "";
+  return apiFetch(`/api/planning-studio/projects/${projectId}/corse-km${q}`);
+}
+
 /* ─── Unifica corse gemelle ─── */
 export interface MergeTwinGroup {
   primaryId: string; removeIds: string[];
