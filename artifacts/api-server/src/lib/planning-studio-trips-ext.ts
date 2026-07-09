@@ -250,9 +250,11 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
     const mask = effMask(t);
     const dv = dvByTrip.get(t.id) ?? {};
     const cats = catByTrip.get(t.id) ?? null; // null = tutte
+    // "Scuole Chiuse" generica = ombrello su ogni periodo scuole_chiuse_* (coerente con UDP)
+    const umbrellaChiuse = !!cats && cats.has("scuole_chiuse");
     const line = lineMap.get(t.route_id) ?? { routeId: t.route_id, shortName: t.short_name, longName: t.long_name, color: t.color, kmByCat: {} as Record<string, number>, kmTotal: 0, odByCat: {} as Record<string, number>, odTotal: 0 };
     for (const catCode of allCats) {
-      if (cats && !cats.has(catCode)) continue;
+      if (cats && !cats.has(catCode) && !(umbrellaChiuse && catCode.startsWith("scuole_chiuse"))) continue;
       const perWd = dayCount.get(catCode)!;
       let days = 0;
       for (let w = 0; w < 7; w++) {

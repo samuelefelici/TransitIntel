@@ -295,14 +295,14 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     const datesArrLiteral = `{${dates.join(",")}}`;
     const catCalR = await db.execute(sql`
       SELECT to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id,
-             cat.name AS category_name, cat.color AS category_color
+             cat.name AS category_name, cat.color AS category_color, cat.code AS category_code
         FROM ps_validity_category_calendar c
         LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
        WHERE c.date = ANY(${datesArrLiteral}::date[])
     `);
-    const catByDate = new Map<string, { id: string; name: string; color: string }>();
+    const catByDate = new Map<string, { id: string; name: string; color: string; code: string }>();
     for (const r of (catCalR as any).rows ?? []) {
-      catByDate.set(r.date, { id: r.category_id, name: r.category_name, color: r.category_color });
+      catByDate.set(r.date, { id: r.category_id, name: r.category_name, color: r.category_color, code: r.category_code });
     }
 
     // Day-type per data
@@ -410,14 +410,22 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
     // Vincolo categorie per corsa (validità del calendario aziendale):
     // se una corsa ha ≥1 categorie, vale SOLO nei giorni con quella categoria.
     const tripCatMap = new Map<string, Set<string>>();
+    // Corse con la categoria GENERICA "Scuole Chiuse" (codice nudo scuole_chiuse):
+    // valgono come OMBRELLO su TUTTI i periodi scuole_chiuse_<slug> del calendario,
+    // così una corsa marcata semplicemente "Scuole Chiuse" copre estivo/invernale/…
+    // senza dover essere riassegnata periodo per periodo.
+    const tripUmbrellaChiuse = new Set<string>();
     if (tripIds.length > 0) {
       const tcR = await db.execute(sql`
-        SELECT trip_id, category_id FROM ps_trip_category_validity
-         WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+        SELECT tc.trip_id, tc.category_id, cat.code AS category_code
+          FROM ps_trip_category_validity tc
+          LEFT JOIN ps_validity_categories cat ON cat.id = tc.category_id
+         WHERE tc.trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
       `);
       for (const r of (tcR as any).rows ?? []) {
         if (!tripCatMap.has(r.trip_id)) tripCatMap.set(r.trip_id, new Set());
         tripCatMap.get(r.trip_id)!.add(r.category_id);
+        if (r.category_code === "scuole_chiuse") tripUmbrellaChiuse.add(r.trip_id);
       }
     }
 
@@ -454,7 +462,13 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
           // vincolo categorie: la corsa vale solo nei periodi selezionati
           const cats = tripCatMap.get(t.id);
           if (isActiveToday && cats && cats.size > 0) {
-            isActiveToday = !!cat && cats.has(cat.id);
+            let match = !!cat && cats.has(cat.id);
+            // "Scuole Chiuse" generica = ombrello: copre ogni periodo scuole_chiuse_*
+            if (!match && cat && tripUmbrellaChiuse.has(t.id)
+                && typeof cat.code === "string" && cat.code.startsWith("scuole_chiuse")) {
+              match = true;
+            }
+            isActiveToday = match;
           }
         }
         if (!isActiveToday) continue;
