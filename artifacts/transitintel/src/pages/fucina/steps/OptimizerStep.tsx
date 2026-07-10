@@ -574,6 +574,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           forced: assignment.forcedRoutes.has(routeId),
         })),
         ...(Object.keys(tripOverridesObj).length > 0 ? { tripVehicleOverrides: tripOverridesObj } : {}),
+        // Corse escluse dall'operatore → fuori dall'ottimizzazione, contate come scoperte
+        ...(assignment.excludedTripIds && assignment.excludedTripIds.size > 0
+          ? { excludedTripIds: Array.from(assignment.excludedTripIds) } : {}),
         // Depositi selezionati (multi) + capacità → residenza per turno + advisory capacità
         ...(depots && depots.length > 0 ? { depots } : {}),
       };
@@ -721,6 +724,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         routes: Array.from(assignment.selectedRoutes.entries()).map(([routeId, vehicleType]) => ({
           routeId, vehicleType, forced: assignment.forcedRoutes.has(routeId),
         })),
+        ...(assignment.excludedTripIds && assignment.excludedTripIds.size > 0
+          ? { excludedTripIds: Array.from(assignment.excludedTripIds) } : {}),
       };
 
       // ── Round selezionato dall'operatore (default: best round del VCSP).

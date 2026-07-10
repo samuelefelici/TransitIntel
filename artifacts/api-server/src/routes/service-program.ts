@@ -1336,12 +1336,21 @@ router.post("/service-program", async (req, res) => {
       clusterMap.set(a.stopId, nearby);
     }
 
+    // Corse ESCLUSE dall'operatore in fase di selezione: non entrano nel solver
+    // (nessun veicolo le coprirà) ma restano contate come SCOPERTE (unassigned),
+    // così il traffico dati resta corretto e non spariscono silenziosamente.
+    const excludedSet = new Set<string>(Array.isArray((body as any).excludedTripIds)
+      ? (body as any).excludedTripIds.filter((x: any) => typeof x === "string") : []);
+    const excludedBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => excludedSet.has(t.tripId)) : [];
+    for (const b of excludedBlocks) (b as any).excludedByOperator = true;
+    const solverBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => !excludedSet.has(t.tripId)) : tripBlocks;
+
     // 7. Run separately for urban and suburban — pass clusterMap
-    const urbanResult = buildServiceProgram(tripBlocks, routeVehicleMap, "urbano", 0, clusterMap);
-    const suburbanResult = buildServiceProgram(tripBlocks, routeVehicleMap, "extraurbano", urbanResult.shifts.length, clusterMap);
+    const urbanResult = buildServiceProgram(solverBlocks, routeVehicleMap, "urbano", 0, clusterMap);
+    const suburbanResult = buildServiceProgram(solverBlocks, routeVehicleMap, "extraurbano", urbanResult.shifts.length, clusterMap);
 
     const allShifts = [...urbanResult.shifts, ...suburbanResult.shifts];
-    const allUnassigned = [...urbanResult.unassigned, ...suburbanResult.unassigned];
+    const allUnassigned = [...urbanResult.unassigned, ...suburbanResult.unassigned, ...excludedBlocks];
 
     // 8. Stats
     const byType: Record<string, number> = {};
@@ -1863,7 +1872,15 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       });
     }
 
-    req.log.info(`CP-SAT VSP: ${tripBlocks.length} trips, timeLimit=${timeLimitSec}s`);
+    // Corse ESCLUSE dall'operatore: fuori dal solver ma restano SCOPERTE (unassigned),
+    // così il traffico dati resta corretto (non spariscono, contano come non coperte).
+    const excludedSet = new Set<string>(Array.isArray((body as any).excludedTripIds)
+      ? (body as any).excludedTripIds.filter((x: any) => typeof x === "string") : []);
+    const excludedBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => excludedSet.has(t.tripId)) : [];
+    for (const b of excludedBlocks) (b as any).excludedByOperator = true;
+    const solverBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => !excludedSet.has(t.tripId)) : tripBlocks;
+
+    req.log.info(`CP-SAT VSP: ${solverBlocks.length} trips (${excludedBlocks.length} escluse), timeLimit=${timeLimitSec}s`);
 
     // Build route details for Python
     const routeDetailsForPy = Array.from(selectedRouteIds).map(rid => ({
@@ -2033,7 +2050,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       // Relief points per corsa (fermate intermedie nei cluster) precomputati
       // UNA volta: l'orchestratore li riattacca ai blocchi di ogni round prima
       // di lanciare il CSP.
-      const pseudoShifts: any[] = [{ trips: tripBlocks.map(tb => ({ type: "trip", tripId: tb.tripId })) }];
+      const pseudoShifts: any[] = [{ trips: solverBlocks.map(tb => ({ type: "trip", tripId: tb.tripId })) }];
       try { await enrichTripsWithClusterStops(pseudoShifts as any, req.log); } catch { /* senza cluster il CSP taglia solo ai capolinea */ }
       const tripClusterStops: Record<string, any[]> = {};
       for (const t of pseudoShifts[0].trips as any[]) {
@@ -2064,7 +2081,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       };
       cpResult = await runVcspOrchestrator(req.log, {
         vsp: {
-          trips: buildPyTrips(tripBlocks),
+          trips: buildPyTrips(solverBlocks),
           config: { timeLimit: timeLimitSec, ...vspExtraConfig },
           routeDetails: routeDetailsForPy,
           psClusters: psClustersForPy,
@@ -2080,7 +2097,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       });
     } else {
       cpResult = await runCPSATVehicleScheduler(
-        tripBlocks, timeLimitSec, req.log,
+        solverBlocks, timeLimitSec, req.log,
         vspExtraConfig,
         routeDetailsForPy,
         psClustersForPy,
@@ -2198,7 +2215,9 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     res.json({
       solver: mode === "vcsp" ? "vcsp" : "cpsat",
       shifts: cpShifts,
-      unassigned: [],
+      // Le corse escluse dall'operatore risultano SCOPERTE (il CP-SAT copre tutte
+      // le altre che riceve, quindi qui l'unica non-copertura è quella voluta).
+      unassigned: excludedBlocks,
       routeStats,
       hourlyDist,
       summary,
