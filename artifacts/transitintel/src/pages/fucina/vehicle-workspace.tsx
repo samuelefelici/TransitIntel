@@ -807,6 +807,8 @@ export default function VehicleWorkspace({
             timeLabel: `${wwFmt(t.departureMin)}→${wwFmt(t.arrivalMin)}`,
             desc: `${t.firstStopName ?? ""} → ${t.lastStopName ?? ""}`,
             startMin: t.departureMin, endMin: t.arrivalMin,
+            fromName: t.firstStopName ?? undefined, toName: t.lastStopName ?? undefined,
+            vehicleLabel: VEHICLE_SHORT[sh.vehicleType] || sh.vehicleType,
           })),
         };
       });
@@ -2066,6 +2068,7 @@ export default function VehicleWorkspace({
                 shifts={wwShifts}
                 selected={wwSelected}
                 onToggleSelect={(id) => setWwSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+                onSelectMany={(ids, additive) => setWwSelected(prev => additive ? new Set([...prev, ...ids]) : new Set(ids))}
                 onToggleSelectAll={(shiftId) => {
                   const sh = wwShifts.find(s => s.id === shiftId); if (!sh) return;
                   const tripIds = sh.activities.filter(a => a.isTrip).map(a => a.id);
@@ -2089,6 +2092,8 @@ export default function VehicleWorkspace({
                   timeLabel: `${wwFmt(p.entry.departureMin)}→${wwFmt(p.entry.arrivalMin)}`,
                   desc: `${p.entry.firstStopName ?? ""} → ${p.entry.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
                   startMin: p.entry.departureMin, endMin: p.entry.arrivalMin,
+                  fromName: p.entry.firstStopName ?? undefined, toName: p.entry.lastStopName ?? undefined,
+                  vehicleLabel: (p.entry as any).requiredVehicle || (p.entry as any).vehicleType || undefined,
                 }))}
                 onReorderLoose={(from, to) => setWwPool(prev => {
                   const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n;

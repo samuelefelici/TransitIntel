@@ -637,6 +637,8 @@ export default function DriverWorkspace({
           timeLabel: `${wwFmtH(tp.departureMin)}→${wwFmtH(tp.arrivalMin)}`,
           desc: `${tp.firstStopName ?? ""} → ${tp.lastStopName ?? ""}`,
           startMin: tp.departureMin, endMin: tp.arrivalMin,
+          fromName: tp.firstStopName ?? undefined, toName: tp.lastStopName ?? undefined,
+          vehicleLabel: (tp as any).vehicleType || undefined,
         }))),
       }));
   }, [result, wwShiftIds]);
@@ -1870,14 +1872,18 @@ export default function DriverWorkspace({
                       timeLabel: `${wwFmtH(p.trip.departureMin)}→${wwFmtH(p.trip.arrivalMin)}`,
                       desc: `${p.trip.firstStopName ?? ""} → ${p.trip.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
                       startMin: p.trip.departureMin, endMin: p.trip.arrivalMin,
+                      fromName: p.trip.firstStopName ?? undefined, toName: p.trip.lastStopName ?? undefined,
+                      vehicleLabel: (p.trip as any).vehicleType || undefined,
                     }) : ({
-                      id: p.activity!.id, isTrip: true,
+                      id: p.activity!.id, isTrip: false,
                       kindLabel: ACTIVITY_LABELS[p.activity!.type] ?? p.activity!.type,
                       kindColor: ACTIVITY_COLORS[p.activity!.type] ?? "#22c55e",
                       timeLabel: `${wwFmtH(p.activity!.startMin)}→${wwFmtH(p.activity!.endMin)}`,
                       desc: [p.activity!.fromNode, p.activity!.toNode].filter(Boolean).join(" → ") || "attività",
                       deletable: true,
                       startMin: p.activity!.startMin, endMin: p.activity!.endMin,
+                      fromName: p.activity!.fromNode, toName: p.activity!.toNode,
+                      actType: p.activity!.type as "riserva" | "presidio" | "taxi",
                     }))}
                     onAddActivity={() => setWwActOpen(true)}
                     onDeleteLoose={(id) => {
@@ -1888,6 +1894,7 @@ export default function DriverWorkspace({
                     onImport={wwImport}
                     selected={wwSelected}
                     onToggleSelect={(id) => setWwSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+                    onSelectMany={(ids, additive) => setWwSelected(prev => additive ? new Set([...prev, ...ids]) : new Set(ids))}
                     onToggleSelectAll={(shiftId) => {
                       const sh = wwShifts.find(s => s.id === shiftId); if (!sh) return;
                       const tripIds = sh.activities.filter(a => a.isTrip).map(a => a.id);
