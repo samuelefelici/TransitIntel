@@ -11,7 +11,7 @@
  * la logica di ricostruzione è del workspace ospite (onRepack).
  */
 import React, { useState, useEffect } from "react";
-import { X, PackageOpen, Package, Trash2, CheckSquare, Square, GripVertical } from "lucide-react";
+import { X, PackageOpen, Package, Trash2, CheckSquare, Square, GripVertical, ShieldCheck } from "lucide-react";
 
 export interface WorkActivity {
   /** id univoco nell'ambito della finestra (per le corse: tripId) */
@@ -28,6 +28,9 @@ export interface WorkActivity {
   desc: string;
   /** card eliminabile (es. attività create a mano) */
   deletable?: boolean;
+  /** minuti dal giorno (per il posizionamento sulla griglia oraria stile Bdsi) */
+  startMin?: number;
+  endMin?: number;
 }
 
 export interface WorkShiftView {
@@ -69,6 +72,8 @@ interface Props {
   /** anteprima LIVE della tipologia del turno che nascerebbe da queste card
    *  (es. "Intero", "Semiunico"): chiamata debounced mentre componi la bozza. */
   onPreviewIds?: (ids: string[]) => Promise<string | null>;
+  /** "Verifica normativa" puntuale su un turno (dialogo del workspace ospite) */
+  onVerifyShift?: (shiftId: string) => void;
   onClose: () => void;
   busy?: boolean;
   /** accent: "amber" (TM) | "purple" (TG) */
@@ -78,7 +83,7 @@ interface Props {
 export default function WorkWindowPanel({
   shifts, loose = [], onReorderLoose, onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onVerifyShift, onClose, busy, accent = "purple",
 }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -99,8 +104,41 @@ export default function WorkWindowPanel({
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(drafts.map(d => [d.id, d.ids]))]);
-  const [expanded, setExpanded] = useState(false);
+  /* Come la finestra LAVORO di Bdsi: l'area di lavoro nasce GRANDE (tutto lo
+   * schermo); il pulsante 🗗 la riduce a pannello se serve tenere il gantt a vista. */
+  const [expanded, setExpanded] = useState(true);
   const inDraft = new Set(drafts.flatMap(d => d.ids));
+
+  /* ── Griglia oraria (stile Bdsi): tutto è posizionato sul TEMPO ── */
+  const PPM = 1.4;           // pixel per minuto (≈84px/ora)
+  const LABELW = 200;        // colonna etichette turno (sticky)
+  const timedActs = [...shifts.flatMap(s => s.activities), ...loose]
+    .filter(a => typeof a.startMin === "number" && typeof a.endMin === "number");
+  const hasTime = timedActs.length > 0;
+  const tMin = hasTime ? Math.floor((Math.min(...timedActs.map(a => a.startMin!)) - 15) / 60) * 60 : 0;
+  const tMax = hasTime ? Math.ceil((Math.max(...timedActs.map(a => a.endMin!)) + 15) / 60) * 60 : 60;
+  const spanW = Math.max(120, (tMax - tMin) * PPM);
+  const xAt = (m: number) => (m - tMin) * PPM;
+  const hourTicks: number[] = [];
+  for (let h = Math.ceil(tMin / 60); h * 60 <= tMax; h++) hourTicks.push(h);
+  const fmtHH = (h: number) => `${String(h % 24).padStart(2, "0")}:00`;
+  const gridBg: React.CSSProperties = {
+    backgroundImage: `repeating-linear-gradient(to right, rgba(148,163,184,0.13) 0px, rgba(148,163,184,0.13) 1px, transparent 1px, transparent ${60 * PPM}px)`,
+    backgroundPosition: `${xAt(Math.ceil(tMin / 60) * 60)}px 0`,
+  };
+  /* corse sciolte disposte in CORSIE temporali (niente sovrapposizioni) */
+  const looseTimed = loose.filter(a => !inDraft.has(a.id) && typeof a.startMin === "number" && typeof a.endMin === "number");
+  const looseUntimed = loose.filter(a => !inDraft.has(a.id) && (typeof a.startMin !== "number" || typeof a.endMin !== "number"));
+  const looseLanes: WorkActivity[][] = [];
+  {
+    const laneEnd: number[] = [];
+    for (const a of [...looseTimed].sort((p, q) => p.startMin! - q.startMin!)) {
+      let li = laneEnd.findIndex(e => e <= a.startMin!);
+      if (li === -1) { li = laneEnd.length; laneEnd.push(0); looseLanes.push([]); }
+      laneEnd[li] = a.endMin! + 4;
+      looseLanes[li].push(a);
+    }
+  }
   const draftDrop = (draftId: number) => (e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation();
     const cid = e.dataTransfer.getData("text/x-card");
@@ -173,14 +211,15 @@ export default function WorkWindowPanel({
         </div>
       </div>
 
-      {/* Pool di corse sciolte: card trascinabili, ordina a mano e seleziona */}
-      {loose.length > 0 && (
+      {/* Card SENZA orario (attività appena create senza tempi validi): lista
+          compatta di riserva — tutte le altre vivono sulla griglia oraria. */}
+      {looseUntimed.length > 0 && (
         <div className="px-3 pt-3">
           <p className="text-[10px] text-muted-foreground mb-1.5">
-            Corse sciolte (SCOPERTE finché non le rimpacchetti) — trascina le card per metterle nell'ordine desiderato, clicca per selezionarle:
+            Card senza orario — trascina per riordinare, clicca per selezionare:
           </p>
           <div className="flex flex-wrap gap-1.5">
-            {loose.filter(a => !inDraft.has(a.id)).map((a, i) => (
+            {looseUntimed.map((a, i) => (
               <div key={`${a.id}-${i}`}
                 draggable
                 onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-loose", String(i)); e.dataTransfer.setData("text/x-card", a.id); }}
@@ -269,7 +308,113 @@ export default function WorkWindowPanel({
         <div className={`flex flex-col items-center justify-center gap-2 py-12 text-center border-2 border-dashed m-3 rounded-xl ${dragOver ? ac.border : "border-border/30"}`}>
           <GripVertical className="w-6 h-6 text-muted-foreground/40" />
           <p className="text-sm text-muted-foreground">Trascina qui uno o più turni dal gantt (prendili dall'etichetta a sinistra)</p>
-          <p className="text-[11px] text-muted-foreground/60">Li vedrai a colonna, una riga per attività: spacchetta, riordina la selezione, rimpacchetta.</p>
+          <p className="text-[11px] text-muted-foreground/60">Li vedrai sulla griglia oraria: spacchetta, sposta le corse nelle bozze, chiudi il turno col deposito.</p>
+        </div>
+      ) : hasTime ? (
+        /* ── GRIGLIA ORARIA stile Bdsi: turni a nastro + corsie di corse sciolte ── */
+        <div className="flex-1 overflow-auto">
+          <div style={{ minWidth: LABELW + spanW + 16 }}>
+            {/* righello ore */}
+            <div className="flex sticky top-0 z-20 bg-background/95 border-b border-border/40">
+              <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 flex items-center text-[9px] text-muted-foreground uppercase tracking-wide" style={{ width: LABELW }}>
+                griglia oraria
+              </div>
+              <div className="relative h-6 shrink-0" style={{ width: spanW }}>
+                {hourTicks.map(h => (
+                  <span key={h} className="absolute top-1 -translate-x-1/2 text-[10px] font-mono text-muted-foreground" style={{ left: xAt(h * 60) }}>{fmtHH(h)}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* TURNI: nastro-intestazione + blocchi attività posizionati sul tempo */}
+            {shifts.map(s => {
+              const trips = s.activities.filter(a => a.isTrip);
+              const allSel = trips.length > 0 && trips.every(t => selected.has(t.id));
+              const timed = s.activities.filter(a => typeof a.startMin === "number" && typeof a.endMin === "number");
+              const s0 = timed.length ? Math.min(...timed.map(a => a.startMin!)) : tMin;
+              const s1 = timed.length ? Math.max(...timed.map(a => a.endMin!)) : tMin + 60;
+              return (
+                <div key={s.id} className="flex border-b border-border/15 hover:bg-muted/10">
+                  <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 py-1 flex flex-col justify-center gap-0.5" style={{ width: LABELW }}>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => onToggleSelectAll(s.id)} className={`shrink-0 ${ac.text}`} title={allSel ? "Deseleziona tutte le corse" : "Seleziona tutte le corse"}>
+                        {allSel ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                      </button>
+                      <span className="text-[11px] font-bold text-foreground truncate">{s.label}</span>
+                      <div className="ml-auto flex items-center gap-0.5">
+                        {onVerifyShift && (
+                          <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa del turno (tipologia + regole BDS)"
+                            className="p-0.5 rounded text-muted-foreground hover:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                        )}
+                        {!s.unpacked && (
+                          <button onClick={() => onUnpack(s.id)} title="Spacchetta: le corse diventano card sciolte"
+                            className="p-0.5 rounded text-muted-foreground hover:text-foreground"><PackageOpen className="w-3.5 h-3.5" /></button>
+                        )}
+                        <button onClick={() => onRemoveShift(s.id)} title="Rimuovi dalla finestra"
+                          className="p-0.5 rounded text-muted-foreground hover:text-rose-400"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+                    {s.sub && <div className="text-[9px] text-muted-foreground truncate">{s.sub}</div>}
+                  </div>
+                  <div className="relative shrink-0" style={{ width: spanW, height: 54, ...gridBg }}>
+                    <div className={`absolute rounded-sm ${ac.solid} border ${ac.border} flex items-center px-1.5 overflow-hidden`}
+                      style={{ left: xAt(s0), width: Math.max(40, (s1 - s0) * PPM), top: 4, height: 15 }}>
+                      <span className={`text-[9px] font-bold ${ac.text} truncate`}>{s.label}{s.sub ? ` · ${s.sub}` : ""}</span>
+                    </div>
+                    {s.activities.map((a, i) => {
+                      if (typeof a.startMin !== "number" || typeof a.endMin !== "number") return null;
+                      const w = Math.max(12, (a.endMin - a.startMin) * PPM);
+                      const sel = a.isTrip && selected.has(a.id);
+                      return (
+                        <div key={`${a.id}-${i}`}
+                          draggable={a.isTrip}
+                          onDragStart={a.isTrip ? (e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-card", a.id); } : undefined}
+                          onClick={a.isTrip ? () => onToggleSelect(a.id) : undefined}
+                          title={`${a.kindLabel} · ${a.timeLabel} · ${a.desc}`}
+                          className={`absolute rounded-sm border flex items-center px-1 overflow-hidden ${a.isTrip ? "cursor-pointer" : "opacity-50"} ${sel ? "ring-2 ring-white/70" : ""}`}
+                          style={{ left: xAt(a.startMin), width: w, top: 23, height: 24, borderColor: (a.kindColor ?? "#94a3b8") + "aa", background: (a.kindColor ?? "#94a3b8") + (sel ? "66" : "2b") }}>
+                          {w > 46 && <span className="text-[9px] font-semibold truncate" style={{ color: a.kindColor ?? "#cbd5e1" }}>{a.kindLabel} <span className="font-mono font-normal opacity-80">{a.timeLabel}</span></span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* CORSE SCIOLTE (scoperte): corsie temporali senza sovrapposizioni */}
+            {looseLanes.map((lane, li) => (
+              <div key={`lane-${li}`} className="flex border-b border-border/10">
+                <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 flex items-center" style={{ width: LABELW }}>
+                  {li === 0 && <span className="text-[9px] font-semibold text-rose-300 uppercase tracking-wide">Corse sciolte · scoperte</span>}
+                </div>
+                <div className="relative shrink-0" style={{ width: spanW, height: 34, ...gridBg }}>
+                  {lane.map(a => {
+                    const w = Math.max(12, (a.endMin! - a.startMin!) * PPM);
+                    const sel = selected.has(a.id);
+                    return (
+                      <div key={a.id}
+                        draggable
+                        onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-card", a.id); }}
+                        onClick={() => onToggleSelect(a.id)}
+                        title={`${a.kindLabel} · ${a.timeLabel} · ${a.desc} — click per selezionare · trascina in una bozza`}
+                        className={`absolute rounded-sm border flex items-center gap-1 px-1 overflow-hidden cursor-pointer ${sel ? "ring-2 ring-white/70" : ""}`}
+                        style={{ left: xAt(a.startMin!), width: w, top: 5, height: 24, borderColor: (a.kindColor ?? "#94a3b8") + "aa", background: (a.kindColor ?? "#94a3b8") + (sel ? "66" : "2b") }}>
+                        {w > 46 && <span className="text-[9px] font-semibold truncate" style={{ color: a.kindColor ?? "#cbd5e1" }}>{a.kindLabel} <span className="font-mono font-normal opacity-80">{a.timeLabel}</span></span>}
+                        {a.deletable && onDeleteLoose && w > 70 && (
+                          <button onClick={(e) => { e.stopPropagation(); onDeleteLoose(a.id); }}
+                            title="Elimina questa attività" className="ml-auto text-muted-foreground hover:text-rose-400 shrink-0"><Trash2 className="w-3 h-3" /></button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+            {looseLanes.length === 0 && shifts.length > 0 && (
+              <div className="px-3 py-1.5 text-[9px] text-muted-foreground/60">Spacchetta un turno per avere card sciolte da ricomporre nelle bozze.</div>
+            )}
+          </div>
         </div>
       ) : shifts.length === 0 ? (
         <div className="h-3" />

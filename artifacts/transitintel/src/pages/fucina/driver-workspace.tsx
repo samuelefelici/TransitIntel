@@ -140,6 +140,8 @@ export default function DriverWorkspace({
   const [wwDepots, setWwDepots] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
   const [wwRepackAsk, setWwRepackAsk] = useState<{ ids?: string[] } | null>(null);
   const [wwRepackDepot, setWwRepackDepot] = useState<string>("auto");
+  /* Verifica normativa puntuale (stile Bdsi): dialogo con tipologia + regole BDS */
+  const [wwVerify, setWwVerify] = useState<{ shiftId: string; busy: boolean; type?: string | null; validation?: DriverShiftData["bdsValidation"] | null; residenza?: string | null } | null>(null);
   useEffect(() => {
     if (!wwOpen || wwDepots.length > 0) return;
     void fetch(`${getApiBase()}/api/depots`, { credentials: "include" })
@@ -634,6 +636,7 @@ export default function DriverWorkspace({
           id: String(tp.tripId), isTrip: true, kindLabel: tp.routeName || "Corsa", kindColor: "#a78bfa",
           timeLabel: `${wwFmtH(tp.departureMin)}→${wwFmtH(tp.arrivalMin)}`,
           desc: `${tp.firstStopName ?? ""} → ${tp.lastStopName ?? ""}`,
+          startMin: tp.departureMin, endMin: tp.arrivalMin,
         }))),
       }));
   }, [result, wwShiftIds]);
@@ -835,6 +838,28 @@ export default function DriverWorkspace({
       return rr?.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : null;
     } catch { return null; }
   }, [result, wwShiftIds, wwPool, operatorConfig]);
+
+  /* Verifica normativa PUNTUALE su un turno della finestra (dialogo stile Bdsi) */
+  const wwVerifyShift = useCallback(async (shiftId: string) => {
+    const sh = result?.driverShifts.find(s => s.driverId === shiftId);
+    if (!sh) return;
+    setWwVerify({ shiftId, busy: true, residenza: sh.residenzaName ?? null });
+    try {
+      const r = await fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shifts: [sh], config: operatorConfig }),
+      });
+      const data = r.ok ? await r.json() : null;
+      const rr = data?.results?.[shiftId];
+      setWwVerify({
+        shiftId, busy: false, residenza: sh.residenzaName ?? null,
+        type: rr?.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : (TYPE_LABELS[sh.type] ?? sh.type),
+        validation: rr?.bdsValidation ?? sh.bdsValidation ?? null,
+      });
+    } catch {
+      setWwVerify({ shiftId, busy: false, residenza: sh.residenzaName ?? null, type: TYPE_LABELS[sh.type] ?? sh.type, validation: sh.bdsValidation ?? null });
+    }
+  }, [result, operatorConfig]);
 
   // Tipi di segmento eliminabili dal Gantt (tutto tranne le corse: fuori linea,
   // taxi/auto aziendale, pre-turno, attività).
@@ -1681,6 +1706,57 @@ export default function DriverWorkspace({
                   </ol>
                 </div>
               )}
+              {/* Verifica normativa puntuale (stile Bdsi) */}
+              {wwVerify && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwVerify(null)}>
+                  <div className="w-full max-w-sm rounded-xl border border-emerald-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-emerald-300">⚖ Verifica normativa · {wwVerify.shiftId}</p>
+                    {wwVerify.busy ? (
+                      <p className="text-xs text-zinc-400">Verifica in corso…</p>
+                    ) : (
+                      <>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">{wwVerify.type ?? "—"}</span>
+                          {wwVerify.residenza && <span className="text-zinc-400">zona di riferimento: <b className="text-zinc-200">{wwVerify.residenza}</b></span>}
+                        </div>
+                        {wwVerify.validation ? (
+                          <div className="space-y-1">
+                            {([
+                              ["classificazioneValida", "Classificazione tipologia"],
+                              ["cee561", "Guida continuativa (RD131/CEE561)"],
+                              ["intervalloPasto", "Intervallo pasto"],
+                              ["staccoMinimo", "Stacco minimo fra turni"],
+                              ["nastro", "Nastro massimo"],
+                              ["riprese", "Riprese"],
+                            ] as const).map(([k, label]) => (
+                              <div key={k} className="flex items-center gap-2 text-[11px]">
+                                <span className={(wwVerify.validation as any)?.[k] ? "text-emerald-400" : "text-rose-400"}>{(wwVerify.validation as any)?.[k] ? "✔" : "✘"}</span>
+                                <span className="text-zinc-300">{label}</span>
+                              </div>
+                            ))}
+                            {(wwVerify.validation.violations ?? []).length > 0 && (
+                              <div className="mt-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 space-y-0.5">
+                                {wwVerify.validation.violations.map((v, i) => (
+                                  <p key={i} className="text-[10px] text-rose-300">• {v}</p>
+                                ))}
+                              </div>
+                            )}
+                            {wwVerify.validation.valid && (wwVerify.validation.violations ?? []).length === 0 && (
+                              <p className="text-[11px] text-emerald-400 font-semibold">Turno conforme alla normativa attiva ✔</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-zinc-500">Nessun dettaglio normativa disponibile per questo turno.</p>
+                        )}
+                        <div className="flex justify-end pt-1">
+                          <button onClick={() => setWwVerify(null)}
+                            className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 text-xs hover:text-zinc-100">Chiudi</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
               {/* Rimpacchetta stile Bdsi: scelta del DEPOSITO di appartenenza del
                   nuovo turno guida; la tipologia la rileva la normativa da sola. */}
               {wwRepackAsk && (
@@ -1778,6 +1854,7 @@ export default function DriverWorkspace({
                       kindColor: p.importedFrom ? "#fb7185" : "#a78bfa",
                       timeLabel: `${wwFmtH(p.trip.departureMin)}→${wwFmtH(p.trip.arrivalMin)}`,
                       desc: `${p.trip.firstStopName ?? ""} → ${p.trip.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                      startMin: p.trip.departureMin, endMin: p.trip.arrivalMin,
                     }) : ({
                       id: p.activity!.id, isTrip: true,
                       kindLabel: ACTIVITY_LABELS[p.activity!.type] ?? p.activity!.type,
@@ -1785,6 +1862,7 @@ export default function DriverWorkspace({
                       timeLabel: `${wwFmtH(p.activity!.startMin)}→${wwFmtH(p.activity!.endMin)}`,
                       desc: [p.activity!.fromNode, p.activity!.toNode].filter(Boolean).join(" → ") || "attività",
                       deletable: true,
+                      startMin: p.activity!.startMin, endMin: p.activity!.endMin,
                     }))}
                     onAddActivity={() => setWwActOpen(true)}
                     onDeleteLoose={(id) => {
@@ -1812,6 +1890,7 @@ export default function DriverWorkspace({
                     onRepack={() => setWwRepackAsk({})}
                     onRepackIds={(ids) => setWwRepackAsk({ ids })}
                     onPreviewIds={wwPreviewType}
+                    onVerifyShift={(id) => { void wwVerifyShift(id); }}
                     onClose={() => setWwOpen(false)}
                     busy={wwImportBusy}
                     accent="purple"

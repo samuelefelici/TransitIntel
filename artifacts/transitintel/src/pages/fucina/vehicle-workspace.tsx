@@ -806,6 +806,7 @@ export default function VehicleWorkspace({
             kindColor: t.type === "trip" ? ((routeColorMap as any)[t.routeId] ?? "#38bdf8") : "#f59e0b",
             timeLabel: `${wwFmt(t.departureMin)}→${wwFmt(t.arrivalMin)}`,
             desc: `${t.firstStopName ?? ""} → ${t.lastStopName ?? ""}`,
+            startMin: t.departureMin, endMin: t.arrivalMin,
           })),
         };
       });
@@ -2072,6 +2073,7 @@ export default function VehicleWorkspace({
                   kindColor: p.importedFrom ? "#fb7185" : ((routeColorMap as any)[p.entry.routeId] ?? "#38bdf8"),
                   timeLabel: `${wwFmt(p.entry.departureMin)}→${wwFmt(p.entry.arrivalMin)}`,
                   desc: `${p.entry.firstStopName ?? ""} → ${p.entry.lastStopName ?? ""}${p.udpName ? ` · da ${p.udpName}` : ""}`,
+                  startMin: p.entry.departureMin, endMin: p.entry.arrivalMin,
                 }))}
                 onReorderLoose={(from, to) => setWwPool(prev => {
                   const n = [...prev]; const [m] = n.splice(from, 1); n.splice(to, 0, m); return n;
