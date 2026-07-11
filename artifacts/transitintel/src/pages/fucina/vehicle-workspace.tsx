@@ -879,6 +879,21 @@ export default function VehicleWorkspace({
     setWwOpen(true);
   }, [result]);
 
+  /* Sidebar gantt della finestra: turni macchina NON ancora nell'area di lavoro */
+  const wwAvailable = useMemo(() => {
+    if (!result) return [];
+    const inWin = new Set(wwShiftIds);
+    return result.shifts
+      .filter(s => !inWin.has(s.vehicleId))
+      .map(s => ({
+        id: s.vehicleId,
+        label: customLabels[s.vehicleId] ?? s.vehicleId,
+        sub: `${s.tripCount} corse · ${VEHICLE_SHORT[s.vehicleType] || s.vehicleType}`,
+        color: "#f59e0b",
+        segments: s.trips.filter(t => t.type === "trip").map(t => ({ startMin: t.departureMin, endMin: t.arrivalMin })),
+      }));
+  }, [result, wwShiftIds, customLabels]);
+
   /* Rimpacchetta (TM): corse selezionate → turno NUOVO con fuorilinea
    * rigenerati e matricola automatica; i turni sorgente tengono le corse
    * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti). */
@@ -2084,6 +2099,7 @@ export default function VehicleWorkspace({
                 onUnpackAll={() => wwDissolve(wwShiftIds)}
                 onRepack={() => wwRepack()}
                 onRepackIds={(ids) => wwRepack(ids)}
+                available={wwAvailable}
                 onClose={() => setWwOpen(false)}
                 accent="amber"
               />

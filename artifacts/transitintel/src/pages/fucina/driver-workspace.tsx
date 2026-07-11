@@ -647,6 +647,21 @@ export default function DriverWorkspace({
     setWwOpen(true);
   }, [result]);
 
+  /* Sidebar gantt della finestra: turni guida NON ancora nell'area di lavoro */
+  const wwAvailable = useMemo(() => {
+    if (!result) return [];
+    const inWin = new Set(wwShiftIds);
+    return result.driverShifts
+      .filter(s => !inWin.has(s.driverId))
+      .map(s => ({
+        id: s.driverId,
+        label: s.driverId,
+        sub: `${TYPE_LABELS[s.type] ?? s.type} · ${s.riprese.reduce((n, r) => n + r.trips.length, 0)} corse${s.residenzaName ? ` · ${s.residenzaName}` : ""}`,
+        color: s.residenzaColor || "#a78bfa",
+        segments: s.riprese.map(r => ({ startMin: r.startMin, endMin: r.endMin })),
+      }));
+  }, [result, wwShiftIds]);
+
   const wwDissolve = useCallback((shiftIds: string[]) => {
     if (!result) return;
     const ids = new Set(shiftIds);
@@ -1891,6 +1906,7 @@ export default function DriverWorkspace({
                     onRepackIds={(ids) => setWwRepackAsk({ ids })}
                     onPreviewIds={wwPreviewType}
                     onVerifyShift={(id) => { void wwVerifyShift(id); }}
+                    available={wwAvailable}
                     onClose={() => setWwOpen(false)}
                     busy={wwImportBusy}
                     accent="purple"
