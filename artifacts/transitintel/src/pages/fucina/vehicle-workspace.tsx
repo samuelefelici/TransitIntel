@@ -776,13 +776,21 @@ export default function VehicleWorkspace({
     () => result ? buildRouteColorMap(result.shifts) : new Map<string, string>(),
     [result],
   );
+  /* I turni portati nell'AREA DI LAVORO spariscono dal gantt (niente doppioni):
+   * tornano visibili quando li rimuovi dall'area. */
   const ganttRows = useMemo(
-    () => result ? shiftsToRows(result.shifts, customLabels) : [],
-    [result, customLabels],
+    () => {
+      const rows = result ? shiftsToRows(result.shifts, customLabels) : [];
+      return wwShiftIds.length ? rows.filter(r => !wwShiftIds.includes(r.id)) : rows;
+    },
+    [result, customLabels, wwShiftIds],
   );
   const ganttBars = useMemo(
-    () => result ? shiftsToBars(result.shifts, routeColorMap, depotMovementOverrides) : [],
-    [result, routeColorMap, depotMovementOverrides],
+    () => {
+      const bars = result ? shiftsToBars(result.shifts, routeColorMap, depotMovementOverrides) : [];
+      return wwShiftIds.length ? bars.filter(b => !wwShiftIds.includes(b.rowId)) : bars;
+    },
+    [result, routeColorMap, depotMovementOverrides, wwShiftIds],
   );
   /* ── Finestra di lavoro: adapter VehicleShift → colonne attività ── */
   const wwFmt = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
@@ -2105,6 +2113,9 @@ export default function VehicleWorkspace({
                 onRepack={() => wwRepack()}
                 onRepackIds={(ids) => wwRepack(ids)}
                 available={wwAvailable}
+                onUndo={undo}
+                canUndo={historyIndex >= 0}
+                storageKey={`ww-pos:tm:${initialSavedId ?? "live"}`}
                 onClose={() => setWwOpen(false)}
                 accent="amber"
               />

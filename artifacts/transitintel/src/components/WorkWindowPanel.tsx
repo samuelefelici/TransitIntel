@@ -80,6 +80,11 @@ interface Props {
   onPreviewIds?: (ids: string[]) => Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null>;
   onVerifyShift?: (shiftId: string) => void;
   available?: WorkAvailableShift[];
+  /** Annulla (history del workspace ospite) */
+  onUndo?: () => void;
+  canUndo?: boolean;
+  /** chiave localStorage per PERSISTERE le posizioni delle card sul canvas */
+  storageKey?: string;
   onClose: () => void;
   busy?: boolean;
   accent?: "amber" | "purple";
@@ -103,7 +108,7 @@ const CARD_H = 26;    // altezza card-riga libera
 export default function WorkWindowPanel({
   shifts, loose = [], onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onSelectMany, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
 }: Props) {
   const ac = accent === "amber"
     ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
@@ -121,13 +126,27 @@ export default function WorkWindowPanel({
     window.addEventListener("mouseup", up);
     return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
   }, [resizing]);
-  const av = available ?? [];
+  /* ricerca/filtro nella sidebar (utile con molti turni) */
+  const [sideQ, setSideQ] = useState("");
+  const avBase = available ?? [];
+  const av = sideQ.trim()
+    ? avBase.filter(r => (`${r.label} ${r.sub ?? ""}`).toLowerCase().includes(sideQ.trim().toLowerCase()))
+    : avBase;
   const avAll = av.flatMap(r => r.segments);
   const avMin = avAll.length ? Math.min(...avAll.map(s => s.startMin)) : 0;
   const avSpan = avAll.length ? Math.max(1, Math.max(...avAll.map(s => s.endMin)) - avMin) : 1;
 
   /* ── Posizioni libere sul canvas (card turno + righe sciolte) ── */
-  const [pos, setPos] = useState<Record<string, { x: number; y: number }>>({});
+  const [pos, setPos] = useState<Record<string, { x: number; y: number }>>(() => {
+    if (!storageKey) return {};
+    try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); } catch { return {}; }
+  });
+  // persiste il layout del canvas: riaprendo l'area ritrovi le card dove le avevi lasciate
+  useEffect(() => {
+    if (!storageKey) return;
+    const t = setTimeout(() => { try { localStorage.setItem(storageKey, JSON.stringify(pos)); } catch { /* quota */ } }, 400);
+    return () => clearTimeout(t);
+  }, [pos, storageKey]);
   const posRef = useRef(pos); posRef.current = pos;
   // default: le card turno in colonna a sinistra, le righe libere a destra
   useEffect(() => {
@@ -198,14 +217,14 @@ export default function WorkWindowPanel({
   const bandStart = (e: React.MouseEvent) => {
     if (e.target !== canvasRef.current || e.button !== 0) return;
     const rc = canvasRef.current!.getBoundingClientRect();
-    const x = e.clientX - rc.left + canvasRef.current!.parentElement!.scrollLeft;
-    const y = e.clientY - rc.top + canvasRef.current!.parentElement!.scrollTop;
+    const x = e.clientX - rc.left;
+    const y = e.clientY - rc.top;
     const additive = e.ctrlKey || e.metaKey;
     const start = { x0: x, y0: y, x1: x, y1: y };
     setBand(start);
     const move = (ev: MouseEvent) => {
       const r2 = canvasRef.current!.getBoundingClientRect();
-      setBand(b => b ? { ...b, x1: ev.clientX - r2.left + canvasRef.current!.parentElement!.scrollLeft, y1: ev.clientY - r2.top + canvasRef.current!.parentElement!.scrollTop } : b);
+      setBand(b => b ? { ...b, x1: ev.clientX - r2.left, y1: ev.clientY - r2.top } : b);
     };
     const up = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", move);
@@ -293,6 +312,11 @@ export default function WorkWindowPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [loose, selected, onSelectMany, onDeleteLoose]);
 
+  /* uscita con avviso: se restano corse LIBERE (scoperte) chiedi conferma */
+  const [confirmClose, setConfirmClose] = useState(false);
+  const looseTrips = loose.filter(a => a.isTrip).length;
+  const requestClose = () => { if (looseTrips > 0) setConfirmClose(true); else onClose(); };
+
   const handleDropShift = (e: React.DragEvent) => {
     e.preventDefault();
     const id = e.dataTransfer.getData("application/x-cerbero-row") || e.dataTransfer.getData("text/plain");
@@ -318,7 +342,7 @@ export default function WorkWindowPanel({
     <div className="fixed inset-0 z-50 bg-background flex flex-col" onDragOver={(e) => e.preventDefault()} onDrop={handleDropShift}>
       {/* ── Header pagina ── */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-background/95 flex-wrap shrink-0">
-        <button onClick={onClose} title="Torna al gantt"
+        <button onClick={requestClose} title="Torna al gantt"
           className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground">
           <ArrowLeft className="w-3.5 h-3.5" /> Gantt
         </button>
@@ -350,6 +374,13 @@ export default function WorkWindowPanel({
               ⬇ Importa scoperte
             </button>
           )}
+          {onUndo && (
+            <button onClick={onUndo} disabled={busy || canUndo === false}
+              title="Annulla l'ultima modifica (Ctrl+Z)"
+              className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
+              ↶ Annulla
+            </button>
+          )}
           <button onClick={orderByTime} disabled={busy || loose.length === 0}
             title="Riallinea le righe libere in colonne ordinate per orario di partenza (solo le selezionate, se ce ne sono)"
             className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
@@ -365,7 +396,7 @@ export default function WorkWindowPanel({
             className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border ${ac.border} ${ac.solid} ${ac.text} hover:opacity-90 disabled:opacity-40`}>
             <Package className="w-3.5 h-3.5" /> Rimpacchetta ({nSel})
           </button>
-          <button onClick={onClose} title="Chiudi l'area di lavoro" className="p-1 rounded text-muted-foreground hover:text-foreground">
+          <button onClick={requestClose} title="Chiudi l'area di lavoro" className="p-1 rounded text-muted-foreground hover:text-foreground">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -377,6 +408,8 @@ export default function WorkWindowPanel({
           <div className="px-2 py-1.5 border-b border-border/30 sticky top-0 bg-background/95 z-10">
             <p className={`text-[10px] font-bold uppercase tracking-wide ${ac.text}`}>Turni dal gantt</p>
             <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro, o aggiungilo col ⊕</p>
+            <input value={sideQ} onChange={e => setSideQ(e.target.value)} placeholder="Cerca turno (matricola, tipologia, deposito)…"
+              className="mt-1 w-full px-2 py-1 rounded border border-border/40 bg-background text-[10px] outline-none focus:border-border" />
           </div>
           {av.map(row => (
             <div key={row.id}
@@ -413,7 +446,7 @@ export default function WorkWindowPanel({
           className={`w-1.5 shrink-0 cursor-col-resize transition-colors ${resizing ? ac.solid : "bg-border/30 hover:bg-border/70"}`} />
 
         {/* ── CANVAS: card turno tabellari + righe libere, tutto trascinabile ── */}
-        <div className="flex-1 min-w-0 overflow-auto" onDragOver={(e) => e.preventDefault()} onDrop={handleDropShift}>
+        <div className="flex-1 min-w-0 overflow-auto">
           <div ref={canvasRef} onMouseDown={bandStart}
             className="relative"
             style={{ width: 2400, height: Math.max(900, ...Object.values(pos).map(p => p.y + 320)) }}>
@@ -513,6 +546,27 @@ export default function WorkWindowPanel({
           </div>
         </div>
       </div>
+
+      {/* ── Conferma uscita con corse scoperte ── */}
+      {confirmClose && (
+        <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center p-4" onClick={() => setConfirmClose(false)}>
+          <div className="w-full max-w-sm rounded-xl border border-rose-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm font-bold text-rose-300">⚠ Corse scoperte nell'area</p>
+            <p className="text-[11px] text-zinc-400">
+              Stai lasciando <b className="text-rose-300">{looseTrips} cors{looseTrips === 1 ? "a" : "e"}</b> ancora libere:
+              resteranno SCOPERTE finché non le rimpacchetti in un turno.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setConfirmClose(false)}
+                className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 text-xs hover:text-zinc-100">Resta nell'area</button>
+              <button onClick={() => { setConfirmClose(false); onClose(); }}
+                className="px-3 py-1.5 rounded-lg border border-rose-500/50 bg-rose-500/20 text-rose-200 text-xs font-semibold hover:bg-rose-500/30">
+                Esci comunque
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Context menu (click destro): dettagli + tipologia macchina ── */}
       {ctx && (
