@@ -1,36 +1,43 @@
 /**
- * WorkWindowPanel — "Finestra di lavoro" condivisa tra le aree Turni Macchina
- * e Turni Guida.
+ * WorkWindowPanel — "Area di lavoro" (stile MAIOR Bdsi, finestra LAVORO) condivisa
+ * tra Turni Macchina e Turni Guida.
  *
- * L'operatore TRASCINA uno o più turni interi (dalle etichette di riga del
- * gantt, InteractiveGantt rowsDraggable) dentro la finestra: qui i turni sono
- * mostrati A COLONNA, una riga per attività (corse, fuorilinea, pre-turno,
- * taxi, depositi…). Con "Spacchetta" restano SOLO le corse, selezionabili;
- * con "Rimpacchetta" le corse selezionate diventano un turno NUOVO chiuso in
- * automatico (fuorilinea rigenerati, tipologia e matricola automatiche) —
- * la logica di ricostruzione è del workspace ospite (onRepack).
+ * È una PAGINA a schermo intero: sidebar con il gantt dei turni (mini-gantt,
+ * allargabile) da cui TRASCINI i turni nell'area di lavoro. Lì ogni turno è una
+ * CARD TABELLARE (una riga = una corsa: percorso · ora/luogo inizio · ora/luogo
+ * fine). "Spacchetta" (nell'header della card) scioglie il turno in RIGHE LIBERE
+ * che muovi e ordini a piacere sul canvas; selezioni con il mouse (rettangolo)
+ * o con ctrl+click, poi "Rimpacchetta" chiude un turno nuovo (deposito scelto
+ * dall'operatore, tipologia rilevata dalla normativa — logica del workspace
+ * ospite via onRepack). Colori: corse GIALLE, riserva VERDE, presidio AZZURRO,
+ * taxi ARANCIONE. Click destro su una corsa → dettagli + tipologia di macchina.
  */
-import React, { useState, useEffect } from "react";
-import { X, PackageOpen, Package, Trash2, CheckSquare, Square, GripVertical, ShieldCheck } from "lucide-react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import { X, PackageOpen, Package, Trash2, CheckSquare, Square, ShieldCheck, ArrowLeft } from "lucide-react";
 
 export interface WorkActivity {
   /** id univoco nell'ambito della finestra (per le corse: tripId) */
   id: string;
   /** true = corsa di servizio (selezionabile e rimpacchettabile) */
   isTrip: boolean;
-  /** etichetta tipo attività (Corsa 21, Fuorilinea, Pre-turno, Taxi…) */
+  /** etichetta tipo attività (per le corse: il PERCORSO/linea) */
   kindLabel: string;
-  /** colore accento dell'attività */
   kindColor?: string;
   /** fascia oraria "HH:MM → HH:MM" */
   timeLabel: string;
-  /** descrizione (origine → destinazione, note) */
+  /** descrizione libera (fallback) */
   desc: string;
-  /** card eliminabile (es. attività create a mano) */
   deletable?: boolean;
-  /** minuti dal giorno (per il posizionamento sulla griglia oraria stile Bdsi) */
+  /** minuti dal giorno */
   startMin?: number;
   endMin?: number;
+  /** luoghi di inizio/fine corsa */
+  fromName?: string;
+  toName?: string;
+  /** tipologia di macchina (mostrata col click destro) */
+  vehicleLabel?: string;
+  /** tipo attività non-corsa: colora la riga (verde/azzurro/arancione) */
+  actType?: "riserva" | "presidio" | "taxi";
 }
 
 export interface WorkShiftView {
@@ -41,8 +48,7 @@ export interface WorkShiftView {
   activities: WorkActivity[];
 }
 
-/** Turno disponibile nel gantt (non ancora nella finestra): riga della sidebar
- *  con mini-gantt, trascinabile nell'area di lavoro o aggiungibile col ⊕. */
+/** Turno disponibile nel gantt (non ancora nella finestra). */
 export interface WorkAvailableShift {
   id: string;
   label: string;
@@ -52,83 +58,64 @@ export interface WorkAvailableShift {
 }
 
 interface Props {
-  /** turni attualmente nella finestra (adattati dal workspace ospite) */
   shifts: WorkShiftView[];
-  /** CORSE SCIOLTE (spacchettate o importate): card trascinabili per riordinarle.
-   *  Ogni corsa qui è "scoperta" finché non viene rimpacchettata. */
   loose?: WorkActivity[];
-  /** riordino manuale delle card sciolte (drag) */
   onReorderLoose?: (fromIdx: number, toIdx: number) => void;
-  /** apre l'import di corse scoperte da altre UDP con la stessa validità */
   onImport?: () => void;
-  /** apre il form "nuova attività" (riserva/presidio/taxi) come card nel pool */
   onAddActivity?: () => void;
-  /** elimina una card dal pool (solo card deletable) */
   onDeleteLoose?: (id: string) => void;
-  /** id corse selezionate (globali alla finestra) */
   selected: Set<string>;
   onToggleSelect: (activityId: string) => void;
+  /** selezione in blocco (rettangolo col mouse / click semplice): sostituisce
+   *  la selezione, o la ESTENDE se additive=true (ctrl premuto) */
+  onSelectMany?: (ids: string[], additive?: boolean) => void;
   onToggleSelectAll: (shiftId: string) => void;
-  /** drop di un turno (rowId dal gantt) */
   onDropShift: (shiftId: string) => void;
   onRemoveShift: (shiftId: string) => void;
-  /** spacchetta: rimuove le attività non-corsa dal turno nella finestra */
   onUnpack: (shiftId: string) => void;
   onUnpackAll: () => void;
-  /** rimpacchetta le corse selezionate in un turno nuovo */
   onRepack: () => void;
-  /** rimpacchetta ESATTAMENTE queste corse (chiusura di una bozza) */
   onRepackIds?: (ids: string[]) => void;
-  /** anteprima LIVE della tipologia del turno che nascerebbe da queste card
-   *  (es. "Intero", "Semiunico"): chiamata debounced mentre componi la bozza. */
+  /** tipologia LIVE della selezione corrente (normativa) */
   onPreviewIds?: (ids: string[]) => Promise<string | null>;
-  /** "Verifica normativa" puntuale su un turno (dialogo del workspace ospite) */
   onVerifyShift?: (shiftId: string) => void;
-  /** turni del gantt NON ancora nella finestra: sidebar mini-gantt (allargabile)
-   *  da cui trascinarli nell'area di lavoro (o aggiungerli col ⊕). */
   available?: WorkAvailableShift[];
   onClose: () => void;
   busy?: boolean;
-  /** accent: "amber" (TM) | "purple" (TG) */
   accent?: "amber" | "purple";
 }
 
-export default function WorkWindowPanel({
-  shifts, loose = [], onReorderLoose, onImport, onAddActivity, onDeleteLoose,
-  selected, onToggleSelect, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onVerifyShift, available, onClose, busy, accent = "purple",
-}: Props) {
-  const [dragOver, setDragOver] = useState(false);
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  /* Bozze: più turni in composizione SIMULTANEA — ogni bozza è una colonna
-   * in cui trascinare le card; "Chiudi turno" la rimpacchetta da sola. */
-  const [drafts, setDrafts] = useState<Array<{ id: number; ids: string[] }>>([]);
-  /* Tipologia LIVE per bozza (stile Bdsi: il tipo di turno si rileva da solo
-   * mentre componi). Chiave = draft.id, valore = etichetta o null. */
-  const [draftType, setDraftType] = useState<Record<number, string | null>>({});
-  useEffect(() => {
-    if (!onPreviewIds || drafts.length === 0) return;
-    const t = setTimeout(() => {
-      for (const d of drafts) {
-        if (d.ids.length === 0) { setDraftType(p => ({ ...p, [d.id]: null })); continue; }
-        void onPreviewIds(d.ids).then(label => setDraftType(p => ({ ...p, [d.id]: label })));
-      }
-    }, 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [JSON.stringify(drafts.map(d => [d.id, d.ids]))]);
-  /* Come la finestra LAVORO di Bdsi: l'area di lavoro nasce GRANDE (tutto lo
-   * schermo); il pulsante 🗗 la riduce a pannello se serve tenere il gantt a vista. */
-  const [expanded, setExpanded] = useState(true);
-  const inDraft = new Set(drafts.flatMap(d => d.ids));
+/* colori riga per tipo (specifica operatore): corse gialle, riserva verde,
+ * presidio azzurro, taxi arancione */
+const ROW_COLORS: Record<string, { bg: string; border: string; text: string }> = {
+  trip:     { bg: "rgba(234,179,8,0.16)",  border: "rgba(234,179,8,0.55)",  text: "#fde047" },
+  riserva:  { bg: "rgba(34,197,94,0.16)",  border: "rgba(34,197,94,0.55)",  text: "#86efac" },
+  presidio: { bg: "rgba(56,189,248,0.16)", border: "rgba(56,189,248,0.55)", text: "#7dd3fc" },
+  taxi:     { bg: "rgba(249,115,22,0.18)", border: "rgba(249,115,22,0.55)", text: "#fdba74" },
+};
+const rowColorOf = (a: WorkActivity) => ROW_COLORS[a.actType ?? (a.isTrip ? "trip" : "riserva")] ?? ROW_COLORS.trip;
+/** selezionabile per il rimpacchetta: corse E attività create dall'operatore */
+const isPickable = (a: WorkActivity) => a.isTrip || !!a.actType;
 
-  /* Sidebar mini-gantt dei turni ancora nel gantt: da qui si TRASCINANO dentro
-   * l'area di lavoro (o si aggiungono col ⊕). Larghezza regolabile col bordo. */
+const CARD_W = 470;   // larghezza card-riga libera
+const CARD_H = 26;    // altezza card-riga libera
+
+export default function WorkWindowPanel({
+  shifts, loose = [], onImport, onAddActivity, onDeleteLoose,
+  selected, onToggleSelect, onSelectMany, onToggleSelectAll, onDropShift, onRemoveShift,
+  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onClose, busy, accent = "purple",
+}: Props) {
+  const ac = accent === "amber"
+    ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
+    : { text: "text-purple-300", border: "border-purple-500/40", bg: "bg-purple-500/10", solid: "bg-purple-500/20" };
+  const nSel = selected.size;
+
+  /* ── Sidebar gantt (allargabile) ── */
   const [sideW, setSideW] = useState(300);
   const [resizing, setResizing] = useState(false);
   useEffect(() => {
     if (!resizing) return;
-    const move = (e: MouseEvent) => setSideW(Math.max(210, Math.min(680, e.clientX - 20)));
+    const move = (e: MouseEvent) => setSideW(Math.max(210, Math.min(680, e.clientX)));
     const up = () => setResizing(false);
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
@@ -138,73 +125,161 @@ export default function WorkWindowPanel({
   const avAll = av.flatMap(r => r.segments);
   const avMin = avAll.length ? Math.min(...avAll.map(s => s.startMin)) : 0;
   const avSpan = avAll.length ? Math.max(1, Math.max(...avAll.map(s => s.endMin)) - avMin) : 1;
-  const showSidebar = expanded && av.length > 0;
 
-  /* ── Griglia oraria (stile Bdsi): tutto è posizionato sul TEMPO ── */
-  const PPM = 1.4;           // pixel per minuto (≈84px/ora)
-  const LABELW = 200;        // colonna etichette turno (sticky)
-  const timedActs = [...shifts.flatMap(s => s.activities), ...loose]
-    .filter(a => typeof a.startMin === "number" && typeof a.endMin === "number");
-  const hasTime = timedActs.length > 0;
-  const tMin = hasTime ? Math.floor((Math.min(...timedActs.map(a => a.startMin!)) - 15) / 60) * 60 : 0;
-  const tMax = hasTime ? Math.ceil((Math.max(...timedActs.map(a => a.endMin!)) + 15) / 60) * 60 : 60;
-  const spanW = Math.max(120, (tMax - tMin) * PPM);
-  const xAt = (m: number) => (m - tMin) * PPM;
-  const hourTicks: number[] = [];
-  for (let h = Math.ceil(tMin / 60); h * 60 <= tMax; h++) hourTicks.push(h);
-  const fmtHH = (h: number) => `${String(h % 24).padStart(2, "0")}:00`;
-  const gridBg: React.CSSProperties = {
-    backgroundImage: `repeating-linear-gradient(to right, rgba(148,163,184,0.13) 0px, rgba(148,163,184,0.13) 1px, transparent 1px, transparent ${60 * PPM}px)`,
-    backgroundPosition: `${xAt(Math.ceil(tMin / 60) * 60)}px 0`,
+  /* ── Posizioni libere sul canvas (card turno + righe sciolte) ── */
+  const [pos, setPos] = useState<Record<string, { x: number; y: number }>>({});
+  const posRef = useRef(pos); posRef.current = pos;
+  // default: le card turno in colonna a sinistra, le righe libere a destra
+  useEffect(() => {
+    setPos(prev => {
+      const next = { ...prev };
+      let changed = false;
+      shifts.forEach((s, i) => {
+        const k = `shift:${s.id}`;
+        if (!next[k]) { next[k] = { x: 24 + (i % 2) * 540, y: 24 + Math.floor(i / 2) * 260 }; changed = true; }
+      });
+      loose.forEach((a, i) => {
+        const k = `card:${a.id}`;
+        if (!next[k]) { next[k] = { x: 1120 + (i % 2) * 30, y: 24 + i * (CARD_H + 8) }; changed = true; }
+      });
+      return changed ? next : prev;
+    });
+  }, [shifts, loose]);
+
+  /* drag di una card (turno o riga libera): soglia 4px per distinguere dal click */
+  const dragRef = useRef<{ key: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
+  const startDrag = (key: string) => (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const p = posRef.current[key] ?? { x: 0, y: 0 };
+    dragRef.current = { key, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+    const move = (ev: MouseEvent) => {
+      const d = dragRef.current; if (!d) return;
+      const dx = ev.clientX - d.sx, dy = ev.clientY - d.sy;
+      if (!d.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
+      d.moved = true;
+      setPos(prev => ({ ...prev, [d.key]: { x: Math.max(0, d.ox + dx), y: Math.max(0, d.oy + dy) } }));
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setTimeout(() => { dragRef.current = null; }, 0);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
-  /* corse sciolte disposte in CORSIE temporali (niente sovrapposizioni) */
-  const looseTimed = loose.filter(a => !inDraft.has(a.id) && typeof a.startMin === "number" && typeof a.endMin === "number");
-  const looseUntimed = loose.filter(a => !inDraft.has(a.id) && (typeof a.startMin !== "number" || typeof a.endMin !== "number"));
-  const looseLanes: WorkActivity[][] = [];
-  {
-    const laneEnd: number[] = [];
-    for (const a of [...looseTimed].sort((p, q) => p.startMin! - q.startMin!)) {
-      let li = laneEnd.findIndex(e => e <= a.startMin!);
-      if (li === -1) { li = laneEnd.length; laneEnd.push(0); looseLanes.push([]); }
-      laneEnd[li] = a.endMin! + 4;
-      looseLanes[li].push(a);
-    }
-  }
-  const draftDrop = (draftId: number) => (e: React.DragEvent) => {
+  const wasDrag = () => !!dragRef.current?.moved;
+
+  /* ── Selezione a rettangolo sul canvas (più ctrl+click sulle card) ── */
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [band, setBand] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const bandStart = (e: React.MouseEvent) => {
+    if (e.target !== canvasRef.current || e.button !== 0) return;
+    const rc = canvasRef.current!.getBoundingClientRect();
+    const x = e.clientX - rc.left + canvasRef.current!.parentElement!.scrollLeft;
+    const y = e.clientY - rc.top + canvasRef.current!.parentElement!.scrollTop;
+    const additive = e.ctrlKey || e.metaKey;
+    const start = { x0: x, y0: y, x1: x, y1: y };
+    setBand(start);
+    const move = (ev: MouseEvent) => {
+      const r2 = canvasRef.current!.getBoundingClientRect();
+      setBand(b => b ? { ...b, x1: ev.clientX - r2.left + canvasRef.current!.parentElement!.scrollLeft, y1: ev.clientY - r2.top + canvasRef.current!.parentElement!.scrollTop } : b);
+    };
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setBand(b => {
+        if (b) {
+          const [xa, xb] = [Math.min(b.x0, b.x1), Math.max(b.x0, b.x1)];
+          const [ya, yb] = [Math.min(b.y0, b.y1), Math.max(b.y0, b.y1)];
+          const hit: string[] = [];
+          for (const a of loose) {
+            const p = posRef.current[`card:${a.id}`]; if (!p) continue;
+            if (p.x < xb && p.x + CARD_W > xa && p.y < yb && p.y + CARD_H > ya) hit.push(a.id);
+          }
+          if (xb - xa > 6 || yb - ya > 6) onSelectMany?.(hit, additive);
+          else if (!additive) onSelectMany?.([], false); // click sul vuoto = deseleziona
+        }
+        return null;
+      });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
+  /* click su una card/riga: ctrl = toggle, semplice = selezione singola */
+  const rowClick = (a: WorkActivity) => (e: React.MouseEvent) => {
+    if (wasDrag() || !isPickable(a)) return;
+    e.stopPropagation();
+    if (e.ctrlKey || e.metaKey) onToggleSelect(a.id);
+    else if (onSelectMany) onSelectMany([a.id], false);
+    else onToggleSelect(a.id);
+  };
+
+  /* ── Click destro: dettagli corsa + tipologia di macchina ── */
+  const [ctx, setCtx] = useState<{ x: number; y: number; a: WorkActivity } | null>(null);
+  useEffect(() => {
+    if (!ctx) return;
+    const close = () => setCtx(null);
+    window.addEventListener("click", close);
+    window.addEventListener("contextmenu", close);
+    return () => { window.removeEventListener("click", close); window.removeEventListener("contextmenu", close); };
+  }, [ctx]);
+  const rowCtx = (a: WorkActivity) => (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
-    const cid = e.dataTransfer.getData("text/x-card");
-    if (!cid) return;
-    setDrafts(ds => ds.map(d => ({ ...d, ids: d.id === draftId ? (d.ids.includes(cid) ? d.ids : [...d.ids, cid]) : d.ids.filter(x => x !== cid) })));
-    setDragIdx(null);
+    setCtx({ x: e.clientX, y: e.clientY, a });
   };
-  const looseById = new Map(loose.map(a => [a.id, a] as const));
-  const ac = accent === "amber"
-    ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
-    : { text: "text-purple-300", border: "border-purple-500/40", bg: "bg-purple-500/10", solid: "bg-purple-500/20" };
-  const nSel = selected.size;
 
-  const handleDrop = (e: React.DragEvent) => {
+  /* ── Tipologia LIVE della selezione (normativa) ── */
+  const [selType, setSelType] = useState<string | null>(null);
+  useEffect(() => {
+    if (!onPreviewIds || nSel === 0) { setSelType(null); return; }
+    const ids = [...selected];
+    const t = setTimeout(() => { void onPreviewIds(ids).then(setSelType); }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify([...selected].sort())]);
+
+  const handleDropShift = (e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(false);
     const id = e.dataTransfer.getData("application/x-cerbero-row") || e.dataTransfer.getData("text/plain");
     if (id) onDropShift(id);
   };
 
+  /* riga-tabella di una corsa/attività: percorso · inizio (ora+luogo) · fine (ora+luogo) */
+  const rowCells = (a: WorkActivity) => {
+    const c = rowColorOf(a);
+    const [t0, t1] = a.timeLabel.split("→").map(s => s?.trim() ?? "");
+    return (
+      <>
+        <span className="w-16 shrink-0 font-bold truncate" style={{ color: c.text }}>{a.isTrip ? a.kindLabel : (a.actType ?? a.kindLabel)}</span>
+        <span className="w-11 shrink-0 font-mono">{t0}</span>
+        <span className="flex-1 min-w-0 truncate opacity-90">{a.fromName ?? a.desc.split("→")[0]}</span>
+        <span className="w-11 shrink-0 font-mono">{t1}</span>
+        <span className="flex-1 min-w-0 truncate opacity-90">{a.toName ?? a.desc.split("→")[1] ?? ""}</span>
+      </>
+    );
+  };
+
   return (
-    <div
-      className={`flex flex-col border rounded-xl overflow-hidden ${expanded ? "fixed inset-3 z-50 bg-background/98 shadow-2xl" : "bg-card/60"} ${dragOver ? `${ac.border} ${ac.bg}` : "border-border/40"}`}
-      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDragOver(true); }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-    >
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/30 bg-background/40 flex-wrap">
-        <span className={`text-xs font-bold ${ac.text}`}>🪟 Finestra di lavoro</span>
+    <div className="fixed inset-0 z-50 bg-background flex flex-col" onDragOver={(e) => e.preventDefault()} onDrop={handleDropShift}>
+      {/* ── Header pagina ── */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border/40 bg-background/95 flex-wrap shrink-0">
+        <button onClick={onClose} title="Torna al gantt"
+          className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="w-3.5 h-3.5" /> Gantt
+        </button>
+        <span className={`text-sm font-bold ${ac.text}`}>🪟 Area di lavoro</span>
         <span className="text-[10px] text-muted-foreground">{shifts.length} turni · {loose.length} corse sciolte · {nSel} selezionate</span>
+        {selType && nSel > 0 && (
+          <span title="Tipologia che avrebbe il turno chiuso con la selezione corrente (normativa attiva)"
+            className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
+            selezione → {selType}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           {onAddActivity && (
             <button onClick={onAddActivity} disabled={busy}
-              title="Crea un'attività (riserva/presidio = verde, taxi = giallo): diventa una card da mettere in un turno"
+              title="Crea un'attività: riserva (verde), presidio (azzurro), taxi (arancione) — diventa una riga libera"
               className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40">
               ➕ Attività
             </button>
@@ -212,346 +287,184 @@ export default function WorkWindowPanel({
           {onImport && (
             <button onClick={onImport} disabled={busy}
               title="Importa corse scoperte da altre UDP con la stessa validità"
-              className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground hover:border-border/70 disabled:opacity-40">
+              className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
               ⬇ Importa scoperte
             </button>
           )}
           <button onClick={onUnpackAll} disabled={busy || shifts.length === 0}
-            title="Toglie fuorilinea, pre-turno, taxi ecc. da TUTTI i turni: restano solo le corse"
-            className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground hover:border-border/70 disabled:opacity-40">
+            title="Spacchetta TUTTI i turni nell'area: le corse diventano righe libere"
+            className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
             <PackageOpen className="w-3.5 h-3.5" /> Spacchetta tutto
           </button>
           <button onClick={onRepack} disabled={busy || nSel === 0}
-            title="Chiude un turno NUOVO con le corse selezionate: fuorilinea rigenerati, tipologia e matricola automatiche"
+            title="Chiude un turno NUOVO con le corse selezionate: scegli il deposito, tipologia e fuorilinea automatici"
             className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border ${ac.border} ${ac.solid} ${ac.text} hover:opacity-90 disabled:opacity-40`}>
             <Package className="w-3.5 h-3.5" /> Rimpacchetta ({nSel})
           </button>
-          <button onClick={() => setDrafts(ds => [...ds, { id: Date.now() + ds.length, ids: [] }])} disabled={busy}
-            title="Aggiungi una bozza turno: trascinaci dentro le card per comporre più turni insieme"
-            className={`flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border ${ac.border} ${ac.text} hover:opacity-90 disabled:opacity-40`}>
-            ＋ Bozza turno
-          </button>
-          <button onClick={() => setExpanded(v => !v)} title={expanded ? "Riduci" : "Espandi l'area di lavoro"}
-            className="p-1 rounded text-muted-foreground hover:text-foreground text-[13px] leading-none">
-            {expanded ? "🗗" : "⛶"}
-          </button>
-          <button onClick={onClose} title="Chiudi la finestra di lavoro"
-            className="p-1 rounded text-muted-foreground hover:text-foreground">
+          <button onClick={onClose} title="Chiudi l'area di lavoro" className="p-1 rounded text-muted-foreground hover:text-foreground">
             <X className="w-4 h-4" />
           </button>
         </div>
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* ── SIDEBAR GANTT (allargabile): turni ancora fuori dalla finestra ── */}
-        {showSidebar && (
-          <>
-            <div className="shrink-0 border-r border-border/30 bg-background/60 overflow-y-auto" style={{ width: sideW }}>
-              <div className="px-2 py-1.5 border-b border-border/30 sticky top-0 bg-background/95 z-10">
-                <p className={`text-[10px] font-bold uppercase tracking-wide ${ac.text}`}>Turni dal gantt</p>
-                <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro, o aggiungilo col ⊕</p>
-              </div>
-              {av.map(row => (
-                <div key={row.id}
-                  draggable
-                  onDragStart={(e) => { e.dataTransfer.effectAllowed = "copy"; e.dataTransfer.setData("application/x-cerbero-row", row.id); e.dataTransfer.setData("text/plain", row.id); }}
-                  onDoubleClick={() => onDropShift(row.id)}
-                  title={`${row.label}${row.sub ? ` · ${row.sub}` : ""} — trascina nell'area di lavoro (o doppio click / ⊕)`}
-                  className="px-2 py-1.5 border-b border-border/15 cursor-grab active:cursor-grabbing hover:bg-muted/20 select-none">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: row.color || "#a78bfa" }} />
-                    <span className="text-[11px] font-bold text-foreground truncate">{row.label}</span>
-                    {row.sub && <span className="text-[9px] text-muted-foreground truncate">{row.sub}</span>}
-                    <button onClick={(e) => { e.stopPropagation(); onDropShift(row.id); }}
-                      title="Aggiungi alla finestra di lavoro"
-                      className={`ml-auto shrink-0 w-5 h-5 rounded border ${ac.border} ${ac.text} text-[12px] leading-none hover:opacity-80`}>＋</button>
-                  </div>
-                  {/* mini-gantt del turno (scala comune a tutta la sidebar) */}
-                  <div className="relative h-2.5 mt-1 rounded-sm bg-muted/20 overflow-hidden">
-                    {row.segments.map((sg, i) => (
-                      <div key={i} className="absolute top-0 bottom-0 rounded-[2px]"
-                        style={{
-                          left: `${((sg.startMin - avMin) / avSpan) * 100}%`,
-                          width: `${Math.max(0.8, ((sg.endMin - sg.startMin) / avSpan) * 100)}%`,
-                          background: sg.color || row.color || "#a78bfa",
-                          opacity: 0.85,
-                        }} />
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {av.length === 0 && <p className="px-2 py-3 text-[10px] text-muted-foreground">Tutti i turni sono già nella finestra.</p>}
-            </div>
-            <div onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
-              title="Trascina per allargare/restringere il gantt"
-              className={`w-1.5 shrink-0 cursor-col-resize transition-colors ${resizing ? ac.solid : "bg-border/30 hover:bg-border/70"}`} />
-          </>
-        )}
-
-        {/* ── AREA DI LAVORO ── */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-y-auto">
-      {/* Card SENZA orario (attività appena create senza tempi validi): lista
-          compatta di riserva — tutte le altre vivono sulla griglia oraria. */}
-      {looseUntimed.length > 0 && (
-        <div className="px-3 pt-3">
-          <p className="text-[10px] text-muted-foreground mb-1.5">
-            Card senza orario — trascina per riordinare, clicca per selezionare:
-          </p>
-          <div className="flex flex-wrap gap-1.5">
-            {looseUntimed.map((a, i) => (
-              <div key={`${a.id}-${i}`}
-                draggable
-                onDragStart={(e) => { setDragIdx(i); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-loose", String(i)); e.dataTransfer.setData("text/x-card", a.id); }}
-                onDragEnd={() => setDragIdx(null)}
-                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move"; }}
-                onDrop={(e) => {
-                  e.preventDefault(); e.stopPropagation();
-                  const from = dragIdx ?? Number(e.dataTransfer.getData("text/x-loose"));
-                  if (Number.isFinite(from) && from !== i) onReorderLoose?.(from, i);
-                  setDragIdx(null);
-                }}
-                onClick={() => onToggleSelect(a.id)}
-                className={`cursor-grab active:cursor-grabbing select-none rounded-lg border px-2 py-1.5 text-[10px] flex items-center gap-1.5 transition-colors ${
-                  selected.has(a.id) ? `${ac.border} ${ac.bg}` : "border-border/40 bg-background/50 hover:border-border/70"
-                } ${dragIdx === i ? "opacity-40" : ""}`}
-                title="Trascina per riordinare · click per selezionare">
-                {selected.has(a.id)
-                  ? <CheckSquare className={`w-3 h-3 shrink-0 ${ac.text}`} />
-                  : <Square className="w-3 h-3 shrink-0 text-muted-foreground/50" />}
-                <span className="font-semibold" style={{ color: a.kindColor ?? "#94a3b8" }}>{a.kindLabel}</span>
-                <span className="font-mono text-muted-foreground">{a.timeLabel}</span>
-                <span className="max-w-[180px] truncate text-foreground/80">{a.desc}</span>
-                {a.deletable && onDeleteLoose && (
-                  <button onClick={(e) => { e.stopPropagation(); onDeleteLoose(a.id); }}
-                    title="Elimina questa attività" className="ml-0.5 text-muted-foreground hover:text-rose-400">
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
-            ))}
+        {/* ── SIDEBAR GANTT (allargabile) ── */}
+        <div className="shrink-0 border-r border-border/30 bg-background/60 overflow-y-auto" style={{ width: sideW }}>
+          <div className="px-2 py-1.5 border-b border-border/30 sticky top-0 bg-background/95 z-10">
+            <p className={`text-[10px] font-bold uppercase tracking-wide ${ac.text}`}>Turni dal gantt</p>
+            <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro, o aggiungilo col ⊕</p>
           </div>
-        </div>
-      )}
-
-      {/* Bozze in composizione */}
-      {drafts.length > 0 && (
-        <div className="flex gap-3 px-3 pt-3 overflow-x-auto">
-          {drafts.map((d, di) => (
-            <div key={d.id}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move"; }}
-              onDrop={draftDrop(d.id)}
-              className={`w-72 shrink-0 border-2 border-dashed ${ac.border} rounded-lg bg-background/40 flex flex-col`}>
-              <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border/30">
-                <span className={`text-[11px] font-bold ${ac.text}`}>Bozza {di + 1} · {d.ids.length} corse</span>
-                {draftType[d.id] && (
-                  <span title="Tipologia rilevata automaticamente dalla normativa attiva (si aggiorna mentre componi)"
-                    className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
-                    → {draftType[d.id]}
-                  </span>
-                )}
-                <div className="ml-auto flex items-center gap-1">
-                  <button onClick={() => { if (d.ids.length) { onRepackIds?.(d.ids); } setDrafts(ds => ds.filter(x => x.id !== d.id)); }}
-                    disabled={busy || d.ids.length === 0}
-                    title="Chiudi il turno con queste corse (fuorilinea, tipologia e matricola automatici)"
-                    className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${ac.border} ${ac.solid} ${ac.text} disabled:opacity-40`}>
-                    <Package className="w-3 h-3 inline mr-0.5" />Chiudi turno
-                  </button>
-                  <button onClick={() => setDrafts(ds => ds.filter(x => x.id !== d.id))}
-                    title="Sciogli la bozza (le card tornano nel pool)"
-                    className="p-0.5 rounded text-muted-foreground hover:text-rose-400"><X className="w-3 h-3" /></button>
-                </div>
+          {av.map(row => (
+            <div key={row.id}
+              draggable
+              onDragStart={(e) => { e.dataTransfer.effectAllowed = "copy"; e.dataTransfer.setData("application/x-cerbero-row", row.id); e.dataTransfer.setData("text/plain", row.id); }}
+              onDoubleClick={() => onDropShift(row.id)}
+              title={`${row.label}${row.sub ? ` · ${row.sub}` : ""} — trascina nell'area di lavoro (o doppio click / ⊕)`}
+              className="px-2 py-1.5 border-b border-border/15 cursor-grab active:cursor-grabbing hover:bg-muted/20 select-none">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ background: row.color || "#a78bfa" }} />
+                <span className="text-[11px] font-bold text-foreground truncate">{row.label}</span>
+                {row.sub && <span className="text-[9px] text-muted-foreground truncate">{row.sub}</span>}
+                <button onClick={(e) => { e.stopPropagation(); onDropShift(row.id); }}
+                  title="Aggiungi all'area di lavoro"
+                  className={`ml-auto shrink-0 w-5 h-5 rounded border ${ac.border} ${ac.text} text-[12px] leading-none hover:opacity-80`}>＋</button>
               </div>
-              <div className="p-1.5 space-y-1 min-h-[52px]">
-                {d.ids.length === 0 && <p className="text-[10px] text-muted-foreground/60 text-center py-2">trascina qui le card</p>}
-                {d.ids.map(id => {
-                  const a = looseById.get(id);
-                  if (!a) return null;
-                  return (
-                    <div key={id} className={`flex items-center gap-1.5 rounded border px-1.5 py-1 text-[10px] ${ac.border} ${ac.bg}`}>
-                      <span className="font-semibold" style={{ color: a.kindColor ?? "#94a3b8" }}>{a.kindLabel}</span>
-                      <span className="font-mono text-muted-foreground">{a.timeLabel}</span>
-                      <span className="truncate flex-1">{a.desc}</span>
-                      <button onClick={() => setDrafts(ds => ds.map(x => x.id === d.id ? { ...x, ids: x.ids.filter(y => y !== id) } : x))}
-                        title="Rimetti nel pool" className="text-muted-foreground hover:text-rose-400"><X className="w-3 h-3" /></button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Corpo */}
-      {shifts.length === 0 && loose.length === 0 ? (
-        <div className={`flex flex-col items-center justify-center gap-2 py-12 text-center border-2 border-dashed m-3 rounded-xl ${dragOver ? ac.border : "border-border/30"}`}>
-          <GripVertical className="w-6 h-6 text-muted-foreground/40" />
-          <p className="text-sm text-muted-foreground">Trascina qui uno o più turni dal gantt (prendili dall'etichetta a sinistra)</p>
-          <p className="text-[11px] text-muted-foreground/60">Li vedrai sulla griglia oraria: spacchetta, sposta le corse nelle bozze, chiudi il turno col deposito.</p>
-        </div>
-      ) : hasTime ? (
-        /* ── GRIGLIA ORARIA stile Bdsi: turni a nastro + corsie di corse sciolte ── */
-        <div className="flex-1 overflow-auto">
-          <div style={{ minWidth: LABELW + spanW + 16 }}>
-            {/* righello ore */}
-            <div className="flex sticky top-0 z-20 bg-background/95 border-b border-border/40">
-              <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 flex items-center text-[9px] text-muted-foreground uppercase tracking-wide" style={{ width: LABELW }}>
-                griglia oraria
-              </div>
-              <div className="relative h-6 shrink-0" style={{ width: spanW }}>
-                {hourTicks.map(h => (
-                  <span key={h} className="absolute top-1 -translate-x-1/2 text-[10px] font-mono text-muted-foreground" style={{ left: xAt(h * 60) }}>{fmtHH(h)}</span>
+              <div className="relative h-2.5 mt-1 rounded-sm bg-muted/20 overflow-hidden">
+                {row.segments.map((sg, i) => (
+                  <div key={i} className="absolute top-0 bottom-0 rounded-[2px]"
+                    style={{
+                      left: `${((sg.startMin - avMin) / avSpan) * 100}%`,
+                      width: `${Math.max(0.8, ((sg.endMin - sg.startMin) / avSpan) * 100)}%`,
+                      background: sg.color || row.color || "#a78bfa",
+                      opacity: 0.85,
+                    }} />
                 ))}
               </div>
             </div>
+          ))}
+          {av.length === 0 && <p className="px-2 py-3 text-[10px] text-muted-foreground">Tutti i turni sono già nell'area di lavoro.</p>}
+        </div>
+        <div onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
+          title="Trascina per allargare/restringere il gantt"
+          className={`w-1.5 shrink-0 cursor-col-resize transition-colors ${resizing ? ac.solid : "bg-border/30 hover:bg-border/70"}`} />
 
-            {/* TURNI: nastro-intestazione + blocchi attività posizionati sul tempo */}
+        {/* ── CANVAS: card turno tabellari + righe libere, tutto trascinabile ── */}
+        <div className="flex-1 min-w-0 overflow-auto" onDragOver={(e) => e.preventDefault()} onDrop={handleDropShift}>
+          <div ref={canvasRef} onMouseDown={bandStart}
+            className="relative"
+            style={{ width: 2400, height: Math.max(900, ...Object.values(pos).map(p => p.y + 320)) }}>
+
+            {/* rettangolo di selezione */}
+            {band && (
+              <div className={`absolute border ${ac.border} ${ac.bg} pointer-events-none z-30`}
+                style={{ left: Math.min(band.x0, band.x1), top: Math.min(band.y0, band.y1), width: Math.abs(band.x1 - band.x0), height: Math.abs(band.y1 - band.y0) }} />
+            )}
+
+            {shifts.length === 0 && loose.length === 0 && (
+              <div className="absolute left-8 top-8 right-8 border-2 border-dashed border-border/30 rounded-xl p-10 text-center pointer-events-none">
+                <p className="text-sm text-muted-foreground">Trascina qui un turno dalla sidebar (o usa ⊕)</p>
+                <p className="text-[11px] text-muted-foreground/60 mt-1">Lo vedrai come tabella (una riga = una corsa): Spacchetta per liberare le corse, selezionale col mouse o ctrl+click, poi Rimpacchetta.</p>
+              </div>
+            )}
+
+            {/* CARD TURNO tabellari (trascinabili dall'header) */}
             {shifts.map(s => {
+              const p = pos[`shift:${s.id}`] ?? { x: 24, y: 24 };
               const trips = s.activities.filter(a => a.isTrip);
               const allSel = trips.length > 0 && trips.every(t => selected.has(t.id));
-              const timed = s.activities.filter(a => typeof a.startMin === "number" && typeof a.endMin === "number");
-              const s0 = timed.length ? Math.min(...timed.map(a => a.startMin!)) : tMin;
-              const s1 = timed.length ? Math.max(...timed.map(a => a.endMin!)) : tMin + 60;
               return (
-                <div key={s.id} className="flex border-b border-border/15 hover:bg-muted/10">
-                  <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 py-1 flex flex-col justify-center gap-0.5" style={{ width: LABELW }}>
-                    <div className="flex items-center gap-1.5">
-                      <button onClick={() => onToggleSelectAll(s.id)} className={`shrink-0 ${ac.text}`} title={allSel ? "Deseleziona tutte le corse" : "Seleziona tutte le corse"}>
-                        {allSel ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
-                      </button>
-                      <span className="text-[11px] font-bold text-foreground truncate">{s.label}</span>
-                      <div className="ml-auto flex items-center gap-0.5">
-                        {onVerifyShift && (
-                          <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa del turno (tipologia + regole BDS)"
-                            className="p-0.5 rounded text-muted-foreground hover:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /></button>
-                        )}
-                        {!s.unpacked && (
-                          <button onClick={() => onUnpack(s.id)} title="Spacchetta: le corse diventano card sciolte"
-                            className="p-0.5 rounded text-muted-foreground hover:text-foreground"><PackageOpen className="w-3.5 h-3.5" /></button>
-                        )}
-                        <button onClick={() => onRemoveShift(s.id)} title="Rimuovi dalla finestra"
-                          className="p-0.5 rounded text-muted-foreground hover:text-rose-400"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
+                <div key={s.id} className="absolute rounded-lg border border-border/50 bg-background/95 shadow-xl select-none"
+                  style={{ left: p.x, top: p.y, width: 520 }}>
+                  {/* header (drag della card) — stile nastro Bdsi */}
+                  <div onMouseDown={startDrag(`shift:${s.id}`)}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-t-lg cursor-grab active:cursor-grabbing ${ac.solid} border-b ${ac.border}`}>
+                    <button onClick={(e) => { e.stopPropagation(); onToggleSelectAll(s.id); }} onMouseDown={(e) => e.stopPropagation()}
+                      className={ac.text} title={allSel ? "Deseleziona tutte le corse" : "Seleziona tutte le corse"}>
+                      {allSel ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                    </button>
+                    <span className="text-[11px] font-bold text-foreground">{s.label}</span>
+                    {s.sub && <span className="text-[9px] text-muted-foreground truncate">{s.sub}</span>}
+                    <div className="ml-auto flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
+                      {!s.unpacked && (
+                        <button onClick={() => onUnpack(s.id)}
+                          title="Spacchetta: le corse diventano righe LIBERE da muovere e ricomporre"
+                          className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded border ${ac.border} ${ac.text} hover:opacity-80`}>
+                          <PackageOpen className="w-3 h-3" /> Spacchetta
+                        </button>
+                      )}
+                      {onVerifyShift && (
+                        <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa del turno"
+                          className="p-0.5 rounded text-muted-foreground hover:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                      )}
+                      <button onClick={() => onRemoveShift(s.id)} title="Rimuovi dall'area (torna nel gantt)"
+                        className="p-0.5 rounded text-muted-foreground hover:text-rose-400"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
-                    {s.sub && <div className="text-[9px] text-muted-foreground truncate">{s.sub}</div>}
                   </div>
-                  <div className="relative shrink-0" style={{ width: spanW, height: 54, ...gridBg }}>
-                    <div className={`absolute rounded-sm ${ac.solid} border ${ac.border} flex items-center px-1.5 overflow-hidden`}
-                      style={{ left: xAt(s0), width: Math.max(40, (s1 - s0) * PPM), top: 4, height: 15 }}>
-                      <span className={`text-[9px] font-bold ${ac.text} truncate`}>{s.label}{s.sub ? ` · ${s.sub}` : ""}</span>
-                    </div>
+                  {/* righe = corse/attività */}
+                  <div className="divide-y divide-border/15 max-h-72 overflow-y-auto rounded-b-lg">
                     {s.activities.map((a, i) => {
-                      if (typeof a.startMin !== "number" || typeof a.endMin !== "number") return null;
-                      const w = Math.max(12, (a.endMin - a.startMin) * PPM);
-                      const sel = a.isTrip && selected.has(a.id);
+                      const c = rowColorOf(a);
+                      const sel = isPickable(a) && selected.has(a.id);
                       return (
                         <div key={`${a.id}-${i}`}
-                          draggable={a.isTrip}
-                          onDragStart={a.isTrip ? (e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-card", a.id); } : undefined}
-                          onClick={a.isTrip ? () => onToggleSelect(a.id) : undefined}
-                          title={`${a.kindLabel} · ${a.timeLabel} · ${a.desc}`}
-                          className={`absolute rounded-sm border flex items-center px-1 overflow-hidden ${a.isTrip ? "cursor-pointer" : "opacity-50"} ${sel ? "ring-2 ring-white/70" : ""}`}
-                          style={{ left: xAt(a.startMin), width: w, top: 23, height: 24, borderColor: (a.kindColor ?? "#94a3b8") + "aa", background: (a.kindColor ?? "#94a3b8") + (sel ? "66" : "2b") }}>
-                          {w > 46 && <span className="text-[9px] font-semibold truncate" style={{ color: a.kindColor ?? "#cbd5e1" }}>{a.kindLabel} <span className="font-mono font-normal opacity-80">{a.timeLabel}</span></span>}
+                          onClick={rowClick(a)}
+                          onContextMenu={rowCtx(a)}
+                          title={isPickable(a) ? "click = seleziona · ctrl+click = aggiungi · destro = dettagli" : a.kindLabel}
+                          className={`flex items-center gap-1.5 px-2 h-[26px] text-[10px] ${isPickable(a) ? "cursor-pointer" : "opacity-70"} ${sel ? "ring-2 ring-inset ring-white/70" : ""}`}
+                          style={{ background: c.bg, borderLeft: `3px solid ${c.border}` }}>
+                          {rowCells(a)}
                         </div>
                       );
                     })}
+                    {s.activities.length === 0 && <div className="px-2 py-2 text-[10px] text-muted-foreground">nessuna corsa</div>}
                   </div>
                 </div>
               );
             })}
 
-            {/* CORSE SCIOLTE (scoperte): corsie temporali senza sovrapposizioni */}
-            {looseLanes.map((lane, li) => (
-              <div key={`lane-${li}`} className="flex border-b border-border/10">
-                <div className="sticky left-0 z-10 shrink-0 bg-background/95 border-r border-border/30 px-2 flex items-center" style={{ width: LABELW }}>
-                  {li === 0 && <span className="text-[9px] font-semibold text-rose-300 uppercase tracking-wide">Corse sciolte · scoperte</span>}
-                </div>
-                <div className="relative shrink-0" style={{ width: spanW, height: 34, ...gridBg }}>
-                  {lane.map(a => {
-                    const w = Math.max(12, (a.endMin! - a.startMin!) * PPM);
-                    const sel = selected.has(a.id);
-                    return (
-                      <div key={a.id}
-                        draggable
-                        onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/x-card", a.id); }}
-                        onClick={() => onToggleSelect(a.id)}
-                        title={`${a.kindLabel} · ${a.timeLabel} · ${a.desc} — click per selezionare · trascina in una bozza`}
-                        className={`absolute rounded-sm border flex items-center gap-1 px-1 overflow-hidden cursor-pointer ${sel ? "ring-2 ring-white/70" : ""}`}
-                        style={{ left: xAt(a.startMin!), width: w, top: 5, height: 24, borderColor: (a.kindColor ?? "#94a3b8") + "aa", background: (a.kindColor ?? "#94a3b8") + (sel ? "66" : "2b") }}>
-                        {w > 46 && <span className="text-[9px] font-semibold truncate" style={{ color: a.kindColor ?? "#cbd5e1" }}>{a.kindLabel} <span className="font-mono font-normal opacity-80">{a.timeLabel}</span></span>}
-                        {a.deletable && onDeleteLoose && w > 70 && (
-                          <button onClick={(e) => { e.stopPropagation(); onDeleteLoose(a.id); }}
-                            title="Elimina questa attività" className="ml-auto text-muted-foreground hover:text-rose-400 shrink-0"><Trash2 className="w-3 h-3" /></button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-            {looseLanes.length === 0 && shifts.length > 0 && (
-              <div className="px-3 py-1.5 text-[9px] text-muted-foreground/60">Spacchetta un turno per avere card sciolte da ricomporre nelle bozze.</div>
-            )}
-          </div>
-        </div>
-      ) : shifts.length === 0 ? (
-        <div className="h-3" />
-      ) : (
-        <div className="flex gap-3 p-3 overflow-x-auto">
-          {shifts.map((s) => {
-            const trips = s.activities.filter((a) => a.isTrip);
-            const allSel = trips.length > 0 && trips.every((t) => selected.has(t.id));
-            return (
-              <div key={s.id} className="w-64 shrink-0 border border-border/40 rounded-lg bg-background/40 flex flex-col max-h-[420px]">
-                <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border/30">
-                  <button onClick={() => onToggleSelectAll(s.id)} title={allSel ? "Deseleziona tutte le corse" : "Seleziona tutte le corse"}
-                    className={`shrink-0 ${ac.text}`}>
-                    {allSel ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] font-bold text-foreground truncate">{s.label}</div>
-                    {s.sub && <div className="text-[9px] text-muted-foreground truncate">{s.sub}</div>}
-                  </div>
-                  {!s.unpacked && (
-                    <button onClick={() => onUnpack(s.id)} title="Spacchetta: lascia SOLO le corse"
-                      className="p-0.5 rounded text-muted-foreground hover:text-foreground">
-                      <PackageOpen className="w-3.5 h-3.5" />
+            {/* RIGHE LIBERE (corse spacchettate/importate + attività): muovile dove vuoi */}
+            {loose.map(a => {
+              const p = pos[`card:${a.id}`] ?? { x: 1120, y: 24 };
+              const c = rowColorOf(a);
+              const sel = selected.has(a.id);
+              return (
+                <div key={a.id}
+                  onMouseDown={startDrag(`card:${a.id}`)}
+                  onClick={rowClick(a)}
+                  onContextMenu={rowCtx(a)}
+                  title="trascina per spostare · click = seleziona · ctrl+click = aggiungi · destro = dettagli"
+                  className={`absolute flex items-center gap-1.5 px-2 rounded-md border text-[10px] cursor-grab active:cursor-grabbing shadow-md ${sel ? "ring-2 ring-white/70" : ""}`}
+                  style={{ left: p.x, top: p.y, width: CARD_W, height: CARD_H, background: c.bg, borderColor: c.border }}>
+                  {rowCells(a)}
+                  {a.deletable && onDeleteLoose && (
+                    <button onClick={(e) => { e.stopPropagation(); onDeleteLoose(a.id); }} onMouseDown={(e) => e.stopPropagation()}
+                      title="Elimina questa attività" className="shrink-0 text-muted-foreground hover:text-rose-400">
+                      <Trash2 className="w-3 h-3" />
                     </button>
                   )}
-                  <button onClick={() => onRemoveShift(s.id)} title="Rimuovi dalla finestra"
-                    className="p-0.5 rounded text-muted-foreground hover:text-rose-400">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
                 </div>
-                <div className="overflow-y-auto divide-y divide-border/15">
-                  {s.activities.map((a, i) => (
-                    <div key={`${a.id}-${i}`}
-                      onClick={a.isTrip ? () => onToggleSelect(a.id) : undefined}
-                      className={`flex items-center gap-1.5 px-2 py-1 text-[10px] ${a.isTrip ? "cursor-pointer hover:bg-muted/30" : "opacity-60"} ${a.isTrip && selected.has(a.id) ? ac.bg : ""}`}>
-                      {a.isTrip ? (
-                        selected.has(a.id)
-                          ? <CheckSquare className={`w-3 h-3 shrink-0 ${ac.text}`} />
-                          : <Square className="w-3 h-3 shrink-0 text-muted-foreground/50" />
-                      ) : <span className="w-3 shrink-0" />}
-                      <span className="shrink-0 font-semibold px-1 rounded" style={{ color: a.kindColor ?? "#94a3b8", backgroundColor: (a.kindColor ?? "#94a3b8") + "1a" }}>
-                        {a.kindLabel}
-                      </span>
-                      <span className="font-mono shrink-0 text-muted-foreground">{a.timeLabel}</span>
-                      <span className="truncate text-foreground/80">{a.desc}</span>
-                    </div>
-                  ))}
-                  {s.activities.length === 0 && (
-                    <div className="px-2 py-2 text-[10px] text-muted-foreground">nessuna attività</div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
         </div>
       </div>
+
+      {/* ── Context menu (click destro): dettagli + tipologia macchina ── */}
+      {ctx && (
+        <div className="fixed z-[70] rounded-lg border border-border/60 bg-zinc-950 shadow-2xl p-2.5 text-[11px] space-y-1 min-w-[220px]"
+          style={{ left: Math.min(ctx.x, window.innerWidth - 260), top: Math.min(ctx.y, window.innerHeight - 160) }}
+          onClick={(e) => e.stopPropagation()}>
+          <p className="font-bold" style={{ color: rowColorOf(ctx.a).text }}>
+            {ctx.a.isTrip ? `Corsa · percorso ${ctx.a.kindLabel}` : ctx.a.kindLabel}
+          </p>
+          <p className="text-zinc-300 font-mono">{ctx.a.timeLabel}</p>
+          <p className="text-zinc-400">Da: <b className="text-zinc-200">{ctx.a.fromName ?? "—"}</b></p>
+          <p className="text-zinc-400">A: <b className="text-zinc-200">{ctx.a.toName ?? "—"}</b></p>
+          {ctx.a.isTrip && (
+            <p className="text-zinc-400 pt-0.5 border-t border-zinc-800">Tipologia macchina: <b className="text-amber-300">{ctx.a.vehicleLabel ?? "—"}</b></p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
