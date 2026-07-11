@@ -811,9 +811,9 @@ export default function DriverWorkspace({
     toast.success(`Turno guida ${newId} creato`, { description: `${chosen.length} corse · tipologia e fuorilinea in verifica automatica.` });
   }, [result, wwShiftIds, wwSelected, wwPool, pushHistory, operatorConfig]);
 
-  /* Anteprima LIVE della tipologia per le bozze (stile Bdsi): monta un turno
-   * temporaneo con le card della bozza e chiede alla normativa che tipo è. */
-  const wwPreviewType = useCallback(async (ids: string[]): Promise<string | null> => {
+  /* Verifica LIVE della selezione (stile Bdsi): monta un turno temporaneo con
+   * le card selezionate e chiede alla normativa tipologia + violazioni. */
+  const wwPreviewType = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null> => {
     const sel = new Set(ids);
     const chosen: RipresaTrip[] = [];
     if (result) {
@@ -826,7 +826,9 @@ export default function DriverWorkspace({
     for (const p of wwPool) if (p.trip && sel.has(wwPoolId(p))) chosen.push({ ...p.trip });
     if (!chosen.length) return null;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
-    for (let i = 1; i < chosen.length; i++) if (chosen[i].departureMin < chosen[i - 1].arrivalMin) return "⚠ corse sovrapposte";
+    for (let i = 1; i < chosen.length; i++) if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
+      return { type: null, valid: false, violations: ["Corse sovrapposte"] };
+    }
     let split = -1, gmax = 0;
     for (let i = 0; i < chosen.length - 1; i++) {
       const g = chosen[i + 1].departureMin - chosen[i].arrivalMin;
@@ -852,7 +854,12 @@ export default function DriverWorkspace({
       if (!r.ok) return null;
       const data = await r.json();
       const rr = data?.results?.PREVIEW;
-      return rr?.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : null;
+      if (!rr) return null;
+      return {
+        type: rr.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : null,
+        valid: rr.bdsValidation?.valid,
+        violations: rr.bdsValidation?.violations ?? [],
+      };
     } catch { return null; }
   }, [result, wwShiftIds, wwPool, operatorConfig]);
 

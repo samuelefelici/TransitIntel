@@ -76,8 +76,8 @@ interface Props {
   onUnpackAll: () => void;
   onRepack: () => void;
   onRepackIds?: (ids: string[]) => void;
-  /** tipologia LIVE della selezione corrente (normativa) */
-  onPreviewIds?: (ids: string[]) => Promise<string | null>;
+  /** verifica LIVE della selezione corrente (normativa): tipologia + violazioni */
+  onPreviewIds?: (ids: string[]) => Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null>;
   onVerifyShift?: (shiftId: string) => void;
   available?: WorkAvailableShift[];
   onClose: () => void;
@@ -146,18 +146,24 @@ export default function WorkWindowPanel({
     });
   }, [shifts, loose]);
 
-  /* drag di una card (turno o riga libera): soglia 4px per distinguere dal click */
-  const dragRef = useRef<{ key: string; sx: number; sy: number; ox: number; oy: number; moved: boolean } | null>(null);
-  const startDrag = (key: string) => (e: React.MouseEvent) => {
+  /* drag di card (turno o righe libere): soglia 4px per distinguere dal click.
+   * MULTI-DRAG: se trascini una riga SELEZIONATA, si muovono TUTTE le selezionate. */
+  const dragRef = useRef<{ items: Array<{ key: string; ox: number; oy: number }>; sx: number; sy: number; moved: boolean } | null>(null);
+  const startDrag = (key: string, groupKeys?: string[]) => (e: React.MouseEvent) => {
     if (e.button !== 0) return;
-    const p = posRef.current[key] ?? { x: 0, y: 0 };
-    dragRef.current = { key, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+    const keys = groupKeys && groupKeys.length ? Array.from(new Set([key, ...groupKeys])) : [key];
+    const items = keys.map(k => ({ key: k, ox: posRef.current[k]?.x ?? 0, oy: posRef.current[k]?.y ?? 0 }));
+    dragRef.current = { items, sx: e.clientX, sy: e.clientY, moved: false };
     const move = (ev: MouseEvent) => {
       const d = dragRef.current; if (!d) return;
       const dx = ev.clientX - d.sx, dy = ev.clientY - d.sy;
       if (!d.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
       d.moved = true;
-      setPos(prev => ({ ...prev, [d.key]: { x: Math.max(0, d.ox + dx), y: Math.max(0, d.oy + dy) } }));
+      setPos(prev => {
+        const n = { ...prev };
+        for (const it of d.items) n[it.key] = { x: Math.max(0, it.ox + dx), y: Math.max(0, it.oy + dy) };
+        return n;
+      });
     };
     const up = () => {
       window.removeEventListener("mousemove", move);
@@ -168,6 +174,23 @@ export default function WorkWindowPanel({
     window.addEventListener("mouseup", up);
   };
   const wasDrag = () => !!dragRef.current?.moved;
+
+  /* "Ordina per orario": riallinea in colonne ordinate le righe libere
+   * (solo le selezionate, se c'è una selezione; altrimenti tutte). */
+  const orderByTime = useCallback(() => {
+    const targets = loose.filter(a => (selected.size > 0 ? selected.has(a.id) : true));
+    if (!targets.length) return;
+    const sorted = [...targets].sort((a, b) => (a.startMin ?? 0) - (b.startMin ?? 0));
+    const perCol = Math.max(8, Math.floor((window.innerHeight - 170) / (CARD_H + 6)));
+    setPos(prev => {
+      const n = { ...prev };
+      sorted.forEach((a, i) => {
+        const col = Math.floor(i / perCol), row = i % perCol;
+        n[`card:${a.id}`] = { x: 1120 + col * (CARD_W + 18), y: 24 + row * (CARD_H + 6) };
+      });
+      return n;
+    });
+  }, [loose, selected]);
 
   /* ── Selezione a rettangolo sul canvas (più ctrl+click sulle card) ── */
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -229,15 +252,46 @@ export default function WorkWindowPanel({
     setCtx({ x: e.clientX, y: e.clientY, a });
   };
 
-  /* ── Tipologia LIVE della selezione (normativa) ── */
-  const [selType, setSelType] = useState<string | null>(null);
+  /* ── Verifica LIVE della selezione (normativa): tipologia + violazioni ── */
+  const [selPrev, setSelPrev] = useState<{ type: string | null; valid?: boolean; violations?: string[] } | null>(null);
   useEffect(() => {
-    if (!onPreviewIds || nSel === 0) { setSelType(null); return; }
+    if (!onPreviewIds || nSel === 0) { setSelPrev(null); return; }
     const ids = [...selected];
-    const t = setTimeout(() => { void onPreviewIds(ids).then(setSelType); }, 500);
+    const t = setTimeout(() => { void onPreviewIds(ids).then(setSelPrev); }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify([...selected].sort())]);
+
+  /* riepilogo della selezione: nastro (arco), lavoro (somma corse), sovrapposizioni */
+  const allActsFlat = [...shifts.flatMap(s => s.activities), ...loose];
+  const selActs = allActsFlat.filter(a => selected.has(a.id) && typeof a.startMin === "number" && typeof a.endMin === "number");
+  const selNastro = selActs.length ? Math.max(...selActs.map(a => a.endMin!)) - Math.min(...selActs.map(a => a.startMin!)) : 0;
+  const selLavoro = selActs.reduce((s, a) => s + (a.endMin! - a.startMin!), 0);
+  const selOverlap = (() => {
+    const t = [...selActs].sort((a, b) => a.startMin! - b.startMin!);
+    for (let i = 1; i < t.length; i++) if (t[i].startMin! < t[i - 1].endMin!) return true;
+    return false;
+  })();
+  const fmtDur = (m: number) => `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  const selBad = selOverlap || selPrev?.valid === false || (selPrev?.violations?.length ?? 0) > 0;
+
+  /* ── Scorciatoie tastiera: Esc deseleziona · Ctrl+A tutte le libere · Canc elimina attività ── */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.key === "Escape") { onSelectMany?.([], false); setCtx(null); }
+      else if ((e.ctrlKey || e.metaKey) && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        onSelectMany?.(loose.filter(isPickable).map(a => a.id), false);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        const del = loose.filter(a => selected.has(a.id) && a.deletable);
+        if (del.length && onDeleteLoose) { e.preventDefault(); del.forEach(a => onDeleteLoose(a.id)); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [loose, selected, onSelectMany, onDeleteLoose]);
 
   const handleDropShift = (e: React.DragEvent) => {
     e.preventDefault();
@@ -270,10 +324,15 @@ export default function WorkWindowPanel({
         </button>
         <span className={`text-sm font-bold ${ac.text}`}>🪟 Area di lavoro</span>
         <span className="text-[10px] text-muted-foreground">{shifts.length} turni · {loose.length} corse sciolte · {nSel} selezionate</span>
-        {selType && nSel > 0 && (
-          <span title="Tipologia che avrebbe il turno chiuso con la selezione corrente (normativa attiva)"
-            className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
-            selezione → {selType}
+        {nSel > 0 && (
+          <span
+            title={selBad
+              ? `Problemi nella selezione: ${[selOverlap ? "corse sovrapposte" : null, ...(selPrev?.violations ?? [])].filter(Boolean).join(" · ")}`
+              : "Riepilogo del turno che nascerebbe dalla selezione corrente (normativa attiva)"}
+            className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${selBad
+              ? "bg-rose-500/15 border-rose-500/50 text-rose-300"
+              : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"}`}>
+            {selBad ? "⚠ " : ""}{nSel} sel · nastro {fmtDur(selNastro)} · lavoro {fmtDur(selLavoro)}{selPrev?.type ? ` → ${selPrev.type}` : ""}
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
@@ -291,6 +350,11 @@ export default function WorkWindowPanel({
               ⬇ Importa scoperte
             </button>
           )}
+          <button onClick={orderByTime} disabled={busy || loose.length === 0}
+            title="Riallinea le righe libere in colonne ordinate per orario di partenza (solo le selezionate, se ce ne sono)"
+            className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
+            ↕ Ordina per orario
+          </button>
           <button onClick={onUnpackAll} disabled={busy || shifts.length === 0}
             title="Spacchetta TUTTI i turni nell'area: le corse diventano righe libere"
             className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
@@ -429,10 +493,11 @@ export default function WorkWindowPanel({
               const sel = selected.has(a.id);
               return (
                 <div key={a.id}
-                  onMouseDown={startDrag(`card:${a.id}`)}
+                  onMouseDown={startDrag(`card:${a.id}`,
+                    sel ? loose.filter(l => selected.has(l.id)).map(l => `card:${l.id}`) : undefined)}
                   onClick={rowClick(a)}
                   onContextMenu={rowCtx(a)}
-                  title="trascina per spostare · click = seleziona · ctrl+click = aggiungi · destro = dettagli"
+                  title="trascina per spostare (le selezionate si muovono insieme) · click = seleziona · ctrl+click = aggiungi · destro = dettagli"
                   className={`absolute flex items-center gap-1.5 px-2 rounded-md border text-[10px] cursor-grab active:cursor-grabbing shadow-md ${sel ? "ring-2 ring-white/70" : ""}`}
                   style={{ left: p.x, top: p.y, width: CARD_W, height: CARD_H, background: c.bg, borderColor: c.border }}>
                   {rowCells(a)}
