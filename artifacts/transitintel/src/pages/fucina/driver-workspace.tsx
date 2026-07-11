@@ -534,14 +534,22 @@ export default function DriverWorkspace({
     });
   }, [ganttBars, showDiff, ganttMode, tripCompatMap]);
 
-  /* ── Filtro turni: mostra solo i driver selezionati (null = tutti) ── */
+  /* ── Filtro turni: mostra solo i driver selezionati (null = tutti).
+   * I turni PORTATI NELL'AREA DI LAVORO spariscono dal gantt (vivono solo lì,
+   * niente doppioni): tornano visibili quando li rimuovi dall'area. ── */
   const shownRows = useMemo(
-    () => visibleDrivers ? ganttRows.filter(r => visibleDrivers.has(r.id)) : ganttRows,
-    [ganttRows, visibleDrivers],
+    () => {
+      const base = visibleDrivers ? ganttRows.filter(r => visibleDrivers.has(r.id)) : ganttRows;
+      return wwShiftIds.length ? base.filter(r => !wwShiftIds.includes(r.id)) : base;
+    },
+    [ganttRows, visibleDrivers, wwShiftIds],
   );
   const shownBars = useMemo(
-    () => visibleDrivers ? displayBars.filter(b => visibleDrivers.has(b.rowId)) : displayBars,
-    [displayBars, visibleDrivers],
+    () => {
+      const base = visibleDrivers ? displayBars.filter(b => visibleDrivers.has(b.rowId)) : displayBars;
+      return wwShiftIds.length ? base.filter(b => !wwShiftIds.includes(b.rowId)) : base;
+    },
+    [displayBars, visibleDrivers, wwShiftIds],
   );
 
   /* ── History + drag handler ─────────────────────────── */
@@ -1921,6 +1929,9 @@ export default function DriverWorkspace({
                     onPreviewIds={wwPreviewType}
                     onVerifyShift={(id) => { void wwVerifyShift(id); }}
                     available={wwAvailable}
+                    onUndo={handleUndo}
+                    canUndo={historyIdx > 0}
+                    storageKey={`ww-pos:tg:${vehicleScenarioId ?? "x"}:${dssId ?? "live"}`}
                     onClose={() => setWwOpen(false)}
                     busy={wwImportBusy}
                     accent="purple"
