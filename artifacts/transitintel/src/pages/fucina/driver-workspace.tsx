@@ -135,6 +135,21 @@ export default function DriverWorkspace({
   }>>([]);
   const wwPoolId = (p: { trip?: RipresaTrip; activity?: { id: string } }) =>
     p.trip ? String(p.trip.tripId) : (p.activity?.id ?? "");
+  /* Rimpacchetta stile Bdsi: prima di chiudere il turno si sceglie il DEPOSITO
+   * di appartenenza (residenza); la tipologia la rileva la normativa da sola. */
+  const [wwDepots, setWwDepots] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
+  const [wwRepackAsk, setWwRepackAsk] = useState<{ ids?: string[] } | null>(null);
+  const [wwRepackDepot, setWwRepackDepot] = useState<string>("auto");
+  useEffect(() => {
+    if (!wwOpen || wwDepots.length > 0) return;
+    void fetch(`${getApiBase()}/api/depots`, { credentials: "include" })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        const arr = Array.isArray(data) ? data : Array.isArray(data?.data) ? data.data : Array.isArray(data?.depots) ? data.depots : [];
+        setWwDepots(arr.filter((d: any) => d?.id && d?.name).map((d: any) => ({ id: String(d.id), name: String(d.name), color: d.color ?? null })));
+      })
+      .catch(() => { /* senza depositi resta solo "Auto" */ });
+  }, [wwOpen, wwDepots.length]);
   /* form "nuova attività" della Finestra di lavoro */
   const [wwActOpen, setWwActOpen] = useState(false);
   /* nodi selezionabili per le attività: TUTTE le fermate del sistema + depositi */
@@ -613,7 +628,7 @@ export default function DriverWorkspace({
       .map(sh => ({
         id: sh.driverId,
         label: sh.driverId,
-        sub: `${TYPE_LABELS[sh.type] ?? sh.type} · ${sh.riprese.reduce((n, r) => n + r.trips.length, 0)} corse`,
+        sub: `${TYPE_LABELS[sh.type] ?? sh.type} · ${sh.riprese.reduce((n, r) => n + r.trips.length, 0)} corse${sh.residenzaName ? ` · ${sh.residenzaName}` : ""}`,
         unpacked: false,
         activities: sh.riprese.flatMap((r) => r.trips.map(tp => ({
           id: String(tp.tripId), isTrip: true, kindLabel: tp.routeName || "Corsa", kindColor: "#a78bfa",
@@ -666,7 +681,7 @@ export default function DriverWorkspace({
     } finally { setWwImportBusy(false); }
   }, [wwPool, vehicleScenarioId]);
 
-  const wwRepack = useCallback((onlyIds?: string[]) => {
+  const wwRepack = useCallback((onlyIds?: string[], residenza?: { id: string; name: string; color: string | null } | null) => {
     const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
     if (!result || sel.size === 0) return;
     const srcIds = new Set(wwShiftIds);
@@ -708,6 +723,8 @@ export default function DriverWorkspace({
         id: a.id, type: a.type, startMin: a.startMin, endMin: a.endMin,
         note: [a.fromNode, a.toNode].filter(Boolean).join(" → ") || undefined,
       })) } : {}),
+      // deposito di appartenenza scelto dall'operatore alla chiusura (stile Bdsi)
+      ...(residenza ? { residenzaDepotId: residenza.id, residenzaName: residenza.name, residenzaColor: residenza.color } : {}),
       verifyState: "da_verificare" as const,
     } as DriverShiftData;
     const chosenIds = new Set(chosen.map(tp => String(tp.tripId)));
@@ -747,6 +764,10 @@ export default function DriverWorkspace({
           })),
         } : s),
       } : cur);
+      // feedback stile Bdsi: la tipologia rilevata compare appena la normativa risponde
+      if (rr.type) toast.success(`Tipologia rilevata: ${TYPE_LABELS[rr.type as DriverShiftType] ?? rr.type}`, {
+        description: `${newId}${residenza ? ` · deposito ${residenza.name}` : ""}`,
+      });
     }).catch(() => { /* la tipologia resta da verificare */ });
     const importedPacked = chosenPool.filter(p => p.importedFrom && p.trip);
     if (importedPacked.length) {
@@ -769,6 +790,51 @@ export default function DriverWorkspace({
     }
     toast.success(`Turno guida ${newId} creato`, { description: `${chosen.length} corse · tipologia e fuorilinea in verifica automatica.` });
   }, [result, wwShiftIds, wwSelected, wwPool, pushHistory, operatorConfig]);
+
+  /* Anteprima LIVE della tipologia per le bozze (stile Bdsi): monta un turno
+   * temporaneo con le card della bozza e chiede alla normativa che tipo è. */
+  const wwPreviewType = useCallback(async (ids: string[]): Promise<string | null> => {
+    const sel = new Set(ids);
+    const chosen: RipresaTrip[] = [];
+    if (result) {
+      const srcIds = new Set(wwShiftIds);
+      for (const s of result.driverShifts) {
+        if (!srcIds.has(s.driverId)) continue;
+        for (const r of s.riprese) for (const tp of r.trips) if (sel.has(String(tp.tripId))) chosen.push({ ...tp });
+      }
+    }
+    for (const p of wwPool) if (p.trip && sel.has(wwPoolId(p))) chosen.push({ ...p.trip });
+    if (!chosen.length) return null;
+    chosen.sort((a, b) => a.departureMin - b.departureMin);
+    for (let i = 1; i < chosen.length; i++) if (chosen[i].departureMin < chosen[i - 1].arrivalMin) return "⚠ corse sovrapposte";
+    let split = -1, gmax = 0;
+    for (let i = 0; i < chosen.length - 1; i++) {
+      const g = chosen[i + 1].departureMin - chosen[i].arrivalMin;
+      if (g > gmax) { gmax = g; split = i; }
+    }
+    const chunks = gmax >= 60 && split >= 0 ? [chosen.slice(0, split + 1), chosen.slice(split + 1)] : [chosen];
+    const riprese = chunks.map(c => mkRipresaFromTrips(c, String((c[0] as any).vehicleId ?? ""), String((c[0] as any).vehicleType ?? "12m")));
+    const aS = riprese[0].startMin, aE = riprese[riprese.length - 1].endMin;
+    const probe = {
+      driverId: "PREVIEW", type: "intero" as DriverShiftType,
+      nastroStart: wwFmtH(aS), nastroEnd: wwFmtH(aE), nastroStartMin: aS, nastroEndMin: aE,
+      nastroMin: aE - aS, nastro: formatDuration(aE - aS),
+      workMin: riprese.reduce((a, r) => a + r.workMin, 0), work: formatDuration(riprese.reduce((a, r) => a + r.workMin, 0)),
+      interruptionMin: riprese.length === 2 ? Math.max(0, riprese[1].startMin - riprese[0].endMin) : 0,
+      interruption: null, transferMin: 0, transferBackMin: 0, preTurnoMin: 0, cambiCount: 0, riprese,
+      verifyState: "da_verificare" as const,
+    } as DriverShiftData;
+    try {
+      const r = await fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shifts: [probe], config: operatorConfig }),
+      });
+      if (!r.ok) return null;
+      const data = await r.json();
+      const rr = data?.results?.PREVIEW;
+      return rr?.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : null;
+    } catch { return null; }
+  }, [result, wwShiftIds, wwPool, operatorConfig]);
 
   // Tipi di segmento eliminabili dal Gantt (tutto tranne le corse: fuori linea,
   // taxi/auto aziendale, pre-turno, attività).
@@ -1615,6 +1681,42 @@ export default function DriverWorkspace({
                   </ol>
                 </div>
               )}
+              {/* Rimpacchetta stile Bdsi: scelta del DEPOSITO di appartenenza del
+                  nuovo turno guida; la tipologia la rileva la normativa da sola. */}
+              {wwRepackAsk && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwRepackAsk(null)}>
+                  <div className="w-full max-w-sm rounded-xl border border-purple-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-purple-300">📦 Chiudi turno · deposito di appartenenza</p>
+                    <p className="text-[11px] text-zinc-400">Il turno guida verrà domiciliato al deposito scelto; la <b>tipologia</b> (Intero, Semiunico…) viene rilevata automaticamente dalla normativa attiva.</p>
+                    <div className="space-y-1 max-h-52 overflow-y-auto">
+                      <label className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer text-xs ${wwRepackDepot === "auto" ? "border-purple-500/50 bg-purple-500/10 text-purple-200" : "border-zinc-800 text-zinc-400 hover:border-zinc-600"}`}>
+                        <input type="radio" className="hidden" checked={wwRepackDepot === "auto"} onChange={() => setWwRepackDepot("auto")} />
+                        <span className="w-2.5 h-2.5 rounded-full bg-zinc-600 shrink-0" />
+                        Auto (nessun deposito assegnato)
+                      </label>
+                      {wwDepots.map(d => (
+                        <label key={d.id} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer text-xs ${wwRepackDepot === d.id ? "border-purple-500/50 bg-purple-500/10 text-purple-200" : "border-zinc-800 text-zinc-400 hover:border-zinc-600"}`}>
+                          <input type="radio" className="hidden" checked={wwRepackDepot === d.id} onChange={() => setWwRepackDepot(d.id)} />
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: d.color || "#a78bfa" }} />
+                          {d.name}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button onClick={() => setWwRepackAsk(null)}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 text-xs hover:text-zinc-200">Annulla</button>
+                      <button onClick={() => {
+                        const dep = wwDepots.find(d => d.id === wwRepackDepot) ?? null;
+                        wwRepack(wwRepackAsk.ids, dep);
+                        setWwRepackAsk(null);
+                      }}
+                        className="px-3 py-1.5 rounded-lg border border-purple-500/50 bg-purple-500/20 text-purple-200 text-xs font-semibold hover:bg-purple-500/30">
+                        Chiudi turno
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {wwActOpen && (
                 <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwActOpen(false)}>
                   <div className="w-full max-w-sm rounded-xl border border-emerald-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
@@ -1707,8 +1809,9 @@ export default function DriverWorkspace({
                     onRemoveShift={(id) => setWwShiftIds(ids => ids.filter(x => x !== id))}
                     onUnpack={(id) => wwDissolve([id])}
                     onUnpackAll={() => wwDissolve(wwShiftIds)}
-                    onRepack={() => wwRepack()}
-                    onRepackIds={(ids) => wwRepack(ids)}
+                    onRepack={() => setWwRepackAsk({})}
+                    onRepackIds={(ids) => setWwRepackAsk({ ids })}
+                    onPreviewIds={wwPreviewType}
                     onClose={() => setWwOpen(false)}
                     busy={wwImportBusy}
                     accent="purple"

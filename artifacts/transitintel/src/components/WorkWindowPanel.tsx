@@ -10,7 +10,7 @@
  * automatico (fuorilinea rigenerati, tipologia e matricola automatiche) —
  * la logica di ricostruzione è del workspace ospite (onRepack).
  */
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { X, PackageOpen, Package, Trash2, CheckSquare, Square, GripVertical } from "lucide-react";
 
 export interface WorkActivity {
@@ -66,6 +66,9 @@ interface Props {
   onRepack: () => void;
   /** rimpacchetta ESATTAMENTE queste corse (chiusura di una bozza) */
   onRepackIds?: (ids: string[]) => void;
+  /** anteprima LIVE della tipologia del turno che nascerebbe da queste card
+   *  (es. "Intero", "Semiunico"): chiamata debounced mentre componi la bozza. */
+  onPreviewIds?: (ids: string[]) => Promise<string | null>;
   onClose: () => void;
   busy?: boolean;
   /** accent: "amber" (TM) | "purple" (TG) */
@@ -75,13 +78,27 @@ interface Props {
 export default function WorkWindowPanel({
   shifts, loose = [], onReorderLoose, onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onRepackIds, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onClose, busy, accent = "purple",
 }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   /* Bozze: più turni in composizione SIMULTANEA — ogni bozza è una colonna
    * in cui trascinare le card; "Chiudi turno" la rimpacchetta da sola. */
   const [drafts, setDrafts] = useState<Array<{ id: number; ids: string[] }>>([]);
+  /* Tipologia LIVE per bozza (stile Bdsi: il tipo di turno si rileva da solo
+   * mentre componi). Chiave = draft.id, valore = etichetta o null. */
+  const [draftType, setDraftType] = useState<Record<number, string | null>>({});
+  useEffect(() => {
+    if (!onPreviewIds || drafts.length === 0) return;
+    const t = setTimeout(() => {
+      for (const d of drafts) {
+        if (d.ids.length === 0) { setDraftType(p => ({ ...p, [d.id]: null })); continue; }
+        void onPreviewIds(d.ids).then(label => setDraftType(p => ({ ...p, [d.id]: label })));
+      }
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(drafts.map(d => [d.id, d.ids]))]);
   const [expanded, setExpanded] = useState(false);
   const inDraft = new Set(drafts.flatMap(d => d.ids));
   const draftDrop = (draftId: number) => (e: React.DragEvent) => {
@@ -208,6 +225,12 @@ export default function WorkWindowPanel({
               className={`w-72 shrink-0 border-2 border-dashed ${ac.border} rounded-lg bg-background/40 flex flex-col`}>
               <div className="flex items-center gap-1.5 px-2 py-1.5 border-b border-border/30">
                 <span className={`text-[11px] font-bold ${ac.text}`}>Bozza {di + 1} · {d.ids.length} corse</span>
+                {draftType[d.id] && (
+                  <span title="Tipologia rilevata automaticamente dalla normativa attiva (si aggiorna mentre componi)"
+                    className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300">
+                    → {draftType[d.id]}
+                  </span>
+                )}
                 <div className="ml-auto flex items-center gap-1">
                   <button onClick={() => { if (d.ids.length) { onRepackIds?.(d.ids); } setDrafts(ds => ds.filter(x => x.id !== d.id)); }}
                     disabled={busy || d.ids.length === 0}
