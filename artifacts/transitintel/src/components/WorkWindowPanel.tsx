@@ -41,6 +41,16 @@ export interface WorkShiftView {
   activities: WorkActivity[];
 }
 
+/** Turno disponibile nel gantt (non ancora nella finestra): riga della sidebar
+ *  con mini-gantt, trascinabile nell'area di lavoro o aggiungibile col ⊕. */
+export interface WorkAvailableShift {
+  id: string;
+  label: string;
+  sub?: string;
+  color?: string;
+  segments: Array<{ startMin: number; endMin: number; color?: string }>;
+}
+
 interface Props {
   /** turni attualmente nella finestra (adattati dal workspace ospite) */
   shifts: WorkShiftView[];
@@ -74,6 +84,9 @@ interface Props {
   onPreviewIds?: (ids: string[]) => Promise<string | null>;
   /** "Verifica normativa" puntuale su un turno (dialogo del workspace ospite) */
   onVerifyShift?: (shiftId: string) => void;
+  /** turni del gantt NON ancora nella finestra: sidebar mini-gantt (allargabile)
+   *  da cui trascinarli nell'area di lavoro (o aggiungerli col ⊕). */
+  available?: WorkAvailableShift[];
   onClose: () => void;
   busy?: boolean;
   /** accent: "amber" (TM) | "purple" (TG) */
@@ -83,7 +96,7 @@ interface Props {
 export default function WorkWindowPanel({
   shifts, loose = [], onReorderLoose, onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onVerifyShift, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onRepackIds, onPreviewIds, onVerifyShift, available, onClose, busy, accent = "purple",
 }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -108,6 +121,24 @@ export default function WorkWindowPanel({
    * schermo); il pulsante 🗗 la riduce a pannello se serve tenere il gantt a vista. */
   const [expanded, setExpanded] = useState(true);
   const inDraft = new Set(drafts.flatMap(d => d.ids));
+
+  /* Sidebar mini-gantt dei turni ancora nel gantt: da qui si TRASCINANO dentro
+   * l'area di lavoro (o si aggiungono col ⊕). Larghezza regolabile col bordo. */
+  const [sideW, setSideW] = useState(300);
+  const [resizing, setResizing] = useState(false);
+  useEffect(() => {
+    if (!resizing) return;
+    const move = (e: MouseEvent) => setSideW(Math.max(210, Math.min(680, e.clientX - 20)));
+    const up = () => setResizing(false);
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+  }, [resizing]);
+  const av = available ?? [];
+  const avAll = av.flatMap(r => r.segments);
+  const avMin = avAll.length ? Math.min(...avAll.map(s => s.startMin)) : 0;
+  const avSpan = avAll.length ? Math.max(1, Math.max(...avAll.map(s => s.endMin)) - avMin) : 1;
+  const showSidebar = expanded && av.length > 0;
 
   /* ── Griglia oraria (stile Bdsi): tutto è posizionato sul TEMPO ── */
   const PPM = 1.4;           // pixel per minuto (≈84px/ora)
@@ -161,7 +192,7 @@ export default function WorkWindowPanel({
 
   return (
     <div
-      className={`flex flex-col border rounded-xl overflow-hidden ${expanded ? "fixed inset-3 z-50 bg-background/98 shadow-2xl overflow-y-auto" : "bg-card/60"} ${dragOver ? `${ac.border} ${ac.bg}` : "border-border/40"}`}
+      className={`flex flex-col border rounded-xl overflow-hidden ${expanded ? "fixed inset-3 z-50 bg-background/98 shadow-2xl" : "bg-card/60"} ${dragOver ? `${ac.border} ${ac.bg}` : "border-border/40"}`}
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
@@ -211,6 +242,54 @@ export default function WorkWindowPanel({
         </div>
       </div>
 
+      <div className="flex flex-1 min-h-0">
+        {/* ── SIDEBAR GANTT (allargabile): turni ancora fuori dalla finestra ── */}
+        {showSidebar && (
+          <>
+            <div className="shrink-0 border-r border-border/30 bg-background/60 overflow-y-auto" style={{ width: sideW }}>
+              <div className="px-2 py-1.5 border-b border-border/30 sticky top-0 bg-background/95 z-10">
+                <p className={`text-[10px] font-bold uppercase tracking-wide ${ac.text}`}>Turni dal gantt</p>
+                <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro, o aggiungilo col ⊕</p>
+              </div>
+              {av.map(row => (
+                <div key={row.id}
+                  draggable
+                  onDragStart={(e) => { e.dataTransfer.effectAllowed = "copy"; e.dataTransfer.setData("application/x-cerbero-row", row.id); e.dataTransfer.setData("text/plain", row.id); }}
+                  onDoubleClick={() => onDropShift(row.id)}
+                  title={`${row.label}${row.sub ? ` · ${row.sub}` : ""} — trascina nell'area di lavoro (o doppio click / ⊕)`}
+                  className="px-2 py-1.5 border-b border-border/15 cursor-grab active:cursor-grabbing hover:bg-muted/20 select-none">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: row.color || "#a78bfa" }} />
+                    <span className="text-[11px] font-bold text-foreground truncate">{row.label}</span>
+                    {row.sub && <span className="text-[9px] text-muted-foreground truncate">{row.sub}</span>}
+                    <button onClick={(e) => { e.stopPropagation(); onDropShift(row.id); }}
+                      title="Aggiungi alla finestra di lavoro"
+                      className={`ml-auto shrink-0 w-5 h-5 rounded border ${ac.border} ${ac.text} text-[12px] leading-none hover:opacity-80`}>＋</button>
+                  </div>
+                  {/* mini-gantt del turno (scala comune a tutta la sidebar) */}
+                  <div className="relative h-2.5 mt-1 rounded-sm bg-muted/20 overflow-hidden">
+                    {row.segments.map((sg, i) => (
+                      <div key={i} className="absolute top-0 bottom-0 rounded-[2px]"
+                        style={{
+                          left: `${((sg.startMin - avMin) / avSpan) * 100}%`,
+                          width: `${Math.max(0.8, ((sg.endMin - sg.startMin) / avSpan) * 100)}%`,
+                          background: sg.color || row.color || "#a78bfa",
+                          opacity: 0.85,
+                        }} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {av.length === 0 && <p className="px-2 py-3 text-[10px] text-muted-foreground">Tutti i turni sono già nella finestra.</p>}
+            </div>
+            <div onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
+              title="Trascina per allargare/restringere il gantt"
+              className={`w-1.5 shrink-0 cursor-col-resize transition-colors ${resizing ? ac.solid : "bg-border/30 hover:bg-border/70"}`} />
+          </>
+        )}
+
+        {/* ── AREA DI LAVORO ── */}
+        <div className="flex-1 min-w-0 flex flex-col overflow-y-auto">
       {/* Card SENZA orario (attività appena create senza tempi validi): lista
           compatta di riserva — tutte le altre vivono sulla griglia oraria. */}
       {looseUntimed.length > 0 && (
@@ -471,6 +550,8 @@ export default function WorkWindowPanel({
           })}
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }
