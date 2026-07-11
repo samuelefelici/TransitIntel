@@ -9,7 +9,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
   Bus, Calendar, ChevronRight, Loader2, Search, ArrowLeft, ArrowRight,
-  CheckSquare, Square, Lock, Unlock, ChevronDown, ChevronUp, X, AlertTriangle,
+  CheckSquare, Square, Lock, Unlock, ChevronDown, ChevronUp, X, AlertTriangle, Ban,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import type { GtfsSelection, VehicleAssignment } from "@/pages/fucina";
@@ -60,6 +60,11 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
   const [tripVehicleOverrides, setTripVehicleOverrides] = useState<Map<string, VehicleType>>(
     initial?.tripVehicleOverrides ?? new Map(),
   );
+  // Singole corse ESCLUSE dall'ottimizzazione: restano contate come scoperte.
+  const [excludedTripIds, setExcludedTripIds] = useState<Set<string>>(initial?.excludedTripIds ?? new Set());
+  const toggleTripExcluded = (tripId: string) => setExcludedTripIds(prev => {
+    const n = new Set(prev); n.has(tripId) ? n.delete(tripId) : n.add(tripId); return n;
+  });
   const [expandedRouteTrips, setExpandedRouteTrips] = useState<Set<string>>(new Set());
   const [routeTrips, setRouteTrips] = useState<Map<string, TripInfo[]>>(new Map());
   const [loadingTrips, setLoadingTrips] = useState<Set<string>>(new Set());
@@ -230,7 +235,7 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
             <ArrowLeft className="w-3.5 h-3.5" /> Indietro
           </button>
           <button
-            onClick={() => canProceed && onComplete({ selectedDate, selectedRoutes, forcedRoutes, tripVehicleOverrides })}
+            onClick={() => canProceed && onComplete({ selectedDate, selectedRoutes, forcedRoutes, tripVehicleOverrides, excludedTripIds })}
             disabled={!canProceed}
             className="flex items-center gap-1.5 text-[11px] text-black font-semibold px-3 py-1.5 rounded-lg bg-gradient-to-r from-orange-400 to-amber-400 disabled:opacity-40 disabled:cursor-not-allowed hover:shadow-[0_0_12px_rgba(251,146,60,0.3)] transition-shadow"
           >
@@ -478,11 +483,12 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                                 {trips.map(trip => {
                                   const tripVt = tripVehicleOverrides.get(trip.tripId) || vt;
                                   const isOverridden = tripVehicleOverrides.has(trip.tripId) && tripVehicleOverrides.get(trip.tripId) !== vt;
+                                  const isExcluded = excludedTripIds.has(trip.tripId);
                                   return (
-                                    <div key={trip.tripId} className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded ${isOverridden ? "bg-orange-500/10 border border-orange-500/20" : "bg-background/30"}`}>
-                                      <span className="text-muted-foreground shrink-0 w-[46px] font-mono">{trip.departureTime?.substring(0, 5)}</span>
+                                    <div key={trip.tripId} className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded ${isExcluded ? "bg-red-500/10 border border-red-500/25 opacity-70" : isOverridden ? "bg-orange-500/10 border border-orange-500/20" : "bg-background/30"}`}>
+                                      <span className={`text-muted-foreground shrink-0 w-[46px] font-mono ${isExcluded ? "line-through" : ""}`}>{trip.departureTime?.substring(0, 5)}</span>
                                       <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
-                                      <span className="text-muted-foreground shrink-0 w-[46px] font-mono">{trip.arrivalTime?.substring(0, 5)}</span>
+                                      <span className={`text-muted-foreground shrink-0 w-[46px] font-mono ${isExcluded ? "line-through" : ""}`}>{trip.arrivalTime?.substring(0, 5)}</span>
                                       <span className="text-[9px] px-1 py-0.5 rounded bg-muted/30 shrink-0">{trip.directionId === 0 ? "A" : "R"}</span>
                                       {(trip as any).onDemand && (
                                         <span title="Corsa A CHIAMATA (su prenotazione)"
@@ -490,23 +496,32 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                                           📞
                                         </span>
                                       )}
-                                      <span className="truncate flex-1 text-muted-foreground text-[10px]" title={`${trip.firstStopName} → ${trip.lastStopName}`}>
+                                      {isExcluded && (
+                                        <span title="Corsa esclusa: resterà SCOPERTA (non coperta da alcun turno macchina)"
+                                          className="text-[9px] px-1 py-0.5 rounded bg-red-500/20 border border-red-500/40 text-red-300 shrink-0 font-semibold">esclusa · scoperta</span>
+                                      )}
+                                      <span className={`truncate flex-1 text-muted-foreground text-[10px] ${isExcluded ? "line-through" : ""}`} title={`${trip.firstStopName} → ${trip.lastStopName}`}>
                                         {trip.firstStopName} → {trip.lastStopName}
                                       </span>
-                                      <select value={tripVt} onChange={e => setTripVehicle(trip.tripId, e.target.value as VehicleType)}
-                                        className={`text-[10px] bg-background border rounded px-1 py-0.5 shrink-0 focus:outline-none ${isOverridden ? "border-orange-500/40 text-orange-300" : "border-border/50"}`}>
+                                      <select value={tripVt} disabled={isExcluded} onChange={e => setTripVehicle(trip.tripId, e.target.value as VehicleType)}
+                                        className={`text-[10px] bg-background border rounded px-1 py-0.5 shrink-0 focus:outline-none disabled:opacity-40 ${isOverridden ? "border-orange-500/40 text-orange-300" : "border-border/50"}`}>
                                         <option value="autosnodato">Autosnodato</option>
                                         <option value="filobus">Filobus</option>
                                         <option value="12m">12 metri</option>
                                         <option value="10m">10 metri</option>
                                         <option value="pollicino">Pollicino</option>
                                       </select>
-                                      {isOverridden && (
+                                      {isOverridden && !isExcluded && (
                                         <button onClick={() => setTripVehicleOverrides(prev => { const n = new Map(prev); n.delete(trip.tripId); return n; })}
-                                          className="text-muted-foreground/40 hover:text-red-400 shrink-0">
+                                          className="text-muted-foreground/40 hover:text-red-400 shrink-0" title="Rimuovi override tipo vettura">
                                           <X className="w-3 h-3" />
                                         </button>
                                       )}
+                                      <button onClick={() => toggleTripExcluded(trip.tripId)}
+                                        title={isExcluded ? "Reintegra la corsa nell'ottimizzazione" : "Escludi la corsa: sarà considerata SCOPERTA"}
+                                        className={`shrink-0 ${isExcluded ? "text-red-400" : "text-muted-foreground/40 hover:text-red-400"}`}>
+                                        <Ban className="w-3.5 h-3.5" />
+                                      </button>
                                     </div>
                                   );
                                 })}

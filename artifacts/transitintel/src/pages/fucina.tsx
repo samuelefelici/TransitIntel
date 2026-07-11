@@ -43,6 +43,8 @@ export interface VehicleAssignment {
   selectedRoutes: Map<string, import("@/pages/optimizer-route/types").VehicleType>;
   forcedRoutes: Set<string>;
   tripVehicleOverrides: Map<string, import("@/pages/optimizer-route/types").VehicleType>;
+  /** Singole corse escluse dall'operatore: fuori dall'ottimizzazione, contate come SCOPERTE. */
+  excludedTripIds?: Set<string>;
 }
 
 /* ── Definizione step ──────────────────────────────────────
