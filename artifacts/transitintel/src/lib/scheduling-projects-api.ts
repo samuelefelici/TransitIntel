@@ -39,6 +39,13 @@ export interface SchedulingProject {
   /** false = il feed materializzato contiene linee FUORI dall'UDP (o scope non
    *  determinabile): la pipeline lo ri-materializza scopato prima di partire */
   udpFeedScoped?: boolean;
+  /** true = il Planning Studio collegato è stato modificato DOPO l'ultima
+   *  materializzazione: i turni girerebbero su dati vecchi → avviso + risincronizza */
+  feedStale?: boolean;
+  /** ISO dell'ultima modifica nel PS (corse/orari/calendari/percorsi) */
+  psLastChangeAt?: string;
+  /** ISO dell'ultima materializzazione del feed usato */
+  feedSyncedAt?: string;
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */
   isShared?: boolean;
   /** info arricchite dalla list/get */
