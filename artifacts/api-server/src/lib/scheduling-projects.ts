@@ -243,6 +243,11 @@ function rowToProject(r: any) {
     // false = il feed materializzato contiene linee FUORI dall'UDP (o scope
     // non determinabile): il client ri-materializza scopato prima della pipeline
     udpFeedScoped: r.udp_feed_scoped ?? undefined,
+    // true = il Planning Studio è stato modificato DOPO l'ultima materializzazione
+    // del feed: i turni girerebbero su dati vecchi → il client mostra un avviso.
+    feedStale: r.feed_stale ?? undefined,
+    psLastChangeAt: r.ps_last_change_at ?? undefined,
+    feedSyncedAt: r.feed_synced_at ?? undefined,
     depotConfig: r.depot_config ?? {},
     clusterConfig: r.cluster_config ?? {},
     deadheadConfig: r.deadhead_config ?? {},
@@ -557,7 +562,36 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
     } catch { /* indeterminato: non forzare re-sync */ }
   }
 
-  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped }) });
+  // STALENESS: il feed materializzato è più vecchio delle modifiche fatte in
+  // Planning Studio (corse/orari/calendari/percorsi)? Confronta l'ultima
+  // materializzazione (gtfs_feeds.uploaded_at del feed usato) con l'ultimo
+  // cambiamento nel PS collegato. Se il PS è cambiato dopo → il piano gira su
+  // dati vecchi: il client mostra "dati superati, risincronizza".
+  let feedStale: boolean | undefined;
+  let psLastChangeAt: string | null = null;
+  let feedSyncedAt: string | null = null;
+  if (row.planning_studio_project_id) {
+    try {
+      const stR: any = await db.execute(sql`
+        SELECT
+          (SELECT to_char(uploaded_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
+             FROM gtfs_feeds WHERE id = ${row.feed_id ?? null}::uuid) AS feed_synced_at,
+          to_char(GREATEST(
+            COALESCE((SELECT max(updated_at) FROM ps_trips           WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch'),
+            COALESCE((SELECT max(updated_at) FROM ps_calendars       WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch'),
+            COALESCE((SELECT max(updated_at) FROM ps_route_variants  WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch')
+          ), 'YYYY-MM-DD"T"HH24:MI:SSOF') AS ps_last_change_at
+      `);
+      const s = stR.rows?.[0] ?? stR[0] ?? {};
+      feedSyncedAt = s.feed_synced_at ?? null;
+      psLastChangeAt = (s.ps_last_change_at && !String(s.ps_last_change_at).startsWith("1970")) ? s.ps_last_change_at : null;
+      if (feedSyncedAt && psLastChangeAt) {
+        feedStale = new Date(psLastChangeAt).getTime() > new Date(feedSyncedAt).getTime();
+      }
+    } catch { /* colonne assenti su DB legacy → nessun segnale di staleness */ }
+  }
+
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped, feed_stale: feedStale, ps_last_change_at: psLastChangeAt, feed_synced_at: feedSyncedAt }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */

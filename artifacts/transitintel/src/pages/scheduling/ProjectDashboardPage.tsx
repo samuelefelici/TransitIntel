@@ -22,9 +22,11 @@ import {
   getProject, STAGE_META, stageProgress,
   listProjectMembers, listProjectActivity,
   listProjectVehicleScenarios, listProjectDriverScenarios,
+  syncProjectFromPs,
   type SchedulingProject, type ProjectMember, type ProjectActivity,
   type ProjectVehicleScenario, type ProjectDriverScenario,
 } from "@/lib/scheduling-projects-api";
+import { RefreshCw, AlertTriangle } from "lucide-react";
 import { Power } from "lucide-react";
 import ShareProjectDialog from "@/components/scheduling/ShareProjectDialog";
 import { useAuth } from "@/hooks/use-auth";
@@ -120,6 +122,26 @@ export default function ProjectDashboardPage() {
   const [shareOpen, setShareOpen] = useState(false);
   const [vehScenarios, setVehScenarios] = useState<ProjectVehicleScenario[]>([]);
   const [drvScenarios, setDrvScenarios] = useState<ProjectDriverScenario[]>([]);
+  const [resyncing, setResyncing] = useState(false);
+
+  // Ri-sincronizza il feed col Planning Studio: il badge "dati superati" sparisce
+  // quando la materializzazione torna più recente delle modifiche PS.
+  const handleResync = React.useCallback(async () => {
+    if (!projectId) return;
+    setResyncing(true);
+    try {
+      await syncProjectFromPs(projectId);
+      const p = await getProject(projectId);
+      setProject(p);
+      toast.success("Feed risincronizzato col Planning Studio", {
+        description: "I turni ora usano gli orari e i calendari aggiornati.",
+      });
+    } catch (e: any) {
+      toast.error("Risincronizzazione fallita", { description: e?.message });
+    } finally {
+      setResyncing(false);
+    }
+  }, [projectId]);
 
   // Carica progetto
   useEffect(() => {
@@ -264,6 +286,34 @@ export default function ProjectDashboardPage() {
                 </span>
               </div>
             </motion.div>
+
+            {/* Avviso STALENESS: il Planning Studio è cambiato dopo l'ultima
+                materializzazione → i turni girerebbero su dati vecchi. */}
+            {project.feedStale && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                className="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex items-start gap-3"
+              >
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-amber-200">Dati superati: il Planning Studio è cambiato dopo l'ultima sincronizzazione</p>
+                  <p className="text-xs text-amber-300/80 mt-0.5">
+                    Corse, orari o calendari sono stati modificati
+                    {project.psLastChangeAt ? ` il ${new Date(project.psLastChangeAt).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""}
+                    {project.feedSyncedAt ? `, dopo la materializzazione del feed (${new Date(project.feedSyncedAt).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })})` : ""}.
+                    Ottimizzare ora userebbe gli orari vecchi: risincronizza prima di generare o mettere in esercizio i turni.
+                  </p>
+                </div>
+                <button
+                  onClick={handleResync}
+                  disabled={resyncing}
+                  className="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+                >
+                  {resyncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  {resyncing ? "Risincronizzo…" : "Sincronizza con Planning Studio"}
+                </button>
+              </motion.div>
+            )}
 
             {/* Stage map (visual) */}
             <div className="mb-8 rounded-xl border border-zinc-800/60 bg-black/30 p-4">
