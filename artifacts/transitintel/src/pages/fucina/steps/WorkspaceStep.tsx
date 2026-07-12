@@ -47,9 +47,14 @@ export default function WorkspaceStep({
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [scenarioName, setScenarioName] = useState("");
   const [saving, setSaving] = useState(false);
+  // Stato EDITATO che vive dentro VehicleWorkspace (drag, rimpacchetta, area di
+  // lavoro): senza questo, "Salva nel progetto" ed Esporta userebbero il
+  // risultato grezzo dell'ottimizzatore e le rifiniture manuali andrebbero perse.
+  const [liveResult, setLiveResult] = useState<ServiceProgramResult>(optimizationResult);
+  const resultToSave = liveResult ?? optimizationResult;
 
   const handleExport = () => {
-    const blob = new Blob([JSON.stringify(optimizationResult, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(resultToSave, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -78,7 +83,7 @@ export default function WorkspaceStep({
     try {
       const base = getApiBase();
       // Ricostruiamo input minimale dai dati disponibili
-      const date = gtfsSelection.date || (optimizationResult as any)?.summary?.date || "";
+      const date = gtfsSelection.date || (resultToSave as any)?.summary?.date || "";
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
         credentials: "include",
@@ -87,7 +92,7 @@ export default function WorkspaceStep({
           name: scenarioName.trim(),
           date,
           input: {},
-          result: optimizationResult,
+          result: resultToSave,
           projectId,
         }),
       });
@@ -100,10 +105,10 @@ export default function WorkspaceStep({
 
       // ── VCSP: il salvataggio a fine procedura crea ENTRAMBI gli scenari.
       // Turni guida del round scelto → DSS collegato allo scenario vetture.
-      const vcsp = (optimizationResult as any)?.vcsp;
+      const vcsp = (resultToSave as any)?.vcsp;
       let crewSaved: boolean | null = null;
       if (newId && vcsp) {
-        const selR = (optimizationResult as any)?.vcspSelectedRound ?? vcsp.bestRound ?? null;
+        const selR = (resultToSave as any)?.vcspSelectedRound ?? vcsp.bestRound ?? null;
         const rr = vcsp.roundResults?.find((x: any) => x.round === selR);
         const crew = rr?.crew ?? vcsp.crew;
         if (crew?.driverShifts?.length) {
@@ -216,7 +221,7 @@ export default function WorkspaceStep({
 
       {/* Workspace */}
       <div className="flex-1 overflow-hidden">
-        <VehicleWorkspace initialResult={optimizationResult} deadheadMatrix={deadheadMatrix} initialSavedId={savedScenarioId ?? null} />
+        <VehicleWorkspace initialResult={optimizationResult} deadheadMatrix={deadheadMatrix} initialSavedId={savedScenarioId ?? null} onResultChange={setLiveResult} />
       </div>
 
       {/* Save dialog (modalità progetto) */}
@@ -234,7 +239,7 @@ export default function WorkspaceStep({
               </button>
             </div>
             {(() => {
-              const vcsp = (optimizationResult as any)?.vcsp;
+              const vcsp = (resultToSave as any)?.vcsp;
               if (!vcsp) {
                 return (
                   <p className="text-xs text-zinc-400 mb-3">
@@ -242,9 +247,9 @@ export default function WorkspaceStep({
                   </p>
                 );
               }
-              const selR = (optimizationResult as any)?.vcspSelectedRound ?? vcsp.bestRound;
+              const selR = (resultToSave as any)?.vcspSelectedRound ?? vcsp.bestRound;
               const rr = vcsp.roundResults?.find((x: any) => x.round === selR);
-              const tmN = (optimizationResult as any)?.shifts?.length ?? 0;
+              const tmN = (resultToSave as any)?.shifts?.length ?? 0;
               const tgN = (rr?.crew ?? vcsp.crew)?.driverShifts?.length ?? 0;
               return (
                 <p className="text-xs text-emerald-300 mb-3">

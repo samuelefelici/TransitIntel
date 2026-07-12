@@ -524,12 +524,17 @@ export default function VehicleWorkspace({
   deadheadMatrix,
   initialSavedId,
   initialName,
+  onResultChange,
 }: {
   initialResult?: ServiceProgramResult;
   deadheadMatrix?: DeadheadMatrix | null;
   /** scenario già salvato da cui è stato aperto il workspace: abilita "💾 Salva" */
   initialSavedId?: number | string | null;
   initialName?: string;
+  /** Notifica il parent a ogni cambio dello stato EDITATO (drag, rimpacchetta,
+   *  area di lavoro): così "Salva nel progetto" del wizard persiste le
+   *  modifiche reali e non il risultato grezzo dell'ottimizzatore. */
+  onResultChange?: (result: ServiceProgramResult) => void;
 }) {
   // ── Routing: ricaviamo il projectId dalla URL per tornare alla home progetto
   //    dopo il salvataggio dello scenario. Pattern coperti:
@@ -568,6 +573,10 @@ export default function VehicleWorkspace({
   const [modifications, setModifications] = useState<TripReassignment[]>([]);
   const [scenarioName, setScenarioName] = useState(initialName ?? "");
   const [savedId, setSavedId] = useState<number | string | null>(initialSavedId ?? null);
+  // Modifiche non ancora salvate: sostituisce il vecchio "azzera savedId a ogni
+  // edit" (che faceva sparire il tasto Sovrascrivi). savedId resta stabile →
+  // il tasto Salva resta raggiungibile; dirty indica solo se c'è da salvare.
+  const [dirty, setDirty] = useState(false);
   const [customLabels, setCustomLabels] = useState<Record<string, string>>({});
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [loadDialogOpen, setLoadDialogOpen] = useState(false);
@@ -648,6 +657,12 @@ export default function VehicleWorkspace({
     }
   }, [initialResult, originalResult]);
 
+  // Propaga lo stato EDITATO al parent (WorkspaceStep): il "Salva nel progetto"
+  // del wizard deve persistere QUESTO, non la prop iniziale grezza.
+  useEffect(() => {
+    if (result) onResultChange?.(result);
+  }, [result, onResultChange]);
+
   /** Spinge un nuovo frame nella history (tronca i redo). USA REF per essere
    * sempre coerente anche se chiamato in rapida sequenza. */
   const pushHistory = useCallback((
@@ -675,7 +690,7 @@ export default function VehicleWorkspace({
     });
     historyIndexRef.current = idx + 1;
     setHistoryIndex(idx + 1);
-    setSavedId(null);
+    setDirty(true);
   }, []);
 
   /** Aggiunge manualmente un nuovo turno macchina vuoto (#NEW). */
@@ -752,6 +767,7 @@ export default function VehicleWorkspace({
       description: "Reset completo allo stato iniziale",
     }]);
     setSavedId(null);
+    setDirty(false);
     toast.success("Workspace resettata allo scenario originale");
   }, [originalResult]);
 
@@ -1282,7 +1298,7 @@ export default function VehicleWorkspace({
     // Auto-elimina turni macchina rimasti senza corse
     const { result: pruned, removed } = pruneEmptyShifts(newResult);
     setResult(pruned);
-    setSavedId(null);
+    setDirty(true);
     if (removed > 0) {
       pushHistory(pruned, "deadhead",
         `${change.description} · ${removed} turn${removed === 1 ? "o vuoto eliminato" : "i vuoti eliminati"}`,
@@ -1643,6 +1659,7 @@ export default function VehicleWorkspace({
       setFreshShiftIds(new Set());
       setModifications([]);
       setSavedId(null);
+      setDirty(false);
     };
     window.addEventListener("fucina:vehicle-result" as any, handler);
     return () => window.removeEventListener("fucina:vehicle-result" as any, handler);
@@ -1682,6 +1699,7 @@ export default function VehicleWorkspace({
         setScenarioName(detail.name || "");
         setModifications([]);
         setSavedId(null);
+        setDirty(false);
         toast.success("Scenario caricato", { description: detail.name });
       }
     } catch (err: any) {
@@ -1710,7 +1728,7 @@ export default function VehicleWorkspace({
         newEndMin: change.newEndMin,
       },
     ]);
-    setSavedId(null);
+    setDirty(true);
 
     setResult(prev => {
       if (!prev) return prev;
@@ -1865,11 +1883,15 @@ export default function VehicleWorkspace({
           date: result.summary?.date || new Date().toISOString().slice(0, 10).replace(/-/g, ""),
           input: { modifications, customLabels },
           result,
+          // aggancia lo scenario al progetto corrente: senza projectId sarebbe
+          // orfano e invisibile nella dashboard dove veniamo riportati subito dopo.
+          ...(projectIdFromUrl ? { projectId: projectIdFromUrl } : {}),
         }),
       });
       if (!res.ok) throw new Error("Errore salvataggio");
       const data = await res.json();
       setSavedId(data.id);
+      setDirty(false);
       setScenarioName(finalName);
       toast.success("Scenario salvato!", { description: `${finalName} (id ${data.id})` });
       // ── Ritorno alla home del progetto dopo salvataggio turni macchina ──
@@ -1883,7 +1905,7 @@ export default function VehicleWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [result, modifications, customLabels]);
+  }, [result, modifications, customLabels, projectIdFromUrl]);
 
   /* ── Sovrascrivi scenario corrente (PUT). Prima fa prune turni vuoti e
    * rigenera i trasferimenti a vuoto mancanti tra corse in capolinea diversi. ── */
@@ -1913,6 +1935,7 @@ export default function VehicleWorkspace({
       }
       // 4. update local state
       setResult(finalResult);
+      setDirty(false);
       if (removed > 0 || added > 0) {
         const parts: string[] = [];
         if (removed > 0) parts.push(`${removed} turn${removed === 1 ? "o vuoto eliminato" : "i vuoti eliminati"}`);
@@ -2005,6 +2028,7 @@ export default function VehicleWorkspace({
     }]);
     setScenarioName(name);
     setSavedId(id);
+    setDirty(false);
     setModifications([]);
     setBaselineResult(null);
     setScheduleDiff(null);
@@ -2144,13 +2168,13 @@ export default function VehicleWorkspace({
                 size="sm"
                 onClick={handleOverwriteSave}
                 disabled={overwriteSaving || !result}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-[11px]"
+                className={`text-white h-8 text-[11px] ${dirty ? "bg-emerald-600 hover:bg-emerald-700" : "bg-emerald-600/50 hover:bg-emerald-700/60"}`}
                 title="Sovrascrivi il file dello scenario corrente, eliminando i turni vuoti e generando i trasferimenti a vuoto mancanti"
               >
                 {overwriteSaving
                   ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
                   : <Save className="w-3.5 h-3.5 mr-1" />}
-                Salva
+                {dirty ? "Salva ●" : "Salva"}
               </Button>
             )}
 
