@@ -831,7 +831,7 @@ export default function DriverWorkspace({
 
   /* Verifica LIVE della selezione (stile Bdsi): monta un turno temporaneo con
    * le card selezionate e chiede alla normativa tipologia + violazioni. */
-  const wwPreviewType = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null> => {
+  const wwPreviewType = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null> => {
     const sel = new Set(ids);
     const chosen: RipresaTrip[] = [];
     if (result) {
@@ -845,7 +845,7 @@ export default function DriverWorkspace({
     if (!chosen.length) return null;
     chosen.sort((a, b) => a.departureMin - b.departureMin);
     for (let i = 1; i < chosen.length; i++) if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
-      return { type: null, valid: false, violations: ["Corse sovrapposte"] };
+      return { type: null, valid: false, violations: ["Corse sovrapposte"], costEuro: null };
     }
     let split = -1, gmax = 0;
     for (let i = 0; i < chosen.length - 1; i++) {
@@ -873,10 +873,13 @@ export default function DriverWorkspace({
       const data = await r.json();
       const rr = data?.results?.PREVIEW;
       if (!rr) return null;
+      const hourly = Number((operatorConfig as any)?.costRates?.hourlyRate) || 22;
+      const wMin = typeof rr.workMin === "number" ? rr.workMin : probe.workMin;
       return {
         type: rr.type ? (TYPE_LABELS[rr.type as DriverShiftType] ?? String(rr.type)) : null,
         valid: rr.bdsValidation?.valid,
         violations: rr.bdsValidation?.violations ?? [],
+        costEuro: typeof wMin === "number" ? Math.round((wMin / 60) * hourly) : null,
       };
     } catch { return null; }
   }, [result, wwShiftIds, wwPool, operatorConfig]);
@@ -1040,6 +1043,46 @@ export default function DriverWorkspace({
       setWwVerify({ shiftId, busy: false, residenza: sh.residenzaName ?? null, type: TYPE_LABELS[sh.type] ?? sh.type, validation: sh.bdsValidation ?? null });
     }
   }, [result, operatorConfig]);
+
+  /* Stampa foglio-turno del SINGOLO turno dalla card dell'Area di lavoro. */
+  const wwPrintShift = useCallback((shiftId: string) => {
+    const sh = result?.driverShifts.find(s => s.driverId === shiftId);
+    if (!sh || !result) { toast.error("Turno non trovato"); return; }
+    exportDriverShiftsToPrint(
+      { ...result, driverShifts: [sh] },
+      { scenarioName: `Foglio turno ${shiftId}`, columnsPerPage: 1, orientation: "portrait" },
+    );
+  }, [result]);
+
+  /* Scambio DIRETTO di due corse fra due turni diversi (swap 1↔1). */
+  const wwSwapTrips = useCallback((aId: string, bId: string) => {
+    if (!result) return;
+    const ownerOf = (tid: string) => result.driverShifts.find(s => s.riprese.some(r => r.trips.some(tp => String(tp.tripId) === tid)));
+    const shA = ownerOf(aId), shB = ownerOf(bId);
+    if (!shA || !shB || shA.driverId === shB.driverId) { toast.error("Seleziona due corse in due turni diversi"); return; }
+    const tripsOf = (s: DriverShiftData) => s.riprese.flatMap(r => r.trips);
+    const tripA = tripsOf(shA).find(tp => String(tp.tripId) === aId)!;
+    const tripB = tripsOf(shB).find(tp => String(tp.tripId) === bId)!;
+    const newA = [...tripsOf(shA).filter(tp => String(tp.tripId) !== aId), { ...tripB }].sort((x, y) => x.departureMin - y.departureMin);
+    const newB = [...tripsOf(shB).filter(tp => String(tp.tripId) !== bId), { ...tripA }].sort((x, y) => x.departureMin - y.departureMin);
+    for (const [label, arr] of [[shA.driverId, newA], [shB.driverId, newB]] as const) {
+      for (let i = 1; i < arr.length; i++) if (arr[i].departureMin < arr[i - 1].arrivalMin) {
+        toast.error("Scambio impossibile: corse sovrapposte", { description: `In ${label} la corsa ${arr[i].routeName ?? ""} si accavalla con ${arr[i - 1].routeName ?? ""}.` });
+        return;
+      }
+    }
+    const newRes: DriverShiftsResult = {
+      ...result,
+      driverShifts: result.driverShifts.map(s =>
+        s.driverId === shA.driverId ? wwRebuildShift(s, newA)
+        : s.driverId === shB.driverId ? wwRebuildShift(s, newB)
+        : s),
+    };
+    setResult(newRes);
+    pushHistory(newRes, `Area di lavoro · scambio corse ${shA.driverId} ⇄ ${shB.driverId}`);
+    wwRevalidate([shA.driverId, shB.driverId], newRes);
+    toast.success(`Scambio ${shA.driverId} ⇄ ${shB.driverId}`, { description: "Tipologia e normativa in ri-verifica automatica." });
+  }, [result, wwRebuildShift, wwRevalidate, pushHistory]);
 
   // Tipi di segmento eliminabili dal Gantt (tutto tranne le corse: fuori linea,
   // taxi/auto aziendale, pre-turno, attività).
@@ -2116,6 +2159,8 @@ export default function DriverWorkspace({
                     closedIds={wwClosedIds}
                     onReopenShift={(id) => setWwClosedIds(prev => prev.filter(x => x !== id))}
                     onSuggest={(tripId) => { void wwSuggestFor(tripId); }}
+                    onPrintShift={wwPrintShift}
+                    onSwapTrips={wwSwapTrips}
                     onUndo={handleUndo}
                     canUndo={historyIdx > 0}
                     storageKey={`ww-pos:tg:${vehicleScenarioId ?? "x"}:${dssId ?? "live"}`}
