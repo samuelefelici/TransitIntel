@@ -214,6 +214,17 @@ export default function VehicleScenariosPage() {
                         DH {s.totalDeadheadKm.toFixed(1)} km
                       </span>
                     )}
+                    {/* Copertura: il numero da guardare prima di mettere in
+                        esercizio. Verde = tutte coperte, ambra = ci sono scoperte. */}
+                    {(s.uncoveredTrips ?? 0) > 0 ? (
+                      <span className="font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        ⚠ {s.uncoveredTrips} corse scoperte
+                      </span>
+                    ) : s.coveredTrips != null ? (
+                      <span className="font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300/80 border border-emerald-500/25">
+                        ✓ {s.coveredTrips} corse coperte
+                      </span>
+                    ) : null}
                     {ownerLabel && (
                       <span className="text-zinc-600">
                         Owner: <span className="text-zinc-400">{ownerLabel}</span>
@@ -255,9 +266,14 @@ export default function VehicleScenariosPage() {
                   )}
                   {isOwner && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setDeleteTarget(s); setDeleteAck(false); }}
-                      title="Elimina scenario"
-                      className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); if (s.isOperational) return; setDeleteTarget(s); setDeleteAck(false); }}
+                      disabled={s.isOperational}
+                      title={s.isOperational ? "In esercizio: togli prima lo stato operativo per eliminare" : "Elimina scenario"}
+                      className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border transition-colors ${
+                        s.isOperational
+                          ? "border-zinc-800 text-zinc-700 cursor-not-allowed"
+                          : "border-rose-500/30 text-rose-400 hover:bg-rose-500/10"
+                      }`}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

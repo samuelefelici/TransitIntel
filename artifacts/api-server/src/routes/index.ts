@@ -48,6 +48,7 @@ import schedulingProjectsRouter from "../lib/scheduling-projects";
 import scheduleSharesRouter from "../lib/schedule-shares";
 import planningStudioRouter from "../lib/planning-studio";
 import planningStudioImportRouter from "../lib/planning-studio-import";
+import planningStudioExportRouter from "../lib/planning-studio-export";
 import planningStudioClustersRouter from "../lib/planning-studio-clusters";
 import planningStudioPeriodsRouter from "../lib/planning-studio-periods";
 import planningStudioTripsExtRouter from "../lib/planning-studio-trips-ext";
@@ -118,6 +119,7 @@ router.use(schedulingProjectsRouter);
 router.use(scheduleSharesRouter);
 router.use(planningStudioRouter);
 router.use(planningStudioImportRouter);
+router.use(planningStudioExportRouter); // export GTFS zip del programma (deliverable Regione/open data/AVM)
 router.use(planningStudioClustersRouter);
 router.use(planningStudioPeriodsRouter);
 router.use(planningStudioTripsExtRouter);

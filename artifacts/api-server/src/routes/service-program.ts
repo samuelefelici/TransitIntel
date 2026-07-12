@@ -34,6 +34,20 @@ import {
 
 const router: IRouter = Router();
 
+/** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
+ * ufficiale del Quadro d'esercizio): congelato → niente PUT/DELETE finché
+ * l'operatore non toglie lo stato operativo. Colonna additiva: se assente
+ * (installazioni vecchie) → false, nessun blocco. */
+async function isOperationalVehicleScenario(id: string): Promise<boolean> {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT COALESCE(is_operational, false) AS op
+        FROM service_program_scenarios WHERE id = ${id}::uuid LIMIT 1
+    `);
+    return !!(r.rows?.[0]?.op);
+  } catch { return false; }
+}
+
 // Colonna additiva variant_code su gtfs_trips (feed storici senza colonna):
 // il codice percorso viaggia corsa→turni macchina→turni guida.
 let variantColReady = false;
@@ -2339,6 +2353,15 @@ router.put("/service-program/scenarios/:id", async (req, res) => {
   try {
     const acc = await requireVehicleScenarioWrite(req, res, req.params.id);
     if (!acc) return;
+    // Esercizio CONGELATO: lo scenario operativo è la soluzione ufficiale usata
+    // da Quadro d'esercizio, confronti e stampe — non si sovrascrive live.
+    // Per modificarlo: togli lo stato "in esercizio", salva, rimettilo.
+    if (await isOperationalVehicleScenario(req.params.id)) {
+      res.status(409).json({
+        error: "Scenario IN ESERCIZIO: non modificabile. Togli prima lo stato operativo dalla lista scenari, poi salva.",
+      });
+      return;
+    }
     const { name, input, result: scenarioResult } = req.body as {
       name?: string; input?: unknown; result?: unknown;
     };
@@ -2391,6 +2414,14 @@ router.delete("/service-program/scenarios/:id", async (req, res) => {
     // Only owner (o admin) può cancellare definitivamente
     if (acc.level !== "owner" && acc.level !== "legacy") {
       res.status(403).json({ error: "Solo l'owner può eliminare lo scenario" });
+      return;
+    }
+    // Esercizio CONGELATO: la soluzione ufficiale non si elimina finché è
+    // operativa (Quadro d'esercizio, roster e stampe la referenziano).
+    if (await isOperationalVehicleScenario(req.params.id)) {
+      res.status(409).json({
+        error: "Scenario IN ESERCIZIO: non eliminabile. Togli prima lo stato operativo dalla lista scenari.",
+      });
       return;
     }
     await db.delete(serviceProgramScenarios)
