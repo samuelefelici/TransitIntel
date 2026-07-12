@@ -1783,6 +1783,11 @@ router.post("/driver-shifts/tools/turni-unici", async (req, res) => {
  *  (tasto "Salva" del workspace: aggiorna il lavoro in corso senza duplicare). */
 router.put("/driver-shifts/scenarios/:id", async (req, res) => {
   try {
+    // Anti-IDOR: solo chi ha permesso di scrittura sullo scenario può
+    // sovrascriverlo (prima qualunque utente autenticato con l'UUID poteva
+    // distruggere i turni guida altrui). Allineato a DELETE e al PUT gemello TM.
+    const acc = await requireDriverScenarioWrite(req, res, (req.params.id as string));
+    if (!acc) return;
     const { name, result, config } = (req.body ?? {}) as any;
     if (!result && !name && config === undefined) { res.status(400).json({ error: "niente da salvare" }); return; }
     const [row] = await db.update(driverShiftScenarios)

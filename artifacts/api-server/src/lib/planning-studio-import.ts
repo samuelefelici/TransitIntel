@@ -97,15 +97,18 @@ async function loadProjectWritable(projectId: string, userId: string): Promise<a
   return row;
 }
 
+/** Esecutore SQL: db (autocommit) oppure una transazione drizzle. */
+type Executor = { execute: (q: any) => Promise<any> };
+
 /** Wipe dati operativi (mantiene il progetto + membri). */
-async function wipeProjectData(projectId: string): Promise<void> {
+async function wipeProjectData(projectId: string, exec: Executor = db): Promise<void> {
   // ON DELETE CASCADE fa il grosso del lavoro: cancellando i trips spariscono
   // gli stop_times, cancellando le varianti spariscono variant_stops + shape, etc.
-  await db.execute(sql`DELETE FROM ps_trips WHERE project_id = ${projectId}::uuid`);
-  await db.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${projectId}::uuid`);
-  await db.execute(sql`DELETE FROM ps_routes WHERE project_id = ${projectId}::uuid`);
-  await db.execute(sql`DELETE FROM ps_calendars WHERE project_id = ${projectId}::uuid`);
-  await db.execute(sql`DELETE FROM ps_stops WHERE project_id = ${projectId}::uuid`);
+  await exec.execute(sql`DELETE FROM ps_trips WHERE project_id = ${projectId}::uuid`);
+  await exec.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${projectId}::uuid`);
+  await exec.execute(sql`DELETE FROM ps_routes WHERE project_id = ${projectId}::uuid`);
+  await exec.execute(sql`DELETE FROM ps_calendars WHERE project_id = ${projectId}::uuid`);
+  await exec.execute(sql`DELETE FROM ps_stops WHERE project_id = ${projectId}::uuid`);
 }
 
 /** Esegue una INSERT in batch usando VALUES multipli. */
@@ -113,6 +116,7 @@ async function bulkInsert(
   table: string,
   cols: string[],
   rows: any[][],
+  exec: Executor = db,
   batchSize = 500,
 ): Promise<void> {
   if (rows.length === 0) return;
@@ -124,7 +128,7 @@ async function bulkInsert(
     );
     const colsSql = sql.raw(cols.join(", "));
     const tableSql = sql.raw(table);
-    await db.execute(sql`INSERT INTO ${tableSql} (${colsSql}) VALUES ${valuesSql}`);
+    await exec.execute(sql`INSERT INTO ${tableSql} (${colsSql}) VALUES ${valuesSql}`);
   }
 }
 
@@ -273,13 +277,20 @@ router.post(
       }
     }
 
+    // conteggi popolati a fine transazione: le variabili *Values sono scopate
+    // dentro la callback, qui teniamo solo i numeri per log e risposta.
+    let counts = { stops: 0, routes: 0, variants: 0, trips: 0, stopTimes: 0, calendars: 0, calendarDates: 0, shapes: 0 };
     try {
+      /* Wipe + tutti gli insert in UNA transazione: se qualcosa fallisce a metà
+       * (riga malformata, violazione FK, timeout) si fa rollback e il progetto
+       * resta INTATTO, invece di restare svuotato/mezzo importato. */
+      await db.transaction(async (tx) => {
       /* ─── 2. Wipe ─── */
-      await wipeProjectData(projectId);
+      await wipeProjectData(projectId, tx);
 
       /* ─── 3. Aggiorna agency_name dal primo agency.txt ─── */
       if (agencyRows[0]?.agency_name) {
-        await db.execute(sql`
+        await tx.execute(sql`
           UPDATE ps_projects SET agency_name = ${agencyRows[0].agency_name},
                                  agency_timezone = ${agencyRows[0].agency_timezone || "Europe/Rome"}
            WHERE id = ${projectId}::uuid
@@ -312,6 +323,7 @@ router.post(
         ["id", "project_id", "code", "name", "description", "lat", "lon", "zone_id",
          "location_type", "wheelchair_boarding", "platform_code"],
         stopValues,
+        tx,
       );
 
       /* ─── 5. ROUTES ─── */
@@ -340,6 +352,7 @@ router.post(
         ["id", "project_id", "code", "short_name", "long_name", "description",
          "route_type", "color", "text_color", "agency_id", "sort_order"],
         routeValues,
+        tx,
       );
 
       /* ─── 6. CALENDARS ─── */
@@ -367,6 +380,7 @@ router.post(
          "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
          "start_date", "end_date"],
         calValues,
+        tx,
       );
 
       /* ─── 7. CALENDAR_DATES ─── */
@@ -402,6 +416,7 @@ router.post(
          "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
          "start_date", "end_date"],
         stubValues,
+        tx,
       );
 
       // Inserisci le date eccezione
@@ -418,6 +433,7 @@ router.post(
         "ps_calendar_dates",
         ["calendar_id", "date", "exception_type"],
         calDateValues,
+        tx,
       );
 
       /* ─── 8. SHAPES (solo geometry, le attacchiamo per shape_id) ─── */
@@ -521,6 +537,7 @@ router.post(
         "ps_route_variants",
         ["id", "project_id", "route_id", "name", "direction", "headsign", "is_default"],
         variantValues,
+        tx,
       );
 
       /* ─── 12. VARIANT_STOPS (sequenza canonica della variante = quella del primo trip) ─── */
@@ -539,6 +556,7 @@ router.post(
         "ps_variant_stops",
         ["variant_id", "seq", "stop_id", "pickup_type", "drop_off_type", "timepoint", "shape_dist_traveled"],
         variantStopsValues,
+        tx,
       );
 
       /* ─── 13. SHAPES delle varianti ─── */
@@ -575,6 +593,7 @@ router.post(
         "ps_shapes",
         ["id", "project_id", "variant_id", "mode", "geometry", "waypoints", "distance_m", "duration_s"],
         shapeValues,
+        tx,
       );
 
       /* ─── 14. TRIPS ─── */
@@ -604,6 +623,7 @@ router.post(
         ["id", "project_id", "route_id", "variant_id", "calendar_id",
          "headsign", "short_name", "direction", "block_id"],
         tripValues,
+        tx,
       );
 
       /* ─── 15. STOP_TIMES ─── */
@@ -626,7 +646,20 @@ router.post(
         ["trip_id", "stop_seq", "stop_id", "arrival_time", "departure_time",
          "pickup_type", "drop_off_type", "timepoint", "shape_dist_traveled"],
         stValues,
+        tx,
       );
+
+      counts = {
+        stops: stopValues.length,
+        routes: routeValues.length,
+        variants: variantValues.length,
+        trips: tripValues.length,
+        stopTimes: stValues.length,
+        calendars: calValues.length + stubValues.length,
+        calendarDates: calDateValues.length,
+        shapes: shapeValues.length,
+      };
+      }); // fine transazione import
 
       /* ─── 16. Activity log ─── */
       try {
@@ -637,13 +670,13 @@ router.post(
                     fileName: req.file.originalname,
                     sizeKb: Math.round(req.file.size / 1024),
                     counts: {
-                      stops: stopValues.length,
-                      routes: routeValues.length,
-                      variants: variantValues.length,
-                      trips: tripValues.length,
-                      stopTimes: stValues.length,
-                      calendars: calValues.length + stubValues.length,
-                      shapes: shapeValues.length,
+                      stops: counts.stops,
+                      routes: counts.routes,
+                      variants: counts.variants,
+                      trips: counts.trips,
+                      stopTimes: counts.stopTimes,
+                      calendars: counts.calendars,
+                      shapes: counts.shapes,
                     },
                   })}::jsonb)
         `);
@@ -664,14 +697,14 @@ router.post(
       res.json({
         ok: true,
         counts: {
-          stops: stopValues.length,
-          routes: routeValues.length,
-          calendars: calValues.length + stubValues.length,
-          calendarDates: calDateValues.length,
-          variants: variantValues.length,
-          shapes: shapeValues.length,
-          trips: tripValues.length,
-          stopTimes: stValues.length,
+          stops: counts.stops,
+          routes: counts.routes,
+          calendars: counts.calendars,
+          calendarDates: counts.calendarDates,
+          variants: counts.variants,
+          shapes: counts.shapes,
+          trips: counts.trips,
+          stopTimes: counts.stopTimes,
         },
         autoValidity: autoImport?.summary ?? null,
       });

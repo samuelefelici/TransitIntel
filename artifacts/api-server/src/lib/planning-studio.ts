@@ -676,6 +676,22 @@ async function requireProject(req: Request, res: Response): Promise<any | null> 
   return proj;
 }
 
+/** Anti-IDOR: verifica che il record figlio (:variantId/:tripId/:calId) appartenga
+ * DAVVERO al progetto dell'URL. requireProject autorizza solo il progetto: senza
+ * questo check un id figlio di un altro progetto passerebbe le scritture. */
+async function childInProject(
+  table: "ps_route_variants" | "ps_trips" | "ps_calendars",
+  childId: string,
+  projectId: string,
+): Promise<boolean> {
+  const r = await db.execute(sql`
+    SELECT 1 FROM ${sql.raw(table)}
+     WHERE id = ${childId}::uuid AND project_id = ${projectId}::uuid
+     LIMIT 1
+  `);
+  return !!((r as any).rows?.[0] ?? (r as any)[0]);
+}
+
 /* ════════════════════════════════════════════════════════════
  *  Router
  * ════════════════════════════════════════════════════════════ */
@@ -900,10 +916,17 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
     return;
   }
 
+  // Promuovi il nuovo feed a operativo SOLO fra i feed dello STESSO tenant
+  // (owner_user_id del feed appena materializzato). L'UPDATE globale spegneva
+  // is_active/is_default anche sui feed di altri utenti/programmi, mentre la
+  // risoluzione del feed attivo è per-tenant (gtfs-helpers getLatestFeedId).
   await db.execute(sql`
     UPDATE gtfs_feeds
        SET is_active = (id = ${feedId}::uuid),
            is_default = (id = ${feedId}::uuid)
+     WHERE owner_user_id IS NOT DISTINCT FROM (
+             SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
+           )
   `);
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
     targetType: "feed", targetId: feedId,
@@ -1317,11 +1340,50 @@ router.delete("/planning-studio/projects/:id/routes/:routeId", async (req, res):
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const routeId = String(req.params.routeId);
   if (!UUID_RE.test(routeId)) { badId(res, "routeId"); return; }
-  await db.execute(sql`
-    DELETE FROM ps_routes WHERE id = ${routeId}::uuid AND project_id = ${proj.id}::uuid
+  const rq = await db.execute(sql`
+    SELECT id FROM ps_routes WHERE id = ${routeId}::uuid AND project_id = ${proj.id}::uuid LIMIT 1
   `);
-  await logActivity(proj.id, req.user!.id, "ps.route.delete", { targetId: routeId });
-  res.json({ ok: true });
+  if (!(((rq as any).rows ?? (rq as any))?.length)) { res.status(404).json({ error: "Linea non trovata" }); return; }
+  // Come per le varianti: ps_trips.variant_id è ON DELETE RESTRICT, quindi la
+  // DELETE nuda della linea (cascata su varianti) violava la FK → 500 e la
+  // linea era ineliminabile dopo un import. Senza conferma: 409 parlante con il
+  // numero di corse; con ?force=1 elimino PRIMA le corse (cascata su
+  // stop_times/validità/eccezioni) e poi la linea (cascata su varianti,
+  // sequenza fermate, shape).
+  const tq = await db.execute<any>(sql`
+    SELECT count(*)::int AS n FROM ps_trips
+     WHERE route_id = ${routeId}::uuid AND project_id = ${proj.id}::uuid
+  `);
+  const tripCount = Number(((tq as any).rows?.[0] ?? (tq as any)[0])?.n ?? 0);
+  const force = req.query.force === "1" || req.query.force === "true";
+  if (tripCount > 0 && !force) {
+    res.status(409).json({
+      error: `La linea ha ${tripCount} corse collegate: conferma per eliminarle insieme, oppure spostale prima su un'altra linea.`,
+      tripCount,
+    });
+    return;
+  }
+  if (tripCount > 0) {
+    // ps_trip_category_validity non ha FK con cascata: pulizia esplicita best-effort
+    try {
+      await db.execute(sql`
+        DELETE FROM ps_trip_category_validity
+         WHERE trip_id IN (SELECT id FROM ps_trips WHERE route_id = ${routeId}::uuid)
+      `);
+    } catch { /* tabella assente */ }
+  }
+  await db.transaction(async (tx) => {
+    if (tripCount > 0) {
+      await tx.execute(sql`
+        DELETE FROM ps_trips WHERE route_id = ${routeId}::uuid AND project_id = ${proj.id}::uuid
+      `);
+    }
+    await tx.execute(sql`
+      DELETE FROM ps_routes WHERE id = ${routeId}::uuid AND project_id = ${proj.id}::uuid
+    `);
+  });
+  await logActivity(proj.id, req.user!.id, "ps.route.delete", { targetId: routeId, payload: { deletedTrips: tripCount } });
+  res.json({ ok: true, deletedTrips: tripCount });
 });
 
 /* ────────────────────────────────────────────────────────────
@@ -1546,20 +1608,27 @@ router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const variantId = String(req.params.variantId);
   if (!UUID_RE.test(variantId)) { badId(res, "variantId"); return; }
-  const list: any[] = Array.isArray(req.body?.stops) ? req.body.stops : [];
-  await db.execute(sql`DELETE FROM ps_variant_stops WHERE variant_id = ${variantId}::uuid`);
-  let seq = 1;
-  for (const s of list) {
-    if (!s?.stopId || !UUID_RE.test(String(s.stopId))) continue;
-    await db.execute(sql`
-      INSERT INTO ps_variant_stops (variant_id, seq, stop_id, pickup_type, drop_off_type, timepoint, shape_dist_traveled)
-      VALUES (${variantId}::uuid, ${seq}, ${String(s.stopId)}::uuid,
-              ${s.pickupType ?? 0}, ${s.dropOffType ?? 0},
-              ${s.timepoint ?? 1}, ${s.shapeDistTraveled ?? null})
-    `);
-    seq++;
+  if (!(await childInProject("ps_route_variants", variantId, proj.id))) {
+    res.status(404).json({ error: "Variante non trovata in questo progetto" }); return;
   }
-  await db.execute(sql`UPDATE ps_route_variants SET updated_at = now() WHERE id = ${variantId}::uuid`);
+  const list: any[] = Array.isArray(req.body?.stops) ? req.body.stops : [];
+  // Transazione: DELETE + reinserimento atomici (un INSERT fallito dopo il
+  // DELETE committato lascerebbe il percorso senza fermate).
+  let seq = 1;
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM ps_variant_stops WHERE variant_id = ${variantId}::uuid`);
+    for (const s of list) {
+      if (!s?.stopId || !UUID_RE.test(String(s.stopId))) continue;
+      await tx.execute(sql`
+        INSERT INTO ps_variant_stops (variant_id, seq, stop_id, pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+        VALUES (${variantId}::uuid, ${seq}, ${String(s.stopId)}::uuid,
+                ${s.pickupType ?? 0}, ${s.dropOffType ?? 0},
+                ${s.timepoint ?? 1}, ${s.shapeDistTraveled ?? null})
+      `);
+      seq++;
+    }
+    await tx.execute(sql`UPDATE ps_route_variants SET updated_at = now() WHERE id = ${variantId}::uuid`);
+  });
   await logActivity(proj.id, req.user!.id, "ps.variant.sequence", { targetId: variantId, payload: { count: seq - 1 } });
   res.json({ ok: true, count: seq - 1 });
 });
@@ -1572,6 +1641,9 @@ router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const variantId = String(req.params.variantId);
   if (!UUID_RE.test(variantId)) { badId(res, "variantId"); return; }
+  if (!(await childInProject("ps_route_variants", variantId, proj.id))) {
+    res.status(404).json({ error: "Variante non trovata in questo progetto" }); return;
+  }
   const b = req.body || {};
   if (!b.geometry || b.geometry.type !== "LineString" || !Array.isArray(b.geometry.coordinates)) {
     res.status(400).json({ error: "geometry: LineString GeoJSON richiesto" }); return;
@@ -1710,16 +1782,25 @@ router.put("/planning-studio/projects/:id/calendars/:calId/dates", async (req, r
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const calId = String(req.params.calId);
   if (!UUID_RE.test(calId)) { badId(res, "calId"); return; }
-  const list: any[] = Array.isArray(req.body?.dates) ? req.body.dates : [];
-  await db.execute(sql`DELETE FROM ps_calendar_dates WHERE calendar_id = ${calId}::uuid`);
-  for (const d of list) {
-    if (!d?.date) continue;
-    await db.execute(sql`
-      INSERT INTO ps_calendar_dates (calendar_id, date, exception_type)
-      VALUES (${calId}::uuid, ${d.date}::date, ${Number(d.exceptionType ?? 1)})
-      ON CONFLICT (calendar_id, date) DO UPDATE SET exception_type = EXCLUDED.exception_type
-    `);
+  if (!(await childInProject("ps_calendars", calId, proj.id))) {
+    res.status(404).json({ error: "Calendario non trovato in questo progetto" }); return;
   }
+  const list: any[] = Array.isArray(req.body?.dates) ? req.body.dates : [];
+  // Transazione: DELETE + reinserimento atomici (senza, un errore a metà
+  // lascerebbe il calendario senza eccezioni). Bump di updated_at così
+  // ensureCategoriesFresh vede la modifica e risincronizza le categorie.
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`DELETE FROM ps_calendar_dates WHERE calendar_id = ${calId}::uuid`);
+    for (const d of list) {
+      if (!d?.date) continue;
+      await tx.execute(sql`
+        INSERT INTO ps_calendar_dates (calendar_id, date, exception_type)
+        VALUES (${calId}::uuid, ${d.date}::date, ${Number(d.exceptionType ?? 1)})
+        ON CONFLICT (calendar_id, date) DO UPDATE SET exception_type = EXCLUDED.exception_type
+      `);
+    }
+    await tx.execute(sql`UPDATE ps_calendars SET updated_at = now() WHERE id = ${calId}::uuid`);
+  });
   await logActivity(proj.id, req.user!.id, "ps.calendar.dates", { targetId: calId, payload: { count: list.length } });
   res.json({ ok: true, count: list.length });
 });
@@ -1829,11 +1910,20 @@ router.delete("/planning-studio/projects/:id/trips/:tripId", async (req, res): P
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const tripId = String(req.params.tripId);
   if (!UUID_RE.test(tripId)) { badId(res, "tripId"); return; }
-  await db.execute(sql`
-    DELETE FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${proj.id}::uuid
-  `);
-  // ps_trip_category_validity non ha FK con cascata: pulizia esplicita
-  await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid`);
+  // Elimina la corsa SOLO se appartiene al progetto; la pulizia di
+  // ps_trip_category_validity (senza FK con cascata) avviene atomicamente e
+  // solo se la DELETE ha davvero rimosso la corsa (evita di cancellare la
+  // validità di una corsa omonima in un altro progetto).
+  const deleted = await db.transaction(async (tx) => {
+    const r = await tx.execute(sql`
+      DELETE FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${proj.id}::uuid
+      RETURNING id
+    `);
+    const hit = !!((r as any).rows?.[0] ?? (r as any)[0]);
+    if (hit) await tx.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ${tripId}::uuid`);
+    return hit;
+  });
+  if (!deleted) { res.status(404).json({ error: "Corsa non trovata in questo progetto" }); return; }
   await logActivity(proj.id, req.user!.id, "ps.trip.delete", { targetId: tripId });
   res.json({ ok: true });
 });
@@ -1913,6 +2003,9 @@ router.put("/planning-studio/projects/:id/trips/:tripId/stop-times", async (req,
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const tripId = String(req.params.tripId);
   if (!UUID_RE.test(tripId)) { badId(res, "tripId"); return; }
+  if (!(await childInProject("ps_trips", tripId, proj.id))) {
+    res.status(404).json({ error: "Corsa non trovata in questo progetto" }); return;
+  }
   const list: any[] = Array.isArray(req.body?.stopTimes) ? req.body.stopTimes : [];
   // Validazione formato HH:MM:SS (consente >24)
   for (const st of list) {
