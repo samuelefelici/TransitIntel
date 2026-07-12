@@ -109,7 +109,17 @@ export interface MaterializeResult {
 export async function materializePsToFeed(
   psProjectId: string,
   ownerUserId: string,
-  opts?: { tripIds?: string[] | null },
+  opts?: {
+    tripIds?: string[] | null;
+    /** Feed VECCHIO da rimuovere DOPO aver costruito il nuovo (delete-last).
+     *  Se undefined: per l'esercizio (non scoped) usa ps_projects.materialized_feed_id;
+     *  per una UDP (scoped) NON tocca nessun feed a meno che non sia passato esplicito.
+     *  Passare null per non cancellare nulla. */
+    replaceFeedId?: string | null;
+    /** Se aggiornare ps_projects.materialized_feed_id (feed d'esercizio globale).
+     *  Default: true solo per l'esercizio (non scoped). Le UDP NON devono toccarlo. */
+    updateProjectPointer?: boolean;
+  },
 ): Promise<MaterializeResult> {
   await ensureMaterializedColumn();
 
@@ -122,6 +132,14 @@ export async function materializePsToFeed(
   // contiene SOLO quelle (e le linee/calendari/shape che usano) — così "mandare
   // una UDP" non porta tutto il progetto nello scheduling.
   const scoped = Array.isArray(opts?.tripIds) && opts!.tripIds!.length > 0;
+  // Un feed PER SCOPO, non uno slot unico per progetto: l'esercizio usa
+  // ps_projects.materialized_feed_id, ogni UDP il proprio scheduling_projects.feed_id.
+  // Prima ogni materializzazione cancellava lo slot unico → le UDP sorelle si
+  // distruggevano il feed a vicenda (ping-pong). Ora ognuno rimpiazza SOLO il suo.
+  const replaceFeedId = opts?.replaceFeedId !== undefined
+    ? opts.replaceFeedId
+    : (scoped ? null : (project.materialized_feed_id ?? null));
+  const updateProjectPointer = opts?.updateProjectPointer ?? !scoped;
   const tripIdsLit = scoped ? `{${opts!.tripIds!.join(",")}}` : "";
   // frammenti riusabili: alias `t`, senza alias, e sottoinsiemi route/calendar/variant
   const fT = scoped ? sql`AND t.id = ANY(${tripIdsLit}::uuid[])` : sql``;
@@ -139,10 +157,9 @@ export async function materializePsToFeed(
    * Niente più OOM su Render starter.
    * ──────────────────────────────────────────────────────────── */
 
-  /* ── 1. Cancella vecchio feed materializzato (CASCADE pulisce gtfs_*) ── */
-  if (project.materialized_feed_id) {
-    await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${project.materialized_feed_id}::uuid`);
-  }
+  /* ── 1. (delete-last) Il vecchio feed si cancella SOLO alla fine, dopo aver
+   *    costruito e agganciato il nuovo: se qualcosa fallisce a metà il feed
+   *    esistente (esercizio o UDP) resta intatto invece di sparire. ── */
 
   /* ── 2. Calcola feed_start_date / feed_end_date dai calendari ──
    * Singola query aggregata, evita load di tutti i calendari in Node. */
@@ -382,13 +399,24 @@ export async function materializePsToFeed(
        AND COALESCE(c.kind, 'interchange') = 'interchange'
   `);
 
-  /* ── 6. Aggiorna ps_projects.materialized_feed_id ──────────── */
-  await db.execute(sql`
-    UPDATE ps_projects
-       SET materialized_feed_id = ${feedId}::uuid,
-           materialized_at = now()
-     WHERE id = ${psProjectId}::uuid
-  `);
+  /* ── 6. Aggancia il nuovo feed d'ESERCIZIO (solo se non scoped/UDP) ──
+   * Le UDP NON toccano ps_projects.materialized_feed_id: il loro feed vive
+   * su scheduling_projects.feed_id, aggiornato dal chiamante (startSyncJob). */
+  if (updateProjectPointer) {
+    await db.execute(sql`
+      UPDATE ps_projects
+         SET materialized_feed_id = ${feedId}::uuid,
+             materialized_at = now()
+       WHERE id = ${psProjectId}::uuid
+    `);
+  }
+
+  /* ── 6b. (delete-last) Ora che il nuovo feed è completo e agganciato,
+   * rimuovo il vecchio feed che questo rimpiazza (CASCADE pulisce gtfs_*).
+   * Cancello SOLO il feed indicato: le UDP sorelle e l'esercizio restano. */
+  if (replaceFeedId && replaceFeedId !== feedId) {
+    await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${replaceFeedId}::uuid`);
+  }
 
   /* ── 7. Counts finali per la response (singola query aggregata) ── */
   const countsR: any = await db.execute(sql`
@@ -525,7 +553,19 @@ export function startSyncJob(
       } catch (scopeErr: any) {
         logger?.warn?.({ err: scopeErr, projectId }, "UDP scope lookup failed, materializzo tutto il progetto");
       }
-      const result = await materializePsToFeed(psProjectId, ownerUserId, { tripIds });
+      // Feed VECCHIO di QUESTA UDP (non lo slot globale del progetto): lo
+      // rimpiazziamo col nuovo in modalità delete-last, senza toccare né il
+      // feed d'esercizio né quello delle UDP sorelle.
+      let oldFeedId: string | null = null;
+      try {
+        const ofR: any = await db.execute(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${projectId}::uuid LIMIT 1`);
+        oldFeedId = ofR.rows?.[0]?.feed_id ?? null;
+      } catch { /* colonna assente su DB legacy → nessun vecchio feed da rimuovere */ }
+      const result = await materializePsToFeed(psProjectId, ownerUserId, {
+        tripIds,
+        replaceFeedId: oldFeedId,
+        updateProjectPointer: false,
+      });
       await db.execute(sql`
         UPDATE scheduling_projects
            SET feed_id = ${result.feedId}::uuid,
