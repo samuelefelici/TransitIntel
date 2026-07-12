@@ -1835,9 +1835,20 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
      WHERE t.project_id = ${proj.id}::uuid
        AND (${routeId}::uuid IS NULL OR t.route_id = ${routeId}::uuid)
        AND (${variantId}::uuid IS NULL OR t.variant_id = ${variantId}::uuid)
-       AND (${categoryId}::uuid IS NULL OR EXISTS (
-             SELECT 1 FROM ps_trip_category_validity cv
-              WHERE cv.trip_id = t.id AND cv.category_id = ${categoryId}::uuid))
+       AND (${categoryId}::uuid IS NULL
+            OR EXISTS (
+                 SELECT 1 FROM ps_trip_category_validity cv
+                  WHERE cv.trip_id = t.id AND cv.category_id = ${categoryId}::uuid)
+            -- OMBRELLO: filtrando per un periodo scuole_chiuse_<slug> compaiono
+            -- anche le corse con la categoria NUDA "scuole_chiuse" (che vale in
+            -- tutti i periodi). Coerente con matrice, UDP e km.
+            OR (
+                 EXISTS (SELECT 1 FROM ps_validity_categories fc
+                          WHERE fc.id = ${categoryId}::uuid AND fc.code LIKE 'scuole_chiuse%')
+                 AND EXISTS (SELECT 1 FROM ps_trip_category_validity cv2
+                               JOIN ps_validity_categories c2 ON c2.id = cv2.category_id
+                              WHERE cv2.trip_id = t.id AND c2.code = 'scuole_chiuse')
+               ))
      ORDER BY first_departure NULLS LAST, t.created_at ASC
      LIMIT 5000
   `);

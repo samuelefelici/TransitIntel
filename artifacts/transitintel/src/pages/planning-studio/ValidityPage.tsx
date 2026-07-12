@@ -312,8 +312,12 @@ export default function PlanningStudioValidityPage() {
       if (Array.isArray(t.weekdays) && t.weekdays.length === 7) tw.set(t.id, t.weekdays);
     }
     c.tripWeekdays = tw;
+    // id categoria → code: abilita l'ombrello scuole_chiuse in getCellValidity
+    const codeById = new Map<string, string>();
+    for (const cat of (categoriesQ.data ?? [])) codeById.set(cat.id, cat.code);
+    c.categoryCodeById = codeById;
     return c;
-  }, [matrixQ.data, categoryByDate]);
+  }, [matrixQ.data, categoryByDate, categoriesQ.data]);
 
   const allDates = useMemo(() => isoRange(from, to), [from, to]);
   // Filtro colonne per criterio del Calendario aziendale (scuole aperte/chiuse…)

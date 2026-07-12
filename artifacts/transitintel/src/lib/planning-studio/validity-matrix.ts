@@ -47,6 +47,11 @@ export interface MatrixContext {
    *  Assente = tutti attivi. Permette di spegnere un singolo giorno
    *  (es. corsa feriale valida Lun-Ven ma NON il giovedì). */
   tripWeekdays?: Map<string, boolean[]>;
+  /** id categoria → code (es. "scuole_chiuse", "scuole_chiuse_estivo").
+   *  Abilita il modello OMBRELLO: la categoria nuda "scuole_chiuse" assegnata a
+   *  una corsa copre TUTTI i giorni la cui categoria è scuole_chiuse_<slug>.
+   *  Assente = comportamento classico (match esatto della categoria). */
+  categoryCodeById?: Map<string, string>;
 }
 
 /** Indice giorno-settimana 0=Lun … 6=Dom di una data 'YYYY-MM-DD' (UTC). */
@@ -95,7 +100,19 @@ export function getCellValidity(
   const cats = ctx.tripCategories?.get(tripId);
   if (cats && cats.size > 0) {
     const c = ctx.dayCategory?.get(date);
-    if (!c || !cats.has(c)) return false;
+    if (!c) return false;
+    if (!cats.has(c)) {
+      // OMBRELLO scuole_chiuse: la categoria nuda "scuole_chiuse" assegnata alla
+      // corsa copre OGNI giorno la cui categoria è scuole_chiuse_<slug> (o la
+      // nuda stessa). Allinea la matrice a UDP e km, che già lo applicano.
+      const codeById = ctx.categoryCodeById;
+      const dayCode = codeById?.get(c);
+      const hasUmbrella = codeById
+        ? [...cats].some((id) => codeById.get(id) === "scuole_chiuse")
+        : false;
+      const covered = hasUmbrella && typeof dayCode === "string" && dayCode.startsWith("scuole_chiuse");
+      if (!covered) return false;
+    }
   }
   return true;
 }
