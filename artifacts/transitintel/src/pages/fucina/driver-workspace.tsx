@@ -135,6 +135,15 @@ export default function DriverWorkspace({
   }>>([]);
   const wwPoolId = (p: { trip?: RipresaTrip; activity?: { id: string } }) =>
     p.trip ? String(p.trip.tripId) : (p.activity?.id ?? "");
+  // Ripristina le corse SCOPERTE salvate col DSS nel pool dell'Area di lavoro,
+  // così riaprendo lo scenario tornano visibili (e conteggiate come scoperte)
+  // invece di sparire. Gira quando cambia lo scenario caricato.
+  useEffect(() => {
+    const saved = (initialResult as any)?.unassignedTrips as RipresaTrip[] | undefined;
+    if (Array.isArray(saved) && saved.length) {
+      setWwPool(saved.map(trip => ({ trip: { ...trip } })));
+    }
+  }, [initialResult]);
   /* Rimpacchetta stile Bdsi: prima di chiudere il turno si sceglie il DEPOSITO
    * di appartenenza (residenza); la tipologia la rileva la normativa da sola. */
   const [wwDepots, setWwDepots] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
@@ -340,6 +349,11 @@ export default function DriverWorkspace({
         const res = row?.result as DriverShiftsResult | undefined;
         if (!res || !Array.isArray(res.driverShifts)) throw new Error("Scenario turni guida senza risultato");
         setResult(res);
+        // ripristina le corse scoperte salvate col DSS nel pool dell'Area di lavoro
+        const savedPool = (res as any)?.unassignedTrips as RipresaTrip[] | undefined;
+        if (Array.isArray(savedPool) && savedPool.length) {
+          setWwPool(savedPool.map(trip => ({ trip: { ...trip } })));
+        }
         baselineSummaryRef.current = res.summary ? { ...res.summary } : null;
         baselineBarsRef.current = res.driverShifts
           ? new Map(driverShiftsToTripBars(res.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
@@ -430,12 +444,20 @@ export default function DriverWorkspace({
     if (!vehicleScenarioId || !result || !dssName.trim()) return;
     setSavingDss(true);
     try {
+      // Persisti le corse SCOPERTE dell'Area di lavoro (spacchettate/estratte e
+      // non ancora ricomposte): senza questo vivrebbero solo nello stato React e
+      // il salvataggio le perderebbe, lasciando il piano "completo" ma con corse
+      // in meno.
+      const poolTrips = wwPool.filter(p => p.trip).map(p => ({ ...p.trip! }));
+      const resultToSave: DriverShiftsResult = poolTrips.length
+        ? { ...result, unassignedTrips: poolTrips }
+        : result;
       const resp = await fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: dssName.trim(),
-          result,
+          result: resultToSave,
           config: { ...operatorConfig, solverMode },
         }),
       });
@@ -451,7 +473,7 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode]);
+  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool]);
 
   /* ── Export handlers ─────────────────────────────────── */
   const handleExportPrint = useCallback(() => {

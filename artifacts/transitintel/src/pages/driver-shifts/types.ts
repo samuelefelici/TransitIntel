@@ -292,6 +292,10 @@ export interface DriverShiftsResult {
   driverShifts: DriverShiftData[];
   summary: DriverShiftSummary;
   unassignedBlocks: number;
+  /** Corse SCOPERTE (spacchettate/estratte nell'Area di lavoro e non ancora
+   *  ricomposte in un turno): persistite col DSS così riaprendo lo scenario
+   *  tornano nel pool invece di sparire dal piano. */
+  unassignedTrips?: RipresaTrip[];
   clusters: ClusterInfo[];
   companyCars: number;
   /* v2 cost fields */
