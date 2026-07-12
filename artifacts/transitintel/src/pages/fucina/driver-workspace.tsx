@@ -871,6 +871,108 @@ export default function DriverWorkspace({
     } catch { return null; }
   }, [result, wwShiftIds, wwPool, operatorConfig]);
 
+  /* ── SPOSTA CORSE (drag nell'Area di lavoro): dentro un turno, fuori da un
+   *    turno (→ scoperta) o fra due turni. Riprese ricostruite, poi la
+   *    normativa ri-verifica tipologia e fuorilinea dei turni toccati. ── */
+  const wwChunkTrips = (chosen: RipresaTrip[]): RipresaTrip[][] => {
+    let split = -1, gmax = 0;
+    for (let i = 0; i < chosen.length - 1; i++) {
+      const g = chosen[i + 1].departureMin - chosen[i].arrivalMin;
+      if (g > gmax) { gmax = g; split = i; }
+    }
+    return gmax >= 60 && split >= 0 ? [chosen.slice(0, split + 1), chosen.slice(split + 1)] : [chosen];
+  };
+  const wwRebuildShift = useCallback((s: DriverShiftData, trips: RipresaTrip[]): DriverShiftData => {
+    const sorted = [...trips].sort((a, b) => a.departureMin - b.departureMin);
+    const riprese = wwChunkTrips(sorted).map(c => mkRipresaFromTrips(c, String((c[0] as any).vehicleId ?? ""), String((c[0] as any).vehicleType ?? "12m")));
+    const aS = riprese[0].startMin, aE = riprese[riprese.length - 1].endMin;
+    return {
+      ...s, riprese,
+      nastroStart: wwFmtH(aS), nastroEnd: wwFmtH(aE), nastroStartMin: aS, nastroEndMin: aE,
+      nastroMin: aE - aS, nastro: formatDuration(aE - aS),
+      workMin: riprese.reduce((a, r) => a + r.workMin, 0), work: formatDuration(riprese.reduce((a, r) => a + r.workMin, 0)),
+      interruptionMin: riprese.length === 2 ? Math.max(0, riprese[1].startMin - riprese[0].endMin) : 0,
+      interruption: riprese.length === 2 ? formatDuration(Math.max(0, riprese[1].startMin - riprese[0].endMin)) : null,
+      verifyState: "da_verificare" as const,
+    };
+  }, []);
+  const wwRevalidate = useCallback((ids: string[], res: DriverShiftsResult) => {
+    const targets = res.driverShifts.filter(s => ids.includes(s.driverId));
+    if (!targets.length) return;
+    void fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ shifts: targets, config: operatorConfig }),
+    }).then(r => (r.ok ? r.json() : null)).then(data => {
+      if (!data?.results) return;
+      setResult(cur => cur ? {
+        ...cur,
+        driverShifts: cur.driverShifts.map(s => {
+          const rr = data.results[s.driverId];
+          if (!ids.includes(s.driverId) || !rr || rr.error) return s;
+          return { ...s, type: (rr.type as DriverShiftType) ?? s.type, bdsValidation: rr.bdsValidation ?? s.bdsValidation };
+        }),
+      } : cur);
+    }).catch(() => { /* restano da verificare */ });
+  }, [operatorConfig]);
+  const wwMoveTrips = useCallback((tripIds: string[], targetShiftId: string | null) => {
+    if (!result || tripIds.length === 0) return;
+    const idSet = new Set(tripIds);
+    const moved: RipresaTrip[] = [];
+    // dal pool (righe libere)
+    const fromPool = wwPool.filter(p => p.trip && idSet.has(String(p.trip.tripId)));
+    for (const p of fromPool) moved.push({ ...p.trip! });
+    // dai turni sorgente (rimuovendole)
+    const touched: string[] = [];
+    let shifts = result.driverShifts.map(s => {
+      const own = s.riprese.flatMap(r => r.trips);
+      const taken = own.filter(tp => idSet.has(String(tp.tripId)));
+      if (!taken.length) return s;
+      for (const tp of taken) moved.push({ ...tp });
+      const rest = own.filter(tp => !idSet.has(String(tp.tripId)));
+      if (!rest.length) return null;                     // turno svuotato → sparisce
+      touched.push(s.driverId);
+      return wwRebuildShift(s, rest);
+    }).filter((s): s is DriverShiftData => !!s);
+    if (!moved.length) return;
+    if (targetShiftId) {
+      const target = shifts.find(s => s.driverId === targetShiftId);
+      if (!target) { toast.error("Turno di destinazione non trovato"); return; }
+      const merged = [...target.riprese.flatMap(r => r.trips), ...moved].sort((a, b) => a.departureMin - b.departureMin);
+      for (let i = 1; i < merged.length; i++) if (merged[i].departureMin < merged[i - 1].arrivalMin) {
+        toast.error("Corse sovrapposte", { description: `La corsa ${merged[i].routeName ?? ""} si accavalla con ${merged[i - 1].routeName ?? ""} in ${targetShiftId}.` });
+        return;
+      }
+      shifts = shifts.map(s => s.driverId === targetShiftId ? wwRebuildShift(s, merged) : s);
+      touched.push(targetShiftId);
+    }
+    const emptied = result.driverShifts.filter(s => !shifts.some(k => k.driverId === s.driverId)).map(s => s.driverId);
+    const newRes: DriverShiftsResult = { ...result, driverShifts: shifts };
+    setResult(newRes);
+    pushHistory(newRes, targetShiftId
+      ? `Area di lavoro · ${moved.length} corse → ${targetShiftId}`
+      : `Area di lavoro · ${moved.length} corse estratte (scoperte)`);
+    if (emptied.length) setWwShiftIds(prev => prev.filter(id => !emptied.includes(id)));
+    if (targetShiftId) {
+      // le corse spostate NON sono più scoperte: via dal pool
+      const movedIds = new Set(moved.map(tp => String(tp.tripId)));
+      setWwPool(prev => prev.filter(p => !(p.trip && movedIds.has(String(p.trip.tripId)))));
+      toast.success(`${moved.length} cors${moved.length === 1 ? "a" : "e"} → ${targetShiftId}`, { description: "Tipologia e normativa in ri-verifica automatica." });
+    } else {
+      // estratte: entrano nel pool come scoperte
+      setWwPool(prev => [...prev, ...moved.map(trip => ({ trip }))]);
+      toast.info(`${moved.length} cors${moved.length === 1 ? "a" : "e"} estratt${moved.length === 1 ? "a" : "e"}: ora SCOPERTE`, { description: "Rimpacchettale in un turno per coprirle." });
+    }
+    wwRevalidate([...new Set(touched)], newRes);
+  }, [result, wwPool, wwRebuildShift, wwRevalidate, pushHistory]);
+
+  /* copertura del piano: corse nei turni / totali (le scoperte = pool) */
+  const wwCoverage = useMemo(() => {
+    if (!result) return undefined;
+    const inShifts = result.driverShifts.reduce((n, s) => n + s.riprese.reduce((m, r) => m + r.trips.length, 0), 0);
+    const inPool = wwPool.filter(p => p.trip).length;
+    return { total: inShifts + inPool, uncovered: inPool };
+  }, [result, wwPool]);
+
   /* Verifica normativa PUNTUALE su un turno della finestra (dialogo stile Bdsi) */
   const wwVerifyShift = useCallback(async (shiftId: string) => {
     const sh = result?.driverShifts.find(s => s.driverId === shiftId);
@@ -1929,6 +2031,8 @@ export default function DriverWorkspace({
                     onPreviewIds={wwPreviewType}
                     onVerifyShift={(id) => { void wwVerifyShift(id); }}
                     available={wwAvailable}
+                    onMoveTrips={wwMoveTrips}
+                    coverage={wwCoverage}
                     onUndo={handleUndo}
                     canUndo={historyIdx > 0}
                     storageKey={`ww-pos:tg:${vehicleScenarioId ?? "x"}:${dssId ?? "live"}`}

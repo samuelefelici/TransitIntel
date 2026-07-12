@@ -80,6 +80,12 @@ interface Props {
   onPreviewIds?: (ids: string[]) => Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null>;
   onVerifyShift?: (shiftId: string) => void;
   available?: WorkAvailableShift[];
+  /** SPOSTA corse: dentro un turno esistente (targetShiftId), fuori da un turno
+   *  (targetShiftId=null → diventano righe libere/scoperte) o fra due turni.
+   *  Il workspace ospite ricostruisce le riprese e ri-verifica la normativa. */
+  onMoveTrips?: (tripIds: string[], targetShiftId: string | null) => void;
+  /** contatore copertura: corse totali e SCOPERTE (obiettivo: zero) */
+  coverage?: { total: number; uncovered: number };
   /** Annulla (history del workspace ospite) */
   onUndo?: () => void;
   canUndo?: boolean;
@@ -108,7 +114,7 @@ const CARD_H = 26;    // altezza card-riga libera
 export default function WorkWindowPanel({
   shifts, loose = [], onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onSelectMany, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onMoveTrips, coverage, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
 }: Props) {
   const ac = accent === "amber"
     ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
@@ -168,7 +174,7 @@ export default function WorkWindowPanel({
   /* drag di card (turno o righe libere): soglia 4px per distinguere dal click.
    * MULTI-DRAG: se trascini una riga SELEZIONATA, si muovono TUTTE le selezionate. */
   const dragRef = useRef<{ items: Array<{ key: string; ox: number; oy: number }>; sx: number; sy: number; moved: boolean } | null>(null);
-  const startDrag = (key: string, groupKeys?: string[]) => (e: React.MouseEvent) => {
+  const startDrag = (key: string, groupKeys?: string[], onDropAt?: (ev: MouseEvent, moved: boolean) => void) => (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const keys = groupKeys && groupKeys.length ? Array.from(new Set([key, ...groupKeys])) : [key];
     const items = keys.map(k => ({ key: k, ox: posRef.current[k]?.x ?? 0, oy: posRef.current[k]?.y ?? 0 }));
@@ -184,15 +190,69 @@ export default function WorkWindowPanel({
         return n;
       });
     };
-    const up = () => {
+    const up = (ev: MouseEvent) => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      onDropAt?.(ev, !!dragRef.current?.moved);
       setTimeout(() => { dragRef.current = null; }, 0);
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
   const wasDrag = () => !!dragRef.current?.moved;
+
+  /* card turno sotto il puntatore (per il drop di corse su un turno) */
+  const shiftUnderPointer = (ev: MouseEvent): string | null => {
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    return el?.closest?.("[data-wwshift]")?.getAttribute("data-wwshift") ?? null;
+  };
+
+  /* ── DRAG di una RIGA dentro una card turno: fuori dal turno (→ scoperta),
+   *    su un ALTRO turno (→ spostamento diretto) o su nulla (annulla) ── */
+  const rowDragRef = useRef<{ moved: boolean } | null>(null);
+  const [rowDragHint, setRowDragHint] = useState<{ x: number; y: number; n: number } | null>(null);
+  const startRowDrag = (a: WorkActivity, fromShiftId: string) => (e: React.MouseEvent) => {
+    if (e.button !== 0 || !a.isTrip || !onMoveTrips) return;
+    const sx = e.clientX, sy = e.clientY;
+    // se la riga è selezionata trascini TUTTE le corse selezionate di quel turno
+    const shift = shifts.find(s => s.id === fromShiftId);
+    const ids = selected.has(a.id) && shift
+      ? shift.activities.filter(t => t.isTrip && selected.has(t.id)).map(t => t.id)
+      : [a.id];
+    rowDragRef.current = { moved: false };
+    const move = (ev: MouseEvent) => {
+      const d = rowDragRef.current; if (!d) return;
+      if (!d.moved && Math.abs(ev.clientX - sx) < 6 && Math.abs(ev.clientY - sy) < 6) return;
+      d.moved = true;
+      setRowDragHint({ x: ev.clientX, y: ev.clientY, n: ids.length });
+    };
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      const wasMoved = !!rowDragRef.current?.moved;
+      setRowDragHint(null);
+      if (wasMoved) {
+        const target = shiftUnderPointer(ev);
+        if (target && target !== fromShiftId) {
+          onMoveTrips(ids, target);                 // turno → turno
+        } else if (!target && canvasRef.current) {
+          const rc = canvasRef.current.getBoundingClientRect();
+          if (ev.clientX >= rc.left && ev.clientY >= rc.top) {
+            // estrai: righe libere alla posizione del rilascio
+            setPos(prev => {
+              const n = { ...prev };
+              ids.forEach((id, i) => { n[`card:${id}`] = { x: Math.max(0, ev.clientX - rc.left - 40), y: Math.max(0, ev.clientY - rc.top - 12 + i * (CARD_H + 6)) }; });
+              return n;
+            });
+            onMoveTrips(ids, null);                 // turno → scoperte
+          }
+        }
+      }
+      setTimeout(() => { rowDragRef.current = null; }, 0);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
 
   /* "Ordina per orario": riallinea in colonne ordinate le righe libere
    * (solo le selezionate, se c'è una selezione; altrimenti tutte). */
@@ -250,7 +310,7 @@ export default function WorkWindowPanel({
 
   /* click su una card/riga: ctrl = toggle, semplice = selezione singola */
   const rowClick = (a: WorkActivity) => (e: React.MouseEvent) => {
-    if (wasDrag() || !isPickable(a)) return;
+    if (wasDrag() || rowDragRef.current?.moved || !isPickable(a)) return;
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey) onToggleSelect(a.id);
     else if (onSelectMany) onSelectMany([a.id], false);
@@ -348,6 +408,18 @@ export default function WorkWindowPanel({
         </button>
         <span className={`text-sm font-bold ${ac.text}`}>🪟 Area di lavoro</span>
         <span className="text-[10px] text-muted-foreground">{shifts.length} turni · {loose.length} corse sciolte · {nSel} selezionate</span>
+        {coverage && (
+          <span title="Copertura del piano: corse dentro un turno / totali. Obiettivo: zero scoperte."
+            className={`flex items-center gap-1.5 text-[10px] font-semibold px-2 py-0.5 rounded border ${coverage.uncovered > 0
+              ? "bg-rose-500/10 border-rose-500/40 text-rose-300"
+              : "bg-emerald-500/10 border-emerald-500/40 text-emerald-300"}`}>
+            <span className="relative w-16 h-1.5 rounded bg-muted/40 overflow-hidden">
+              <span className={`absolute inset-y-0 left-0 ${coverage.uncovered > 0 ? "bg-rose-400" : "bg-emerald-400"}`}
+                style={{ width: `${coverage.total > 0 ? ((coverage.total - coverage.uncovered) / coverage.total) * 100 : 100}%` }} />
+            </span>
+            {coverage.total - coverage.uncovered}/{coverage.total} coperte{coverage.uncovered > 0 ? ` · ${coverage.uncovered} scoperte` : " ✔"}
+          </span>
+        )}
         {nSel > 0 && (
           <span
             title={selBad
@@ -470,7 +542,8 @@ export default function WorkWindowPanel({
               const trips = s.activities.filter(a => a.isTrip);
               const allSel = trips.length > 0 && trips.every(t => selected.has(t.id));
               return (
-                <div key={s.id} className="absolute rounded-lg border border-border/50 bg-background/95 shadow-xl select-none"
+                <div key={s.id} data-wwshift={s.id}
+                  className="absolute rounded-lg border border-border/50 bg-background/95 shadow-xl select-none"
                   style={{ left: p.x, top: p.y, width: 520 }}>
                   {/* header (drag della card) — stile nastro Bdsi */}
                   <div onMouseDown={startDrag(`shift:${s.id}`)}
@@ -504,9 +577,10 @@ export default function WorkWindowPanel({
                       const sel = isPickable(a) && selected.has(a.id);
                       return (
                         <div key={`${a.id}-${i}`}
+                          onMouseDown={a.isTrip && onMoveTrips ? startRowDrag(a, s.id) : undefined}
                           onClick={rowClick(a)}
                           onContextMenu={rowCtx(a)}
-                          title={isPickable(a) ? "click = seleziona · ctrl+click = aggiungi · destro = dettagli" : a.kindLabel}
+                          title={isPickable(a) ? "click = seleziona · ctrl+click = aggiungi · trascina fuori = estrai (scoperta) o su un altro turno = sposta · destro = dettagli" : a.kindLabel}
                           className={`flex items-center gap-1.5 px-2 h-[26px] text-[10px] ${isPickable(a) ? "cursor-pointer" : "opacity-70"} ${sel ? "ring-2 ring-inset ring-white/70" : ""}`}
                           style={{ background: c.bg, borderLeft: `3px solid ${c.border}` }}>
                           {rowCells(a)}
@@ -526,8 +600,17 @@ export default function WorkWindowPanel({
               const sel = selected.has(a.id);
               return (
                 <div key={a.id}
-                  onMouseDown={startDrag(`card:${a.id}`,
-                    sel ? loose.filter(l => selected.has(l.id)).map(l => `card:${l.id}`) : undefined)}
+                  onMouseDown={startDrag(
+                    `card:${a.id}`,
+                    sel ? loose.filter(l => selected.has(l.id)).map(l => `card:${l.id}`) : undefined,
+                    (ev, moved) => {
+                      if (!moved || !onMoveTrips) return;
+                      const target = shiftUnderPointer(ev);
+                      if (!target) return;
+                      const ids = (sel ? loose.filter(l => selected.has(l.id)) : [a]).filter(l => l.isTrip).map(l => l.id);
+                      if (ids.length) onMoveTrips(ids, target);   // scoperta → dentro il turno
+                    },
+                  )}
                   onClick={rowClick(a)}
                   onContextMenu={rowCtx(a)}
                   title="trascina per spostare (le selezionate si muovono insieme) · click = seleziona · ctrl+click = aggiungi · destro = dettagli"
@@ -546,6 +629,14 @@ export default function WorkWindowPanel({
           </div>
         </div>
       </div>
+
+      {/* chip guida durante il trascinamento di righe da un turno */}
+      {rowDragHint && (
+        <div className="fixed z-[75] pointer-events-none px-2 py-1 rounded-md border border-yellow-500/50 bg-zinc-950/95 text-[10px] text-yellow-200 shadow-xl"
+          style={{ left: rowDragHint.x + 12, top: rowDragHint.y + 12 }}>
+          {rowDragHint.n} cors{rowDragHint.n === 1 ? "a" : "e"} — rilascia su un turno per spostarle, sul canvas per estrarle (scoperte)
+        </div>
+      )}
 
       {/* ── Conferma uscita con corse scoperte ── */}
       {confirmClose && (

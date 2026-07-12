@@ -889,6 +889,14 @@ export default function VehicleWorkspace({
     setWwOpen(true);
   }, [result]);
 
+  /* copertura del piano: corse nei turni macchina / totali (scoperte = pool) */
+  const wwCoverage = useMemo(() => {
+    if (!result) return undefined;
+    const inShifts = result.shifts.reduce((n, s) => n + s.trips.filter(t => t.type === "trip").length, 0);
+    const inPool = wwPool.length;
+    return { total: inShifts + inPool, uncovered: inPool };
+  }, [result, wwPool]);
+
   /* Sidebar gantt della finestra: turni macchina NON ancora nell'area di lavoro */
   const wwAvailable = useMemo(() => {
     if (!result) return [];
@@ -2113,6 +2121,7 @@ export default function VehicleWorkspace({
                 onRepack={() => wwRepack()}
                 onRepackIds={(ids) => wwRepack(ids)}
                 available={wwAvailable}
+                coverage={wwCoverage}
                 onUndo={undo}
                 canUndo={historyIndex >= 0}
                 storageKey={`ww-pos:tm:${initialSavedId ?? "live"}`}
