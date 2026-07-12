@@ -280,6 +280,11 @@ function estimateDeadhead(
   return { km: Math.round(km * 10) / 10, min };
 }
 
+/* Gerarchia taglie per il controllo tipologia mezzo: un mezzo più piccolo del
+ * richiesto = capienza insufficiente; pollicino e filobus sono vincoli di
+ * infrastruttura (transitabilità centro storico / rete filoviaria). */
+const VEHICLE_SIZE: Record<string, number> = { pollicino: 0, "10m": 1, "12m": 2, filobus: 2, autosnodato: 3 };
+
 /** Ricalcola i totali di un singolo turno macchina dopo modifiche. */
 function recomputeShift(s: VehicleShift): VehicleShift {
   const trips = s.trips;
@@ -624,6 +629,10 @@ export default function VehicleWorkspace({
    *  altre UDP (restano scoperte alla fonte finché non vengono rimpacchettate) */
   const [wwPool, setWwPool] = useState<Array<{ entry: ShiftTripEntry; importedFrom?: string; udpName?: string }>>([]);
   const [wwImportBusy, setWwImportBusy] = useState(false);
+  /* "Dove la metto?" (TM): turni che accettano la corsa scoperta senza conflitti */
+  const [wwSuggest, setWwSuggest] = useState<{ tripId: string; results: Array<{ shiftId: string; type: string; note: string | null }> } | null>(null);
+  /* Verifica puntuale del turno macchina: checklist tipologia mezzo + vincoli */
+  const [wwVerify, setWwVerify] = useState<{ shiftId: string; type: string; checks: Array<{ ok: boolean; label: string }>; violations: string[] } | null>(null);
   const actionIdRef = React.useRef(0);
   // FIX-REFRESH: tengo l'indice corrente in un ref per evitare race condition
   // tra setResult/setHistory/setHistoryIndex (più drag in rapida sequenza).
@@ -915,9 +924,73 @@ export default function VehicleWorkspace({
       }));
   }, [result, wwShiftIds, customLabels]);
 
+  /* ═══ Controlli TM: tipologia mezzo + vincoli del blocco (niente normativa
+   *     guida — qui contano capienza, transitabilità, rete filoviaria,
+   *     categoria di servizio e fattibilità dei trasferimenti a vuoto). ═══ */
+  const wwRouteInfo = useMemo(() => {
+    const m = new Map<string, { vehicleType: string; category: string }>();
+    for (const r of result?.routeStats ?? []) m.set(String(r.routeId), { vehicleType: r.vehicleType, category: r.category });
+    return m;
+  }, [result]);
+  /** Tipologia mezzo richiesta dalla corsa: dalla linea (routeStats) o dal
+   * flag "mezzo ridotto" del solver. */
+  const wwRequiredType = useCallback((t: ShiftTripEntry): VehicleType | null => {
+    if (t.originalVehicle) return t.originalVehicle;
+    const rt = wwRouteInfo.get(String(t.routeId))?.vehicleType;
+    return rt && rt in VEHICLE_SIZE ? (rt as VehicleType) : null;
+  }, [wwRouteInfo]);
+  /** Tipologia mezzo del blocco = la più impegnativa richiesta dalle corse. */
+  const wwBlockVehicleType = useCallback((trips: ShiftTripEntry[]): VehicleType | null => {
+    let best: VehicleType | null = null;
+    for (const t of trips) {
+      const req = wwRequiredType(t);
+      if (!req) continue;
+      if (req === "filobus") return "filobus"; // infrastruttura vincolante
+      if (!best || (VEHICLE_SIZE[req] ?? 2) > (VEHICLE_SIZE[best] ?? 2)) best = req;
+    }
+    return best;
+  }, [wwRequiredType]);
+  /** Verifica un blocco di corse contro un tipo di mezzo: violazioni (bloccanti)
+   * + avvisi (mezzo ridotto, categoria mista). */
+  const wwBlockChecks = useCallback((trips: ShiftTripEntry[], vehicleType: VehicleType | null) => {
+    const sorted = trips.filter(t => t.type === "trip").sort((a, b) => a.departureMin - b.departureMin);
+    const violations: string[] = [];
+    const warnings: string[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const a = sorted[i - 1], b = sorted[i];
+      if (b.departureMin < a.arrivalMin) {
+        violations.push(`Corse sovrapposte: "${a.routeName}" e "${b.routeName}"`);
+        continue;
+      }
+      const gap = b.departureMin - a.arrivalMin;
+      const same = a.lastStopName && b.firstStopName
+        && a.lastStopName.trim().toUpperCase() === b.firstStopName.trim().toUpperCase();
+      if (!same && gap < 5) violations.push(`Trasferimento non fattibile: ${a.lastStopName ?? "?"} → ${b.firstStopName ?? "?"} in ${gap}′`);
+    }
+    if (vehicleType) {
+      const vSize = VEHICLE_SIZE[vehicleType] ?? 2;
+      for (const t of sorted) {
+        const req = wwRequiredType(t);
+        if (!req || req === vehicleType) continue;
+        const rSize = VEHICLE_SIZE[req] ?? 2;
+        if (req === "filobus" || vehicleType === "filobus") {
+          violations.push(`"${t.routeName}": rete filoviaria — richiede ${VEHICLE_LABELS[req]}, il turno è ${VEHICLE_LABELS[vehicleType]}`);
+        } else if (req === "pollicino" && vSize > 0) {
+          violations.push(`"${t.routeName}": percorso da ${VEHICLE_LABELS.pollicino} — ${VEHICLE_LABELS[vehicleType]} non transitabile`);
+        } else if (rSize > vSize) {
+          warnings.push(`"${t.routeName}": mezzo ridotto — richiesto ${VEHICLE_LABELS[req]} su ${VEHICLE_LABELS[vehicleType]} (capienza)`);
+        }
+      }
+    }
+    const cats = new Set(sorted.map(t => wwRouteInfo.get(String(t.routeId))?.category).filter(Boolean));
+    if (cats.size > 1) warnings.push("Blocco misto urbano/extraurbano: verifica percorrenze e tariffe km");
+    return { violations, warnings, sorted };
+  }, [wwRequiredType, wwRouteInfo]);
+
   /* Rimpacchetta (TM): corse selezionate → turno NUOVO con fuorilinea
    * rigenerati e matricola automatica; i turni sorgente tengono le corse
-   * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti). */
+   * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti).
+   * La tipologia del mezzo la rileva dal blocco (la più impegnativa richiesta). */
   const wwRepack = useCallback((onlyIds?: string[]) => {
     const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
     if (!result || sel.size === 0) return;
@@ -941,8 +1014,14 @@ export default function VehicleWorkspace({
       }
     }
     const newId = nextVehicleId(result.shifts.map(s => s.vehicleId), "M");
-    const srcShift = result.shifts.find(s => srcIds.has(s.vehicleId))!;
-    const newShift = recomputeShift({ ...srcShift, vehicleId: newId, trips: chosen });
+    const srcShift = result.shifts.find(s => srcIds.has(s.vehicleId)) ?? result.shifts[0]
+      ?? createEmptyVehicleShift({ vehicleId: newId, vehicleType: "12m", category: "urbano", fifoOrder: 1 });
+    // tipologia del mezzo rilevata dal blocco: la più impegnativa fra le corse
+    const reqType = wwBlockVehicleType(chosen) ?? srcShift.vehicleType;
+    const { violations: vViol, warnings: vWarn } = wwBlockChecks(chosen, reqType);
+    if (vViol.length) { toast.error("Il turno non può chiudersi", { description: vViol[0] }); return; }
+    if (vWarn.length) toast.warning("Attenzione tipologia mezzo", { description: vWarn[0] });
+    const newShift = recomputeShift({ ...srcShift, vehicleId: newId, vehicleType: reqType, trips: chosen });
     const remaining = result.shifts.map(s => {
       if (!srcIds.has(s.vehicleId)) return s;
       return recomputeShift({ ...s, trips: s.trips.filter(t => t.type === "trip" && !sel.has(t.tripId)) });
@@ -993,10 +1072,180 @@ export default function VehicleWorkspace({
         toast.info(`Scoperte aggiornate nelle UDP di origine (${bySrc.size})`);
       })();
     }
-    toast.success(`Turno macchina ${newId} chiuso`, {
+    toast.success(`Turno macchina ${newId} chiuso (${VEHICLE_SHORT[reqType] || reqType})`, {
       description: `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · resta nell'area come card compatta: trascinala sulla sidebar per consegnarla al gantt.`,
     });
-  }, [result, wwShiftIds, wwSelected, pushHistory]);
+  }, [result, wwShiftIds, wwSelected, wwPool, wwBlockVehicleType, wwBlockChecks, pushHistory]);
+
+  /* Verifica LIVE della selezione (stile Bdsi, versione TM): tipologia mezzo
+   * risultante + vincoli + costo ≈ € (ore servizio × costo orario scenario). */
+  const wwPreviewIds = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null> => {
+    if (!result) return null;
+    const sel = new Set(ids.map(String));
+    const chosen: ShiftTripEntry[] = [];
+    const srcIds = new Set(wwShiftIds);
+    for (const s of result.shifts) {
+      if (!srcIds.has(s.vehicleId)) continue;
+      for (const t of s.trips) if (t.type === "trip" && sel.has(String(t.tripId))) chosen.push({ ...t });
+    }
+    for (const p of wwPool) if (sel.has(String(p.entry.tripId))) chosen.push({ ...p.entry });
+    if (!chosen.length) return null;
+    const vt = wwBlockVehicleType(chosen)
+      ?? result.shifts.find(s => srcIds.has(s.vehicleId))?.vehicleType ?? "12m";
+    const { violations, warnings } = wwBlockChecks(chosen, vt);
+    const serviceMin = chosen.reduce((a, t) => a + Math.max(0, t.arrivalMin - t.departureMin), 0);
+    const rate = Number(result.costs?.costPerServiceHour)
+      || (Number(result.costs?.totalDailyCost) > 0 && Number(result.summary?.totalServiceHours) > 0
+        ? Number(result.costs.totalDailyCost) / Number(result.summary.totalServiceHours) : 0);
+    return {
+      type: VEHICLE_LABELS[vt] ?? String(vt),
+      valid: violations.length === 0,
+      violations: [...violations, ...warnings],
+      costEuro: rate > 0 ? Math.round((serviceMin / 60) * rate) : null,
+    };
+  }, [result, wwShiftIds, wwPool, wwBlockVehicleType, wwBlockChecks]);
+
+  /** Ricostruisce un turno macchina con un nuovo set di corse: i vuoti vengono
+   * rigenerati globalmente da regenerateMissingDeadheads dopo la modifica. */
+  const wwRebuildVehicleShift = useCallback((s: VehicleShift, trips: ShiftTripEntry[]): VehicleShift => {
+    const sorted = trips.filter(t => t.type === "trip").sort((a, b) => a.departureMin - b.departureMin);
+    return recomputeShift({ ...s, trips: sorted });
+  }, []);
+
+  /* ── SPOSTA CORSE (drag nell'Area di lavoro): dentro un turno, fuori da un
+   *    turno (→ scoperta) o fra due turni, con controllo tipologia mezzo. ── */
+  const wwMoveTrips = useCallback((tripIds: string[], targetShiftId: string | null) => {
+    if (!result || tripIds.length === 0) return;
+    const idSet = new Set(tripIds.map(String));
+    const moved: ShiftTripEntry[] = [];
+    const fromPoolIds = new Set<string>();
+    for (const p of wwPool) if (idSet.has(String(p.entry.tripId))) {
+      moved.push({ ...p.entry });
+      fromPoolIds.add(String(p.entry.tripId));
+    }
+    let shifts = result.shifts.map(s => {
+      const own = s.trips.filter(t => t.type === "trip");
+      const taken = own.filter(t => idSet.has(String(t.tripId)));
+      if (!taken.length) return s;
+      for (const t of taken) moved.push({ ...t });
+      const rest = own.filter(t => !idSet.has(String(t.tripId)));
+      if (!rest.length) return null;                     // turno svuotato → sparisce
+      return wwRebuildVehicleShift(s, rest);
+    }).filter((s): s is VehicleShift => !!s);
+    if (!moved.length) return;
+    if (targetShiftId) {
+      const target = shifts.find(s => s.vehicleId === targetShiftId);
+      if (!target) { toast.error("Turno di destinazione non trovato"); return; }
+      const merged = [...target.trips.filter(t => t.type === "trip"), ...moved];
+      const { violations, warnings } = wwBlockChecks(merged, target.vehicleType);
+      if (violations.length) { toast.error("Spostamento bloccato", { description: violations[0] }); return; }
+      if (warnings.length) toast.warning("Attenzione tipologia mezzo", { description: warnings[0] });
+      shifts = shifts.map(s => s.vehicleId === targetShiftId ? wwRebuildVehicleShift(s, merged) : s);
+    }
+    const movedIds = new Set(moved.map(t => String(t.tripId)));
+    // estratte: nel pool/scoperte SOLO quelle che non c'erano già
+    const freshOut = targetShiftId ? [] : moved.filter(t => !fromPoolIds.has(String(t.tripId)));
+    let next: ServiceProgramResult = {
+      ...result,
+      shifts,
+      unassigned: targetShiftId
+        ? (result.unassigned ?? []).filter((u: any) => !movedIds.has(String(u?.tripId)))
+        : [...(result.unassigned ?? []), ...freshOut],
+    };
+    const pr = pruneEmptyShifts(next); next = pr.result;
+    const rg = regenerateMissingDeadheads(next); next = rg.result;
+    next = recomputeSummary(next);
+    setResult(next);
+    pushHistory(next, "deadhead", targetShiftId
+      ? `Area di lavoro · ${moved.length} corse → ${targetShiftId}`
+      : `Area di lavoro · ${moved.length} corse estratte (scoperte)`,
+      `${rg.added} fuorilinea rigenerati · ${pr.removed} turni vuoti eliminati`);
+    const emptied = result.shifts.filter(s => !next.shifts.some(k => k.vehicleId === s.vehicleId)).map(s => s.vehicleId);
+    if (emptied.length) setWwShiftIds(prev => prev.filter(id => !emptied.includes(id)));
+    if (targetShiftId) {
+      setWwPool(prev => prev.filter(p => !movedIds.has(String(p.entry.tripId))));
+      toast.success(`${moved.length} cors${moved.length === 1 ? "a" : "e"} → ${targetShiftId}`, { description: "Vuoti rigenerati e totali ricalcolati." });
+    } else {
+      setWwPool(prev => [...prev, ...freshOut.map(entry => ({ entry }))]);
+      toast.info(`${moved.length} cors${moved.length === 1 ? "a" : "e"} estratt${moved.length === 1 ? "a" : "e"}: ora SCOPERTE`, { description: "Rimpacchettale in un turno per coprirle." });
+    }
+  }, [result, wwPool, wwRebuildVehicleShift, wwBlockChecks, pushHistory]);
+
+  /* "Dove la metto?" (TM): prova la corsa scoperta in OGNI turno macchina —
+   * accettano solo quelli senza conflitti di orario né di tipologia mezzo. */
+  const wwSuggestFor = useCallback((tripId: string) => {
+    if (!result) return;
+    const entry = wwPool.find(p => String(p.entry.tripId) === tripId)?.entry;
+    if (!entry) return;
+    const results: Array<{ shiftId: string; type: string; note: string | null }> = [];
+    for (const s of result.shifts) {
+      const merged = [...s.trips.filter(t => t.type === "trip"), { ...entry }];
+      const { violations, warnings } = wwBlockChecks(merged, s.vehicleType);
+      if (violations.length || warnings.length) continue;
+      results.push({
+        shiftId: s.vehicleId,
+        type: VEHICLE_SHORT[s.vehicleType] || s.vehicleType,
+        note: (s as any).residenzaName ?? null,
+      });
+    }
+    setWwSuggest({ tripId, results });
+  }, [result, wwPool, wwBlockChecks]);
+
+  /* Verifica puntuale del turno macchina: checklist mezzo/vincoli (senza
+   * normativa guida, che qui non si applica). */
+  const wwVerifyShift = useCallback((shiftId: string) => {
+    const sh = result?.shifts.find(s => s.vehicleId === shiftId);
+    if (!sh) return;
+    const { violations, warnings } = wwBlockChecks(sh.trips, sh.vehicleType);
+    const checks = [
+      { ok: !violations.some(v => v.startsWith("Corse sovrapposte")), label: "Nessuna sovrapposizione fra corse" },
+      { ok: !violations.some(v => v.startsWith("Trasferimento non fattibile")), label: "Trasferimenti a vuoto fattibili" },
+      { ok: !violations.some(v => v.includes("filoviaria") || v.includes("transitabile")), label: "Tipologia mezzo compatibile (infrastruttura)" },
+      { ok: !warnings.some(w => w.includes("mezzo ridotto")), label: "Capienza adeguata (nessun mezzo ridotto)" },
+      { ok: !warnings.some(w => w.includes("misto")), label: "Categoria di servizio omogenea" },
+    ];
+    setWwVerify({ shiftId, type: VEHICLE_LABELS[sh.vehicleType] ?? sh.vehicleType, checks, violations: [...violations, ...warnings] });
+  }, [result, wwBlockChecks]);
+
+  /* Stampa foglio-turno del SINGOLO turno macchina dalla card. */
+  const wwPrintShift = useCallback((shiftId: string) => {
+    const sh = result?.shifts.find(s => s.vehicleId === shiftId);
+    if (!sh || !result) { toast.error("Turno non trovato"); return; }
+    exportScenarioToPrint(
+      { ...result, shifts: [sh] },
+      { scenarioName: `Foglio turno ${customLabels[shiftId] ?? shiftId}`, columnsPerPage: 1, orientation: "portrait", customLabels },
+    );
+  }, [result, customLabels]);
+
+  /* Scambio DIRETTO di due corse fra due turni macchina diversi (swap 1↔1). */
+  const wwSwapTrips = useCallback((aId: string, bId: string) => {
+    if (!result) return;
+    const ownerOf = (tid: string) => result.shifts.find(s => s.trips.some(t => t.type === "trip" && String(t.tripId) === tid));
+    const shA = ownerOf(aId), shB = ownerOf(bId);
+    if (!shA || !shB || shA.vehicleId === shB.vehicleId) { toast.error("Seleziona due corse in due turni diversi"); return; }
+    const tripsOf = (s: VehicleShift) => s.trips.filter(t => t.type === "trip");
+    const tripA = tripsOf(shA).find(t => String(t.tripId) === aId)!;
+    const tripB = tripsOf(shB).find(t => String(t.tripId) === bId)!;
+    const newA = [...tripsOf(shA).filter(t => String(t.tripId) !== aId), { ...tripB }];
+    const newB = [...tripsOf(shB).filter(t => String(t.tripId) !== bId), { ...tripA }];
+    for (const [sh, arr] of [[shA, newA], [shB, newB]] as const) {
+      const { violations, warnings } = wwBlockChecks(arr, sh.vehicleType);
+      if (violations.length) { toast.error(`Scambio impossibile in ${sh.vehicleId}`, { description: violations[0] }); return; }
+      if (warnings.length) toast.warning(`Attenzione su ${sh.vehicleId}`, { description: warnings[0] });
+    }
+    let next: ServiceProgramResult = {
+      ...result,
+      shifts: result.shifts.map(s =>
+        s.vehicleId === shA.vehicleId ? wwRebuildVehicleShift(s, newA)
+        : s.vehicleId === shB.vehicleId ? wwRebuildVehicleShift(s, newB)
+        : s),
+    };
+    const rg = regenerateMissingDeadheads(next);
+    next = recomputeSummary(rg.result);
+    setResult(next);
+    pushHistory(next, "deadhead", `Area di lavoro · scambio corse ${shA.vehicleId} ⇄ ${shB.vehicleId}`, `${rg.added} fuorilinea rigenerati`);
+    toast.success(`Scambio ${shA.vehicleId} ⇄ ${shB.vehicleId}`, { description: "Vuoti rigenerati e totali ricalcolati." });
+  }, [result, wwRebuildVehicleShift, wwBlockChecks, pushHistory]);
 
   const stopOptions = useMemo(() => {
     if (!result) return [] as string[];
@@ -2128,6 +2377,12 @@ export default function VehicleWorkspace({
                 onUnpackAll={() => wwDissolve(wwShiftIds)}
                 onRepack={() => wwRepack()}
                 onRepackIds={(ids) => wwRepack(ids)}
+                onPreviewIds={wwPreviewIds}
+                onVerifyShift={wwVerifyShift}
+                onMoveTrips={wwMoveTrips}
+                onSuggest={(tripId) => wwSuggestFor(tripId)}
+                onPrintShift={wwPrintShift}
+                onSwapTrips={wwSwapTrips}
                 available={wwAvailable}
                 coverage={wwCoverage}
                 closedIds={wwClosedIds}
@@ -2138,6 +2393,71 @@ export default function VehicleWorkspace({
                 onClose={() => setWwOpen(false)}
                 accent="amber"
               />
+              {/* "Dove la metto?" (TM): turni che accettano la corsa scoperta */}
+              {wwSuggest && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwSuggest(null)}>
+                  <div className="w-full max-w-sm rounded-xl border border-amber-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-amber-300">🎯 Dove la metto?</p>
+                    {wwSuggest.results.length === 0 ? (
+                      <p className="text-xs text-zinc-400">Nessun turno macchina può accoglierla senza conflitti di orario o di tipologia mezzo: componi un turno nuovo (Rimpacchetta) o rivedi le composizioni.</p>
+                    ) : (
+                      <>
+                        <p className="text-[11px] text-zinc-400">{wwSuggest.results.length} turn{wwSuggest.results.length === 1 ? "o accetta" : "i accettano"} la corsa <b>senza conflitti</b>:</p>
+                        <div className="space-y-1 max-h-56 overflow-y-auto">
+                          {wwSuggest.results.map(rr => (
+                            <div key={rr.shiftId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-zinc-800 text-xs">
+                              <span className="font-bold text-zinc-100">{customLabels[rr.shiftId] ?? rr.shiftId}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold">{rr.type}</span>
+                              {rr.note && <span className="text-[10px] text-zinc-500 truncate">{rr.note}</span>}
+                              <button onClick={() => { wwMoveTrips([wwSuggest.tripId], rr.shiftId); setWwSuggest(null); }}
+                                className="ml-auto shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded border border-amber-500/50 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25">
+                                Inserisci
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <div className="flex justify-end pt-1">
+                      <button onClick={() => setWwSuggest(null)}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 text-xs hover:text-zinc-200">Chiudi</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* Verifica puntuale turno macchina: tipologia mezzo + vincoli */}
+              {wwVerify && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwVerify(null)}>
+                  <div className="w-full max-w-sm rounded-xl border border-emerald-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-emerald-300">🚌 Verifica turno macchina · {customLabels[wwVerify.shiftId] ?? wwVerify.shiftId}</p>
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-semibold">{wwVerify.type}</span>
+                    </div>
+                    <div className="space-y-1">
+                      {wwVerify.checks.map((c, i) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px]">
+                          <span className={c.ok ? "text-emerald-400" : "text-rose-400"}>{c.ok ? "✔" : "✘"}</span>
+                          <span className="text-zinc-300">{c.label}</span>
+                        </div>
+                      ))}
+                      {wwVerify.violations.length > 0 && (
+                        <div className="mt-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 space-y-0.5">
+                          {wwVerify.violations.map((v, i) => (
+                            <p key={i} className="text-[10px] text-rose-300">• {v}</p>
+                          ))}
+                        </div>
+                      )}
+                      {wwVerify.violations.length === 0 && (
+                        <p className="text-[11px] text-emerald-400 font-semibold">Turno macchina senza conflitti ✔</p>
+                      )}
+                    </div>
+                    <div className="flex justify-end pt-1">
+                      <button onClick={() => setWwVerify(null)}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 text-xs hover:text-zinc-100">Chiudi</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <div className="flex-1 min-h-0">
