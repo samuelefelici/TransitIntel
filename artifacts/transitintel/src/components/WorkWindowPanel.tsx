@@ -13,7 +13,7 @@
  * taxi ARANCIONE. Click destro su una corsa → dettagli + tipologia di macchina.
  */
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { X, PackageOpen, Package, Trash2, CheckSquare, Square, ShieldCheck, ArrowLeft } from "lucide-react";
+import { X, PackageOpen, Package, Trash2, CheckSquare, Square, ShieldCheck, ArrowLeft, Printer, ArrowLeftRight } from "lucide-react";
 
 export interface WorkActivity {
   /** id univoco nell'ambito della finestra (per le corse: tripId) */
@@ -77,7 +77,7 @@ interface Props {
   onRepack: () => void;
   onRepackIds?: (ids: string[]) => void;
   /** verifica LIVE della selezione corrente (normativa): tipologia + violazioni */
-  onPreviewIds?: (ids: string[]) => Promise<{ type: string | null; valid?: boolean; violations?: string[] } | null>;
+  onPreviewIds?: (ids: string[]) => Promise<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null>;
   onVerifyShift?: (shiftId: string) => void;
   available?: WorkAvailableShift[];
   /** SPOSTA corse: dentro un turno esistente (targetShiftId), fuori da un turno
@@ -92,6 +92,10 @@ interface Props {
   onReopenShift?: (shiftId: string) => void;
   /** "Dove la metto?": suggerisce i turni che accettano una corsa scoperta */
   onSuggest?: (tripId: string) => void;
+  /** stampa il foglio-turno (A4) di una card */
+  onPrintShift?: (shiftId: string) => void;
+  /** scambia due corse fra DUE turni (selezione di esattamente 2 corse) */
+  onSwapTrips?: (tripIdA: string, tripIdB: string) => void;
   /** Annulla (history del workspace ospite) */
   onUndo?: () => void;
   canUndo?: boolean;
@@ -117,10 +121,28 @@ const isPickable = (a: WorkActivity) => a.isTrip || !!a.actType;
 const CARD_W = 470;   // larghezza card-riga libera
 const CARD_H = 26;    // altezza card-riga libera
 
+/** intercala le INTERRUZIONI (gap ≥30') tra le attività di un turno */
+type RowOrGap = { kind: "act"; a: WorkActivity; i: number } | { kind: "gap"; min: number; i: number };
+const withGaps = (acts: WorkActivity[]): RowOrGap[] => {
+  const out: RowOrGap[] = [];
+  acts.forEach((a, i) => {
+    if (i > 0) {
+      const prev = acts[i - 1];
+      if (typeof prev.endMin === "number" && typeof a.startMin === "number") {
+        const gap = a.startMin - prev.endMin;
+        if (gap >= 30) out.push({ kind: "gap", min: gap, i });
+      }
+    }
+    out.push({ kind: "act", a, i });
+  });
+  return out;
+};
+const fmtGap = (m: number) => `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+
 export default function WorkWindowPanel({
   shifts, loose = [], onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onSelectMany, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onMoveTrips, coverage, closedIds, onReopenShift, onSuggest, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onMoveTrips, coverage, closedIds, onReopenShift, onSuggest, onPrintShift, onSwapTrips, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
 }: Props) {
   const ac = accent === "amber"
     ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
@@ -344,7 +366,7 @@ export default function WorkWindowPanel({
   };
 
   /* ── Verifica LIVE della selezione (normativa): tipologia + violazioni ── */
-  const [selPrev, setSelPrev] = useState<{ type: string | null; valid?: boolean; violations?: string[] } | null>(null);
+  const [selPrev, setSelPrev] = useState<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null>(null);
   useEffect(() => {
     if (!onPreviewIds || nSel === 0) { setSelPrev(null); return; }
     const ids = [...selected];
@@ -440,7 +462,7 @@ export default function WorkWindowPanel({
             className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${selBad
               ? "bg-rose-500/15 border-rose-500/50 text-rose-300"
               : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"}`}>
-            {selBad ? "⚠ " : ""}{nSel} sel · nastro {fmtDur(selNastro)} · lavoro {fmtDur(selLavoro)}{selPrev?.type ? ` → ${selPrev.type}` : ""}
+            {selBad ? "⚠ " : ""}{nSel} sel · nastro {fmtDur(selNastro)} · lavoro {fmtDur(selLavoro)}{typeof selPrev?.costEuro === "number" ? ` · ≈ €${selPrev.costEuro}` : ""}{selPrev?.type ? ` → ${selPrev.type}` : ""}
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
@@ -475,6 +497,21 @@ export default function WorkWindowPanel({
             className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
             <PackageOpen className="w-3.5 h-3.5" /> Spacchetta tutto
           </button>
+          {onSwapTrips && (() => {
+            const ids = [...selected];
+            const owner = (id: string) => shifts.find(sh => sh.activities.some(x => x.isTrip && x.id === id))?.id ?? null;
+            const eligible = ids.length === 2 && (() => {
+              const [o1, o2] = [owner(ids[0]), owner(ids[1])];
+              return !!o1 && !!o2 && o1 !== o2;
+            })();
+            return (
+              <button onClick={() => eligible && onSwapTrips(ids[0], ids[1])} disabled={busy || !eligible}
+                title="Scambia le due corse selezionate fra i loro turni (seleziona UNA corsa in ciascuno dei due turni)"
+                className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40">
+                <ArrowLeftRight className="w-3.5 h-3.5" /> Scambia
+              </button>
+            );
+          })()}
           <button onClick={onRepack} disabled={busy || nSel === 0}
             title="Chiude un turno NUOVO con le corse selezionate: scegli il deposito, tipologia e fuorilinea automatici"
             className={`flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-lg border ${ac.border} ${ac.solid} ${ac.text} hover:opacity-90 disabled:opacity-40`}>
@@ -569,6 +606,10 @@ export default function WorkWindowPanel({
                       <span className="text-[11px] font-bold text-foreground">{s.label}</span>
                       {s.sub && <span className="text-[9px] text-emerald-200/80 truncate">{s.sub}</span>}
                       <div className="ml-auto flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
+                        {onPrintShift && (
+                          <button onClick={() => onPrintShift(s.id)} title="Stampa il foglio-turno (A4)"
+                            className="p-0.5 rounded text-emerald-300/70 hover:text-emerald-300"><Printer className="w-3.5 h-3.5" /></button>
+                        )}
                         {onVerifyShift && (
                           <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa"
                             className="p-0.5 rounded text-emerald-300/70 hover:text-emerald-300"><ShieldCheck className="w-3.5 h-3.5" /></button>
@@ -581,7 +622,25 @@ export default function WorkWindowPanel({
                         )}
                       </div>
                     </div>
-                    <div className="px-2 pb-1 text-[9px] text-emerald-200/60">trascina sulla sidebar ⟵ per consegnarlo al gantt</div>
+                    {/* corse SEMPRE visibili anche da chiuso (una riga per linea) */}
+                    <div className="divide-y divide-emerald-500/10 max-h-72 overflow-y-auto">
+                      {withGaps(s.activities).map(row => row.kind === "gap" ? (
+                        <div key={`g-${row.i}`} className="flex items-center gap-1.5 px-2 h-[18px] text-[9px] text-emerald-200/50">
+                          <span className="flex-1 border-t border-dashed border-emerald-500/25" />
+                          interruzione {fmtGap(row.min)}
+                          <span className="flex-1 border-t border-dashed border-emerald-500/25" />
+                        </div>
+                      ) : (
+                        <div key={`${row.a.id}-${row.i}`}
+                          onContextMenu={rowCtx(row.a)}
+                          title={`${row.a.kindLabel} · ${row.a.timeLabel} — turno chiuso: Riapri per modificare`}
+                          className="flex items-center gap-1.5 px-2 h-[24px] text-[10px] opacity-90"
+                          style={{ background: rowColorOf(row.a).bg, borderLeft: `3px solid ${rowColorOf(row.a).border}` }}>
+                          {rowCells(row.a)}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="px-2 py-1 text-[9px] text-emerald-200/60">trascina sulla sidebar ⟵ per consegnarlo al gantt</div>
                   </div>
                 );
               }
@@ -608,6 +667,10 @@ export default function WorkWindowPanel({
                           <PackageOpen className="w-3 h-3" /> Spacchetta
                         </button>
                       )}
+                      {onPrintShift && (
+                        <button onClick={() => onPrintShift(s.id)} title="Stampa il foglio-turno (A4)"
+                          className="p-0.5 rounded text-muted-foreground hover:text-foreground"><Printer className="w-3.5 h-3.5" /></button>
+                      )}
                       {onVerifyShift && (
                         <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa del turno"
                           className="p-0.5 rounded text-muted-foreground hover:text-emerald-400"><ShieldCheck className="w-3.5 h-3.5" /></button>
@@ -618,11 +681,19 @@ export default function WorkWindowPanel({
                   </div>
                   {/* righe = corse/attività */}
                   <div className="divide-y divide-border/15 max-h-72 overflow-y-auto rounded-b-lg">
-                    {s.activities.map((a, i) => {
+                    {withGaps(s.activities).map(row => {
+                      if (row.kind === "gap") return (
+                        <div key={`g-${row.i}`} className="flex items-center gap-1.5 px-2 h-[18px] text-[9px] text-muted-foreground/60">
+                          <span className="flex-1 border-t border-dashed border-border/40" />
+                          interruzione {fmtGap(row.min)}
+                          <span className="flex-1 border-t border-dashed border-border/40" />
+                        </div>
+                      );
+                      const a = row.a;
                       const c = rowColorOf(a);
                       const sel = isPickable(a) && selected.has(a.id);
                       return (
-                        <div key={`${a.id}-${i}`}
+                        <div key={`${a.id}-${row.i}`}
                           onMouseDown={a.isTrip && onMoveTrips ? startRowDrag(a, s.id) : undefined}
                           onClick={rowClick(a)}
                           onContextMenu={rowCtx(a)}
