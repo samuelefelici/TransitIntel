@@ -140,6 +140,12 @@ export default function DriverWorkspace({
   const [wwDepots, setWwDepots] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
   const [wwRepackAsk, setWwRepackAsk] = useState<{ ids?: string[] } | null>(null);
   const [wwRepackDepot, setWwRepackDepot] = useState<string>("auto");
+  /* Turni CHIUSI nell'area (appena rimpacchettati): card compatta finché
+   * l'operatore non li consegna al gantt trascinandoli sulla sidebar. */
+  const [wwClosedIds, setWwClosedIds] = useState<string[]>([]);
+  /* "Dove la metto?": suggerimenti dei turni che accettano una corsa scoperta */
+  const [wwSuggest, setWwSuggest] = useState<{ tripId: string; busy: boolean; results: Array<{ shiftId: string; type: string; residenza: string | null }> } | null>(null);
+
   /* Verifica normativa puntuale (stile Bdsi): dialogo con tipologia + regole BDS */
   const [wwVerify, setWwVerify] = useState<{ shiftId: string; busy: boolean; type?: string | null; validation?: DriverShiftData["bdsValidation"] | null; residenza?: string | null } | null>(null);
   useEffect(() => {
@@ -768,6 +774,10 @@ export default function DriverWorkspace({
     const newRes: DriverShiftsResult = { ...result, driverShifts: [...kept, newShift] };
     setResult(newRes);
     pushHistory(newRes, `Finestra di lavoro · rimpacchettato ${newId} (${chosen.length} corse)`);
+    // il turno chiuso resta NELL'AREA come card compatta: si consegna al gantt
+    // trascinandolo sulla sidebar (scelta esplicita dell'operatore).
+    setWwShiftIds(prev => (prev.includes(newId) ? prev : [...prev, newId]));
+    setWwClosedIds(prev => [...prev, newId]);
     const usedActIds = new Set(chosenActs.map(a => a.id));
     setWwPool(prev => prev.filter(p => !chosenIds.has(wwPoolId(p)) && !usedActIds.has(wwPoolId(p))));
     setWwSelected(prev => new Set([...prev].filter(id => !chosenIds.has(id) && !usedActIds.has(id))));
@@ -816,7 +826,7 @@ export default function DriverWorkspace({
         }
       })();
     }
-    toast.success(`Turno guida ${newId} creato`, { description: `${chosen.length} corse · tipologia e fuorilinea in verifica automatica.` });
+    toast.success(`Turno guida ${newId} chiuso`, { description: `${chosen.length} corse · resta nell'area come card compatta: trascinala sulla sidebar per consegnarla al gantt.` });
   }, [result, wwShiftIds, wwSelected, wwPool, pushHistory, operatorConfig]);
 
   /* Verifica LIVE della selezione (stile Bdsi): monta un turno temporaneo con
@@ -964,6 +974,42 @@ export default function DriverWorkspace({
     }
     wwRevalidate([...new Set(touched)], newRes);
   }, [result, wwPool, wwRebuildShift, wwRevalidate, pushHistory]);
+
+  /* "Dove la metto?": prova la corsa scoperta in OGNI turno (senza sovrapposizioni)
+   * e chiede alla normativa quali la accettano SENZA violazioni. */
+  const wwSuggestFor = useCallback(async (tripId: string) => {
+    if (!result) return;
+    const entry = wwPool.find(p => p.trip && String(p.trip.tripId) === tripId);
+    const trip = entry?.trip;
+    if (!trip) return;
+    setWwSuggest({ tripId, busy: true, results: [] });
+    const probes: DriverShiftData[] = [];
+    for (const sft of result.driverShifts) {
+      const merged = [...sft.riprese.flatMap(r => r.trips), { ...trip }].sort((a, b) => a.departureMin - b.departureMin);
+      let ok = true;
+      for (let i = 1; i < merged.length; i++) if (merged[i].departureMin < merged[i - 1].arrivalMin) { ok = false; break; }
+      if (ok) probes.push(wwRebuildShift(sft, merged));
+    }
+    if (!probes.length) { setWwSuggest({ tripId, busy: false, results: [] }); return; }
+    try {
+      const r = await fetch(`${getApiBase()}/api/driver-shifts/tools/validate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shifts: probes.slice(0, 60), config: operatorConfig }),
+      });
+      const data = r.ok ? await r.json() : null;
+      const results = probes
+        .map(pb => ({ id: pb.driverId, rr: data?.results?.[pb.driverId] }))
+        .filter(x => x.rr && !x.rr.error && x.rr.bdsValidation?.valid)
+        .map(x => ({
+          shiftId: x.id,
+          type: x.rr.type ? (TYPE_LABELS[x.rr.type as DriverShiftType] ?? String(x.rr.type)) : "—",
+          residenza: result.driverShifts.find(sft => sft.driverId === x.id)?.residenzaName ?? null,
+        }));
+      setWwSuggest({ tripId, busy: false, results });
+    } catch {
+      setWwSuggest({ tripId, busy: false, results: [] });
+    }
+  }, [result, wwPool, wwRebuildShift, operatorConfig]);
 
   /* copertura del piano: corse nei turni / totali (le scoperte = pool) */
   const wwCoverage = useMemo(() => {
@@ -1840,6 +1886,40 @@ export default function DriverWorkspace({
                   </ol>
                 </div>
               )}
+              {/* "Dove la metto?": turni che accettano la corsa scoperta */}
+              {wwSuggest && (
+                <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwSuggest(null)}>
+                  <div className="w-full max-w-sm rounded-xl border border-purple-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
+                    <p className="text-sm font-bold text-purple-300">🎯 Dove la metto?</p>
+                    {wwSuggest.busy ? (
+                      <p className="text-xs text-zinc-400">Provo la corsa in tutti i turni e verifico la normativa…</p>
+                    ) : wwSuggest.results.length === 0 ? (
+                      <p className="text-xs text-zinc-400">Nessun turno può accoglierla senza violazioni: componi un turno nuovo (Rimpacchetta) o rivedi le composizioni.</p>
+                    ) : (
+                      <>
+                        <p className="text-[11px] text-zinc-400">{wwSuggest.results.length} turn{wwSuggest.results.length === 1 ? "o accetta" : "i accettano"} la corsa <b>senza violazioni</b>:</p>
+                        <div className="space-y-1 max-h-56 overflow-y-auto">
+                          {wwSuggest.results.map(rr => (
+                            <div key={rr.shiftId} className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-zinc-800 text-xs">
+                              <span className="font-bold text-zinc-100">{rr.shiftId}</span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-semibold">→ {rr.type}</span>
+                              {rr.residenza && <span className="text-[10px] text-zinc-500 truncate">{rr.residenza}</span>}
+                              <button onClick={() => { wwMoveTrips([wwSuggest.tripId], rr.shiftId); setWwSuggest(null); }}
+                                className="ml-auto shrink-0 text-[10px] font-semibold px-2 py-0.5 rounded border border-purple-500/50 bg-purple-500/15 text-purple-200 hover:bg-purple-500/25">
+                                Inserisci
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <div className="flex justify-end pt-1">
+                      <button onClick={() => setWwSuggest(null)}
+                        className="px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-400 text-xs hover:text-zinc-200">Chiudi</button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {/* Verifica normativa puntuale (stile Bdsi) */}
               {wwVerify && (
                 <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwVerify(null)}>
@@ -2023,7 +2103,7 @@ export default function DriverWorkspace({
                       });
                     }}
                     onDropShift={wwDrop}
-                    onRemoveShift={(id) => setWwShiftIds(ids => ids.filter(x => x !== id))}
+                    onRemoveShift={(id) => { setWwShiftIds(ids => ids.filter(x => x !== id)); setWwClosedIds(prev => prev.filter(x => x !== id)); }}
                     onUnpack={(id) => wwDissolve([id])}
                     onUnpackAll={() => wwDissolve(wwShiftIds)}
                     onRepack={() => setWwRepackAsk({})}
@@ -2033,6 +2113,9 @@ export default function DriverWorkspace({
                     available={wwAvailable}
                     onMoveTrips={wwMoveTrips}
                     coverage={wwCoverage}
+                    closedIds={wwClosedIds}
+                    onReopenShift={(id) => setWwClosedIds(prev => prev.filter(x => x !== id))}
+                    onSuggest={(tripId) => { void wwSuggestFor(tripId); }}
                     onUndo={handleUndo}
                     canUndo={historyIdx > 0}
                     storageKey={`ww-pos:tg:${vehicleScenarioId ?? "x"}:${dssId ?? "live"}`}

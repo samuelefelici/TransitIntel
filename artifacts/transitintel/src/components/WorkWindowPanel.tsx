@@ -86,6 +86,12 @@ interface Props {
   onMoveTrips?: (tripIds: string[], targetShiftId: string | null) => void;
   /** contatore copertura: corse totali e SCOPERTE (obiettivo: zero) */
   coverage?: { total: number; uncovered: number };
+  /** turni CHIUSI nell'area (appena rimpacchettati): card compatta con la
+   *  tipologia in evidenza; si consegnano al gantt trascinandoli sulla sidebar. */
+  closedIds?: string[];
+  onReopenShift?: (shiftId: string) => void;
+  /** "Dove la metto?": suggerisce i turni che accettano una corsa scoperta */
+  onSuggest?: (tripId: string) => void;
   /** Annulla (history del workspace ospite) */
   onUndo?: () => void;
   canUndo?: boolean;
@@ -114,7 +120,7 @@ const CARD_H = 26;    // altezza card-riga libera
 export default function WorkWindowPanel({
   shifts, loose = [], onImport, onAddActivity, onDeleteLoose,
   selected, onToggleSelect, onSelectMany, onToggleSelectAll, onDropShift, onRemoveShift,
-  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onMoveTrips, coverage, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
+  onUnpack, onUnpackAll, onRepack, onPreviewIds, onVerifyShift, available, onMoveTrips, coverage, closedIds, onReopenShift, onSuggest, onUndo, canUndo, storageKey, onClose, busy, accent = "purple",
 }: Props) {
   const ac = accent === "amber"
     ? { text: "text-amber-300", border: "border-amber-500/40", bg: "bg-amber-500/10", solid: "bg-amber-500/20" }
@@ -206,6 +212,12 @@ export default function WorkWindowPanel({
     const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
     return el?.closest?.("[data-wwshift]")?.getAttribute("data-wwshift") ?? null;
   };
+  /* puntatore sopra la SIDEBAR: trascinarci una card turno = consegnarla al gantt */
+  const overSidebar = (ev: MouseEvent): boolean => {
+    const el = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+    return !!el?.closest?.("[data-wwsidebar]");
+  };
+  const closedSet = new Set(closedIds ?? []);
 
   /* ── DRAG di una RIGA dentro una card turno: fuori dal turno (→ scoperta),
    *    su un ALTRO turno (→ spostamento diretto) o su nulla (annulla) ── */
@@ -318,7 +330,7 @@ export default function WorkWindowPanel({
   };
 
   /* ── Click destro: dettagli corsa + tipologia di macchina ── */
-  const [ctx, setCtx] = useState<{ x: number; y: number; a: WorkActivity } | null>(null);
+  const [ctx, setCtx] = useState<{ x: number; y: number; a: WorkActivity; loose?: boolean } | null>(null);
   useEffect(() => {
     if (!ctx) return;
     const close = () => setCtx(null);
@@ -326,9 +338,9 @@ export default function WorkWindowPanel({
     window.addEventListener("contextmenu", close);
     return () => { window.removeEventListener("click", close); window.removeEventListener("contextmenu", close); };
   }, [ctx]);
-  const rowCtx = (a: WorkActivity) => (e: React.MouseEvent) => {
+  const rowCtx = (a: WorkActivity, loose?: boolean) => (e: React.MouseEvent) => {
     e.preventDefault(); e.stopPropagation();
-    setCtx({ x: e.clientX, y: e.clientY, a });
+    setCtx({ x: e.clientX, y: e.clientY, a, loose });
   };
 
   /* ── Verifica LIVE della selezione (normativa): tipologia + violazioni ── */
@@ -476,10 +488,10 @@ export default function WorkWindowPanel({
 
       <div className="flex flex-1 min-h-0">
         {/* ── SIDEBAR GANTT (allargabile) ── */}
-        <div className="shrink-0 border-r border-border/30 bg-background/60 overflow-y-auto" style={{ width: sideW }}>
+        <div data-wwsidebar="1" className="shrink-0 border-r border-border/30 bg-background/60 overflow-y-auto" style={{ width: sideW }}>
           <div className="px-2 py-1.5 border-b border-border/30 sticky top-0 bg-background/95 z-10">
             <p className={`text-[10px] font-bold uppercase tracking-wide ${ac.text}`}>Turni dal gantt</p>
-            <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro, o aggiungilo col ⊕</p>
+            <p className="text-[9px] text-muted-foreground">trascina un turno nell'area di lavoro (⊕ per aggiungerlo) · trascina QUI una card per consegnarla al gantt</p>
             <input value={sideQ} onChange={e => setSideQ(e.target.value)} placeholder="Cerca turno (matricola, tipologia, deposito)…"
               className="mt-1 w-full px-2 py-1 rounded border border-border/40 bg-background text-[10px] outline-none focus:border-border" />
           </div>
@@ -541,12 +553,46 @@ export default function WorkWindowPanel({
               const p = pos[`shift:${s.id}`] ?? { x: 24, y: 24 };
               const trips = s.activities.filter(a => a.isTrip);
               const allSel = trips.length > 0 && trips.every(t => selected.has(t.id));
+              if (closedSet.has(s.id)) {
+                // TURNO CHIUSO: compatto, tipologia in evidenza; per toglierlo
+                // dall'area lo TRASCINI sulla sidebar (torna nel gantt).
+                return (
+                  <div key={s.id} data-wwshift={s.id}
+                    onMouseDown={startDrag(`shift:${s.id}`, undefined, (ev, moved) => {
+                      if (moved && overSidebar(ev)) onRemoveShift(s.id);
+                    })}
+                    title="Turno CHIUSO — trascinalo sulla sidebar per consegnarlo al gantt, o riaprilo per modificarlo"
+                    className="absolute rounded-lg border border-emerald-500/50 bg-emerald-500/10 shadow-xl select-none cursor-grab active:cursor-grabbing"
+                    style={{ left: p.x, top: p.y, width: 400 }}>
+                    <div className="flex items-center gap-1.5 px-2 py-1.5">
+                      <span className="text-[10px] font-black text-emerald-300">✓ CHIUSO</span>
+                      <span className="text-[11px] font-bold text-foreground">{s.label}</span>
+                      {s.sub && <span className="text-[9px] text-emerald-200/80 truncate">{s.sub}</span>}
+                      <div className="ml-auto flex items-center gap-1" onMouseDown={(e) => e.stopPropagation()}>
+                        {onVerifyShift && (
+                          <button onClick={() => onVerifyShift(s.id)} title="Verifica normativa"
+                            className="p-0.5 rounded text-emerald-300/70 hover:text-emerald-300"><ShieldCheck className="w-3.5 h-3.5" /></button>
+                        )}
+                        {onReopenShift && (
+                          <button onClick={() => onReopenShift(s.id)} title="Riapri il turno per modificarlo"
+                            className="text-[10px] font-semibold px-2 py-0.5 rounded border border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/15">
+                            Riapri
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="px-2 pb-1 text-[9px] text-emerald-200/60">trascina sulla sidebar ⟵ per consegnarlo al gantt</div>
+                  </div>
+                );
+              }
               return (
                 <div key={s.id} data-wwshift={s.id}
                   className="absolute rounded-lg border border-border/50 bg-background/95 shadow-xl select-none"
                   style={{ left: p.x, top: p.y, width: 520 }}>
                   {/* header (drag della card) — stile nastro Bdsi */}
-                  <div onMouseDown={startDrag(`shift:${s.id}`)}
+                  <div onMouseDown={startDrag(`shift:${s.id}`, undefined, (ev, moved) => {
+                      if (moved && overSidebar(ev)) onRemoveShift(s.id);   // consegna al gantt
+                    })}
                     className={`flex items-center gap-1.5 px-2 py-1 rounded-t-lg cursor-grab active:cursor-grabbing ${ac.solid} border-b ${ac.border}`}>
                     <button onClick={(e) => { e.stopPropagation(); onToggleSelectAll(s.id); }} onMouseDown={(e) => e.stopPropagation()}
                       className={ac.text} title={allSel ? "Deseleziona tutte le corse" : "Seleziona tutte le corse"}>
@@ -612,8 +658,8 @@ export default function WorkWindowPanel({
                     },
                   )}
                   onClick={rowClick(a)}
-                  onContextMenu={rowCtx(a)}
-                  title="trascina per spostare (le selezionate si muovono insieme) · click = seleziona · ctrl+click = aggiungi · destro = dettagli"
+                  onContextMenu={rowCtx(a, true)}
+                  title="trascina per spostare (le selezionate si muovono insieme; su un turno = entra nel turno) · click = seleziona · ctrl+click = aggiungi · destro = dettagli e «Dove la metto?»"
                   className={`absolute flex items-center gap-1.5 px-2 rounded-md border text-[10px] cursor-grab active:cursor-grabbing shadow-md ${sel ? "ring-2 ring-white/70" : ""}`}
                   style={{ left: p.x, top: p.y, width: CARD_W, height: CARD_H, background: c.bg, borderColor: c.border }}>
                   {rowCells(a)}
@@ -672,6 +718,12 @@ export default function WorkWindowPanel({
           <p className="text-zinc-400">A: <b className="text-zinc-200">{ctx.a.toName ?? "—"}</b></p>
           {ctx.a.isTrip && (
             <p className="text-zinc-400 pt-0.5 border-t border-zinc-800">Tipologia macchina: <b className="text-amber-300">{ctx.a.vehicleLabel ?? "—"}</b></p>
+          )}
+          {ctx.loose && ctx.a.isTrip && onSuggest && (
+            <button onClick={() => { onSuggest(ctx.a.id); setCtx(null); }}
+              className="w-full mt-1 text-left px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 text-purple-200 text-[11px] font-semibold hover:bg-purple-500/20">
+              🎯 Dove la metto? — suggerisci i turni compatibili
+            </button>
           )}
         </div>
       )}

@@ -615,6 +615,9 @@ export default function VehicleWorkspace({
   /* ── Finestra di lavoro: turni a colonna, spacchetta/rimpacchetta ── */
   const [wwOpen, setWwOpen] = useState(false);
   const [wwShiftIds, setWwShiftIds] = useState<string[]>([]);
+  /* Turni CHIUSI nell'area (appena rimpacchettati): card compatta finché
+   * l'operatore non li consegna al gantt trascinandoli sulla sidebar. */
+  const [wwClosedIds, setWwClosedIds] = useState<string[]>([]);
   const [wwUnpacked, setWwUnpacked] = useState<Set<string>>(new Set());
   const [wwSelected, setWwSelected] = useState<Set<string>>(new Set());
   /** pool corse sciolte: locali (= scoperte di QUESTO scenario) + importate da
@@ -957,6 +960,10 @@ export default function VehicleWorkspace({
     setResult(next);
     pushHistory(next, "deadhead", `Finestra di lavoro · rimpacchettato ${newId}`,
       `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · ${pr.removed} turni vuoti eliminati`);
+    // il turno chiuso resta NELL'AREA come card compatta: si consegna al gantt
+    // trascinandolo sulla sidebar (scelta esplicita dell'operatore).
+    setWwShiftIds(prev => (prev.includes(newId) ? prev : [...prev, newId]));
+    setWwClosedIds(prev => [...prev, newId]);
     // il pool tiene le corse NON usate (restano nell'area, requisito 2);
     // le importate rimpacchettate vanno tolte dalle scoperte della UDP sorgente
     const importedPacked = chosenPool.filter(p => p.importedFrom);
@@ -986,8 +993,8 @@ export default function VehicleWorkspace({
         toast.info(`Scoperte aggiornate nelle UDP di origine (${bySrc.size})`);
       })();
     }
-    toast.success(`Turno macchina ${newId} creato`, {
-      description: `${chosen.length} corse in ordine · ${rg.added} fuorilinea rigenerati automaticamente${pr.removed ? ` · ${pr.removed} turni rimasti vuoti eliminati` : ""}.`,
+    toast.success(`Turno macchina ${newId} chiuso`, {
+      description: `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · resta nell'area come card compatta: trascinala sulla sidebar per consegnarla al gantt.`,
     });
   }, [result, wwShiftIds, wwSelected, pushHistory]);
 
@@ -2099,6 +2106,7 @@ export default function VehicleWorkspace({
                 onRemoveShift={(id) => {
                   setWwShiftIds(ids => ids.filter(x => x !== id));
                   setWwUnpacked(prev => { const n = new Set(prev); n.delete(id); return n; });
+                  setWwClosedIds(prev => prev.filter(x => x !== id));
                 }}
                 loose={wwPool.map((p, i) => ({
                   id: String(p.entry.tripId),
@@ -2122,6 +2130,8 @@ export default function VehicleWorkspace({
                 onRepackIds={(ids) => wwRepack(ids)}
                 available={wwAvailable}
                 coverage={wwCoverage}
+                closedIds={wwClosedIds}
+                onReopenShift={(id) => setWwClosedIds(prev => prev.filter(x => x !== id))}
                 onUndo={undo}
                 canUndo={historyIndex >= 0}
                 storageKey={`ww-pos:tm:${initialSavedId ?? "live"}`}
