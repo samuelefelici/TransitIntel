@@ -204,13 +204,17 @@ export async function computeActiveDatesByTrip(
     }
   }
 
-  // Calendario categorie (globale): data → categoria
+  // Calendario categorie: merged PROJECT > GLOBAL (5B) — la riga del progetto
+  // vince, quella globale legacy è il fallback per le date scoperte.
   const datesArrLiteral = `{${dates.join(",")}}`;
   const catCalR = await db.execute(sql`
-    SELECT to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id, cat.code AS category_code
+    SELECT DISTINCT ON (c.date)
+           to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id, cat.code AS category_code
       FROM ps_validity_category_calendar c
       LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
-     WHERE c.date = ANY(${datesArrLiteral}::date[])
+     WHERE (c.project_id = ${projectId}::uuid OR c.project_id IS NULL)
+       AND c.date = ANY(${datesArrLiteral}::date[])
+     ORDER BY c.date, c.project_id ASC NULLS LAST
   `);
   const catByDate = new Map<string, { id: string; code: string }>();
   for (const r of (catCalR as any).rows ?? []) {

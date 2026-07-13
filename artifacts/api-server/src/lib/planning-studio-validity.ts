@@ -1289,24 +1289,12 @@ export async function syncValidityCategoriesFromProfile(
   }
 
   /* ── Categorie (tabelle globali + seed idempotenti, lookup id per codice) ── */
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_validity_categories (
-      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      code        text NOT NULL UNIQUE,
-      name        text NOT NULL,
-      color       text NOT NULL,
-      sort_order  integer NOT NULL DEFAULT 0,
-      created_at  timestamptz NOT NULL DEFAULT now(),
-      updated_at  timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
-      date         date PRIMARY KEY,
-      category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
-      created_at   timestamptz NOT NULL DEFAULT now()
-    )
-  `);
+  // Schema condiviso (5B): anagrafica categorie + calendario PER-PROGETTO
+  // (project_id NULLABLE, indici unique parziali, PK legacy rimossa).
+  {
+    const { ensureValidityCategoryCalendarSchema } = await import("./planning-studio-validity-categories");
+    await ensureValidityCategoryCalendarSchema();
+  }
   for (const c of SEED_VALIDITY_CATEGORIES) {
     await db.execute(sql`
       INSERT INTO ps_validity_categories (code, name, color, sort_order)
@@ -1346,14 +1334,18 @@ export async function syncValidityCategoriesFromProfile(
   }
   categoryDates = dateEntries.length;
   if (!dryRun) {
+    // Upsert PER-PROGETTO (5B): il sync di un progetto scrive solo le SUE
+    // righe — prima l'ON CONFLICT (date) globale sovrascriveva la
+    // classificazione dei giorni degli altri progetti a ogni sync.
     const CHUNK = 400;
     for (let i = 0; i < dateEntries.length; i += CHUNK) {
       const chunk = dateEntries.slice(i, i + CHUNK);
-      const values = sql.join(chunk.map((e) => sql`(${e.iso}::date, ${e.catId}::uuid)`), sql`, `);
+      const values = sql.join(chunk.map((e) => sql`(${projectId}::uuid, ${e.iso}::date, ${e.catId}::uuid)`), sql`, `);
       await db.execute(sql`
-        INSERT INTO ps_validity_category_calendar (date, category_id)
+        INSERT INTO ps_validity_category_calendar (project_id, date, category_id)
         VALUES ${values}
-        ON CONFLICT (date) DO UPDATE SET category_id = EXCLUDED.category_id
+        ON CONFLICT (project_id, date) WHERE project_id IS NOT NULL
+        DO UPDATE SET category_id = EXCLUDED.category_id
       `);
     }
   }

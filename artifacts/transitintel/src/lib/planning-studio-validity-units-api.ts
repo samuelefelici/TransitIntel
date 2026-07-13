@@ -57,20 +57,27 @@ export function deletePsValidityCategory(catId: string): Promise<{ ok: true }> {
 
 export function listPsValidityCategoryCalendar(params: {
   from: string; to: string;
+  /** merged project > global; assente = solo strato globale legacy */
+  projectId?: string;
 }): Promise<PsValidityCategoryCalendarEntry[]> {
-  const qs = new URLSearchParams({ from: params.from, to: params.to }).toString();
+  const qs = new URLSearchParams({ from: params.from, to: params.to });
+  if (params.projectId) qs.set("projectId", params.projectId);
   return apiFetch<PsValidityCategoryCalendarEntry[]>(
-    `/api/planning-studio/validity-categories/calendar?${qs}`,
+    `/api/planning-studio/validity-categories/calendar?${qs.toString()}`,
   );
 }
 
-/** Upsert/Delete bulk: passa categoryId=null per rimuovere. */
+/** Upsert/Delete bulk: passa categoryId=null per rimuovere.
+ *  Con projectId scrive lo strato del progetto (5B); senza, quello globale. */
 export function setPsValidityCategoryCalendar(input: {
-  dates: string[]; categoryId: string | null;
+  dates: string[]; categoryId: string | null; projectId?: string;
 }): Promise<{ ok: true; count: number; op: "upsert" | "delete" }> {
   return apiFetch(`/api/planning-studio/validity-categories/calendar`, {
     method: "PUT",
-    body: JSON.stringify({ dates: input.dates, category_id: input.categoryId }),
+    body: JSON.stringify({
+      dates: input.dates, category_id: input.categoryId,
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+    }),
   });
 }
 

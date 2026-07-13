@@ -277,8 +277,8 @@ export default function PlanningStudioValidityPage() {
     queryFn: () => listPsValidityCategories(),
   });
   const categoryCalQ = useQuery({
-    queryKey: ["ps-validity-categories", "calendar", from, to],
-    queryFn: () => listPsValidityCategoryCalendar({ from, to }),
+    queryKey: ["ps-validity-categories", "calendar", projectId, from, to],
+    queryFn: () => listPsValidityCategoryCalendar({ from, to, projectId }),
     enabled: !!from && !!to,
   });
   const categoryByDate = useMemo(() => {
@@ -569,7 +569,7 @@ export default function PlanningStudioValidityPage() {
 
   const setCategoryMut = useMutation({
     mutationFn: (input: { dates: string[]; categoryId: string | null }) =>
-      setPsValidityCategoryCalendar(input),
+      setPsValidityCategoryCalendar({ ...input, projectId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
     },
@@ -1212,6 +1212,7 @@ export default function PlanningStudioValidityPage() {
           onClose={() => setCategoryPeriodsOpen(false)}
           categories={categoriesQ.data ?? []}
           openCategoryEditor={() => setCatEditorOpen(true)}
+          projectId={projectId}
         />
       )}
 
@@ -2656,6 +2657,8 @@ function CategoryPeriodsDialog(props: {
   onClose: () => void;
   categories: PsValidityCategory[];
   openCategoryEditor: () => void;
+  /** pittura sul calendario DEL PROGETTO (5B): merged in lettura, scoped in scrittura */
+  projectId: string;
 }) {
   const qc = useQueryClient();
   const today = new Date();
@@ -2672,8 +2675,8 @@ function CategoryPeriodsDialog(props: {
   const lastISO = useMemo(() => `${year}-${String(month + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`, [year, month, lastDay]);
 
   const calQ = useQuery({
-    queryKey: ["ps-validity-categories", "calendar", firstISO, lastISO],
-    queryFn: () => listPsValidityCategoryCalendar({ from: firstISO, to: lastISO }),
+    queryKey: ["ps-validity-categories", "calendar", props.projectId, firstISO, lastISO],
+    queryFn: () => listPsValidityCategoryCalendar({ from: firstISO, to: lastISO, projectId: props.projectId }),
   });
 
   const dateToCatId = useMemo(() => {
@@ -2690,7 +2693,7 @@ function CategoryPeriodsDialog(props: {
 
   const setMut = useMutation({
     mutationFn: (input: { dates: string[]; categoryId: string | null }) =>
-      setPsValidityCategoryCalendar(input),
+      setPsValidityCategoryCalendar({ ...input, projectId: props.projectId }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
     },

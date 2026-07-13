@@ -7,18 +7,23 @@
  *    attraverso un calendario decido quando sono attive queste validità.
  *    Le categorie sono valide per tutti i progetti."
  *
- * Modello (entrambe globali, nessun project_id):
+ * Modello:
  *   - ps_validity_categories         (id, code, name, color, sort_order)
- *   - ps_validity_category_calendar  (date PK, category_id) — 1 categoria per giorno
+ *     → dizionario GLOBALE condiviso (scuole_chiuse_estivo significa lo
+ *       stesso ovunque; ciò che cambia per progetto è QUALI giorni lo sono)
+ *   - ps_validity_category_calendar  (project_id?, date, category_id)
+ *     → PER-PROGETTO dal pacchetto 5B (project_id NULL = strato globale
+ *       legacy, fallback per i progetti senza righe proprie). 1 categoria
+ *       per giorno per strato; lettura con precedenza project > global.
  *
  * Endpoint sotto /api/planning-studio/validity-categories:
  *   GET    /                            → lista categorie
  *   POST   /                            → crea
  *   PATCH  /:catId                      → modifica
  *   DELETE /:catId                      → elimina (cascade calendar)
- *   GET    /calendar?from=&to=          → entries calendario nel range
- *   PUT    /calendar                    → upsert { date, category_id }
- *   DELETE /calendar?date=YYYY-MM-DD    → rimuovi assegnazione
+ *   GET    /calendar?from=&to=[&projectId=] → entries (merged se projectId)
+ *   PUT    /calendar                    → upsert { dates, category_id, projectId? }
+ *   DELETE /calendar?date=&projectId?=  → rimuovi assegnazione (per strato)
  */
 import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
@@ -28,12 +33,76 @@ import { sql } from "drizzle-orm";
 const router: IRouter = Router();
 
 let bootstrapped = false;
+let calendarSchemaReady = false;
 
 const SEED_CATEGORIES = [
   { code: "scuole_aperte",  name: "Scuole Aperte",  color: "#3b82f6", sort_order: 10 },
   { code: "scuole_chiuse",  name: "Scuole Chiuse",  color: "#f59e0b", sort_order: 20 },
   { code: "festivita",      name: "Festività",      color: "#ef4444", sort_order: 30 },
 ];
+
+/**
+ * Schema del CALENDARIO categorie — migrazione PER-PROGETTO (pacchetto 5B).
+ *
+ * Storicamente PK sulla sola `date` (calendario unico globale): due progetti
+ * si sovrascrivevano a vicenda la classificazione dei giorni a ogni sync.
+ * Ora: colonna project_id NULLABLE + indici UNIQUE PARZIALI, stesso pattern
+ * di ps_day_calendar (planning-studio-validity.ts). Le righe esistenti restano
+ * project_id NULL = fallback legacy leggibile da tutti; le nuove scritture
+ * sono per-progetto. Lettura con precedenza project > global.
+ *
+ * Idempotente e condivisa: chiamata dai 3 moduli che bootstrappavano la
+ * tabella inline (questo, validity, validity-units).
+ * Ordine importante: indici PRIMA del drop della PK (mai senza arbiter).
+ */
+export async function ensureValidityCategoryCalendarSchema(): Promise<void> {
+  if (calendarSchemaReady) return;
+  // Self-contained: la FK del calendario richiede l'anagrafica categorie.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS ps_validity_categories (
+      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      code        text NOT NULL UNIQUE,
+      name        text NOT NULL,
+      color       text NOT NULL,
+      sort_order  integer NOT NULL DEFAULT 0,
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      updated_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
+      date         date PRIMARY KEY,
+      category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    ALTER TABLE ps_validity_category_calendar
+      ADD COLUMN IF NOT EXISTS project_id uuid REFERENCES ps_projects(id) ON DELETE CASCADE
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_vcc_global
+      ON ps_validity_category_calendar (date) WHERE project_id IS NULL
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_vcc_project
+      ON ps_validity_category_calendar (project_id, date) WHERE project_id IS NOT NULL
+  `);
+  // drop PK name-agnostic (il NOT NULL su date sopravvive al drop)
+  await db.execute(sql`
+    DO $$ DECLARE pk text;
+    BEGIN
+      SELECT conname INTO pk FROM pg_constraint
+       WHERE conrelid = 'ps_validity_category_calendar'::regclass AND contype = 'p';
+      IF pk IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE ps_validity_category_calendar DROP CONSTRAINT %I', pk);
+      END IF;
+    END $$
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_vcc_cat ON ps_validity_category_calendar(category_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_vcc_lookup ON ps_validity_category_calendar (project_id, date)`);
+  calendarSchemaReady = true;
+}
 
 async function ensureTables(): Promise<void> {
   if (bootstrapped) return;
@@ -49,14 +118,7 @@ async function ensureTables(): Promise<void> {
         updated_at  timestamptz NOT NULL DEFAULT now()
       )
     `);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
-        date         date PRIMARY KEY,
-        category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
-        created_at   timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_vcc_cat ON ps_validity_category_calendar(category_id)`);
+    await ensureValidityCategoryCalendarSchema();
 
     for (const c of SEED_CATEGORIES) {
       await db.execute(sql`
@@ -75,6 +137,42 @@ async function ensureTables(): Promise<void> {
 
 function getUserId(req: Request): string | null {
   return (req as any).session?.userId ?? (req as any).user?.id ?? null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Accesso al progetto (owner/membro; needWrite = owner|editor). Duplicata
+ *  localmente come negli altri moduli ps_* per evitare cicli di import. */
+async function loadProject(projectId: string, userId: string, needWrite: boolean): Promise<any | null> {
+  const r = await db.execute(sql`
+    SELECT p.id,
+           CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
+                ELSE pm.role END AS my_role
+      FROM ps_projects p
+      LEFT JOIN ps_project_members pm
+             ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
+     WHERE p.id = ${projectId}::uuid
+       AND (p.owner_user_id = ${userId}::uuid OR pm.user_id IS NOT NULL)
+     LIMIT 1
+  `);
+  const row: any = (r as any).rows?.[0] ?? null;
+  if (!row) return null;
+  if (needWrite && row.my_role !== "owner" && row.my_role !== "editor") return null;
+  return row;
+}
+
+/** projectId opzionale da query/body: null = strato globale legacy.
+ *  Ritorna undefined se presente ma invalido/inaccessibile (→ 4xx). */
+async function resolveProjectScope(
+  req: Request, res: Response, raw: unknown, needWrite: boolean,
+): Promise<string | null | undefined> {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const pid = String(raw);
+  if (!UUID_RE.test(pid)) { res.status(400).json({ error: "projectId non valido" }); return undefined; }
+  const userId = getUserId(req);
+  const proj = userId ? await loadProject(pid, userId, needWrite) : null;
+  if (!proj) { res.status(404).json({ error: "Progetto non trovato o permessi insufficienti" }); return undefined; }
+  return pid;
 }
 
 function isValidISODate(s: unknown): s is string {
@@ -186,13 +284,27 @@ router.get("/planning-studio/validity-categories/calendar", async (req, res): Pr
   if (!isValidISODate(from) || !isValidISODate(to) || from > to) {
     res.status(400).json({ error: "from_to_required" }); return;
   }
+  const projectId = await resolveProjectScope(req, res, req.query.projectId, false);
+  if (projectId === undefined) return;
   try {
-    const r = await db.execute(sql`
-      SELECT to_char(date, 'YYYY-MM-DD') AS date, category_id
-        FROM ps_validity_category_calendar
-       WHERE date >= ${from}::date AND date <= ${to}::date
-       ORDER BY date ASC
-    `);
+    // Con projectId: merged project > global (la riga di progetto vince, la
+    // globale legacy resta fallback per le date scoperte). Senza: solo lo
+    // strato globale — esattamente ciò che i client vecchi vedevano prima.
+    const r = projectId
+      ? await db.execute(sql`
+          SELECT DISTINCT ON (date) to_char(date, 'YYYY-MM-DD') AS date, category_id
+            FROM ps_validity_category_calendar
+           WHERE (project_id = ${projectId}::uuid OR project_id IS NULL)
+             AND date >= ${from}::date AND date <= ${to}::date
+           ORDER BY date ASC, project_id ASC NULLS LAST
+        `)
+      : await db.execute(sql`
+          SELECT to_char(date, 'YYYY-MM-DD') AS date, category_id
+            FROM ps_validity_category_calendar
+           WHERE project_id IS NULL
+             AND date >= ${from}::date AND date <= ${to}::date
+           ORDER BY date ASC
+        `);
     res.json(((r as any).rows ?? []).map((x: any) => ({ date: x.date, categoryId: x.category_id })));
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "internal_error" });
@@ -211,21 +323,43 @@ router.put("/planning-studio/validity-categories/calendar", async (req, res): Pr
   for (const d of dates) {
     if (!isValidISODate(d)) { res.status(400).json({ error: `invalid_date:${d}` }); return; }
   }
+  const projectId = await resolveProjectScope(req, res, req.body?.projectId, true);
+  if (projectId === undefined) return;
   try {
     if (categoryId === null) {
-      // bulk delete
+      // bulk delete (scoped: solo lo strato indicato — l'erase per-progetto
+      // può far riemergere il fallback globale su quella data, come day-calendar)
       for (const d of dates) {
-        await db.execute(sql`DELETE FROM ps_validity_category_calendar WHERE date = ${d}::date`);
+        if (projectId) {
+          await db.execute(sql`
+            DELETE FROM ps_validity_category_calendar
+             WHERE project_id = ${projectId}::uuid AND date = ${d}::date`);
+        } else {
+          await db.execute(sql`
+            DELETE FROM ps_validity_category_calendar
+             WHERE project_id IS NULL AND date = ${d}::date`);
+        }
       }
       res.json({ ok: true, count: dates.length, op: "delete" });
       return;
     }
+    // upsert su indice parziale: stessa sintassi collaudata di ps_day_calendar
     for (const d of dates) {
-      await db.execute(sql`
-        INSERT INTO ps_validity_category_calendar (date, category_id)
-        VALUES (${d}::date, ${categoryId}::uuid)
-        ON CONFLICT (date) DO UPDATE SET category_id = EXCLUDED.category_id
-      `);
+      if (projectId) {
+        await db.execute(sql`
+          INSERT INTO ps_validity_category_calendar (project_id, date, category_id)
+          VALUES (${projectId}::uuid, ${d}::date, ${categoryId}::uuid)
+          ON CONFLICT (project_id, date) WHERE project_id IS NOT NULL
+          DO UPDATE SET category_id = EXCLUDED.category_id
+        `);
+      } else {
+        await db.execute(sql`
+          INSERT INTO ps_validity_category_calendar (project_id, date, category_id)
+          VALUES (NULL, ${d}::date, ${categoryId}::uuid)
+          ON CONFLICT (date) WHERE project_id IS NULL
+          DO UPDATE SET category_id = EXCLUDED.category_id
+        `);
+      }
     }
     res.json({ ok: true, count: dates.length, op: "upsert" });
   } catch (e: any) {
@@ -239,8 +373,18 @@ router.delete("/planning-studio/validity-categories/calendar", async (req, res):
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const date = req.query.date;
   if (!isValidISODate(date)) { res.status(400).json({ error: "date_required" }); return; }
+  const projectId = await resolveProjectScope(req, res, req.query.projectId, true);
+  if (projectId === undefined) return;
   try {
-    await db.execute(sql`DELETE FROM ps_validity_category_calendar WHERE date = ${date}::date`);
+    if (projectId) {
+      await db.execute(sql`
+        DELETE FROM ps_validity_category_calendar
+         WHERE project_id = ${projectId}::uuid AND date = ${date}::date`);
+    } else {
+      await db.execute(sql`
+        DELETE FROM ps_validity_category_calendar
+         WHERE project_id IS NULL AND date = ${date}::date`);
+    }
     res.json({ ok: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "internal_error" });

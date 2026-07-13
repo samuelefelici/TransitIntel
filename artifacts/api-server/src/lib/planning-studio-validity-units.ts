@@ -41,26 +41,12 @@ async function ensureTables(): Promise<void> {
   try {
     /* Dipendenze cross-modulo: le tabelle delle CATEGORIE possono non esistere
        ancora (vengono create dal modulo validity-categories al primo uso).
-       Le creiamo qui in modo idempotente così la compute delle UDP funziona
-       anche su progetti "da zero" che non hanno mai toccato le categorie. */
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_validity_categories (
-        id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        code        text NOT NULL UNIQUE,
-        name        text NOT NULL,
-        color       text NOT NULL,
-        sort_order  integer NOT NULL DEFAULT 0,
-        created_at  timestamptz NOT NULL DEFAULT now(),
-        updated_at  timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
-        date         date PRIMARY KEY,
-        category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
-        created_at   timestamptz NOT NULL DEFAULT now()
-      )
-    `);
+       Helper condiviso (5B): anagrafica + calendario per-progetto, così la
+       compute delle UDP funziona anche su progetti "da zero". */
+    {
+      const { ensureValidityCategoryCalendarSchema } = await import("./planning-studio-validity-categories");
+      await ensureValidityCategoryCalendarSchema();
+    }
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_trip_category_validity (
         trip_id     uuid NOT NULL,
@@ -290,15 +276,19 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
       for (const d of settings.patronSaintDates) if (isValidISODate(d)) patronSaints.add(d);
     }
 
-    // Calendario categorie (globale) — array come literal Postgres (vedi nota
-    // in buildDayTypeMap: l'interpolazione diretta genera una tupla invalida)
+    // Calendario categorie: merged PROJECT > GLOBAL (5B) — la riga del
+    // progetto vince, quella globale legacy resta fallback per le date
+    // scoperte. Array come literal Postgres (vedi nota in buildDayTypeMap).
     const datesArrLiteral = `{${dates.join(",")}}`;
     const catCalR = await db.execute(sql`
-      SELECT to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id,
+      SELECT DISTINCT ON (c.date)
+             to_char(c.date, 'YYYY-MM-DD') AS date, c.category_id,
              cat.name AS category_name, cat.color AS category_color, cat.code AS category_code
         FROM ps_validity_category_calendar c
         LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
-       WHERE c.date = ANY(${datesArrLiteral}::date[])
+       WHERE (c.project_id = ${proj.id}::uuid OR c.project_id IS NULL)
+         AND c.date = ANY(${datesArrLiteral}::date[])
+       ORDER BY c.date, c.project_id ASC NULLS LAST
     `);
     const catByDate = new Map<string, { id: string; name: string; color: string; code: string }>();
     for (const r of (catCalR as any).rows ?? []) {

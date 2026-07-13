@@ -143,12 +143,20 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
   // aggiorna le categorie del calendario aziendale prima del calcolo
   try { const { ensureCategoriesFresh } = await import("./planning-studio-validity"); await ensureCategoriesFresh(projId); } catch { /* non bloccante */ }
 
-  // 1) calendario categorie (data → categoria) + meta categorie
+  // 1) calendario categorie (data → categoria) + meta categorie.
+  // Merged PROJECT > GLOBAL (5B) in SUBQUERY: prima si aggregava TUTTA la
+  // tabella cross-progetto (i km di A calcolati sui giorni classificati
+  // dall'ultimo progetto sincronizzato). Il DISTINCT ON evita anche il
+  // doppio conteggio quando una data ha sia la riga di progetto che la
+  // globale legacy (un WHERE piatto darebbe 2 righe per data → km doppi).
   const ccR = await db.execute<any>(sql`
-    SELECT EXTRACT(ISODOW FROM cc.date)::int AS isodow, c.code, c.name, c.color, c.sort_order,
-           to_char(min(cc.date) OVER (), 'YYYY-MM-DD') AS dmin, to_char(max(cc.date) OVER (), 'YYYY-MM-DD') AS dmax
-      FROM ps_validity_category_calendar cc
-      JOIN ps_validity_categories c ON c.id = cc.category_id`);
+    SELECT EXTRACT(ISODOW FROM m.date)::int AS isodow, c.code, c.name, c.color, c.sort_order,
+           to_char(min(m.date) OVER (), 'YYYY-MM-DD') AS dmin, to_char(max(m.date) OVER (), 'YYYY-MM-DD') AS dmax
+      FROM (SELECT DISTINCT ON (date) date, category_id
+              FROM ps_validity_category_calendar
+             WHERE project_id = ${projId}::uuid OR project_id IS NULL
+             ORDER BY date, project_id ASC NULLS LAST) m
+      JOIN ps_validity_categories c ON c.id = m.category_id`);
   const catMeta = new Map<string, { name: string; color: string | null; sort: number }>();
   const dayCount = new Map<string, number[]>(); // catCode → [7] per weekday (0=Lun..6=Dom)
   let dmin: string | null = null, dmax: string | null = null;
