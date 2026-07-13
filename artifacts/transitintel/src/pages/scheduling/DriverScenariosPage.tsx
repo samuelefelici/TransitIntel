@@ -259,6 +259,12 @@ export default function DriverScenariosPage() {
                               </div>
                               <div className="flex items-center gap-3 text-[10px] text-zinc-500 font-mono mt-0.5 flex-wrap">
                                 <span>Salvato {new Date(d.createdAt).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                                {(d.dutyCount ?? 0) > 0 && <span className="text-purple-300/80">{d.dutyCount} turni</span>}
+                                {(d.uncoveredTrips ?? 0) > 0 && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                                    ⚠ {d.uncoveredTrips} corse scoperte
+                                  </span>
+                                )}
                                 {ownerLabel && <span className="text-zinc-600">Owner: <span className="text-zinc-400">{ownerLabel}</span></span>}
                                 {memberCount > 0 && (
                                   <span className="inline-flex items-center gap-1 text-cyan-400/80">

@@ -49,6 +49,19 @@ import { SCRIPTS_DIR } from "../lib/scripts-dir";
 
 const router: IRouter = Router();
 
+/** true se il DSS è marcato "in esercizio" (soluzione ufficiale): congelato →
+ * niente PUT/DELETE finché non viene tolto lo stato operativo. Colonna
+ * additiva: assente su installazioni vecchie → false, nessun blocco. */
+async function isOperationalDss(dssId: string): Promise<boolean> {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT COALESCE(is_operational, false) AS op
+        FROM driver_shift_scenarios WHERE id = ${dssId}::uuid LIMIT 1
+    `);
+    return !!(r.rows?.[0]?.op);
+  } catch { return false; }
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  CONSTANTS & RULES
  * ═══════════════════════════════════════════════════════════════ */
@@ -1436,6 +1449,13 @@ router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) =>
       res.status(403).json({ error: "Solo l'owner può eliminare lo scenario turni" });
       return;
     }
+    // Esercizio CONGELATO: il DSS operativo è referenziato da Quadro e roster.
+    if (await isOperationalDss(req.params.dssId as string)) {
+      res.status(409).json({
+        error: "Turni guida IN ESERCIZIO: non eliminabili. Togli prima lo stato operativo dalla lista scenari.",
+      });
+      return;
+    }
     await db.delete(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
@@ -1788,6 +1808,13 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
     // distruggere i turni guida altrui). Allineato a DELETE e al PUT gemello TM.
     const acc = await requireDriverScenarioWrite(req, res, (req.params.id as string));
     if (!acc) return;
+    // Esercizio CONGELATO: i turni guida operativi non si sovrascrivono live.
+    if (await isOperationalDss(req.params.id as string)) {
+      res.status(409).json({
+        error: "Turni guida IN ESERCIZIO: non modificabili. Togli prima lo stato operativo, salva, poi rimettilo.",
+      });
+      return;
+    }
     const { name, result, config } = (req.body ?? {}) as any;
     if (!result && !name && config === undefined) { res.status(400).json({ error: "niente da salvare" }); return; }
     const [row] = await db.update(driverShiftScenarios)

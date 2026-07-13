@@ -206,6 +206,10 @@ export interface ProjectVehicleScenario {
   isOperational?: boolean;
   numVehicles?: number | null;
   totalDeadheadKm?: number | null;
+  /** corse coperte dai turni (summary.totalTrips) — il primo numero da guardare */
+  coveredTrips?: number | null;
+  /** corse SCOPERTE (result.unassigned): >0 = piano incompleto */
+  uncoveredTrips?: number;
 }
 
 export interface ProjectDriverScenario {
@@ -217,6 +221,10 @@ export interface ProjectDriverScenario {
   vehicleScenarioName: string;
   vehicleScenarioDate: string;
   vehicleIsOperational?: boolean;
+  /** n. turni guida nel DSS */
+  dutyCount?: number;
+  /** corse SCOPERTE persistite col DSS (pool dell'Area di lavoro) */
+  uncoveredTrips?: number;
 }
 
 export async function listProjectVehicleScenarios(projectId: string): Promise<ProjectVehicleScenario[]> {

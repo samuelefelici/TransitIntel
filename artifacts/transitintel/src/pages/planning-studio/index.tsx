@@ -10,8 +10,9 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download,
 } from "lucide-react";
+import { getApiBase } from "@/lib/api";
 import {
   listPsProjects, createPsProject, deletePsProject, activatePsProject, duplicatePsProject,
   type PsProject,
@@ -87,6 +88,27 @@ export default function PlanningStudioListPage() {
     }
   }
 
+  async function handleExportGtfs(p: PsProject) {
+    const tid = toast.loading(`Genero il GTFS di "${p.name}"…`);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-gtfs`, { credentials: "include" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `gtfs_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("GTFS esportato", { id: tid, description: "Zip pronto per Regione/open data/AVM." });
+    } catch (e: any) {
+      toast.error("Export GTFS fallito", { id: tid, description: e?.message });
+    }
+  }
+
   async function handleActivate(p: PsProject) {
     if (!confirm(
       `Mettere in esercizio "${p.name}"?\n\n` +
@@ -153,6 +175,7 @@ export default function PlanningStudioListPage() {
                 onShare={() => setShareProject(p)}
                 onActivate={() => handleActivate(p)}
                 onDuplicate={() => handleDuplicate(p)}
+                onExportGtfs={() => handleExportGtfs(p)}
               />
             ))}
           </div>
@@ -241,8 +264,8 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 }
 
 function ProjectCard({
-  project: p, onOpen, onDelete, onShare, onActivate, onDuplicate,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void }) {
+  project: p, onOpen, onDelete, onShare, onActivate, onDuplicate, onExportGtfs,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void; onExportGtfs: () => void }) {
   const isOwner = p.myRole === "owner";
   // Eliminazione a DUE CLICK: il primo arma (cestino rosso "Confermi?"),
   // il secondo elimina. Si disarma da solo dopo 4 secondi.
@@ -339,6 +362,13 @@ function ProjectCard({
               title="Duplica il progetto (copia completa: fermate, linee, corse, calendari, validità)"
             >
               <Copy className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onExportGtfs(); }}
+              className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
+              title="Esporta GTFS (zip per Regione/open data/AVM)"
+            >
+              <Download className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onShare(); }}

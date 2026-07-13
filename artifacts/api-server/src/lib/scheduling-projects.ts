@@ -806,7 +806,11 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
   const r = await db.execute(sql`
     SELECT id, name, date, created_at, COALESCE(is_operational, false) AS is_operational,
            (result->'summary'->>'numVehicles')::int AS num_vehicles,
-           (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km
+           (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km,
+           -- copertura: il primo numero che si guarda prima di scegliere lo
+           -- scenario da mettere in esercizio (corse nei turni vs scoperte)
+           (result->'summary'->>'totalTrips')::int AS covered_trips,
+           COALESCE(jsonb_array_length(result->'unassigned'), 0) AS uncovered_trips
       FROM service_program_scenarios
      WHERE project_id = ${id}::uuid
      ORDER BY is_operational DESC, created_at DESC
@@ -821,6 +825,8 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
       isOperational: !!s.is_operational,
       numVehicles: s.num_vehicles,
       totalDeadheadKm: s.total_deadhead_km,
+      coveredTrips: s.covered_trips ?? null,
+      uncoveredTrips: Number(s.uncovered_trips ?? 0),
     })),
   });
 });
@@ -869,7 +875,11 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
     SELECT dss.id, dss.name, dss.created_at, dss.service_program_scenario_id,
            COALESCE(dss.is_operational, false) AS is_operational,
            COALESCE(sps.is_operational, false) AS vehicle_is_operational,
-           sps.name AS vehicle_scenario_name, sps.date AS vehicle_date
+           sps.name AS vehicle_scenario_name, sps.date AS vehicle_date,
+           -- KPI minimi per scegliere lo scenario senza aprirlo: n. turni e
+           -- corse SCOPERTE (pool dell'Area di lavoro persistito col DSS)
+           COALESCE(jsonb_array_length(dss.result->'driverShifts'), 0) AS duty_count,
+           COALESCE(jsonb_array_length(dss.result->'unassignedTrips'), 0) AS uncovered_trips
       FROM driver_shift_scenarios dss
       JOIN service_program_scenarios sps ON sps.id = dss.service_program_scenario_id
      WHERE sps.project_id = ${id}::uuid OR dss.project_id = ${id}::uuid
@@ -886,6 +896,8 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
       vehicleScenarioName: s.vehicle_scenario_name,
       vehicleScenarioDate: s.vehicle_date,
       vehicleIsOperational: !!s.vehicle_is_operational,
+      dutyCount: Number(s.duty_count ?? 0),
+      uncoveredTrips: Number(s.uncovered_trips ?? 0),
     })),
   });
 });
