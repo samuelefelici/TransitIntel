@@ -2085,10 +2085,25 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       const crewDbClusters = selClusterIds && selClusterIds.length > 0
         ? allDbClusters.filter((c: any) => selClusterIds.includes(c.id))
         : allDbClusters;
-      const crewCompanyCars = typeof operatorCfg?.companyCars === "number" ? operatorCfg.companyCars : dbCompanyCars;
+      // ── Autovetture aziendali = vincolo RIGIDO, sempre ──
+      // Il solver v4 applica il cap HARD solo se bds.optimizer.maxCompanyCars
+      // è presente (altrimenti default 5, ignorando le autovetture reali).
+      // Precedenza: campo "Autovetture aziendali" della UI (imposta entrambi)
+      // > override esplicito dal pannello completo > impostazione DB.
+      const explicitOptimizerCap = (operatorCfg as any)?.bds?.optimizer?.maxCompanyCars;
+      const crewCompanyCars = typeof operatorCfg?.companyCars === "number"
+        ? operatorCfg.companyCars
+        : (typeof explicitOptimizerCap === "number" ? explicitOptimizerCap : dbCompanyCars);
       const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorCfg } = operatorCfg || {};
       const crewConfig = {
         ...restOperatorCfg,
+        bds: {
+          ...((restOperatorCfg as any).bds ?? {}),
+          optimizer: {
+            ...(((restOperatorCfg as any).bds ?? {}).optimizer ?? {}),
+            maxCompanyCars: crewCompanyCars,
+          },
+        },
         clusters: crewDbClusters,
         companyCars: crewCompanyCars,
         restPoints: crewRestPoints,

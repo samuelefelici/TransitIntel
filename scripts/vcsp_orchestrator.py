@@ -210,6 +210,9 @@ def main() -> None:
             "vehicleShifts": vsp_out.get("vehicleShifts", []),
             "crew": {
                 "summary": crew_out.get("summary"),
+                # metrics include il check del vincolo RIGIDO autovetture
+                # (companyCarsCap / MaxSimultaneous / HardViolation) per round
+                "metrics": crew_out.get("metrics"),
                 "driverShifts": crew_out.get("driverShifts"),
                 "handovers": crew_out.get("handovers"),
                 "clusters": crew_out.get("clusters"),

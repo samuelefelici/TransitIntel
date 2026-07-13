@@ -1030,6 +1030,18 @@ async function runCPSATCrewScheduler(
       config: {
         timeLimit: timeLimitSec,
         ...restConfig,
+        // Autovetture aziendali = vincolo RIGIDO sempre: senza il cap
+        // esplicito il solver v4 userebbe il default 5 anche con un numero
+        // diverso di autovetture reali (campo UI o impostazione DB).
+        bds: {
+          ...(restConfig.bds ?? {}),
+          optimizer: {
+            ...((restConfig.bds ?? {}).optimizer ?? {}),
+            maxCompanyCars: typeof restConfig?.bds?.optimizer?.maxCompanyCars === "number"
+              ? restConfig.bds.optimizer.maxCompanyCars
+              : companyCarsEffective,
+          },
+        },
         clusters: dbClusters,
         companyCars: companyCarsEffective,
       },
@@ -1130,6 +1142,17 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
         config: {
           timeLimit: timeLimitSec,
           ...restOperatorConfig,
+          // Autovetture aziendali = vincolo RIGIDO sempre (cap del solver v4);
+          // senza, il default 5 ignorerebbe il numero reale di autovetture.
+          bds: {
+            ...((restOperatorConfig as any).bds ?? {}),
+            optimizer: {
+              ...(((restOperatorConfig as any).bds ?? {}).optimizer ?? {}),
+              maxCompanyCars: typeof (restOperatorConfig as any)?.bds?.optimizer?.maxCompanyCars === "number"
+                ? (restOperatorConfig as any).bds.optimizer.maxCompanyCars
+                : companyCarsEffective,
+            },
+          },
           clusters: dbClusters,
           companyCars: companyCarsEffective,
           restPoints,
