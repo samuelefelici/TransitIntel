@@ -1066,7 +1066,11 @@ export default function TimetablesPage() {
         qr = await QRCode.toDataURL(url, { width: 480, margin: 2, color: { dark: "#0f172a", light: "#ffffff" } });
       } catch { /* QR opzionale: il dialog mostra comunque l'URL */ }
       setMapShare({ url, expiresAt: r.expiresAt, qr, linesCount: ids.length });
-      toast.success("Link Mappa Orari creato e copiato");
+      toast.success("Link Mappa Orari creato e copiato", {
+        description: r.expiresAt
+          ? `Online fino a ${new Date(r.expiresAt).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}`
+          : "Sempre online (nessuna scadenza)",
+      });
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
     } finally { setSharing(false); }
@@ -1423,12 +1427,29 @@ export default function TimetablesPage() {
               <button onClick={() => setMapShare(null)} className="text-zinc-500 hover:text-zinc-200 text-lg leading-none">×</button>
             </div>
             <div className="p-4 space-y-3">
+              {/* Banner VALIDITÀ ben visibile: quando smette di funzionare il link */}
+              {mapShare.expiresAt ? (
+                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2.5">
+                  <p className="text-xs font-bold text-amber-300">
+                    ⏳ Questo link resterà online fino a{" "}
+                    {new Date(mapShare.expiresAt).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                  </p>
+                  <p className="text-[11px] text-amber-200/80 mt-0.5">
+                    Dopo quella data il QR e il link smettono di funzionare. Per una durata diversa,
+                    cambia la tendina "Link:" e premi di nuovo "Mappa orari".
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-3 py-2.5">
+                  <p className="text-xs font-bold text-emerald-300">♾️ Questo link resterà online per sempre</p>
+                  <p className="text-[11px] text-emerald-200/80 mt-0.5">
+                    Nessuna scadenza: ideale per il QR stampato alle paline. Gli orari mostrati
+                    sono sempre quelli correnti del progetto.
+                  </p>
+                </div>
+              )}
               <p className="text-[11px] text-zinc-400">
-                {mapShare.linesCount > 0 ? `${mapShare.linesCount} linee incluse` : "Tutte le linee incluse"} ·{" "}
-                {mapShare.expiresAt
-                  ? <>online fino al <b className="text-zinc-200">{new Date(mapShare.expiresAt).toLocaleDateString("it-IT")}</b></>
-                  : <b className="text-emerald-300">sempre online</b>}
-                {" "}(durata dalla tendina "Link:").
+                {mapShare.linesCount > 0 ? `${mapShare.linesCount} linee incluse nel link` : "Tutte le linee del progetto incluse nel link"}.
               </p>
               <div className="flex items-center gap-2">
                 <input readOnly value={mapShare.url}

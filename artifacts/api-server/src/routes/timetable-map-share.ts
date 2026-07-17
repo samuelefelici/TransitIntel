@@ -94,6 +94,10 @@ router.get("/timetable-map/:token", async (req, res): Promise<void> => {
     // Giorni di validità (dalla matrice GTFS/PS): guida lo step 1 del flusso
     const hasValidity = await projectHasTripValidity(share.project_id);
     let dayTypes: any[] = [];
+    // linea → giorni in cui ha ≥1 corsa valida: serve al FE per FILTRARE le
+    // linee dopo la scelta del giorno (una linea solo-feriale non deve
+    // comparire scegliendo Festivo).
+    const daysByRoute = new Map<string, string[]>();
     if (hasValidity) {
       const dtR = await db.execute<any>(sql`
         SELECT DISTINCT dt.id, dt.code, dt.name, dt.color, dt.sort_order
@@ -108,6 +112,18 @@ router.get("/timetable-map/:token", async (req, res): Promise<void> => {
       dayTypes = (dtR.rows ?? []).map((d: any) => ({
         id: d.id, code: d.code, name: d.name, color: d.color ?? null,
       }));
+      const rdR = await db.execute<any>(sql`
+        SELECT DISTINCT t.route_id, tdv.day_type_id
+          FROM ps_trips t
+          JOIN ps_trip_day_validity tdv ON tdv.trip_id = t.id AND tdv.is_valid = true
+         WHERE t.project_id = ${share.project_id}::uuid
+           AND COALESCE(t.is_active, true) = true
+           AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+      `);
+      for (const r of rdR.rows ?? []) {
+        if (!daysByRoute.has(r.route_id)) daysByRoute.set(r.route_id, []);
+        daysByRoute.get(r.route_id)!.push(r.day_type_id);
+      }
     }
     res.json({
       title: share.title,
@@ -117,6 +133,9 @@ router.get("/timetable-map/:token", async (req, res): Promise<void> => {
       dayTypes,
       lines: (linesR.rows ?? []).map((r: any) => ({
         routeId: r.id, code: r.code, longName: r.long_name ?? null, color: r.color ?? null,
+        // giorni in cui la linea circola; [] = nessun bollino → il FE la
+        // mostra sempre (fallback permissivo: meglio mostrare che nascondere)
+        dayTypeIds: daysByRoute.get(r.id) ?? [],
       })),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
