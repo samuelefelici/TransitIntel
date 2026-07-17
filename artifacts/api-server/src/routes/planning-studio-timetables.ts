@@ -543,4 +543,118 @@ router.post("/planning-studio/:projectId/timetable-map-share", async (req, res):
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GESTIONE link Mappa Orari: i QR stampati alle paline NON si ristampano.
+// Il token (→ URL → QR) resta lo stesso per sempre; qui si aggiorna il
+// CONTENUTO del link (linee incluse, titolo, scadenza) o lo si revoca.
+router.get("/planning-studio/:projectId/timetable-map-shares", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
+    await ensureTimetableMapShareTable();
+    const r = await db.execute<any>(sql`
+      SELECT token, title, route_ids, created_at, expires_at
+        FROM ps_timetable_map_shares
+       WHERE project_id = ${projectId}::uuid
+       ORDER BY created_at DESC`);
+    res.json({
+      shares: (r.rows ?? []).map((s: any) => ({
+        token: s.token,
+        title: s.title ?? null,
+        routeIds: Array.isArray(s.route_ids) ? s.route_ids : [],
+        createdAt: s.created_at,
+        expiresAt: s.expires_at ?? null,
+      })),
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// PATCH: aggiorna il link MANTENENDO lo stesso token (stesso QR).
+// expiresInDays: assente = non toccare; 0 = sempre online; >0 = ora + N giorni.
+router.patch("/planning-studio/:projectId/timetable-map-shares/:token", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    const token = String(req.params.token);
+    if (!UUID_RE.test(projectId) || !/^[A-Za-z0-9_-]{6,64}$/.test(token)) {
+      res.status(400).json({ error: "parametri non validi" }); return;
+    }
+    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    const sets: any[] = [];
+    if (Array.isArray(req.body?.routeIds)) {
+      const ids = req.body.routeIds.filter((x: any) => UUID_RE.test(String(x)));
+      sets.push(sql`route_ids = ${JSON.stringify(ids)}::jsonb`);
+    }
+    if (typeof req.body?.title === "string") sets.push(sql`title = ${req.body.title.slice(0, 120)}`);
+    if (req.body?.expiresInDays !== undefined) {
+      const days = Number(req.body.expiresInDays);
+      const expiresAt = Number.isFinite(days) && days > 0
+        ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
+      sets.push(sql`expires_at = ${expiresAt}::timestamptz`);
+    }
+    if (sets.length === 0) { res.status(400).json({ error: "Nessuna modifica indicata" }); return; }
+    const r = await db.execute<any>(sql`
+      UPDATE ps_timetable_map_shares SET ${sql.join(sets, sql`, `)}
+       WHERE token = ${token} AND project_id = ${projectId}::uuid
+       RETURNING token, title, route_ids, created_at, expires_at`);
+    const row = r.rows?.[0];
+    if (!row) { res.status(404).json({ error: "Link non trovato" }); return; }
+    res.json({
+      token: row.token, title: row.title ?? null,
+      routeIds: Array.isArray(row.route_ids) ? row.route_ids : [],
+      createdAt: row.created_at, expiresAt: row.expires_at ?? null,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    const token = String(req.params.token);
+    if (!UUID_RE.test(projectId) || !/^[A-Za-z0-9_-]{6,64}$/.test(token)) {
+      res.status(400).json({ error: "parametri non validi" }); return;
+    }
+    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    await db.execute(sql`
+      DELETE FROM ps_timetable_map_shares
+       WHERE token = ${token} AND project_id = ${projectId}::uuid`);
+    res.json({ ok: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DOMINIO PUBBLICO dei link condivisi (opzionale) ──
+// Se impostato (es. https://orari.miacitta.it), i nuovi link e QR usano quel
+// dominio invece di quello dell'app. Richiede che il dominio punti all'app
+// (CNAME/alias sull'hosting): il path /o/:token è servito su qualunque host.
+router.get("/settings/share-domain", async (_req, res): Promise<void> => {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT value #>> '{}' AS v FROM app_settings WHERE key = 'public_share_domain' LIMIT 1`);
+    res.json({ shareDomain: r.rows?.[0]?.v ?? null });
+  } catch { res.json({ shareDomain: null }); }
+});
+
+router.put("/settings/share-domain", async (req, res): Promise<void> => {
+  try {
+    const raw = typeof req.body?.shareDomain === "string" ? req.body.shareDomain.trim() : "";
+    if (raw === "") {
+      await db.execute(sql`DELETE FROM app_settings WHERE key = 'public_share_domain'`);
+      res.json({ shareDomain: null }); return;
+    }
+    let normalized: string;
+    try {
+      const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+      if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("proto");
+      normalized = `${u.protocol}//${u.host}`;
+    } catch {
+      res.status(400).json({ error: "Dominio non valido (es. https://orari.miacitta.it)" }); return;
+    }
+    await db.execute(sql`
+      INSERT INTO app_settings (key, value, updated_at)
+      VALUES ('public_share_domain', to_jsonb(${normalized}::text), now())
+      ON CONFLICT (key) DO UPDATE SET value = to_jsonb(${normalized}::text), updated_at = now()`);
+    res.json({ shareDomain: normalized });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;

@@ -12,10 +12,10 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, Search, Share2, SignpostBig,
+  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
@@ -727,6 +727,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
 /* ─── Pagina ─── */
 
 export default function TimetablesPage() {
+  const qc = useQueryClient();
   const [tab, setTab] = useState<"stop" | "route">("route");
 
   // progetto Planning Studio (sorgente del programma di esercizio)
@@ -749,6 +750,25 @@ export default function TimetablesPage() {
   const [shareDays, setShareDays] = useState<number>(7); // durata link condiviso (0 = senza scadenza)
   // dialog post-creazione del link Mappa Orari (URL + QR da stampare)
   const [mapShare, setMapShare] = useState<{ url: string; expiresAt: string | null; qr: string | null; linesCount: number } | null>(null);
+  // gestione link Mappa Orari esistenti (i QR alle paline NON si ristampano:
+  // stesso token = stesso QR, si aggiorna il contenuto)
+  const [manageOpen, setManageOpen] = useState(false);
+  const [domainDraft, setDomainDraft] = useState<string>("");
+
+  // Dominio pubblico opzionale per i link (es. https://orari.miacitta.it)
+  const shareDomainQ = useQuery({
+    queryKey: ["settings", "share-domain"],
+    queryFn: () => apiFetch<{ shareDomain: string | null }>(`/api/settings/share-domain`),
+    staleTime: 60_000,
+  });
+  const publicBase = (shareDomainQ.data?.shareDomain || window.location.origin).replace(/\/+$/, "");
+
+  const mapSharesQ = useQuery({
+    queryKey: ["timetable-map-shares", projectId],
+    queryFn: () => apiFetch<{ shares: Array<{ token: string; title: string | null; routeIds: string[]; createdAt: string; expiresAt: string | null }> }>(
+      `/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares`),
+    enabled: manageOpen && !!projectId,
+  });
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
@@ -1058,7 +1078,7 @@ export default function TimetablesPage() {
       const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-share`, {
         method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
       });
-      const url = `${window.location.origin}/o/${r.token}`;
+      const url = `${publicBase}/o/${r.token}`;
       try { await navigator.clipboard.writeText(url); } catch { /* clipboard opzionale */ }
       let qr: string | null = null;
       try {
@@ -1066,6 +1086,7 @@ export default function TimetablesPage() {
         qr = await QRCode.toDataURL(url, { width: 480, margin: 2, color: { dark: "#0f172a", light: "#ffffff" } });
       } catch { /* QR opzionale: il dialog mostra comunque l'URL */ }
       setMapShare({ url, expiresAt: r.expiresAt, qr, linesCount: ids.length });
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
       toast.success("Link Mappa Orari creato e copiato", {
         description: r.expiresAt
           ? `Online fino a ${new Date(r.expiresAt).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}`
@@ -1074,6 +1095,50 @@ export default function TimetablesPage() {
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
     } finally { setSharing(false); }
+  }
+
+  /* ── Gestione link Mappa Orari esistenti ──
+   * Il QR codifica SOLO l'URL: finché il token resta lo stesso, il QR
+   * stampato alle paline continua a funzionare. Qui si aggiorna il
+   * CONTENUTO del link (linee incluse, scadenza) senza cambiare il QR. */
+  function shareUrl(tokenStr: string): string { return `${publicBase}/o/${tokenStr}`; }
+
+  async function downloadQr(tokenStr: string) {
+    try {
+      const QRCode = (await import("qrcode")).default;
+      const dataUrl = await QRCode.toDataURL(shareUrl(tokenStr), { width: 480, margin: 2, color: { dark: "#0f172a", light: "#ffffff" } });
+      const a = document.createElement("a");
+      a.href = dataUrl; a.download = `mappa-orari-qr-${tokenStr.slice(0, 6)}.png`; a.click();
+    } catch (e: any) { toast.error(e?.message ?? "Errore generazione QR"); }
+  }
+
+  async function patchShare(tokenStr: string, patch: { routeIds?: string[]; expiresInDays?: number }, okMsg: string) {
+    try {
+      await apiFetch(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares/${tokenStr}`, {
+        method: "PATCH", body: JSON.stringify(patch),
+      });
+      toast.success(okMsg, { description: "Il QR e il link restano gli stessi." });
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
+    } catch (e: any) { toast.error(e?.message ?? "Aggiornamento fallito"); }
+  }
+
+  async function revokeShare(tokenStr: string) {
+    if (!confirm("Revocare questo link? Il QR stampato smetterà di funzionare. L'operazione non è annullabile.")) return;
+    try {
+      await apiFetch(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares/${tokenStr}`, { method: "DELETE" });
+      toast.success("Link revocato");
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
+    } catch (e: any) { toast.error(e?.message ?? "Revoca fallita"); }
+  }
+
+  async function saveShareDomain() {
+    try {
+      const r = await apiFetch<{ shareDomain: string | null }>(`/api/settings/share-domain`, {
+        method: "PUT", body: JSON.stringify({ shareDomain: domainDraft }),
+      });
+      toast.success(r.shareDomain ? `Dominio pubblico: ${r.shareDomain}` : "Dominio pubblico rimosso (si usa quello dell'app)");
+      qc.invalidateQueries({ queryKey: ["settings", "share-domain"] });
+    } catch (e: any) { toast.error(e?.message ?? "Dominio non valido"); }
   }
 
   return (
@@ -1234,6 +1299,14 @@ export default function TimetablesPage() {
               >
                 {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPinned className="w-4 h-4" />}
                 Mappa orari
+              </button>
+              <button
+                onClick={() => { setDomainDraft(shareDomainQ.data?.shareDomain ?? ""); setManageOpen(true); }}
+                className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-border/60 text-muted-foreground hover:text-cyan-300 hover:border-cyan-500/40 text-sm font-medium transition-colors"
+                title="Link Mappa Orari già creati: aggiorna le linee incluse o la scadenza SENZA cambiare il QR stampato, riscarica i QR, imposta il dominio pubblico."
+              >
+                <QrCode className="w-4 h-4" />
+                Gestisci link
               </button>
               <button
                 onClick={printPosters}
@@ -1412,6 +1485,115 @@ export default function TimetablesPage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Dialog GESTIONE link Mappa Orari: aggiorna senza cambiare QR ── */}
+      {manageOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setManageOpen(false)}>
+          <div className="w-full max-w-2xl mx-4 rounded-2xl border border-cyan-500/30 bg-zinc-950 shadow-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 shrink-0">
+              <div className="flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-cyan-400" />
+                <h3 className="text-sm font-semibold text-zinc-100">Link Mappa Orari — gestione</h3>
+              </div>
+              <button onClick={() => setManageOpen(false)} className="text-zinc-500 hover:text-zinc-200 text-lg leading-none">×</button>
+            </div>
+            <div className="p-4 space-y-4 overflow-y-auto">
+              <p className="text-[11px] text-zinc-400">
+                Il QR codifica solo l'indirizzo: <b className="text-zinc-200">finché il link resta lo stesso, il QR stampato alle
+                paline continua a funzionare</b>. Da qui aggiorni cosa mostra (linee incluse) e per quanto resta online,
+                senza ristampare nulla.
+              </p>
+
+              {/* Dominio pubblico */}
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
+                <p className="text-xs font-semibold text-zinc-200">Dominio pubblico dei link (opzionale)</p>
+                <div className="flex items-center gap-2">
+                  <input
+                    value={domainDraft}
+                    onChange={(e) => setDomainDraft(e.target.value)}
+                    placeholder="es. https://orari.miacitta.it (vuoto = dominio dell'app)"
+                    className="flex-1 px-2.5 py-2 text-xs font-mono rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-200 outline-none focus:border-cyan-500/50"
+                  />
+                  <button onClick={saveShareDomain}
+                    className="px-3 py-2 rounded-lg border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 text-xs font-semibold">
+                    Salva
+                  </button>
+                </div>
+                <p className="text-[10px] text-zinc-500">
+                  I nuovi link e QR useranno questo dominio al posto di quello dell'app. Il dominio deve essere tuo e
+                  puntare all'app (record DNS CNAME/alias sull'hosting): la pagina /o/… risponde su qualunque dominio
+                  che arrivi all'app. I link già stampati col vecchio dominio continuano a funzionare.
+                </p>
+              </div>
+
+              {/* Elenco link creati */}
+              {mapSharesQ.isLoading && <p className="text-xs text-zinc-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico i link…</p>}
+              {mapSharesQ.data && mapSharesQ.data.shares.length === 0 && (
+                <p className="text-xs text-zinc-500">Nessun link creato per questo progetto. Usa "Mappa orari" per crearne uno.</p>
+              )}
+              {(mapSharesQ.data?.shares ?? []).map((s) => {
+                const expired = s.expiresAt ? new Date(s.expiresAt).getTime() < Date.now() : false;
+                return (
+                  <div key={s.token} className={`rounded-xl border p-3 space-y-2 ${expired ? "border-rose-500/40 bg-rose-500/5" : "border-zinc-800 bg-zinc-900/40"}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-semibold text-zinc-200">
+                        {s.title || (s.routeIds.length > 0 ? `${s.routeIds.length} linee` : "Tutte le linee")}
+                      </span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${
+                        expired
+                          ? "border-rose-500/50 text-rose-300"
+                          : s.expiresAt ? "border-amber-500/40 text-amber-300" : "border-emerald-500/40 text-emerald-300"
+                      }`}>
+                        {expired
+                          ? "SCADUTO"
+                          : s.expiresAt
+                            ? `online fino al ${new Date(s.expiresAt).toLocaleDateString("it-IT")}`
+                            : "sempre online"}
+                      </span>
+                      <span className="text-[10px] text-zinc-500 ml-auto">
+                        creato il {new Date(s.createdAt).toLocaleDateString("it-IT")}
+                      </span>
+                    </div>
+                    <p className="text-[10px] font-mono text-zinc-500 truncate">{shareUrl(s.token)}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <button onClick={async () => { try { await navigator.clipboard.writeText(shareUrl(s.token)); toast.success("Link copiato"); } catch { /* noop */ } }}
+                        className="px-2.5 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px] font-semibold">
+                        Copia link
+                      </button>
+                      <button onClick={() => downloadQr(s.token)}
+                        className="px-2.5 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px] font-semibold">
+                        Scarica QR
+                      </button>
+                      <button onClick={() => window.open(shareUrl(s.token), "_blank")}
+                        className="px-2.5 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px] font-semibold">
+                        Apri
+                      </button>
+                      <button
+                        onClick={() => patchShare(s.token, { routeIds: selectedIdsOrdered() },
+                          selectedRouteIds.length > 0 ? `Linee del link aggiornate (${selectedRouteIds.length})` : "Link aggiornato: tutte le linee")}
+                        title="Sostituisce le linee incluse nel link con la selezione corrente a video (nessuna selezione = tutte). Il QR resta lo stesso."
+                        className="px-2.5 py-1.5 rounded-lg border border-indigo-500/40 text-indigo-300 hover:bg-indigo-500/10 text-[11px] font-semibold">
+                        Aggiorna con selezione
+                      </button>
+                      <button
+                        onClick={() => patchShare(s.token, { expiresInDays: shareDays },
+                          shareDays > 0 ? `Validità rinnovata: ${shareDays} giorni da oggi` : "Link reso SEMPRE online")}
+                        title={`Rinnova la validità secondo la tendina "Link:" (${shareDays > 0 ? `${shareDays} giorni da oggi` : "sempre online"}). Utile anche per riattivare un link scaduto.`}
+                        className="px-2.5 py-1.5 rounded-lg border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-[11px] font-semibold">
+                        Rinnova validità
+                      </button>
+                      <button onClick={() => revokeShare(s.token)}
+                        className="px-2.5 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 text-[11px] font-semibold ml-auto">
+                        Revoca
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
