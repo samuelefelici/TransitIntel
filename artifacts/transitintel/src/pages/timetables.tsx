@@ -753,9 +753,12 @@ export default function TimetablesPage() {
   // gestione link Mappa Orari esistenti (i QR alle paline NON si ristampano:
   // stesso token = stesso QR, si aggiorna il contenuto)
   const [manageOpen, setManageOpen] = useState(false);
-  // Dominio dell'app: funziona SEMPRE (un dominio custom richiederebbe DNS
-  // configurato — se sbagliato, i QR stampati nascerebbero morti).
-  const publicBase = window.location.origin.replace(/\/+$/, "");
+  // Dominio dei link orari: di default quello dell'app (funziona sempre).
+  // Opzionale: dominio DEDICATO via variabile d'ambiente al deploy
+  // (VITE_TIMETABLE_MAP_DOMAIN, es. https://orari.miacitta.it) — la imposta
+  // chi controlla il DNS, quindi niente QR stampati morti per configurazioni
+  // sbagliate a runtime. Il dominio deve puntare all'app (CNAME/alias).
+  const publicBase = (import.meta.env.VITE_TIMETABLE_MAP_DOMAIN || window.location.origin).replace(/\/+$/, "");
 
   const mapSharesQ = useQuery({
     queryKey: ["timetable-map-shares", projectId],
@@ -844,6 +847,12 @@ export default function TimetablesPage() {
     return [...list].sort((a, b) =>
       String(a.routeShortName ?? "").localeCompare(String(b.routeShortName ?? ""), "it", { numeric: true }));
   }, [routesQ.data]);
+
+  // codice linea per id: mostra QUALI linee include ogni link in Gestisci link
+  const routeCodeById = useMemo(
+    () => new Map((routesQ.data?.routes ?? []).map((r) => [r.routeId, r.routeShortName ?? "?"])),
+    [routesQ.data],
+  );
 
   const filteredRoutes = useMemo(() => {
     const q = routeSearch.trim().toLowerCase();
@@ -1066,11 +1075,19 @@ export default function TimetablesPage() {
   // nel link; nessuna selezione = TUTTE. Il dialog mostra URL + QR da
   // stampare alle paline, con la durata scelta nella tendina "Link:".
   async function shareTimetableMap() {
+    const ids = selectedIdsOrdered();
+    // Nome del link: con più link attivi sullo stesso progetto (es. "Linee
+    // urbane" e "Linee scolastiche" su selezioni diverse) serve riconoscerli
+    // in Gestisci link. Annulla = creazione annullata.
+    const suggested = ids.length > 0
+      ? ids.map((id) => routeCodeById.get(id) ?? "").filter(Boolean).slice(0, 4).join(", ") + (ids.length > 4 ? "…" : "")
+      : "Tutte le linee";
+    const title = prompt("Nome del link (ti aiuta a riconoscerlo in \"Gestisci link\"):", suggested);
+    if (title === null) return;
     setSharing(true);
     try {
-      const ids = selectedIdsOrdered();
       const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-share`, {
-        method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
+        method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays, title: title.trim() || undefined }),
       });
       const url = `${publicBase}/o/${r.token}`;
       try { await navigator.clipboard.writeText(url); } catch { /* clipboard opzionale */ }
@@ -1106,7 +1123,7 @@ export default function TimetablesPage() {
     } catch (e: any) { toast.error(e?.message ?? "Errore generazione QR"); }
   }
 
-  async function patchShare(tokenStr: string, patch: { routeIds?: string[]; expiresInDays?: number }, okMsg: string) {
+  async function patchShare(tokenStr: string, patch: { routeIds?: string[]; expiresInDays?: number; title?: string }, okMsg: string) {
     try {
       await apiFetch(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares/${tokenStr}`, {
         method: "PATCH", body: JSON.stringify(patch),
@@ -1489,6 +1506,12 @@ export default function TimetablesPage() {
                 paline continua a funzionare</b>. Da qui aggiorni cosa mostra (linee incluse) e per quanto resta online,
                 senza ristampare nulla.
               </p>
+              <p className="text-[10px] text-zinc-500">
+                Dominio dei link: <span className="font-mono text-zinc-400">{publicBase}</span>
+                {import.meta.env.VITE_TIMETABLE_MAP_DOMAIN
+                  ? " (dedicato, da variabile d'ambiente)"
+                  : " — per usare un dominio dedicato imposta la variabile d'ambiente VITE_TIMETABLE_MAP_DOMAIN al deploy (il dominio deve puntare all'app)."}
+              </p>
 
               {/* Elenco link creati */}
               {mapSharesQ.isLoading && <p className="text-xs text-zinc-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico i link…</p>}
@@ -1518,6 +1541,13 @@ export default function TimetablesPage() {
                         creato il {new Date(s.createdAt).toLocaleDateString("it-IT")}
                       </span>
                     </div>
+                    {s.routeIds.length > 0 && (
+                      <p className="text-[10px] text-zinc-400">
+                        Linee: <span className="font-mono text-zinc-300">
+                          {s.routeIds.map((id) => routeCodeById.get(id) ?? "?").join(", ")}
+                        </span>
+                      </p>
+                    )}
                     <p className="text-[10px] font-mono text-zinc-500 truncate">{shareUrl(s.token)}</p>
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <button onClick={async () => { try { await navigator.clipboard.writeText(shareUrl(s.token)); toast.success("Link copiato"); } catch { /* noop */ } }}
@@ -1545,6 +1575,14 @@ export default function TimetablesPage() {
                         title={`Rinnova la validità secondo la tendina "Link:" (${shareDays > 0 ? `${shareDays} giorni da oggi` : "sempre online"}). Utile anche per riattivare un link scaduto.`}
                         className="px-2.5 py-1.5 rounded-lg border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-[11px] font-semibold">
                         Rinnova validità
+                      </button>
+                      <button
+                        onClick={() => {
+                          const nn = prompt("Nuovo nome del link:", s.title ?? "");
+                          if (nn !== null) void patchShare(s.token, { title: nn.trim() }, "Link rinominato");
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px] font-semibold">
+                        Rinomina
                       </button>
                       <button onClick={() => revokeShare(s.token)}
                         className="px-2.5 py-1.5 rounded-lg border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 text-[11px] font-semibold ml-auto">

@@ -1,17 +1,21 @@
 /**
  * MAPPA ORARI pubblica (/o/:token) — nessuna autenticazione.
  *
- * Pensata per il PASSEGGERO, non per l'operatore. Flusso guidato:
- *   1. scegli il GIORNO (Feriale / Sabato / Festivo… — dai giorni di
- *      validità reali del GTFS/matrice; se il progetto non li usa, si salta)
- *   2. scegli la LINEA (chips colorate, ricerca)
- *   3. si apre la MAPPA con tutti i percorsi e le fermate della linea
- *   4. tocca una FERMATA → orari di transito DI QUEL GIORNO, con le corse
- *      A CHIAMATA (📞) evidenziate
+ * Pensata per il PASSEGGERO, non per l'operatore.
  *
- * I colori dei percorsi sono quelli scelti dall'operatore nell'app:
- * colore per-percorso (attributes.color) se impostato, altrimenti il
- * colore della linea. Mobile-first: bottom-sheet, tap target grandi.
+ * MOBILE (< md): flusso guidato a overlay —
+ *   1. scegli il GIORNO (Feriale / Sabato / Festivo… dai giorni di validità
+ *      reali del GTFS/matrice; se il progetto non li usa, si salta)
+ *   2. scegli la LINEA (solo quelle che circolano in quel giorno)
+ *   3. mappa con percorsi e fermate; tocca una fermata → orari del giorno,
+ *      con le corse A CHIAMATA (📞) evidenziate. Pannello a bottom-sheet.
+ *
+ * DESKTOP (≥ md): sidebar fissa a sinistra con giorno + elenco linee sempre
+ * visibili, mappa a destra, pannello orari come card laterale. Cambiare
+ * giorno NON resetta la linea se questa circola anche nel nuovo giorno.
+ *
+ * I colori dei percorsi sono quelli scelti dall'operatore nell'app
+ * (attributes.color per percorso, fallback colore linea), letti live.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
@@ -156,7 +160,14 @@ export default function TimetableMapPage() {
     }
   }, [bounds]);
 
-  function pickDay(id: string) { setDayTypeId(id); setRouteId(null); setStopId(null); }
+  /* Cambio giorno "intelligente": la linea resta selezionata se circola anche
+   * nel nuovo giorno (desktop-friendly); altrimenti si torna alla scelta. */
+  function pickDay(id: string) {
+    setDayTypeId(id);
+    const line = lines.find((l) => l.routeId === routeId);
+    const stillValid = !!line && (!Array.isArray(line.dayTypeIds) || line.dayTypeIds.length === 0 || line.dayTypeIds.includes(id));
+    if (!stillValid) { setRouteId(null); setStopId(null); }
+  }
   function pickLine(id: string) { setRouteId(id); setStopId(null); }
   function backToDays() { setDayTypeId(null); setRouteId(null); setStopId(null); }
 
@@ -188,163 +199,67 @@ export default function TimetableMapPage() {
   const showDayStep = needsDay && !dayTypeId;
   const showLineStep = !showDayStep && !routeId;
 
+  /* elemento riga-linea (riusato in sidebar desktop e overlay mobile) */
+  const lineRow = (l: MetaResp["lines"][number]) => {
+    const c = col(l.color);
+    const active = l.routeId === routeId;
+    return (
+      <button key={l.routeId} onClick={() => pickLine(l.routeId)}
+        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors text-left ${
+          active ? "border-transparent ring-2" : "border-slate-700 bg-slate-900 hover:border-slate-500 hover:bg-slate-800"
+        }`}
+        style={active ? { backgroundColor: `${c}22`, ["--tw-ring-color" as any]: c } : undefined}>
+        <span className="shrink-0 min-w-[44px] text-center px-2 py-1 rounded-lg text-xs font-bold text-white" style={{ backgroundColor: c }}>
+          {l.code}
+        </span>
+        <span className="text-xs text-slate-300 truncate">{l.longName ?? ""}</span>
+      </button>
+    );
+  };
+
+  const dayChip = (d: MetaResp["dayTypes"][number]) => {
+    const active = d.id === dayTypeId;
+    const c = col(d.color, "#22d3ee");
+    return (
+      <button key={d.id} onClick={() => pickDay(d.id)}
+        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+          active ? "text-white shadow" : "text-slate-300 bg-slate-900 hover:text-white"
+        }`}
+        style={active ? { backgroundColor: c, borderColor: c } : { borderColor: `${c}66` }}>
+        {d.name}
+      </button>
+    );
+  };
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-slate-950 text-white overflow-hidden">
-      {/* ── Header brand + stato scelte ── */}
-      <header className="shrink-0 px-3 pt-3 pb-2 space-y-2 bg-slate-950/95 border-b border-slate-800 z-10">
-        <div className="flex items-center gap-2">
-          <MapPinned className="w-5 h-5 text-cyan-400 shrink-0" />
-          <div className="min-w-0">
-            <h1 className="text-sm font-bold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
-            {meta.agencyName && <p className="text-[11px] text-slate-400 leading-tight truncate">{meta.agencyName}</p>}
+    <div className="h-screen w-screen flex bg-slate-950 text-white overflow-hidden">
+      {/* ═══ SIDEBAR DESKTOP: giorno + linee sempre visibili ═══ */}
+      <aside className="hidden md:flex flex-col w-80 shrink-0 border-r border-slate-800 bg-slate-950">
+        <div className="px-4 pt-4 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <MapPinned className="w-5 h-5 text-cyan-400 shrink-0" />
+            <div className="min-w-0">
+              <h1 className="text-sm font-bold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
+              {meta.agencyName && <p className="text-[11px] text-slate-400 leading-tight truncate">{meta.agencyName}</p>}
+            </div>
           </div>
-          {/* chip giorno scelto: tocca per cambiarlo */}
-          {needsDay && selectedDay && (
-            <button onClick={backToDays}
-              className="ml-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold border transition-colors hover:brightness-125"
-              style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}
-              title="Cambia giorno">
-              <CalendarDays className="w-3.5 h-3.5" /> {selectedDay.name}
-            </button>
-          )}
         </div>
-        {/* chips linee: visibili quando il giorno è scelto (o non serve) */}
-        {!showDayStep && (
-          <>
-            <div className="flex items-center gap-1.5">
-              <div className="relative flex-1 sm:flex-none">
-                <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Cerca linea…"
-                  className="w-full sm:w-52 pl-7 pr-2 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
-                />
-              </div>
-            </div>
-            <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarWidth: "thin" }}>
-              {filteredLines.map((l) => {
-                const active = l.routeId === routeId;
-                const c = col(l.color);
-                return (
-                  <button
-                    key={l.routeId}
-                    onClick={() => pickLine(l.routeId)}
-                    title={l.longName ?? l.code}
-                    className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
-                      active ? "text-white shadow-lg scale-105" : "text-slate-200 bg-slate-900 hover:scale-105"
-                    }`}
-                    style={active ? { backgroundColor: c, borderColor: c } : { borderColor: `${c}66` }}
-                  >
-                    <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ backgroundColor: c }} />
-                    {l.code}
-                  </button>
-                );
-              })}
-              {filteredLines.length === 0 && (
-                <span className="text-xs text-slate-500 py-1.5">Nessuna linea trovata</span>
-              )}
-            </div>
-            {selectedLine && (
-              <p className="text-[11px] text-slate-400 truncate">
-                <span className="font-semibold" style={{ color: lineColor }}>Linea {selectedLine.code}</span>
-                {selectedLine.longName ? ` — ${selectedLine.longName}` : ""} · tocca una fermata sulla mappa per gli orari
-              </p>
-            )}
-          </>
-        )}
-      </header>
-
-      {/* ── Mappa (sempre sotto; gli step sono overlay) ── */}
-      <div className="flex-1 relative">
-        <MapGL
-          ref={mapRef}
-          mapboxAccessToken={MAPBOX_TOKEN}
-          initialViewState={{ longitude: 13.51, latitude: 43.61, zoom: 10 }}
-          mapStyle="mapbox://styles/mapbox/streets-v12"
-          interactiveLayerIds={routeId ? ["tm-stops"] : []}
-          onClick={(e) => {
-            const f = e.features?.find((x: any) => x.layer?.id === "tm-stops");
-            if (f?.properties?.stopId) setStopId(String(f.properties.stopId));
-          }}
-          onMouseMove={(e) => {
-            const canvas = mapRef.current?.getCanvas();
-            if (canvas) canvas.style.cursor = e.features?.length ? "pointer" : "";
-          }}
-          style={{ width: "100%", height: "100%" }}
-        >
-          <NavigationControl position="top-right" />
-          {routeId && (
-            <>
-              <Source id="tm-lines" type="geojson" data={linesFC}>
-                <Layer id="tm-lines-casing" type="line"
-                  paint={{ "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.85 }}
-                  layout={{ "line-cap": "round", "line-join": "round" }} />
-                <Layer id="tm-lines-core" type="line"
-                  paint={{ "line-color": ["get", "color"], "line-width": 4 }}
-                  layout={{ "line-cap": "round", "line-join": "round" }} />
-              </Source>
-              <Source id="tm-stops-src" type="geojson" data={stopsFC}>
-                <Layer id="tm-stops" type="circle"
-                  paint={{
-                    "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 8],
-                    "circle-color": "#ffffff",
-                    "circle-stroke-color": ["get", "color"],
-                    "circle-stroke-width": 2.5,
-                  }} />
-                <Layer id="tm-stop-labels" type="symbol" minzoom={13}
-                  layout={{
-                    "text-field": ["get", "name"],
-                    "text-size": 11,
-                    "text-offset": [0, 1.1],
-                    "text-anchor": "top",
-                  }}
-                  paint={{ "text-color": "#0f172a", "text-halo-color": "#ffffff", "text-halo-width": 1.4 }} />
-              </Source>
-            </>
-          )}
-        </MapGL>
-
-        {/* ── STEP 1: scegli il giorno (overlay guidato) ── */}
-        {showDayStep && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-            <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-4">
-              <div className="flex items-center gap-2">
-                <CalendarDays className="w-5 h-5 text-cyan-400" />
-                <h2 className="text-base font-bold">Che giorno viaggi?</h2>
-              </div>
-              <p className="text-xs text-slate-400">Gli orari cambiano in base al giorno: scegli quello che ti interessa.</p>
-              <div className="grid gap-2">
-                {dayTypes.map((d) => (
-                  <button key={d.id} onClick={() => pickDay(d.id)}
-                    className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border border-slate-700 bg-slate-900 hover:border-cyan-500/60 hover:bg-slate-800 transition-colors text-left">
-                    <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: col(d.color, "#22d3ee") }} />
-                    <span className="text-sm font-semibold">{d.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
+        {needsDay && (
+          <div className="px-4 py-3 border-b border-slate-800 space-y-2">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 flex items-center gap-1.5">
+              <CalendarDays className="w-3.5 h-3.5" /> 1 · Che giorno viaggi?
+            </p>
+            <div className="flex flex-wrap gap-1.5">{dayTypes.map(dayChip)}</div>
           </div>
         )}
-
-        {/* ── STEP 2: scegli la linea (overlay guidato) ── */}
-        {showLineStep && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-            <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-3 max-h-[80vh] flex flex-col">
-              <div className="flex items-center gap-2">
-                {needsDay && (
-                  <button onClick={backToDays} className="p-1 -ml-1 rounded-lg hover:bg-slate-800 text-slate-400" title="Cambia giorno">
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                )}
-                <h2 className="text-base font-bold">Scegli la linea</h2>
-                {selectedDay && (
-                  <span className="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full border"
-                    style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}>
-                    {selectedDay.name}
-                  </span>
-                )}
-              </div>
+        <div className="flex-1 flex flex-col min-h-0 px-4 py-3 space-y-2">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+            {needsDay ? "2 · " : ""}Scegli la linea
+          </p>
+          {needsDay && !dayTypeId ? (
+            <p className="text-xs text-slate-500">Prima scegli il giorno qui sopra.</p>
+          ) : (
+            <>
               <div className="relative">
                 <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
                 <input
@@ -354,106 +269,296 @@ export default function TimetableMapPage() {
                   className="w-full pl-8 pr-2 py-2 text-sm rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
                 />
               </div>
-              <div className="overflow-y-auto grid gap-1.5 pr-1">
-                {filteredLines.map((l) => {
-                  const c = col(l.color);
-                  return (
-                    <button key={l.routeId} onClick={() => pickLine(l.routeId)}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-900 hover:border-slate-500 hover:bg-slate-800 transition-colors text-left">
-                      <span className="shrink-0 min-w-[44px] text-center px-2 py-1 rounded-lg text-xs font-bold text-white" style={{ backgroundColor: c }}>
-                        {l.code}
-                      </span>
-                      <span className="text-xs text-slate-300 truncate">{l.longName ?? ""}</span>
-                    </button>
-                  );
-                })}
+              <div className="flex-1 overflow-y-auto grid gap-1.5 content-start pr-1">
+                {filteredLines.map(lineRow)}
                 {filteredLines.length === 0 && (
                   <p className="text-xs text-slate-500 py-2">
                     {search.trim()
                       ? "Nessuna linea trovata con questa ricerca"
-                      : selectedDay
-                        ? `Nessuna linea circola nei giorni "${selectedDay.name}"`
-                        : "Nessuna linea disponibile"}
+                      : selectedDay ? `Nessuna linea circola nei giorni "${selectedDay.name}"` : "Nessuna linea disponibile"}
                   </p>
                 )}
               </div>
+            </>
+          )}
+        </div>
+        {meta.expiresAt && (
+          <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500">
+            Orari validi e aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
+          </div>
+        )}
+      </aside>
+
+      {/* ═══ COLONNA PRINCIPALE (header mobile + mappa) ═══ */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header MOBILE */}
+        <header className="md:hidden shrink-0 px-3 pt-3 pb-2 space-y-2 bg-slate-950/95 border-b border-slate-800 z-10">
+          <div className="flex items-center gap-2">
+            <MapPinned className="w-5 h-5 text-cyan-400 shrink-0" />
+            <div className="min-w-0">
+              <h1 className="text-sm font-bold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
+              {meta.agencyName && <p className="text-[11px] text-slate-400 leading-tight truncate">{meta.agencyName}</p>}
             </div>
+            {needsDay && selectedDay && (
+              <button onClick={backToDays}
+                className="ml-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold border transition-colors hover:brightness-125"
+                style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}
+                title="Cambia giorno">
+                <CalendarDays className="w-3.5 h-3.5" /> {selectedDay.name}
+              </button>
+            )}
           </div>
-        )}
+          {!showDayStep && (
+            <>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Cerca linea…"
+                  className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
+                />
+              </div>
+              <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarWidth: "thin" }}>
+                {filteredLines.map((l) => {
+                  const active = l.routeId === routeId;
+                  const c = col(l.color);
+                  return (
+                    <button
+                      key={l.routeId}
+                      onClick={() => pickLine(l.routeId)}
+                      title={l.longName ?? l.code}
+                      className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+                        active ? "text-white shadow-lg scale-105" : "text-slate-200 bg-slate-900 hover:scale-105"
+                      }`}
+                      style={active ? { backgroundColor: c, borderColor: c } : { borderColor: `${c}66` }}
+                    >
+                      <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ backgroundColor: c }} />
+                      {l.code}
+                    </button>
+                  );
+                })}
+                {filteredLines.length === 0 && (
+                  <span className="text-xs text-slate-500 py-1.5">
+                    {selectedDay ? `Nessuna linea nei giorni "${selectedDay.name}"` : "Nessuna linea trovata"}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </header>
 
-        {routeQ.isLoading && (
-          <div className="absolute inset-x-0 top-3 flex justify-center pointer-events-none">
-            <span className="px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-700 text-xs flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico i percorsi della linea…
-            </span>
-          </div>
-        )}
+        {/* ── Mappa (gli step mobile sono overlay; su desktop guida la sidebar) ── */}
+        <div className="flex-1 relative">
+          <MapGL
+            ref={mapRef}
+            mapboxAccessToken={MAPBOX_TOKEN}
+            initialViewState={{ longitude: 13.51, latitude: 43.61, zoom: 10 }}
+            mapStyle="mapbox://styles/mapbox/streets-v12"
+            interactiveLayerIds={routeId ? ["tm-stops"] : []}
+            onClick={(e) => {
+              const f = e.features?.find((x: any) => x.layer?.id === "tm-stops");
+              if (f?.properties?.stopId) setStopId(String(f.properties.stopId));
+            }}
+            onMouseMove={(e) => {
+              const canvas = mapRef.current?.getCanvas();
+              if (canvas) canvas.style.cursor = e.features?.length ? "pointer" : "";
+            }}
+            style={{ width: "100%", height: "100%" }}
+          >
+            <NavigationControl position="top-right" />
+            {routeId && (
+              <>
+                <Source id="tm-lines" type="geojson" data={linesFC}>
+                  <Layer id="tm-lines-casing" type="line"
+                    paint={{ "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.85 }}
+                    layout={{ "line-cap": "round", "line-join": "round" }} />
+                  <Layer id="tm-lines-core" type="line"
+                    paint={{ "line-color": ["get", "color"], "line-width": 4 }}
+                    layout={{ "line-cap": "round", "line-join": "round" }} />
+                </Source>
+                <Source id="tm-stops-src" type="geojson" data={stopsFC}>
+                  <Layer id="tm-stops" type="circle"
+                    paint={{
+                      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 8],
+                      "circle-color": "#ffffff",
+                      "circle-stroke-color": ["get", "color"],
+                      "circle-stroke-width": 2.5,
+                    }} />
+                  <Layer id="tm-stop-labels" type="symbol" minzoom={13}
+                    layout={{
+                      "text-field": ["get", "name"],
+                      "text-size": 11,
+                      "text-offset": [0, 1.1],
+                      "text-anchor": "top",
+                    }}
+                    paint={{ "text-color": "#0f172a", "text-halo-color": "#ffffff", "text-halo-width": 1.4 }} />
+                </Source>
+              </>
+            )}
+          </MapGL>
 
-        {/* ── Pannello orari fermata: sheet in basso (mobile) / card a destra (desktop) ── */}
-        {stopId && (
-          <div className="absolute inset-x-0 bottom-0 sm:inset-x-auto sm:right-3 sm:bottom-3 sm:top-3 sm:w-[380px] z-20">
-            <div className="bg-slate-950/97 sm:rounded-2xl border-t sm:border border-slate-700 shadow-2xl max-h-[55vh] sm:max-h-full h-full sm:h-auto flex flex-col overflow-hidden">
-              <div className="flex items-start gap-2 px-4 pt-3 pb-2 border-b border-slate-800 shrink-0">
-                <div className="w-3 h-3 rounded-full mt-1 shrink-0 border-2 border-white" style={{ backgroundColor: lineColor }} />
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-sm font-bold leading-tight">{stopQ.data?.stop.name ?? "…"}</h2>
-                  <p className="text-[11px] text-slate-400">
-                    Orari di transito · Linea {selectedLine?.code}{selectedDay ? ` · ${selectedDay.name}` : ""}
-                  </p>
+          {/* Suggerimento DESKTOP quando manca la selezione (non blocca la mappa) */}
+          {!routeId && (
+            <div className="hidden md:flex absolute inset-0 items-center justify-center pointer-events-none">
+              <div className="px-5 py-4 rounded-2xl bg-slate-950/85 border border-slate-700 shadow-2xl text-center max-w-xs">
+                <MapPinned className="w-6 h-6 text-cyan-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold">
+                  {needsDay && !dayTypeId ? "Scegli il giorno nella colonna a sinistra" : "Scegli la linea nella colonna a sinistra"}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1">La mappa si accende con percorsi e fermate; clicca una fermata per gli orari.</p>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 1 (SOLO MOBILE): scegli il giorno ── */}
+          {showDayStep && (
+            <div className="md:hidden absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+              <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-4">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="w-5 h-5 text-cyan-400" />
+                  <h2 className="text-base font-bold">Che giorno viaggi?</h2>
                 </div>
-                <button onClick={() => setStopId(null)} aria-label="Chiudi"
-                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white shrink-0">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="overflow-y-auto px-4 py-3 space-y-4">
-                {stopQ.isLoading && (
-                  <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico gli orari…</p>
-                )}
-                {stopQ.data && stopQ.data.departures.length === 0 && (
-                  <p className="text-xs text-slate-400">
-                    Nessun transito di questa linea dalla fermata{selectedDay ? ` nei giorni "${selectedDay.name}"` : ""}.
-                  </p>
-                )}
-                {depGroups.map(([daysLabel, deps]) => (
-                  <div key={daysLabel}>
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-300 flex items-center gap-1.5 mb-1.5">
-                      <Clock className="w-3.5 h-3.5" /> {daysLabel}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {deps.map((d, i) => (
-                        <span key={i}
-                          title={`${d.headsign ? `→ ${d.headsign}` : ""}${d.onDemand ? " · A CHIAMATA: la corsa va prenotata" : ""}`}
-                          className={`px-2.5 py-1.5 rounded-lg text-sm font-mono font-semibold border ${
-                            d.onDemand
-                              ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
-                              : "bg-slate-900 text-white border-slate-700"
-                          }`}>
-                          {d.time}
-                          {d.onDemand && <PhoneCall className="w-3 h-3 inline-block ml-1 -mt-0.5" />}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                {stopQ.data && stopQ.data.departures.some((d) => d.onDemand) && (
-                  <p className="text-[11px] text-amber-300/90 flex items-center gap-1.5 pt-1 border-t border-slate-800">
-                    <PhoneCall className="w-3.5 h-3.5 shrink-0" />
-                    Gli orari evidenziati sono corse <b>a chiamata</b>: si effettuano solo su prenotazione.
-                  </p>
-                )}
+                <p className="text-xs text-slate-400">Gli orari cambiano in base al giorno: scegli quello che ti interessa.</p>
+                <div className="grid gap-2">
+                  {dayTypes.map((d) => (
+                    <button key={d.id} onClick={() => pickDay(d.id)}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border border-slate-700 bg-slate-900 hover:border-cyan-500/60 hover:bg-slate-800 transition-colors text-left">
+                      <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: col(d.color, "#22d3ee") }} />
+                      <span className="text-sm font-semibold">{d.name}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
+          )}
+
+          {/* ── STEP 2 (SOLO MOBILE): scegli la linea ── */}
+          {showLineStep && (
+            <div className="md:hidden absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+              <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-3 max-h-[80vh] flex flex-col">
+                <div className="flex items-center gap-2">
+                  {needsDay && (
+                    <button onClick={backToDays} className="p-1 -ml-1 rounded-lg hover:bg-slate-800 text-slate-400" title="Cambia giorno">
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                  )}
+                  <h2 className="text-base font-bold">Scegli la linea</h2>
+                  {selectedDay && (
+                    <span className="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full border"
+                      style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}>
+                      {selectedDay.name}
+                    </span>
+                  )}
+                </div>
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <input
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Cerca per numero o destinazione…"
+                    className="w-full pl-8 pr-2 py-2 text-sm rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
+                  />
+                </div>
+                <div className="overflow-y-auto grid gap-1.5 pr-1">
+                  {filteredLines.map(lineRow)}
+                  {filteredLines.length === 0 && (
+                    <p className="text-xs text-slate-500 py-2">
+                      {search.trim()
+                        ? "Nessuna linea trovata con questa ricerca"
+                        : selectedDay ? `Nessuna linea circola nei giorni "${selectedDay.name}"` : "Nessuna linea disponibile"}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {routeQ.isLoading && (
+            <div className="absolute inset-x-0 top-3 flex justify-center pointer-events-none">
+              <span className="px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-700 text-xs flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico i percorsi della linea…
+              </span>
+            </div>
+          )}
+
+          {/* Info linea selezionata (desktop, sopra la mappa) */}
+          {selectedLine && (
+            <div className="hidden md:block absolute top-3 left-3 max-w-md">
+              <span className="px-3 py-1.5 rounded-full bg-slate-950/90 border border-slate-700 text-xs">
+                <b style={{ color: lineColor }}>Linea {selectedLine.code}</b>
+                {selectedLine.longName ? ` — ${selectedLine.longName}` : ""}
+                {selectedDay ? ` · ${selectedDay.name}` : ""} · clicca una fermata per gli orari
+              </span>
+            </div>
+          )}
+
+          {/* ── Pannello orari fermata: bottom-sheet (mobile) / card destra (desktop) ── */}
+          {stopId && (
+            <div className="absolute inset-x-0 bottom-0 md:inset-x-auto md:right-3 md:bottom-3 md:top-3 md:w-[380px] z-20">
+              <div className="bg-slate-950/97 md:rounded-2xl border-t md:border border-slate-700 shadow-2xl max-h-[55vh] md:max-h-full h-full md:h-auto flex flex-col overflow-hidden">
+                <div className="flex items-start gap-2 px-4 pt-3 pb-2 border-b border-slate-800 shrink-0">
+                  <div className="w-3 h-3 rounded-full mt-1 shrink-0 border-2 border-white" style={{ backgroundColor: lineColor }} />
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-sm font-bold leading-tight">{stopQ.data?.stop.name ?? "…"}</h2>
+                    <p className="text-[11px] text-slate-400">
+                      Orari di transito · Linea {selectedLine?.code}{selectedDay ? ` · ${selectedDay.name}` : ""}
+                    </p>
+                  </div>
+                  <button onClick={() => setStopId(null)} aria-label="Chiudi"
+                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white shrink-0">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="overflow-y-auto px-4 py-3 space-y-4">
+                  {stopQ.isLoading && (
+                    <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico gli orari…</p>
+                  )}
+                  {stopQ.data && stopQ.data.departures.length === 0 && (
+                    <p className="text-xs text-slate-400">
+                      Nessun transito di questa linea dalla fermata{selectedDay ? ` nei giorni "${selectedDay.name}"` : ""}.
+                    </p>
+                  )}
+                  {depGroups.map(([daysLabel, deps]) => (
+                    <div key={daysLabel}>
+                      <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-300 flex items-center gap-1.5 mb-1.5">
+                        <Clock className="w-3.5 h-3.5" /> {daysLabel}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {deps.map((d, i) => (
+                          <span key={i}
+                            title={`${d.headsign ? `→ ${d.headsign}` : ""}${d.onDemand ? " · A CHIAMATA: la corsa va prenotata" : ""}`}
+                            className={`px-2.5 py-1.5 rounded-lg text-sm font-mono font-semibold border ${
+                              d.onDemand
+                                ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
+                                : "bg-slate-900 text-white border-slate-700"
+                            }`}>
+                            {d.time}
+                            {d.onDemand && <PhoneCall className="w-3 h-3 inline-block ml-1 -mt-0.5" />}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {stopQ.data && stopQ.data.departures.some((d) => d.onDemand) && (
+                    <p className="text-[11px] text-amber-300/90 flex items-center gap-1.5 pt-1 border-t border-slate-800">
+                      <PhoneCall className="w-3.5 h-3.5 shrink-0" />
+                      Gli orari evidenziati sono corse <b>a chiamata</b>: si effettuano solo su prenotazione.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* footer validità (solo mobile: su desktop è nella sidebar) */}
+        {meta.expiresAt && (
+          <div className="md:hidden shrink-0 text-center text-[10px] text-slate-500 py-1 bg-slate-950 border-t border-slate-800">
+            Orari validi e aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
           </div>
         )}
       </div>
-
-      {/* footer validità link (per il pubblico è utile sapere fino a quando è valido) */}
-      {meta.expiresAt && (
-        <div className="shrink-0 text-center text-[10px] text-slate-500 py-1 bg-slate-950 border-t border-slate-800">
-          Orari validi e aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
-        </div>
-      )}
     </div>
   );
 }
