@@ -30,7 +30,7 @@ interface MetaResp {
   expiresAt: string | null;
   hasValidity: boolean;
   dayTypes: Array<{ id: string; code: string; name: string; color: string | null }>;
-  lines: Array<{ routeId: string; code: string; longName: string | null; color: string | null }>;
+  lines: Array<{ routeId: string; code: string; longName: string | null; color: string | null; dayTypeIds: string[] }>;
 }
 interface VariantResp {
   routeId: string;
@@ -79,9 +79,16 @@ export default function TimetableMapPage() {
   );
   const filteredLines = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return lines;
-    return lines.filter((l) => l.code.toLowerCase().includes(q) || (l.longName ?? "").toLowerCase().includes(q));
-  }, [lines, search]);
+    return lines.filter((l) => {
+      // filtro per GIORNO scelto: la linea compare solo se circola in quel
+      // tipo-giorno; senza bollini di validità ([]) resta sempre visibile
+      // (meglio mostrare un servizio in più che nasconderne uno reale)
+      if (dayTypeId && Array.isArray(l.dayTypeIds) && l.dayTypeIds.length > 0
+          && !l.dayTypeIds.includes(dayTypeId)) return false;
+      if (!q) return true;
+      return l.code.toLowerCase().includes(q) || (l.longName ?? "").toLowerCase().includes(q);
+    });
+  }, [lines, search, dayTypeId]);
   const selectedLine = lines.find((l) => l.routeId === routeId) ?? null;
   const lineColor = col(selectedLine?.color);
 
@@ -360,7 +367,15 @@ export default function TimetableMapPage() {
                     </button>
                   );
                 })}
-                {filteredLines.length === 0 && <p className="text-xs text-slate-500 py-2">Nessuna linea trovata</p>}
+                {filteredLines.length === 0 && (
+                  <p className="text-xs text-slate-500 py-2">
+                    {search.trim()
+                      ? "Nessuna linea trovata con questa ricerca"
+                      : selectedDay
+                        ? `Nessuna linea circola nei giorni "${selectedDay.name}"`
+                        : "Nessuna linea disponibile"}
+                  </p>
+                )}
               </div>
             </div>
           </div>
