@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, Printer, Search, Share2, SignpostBig,
+  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
@@ -1045,6 +1045,26 @@ export default function TimetablesPage() {
     } finally { setSharing(false); }
   }
 
+  // Link pubblico MAPPA ORARI: l'utente sceglie la linea → percorsi e fermate
+  // accesi → clic sulla fermata → orari di transito con le corse a chiamata.
+  // Linee selezionate = solo quelle nel link; nessuna selezione = TUTTE.
+  async function shareTimetableMap() {
+    setSharing(true);
+    try {
+      const ids = selectedIdsOrdered();
+      const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-share`, {
+        method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
+      });
+      const url = `${window.location.origin}/o/${r.token}`;
+      const scad = r.expiresAt ? ` (scade il ${new Date(r.expiresAt).toLocaleDateString("it-IT")})` : " (senza scadenza)";
+      try { await navigator.clipboard.writeText(url); toast.success(`Link Mappa Orari copiato${scad}`, { description: ids.length ? `${ids.length} linee incluse` : "Tutte le linee incluse" }); }
+      catch { toast.success(`Link Mappa Orari creato${scad}`); }
+      window.open(url, "_blank");
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore nella creazione del link");
+    } finally { setSharing(false); }
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -1192,6 +1212,15 @@ export default function TimetablesPage() {
               >
                 {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
                 Condividi
+              </button>
+              <button
+                onClick={shareTimetableMap}
+                disabled={sharing}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-500/60 text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
+                title="Crea un link pubblico MAPPA ORARI: l'utente sceglie la linea, vede percorsi e fermate sulla mappa e, toccando una fermata, gli orari di transito con le corse a chiamata. Linee selezionate = solo quelle; nessuna selezione = tutte."
+              >
+                {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPinned className="w-4 h-4" />}
+                Mappa orari
               </button>
               <button
                 onClick={printPosters}

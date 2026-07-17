@@ -518,4 +518,29 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── POST /planning-studio/:projectId/timetable-map-share — link MAPPA ORARI ──
+// Pagina pubblica /o/:token: l'utente sceglie la linea → percorsi e fermate
+// accesi → clic sulla fermata → orari di transito con corse a chiamata.
+router.post("/planning-studio/:projectId/timetable-map-share", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    // routeIds opzionali: assenti/vuoti = TUTTE le linee del progetto
+    const routeIds: string[] = Array.isArray(req.body?.routeIds)
+      ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : [];
+    const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 120) : null;
+    const days = Number(req.body?.expiresInDays);
+    const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
+    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
+    await ensureTimetableMapShareTable();
+    const token = randomBytes(18).toString("base64url");
+    const userId = (req as any).user?.id ?? null;
+    await db.execute(sql`
+      INSERT INTO ps_timetable_map_shares (token, project_id, route_ids, title, created_by, expires_at)
+      VALUES (${token}, ${projectId}::uuid, ${JSON.stringify(routeIds)}::jsonb, ${title}, ${userId}::uuid, ${expiresAt}::timestamptz)`);
+    res.json({ token, expiresAt });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 export default router;
