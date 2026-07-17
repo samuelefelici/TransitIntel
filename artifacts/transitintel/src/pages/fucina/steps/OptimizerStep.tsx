@@ -1633,6 +1633,26 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         creati entrambi gli scenari e il pulsante "Apri Turni Guida (già generati)" li apre senza rilanciare nulla.
                       </p>
                     )}
+                    {/* Vincolo RIGIDO autovetture aziendali: uso simultaneo vs cap */}
+                    {(() => {
+                      const m = activeCrew?.metrics;
+                      const cap = m?.companyCarsCap ?? crewSum?.companyCars;
+                      const used = m?.companyCarsMaxSimultaneous;
+                      if (typeof cap !== "number" || typeof used !== "number") return null;
+                      const violated = !!m?.companyCarsHardViolation || used > cap;
+                      return (
+                        <p className={`text-[10px] font-semibold inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border ${
+                          violated
+                            ? "bg-rose-500/15 text-rose-300 border-rose-500/40"
+                            : "bg-emerald-500/10 text-emerald-300/90 border-emerald-500/25"
+                        }`}>
+                          🚗 Autovetture aziendali: max {used} simultanee su {cap} disponibili
+                          {violated
+                            ? " — ⚠ VINCOLO RIGIDO VIOLATO (post-processing): rilancia con più tempo CSP o alza le autovetture"
+                            : " — vincolo rigido rispettato"}
+                        </p>
+                      );
+                    })()}
                     {Array.isArray(v.feedback) && v.feedback.length > 0 && (
                       <p className="text-[10px] text-muted-foreground/70">
                         Feedback costi-ombra: {v.feedback.map((f: any) => `round ${f.afterRound}: ${f.blocksPenalized} blocchi → ${f.arcsPenalized} archi penalizzati`).join(" · ")}

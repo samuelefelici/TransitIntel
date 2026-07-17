@@ -46,6 +46,7 @@ const Dashboard = lazyWithRetry(() => import("@/pages/dashboard"));
 const OperationsPage = lazyWithRetry(() => import("@/pages/operations"));
 const TimetablesPage = lazyWithRetry(() => import("@/pages/timetables"));
 const NetworkSharePage = lazyWithRetry(() => import("@/pages/network-share"));
+const TimetableMapPage = lazyWithRetry(() => import("@/pages/timetable-map"));
 const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
 const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
@@ -363,6 +364,10 @@ function AuthGate() {
   // Rotta PUBBLICA della Mappa di Rete condivisa: nessuna autenticazione.
   if (location.startsWith("/m/")) {
     return <Suspense fallback={<PageLoader />}><NetworkSharePage /></Suspense>;
+  }
+  // Rotta PUBBLICA della Mappa Orari (linea → percorsi → fermata → transiti).
+  if (location.startsWith("/o/")) {
+    return <Suspense fallback={<PageLoader />}><TimetableMapPage /></Suspense>;
   }
 
   if (loading) return <PageLoader />;
