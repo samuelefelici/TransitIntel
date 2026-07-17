@@ -1,21 +1,22 @@
 /**
  * MAPPA ORARI pubblica (/o/:token) — nessuna autenticazione.
  *
- * Pensata per il PASSEGGERO, non per l'operatore.
+ * UI in stile APP (tema chiaro, come le app di trasporto che i passeggeri
+ * già conoscono), user-friendly su mobile E desktop:
  *
- * MOBILE (< md): flusso guidato a overlay —
- *   1. scegli il GIORNO (Feriale / Sabato / Festivo… dai giorni di validità
- *      reali del GTFS/matrice; se il progetto non li usa, si salta)
- *   2. scegli la LINEA (solo quelle che circolano in quel giorno)
- *   3. mappa con percorsi e fermate; tocca una fermata → orari del giorno,
- *      con le corse A CHIAMATA (📞) evidenziate. Pannello a bottom-sheet.
+ *  MOBILE (< md): flusso guidato a fogli dal basso —
+ *    1. "Che giorno viaggi?" (dai giorni di validità reali del GTFS/matrice)
+ *    2. "Scegli la linea" (solo quelle che circolano in quel giorno)
+ *    3. mappa; tocca una fermata → orari del giorno in bottom-sheet,
+ *       corse A CHIAMATA (📞) evidenziate
  *
- * DESKTOP (≥ md): sidebar fissa a sinistra con giorno + elenco linee sempre
- * visibili, mappa a destra, pannello orari come card laterale. Cambiare
- * giorno NON resetta la linea se questa circola anche nel nuovo giorno.
+ *  DESKTOP (≥ md): pannello fisso a sinistra con giorno (segmented control)
+ *  e elenco linee sempre visibili; mappa a destra; orari in card laterale.
+ *  Cambiare giorno NON resetta la linea se circola anche nel nuovo giorno.
  *
- * I colori dei percorsi sono quelli scelti dall'operatore nell'app
- * (attributes.color per percorso, fallback colore linea), letti live.
+ * Robustezza: gli errori di caricamento sono SEMPRE visibili (banner con
+ * Riprova), mai pagina muta. I colori dei percorsi sono quelli scelti
+ * dall'operatore nell'app (attributes.color per percorso → colore linea).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
@@ -23,7 +24,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Map as MapGL, Source, Layer, NavigationControl } from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { Loader2, MapPinned, Search, X, PhoneCall, Clock, CalendarDays, ChevronLeft } from "lucide-react";
+import {
+  Loader2, MapPinned, Search, X, PhoneCall, Clock, CalendarDays,
+  ChevronLeft, ChevronRight, AlertTriangle, Bus,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 const MAPBOX_TOKEN: string = import.meta.env.VITE_MAPBOX_TOKEN || "";
@@ -50,9 +54,23 @@ interface StopResp {
   departures: Array<{ time: string; headsign: string | null; variantCode: string | null; onDemand: boolean; days: string[] }>;
 }
 
-function col(c: string | null | undefined, fallback = "#2563eb"): string {
+function col(c: string | null | undefined, fallback = "#0e7490"): string {
   if (!c) return fallback;
   return c.startsWith("#") ? c : `#${c}`;
+}
+
+/** estrae tutte le coordinate [lon,lat] da LineString o MultiLineString */
+function geomCoords(geom: any): Array<[number, number]> {
+  if (!geom) return [];
+  if (geom.type === "LineString") return (geom.coordinates ?? []).filter((c: any) => Array.isArray(c) && c.length >= 2);
+  if (geom.type === "MultiLineString") {
+    const out: Array<[number, number]> = [];
+    for (const part of geom.coordinates ?? []) for (const c of part ?? []) {
+      if (Array.isArray(c) && c.length >= 2) out.push(c as [number, number]);
+    }
+    return out;
+  }
+  return [];
 }
 
 export default function TimetableMapPage() {
@@ -84,9 +102,8 @@ export default function TimetableMapPage() {
   const filteredLines = useMemo(() => {
     const q = search.trim().toLowerCase();
     return lines.filter((l) => {
-      // filtro per GIORNO scelto: la linea compare solo se circola in quel
-      // tipo-giorno; senza bollini di validità ([]) resta sempre visibile
-      // (meglio mostrare un servizio in più che nasconderne uno reale)
+      // la linea compare solo se circola nel giorno scelto; senza bollini di
+      // validità resta sempre visibile (meglio mostrare che nascondere)
       if (dayTypeId && Array.isArray(l.dayTypeIds) && l.dayTypeIds.length > 0
           && !l.dayTypeIds.includes(dayTypeId)) return false;
       if (!q) return true;
@@ -101,6 +118,7 @@ export default function TimetableMapPage() {
     queryFn: () => apiFetch<VariantResp>(`/api/timetable-map/${encodeURIComponent(token)}/route/${routeId}${dayQS}`),
     enabled: !!token && !!routeId,
     staleTime: 60_000,
+    retry: 1,
   });
 
   const stopQ = useQuery({
@@ -109,9 +127,10 @@ export default function TimetableMapPage() {
       `/api/timetable-map/${encodeURIComponent(token)}/stop/${stopId}?routeId=${routeId}${dayTypeId ? `&dayTypeId=${dayTypeId}` : ""}`),
     enabled: !!token && !!stopId && !!routeId,
     staleTime: 60_000,
+    retry: 1,
   });
 
-  /* GeoJSON percorsi (colore per-variante dell'operatore) + fermate */
+  /* GeoJSON percorsi (colore per-percorso dell'operatore) + fermate */
   const { linesFC, stopsFC, bounds } = useMemo(() => {
     const variants = routeQ.data?.variants ?? [];
     const lineFeatures: any[] = [];
@@ -125,9 +144,10 @@ export default function TimetableMapPage() {
     };
     for (const v of variants) {
       const vColor = col(v.color, lineColor);
-      if (v.geometry?.coordinates?.length) {
+      const coords = geomCoords(v.geometry);
+      if (coords.length >= 2) {
         lineFeatures.push({ type: "Feature", properties: { variantId: v.variantId, color: vColor }, geometry: v.geometry });
-        for (const c of v.geometry.coordinates) if (Array.isArray(c) && c.length >= 2) extend(c[0], c[1]);
+        for (const c of coords) extend(c[0], c[1]);
       } else if (v.stops.length >= 2) {
         // fallback senza shape: spezzata tra le fermate
         lineFeatures.push({
@@ -161,7 +181,7 @@ export default function TimetableMapPage() {
   }, [bounds]);
 
   /* Cambio giorno "intelligente": la linea resta selezionata se circola anche
-   * nel nuovo giorno (desktop-friendly); altrimenti si torna alla scelta. */
+   * nel nuovo giorno; altrimenti si torna alla scelta linea. */
   function pickDay(id: string) {
     setDayTypeId(id);
     const line = lines.find((l) => l.routeId === routeId);
@@ -171,7 +191,6 @@ export default function TimetableMapPage() {
   function pickLine(id: string) { setRouteId(id); setStopId(null); }
   function backToDays() { setDayTypeId(null); setRouteId(null); setStopId(null); }
 
-  /* Raggruppa i transiti per etichetta-giorni (col giorno scelto è 1 gruppo) */
   const depGroups = useMemo(() => {
     const deps = stopQ.data?.departures ?? [];
     const groups = new Map<string, StopResp["departures"]>();
@@ -184,171 +203,163 @@ export default function TimetableMapPage() {
   }, [stopQ.data, selectedDay]);
 
   if (metaQ.isLoading) {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white"><Loader2 className="w-6 h-6 animate-spin mr-2" /> Carico la mappa orari…</div>;
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100 text-slate-700">
+        <Loader2 className="w-6 h-6 animate-spin mr-2 text-cyan-600" /> Carico la mappa orari…
+      </div>
+    );
   }
   if (metaQ.isError || !metaQ.data) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white gap-2 px-6 text-center">
-        <MapPinned className="w-8 h-8 text-slate-500" />
-        <p className="text-lg font-semibold">Link non valido o scaduto</p>
-        <p className="text-sm text-slate-400">Controlla l'indirizzo o richiedi un nuovo link all'azienda di trasporto.</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-100 text-slate-800 gap-3 px-6 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-white shadow flex items-center justify-center">
+          <MapPinned className="w-7 h-7 text-slate-400" />
+        </div>
+        <p className="text-lg font-bold">Link non valido o scaduto</p>
+        <p className="text-sm text-slate-500 max-w-xs">Controlla l'indirizzo o richiedi un nuovo link all'azienda di trasporto.</p>
       </div>
     );
   }
   const meta = metaQ.data;
   const showDayStep = needsDay && !dayTypeId;
   const showLineStep = !showDayStep && !routeId;
+  const noDrawable = !!routeQ.data && (routeQ.data.variants.length === 0
+    || routeQ.data.variants.every((v) => geomCoords(v.geometry).length < 2 && v.stops.length < 2));
 
-  /* elemento riga-linea (riusato in sidebar desktop e overlay mobile) */
+  /* riga-linea stile app (badge colorato + nome + freccia) */
   const lineRow = (l: MetaResp["lines"][number]) => {
     const c = col(l.color);
     const active = l.routeId === routeId;
     return (
       <button key={l.routeId} onClick={() => pickLine(l.routeId)}
-        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border transition-colors text-left ${
-          active ? "border-transparent ring-2" : "border-slate-700 bg-slate-900 hover:border-slate-500 hover:bg-slate-800"
+        className={`w-full flex items-center gap-3 px-3 py-3 rounded-2xl transition-all text-left border ${
+          active ? "bg-white shadow-md border-transparent ring-2" : "bg-white/70 border-slate-200 hover:bg-white hover:shadow-sm"
         }`}
-        style={active ? { backgroundColor: `${c}22`, ["--tw-ring-color" as any]: c } : undefined}>
-        <span className="shrink-0 min-w-[44px] text-center px-2 py-1 rounded-lg text-xs font-bold text-white" style={{ backgroundColor: c }}>
+        style={active ? { ["--tw-ring-color" as any]: c } : undefined}>
+        <span className="shrink-0 min-w-[48px] text-center px-2 py-1.5 rounded-xl text-sm font-extrabold text-white shadow-sm" style={{ backgroundColor: c }}>
           {l.code}
         </span>
-        <span className="text-xs text-slate-300 truncate">{l.longName ?? ""}</span>
+        <span className="flex-1 text-[13px] font-medium text-slate-700 truncate">{l.longName ?? "—"}</span>
+        <ChevronRight className={`w-4 h-4 shrink-0 ${active ? "text-slate-600" : "text-slate-300"}`} />
       </button>
     );
   };
 
-  const dayChip = (d: MetaResp["dayTypes"][number]) => {
-    const active = d.id === dayTypeId;
-    const c = col(d.color, "#22d3ee");
-    return (
-      <button key={d.id} onClick={() => pickDay(d.id)}
-        className={`px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
-          active ? "text-white shadow" : "text-slate-300 bg-slate-900 hover:text-white"
-        }`}
-        style={active ? { backgroundColor: c, borderColor: c } : { borderColor: `${c}66` }}>
-        {d.name}
-      </button>
-    );
-  };
+  /* segmented control giorni stile app */
+  const daySegmented = (
+    <div className="grid gap-1 p-1 rounded-2xl bg-slate-200/80" style={{ gridTemplateColumns: `repeat(${Math.min(dayTypes.length, 3)}, minmax(0, 1fr))` }}>
+      {dayTypes.map((d) => {
+        const active = d.id === dayTypeId;
+        return (
+          <button key={d.id} onClick={() => pickDay(d.id)}
+            className={`px-2 py-2 rounded-xl text-[13px] font-bold transition-all ${
+              active ? "bg-white text-slate-900 shadow" : "text-slate-500 hover:text-slate-700"
+            }`}>
+            {d.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const errorBanner = (msg: string, retry: () => void) => (
+    <div className="flex items-center gap-2 px-3 py-2.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700">
+      <AlertTriangle className="w-4 h-4 shrink-0" />
+      <span className="text-xs font-medium flex-1">{msg}</span>
+      <button onClick={retry} className="text-xs font-bold underline underline-offset-2 shrink-0">Riprova</button>
+    </div>
+  );
 
   return (
-    <div className="h-screen w-screen flex bg-slate-950 text-white overflow-hidden">
-      {/* ═══ SIDEBAR DESKTOP: giorno + linee sempre visibili ═══ */}
-      <aside className="hidden md:flex flex-col w-80 shrink-0 border-r border-slate-800 bg-slate-950">
-        <div className="px-4 pt-4 pb-3 border-b border-slate-800">
-          <div className="flex items-center gap-2">
-            <MapPinned className="w-5 h-5 text-cyan-400 shrink-0" />
+    <div className="h-screen w-screen flex bg-slate-100 text-slate-900 overflow-hidden">
+      {/* ═══ PANNELLO DESKTOP ═══ */}
+      <aside className="hidden md:flex flex-col w-96 shrink-0 bg-slate-50 border-r border-slate-200">
+        <div className="px-5 pt-5 pb-4 bg-white border-b border-slate-200">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-cyan-600 flex items-center justify-center shadow">
+              <Bus className="w-5 h-5 text-white" />
+            </div>
             <div className="min-w-0">
-              <h1 className="text-sm font-bold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
-              {meta.agencyName && <p className="text-[11px] text-slate-400 leading-tight truncate">{meta.agencyName}</p>}
+              <h1 className="text-[15px] font-extrabold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
+              {meta.agencyName && <p className="text-xs text-slate-500 leading-tight truncate">{meta.agencyName}</p>}
             </div>
           </div>
         </div>
-        {needsDay && (
-          <div className="px-4 py-3 border-b border-slate-800 space-y-2">
-            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 flex items-center gap-1.5">
-              <CalendarDays className="w-3.5 h-3.5" /> 1 · Che giorno viaggi?
-            </p>
-            <div className="flex flex-wrap gap-1.5">{dayTypes.map(dayChip)}</div>
-          </div>
-        )}
-        <div className="flex-1 flex flex-col min-h-0 px-4 py-3 space-y-2">
-          <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
-            {needsDay ? "2 · " : ""}Scegli la linea
-          </p>
-          {needsDay && !dayTypeId ? (
-            <p className="text-xs text-slate-500">Prima scegli il giorno qui sopra.</p>
-          ) : (
+        <div className="flex-1 flex flex-col min-h-0 px-4 py-4 gap-3">
+          {needsDay && (
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">Che giorno viaggi?</p>
+              {daySegmented}
+            </div>
+          )}
+          {(!needsDay || dayTypeId) ? (
             <>
               <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Cerca per numero o destinazione…"
-                  className="w-full pl-8 pr-2 py-2 text-sm rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
+                  placeholder="Cerca linea o destinazione…"
+                  className="w-full pl-9 pr-3 py-2.5 text-sm rounded-2xl bg-white border border-slate-200 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100 placeholder:text-slate-400 shadow-sm"
                 />
               </div>
-              <div className="flex-1 overflow-y-auto grid gap-1.5 content-start pr-1">
+              <div className="flex-1 overflow-y-auto grid gap-1.5 content-start pr-0.5 -mr-0.5">
                 {filteredLines.map(lineRow)}
                 {filteredLines.length === 0 && (
-                  <p className="text-xs text-slate-500 py-2">
+                  <p className="text-xs text-slate-400 py-3 text-center">
                     {search.trim()
-                      ? "Nessuna linea trovata con questa ricerca"
+                      ? "Nessuna linea trovata"
                       : selectedDay ? `Nessuna linea circola nei giorni "${selectedDay.name}"` : "Nessuna linea disponibile"}
                   </p>
                 )}
               </div>
             </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center">
+              <p className="text-sm text-slate-400 text-center px-6">👆 Scegli il giorno per vedere le linee disponibili</p>
+            </div>
           )}
         </div>
         {meta.expiresAt && (
-          <div className="px-4 py-2 border-t border-slate-800 text-[10px] text-slate-500">
-            Orari validi e aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
+          <div className="px-5 py-2.5 bg-white border-t border-slate-200 text-[10px] text-slate-400">
+            Orari sempre aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
           </div>
         )}
       </aside>
 
-      {/* ═══ COLONNA PRINCIPALE (header mobile + mappa) ═══ */}
+      {/* ═══ COLONNA PRINCIPALE ═══ */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Header MOBILE */}
-        <header className="md:hidden shrink-0 px-3 pt-3 pb-2 space-y-2 bg-slate-950/95 border-b border-slate-800 z-10">
-          <div className="flex items-center gap-2">
-            <MapPinned className="w-5 h-5 text-cyan-400 shrink-0" />
+        <header className="md:hidden shrink-0 px-3 pt-3 pb-2 space-y-2 bg-white border-b border-slate-200 z-10 shadow-sm">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-xl bg-cyan-600 flex items-center justify-center shadow shrink-0">
+              <Bus className="w-4.5 h-4.5 w-[18px] h-[18px] text-white" />
+            </div>
             <div className="min-w-0">
-              <h1 className="text-sm font-bold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
-              {meta.agencyName && <p className="text-[11px] text-slate-400 leading-tight truncate">{meta.agencyName}</p>}
+              <h1 className="text-sm font-extrabold leading-tight truncate">{meta.title || "Mappa Orari"}</h1>
+              {meta.agencyName && <p className="text-[11px] text-slate-500 leading-tight truncate">{meta.agencyName}</p>}
             </div>
             {needsDay && selectedDay && (
               <button onClick={backToDays}
-                className="ml-auto shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-[11px] font-bold border transition-colors hover:brightness-125"
-                style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}
+                className="ml-auto shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-bold bg-slate-100 text-slate-700 border border-slate-200 active:scale-95 transition"
                 title="Cambia giorno">
-                <CalendarDays className="w-3.5 h-3.5" /> {selectedDay.name}
+                <CalendarDays className="w-3.5 h-3.5 text-cyan-600" /> {selectedDay.name}
               </button>
             )}
           </div>
-          {!showDayStep && (
-            <>
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Cerca linea…"
-                  className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
-                />
-              </div>
-              <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarWidth: "thin" }}>
-                {filteredLines.map((l) => {
-                  const active = l.routeId === routeId;
-                  const c = col(l.color);
-                  return (
-                    <button
-                      key={l.routeId}
-                      onClick={() => pickLine(l.routeId)}
-                      title={l.longName ?? l.code}
-                      className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
-                        active ? "text-white shadow-lg scale-105" : "text-slate-200 bg-slate-900 hover:scale-105"
-                      }`}
-                      style={active ? { backgroundColor: c, borderColor: c } : { borderColor: `${c}66` }}
-                    >
-                      <span className="inline-block w-2 h-2 rounded-full mr-1.5 align-middle" style={{ backgroundColor: c }} />
-                      {l.code}
-                    </button>
-                  );
-                })}
-                {filteredLines.length === 0 && (
-                  <span className="text-xs text-slate-500 py-1.5">
-                    {selectedDay ? `Nessuna linea nei giorni "${selectedDay.name}"` : "Nessuna linea trovata"}
-                  </span>
-                )}
-              </div>
-            </>
+          {!showDayStep && !showLineStep && selectedLine && (
+            <button onClick={() => setRouteId(null)}
+              className="w-full flex items-center gap-2.5 px-3 py-2 rounded-2xl bg-slate-50 border border-slate-200 active:scale-[0.99] transition text-left">
+              <span className="shrink-0 min-w-[44px] text-center px-2 py-1 rounded-lg text-xs font-extrabold text-white" style={{ backgroundColor: lineColor }}>
+                {selectedLine.code}
+              </span>
+              <span className="flex-1 text-xs font-medium text-slate-600 truncate">{selectedLine.longName ?? ""}</span>
+              <span className="text-[10px] font-bold text-cyan-700 shrink-0">Cambia ›</span>
+            </button>
           )}
         </header>
 
-        {/* ── Mappa (gli step mobile sono overlay; su desktop guida la sidebar) ── */}
+        {/* ── Mappa ── */}
         <div className="flex-1 relative">
           <MapGL
             ref={mapRef}
@@ -371,167 +382,176 @@ export default function TimetableMapPage() {
               <>
                 <Source id="tm-lines" type="geojson" data={linesFC}>
                   <Layer id="tm-lines-casing" type="line"
-                    paint={{ "line-color": "#ffffff", "line-width": 7, "line-opacity": 0.85 }}
+                    paint={{ "line-color": "#ffffff", "line-width": 8, "line-opacity": 0.9 }}
                     layout={{ "line-cap": "round", "line-join": "round" }} />
                   <Layer id="tm-lines-core" type="line"
-                    paint={{ "line-color": ["get", "color"], "line-width": 4 }}
+                    paint={{ "line-color": ["get", "color"], "line-width": 4.5 }}
                     layout={{ "line-cap": "round", "line-join": "round" }} />
                 </Source>
                 <Source id="tm-stops-src" type="geojson" data={stopsFC}>
                   <Layer id="tm-stops" type="circle"
                     paint={{
-                      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 8],
+                      "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4.5, 14, 9],
                       "circle-color": "#ffffff",
                       "circle-stroke-color": ["get", "color"],
-                      "circle-stroke-width": 2.5,
+                      "circle-stroke-width": 3,
                     }} />
                   <Layer id="tm-stop-labels" type="symbol" minzoom={13}
                     layout={{
                       "text-field": ["get", "name"],
-                      "text-size": 11,
-                      "text-offset": [0, 1.1],
+                      "text-size": 11.5,
+                      "text-offset": [0, 1.15],
                       "text-anchor": "top",
                     }}
-                    paint={{ "text-color": "#0f172a", "text-halo-color": "#ffffff", "text-halo-width": 1.4 }} />
+                    paint={{ "text-color": "#0f172a", "text-halo-color": "#ffffff", "text-halo-width": 1.6 }} />
                 </Source>
               </>
             )}
           </MapGL>
 
-          {/* Suggerimento DESKTOP quando manca la selezione (non blocca la mappa) */}
+          {/* Stato caricamento / ERRORI sempre visibili */}
+          <div className="absolute inset-x-3 top-3 md:left-3 md:right-auto md:max-w-md space-y-2 pointer-events-none [&>*]:pointer-events-auto">
+            {routeQ.isLoading && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/95 border border-slate-200 shadow text-xs font-medium text-slate-600">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-600" /> Carico i percorsi della linea…
+              </div>
+            )}
+            {routeQ.isError && errorBanner("Impossibile caricare i percorsi della linea.", () => routeQ.refetch())}
+            {noDrawable && !routeQ.isLoading && (
+              <div className="flex items-center gap-2 px-3 py-2.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-800 shadow">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span className="text-xs font-medium">
+                  Nessun percorso disponibile per questa linea{selectedDay ? ` nei giorni "${selectedDay.name}"` : ""}.
+                </span>
+              </div>
+            )}
+            {selectedLine && !routeQ.isLoading && !routeQ.isError && !noDrawable && (
+              <div className="hidden md:flex items-center gap-2 px-3 py-2 rounded-2xl bg-white/95 border border-slate-200 shadow text-xs">
+                <span className="px-2 py-0.5 rounded-lg font-extrabold text-white text-[11px]" style={{ backgroundColor: lineColor }}>{selectedLine.code}</span>
+                <span className="font-medium text-slate-600 truncate">{selectedLine.longName ?? ""}</span>
+                <span className="text-slate-400">· clicca una fermata per gli orari</span>
+              </div>
+            )}
+          </div>
+
+          {/* Hint DESKTOP quando manca la selezione */}
           {!routeId && (
             <div className="hidden md:flex absolute inset-0 items-center justify-center pointer-events-none">
-              <div className="px-5 py-4 rounded-2xl bg-slate-950/85 border border-slate-700 shadow-2xl text-center max-w-xs">
-                <MapPinned className="w-6 h-6 text-cyan-400 mx-auto mb-2" />
-                <p className="text-sm font-semibold">
-                  {needsDay && !dayTypeId ? "Scegli il giorno nella colonna a sinistra" : "Scegli la linea nella colonna a sinistra"}
+              <div className="px-6 py-5 rounded-3xl bg-white/95 border border-slate-200 shadow-xl text-center max-w-xs">
+                <div className="w-11 h-11 rounded-2xl bg-cyan-50 flex items-center justify-center mx-auto mb-2.5">
+                  <MapPinned className="w-5.5 h-5.5 w-[22px] h-[22px] text-cyan-600" />
+                </div>
+                <p className="text-sm font-bold text-slate-800">
+                  {needsDay && !dayTypeId ? "Scegli il giorno nel pannello a sinistra" : "Scegli la linea nel pannello a sinistra"}
                 </p>
-                <p className="text-[11px] text-slate-400 mt-1">La mappa si accende con percorsi e fermate; clicca una fermata per gli orari.</p>
+                <p className="text-xs text-slate-500 mt-1">La mappa mostrerà percorsi e fermate; clicca una fermata per gli orari.</p>
               </div>
             </div>
           )}
 
-          {/* ── STEP 1 (SOLO MOBILE): scegli il giorno ── */}
-          {showDayStep && (
-            <div className="md:hidden absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-4">
-                <div className="flex items-center gap-2">
-                  <CalendarDays className="w-5 h-5 text-cyan-400" />
-                  <h2 className="text-base font-bold">Che giorno viaggi?</h2>
-                </div>
-                <p className="text-xs text-slate-400">Gli orari cambiano in base al giorno: scegli quello che ti interessa.</p>
-                <div className="grid gap-2">
-                  {dayTypes.map((d) => (
-                    <button key={d.id} onClick={() => pickDay(d.id)}
-                      className="w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border border-slate-700 bg-slate-900 hover:border-cyan-500/60 hover:bg-slate-800 transition-colors text-left">
-                      <span className="w-3.5 h-3.5 rounded-full shrink-0" style={{ backgroundColor: col(d.color, "#22d3ee") }} />
-                      <span className="text-sm font-semibold">{d.name}</span>
-                    </button>
-                  ))}
-                </div>
+          {/* ── STEP MOBILE: fogli dal basso stile app ── */}
+          {(showDayStep || showLineStep) && (
+            <div className="md:hidden absolute inset-0 z-20 flex items-end bg-slate-900/30 backdrop-blur-[2px]">
+              <div className="w-full bg-white rounded-t-3xl shadow-2xl max-h-[78vh] flex flex-col animate-in slide-in-from-bottom duration-200">
+                <div className="mx-auto mt-2.5 mb-1 w-10 h-1 rounded-full bg-slate-300" />
+                {showDayStep ? (
+                  <div className="px-5 pb-6 pt-2 space-y-4">
+                    <div>
+                      <h2 className="text-lg font-extrabold">Che giorno viaggi?</h2>
+                      <p className="text-xs text-slate-500 mt-0.5">Gli orari cambiano in base al giorno.</p>
+                    </div>
+                    <div className="grid gap-2.5">
+                      {dayTypes.map((d) => (
+                        <button key={d.id} onClick={() => pickDay(d.id)}
+                          className="w-full flex items-center gap-3 px-4 py-4 rounded-2xl bg-slate-50 border border-slate-200 active:scale-[0.98] transition text-left">
+                          <span className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: `${col(d.color, "#0e7490")}1a` }}>
+                            <CalendarDays className="w-4.5 h-4.5 w-[18px] h-[18px]" style={{ color: col(d.color, "#0e7490") }} />
+                          </span>
+                          <span className="text-[15px] font-bold text-slate-800">{d.name}</span>
+                          <ChevronRight className="w-4 h-4 text-slate-300 ml-auto" />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="px-5 pb-5 pt-2 space-y-3 flex flex-col min-h-0">
+                    <div className="flex items-center gap-2">
+                      {needsDay && (
+                        <button onClick={backToDays} className="p-1.5 -ml-1.5 rounded-xl active:bg-slate-100 text-slate-500" title="Cambia giorno">
+                          <ChevronLeft className="w-5 h-5" />
+                        </button>
+                      )}
+                      <h2 className="text-lg font-extrabold">Scegli la linea</h2>
+                      {selectedDay && (
+                        <span className="ml-auto text-[11px] font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">{selectedDay.name}</span>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Cerca linea o destinazione…"
+                        className="w-full pl-9 pr-3 py-2.5 text-sm rounded-2xl bg-slate-100 border border-transparent outline-none focus:bg-white focus:border-cyan-500 placeholder:text-slate-400"
+                      />
+                    </div>
+                    <div className="overflow-y-auto grid gap-1.5 pb-2">
+                      {filteredLines.map(lineRow)}
+                      {filteredLines.length === 0 && (
+                        <p className="text-xs text-slate-400 py-3 text-center">
+                          {search.trim()
+                            ? "Nessuna linea trovata"
+                            : selectedDay ? `Nessuna linea circola nei giorni "${selectedDay.name}"` : "Nessuna linea disponibile"}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
 
-          {/* ── STEP 2 (SOLO MOBILE): scegli la linea ── */}
-          {showLineStep && (
-            <div className="md:hidden absolute inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-              <div className="w-full max-w-sm bg-slate-950 border border-slate-700 rounded-2xl shadow-2xl p-5 space-y-3 max-h-[80vh] flex flex-col">
-                <div className="flex items-center gap-2">
-                  {needsDay && (
-                    <button onClick={backToDays} className="p-1 -ml-1 rounded-lg hover:bg-slate-800 text-slate-400" title="Cambia giorno">
-                      <ChevronLeft className="w-4 h-4" />
-                    </button>
-                  )}
-                  <h2 className="text-base font-bold">Scegli la linea</h2>
-                  {selectedDay && (
-                    <span className="ml-auto text-[11px] font-semibold px-2 py-0.5 rounded-full border"
-                      style={{ borderColor: col(selectedDay.color, "#22d3ee"), color: col(selectedDay.color, "#22d3ee") }}>
-                      {selectedDay.name}
-                    </span>
-                  )}
-                </div>
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-                  <input
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Cerca per numero o destinazione…"
-                    className="w-full pl-8 pr-2 py-2 text-sm rounded-lg bg-slate-900 border border-slate-700 outline-none focus:border-cyan-500/60 placeholder:text-slate-500"
-                  />
-                </div>
-                <div className="overflow-y-auto grid gap-1.5 pr-1">
-                  {filteredLines.map(lineRow)}
-                  {filteredLines.length === 0 && (
-                    <p className="text-xs text-slate-500 py-2">
-                      {search.trim()
-                        ? "Nessuna linea trovata con questa ricerca"
-                        : selectedDay ? `Nessuna linea circola nei giorni "${selectedDay.name}"` : "Nessuna linea disponibile"}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {routeQ.isLoading && (
-            <div className="absolute inset-x-0 top-3 flex justify-center pointer-events-none">
-              <span className="px-3 py-1.5 rounded-full bg-slate-900/90 border border-slate-700 text-xs flex items-center gap-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Carico i percorsi della linea…
-              </span>
-            </div>
-          )}
-
-          {/* Info linea selezionata (desktop, sopra la mappa) */}
-          {selectedLine && (
-            <div className="hidden md:block absolute top-3 left-3 max-w-md">
-              <span className="px-3 py-1.5 rounded-full bg-slate-950/90 border border-slate-700 text-xs">
-                <b style={{ color: lineColor }}>Linea {selectedLine.code}</b>
-                {selectedLine.longName ? ` — ${selectedLine.longName}` : ""}
-                {selectedDay ? ` · ${selectedDay.name}` : ""} · clicca una fermata per gli orari
-              </span>
-            </div>
-          )}
-
-          {/* ── Pannello orari fermata: bottom-sheet (mobile) / card destra (desktop) ── */}
+          {/* ── Pannello orari fermata ── */}
           {stopId && (
-            <div className="absolute inset-x-0 bottom-0 md:inset-x-auto md:right-3 md:bottom-3 md:top-3 md:w-[380px] z-20">
-              <div className="bg-slate-950/97 md:rounded-2xl border-t md:border border-slate-700 shadow-2xl max-h-[55vh] md:max-h-full h-full md:h-auto flex flex-col overflow-hidden">
-                <div className="flex items-start gap-2 px-4 pt-3 pb-2 border-b border-slate-800 shrink-0">
-                  <div className="w-3 h-3 rounded-full mt-1 shrink-0 border-2 border-white" style={{ backgroundColor: lineColor }} />
+            <div className="absolute inset-x-0 bottom-0 md:inset-x-auto md:right-3 md:bottom-3 md:top-3 md:w-[400px] z-20">
+              <div className="bg-white md:rounded-3xl rounded-t-3xl border-t md:border border-slate-200 shadow-2xl max-h-[60vh] md:max-h-full h-full md:h-auto flex flex-col overflow-hidden">
+                <div className="shrink-0" style={{ height: 5, backgroundColor: lineColor }} />
+                <div className="flex items-start gap-2.5 px-4 pt-3 pb-2.5 border-b border-slate-100 shrink-0">
                   <div className="min-w-0 flex-1">
-                    <h2 className="text-sm font-bold leading-tight">{stopQ.data?.stop.name ?? "…"}</h2>
-                    <p className="text-[11px] text-slate-400">
-                      Orari di transito · Linea {selectedLine?.code}{selectedDay ? ` · ${selectedDay.name}` : ""}
+                    <h2 className="text-[15px] font-extrabold leading-tight">{stopQ.data?.stop.name ?? "…"}</h2>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      <span className="px-1.5 py-0.5 rounded font-extrabold text-white text-[10px] mr-1" style={{ backgroundColor: lineColor }}>{selectedLine?.code}</span>
+                      Orari di transito{selectedDay ? ` · ${selectedDay.name}` : ""}
                     </p>
                   </div>
                   <button onClick={() => setStopId(null)} aria-label="Chiudi"
-                    className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white shrink-0">
+                    className="p-2 rounded-xl hover:bg-slate-100 active:bg-slate-200 text-slate-400 shrink-0">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
                 <div className="overflow-y-auto px-4 py-3 space-y-4">
                   {stopQ.isLoading && (
-                    <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico gli orari…</p>
+                    <p className="text-xs text-slate-500 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-cyan-600" /> Carico gli orari…</p>
                   )}
+                  {stopQ.isError && errorBanner("Impossibile caricare gli orari della fermata.", () => stopQ.refetch())}
                   {stopQ.data && stopQ.data.departures.length === 0 && (
-                    <p className="text-xs text-slate-400">
+                    <p className="text-xs text-slate-500">
                       Nessun transito di questa linea dalla fermata{selectedDay ? ` nei giorni "${selectedDay.name}"` : ""}.
                     </p>
                   )}
                   {depGroups.map(([daysLabel, deps]) => (
                     <div key={daysLabel}>
-                      <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-300 flex items-center gap-1.5 mb-1.5">
+                      <p className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1.5 mb-2">
                         <Clock className="w-3.5 h-3.5" /> {daysLabel}
                       </p>
                       <div className="flex flex-wrap gap-1.5">
                         {deps.map((d, i) => (
                           <span key={i}
                             title={`${d.headsign ? `→ ${d.headsign}` : ""}${d.onDemand ? " · A CHIAMATA: la corsa va prenotata" : ""}`}
-                            className={`px-2.5 py-1.5 rounded-lg text-sm font-mono font-semibold border ${
+                            className={`px-3 py-2 rounded-xl text-sm font-mono font-bold border ${
                               d.onDemand
-                                ? "bg-amber-500/15 text-amber-300 border-amber-500/40"
-                                : "bg-slate-900 text-white border-slate-700"
+                                ? "bg-amber-50 text-amber-700 border-amber-300"
+                                : "bg-slate-50 text-slate-800 border-slate-200"
                             }`}>
                             {d.time}
                             {d.onDemand && <PhoneCall className="w-3 h-3 inline-block ml-1 -mt-0.5" />}
@@ -541,7 +561,7 @@ export default function TimetableMapPage() {
                     </div>
                   ))}
                   {stopQ.data && stopQ.data.departures.some((d) => d.onDemand) && (
-                    <p className="text-[11px] text-amber-300/90 flex items-center gap-1.5 pt-1 border-t border-slate-800">
+                    <p className="text-[11px] text-amber-700 flex items-center gap-1.5 pt-2 border-t border-slate-100">
                       <PhoneCall className="w-3.5 h-3.5 shrink-0" />
                       Gli orari evidenziati sono corse <b>a chiamata</b>: si effettuano solo su prenotazione.
                     </p>
@@ -552,10 +572,10 @@ export default function TimetableMapPage() {
           )}
         </div>
 
-        {/* footer validità (solo mobile: su desktop è nella sidebar) */}
+        {/* footer validità (solo mobile) */}
         {meta.expiresAt && (
-          <div className="md:hidden shrink-0 text-center text-[10px] text-slate-500 py-1 bg-slate-950 border-t border-slate-800">
-            Orari validi e aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
+          <div className="md:hidden shrink-0 text-center text-[10px] text-slate-400 py-1 bg-white border-t border-slate-200">
+            Orari sempre aggiornati · pagina online fino al {new Date(meta.expiresAt).toLocaleDateString("it-IT")}
           </div>
         )}
       </div>

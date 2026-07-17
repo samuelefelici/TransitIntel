@@ -753,12 +753,19 @@ export default function TimetablesPage() {
   // gestione link Mappa Orari esistenti (i QR alle paline NON si ristampano:
   // stesso token = stesso QR, si aggiorna il contenuto)
   const [manageOpen, setManageOpen] = useState(false);
-  // Dominio dei link orari: di default quello dell'app (funziona sempre).
-  // Opzionale: dominio DEDICATO via variabile d'ambiente al deploy
-  // (VITE_TIMETABLE_MAP_DOMAIN, es. https://orari.miacitta.it) — la imposta
-  // chi controlla il DNS, quindi niente QR stampati morti per configurazioni
-  // sbagliate a runtime. Il dominio deve puntare all'app (CNAME/alias).
-  const publicBase = (import.meta.env.VITE_TIMETABLE_MAP_DOMAIN || window.location.origin).replace(/\/+$/, "");
+  // Dominio dei link orari, in ordine di precedenza:
+  //   1. env RUNTIME del server (TIMETABLE_MAP_DOMAIN) via API — nessun flag
+  //      "build variable", basta impostarla sull'app e riavviare;
+  //   2. env di build Vite (VITE_TIMETABLE_MAP_DOMAIN), legacy;
+  //   3. dominio dell'app (funziona sempre).
+  const mapDomainQ = useQuery({
+    queryKey: ["settings", "timetable-map-domain"],
+    queryFn: () => apiFetch<{ domain: string | null }>(`/api/settings/timetable-map-domain`),
+    staleTime: 5 * 60 * 1000,
+  });
+  const publicBase = (mapDomainQ.data?.domain
+    || import.meta.env.VITE_TIMETABLE_MAP_DOMAIN
+    || window.location.origin).replace(/\/+$/, "");
 
   const mapSharesQ = useQuery({
     queryKey: ["timetable-map-shares", projectId],
@@ -1508,9 +1515,9 @@ export default function TimetablesPage() {
               </p>
               <p className="text-[10px] text-zinc-500">
                 Dominio dei link: <span className="font-mono text-zinc-400">{publicBase}</span>
-                {import.meta.env.VITE_TIMETABLE_MAP_DOMAIN
+                {(mapDomainQ.data?.domain || import.meta.env.VITE_TIMETABLE_MAP_DOMAIN)
                   ? " (dedicato, da variabile d'ambiente)"
-                  : " — per usare un dominio dedicato imposta la variabile d'ambiente VITE_TIMETABLE_MAP_DOMAIN al deploy (il dominio deve puntare all'app)."}
+                  : " — per un dominio dedicato imposta TIMETABLE_MAP_DOMAIN come normale variabile d'ambiente dell'app (niente flag di build) e riavvia. Il dominio deve puntare all'app."}
               </p>
 
               {/* Elenco link creati */}

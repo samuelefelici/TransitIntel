@@ -69,6 +69,26 @@ function routeScope(share: ShareRow) {
     : sql``;
 }
 
+/** Normalizza la geometry del percorso in un GeoJSON disegnabile.
+ *  ps_shapes può contenere LineString puro, un Feature che lo avvolge o un
+ *  MultiLineString (percorsi spezzati): senza normalizzazione la mappa
+ *  pubblica non disegnava nulla. null = nessuna geometry usabile
+ *  (il chiamante ripiega sulla spezzata tra fermate). */
+function normalizeGeometry(g: any): any | null {
+  if (!g || typeof g !== "object") return null;
+  const geom = g.type === "Feature" ? g.geometry : g;
+  if (!geom || typeof geom !== "object") return null;
+  if (geom.type === "LineString" && Array.isArray(geom.coordinates) && geom.coordinates.length >= 2) {
+    return geom;
+  }
+  if (geom.type === "MultiLineString" && Array.isArray(geom.coordinates)) {
+    const parts = geom.coordinates.filter((p: any) => Array.isArray(p) && p.length >= 2);
+    if (parts.length === 0) return null;
+    return { type: "MultiLineString", coordinates: parts };
+  }
+  return null;
+}
+
 /* ── 1) Meta + elenco linee + giorni di validità ───────────────────
  * Il passeggero sceglie PRIMA il giorno (Feriale/Sabato/Festivo…): i
  * dayTypes elencati sono SOLO quelli realmente usati da ≥1 corsa attiva. */
@@ -192,7 +212,7 @@ router.get("/timetable-map/:token/route/:routeId", async (req, res): Promise<voi
          ORDER BY vs.variant_id, vs.seq`),
     ]);
     const geomByVar = new Map<string, any>();
-    for (const s of shapesR.rows ?? []) geomByVar.set(s.variant_id, s.geometry);
+    for (const s of shapesR.rows ?? []) geomByVar.set(s.variant_id, normalizeGeometry(s.geometry));
     const stopsByVar = new Map<string, any[]>();
     for (const st of stopsR.rows ?? []) {
       if (!stopsByVar.has(st.variant_id)) stopsByVar.set(st.variant_id, []);
@@ -200,6 +220,34 @@ router.get("/timetable-map/:token/route/:routeId", async (req, res): Promise<voi
         stopId: st.stop_id, name: st.name,
         lat: Number(st.lat), lon: Number(st.lon), seq: Number(st.seq),
       });
+    }
+    // FALLBACK fermate: varianti senza righe in ps_variant_stops (es. dati
+    // importati parzialmente) → sequenza fermate dalla corsa più esercitata.
+    // Senza questo, la variante risultava invisibile sulla mappa.
+    const missing = variants.filter((v) => !(stopsByVar.get(v.id)?.length)).map((v) => v.id);
+    if (missing.length > 0) {
+      const fbR = await db.execute<any>(sql`
+        SELECT q.variant_id, st.stop_seq AS seq, s.id AS stop_id, s.name, s.lat, s.lon
+          FROM (
+            SELECT t.variant_id, t.id AS trip_id,
+                   ROW_NUMBER() OVER (PARTITION BY t.variant_id ORDER BY COUNT(st2.trip_id) DESC, t.id) AS rn
+              FROM ps_trips t
+              JOIN ps_stop_times st2 ON st2.trip_id = t.id
+             WHERE t.variant_id = ANY(${`{${missing.join(",")}}`}::uuid[])
+             GROUP BY t.variant_id, t.id
+          ) q
+          JOIN ps_stop_times st ON st.trip_id = q.trip_id
+          JOIN ps_stops s ON s.id = st.stop_id
+         WHERE q.rn = 1
+         ORDER BY q.variant_id, st.stop_seq
+      `);
+      for (const st of fbR.rows ?? []) {
+        if (!stopsByVar.has(st.variant_id)) stopsByVar.set(st.variant_id, []);
+        stopsByVar.get(st.variant_id)!.push({
+          stopId: st.stop_id, name: st.name,
+          lat: Number(st.lat), lon: Number(st.lon), seq: Number(st.seq),
+        });
+      }
     }
     res.json({
       routeId,

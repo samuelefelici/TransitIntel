@@ -622,4 +622,21 @@ router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Dominio dedicato dei link Mappa Orari (env RUNTIME del server) ──
+// TIMETABLE_MAP_DOMAIN (es. https://map.conerobus.it): variabile d'ambiente
+// NORMALE sull'app — niente flag "build variable", niente rebuild: basta
+// impostarla e riavviare. Il frontend la chiede qui e la usa per comporre
+// link e QR. Assente/invalida → si usa il dominio dell'app (funziona sempre).
+router.get("/settings/timetable-map-domain", async (_req, res): Promise<void> => {
+  const raw = process.env.TIMETABLE_MAP_DOMAIN || process.env.VITE_TIMETABLE_MAP_DOMAIN || "";
+  let domain: string | null = null;
+  if (raw) {
+    try {
+      const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+      domain = `${u.protocol}//${u.host}`;
+    } catch { domain = null; }
+  }
+  res.json({ domain });
+});
+
 export default router;
