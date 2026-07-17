@@ -69,7 +69,9 @@ function routeScope(share: ShareRow) {
     : sql``;
 }
 
-/* ── 1) Meta + elenco linee ─────────────────────────────────────── */
+/* ── 1) Meta + elenco linee + giorni di validità ───────────────────
+ * Il passeggero sceglie PRIMA il giorno (Feriale/Sabato/Festivo…): i
+ * dayTypes elencati sono SOLO quelli realmente usati da ≥1 corsa attiva. */
 router.get("/timetable-map/:token", async (req, res): Promise<void> => {
   try {
     const share = await loadShare(String(req.params.token), res);
@@ -89,10 +91,30 @@ router.get("/timetable-map/:token", async (req, res): Promise<void> => {
               AND COALESCE((t.attributes->>'prototype')::boolean, false) = false)
        ORDER BY code
     `);
+    // Giorni di validità (dalla matrice GTFS/PS): guida lo step 1 del flusso
+    const hasValidity = await projectHasTripValidity(share.project_id);
+    let dayTypes: any[] = [];
+    if (hasValidity) {
+      const dtR = await db.execute<any>(sql`
+        SELECT DISTINCT dt.id, dt.code, dt.name, dt.color, dt.sort_order
+          FROM ps_day_types dt
+          JOIN ps_trip_day_validity tdv ON tdv.day_type_id = dt.id AND tdv.is_valid = true
+          JOIN ps_trips t ON t.id = tdv.trip_id
+         WHERE t.project_id = ${share.project_id}::uuid
+           AND COALESCE(t.is_active, true) = true
+           AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+         ORDER BY dt.sort_order NULLS LAST, dt.code
+      `);
+      dayTypes = (dtR.rows ?? []).map((d: any) => ({
+        id: d.id, code: d.code, name: d.name, color: d.color ?? null,
+      }));
+    }
     res.json({
       title: share.title,
       agencyName: proj.agency_name ?? proj.name ?? null,
       expiresAt: share.expires_at,
+      hasValidity,
+      dayTypes,
       lines: (linesR.rows ?? []).map((r: any) => ({
         routeId: r.id, code: r.code, longName: r.long_name ?? null, color: r.color ?? null,
       })),
@@ -110,17 +132,30 @@ router.get("/timetable-map/:token/route/:routeId", async (req, res): Promise<voi
     if (share.route_ids.length > 0 && !share.route_ids.includes(routeId)) {
       res.status(404).json({ error: "Linea non inclusa in questo link" }); return;
     }
-    // Varianti con almeno una corsa reale
+    // Filtro opzionale per GIORNO scelto dal passeggero: mostra solo i
+    // percorsi con almeno una corsa valida in quel tipo-giorno (un percorso
+    // solo-festivo non compare scegliendo Feriale).
+    const dayTypeId = typeof req.query.dayTypeId === "string" && UUID_RE.test(req.query.dayTypeId)
+      ? req.query.dayTypeId : null;
+    const fDay = dayTypeId
+      ? sql`AND EXISTS (SELECT 1 FROM ps_trip_day_validity tdv
+                         WHERE tdv.trip_id = t.id AND tdv.day_type_id = ${dayTypeId}::uuid
+                           AND tdv.is_valid = true)`
+      : sql``;
+    // Varianti con almeno una corsa reale (colore per-percorso opzionale da
+    // attributes.color, scelto dall'operatore nell'app; fallback colore linea)
     const varsR = await db.execute<any>(sql`
       SELECT v.id, COALESCE(NULLIF(v.code, ''), v.name, '') AS code,
-             v.name, v.headsign, COALESCE(v.direction, 0) AS direction
+             v.name, v.headsign, COALESCE(v.direction, 0) AS direction,
+             NULLIF(v.attributes->>'color', '') AS variant_color,
+             r.color AS route_color
         FROM ps_route_variants v
         JOIN ps_routes r ON r.id = v.route_id
        WHERE v.route_id = ${routeId}::uuid AND r.project_id = ${share.project_id}::uuid
          AND EXISTS (
            SELECT 1 FROM ps_trips t
             WHERE t.variant_id = v.id AND COALESCE(t.is_active, true) = true
-              AND COALESCE((t.attributes->>'prototype')::boolean, false) = false)
+              AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fDay})
        ORDER BY direction, code
     `);
     const variants: any[] = varsR.rows ?? [];
@@ -152,6 +187,7 @@ router.get("/timetable-map/:token/route/:routeId", async (req, res): Promise<voi
       variants: variants.map((v) => ({
         variantId: v.id, code: v.code, name: v.name ?? null,
         headsign: v.headsign ?? null, direction: Number(v.direction) || 0,
+        color: v.variant_color ?? v.route_color ?? null,
         geometry: geomByVar.get(v.id) ?? null,
         stops: stopsByVar.get(v.id) ?? [],
       })),
@@ -178,6 +214,16 @@ router.get("/timetable-map/:token/stop/:stopId", async (req, res): Promise<void>
     const stop = stopR.rows[0];
     if (!stop) { res.status(404).json({ error: "Fermata non trovata" }); return; }
 
+    // Filtro per GIORNO scelto dal passeggero (step 1 del flusso): solo le
+    // corse valide in quel tipo-giorno secondo la matrice di validità.
+    const dayTypeId = typeof req.query.dayTypeId === "string" && UUID_RE.test(req.query.dayTypeId)
+      ? req.query.dayTypeId : null;
+    const fDay = dayTypeId
+      ? sql`AND EXISTS (SELECT 1 FROM ps_trip_day_validity tdv
+                         WHERE tdv.trip_id = t.id AND tdv.day_type_id = ${dayTypeId}::uuid
+                           AND tdv.is_valid = true)`
+      : sql``;
+
     // Transiti: partenze dalla fermata (escluso il capolinea d'arrivo),
     // con flag A CHIAMATA (attributes.onDemand) per la prenotazione.
     const depR = await db.execute<any>(sql`
@@ -195,7 +241,7 @@ router.get("/timetable-map/:token/stop/:stopId", async (req, res): Promise<void>
          AND t.route_id = ${routeId}::uuid
          AND t.project_id = ${share.project_id}::uuid
          AND COALESCE(t.is_active, true) = true
-         AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+         AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fDay}
          AND st.departure_time IS NOT NULL
          AND st.stop_seq < last.last_seq
        ORDER BY st.departure_time

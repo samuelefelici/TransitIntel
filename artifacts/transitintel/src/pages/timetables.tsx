@@ -747,6 +747,8 @@ export default function TimetablesPage() {
   const [printing, setPrinting] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shareDays, setShareDays] = useState<number>(7); // durata link condiviso (0 = senza scadenza)
+  // dialog post-creazione del link Mappa Orari (URL + QR da stampare)
+  const [mapShare, setMapShare] = useState<{ url: string; expiresAt: string | null; qr: string | null; linesCount: number } | null>(null);
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
   const [cityBg, setCityBg] = useState(true);          // sfondo schematico punti città
   const [mapBg, setMapBg] = useState(true);            // cartografia di sfondo (tile) sulla mappa rete
@@ -1045,9 +1047,10 @@ export default function TimetablesPage() {
     } finally { setSharing(false); }
   }
 
-  // Link pubblico MAPPA ORARI: l'utente sceglie la linea → percorsi e fermate
-  // accesi → clic sulla fermata → orari di transito con le corse a chiamata.
-  // Linee selezionate = solo quelle nel link; nessuna selezione = TUTTE.
+  // Link pubblico MAPPA ORARI per i passeggeri: giorno → linea → mappa →
+  // fermata → orari (con corse a chiamata). Linee selezionate = solo quelle
+  // nel link; nessuna selezione = TUTTE. Il dialog mostra URL + QR da
+  // stampare alle paline, con la durata scelta nella tendina "Link:".
   async function shareTimetableMap() {
     setSharing(true);
     try {
@@ -1056,10 +1059,14 @@ export default function TimetablesPage() {
         method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
       });
       const url = `${window.location.origin}/o/${r.token}`;
-      const scad = r.expiresAt ? ` (scade il ${new Date(r.expiresAt).toLocaleDateString("it-IT")})` : " (senza scadenza)";
-      try { await navigator.clipboard.writeText(url); toast.success(`Link Mappa Orari copiato${scad}`, { description: ids.length ? `${ids.length} linee incluse` : "Tutte le linee incluse" }); }
-      catch { toast.success(`Link Mappa Orari creato${scad}`); }
-      window.open(url, "_blank");
+      try { await navigator.clipboard.writeText(url); } catch { /* clipboard opzionale */ }
+      let qr: string | null = null;
+      try {
+        const QRCode = (await import("qrcode")).default;
+        qr = await QRCode.toDataURL(url, { width: 480, margin: 2, color: { dark: "#0f172a", light: "#ffffff" } });
+      } catch { /* QR opzionale: il dialog mostra comunque l'URL */ }
+      setMapShare({ url, expiresAt: r.expiresAt, qr, linesCount: ids.length });
+      toast.success("Link Mappa Orari creato e copiato");
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
     } finally { setSharing(false); }
@@ -1202,7 +1209,9 @@ export default function TimetablesPage() {
                 <option value={7}>Link: 7 giorni</option>
                 <option value={30}>Link: 30 giorni</option>
                 <option value={90}>Link: 90 giorni</option>
-                <option value={0}>Link: senza scadenza</option>
+                <option value={180}>Link: 6 mesi</option>
+                <option value={365}>Link: 1 anno</option>
+                <option value={0}>Link: sempre online</option>
               </select>
               <button
                 onClick={shareNetwork}
@@ -1399,6 +1408,58 @@ export default function TimetablesPage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Dialog link MAPPA ORARI: URL + QR da stampare alle paline ── */}
+      {mapShare && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setMapShare(null)}>
+          <div className="w-full max-w-md mx-4 rounded-2xl border border-cyan-500/30 bg-zinc-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <MapPinned className="w-4 h-4 text-cyan-400" />
+                <h3 className="text-sm font-semibold text-zinc-100">Mappa Orari per i passeggeri</h3>
+              </div>
+              <button onClick={() => setMapShare(null)} className="text-zinc-500 hover:text-zinc-200 text-lg leading-none">×</button>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="text-[11px] text-zinc-400">
+                {mapShare.linesCount > 0 ? `${mapShare.linesCount} linee incluse` : "Tutte le linee incluse"} ·{" "}
+                {mapShare.expiresAt
+                  ? <>online fino al <b className="text-zinc-200">{new Date(mapShare.expiresAt).toLocaleDateString("it-IT")}</b></>
+                  : <b className="text-emerald-300">sempre online</b>}
+                {" "}(durata dalla tendina "Link:").
+              </p>
+              <div className="flex items-center gap-2">
+                <input readOnly value={mapShare.url}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="flex-1 px-2.5 py-2 text-xs font-mono rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-200 outline-none" />
+                <button
+                  onClick={async () => { try { await navigator.clipboard.writeText(mapShare.url); toast.success("Link copiato"); } catch { /* noop */ } }}
+                  className="px-3 py-2 rounded-lg border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 text-xs font-semibold">
+                  Copia
+                </button>
+              </div>
+              {mapShare.qr && (
+                <div className="flex items-center gap-4">
+                  <img src={mapShare.qr} alt="QR code Mappa Orari" className="w-36 h-36 rounded-lg bg-white p-1.5" />
+                  <div className="space-y-2 text-[11px] text-zinc-400">
+                    <p>Stampa il QR alle <b className="text-zinc-200">paline</b> o sulle locandine: il passeggero lo inquadra e apre la mappa dal telefono.</p>
+                    <a href={mapShare.qr} download="mappa-orari-qr.png"
+                      className="inline-block px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-200 hover:border-cyan-500/50 hover:text-cyan-300 font-semibold">
+                      Scarica QR (PNG)
+                    </a>
+                  </div>
+                </div>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={() => window.open(mapShare.url, "_blank")}
+                  className="px-3 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold">
+                  Apri anteprima
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
