@@ -58,10 +58,16 @@ app.set("trust proxy", 1);
 // Normalizza (togli slash finale) così `https://app/` in FRONTEND_URL matcha
 // l'Origin del browser (che non ha mai slash/path finale).
 const stripSlash = (s: string) => s.replace(/\/+$/, "");
-const allowedOrigins = (process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(",").map(u => u.trim())
-  : ["http://localhost:5173", "http://localhost:4173"]
-).filter(Boolean).map(stripSlash);
+const allowedOrigins = [
+  ...(process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map(u => u.trim())
+    : ["http://localhost:5173", "http://localhost:4173"]),
+  // Dominio dedicato della Mappa Orari pubblica (QR alle paline): la pagina
+  // su quel dominio chiama queste API cross-origin quando frontend e API
+  // sono servizi separati → va ammesso automaticamente, così basta UNA
+  // variabile (TIMETABLE_MAP_DOMAIN) per attivare tutto.
+  ...(process.env.TIMETABLE_MAP_DOMAIN ? [process.env.TIMETABLE_MAP_DOMAIN.trim()] : []),
+].filter(Boolean).map(stripSlash);
 
 app.use(cors({
   origin: (origin, callback) => {
