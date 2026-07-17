@@ -753,15 +753,9 @@ export default function TimetablesPage() {
   // gestione link Mappa Orari esistenti (i QR alle paline NON si ristampano:
   // stesso token = stesso QR, si aggiorna il contenuto)
   const [manageOpen, setManageOpen] = useState(false);
-  const [domainDraft, setDomainDraft] = useState<string>("");
-
-  // Dominio pubblico opzionale per i link (es. https://orari.miacitta.it)
-  const shareDomainQ = useQuery({
-    queryKey: ["settings", "share-domain"],
-    queryFn: () => apiFetch<{ shareDomain: string | null }>(`/api/settings/share-domain`),
-    staleTime: 60_000,
-  });
-  const publicBase = (shareDomainQ.data?.shareDomain || window.location.origin).replace(/\/+$/, "");
+  // Dominio dell'app: funziona SEMPRE (un dominio custom richiederebbe DNS
+  // configurato — se sbagliato, i QR stampati nascerebbero morti).
+  const publicBase = window.location.origin.replace(/\/+$/, "");
 
   const mapSharesQ = useQuery({
     queryKey: ["timetable-map-shares", projectId],
@@ -1131,16 +1125,6 @@ export default function TimetablesPage() {
     } catch (e: any) { toast.error(e?.message ?? "Revoca fallita"); }
   }
 
-  async function saveShareDomain() {
-    try {
-      const r = await apiFetch<{ shareDomain: string | null }>(`/api/settings/share-domain`, {
-        method: "PUT", body: JSON.stringify({ shareDomain: domainDraft }),
-      });
-      toast.success(r.shareDomain ? `Dominio pubblico: ${r.shareDomain}` : "Dominio pubblico rimosso (si usa quello dell'app)");
-      qc.invalidateQueries({ queryKey: ["settings", "share-domain"] });
-    } catch (e: any) { toast.error(e?.message ?? "Dominio non valido"); }
-  }
-
   return (
     <div className="max-w-5xl mx-auto space-y-5">
       {/* Header */}
@@ -1301,9 +1285,9 @@ export default function TimetablesPage() {
                 Mappa orari
               </button>
               <button
-                onClick={() => { setDomainDraft(shareDomainQ.data?.shareDomain ?? ""); setManageOpen(true); }}
+                onClick={() => setManageOpen(true)}
                 className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-border/60 text-muted-foreground hover:text-cyan-300 hover:border-cyan-500/40 text-sm font-medium transition-colors"
-                title="Link Mappa Orari già creati: aggiorna le linee incluse o la scadenza SENZA cambiare il QR stampato, riscarica i QR, imposta il dominio pubblico."
+                title="Link Mappa Orari già creati: aggiorna le linee incluse o la scadenza SENZA cambiare il QR stampato, riscarica i QR, revoca."
               >
                 <QrCode className="w-4 h-4" />
                 Gestisci link
@@ -1505,28 +1489,6 @@ export default function TimetablesPage() {
                 paline continua a funzionare</b>. Da qui aggiorni cosa mostra (linee incluse) e per quanto resta online,
                 senza ristampare nulla.
               </p>
-
-              {/* Dominio pubblico */}
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3 space-y-2">
-                <p className="text-xs font-semibold text-zinc-200">Dominio pubblico dei link (opzionale)</p>
-                <div className="flex items-center gap-2">
-                  <input
-                    value={domainDraft}
-                    onChange={(e) => setDomainDraft(e.target.value)}
-                    placeholder="es. https://orari.miacitta.it (vuoto = dominio dell'app)"
-                    className="flex-1 px-2.5 py-2 text-xs font-mono rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-200 outline-none focus:border-cyan-500/50"
-                  />
-                  <button onClick={saveShareDomain}
-                    className="px-3 py-2 rounded-lg border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 text-xs font-semibold">
-                    Salva
-                  </button>
-                </div>
-                <p className="text-[10px] text-zinc-500">
-                  I nuovi link e QR useranno questo dominio al posto di quello dell'app. Il dominio deve essere tuo e
-                  puntare all'app (record DNS CNAME/alias sull'hosting): la pagina /o/… risponde su qualunque dominio
-                  che arrivi all'app. I link già stampati col vecchio dominio continuano a funzionare.
-                </p>
-              </div>
 
               {/* Elenco link creati */}
               {mapSharesQ.isLoading && <p className="text-xs text-zinc-400 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico i link…</p>}

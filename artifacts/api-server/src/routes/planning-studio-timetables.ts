@@ -622,39 +622,4 @@ router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-// ── DOMINIO PUBBLICO dei link condivisi (opzionale) ──
-// Se impostato (es. https://orari.miacitta.it), i nuovi link e QR usano quel
-// dominio invece di quello dell'app. Richiede che il dominio punti all'app
-// (CNAME/alias sull'hosting): il path /o/:token è servito su qualunque host.
-router.get("/settings/share-domain", async (_req, res): Promise<void> => {
-  try {
-    const r = await db.execute<any>(sql`
-      SELECT value #>> '{}' AS v FROM app_settings WHERE key = 'public_share_domain' LIMIT 1`);
-    res.json({ shareDomain: r.rows?.[0]?.v ?? null });
-  } catch { res.json({ shareDomain: null }); }
-});
-
-router.put("/settings/share-domain", async (req, res): Promise<void> => {
-  try {
-    const raw = typeof req.body?.shareDomain === "string" ? req.body.shareDomain.trim() : "";
-    if (raw === "") {
-      await db.execute(sql`DELETE FROM app_settings WHERE key = 'public_share_domain'`);
-      res.json({ shareDomain: null }); return;
-    }
-    let normalized: string;
-    try {
-      const u = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
-      if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("proto");
-      normalized = `${u.protocol}//${u.host}`;
-    } catch {
-      res.status(400).json({ error: "Dominio non valido (es. https://orari.miacitta.it)" }); return;
-    }
-    await db.execute(sql`
-      INSERT INTO app_settings (key, value, updated_at)
-      VALUES ('public_share_domain', to_jsonb(${normalized}::text), now())
-      ON CONFLICT (key) DO UPDATE SET value = to_jsonb(${normalized}::text), updated_at = now()`);
-    res.json({ shareDomain: normalized });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
 export default router;
