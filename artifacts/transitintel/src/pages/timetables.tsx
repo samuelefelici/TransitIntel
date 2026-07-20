@@ -376,6 +376,7 @@ function metroLayout(
   pos: Map<string, { x: number; y: number }>,
   edges: Array<[string, string]>,
   W: number, H: number, M: number,
+  paths: string[][] = [],
 ): void {
   if (pos.size < 2 || edges.length === 0) return;
   const rawLens = edges
@@ -416,6 +417,35 @@ function metroLayout(
       const tx = Math.cos(snap) * L / 2, ty = Math.sin(snap) * L / 2;
       add(a, mx - tx - A.x, my - ty - A.y);
       add(b, mx + tx - B.x, my + ty - B.y);
+    }
+    // COLLINEARITÀ (il tratto distintivo delle mappe metro vere): le fermate
+    // consecutive devono giacere su LUNGHI RETTIFILI, con poche pieghe nette.
+    // Ogni nodo interno con svolta DOLCE (< ~34°) viene tirato sulla retta tra
+    // i suoi vicini → le micro-svolte da snap indipendente si appiattiscono,
+    // sopravvivono solo le pieghe geografiche vere (≥ 45°).
+    for (const path of paths) {
+      for (let i = 1; i < path.length - 1; i++) {
+        const A = pos.get(path[i - 1])!, B = pos.get(path[i])!, C = pos.get(path[i + 1])!;
+        const a1 = Math.atan2(B.y - A.y, B.x - A.x);
+        const a2 = Math.atan2(C.y - B.y, C.x - B.x);
+        let dAng = Math.abs(a2 - a1);
+        if (dAng > Math.PI) dAng = 2 * Math.PI - dAng;
+        if (dAng < (Math.PI / 4) * 0.75) {
+          // proiezione sulla retta OCTOLINEARE più vicina alla congiungente
+          // A→C (non sulla congiungente qualsiasi): così il rettifilo nasce
+          // già squadrato e non litiga con lo snap a 45° degli archi.
+          const acx = C.x - A.x, acy = C.y - A.y;
+          const sAng = Math.round(Math.atan2(acy, acx) / (Math.PI / 4)) * (Math.PI / 4);
+          const ux = Math.cos(sAng), uy = Math.sin(sAng);
+          const mx = (A.x + C.x) / 2, my = (A.y + C.y) / 2;
+          const t = (B.x - mx) * ux + (B.y - my) * uy;
+          const px = mx + ux * t, py = my + uy * t;
+          // peso > 1: la collinearità DOMINA sullo snap per-arco, così anche
+          // le svolte ambigue (~25-30°) si risolvono in rettifilo netto invece
+          // di restare a metà strada (tiro alla fune tra le due forze)
+          add(path[i], (px - B.x) * 1.6, (py - B.y) * 1.6);
+        }
+      }
     }
     // repulsione leggera: due nodi troppo vicini si respingono
     for (let i = 0; i < keys.length; i++) {
@@ -516,15 +546,20 @@ function schematicInnerSvg(
     const eKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
     const seenE = new Set<string>();
     const edges: Array<[string, string]> = [];
+    const paths: string[][] = [];
     usable.forEach((l) => {
-      for (let i = 1; i < l.stops.length; i++) {
-        const a = keyOf(l.stops[i - 1]), b = keyOf(l.stops[i]);
-        if (a === b) continue;
-        const pk = eKey(a, b);
-        if (!seenE.has(pk)) { seenE.add(pk); edges.push([a, b]); }
+      const path: string[] = [];
+      for (const s of l.stops) {
+        const k = keyOf(s);
+        if (path[path.length - 1] !== k) path.push(k);
+      }
+      if (path.length >= 2) paths.push(path);
+      for (let i = 1; i < path.length; i++) {
+        const pk = eKey(path[i - 1], path[i]);
+        if (!seenE.has(pk)) { seenE.add(pk); edges.push([path[i - 1], path[i]]); }
       }
     });
-    metroLayout(pos, edges, W, H, M);
+    metroLayout(pos, edges, W, H, M, paths);
   }
 
   // sfondo città (leggero, grigio) — salta i punti che coincidono con un nodo disegnato
