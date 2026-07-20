@@ -377,6 +377,7 @@ function metroLayout(
   edges: Array<[string, string]>,
   W: number, H: number, M: number,
   paths: string[][] = [],
+  minorEdge: boolean[] = [],
 ): void {
   if (pos.size < 2 || edges.length === 0) return;
   const rawLens = edges
@@ -393,9 +394,14 @@ function metroLayout(
   // perdendo ogni proporzione.
   const targetLen = edges.map((_, i) => {
     const r = (rawLens[i] || med) / med;
-    return r <= 1
-      ? med * Math.max(0.62, 0.8 + 0.2 * r)
-      : med * Math.min(2.1, 1 + Math.log(r) * 0.6);
+    let L = r <= 1
+      ? med * Math.max(0.55, 0.72 + 0.18 * r)
+      : med * Math.min(1.6, 1 + Math.log(r) * 0.45);
+    // CATENE di fermate minori (entrambi gli estremi non-nodo, grado ≤ 2):
+    // spaziatura più fitta, come nel riferimento — le diramazioni con tante
+    // fermate intermedie si ACCORCIANO, i nodi importanti respirano.
+    if (minorEdge[i]) L *= 0.8;
+    return L;
   });
   const ITER = 160;
   const keys = [...pos.keys()];
@@ -559,7 +565,15 @@ function schematicInnerSvg(
         if (!seenE.has(pk)) { seenE.add(pk); edges.push([path[i - 1], path[i]]); }
       }
     });
-    metroLayout(pos, edges, W, H, M, paths);
+    // grado di ogni nodo nel grafo (per riconoscere le catene di fermate minori)
+    const degree = new Map<string, number>();
+    for (const [a, b] of edges) {
+      degree.set(a, (degree.get(a) ?? 0) + 1);
+      degree.set(b, (degree.get(b) ?? 0) + 1);
+    }
+    const isMinor = (k: string) => !(node.get(k)?.logical) && (degree.get(k) ?? 0) <= 2;
+    const minorEdge = edges.map(([a, b]) => isMinor(a) && isMinor(b));
+    metroLayout(pos, edges, W, H, M, paths, minorEdge);
   }
 
   // sfondo città (leggero, grigio) — salta i punti che coincidono con un nodo disegnato
@@ -808,7 +822,10 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   }
   const interCount = [...byStop.values()].filter((r) => r.size >= 2).length;
 
-  const W = 1000, H = 1414, M = 42;            // margine interno ridotto → mappa più ampia
+  // Stile METRO su A3 ORIZZONTALE (come le mappe TPL da parete, rif. Jesi):
+  // molto più spazio in larghezza per rettifili e etichette. Geografica: A4
+  // verticale invariato.
+  const W = metro ? 1414 : 1000, H = metro ? 1000 : 1414, M = 42; // margine interno ridotto → mappa più ampia
   const legendH = lines.length * 18 + 10;
   const Hd = H - legendH - 12;                 // altezza area schema (sopra la legenda)
   const rot = (((Math.round(rotate / 90) * 90) % 360) + 360) % 360; // 0/90/180/270
@@ -841,7 +858,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Cerbero Analytics — Mappa di Rete</title>
   <style>
     ${PRINT_BASE_CSS}
-    @page{size:A4 portrait;margin:8mm}
+    @page{size:${metro ? "A3 landscape" : "A4 portrait"};margin:8mm}
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .hero { color:#0f172a; padding:1px 2px 4px; border-bottom:1px solid #e2e8f0; margin-bottom:3px; display:flex; align-items:center; gap:10px; }
     .hero img { height:30px; width:auto; }
