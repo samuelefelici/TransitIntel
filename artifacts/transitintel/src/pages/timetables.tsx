@@ -378,11 +378,24 @@ function metroLayout(
   W: number, H: number, M: number,
 ): void {
   if (pos.size < 2 || edges.length === 0) return;
-  const lens = edges
-    .map(([a, b]) => { const A = pos.get(a)!, B = pos.get(b)!; return Math.hypot(B.x - A.x, B.y - A.y); })
-    .filter((l) => l > 1e-6).sort((x, y) => x - y);
-  const med = lens.length ? lens[Math.floor(lens.length / 2)] : 40;
-  const Lmin = med * 0.55, Lmax = med * 1.7;   // uniformità: schiaccia tratte km-lunghe, allunga le corte
+  const rawLens = edges
+    .map(([a, b]) => { const A = pos.get(a)!, B = pos.get(b)!; return Math.hypot(B.x - A.x, B.y - A.y); });
+  const sorted = rawLens.filter((l) => l > 1e-6).sort((x, y) => x - y);
+  const med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 40;
+  // PROPORZIONE LOGARITMICA: lunghezza target per arco calcolata UNA volta
+  // dalle lunghezze GEOGRAFICHE originali. Sopra la mediana la crescita è
+  // logaritmica (una tratta 10× più lunga occupa ~2× sulla mappa, cap 2.1×):
+  // le diramazioni extraurbane chilometriche non espandono più lo schema e il
+  // centro resta leggibile. Sotto la mediana quasi-uniforme (mai < 0.62×).
+  // NB: target FISSI, non ricalcolati dalla lunghezza corrente — altrimenti il
+  // rilassamento collasserebbe tutte le tratte all'uniformità totale,
+  // perdendo ogni proporzione.
+  const targetLen = edges.map((_, i) => {
+    const r = (rawLens[i] || med) / med;
+    return r <= 1
+      ? med * Math.max(0.62, 0.8 + 0.2 * r)
+      : med * Math.min(2.1, 1 + Math.log(r) * 0.6);
+  });
   const ITER = 160;
   const keys = [...pos.keys()];
   const minD = Math.max(10, med * 0.35);       // distanza minima tra nodi (leggibilità)
@@ -393,12 +406,12 @@ function metroLayout(
       const d = disp.get(k) ?? { x: 0, y: 0, n: 0 };
       d.x += dx; d.y += dy; d.n += 1; disp.set(k, d);
     };
-    for (const [a, b] of edges) {
+    for (let ei = 0; ei < edges.length; ei++) {
+      const [a, b] = edges[ei];
       const A = pos.get(a)!, B = pos.get(b)!;
       const dx = B.x - A.x, dy = B.y - A.y;
-      const len = Math.hypot(dx, dy) || 1e-6;
       const snap = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
-      const L = Math.max(Lmin, Math.min(Lmax, len));
+      const L = targetLen[ei];
       const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
       const tx = Math.cos(snap) * L / 2, ty = Math.sin(snap) * L / 2;
       add(a, mx - tx - A.x, my - ty - A.y);
