@@ -363,9 +363,82 @@ function mercatorTiles(
 
 /** Markup interno <svg> (senza wrapper): linee octolineari che CONVERGONO nei
  *  nodi condivisi, fermate con nome, sfondo punti città e (opz.) cartografia. */
+/**
+ * Layout "METROPOLITANA": deforma le posizioni dei nodi (partendo da quelle
+ * geografiche) fino a una mappa schematica in stile metro — come le mappe
+ * TPL cittadine: tratte snappate a 45°/90°, lunghezze quasi uniformi
+ * (indipendenti dai km reali), nodi mai sovrapposti. La geografia resta
+ * riconoscibile perché il rilassamento parte dal disegno reale e lo deforma
+ * localmente, senza stravolgere l'ordine relativo dei quartieri.
+ * Muta `pos` in place. Deterministico (niente random).
+ */
+function metroLayout(
+  pos: Map<string, { x: number; y: number }>,
+  edges: Array<[string, string]>,
+  W: number, H: number, M: number,
+): void {
+  if (pos.size < 2 || edges.length === 0) return;
+  const lens = edges
+    .map(([a, b]) => { const A = pos.get(a)!, B = pos.get(b)!; return Math.hypot(B.x - A.x, B.y - A.y); })
+    .filter((l) => l > 1e-6).sort((x, y) => x - y);
+  const med = lens.length ? lens[Math.floor(lens.length / 2)] : 40;
+  const Lmin = med * 0.55, Lmax = med * 1.7;   // uniformità: schiaccia tratte km-lunghe, allunga le corte
+  const ITER = 160;
+  const keys = [...pos.keys()];
+  const minD = Math.max(10, med * 0.35);       // distanza minima tra nodi (leggibilità)
+  for (let it = 0; it < ITER; it++) {
+    const damp = 0.22 * (1 - it / ITER) + 0.06; // rilassamento decrescente → converge stabile
+    const disp = new Map<string, { x: number; y: number; n: number }>();
+    const add = (k: string, dx: number, dy: number) => {
+      const d = disp.get(k) ?? { x: 0, y: 0, n: 0 };
+      d.x += dx; d.y += dy; d.n += 1; disp.set(k, d);
+    };
+    for (const [a, b] of edges) {
+      const A = pos.get(a)!, B = pos.get(b)!;
+      const dx = B.x - A.x, dy = B.y - A.y;
+      const len = Math.hypot(dx, dy) || 1e-6;
+      const snap = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+      const L = Math.max(Lmin, Math.min(Lmax, len));
+      const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
+      const tx = Math.cos(snap) * L / 2, ty = Math.sin(snap) * L / 2;
+      add(a, mx - tx - A.x, my - ty - A.y);
+      add(b, mx + tx - B.x, my + ty - B.y);
+    }
+    // repulsione leggera: due nodi troppo vicini si respingono
+    for (let i = 0; i < keys.length; i++) {
+      const A = pos.get(keys[i])!;
+      for (let j = i + 1; j < keys.length; j++) {
+        const B = pos.get(keys[j])!;
+        const dx = B.x - A.x, dy = B.y - A.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 1e-6 && d < minD) {
+          const push = (minD - d) * 0.25, ux = dx / d, uy = dy / d;
+          add(keys[i], -ux * push, -uy * push);
+          add(keys[j], ux * push, uy * push);
+        }
+      }
+    }
+    for (const [k, d] of disp) {
+      const p = pos.get(k)!;
+      p.x += (d.x / d.n) * damp * 2;
+      p.y += (d.y / d.n) * damp * 2;
+    }
+  }
+  // refit centrato nel riquadro di disegno (aspect preservato)
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pos.values()) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  const xr = (maxX - minX) || 1e-6, yr = (maxY - minY) || 1e-6;
+  const s = Math.min((W - 2 * M) / xr, (H - 2 * M) / yr);
+  const ox = M + ((W - 2 * M) - xr * s) / 2, oy = M + ((H - 2 * M) - yr * s) / 2;
+  for (const p of pos.values()) { p.x = ox + (p.x - minX) * s; p.y = oy + (p.y - minY) * s; }
+}
+
 function schematicInnerSvg(
   lines: SchemLine[], W: number, H: number, M: number,
-  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }>; basemap?: boolean; labelMode?: NetNodeLabels },
+  opts?: { nameSize?: number; nodesOnly?: boolean; cityNodes?: Array<{ name: string; lat: number; lon: number }>; basemap?: boolean; labelMode?: NetNodeLabels; metro?: boolean },
 ): string {
   const nameSize = opts?.nameSize ?? 8;
   // Stile tratto PER-LINEA: continuo (default), tratteggiato o puntinato. I
@@ -408,7 +481,9 @@ function schematicInnerSvg(
   // equirettangolare scalata a riempire la pagina.
   let P: (lon: number, lat: number) => { x: number; y: number };
   let tilesLayer = "";
-  if (opts?.basemap && geoPts.length) {
+  // in stile METRO niente cartografia/città: la geografia è deformata,
+  // qualunque sfondo reale risulterebbe fuorviante
+  if (opts?.basemap && !opts?.metro && geoPts.length) {
     const mt = mercatorTiles(geoPts, W, H, M);
     P = mt.P; tilesLayer = mt.tiles;
   } else {
@@ -420,9 +495,28 @@ function schematicInnerSvg(
     P = (lon: number, lat: number) => ({ x: M + ((lon * cosLat - minX) / xr) * (W - 2 * M), y: M + (1 - (lat - minY) / yr) * (H - 2 * M) });
   }
 
+  // Posizione FINALE di ogni nodo: geografica proiettata, oppure — in stile
+  // metro — schematizzata (45°/90°, lunghezze uniformi) da metroLayout.
+  const pos = new Map<string, { x: number; y: number }>();
+  for (const [k, e] of node) pos.set(k, P(e.lon, e.lat));
+  if (opts?.metro) {
+    const eKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    const seenE = new Set<string>();
+    const edges: Array<[string, string]> = [];
+    usable.forEach((l) => {
+      for (let i = 1; i < l.stops.length; i++) {
+        const a = keyOf(l.stops[i - 1]), b = keyOf(l.stops[i]);
+        if (a === b) continue;
+        const pk = eKey(a, b);
+        if (!seenE.has(pk)) { seenE.add(pk); edges.push([a, b]); }
+      }
+    });
+    metroLayout(pos, edges, W, H, M);
+  }
+
   // sfondo città (leggero, grigio) — salta i punti che coincidono con un nodo disegnato
   const drawnPos = new Set([...node.values()].map((e) => `${e.lon.toFixed(5)},${e.lat.toFixed(5)}`));
-  const bg = cityNodes
+  const bg = opts?.metro ? "" : cityNodes
     .filter((c) => !drawnPos.has(`${c.lon.toFixed(5)},${c.lat.toFixed(5)}`))
     .map((c) => {
       const { x, y } = P(c.lon, c.lat);
@@ -459,7 +553,7 @@ function schematicInnerSvg(
   // polilinee: estremi sui nodi (convergenza) + gomiti octolineari tra nodi,
   // con offset perpendicolare per le linee che condividono lo stesso corridoio.
   const polys = usable.map((l, li) => {
-    const pts = l.stops.map((s) => ({ k: keyOf(s), p: (() => { const e = node.get(keyOf(s))!; return P(e.lon, e.lat); })() }));
+    const pts = l.stops.map((s) => ({ k: keyOf(s), p: pos.get(keyOf(s))! }));
     if (!pts.length) return "";
     let d = "";
     let prevEnd: { x: number; y: number } | null = null;
@@ -479,14 +573,14 @@ function schematicInnerSvg(
       for (const e of elbow(A2.x, A2.y, B2.x, B2.y)) d += ` ${e.x.toFixed(1)},${e.y.toFixed(1)}`;
       prevEnd = B2;
     }
-    if (!d) { const e0 = node.get(keyOf(l.stops[0]))!; const p0 = P(e0.lon, e0.lat); d = `${p0.x.toFixed(1)},${p0.y.toFixed(1)}`; }
+    if (!d) { const p0 = pos.get(keyOf(l.stops[0]))!; d = `${p0.x.toFixed(1)},${p0.y.toFixed(1)}`; }
     return `<polyline points="${d}" fill="none" stroke="${lineColor(l.color)}" stroke-width="${strokeW.toFixed(1)}" stroke-linejoin="round" stroke-linecap="round"${dashFor(l.style)} opacity="0.92"/>`;
   }).join("");
 
   // nodi + nomi
   let dots = "", names = "", idx = 0;
-  for (const e of node.values()) {
-    const { x, y } = P(e.lon, e.lat);
+  for (const [k, e] of node) {
+    const { x, y } = pos.get(k)!;
     // SOLO i nodi logici (cluster isLogical) sono "maggiori": le fermate dove
     // passano più linee NON vengono ingrandite solo per questo motivo.
     const major = e.logical;
@@ -650,7 +744,7 @@ interface NetworkLine {
 }
 interface NetworkData { projectId: string; lines: NetworkLine[]; cityNodes?: Array<{ name: string; lat: number; lon: number }> }
 
-function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyles: Record<string, NetLineStyle> = {}, nodeLabels: NetNodeLabels = "logical", rotate = 0): string {
+function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = false, mapBg = false, logoUrl = "", lineStyles: Record<string, NetLineStyle> = {}, nodeLabels: NetNodeLabels = "logical", rotate = 0, metro = false): string {
   const lines = (data.lines ?? []).filter((l) => l.stops.length > 0);
   const gen = new Date().toLocaleString("it-IT");
   if (!lines.length) {
@@ -674,7 +768,7 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
   const dW = swap ? Hd : W, dH = swap ? W : Hd; // dimensioni con cui disegnare lo schema
   const svgInner = schematicInnerSvg(
     lines.map((l) => ({ color: l.color, stops: l.stops, style: lineStyles[l.routeId] ?? "solid" })),
-    dW, dH, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, labelMode: nodeLabels },
+    dW, dH, M, { nameSize: 9, nodesOnly, cityNodes: cityBg ? data.cityNodes : undefined, basemap: mapBg, labelMode: nodeLabels, metro },
   );
   // Rotazione della mappa in stampa: ruota il contenuto attorno al proprio centro
   // e lo ricentra nell'area schema (legenda ed header restano fissi e leggibili).
@@ -687,13 +781,13 @@ function buildNetworkMapHtml(data: NetworkData, nodesOnly = false, cityBg = fals
 
   const hero = `<div class="hero">
       ${logoUrl ? `<img src="${logoUrl}" alt="logo" />` : ""}
-      <div class="t"><h1>Mappa di Rete</h1><div class="sub">Schema linee · interscambi e nodi principali</div><div class="powered">Powered by Cerbero</div></div>
+      <div class="t"><h1>${metro ? "Mappa di Rete — stile Metropolitana" : "Mappa di Rete"}</h1><div class="sub">${metro ? "Schema geometrico 45°/90° · distanze non in scala" : "Schema linee · interscambi e nodi principali"}</div><div class="powered">Powered by Cerbero</div></div>
       <div class="meta"><div><b>${lines.length}</b> linee · <b>${interCount}</b> interscambi</div><div>Generato ${gen}</div></div>
     </div>`;
   const footer = `<div class="brandfoot">
       ${logoUrl ? `<img src="${logoUrl}" alt="logo" />` : ""}
       <span class="powered">Powered by Cerbero Analytics</span>
-      <span style="margin-left:auto">Mappa schematica octolineare · interscambi cerchiati</span>
+      <span style="margin-left:auto">${metro ? "Mappa metropolitana schematica · le distanze non sono in scala" : "Mappa schematica octolineare · interscambi cerchiati"}</span>
     </div>`;
 
   return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Cerbero Analytics — Mappa di Rete</title>
@@ -779,6 +873,9 @@ export default function TimetablesPage() {
   const [show3d, setShow3d] = useState(false);         // anteprima mappa 3D interattiva
   const [lineStyles, setLineStyles] = useState<Record<string, NetLineStyle>>({}); // stile tratto PER-LINEA (mappa rete + 3D)
   const [nodeLabels, setNodeLabels] = useState<NetNodeLabels>("logical"); // nomi: solo nodi logici (default) o tutte le fermate
+  // stile mappa rete: geografica (posizioni reali) o METROPOLITANA (schema
+  // geometrico 45°/90° con distanze uniformi, stile mappa TPL cittadina)
+  const [netStyle, setNetStyle] = useState<"geo" | "metro">("geo");
   const [mapRotate, setMapRotate] = useState(0);       // rotazione mappa rete in stampa (0/90/180/270)
   const [colorOverrides, setColorOverrides] = useState<Record<string, string>>({}); // colore linee (override locale + persistito)
 
@@ -1052,7 +1149,7 @@ export default function TimetablesPage() {
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
       const data2 = { ...data, lines: (data.lines ?? []).map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) };
       const logoUrl = `${window.location.origin}/logo.png`;
-      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels, mapRotate));
+      openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels, mapRotate, netStyle === "metro"));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setPrinting(false); }
@@ -1266,6 +1363,15 @@ export default function TimetablesPage() {
                 <option value={90}>Rotazione: 90°</option>
                 <option value={180}>Rotazione: 180°</option>
                 <option value={270}>Rotazione: 270°</option>
+              </select>
+              <select
+                value={netStyle}
+                onChange={(e) => setNetStyle(e.target.value as "geo" | "metro")}
+                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60"
+                title="Stile della mappa di rete: Geografica = posizioni reali delle fermate; Metropolitana = schema geometrico a 45°/90° con distanze uniformi (stile mappa TPL cittadina), la geografia resta riconoscibile ma non in scala."
+              >
+                <option value="geo">Mappa: Geografica</option>
+                <option value="metro">Mappa: Metropolitana</option>
               </select>
               <button
                 onClick={printNetwork}
