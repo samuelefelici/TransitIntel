@@ -505,10 +505,50 @@ function schematicInnerSvg(
   const usable = src.filter((l) => l.stops.length > 0);
   if (!usable.length) return "";
 
+  // FUSIONE FERMATE GEMELLE (solo stile metro): andata e ritorno fermano
+  // spesso su LATI OPPOSTI della strada in due fermate fisiche distinte → la
+  // mappa le disegnava come due nodi e due assi paralleli, raddoppiando ogni
+  // corridoio. Nelle mappe metro vere le due direzioni sono UN solo asse con
+  // UN pallino. Union-find sulle fermate: stesso cluster, stesso nome
+  // (normalizzato) entro 250 m, o distanza < 80 m → stesso nodo. La posizione
+  // del nodo fuso è la media delle occorrenze (già gestita a valle): il
+  // pallino cade in mezzeria strada.
+  let mergeOf: Map<string, string> | null = null;
+  if (opts?.metro) {
+    const stopsById = new Map<string, SchemStop>();
+    for (const l of usable) for (const s of l.stops) if (!stopsById.has(s.stopId)) stopsById.set(s.stopId, s);
+    const ids = [...stopsById.keys()];
+    const parent = new Map<string, string>(ids.map((i) => [i, i]));
+    const find = (x: string): string => {
+      let r = x;
+      while (parent.get(r) !== r) r = parent.get(r)!;
+      parent.set(x, r);
+      return r;
+    };
+    const union = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+    const norm = (n: string) => (n || "").toLowerCase().replace(/[^a-z0-9à-ù]+/g, " ").trim();
+    const distM = (a: SchemStop, b: SchemStop) => {
+      const kx = 111320 * Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180);
+      return Math.hypot((a.lon - b.lon) * kx, (a.lat - b.lat) * 110540);
+    };
+    for (let i = 0; i < ids.length; i++) {
+      const A = stopsById.get(ids[i])!;
+      for (let j = i + 1; j < ids.length; j++) {
+        const B = stopsById.get(ids[j])!;
+        const d = distM(A, B);
+        const sameCluster = !!A.clusterId && A.clusterId === B.clusterId;
+        if (sameCluster || d < 80 || (d < 250 && norm(A.name) === norm(B.name))) union(ids[i], ids[j]);
+      }
+    }
+    mergeOf = new Map(ids.map((i) => [i, find(i)]));
+  }
+
   // CHIAVE NODO: per le fermate di un nodo logico (cluster isLogical) si usa il
   // cluster + il suo centroide → linee diverse che toccano lo stesso nodo logico
   // CONVERGONO nello stesso punto, anche senza "Solo nodi logici".
-  const keyOf = (s: SchemStop) => (s.clusterLogical && s.clusterId) ? `c:${s.clusterId}` : `s:${s.stopId}`;
+  const keyOf = (s: SchemStop) => (s.clusterLogical && s.clusterId)
+    ? `c:${s.clusterId}`
+    : (mergeOf ? `m:${mergeOf.get(s.stopId) ?? s.stopId}` : `s:${s.stopId}`);
   const posOf = (s: SchemStop) => (s.clusterLogical)
     ? { lon: s.clusterLon ?? s.lon, lat: s.clusterLat ?? s.lat, name: s.clusterName || s.name, logical: true }
     : { lon: s.lon, lat: s.lat, name: s.name, logical: false };
