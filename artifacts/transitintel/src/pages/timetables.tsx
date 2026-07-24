@@ -91,6 +91,22 @@ function lineColor(c: string | null | undefined): string {
 function openPrintWindow(html: string) {
   const w = window.open("", "_blank");
   if (!w) { toast.error("Popup bloccata dal browser: consenti i popup per stampare"); return; }
+  fillPrintWindow(w, html);
+}
+
+/** Apre SUBITO una finestra di stampa (dentro il gesto di click, così il
+ *  browser non la blocca dopo gli await). Va poi riempita con fillPrintWindow
+ *  quando i dati sono pronti, o chiusa in caso di errore/vuoto. */
+function openPendingPrintWindow(): Window | null {
+  const w = window.open("", "_blank");
+  if (!w) { toast.error("Popup bloccata dal browser: consenti i popup per stampare"); return null; }
+  w.document.write('<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Generazione orari…</title></head><body style="font-family:Arial,sans-serif;padding:2rem;color:#334155">Generazione orari in corso…</body></html>');
+  return w;
+}
+
+/** Scrive l'HTML finale in una finestra già aperta e lancia la stampa. */
+function fillPrintWindow(w: Window, html: string) {
+  w.document.open();
   w.document.write(html);
   w.document.close();
   w.focus();
@@ -1119,46 +1135,76 @@ export default function TimetablesPage() {
     return sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId);
   }
 
-  // Stampa SETTIMANALE per calendario: una tabella unica per linea con tutte
-  // le corse Lun→Dom della categoria scelta + note di validità. Un click.
   // STAMPA ORARI (unica): si sceglie il calendario aziendale (Scuole Aperte /
-  // Chiuse) e si generano gli orari di TUTTE le corse con la validità reale
-  // Lun→Dom di quel periodo. Per ogni corsa: colore colonna + striscia L…D +
-  // badge dicono se è a chiamata o valida solo in certi giorni; le corse festive
-  // (domenicali) finiscono in una sezione ROSSA separata per non mischiarle.
+  // Chiuse) e si generano gli orari di TUTTE le corse con la validità Lun→Dom.
+  // Per ogni corsa: colore colonna + striscia L…D + badge dicono se è a chiamata
+  // o valida solo in certi giorni; le corse festive (domenicali) finiscono in
+  // una sezione ROSSA separata per non mischiarle.
+  //
+  // Sorgente = endpoint /route (SEMPRE affidabile: tutte le corse con day-type,
+  // maschera weekdays, categorie e a chiamata). Giorni Lun→Dom e filtro per
+  // calendario si calcolano qui: così la stampa funziona anche quando il
+  // calendario categorie del progetto non è configurato (il /week tornava vuoto).
   async function printLine() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    if (!weekCategory) { toast.error("Seleziona un calendario (Scuole Aperte/Chiuse)"); return; }
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
+    const catName = weekCategories.find((c) => c.code === weekCategory)?.name
+      ?? (weekCategory === "scuole_chiuse" ? "Scuole Chiuse" : "Scuole Aperte");
+    // Apri SUBITO la finestra (dentro il click) così non viene bloccata dopo i fetch.
+    const win = openPendingPrintWindow();
+    if (!win) return;
     setBusy("line");
     try {
       const docs: LineTTDoc[] = [];
       for (const rid of ids) {
         let route: RouteTimetable["route"] | null = null;
         let mapStops: LineTTDoc["mapStops"] = [];
-        let category = { code: weekCategory, name: weekCategory };
         const directions: UniDir[] = [];
         for (const dir of dirs) {
-          const wt = await apiFetch<WeekTimetable>(
-            `${ptt}/route/${encodeURIComponent(rid)}/week?category=${encodeURIComponent(weekCategory)}&directionId=${dir}`,
-          );
-          if (!route) route = { ...wt.route, color: effColor(wt.route.routeId, wt.route.color) };
-          category = wt.category;
-          if (!mapStops.length && wt.stops.length >= 2) {
-            mapStops = wt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === wt.stops.length - 1 }));
+          const rt = await apiFetch<RouteTimetable>(`${ptt}/route/${encodeURIComponent(rid)}?directionId=${dir}`);
+          if (!route) route = { ...rt.route, color: effColor(rt.route.routeId, rt.route.color) };
+          if (!mapStops.length && rt.stops.length >= 2) {
+            mapStops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
           }
-          if (!wt.trips.length) continue;
+          if (!rt.trips.length) continue;
+          const stops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
 
-          const stops = wt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === wt.stops.length - 1 }));
-          const all = wt.trips.map((t) => {
+          // Filtro per CALENDARIO: se il progetto usa le categorie, tieni solo le
+          // corse della categoria scelta (ombrello per scuole_chiuse). Le corse
+          // senza categoria valgono sempre. Se il progetto non usa categorie,
+          // mostra tutto (il calendario è solo un'etichetta).
+          const cats = rt.categories ?? [];
+          const useCats = cats.length > 0;
+          const selIds = new Set(
+            cats.filter((c) => weekCategory === "scuole_chiuse"
+              ? c.code.startsWith("scuole_chiuse") : c.code === weekCategory).map((c) => c.id),
+          );
+          const inCategory = (t: RouteTimetable["trips"][number]) => {
+            if (!useCats) return true;
+            const tc = t.categoryIds ?? [];
+            return tc.length === 0 || tc.some((id) => selIds.has(id));
+          };
+
+          const toUni = (t: RouteTimetable["trips"][number]) => {
             const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
             const dep = cells.find((c) => c) ?? "";
-            const days = Array.isArray(t.days) && t.days.length === 7 ? t.days : [false, false, false, false, false, false, false];
-            // "validità particolare" = non copre tutti i giorni feriali Lun-Ven
+            // giorni Lun→Dom: maschera weekdays se presente; altrimenti dai
+            // bollini day-type (feriale→Lun-Ven, sabato→Sab, festivo→Dom);
+            // se non c'è alcun segnale la corsa è considerata giornaliera.
+            let days: boolean[];
+            if (Array.isArray(t.weekdays) && t.weekdays.length === 7) {
+              days = t.weekdays.map((x) => x !== false);
+            } else {
+              const codes = new Set(t.dayTypeCodes ?? []);
+              days = codes.size === 0
+                ? [true, true, true, true, true, true, true]
+                : [codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("sabato"), codes.has("festivo")];
+            }
             const restricted = !days.slice(0, 5).every(Boolean);
             return { dep, cells, onDemand: !!t.onDemand, days, restricted, sort: hhmmToMin(dep) ?? 9999 };
-          }).filter((c) => c.cells.some((x) => x));
+          };
+          const all = rt.trips.filter(inCategory).map(toUni).filter((c) => c.cells.some((x) => x));
 
           // festiva = circola la domenica MA non nei feriali (servizio festivo puro)
           const isFestive = (t: typeof all[number]) => t.days[6] && !t.days.slice(0, 5).some(Boolean);
@@ -1180,16 +1226,18 @@ export default function TimetablesPage() {
             festive: sortDedup(all.filter(isFestive)),
           });
         }
-        if (route) docs.push({ route, mapStops, category, directions });
+        if (route) docs.push({ route, mapStops, category: { code: weekCategory, name: catName }, directions });
       }
       if (!docs.some((d) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0))) {
-        toast.error("Nessuna corsa per il calendario selezionato", {
-          description: "La linea potrebbe non avere corse in questo periodo, o mancano le validità in Planner Studio.",
+        win.close();
+        toast.error("Nessuna corsa per la selezione", {
+          description: "Le linee selezionate non hanno corse per questa direzione/calendario.",
         });
         return;
       }
-      openPrintWindow(buildLineTimetableHtml(docs));
+      fillPrintWindow(win, buildLineTimetableHtml(docs));
     } catch (e: any) {
+      win.close();
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setBusy(null); }
   }
