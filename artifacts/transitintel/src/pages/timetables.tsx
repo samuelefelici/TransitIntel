@@ -1117,7 +1117,9 @@ export default function TimetablesPage() {
 
   const dayTypesQ = useQuery({
     queryKey: ["pstt", "day-types", projectId],
-    queryFn: () => apiFetch<{ dayTypes: PsDayType[] }>(`/api/planning-studio/projects/${encodeURIComponent(projectId)}/day-types`),
+    // endpoint di STAMPA (lettura aperta come routes/route): evita il 404
+    // "project not found" del router validità su progetti non di proprietà.
+    queryFn: () => apiFetch<{ dayTypes: PsDayType[] }>(`${ptt}/day-types`),
     enabled: !!projectId,
     staleTime: 5 * 60 * 1000,
   });
@@ -1551,6 +1553,7 @@ export default function TimetablesPage() {
               {/* settimana Lun→Dom per CALENDARIO (indipendente dai day-type) */}
               <div className="pt-2 border-t border-border/40 space-y-2">
                 <div className="flex items-center gap-2 text-[11px] font-semibold text-emerald-300"><CalendarRange className="w-3.5 h-3.5" /> Settimana per calendario</div>
+                <p className="text-[10px] text-muted-foreground">Diverso da «Stampa orari linea»: qui scegli UN calendario aziendale (es. Scuole Aperte) e ottieni gli orari giorno per giorno da Lunedì a Domenica di quel periodo.</p>
                 <div className="flex flex-wrap items-center gap-2">
                   <select
                     value={weekCategory}
