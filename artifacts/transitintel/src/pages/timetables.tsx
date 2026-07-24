@@ -1258,14 +1258,28 @@ export default function TimetablesPage() {
           if (!rt.trips.length) continue;
 
           const stops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
+          // Segnali di validità per corsa: i bollini day-type (feriale/sabato/
+          // festivo) sono la sorgente principale; se il progetto NON usa la
+          // matrice (dayTypeCodes vuoti) si ripiega sulla MASCHERA SETTIMANALE
+          // `weekdays` (L…D), così la classe/colore resta corretta.
+          const wdMask = (t: RouteTimetable["trips"][number]) =>
+            (Array.isArray(t.weekdays) && t.weekdays.length === 7) ? t.weekdays : null;
+          const classify = (t: RouteTimetable["trips"][number]) => {
+            const codes = new Set(t.dayTypeCodes ?? []);
+            const wd = wdMask(t);
+            const fromMask = codes.size === 0 && !!wd;
+            const hasF = fromMask ? wd!.slice(0, 5).some((x) => x !== false) : codes.has("feriale");
+            const hasS = fromMask ? wd![5] !== false : codes.has("sabato");
+            const hasH = fromMask ? wd![6] !== false : codes.has("festivo");
+            return { codes, wd, fromMask, hasF, hasS, hasH };
+          };
           // c'è servizio del sabato su questa direzione? (per annotare "non il sabato")
-          const hasSatService = rt.trips.some((t) => (t.dayTypeCodes ?? []).includes("sabato"));
+          const hasSatService = rt.trips.some((t) => classify(t).hasS);
 
           const raw = rt.trips.map((t) => {
             const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
             const dep = cells.find((c) => c) ?? "";
-            const codes = new Set(t.dayTypeCodes ?? []);
-            const hasF = codes.has("feriale"), hasS = codes.has("sabato"), hasH = codes.has("festivo");
+            const { codes, wd, fromMask, hasF, hasS, hasH } = classify(t);
             // classe (colore) + etichetta: il feriale è il default neutro; sabato e
             // festivo si distinguono; le validità custom hanno il loro colore.
             let cls: TTClass = "feriale"; let clsLabel = "Feriale";
@@ -1282,12 +1296,14 @@ export default function TimetablesPage() {
             const notes: string[] = [];
             if (t.onDemand) notes.push("Su prenotazione (a chiamata)");
             if (hasF && hasSatService && !hasS) notes.push("Non effettuata il sabato");
-            if (Array.isArray(t.weekdays) && hasF) {
+            if (wd && hasF) {
               const excl: string[] = [];
-              for (let i = 0; i < 5; i++) if (t.weekdays[i] === false) excl.push(WD_IT[i]);
+              for (let i = 0; i < 5; i++) if (wd[i] === false) excl.push(WD_IT[i]);
               if (excl.length && excl.length < 5) notes.push(`Escluso il ${excl.join(", ")}`);
             }
-            if (codes.size === 0) notes.push("⚠ Senza validità giorno");
+            // avviso SOLO se la corsa non ha davvero alcun segnale di validità
+            // (né bollini né maschera): un dato mancante, non la norma del progetto.
+            if (codes.size === 0 && !wd && !fromMask) notes.push("⚠ Senza validità giorno");
             return { dep, cells, cls, clsLabel, notes, sort: hhmmToMin(dep) ?? 9999 };
           }).filter((c) => c.cells.some((x) => x));
 
