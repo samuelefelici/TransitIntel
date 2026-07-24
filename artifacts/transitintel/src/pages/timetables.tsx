@@ -739,6 +739,7 @@ const LINE_TT_CSS = `
   table.ltt th.trip .dow .on { color: #fff; }
   table.ltt th.trip .dow .off { color: rgba(255,255,255,.45); text-decoration: line-through; }
   table.ltt th.trip .badge { font-size: 6.5px; font-weight: 700; margin-top: 1px; line-height: 1.1; white-space: normal; }
+  table.ltt th.trip .dep .tel { font-size: 9px; vertical-align: 1px; }
   /* colore colonna per tipo di validità */
   table.ltt th.trip.no { background: #334155; }               /* servizio ordinario */
   table.ltt th.trip.sp { background: #b45309; }               /* validità particolare (giorni limitati) */
@@ -805,10 +806,12 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     return chunks.map((ch) => {
       const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => {
         const cls = fe ? "fe" : uniCls(t);
-        // nota di validità testuale (solo tabella feriale); a chiamata sempre
+        // nota di validità testuale (solo tabella feriale); a chiamata sempre.
+        // Le corse a chiamata portano anche un'icona ☎ per riconoscerle subito.
         const note = fe ? "" : t.note;
         const badge = [t.onDemand ? "A chiamata" : "", note].filter(Boolean).join(" · ");
-        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}</div>${badge ? `<div class="badge">${esc(badge)}</div>` : ""}</th>`;
+        const tel = t.onDemand ? ` <span class="tel">☎</span>` : "";
+        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}${tel}</div>${badge ? `<div class="badge">${esc(badge)}</div>` : ""}</th>`;
       }).join("")}</tr>`;
       const rows = stops.map((s, i) =>
         `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) => {
@@ -840,7 +843,7 @@ function lineTimetableDoc(doc: LineTTDoc): string {
   const legItems: string[] = [];
   legItems.push(`<span>Senza nota = corsa feriale (Lun-Sab)</span>`);
   if (anySp) legItems.push(`<span><span class="sw sp"></span>Con nota: circola solo nei giorni indicati</span>`);
-  if (anyOd) legItems.push(`<span><span class="sw od"></span>A chiamata (su prenotazione)</span>`);
+  if (anyOd) legItems.push(`<span><span class="sw od"></span>☎ A chiamata (su prenotazione)</span>`);
   if (anyFe) legItems.push(`<span><span class="sw fe"></span>Corse festive / domenicali (colonne rosse)</span>`);
   const legend = `<div class="ltt-legend"><span class="lg-lbl">Legenda:</span>${legItems.join("")}</div>`;
 
