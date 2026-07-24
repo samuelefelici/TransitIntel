@@ -770,7 +770,7 @@ const LINE_TT_CSS = `
   .brandfix { position: fixed; left: 8mm; right: 8mm; bottom: 4mm; display: flex; align-items: center; justify-content: space-between; font-size: 7px; color: #64748b; }
   .brandfix .pw { display: flex; align-items: center; gap: 4px; }
   .brandfix .pw b { color: #1d4ed8; font-weight: 800; }
-  .cerbero { height: 12px; width: auto; display: inline-block; vertical-align: middle; }
+  .cerbero { height: 15px; width: auto; display: inline-block; vertical-align: middle; }
 `;
 
 /** Striscia di linea ORIZZONTALE (stile diagramma metro): fermate equidistanti
@@ -877,12 +877,40 @@ function lineTimetableDoc(doc: LineTTDoc): string {
   </section>`;
 }
 
-function buildLineTimetableHtml(docs: LineTTDoc[]): string {
+/** Logo Cerbero (public/logo.png) rimpicciolito in un data URI, così è sempre
+ *  presente nella stampa (niente dipendenze di rete/origine). Cache in-memory;
+ *  se il caricamento fallisce si ripiega sul marchio SVG disegnato. */
+let _cerberoLogo: string | null | undefined;
+async function cerberoLogoDataUrl(): Promise<string | null> {
+  if (_cerberoLogo !== undefined) return _cerberoLogo;
+  try {
+    _cerberoLogo = await new Promise<string>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 300;
+        const scale = Math.min(1, maxW / (img.naturalWidth || maxW));
+        const w = Math.max(1, Math.round((img.naturalWidth || maxW) * scale));
+        const h = Math.max(1, Math.round((img.naturalHeight || maxW) * scale));
+        const c = document.createElement("canvas"); c.width = w; c.height = h;
+        const ctx = c.getContext("2d");
+        if (!ctx) { reject(new Error("no canvas ctx")); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/png"));
+      };
+      img.onerror = () => reject(new Error("logo load failed"));
+      img.src = `${import.meta.env.BASE_URL}logo.png`;
+    });
+  } catch { _cerberoLogo = null; }
+  return _cerberoLogo;
+}
+
+function buildLineTimetableHtml(docs: LineTTDoc[], logoDataUrl?: string | null): string {
   const has = (d: LineTTDoc) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0);
   const body = docs.filter(has).map(lineTimetableDoc).join("");
   const gen = new Date().toLocaleString("it-IT");
+  const logo = logoDataUrl ? `<img class="cerbero" src="${logoDataUrl}" alt="Cerbero" />` : CERBERO_LOGO;
   // marchio ripetuto su OGNI foglio (footer fisso, molto piccolo)
-  const brand = `<div class="brandfix"><span>Generato il ${gen}</span><span class="pw">${CERBERO_LOGO}<span>powered by <b>Cerbero Analytics</b></span></span></div>`;
+  const brand = `<div class="brandfix"><span>Generato il ${gen}</span><span class="pw">${logo}<span>powered by <b>Cerbero Analytics</b></span></span></div>`;
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Orari di linea</title>
   <style>${LINE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}${brand}</body></html>`;
@@ -1287,7 +1315,8 @@ export default function TimetablesPage() {
         });
         return;
       }
-      fillPrintWindow(win, buildLineTimetableHtml(docs));
+      const logo = await cerberoLogoDataUrl();
+      fillPrintWindow(win, buildLineTimetableHtml(docs, logo));
     } catch (e: any) {
       win.close();
       toast.error(e?.message ?? "Errore durante la stampa");
