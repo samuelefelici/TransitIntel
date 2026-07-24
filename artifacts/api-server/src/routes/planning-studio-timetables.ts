@@ -527,6 +527,128 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /timetables/stop/:stopId/full — QUADRO DI PALINA completo ────────────
+// Tutte le linee che transitano dalla fermata, con OGNI partenza classificata
+// per CATEGORIA di calendario (Scuole Aperte / Chiuse, con ombrello) e per tipo
+// di giorno (feriale/sabato/festivo). Nessun filtro: la stampa organizza tutto.
+router.get("/planning-studio/:projectId/timetables/stop/:stopId/full", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    const stopId = String(req.params.stopId);
+    if (!UUID_RE.test(projectId) || !UUID_RE.test(stopId)) { res.status(400).json({ error: "ID non valido" }); return; }
+
+    const stopQ = await db.execute<any>(sql`
+      SELECT id, name, code FROM ps_stops
+      WHERE project_id = ${projectId}::uuid AND id = ${stopId}::uuid LIMIT 1`);
+    const stop = stopQ.rows[0];
+    if (!stop) { res.status(404).json({ error: "Fermata non trovata" }); return; }
+
+    // Partenze dalla fermata (escluso il capolinea d'arrivo) + attributi corsa.
+    const depQ = await db.execute<any>(sql.raw(`
+      SELECT st.trip_id, st.departure_time, t.attributes AS attributes,
+             COALESCE(t.headsign, v.headsign) AS trip_headsign,
+             r.id AS route_id, r.short_name, r.long_name, r.color, r.sort_order
+      FROM (
+        SELECT st.*, MAX(st.stop_seq) OVER (PARTITION BY st.trip_id) AS last_seq
+        FROM ps_stop_times st
+        WHERE st.trip_id IN (
+          SELECT id FROM ps_trips WHERE project_id = '${projectId}' AND COALESCE(is_active,true) = true
+            AND COALESCE((attributes->>'prototype')::boolean, false) = false
+        )
+      ) st
+      JOIN ps_trips t ON t.id = st.trip_id
+      JOIN ps_route_variants v ON v.id = t.variant_id
+      JOIN ps_routes r ON r.id = t.route_id
+      WHERE st.stop_id = '${stopId}'
+        AND st.departure_time IS NOT NULL
+        AND st.stop_seq < st.last_seq
+      ORDER BY r.sort_order, r.short_name, st.departure_time
+    `));
+    const rows = depQ.rows as any[];
+    const tripList = uuidList([...new Set(rows.map((r) => String(r.trip_id)))]);
+
+    // day-type codes + category codes per corsa
+    const dayCodesByTrip = new Map<string, Set<string>>();
+    const catCodesByTrip = new Map<string, Set<string>>();
+    if (tripList) {
+      try {
+        const dv = await db.execute<any>(sql.raw(`
+          SELECT v.trip_id, dt.code FROM ps_trip_day_validity v
+          JOIN ps_day_types dt ON dt.id = v.day_type_id
+          WHERE v.is_valid = true AND v.trip_id IN (${tripList})`));
+        for (const r of dv.rows as any[]) {
+          if (!dayCodesByTrip.has(r.trip_id)) dayCodesByTrip.set(r.trip_id, new Set());
+          dayCodesByTrip.get(r.trip_id)!.add(r.code);
+        }
+      } catch { /* validità non configurata */ }
+      try {
+        const cv = await db.execute<any>(sql.raw(`
+          SELECT cv.trip_id, c.code FROM ps_trip_category_validity cv
+          JOIN ps_validity_categories c ON c.id = cv.category_id
+          WHERE cv.trip_id IN (${tripList})`));
+        for (const r of cv.rows as any[]) {
+          if (!catCodesByTrip.has(r.trip_id)) catCodesByTrip.set(r.trip_id, new Set());
+          catCodesByTrip.get(r.trip_id)!.add(r.code);
+        }
+      } catch { /* categorie non configurate */ }
+    }
+
+    const catInfoQ = await db.execute<any>(sql`
+      SELECT code, name FROM ps_validity_categories WHERE code IN ('scuole_aperte','scuole_chiuse')`)
+      .catch(() => ({ rows: [] as any[] }));
+    const catName = new Map<string, string>();
+    for (const r of (catInfoQ.rows as any[])) catName.set(r.code, r.name);
+
+    interface Line { routeId: string; shortName: string | null; longName: string | null; color: string | null; headsigns: string[]; departures: any[] }
+    const lines = new Map<string, Line>();
+    for (const row of rows) {
+      const m = /^(\d{1,2}):(\d{2})/.exec(String(row.departure_time));
+      if (!m) continue;
+      const time = `${String(Number(m[1]) % 24).padStart(2, "0")}:${m[2]}`;
+      let line = lines.get(row.route_id);
+      if (!line) { line = { routeId: row.route_id, shortName: row.short_name, longName: row.long_name, color: row.color, headsigns: [], departures: [] }; lines.set(row.route_id, line); }
+      const hs = String(row.trip_headsign ?? "").trim();
+      let hsIdx = line.headsigns.indexOf(hs);
+      if (hsIdx < 0) { line.headsigns.push(hs); hsIdx = line.headsigns.length - 1; }
+
+      // tipo di giorno: bollini day-type se presenti, altrimenti maschera weekdays
+      const dtc = dayCodesByTrip.get(row.trip_id) ?? new Set<string>();
+      const wd = Array.isArray(row.attributes?.weekdays) && row.attributes.weekdays.length === 7
+        ? row.attributes.weekdays.map((x: any) => x !== false) : null;
+      const days: string[] = [];
+      if (dtc.size) {
+        if (dtc.has("feriale")) days.push("feriale");
+        if (dtc.has("sabato")) days.push("sabato");
+        if (dtc.has("festivo")) days.push("festivo");
+      } else if (wd) {
+        if (wd.slice(0, 5).some((x: boolean) => x)) days.push("feriale");
+        if (wd[5]) days.push("sabato");
+        if (wd[6]) days.push("festivo");
+      }
+      if (!days.length) days.push("feriale");
+
+      // categoria macro: scuole_aperte / scuole_chiuse (ombrello). Nessuna
+      // categoria (o solo festività) → circola sempre → in ENTRAMBE le sezioni.
+      const cc = catCodesByTrip.get(row.trip_id) ?? new Set<string>();
+      const hasA = cc.has("scuole_aperte");
+      const hasC = [...cc].some((c) => c.startsWith("scuole_chiuse"));
+      const cats = (hasA && !hasC) ? ["scuole_aperte"] : (hasC && !hasA) ? ["scuole_chiuse"] : ["scuole_aperte", "scuole_chiuse"];
+
+      line.departures.push({ time, headsignIdx: hsIdx, onDemand: !!row.attributes?.onDemand, days, cats });
+    }
+
+    res.json({
+      stop: { stopId: stop.id, stopName: stop.name, stopCode: stop.code },
+      categories: [
+        { code: "scuole_aperte", name: catName.get("scuole_aperte") ?? "Scuole Aperte" },
+        { code: "scuole_chiuse", name: catName.get("scuole_chiuse") ?? "Scuole Chiuse" },
+      ],
+      lines: [...lines.values()].sort((a, b) =>
+        String(a.shortName ?? "").localeCompare(String(b.shortName ?? ""), "it", { numeric: true })),
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 // Calcolo della rete (variante più esercitata per linea + fermate con coordinate
 // e cluster). Esportato per riuso nell'endpoint pubblico di condivisione.
 export async function computeNetwork(projectId: string, routeIds: string[]): Promise<{ projectId: string; lines: any[]; cityNodes: Array<{ name: string; lat: number; lon: number }> }> {

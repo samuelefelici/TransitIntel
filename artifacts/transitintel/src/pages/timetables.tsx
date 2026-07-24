@@ -205,6 +205,107 @@ function buildCombinedStopPostersHtml(list: StopTimetable[]): string {
   <style>${STOP_POSTER_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna partenza per la selezione.</p>"}</body></html>`;
 }
 
+/* ── QUADRO DI PALINA COMPLETO (A4 vert.) — tutte le linee × categorie ────────
+ * Per fermata (uno o più fogli A4): due sezioni SCUOLE APERTE / CHIUSE; dentro
+ * ciascuna una tabellina per linea (righe = ora, colonne Feriale/Sabato/Festivo,
+ * celle = minuti). Intestazione = ID + nome fermata; footer fisso Cerbero. */
+interface PalDep { time: string; headsignIdx: number; onDemand: boolean; days: string[]; cats: string[] }
+interface PalLine { routeId: string; shortName: string | null; longName: string | null; color: string | null; headsigns: string[]; departures: PalDep[] }
+interface PalStop { stop: { stopId: string; stopName: string; stopCode: string | null }; categories: Array<{ code: string; name: string }>; lines: PalLine[] }
+
+const PAL_CSS = `
+  ${PRINT_BASE_CSS}
+  @page { size: A4 portrait; margin: 8mm 8mm 12mm; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .palhead { display: flex; align-items: center; gap: 12px; border-bottom: 3px solid #0f172a; padding-bottom: 6px; margin-bottom: 8px; }
+  .palhead .cerbero-h { height: 34px; width: auto; }
+  .palhead h1 { font-size: 22px; line-height: 1.1; }
+  .palhead .pid { font-size: 11px; color: #475569; font-weight: 700; letter-spacing: .04em; }
+  .palcat { margin-bottom: 8px; }
+  .cath { font-size: 13px; font-weight: 800; color: #fff; background: #0e7490; padding: 3px 10px; border-radius: 4px; margin: 6px 0 5px; letter-spacing: .04em; break-after: avoid; }
+  .palgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; align-items: start; }
+  .palline { break-inside: avoid; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; }
+  .palline .lh { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-left: 5px solid #0f172a; background: #f8fafc; }
+  .palline .lp { color: #fff; font-weight: 800; border-radius: 5px; padding: 1px 8px; font-size: 13px; min-width: 30px; text-align: center; }
+  .palline .hsleg { font-size: 8.5px; color: #334155; }
+  .palline .hsleg span { margin-right: 6px; }
+  table.pal { width: 100%; border-collapse: collapse; }
+  table.pal th, table.pal td { border: 1px solid #e2e8f0; font-size: 9px; padding: 1px 3px; text-align: left; font-variant-numeric: tabular-nums; }
+  table.pal thead th { background: #334155; color: #fff; text-align: center; font-weight: 800; }
+  table.pal th.h { width: 22px; text-align: center; background: #f1f5f9; font-weight: 800; color: #0f172a; }
+  table.pal tbody tr:nth-child(even) td { background: #fafafa; }
+  table.pal td { font-weight: 600; }
+  table.pal sup { font-size: 7px; font-weight: 800; color: #b45309; }
+  table.pal .od { color: #6d28d9; font-weight: 800; margin-left: 1px; }
+  .pal-note { font-size: 8.5px; color: #475569; margin-top: 4px; }
+  .brandfix { position: fixed; left: 8mm; right: 8mm; bottom: 4mm; display: flex; align-items: center; justify-content: space-between; font-size: 7px; color: #64748b; }
+  .brandfix .pw { display: flex; align-items: center; gap: 4px; }
+  .brandfix .pw b { color: #1d4ed8; font-weight: 800; }
+  .cerbero { height: 15px; width: auto; display: inline-block; vertical-align: middle; }
+`;
+
+const PAL_DAYS: Array<[string, string]> = [["feriale", "Feriale"], ["sabato", "Sabato"], ["festivo", "Festivo"]];
+
+/** Tabellina di UNA linea dentro UNA categoria: righe=ora, colonne=giorni presenti. */
+function palLineTable(line: PalLine, catCode: string): string {
+  const deps = line.departures.filter((d) => d.cats.includes(catCode));
+  if (!deps.length) return "";
+  const present = PAL_DAYS.filter(([k]) => deps.some((d) => d.days.includes(k)));
+  const multiDest = line.headsigns.filter((h) => h).length > 1;
+  const grid = new Map<number, Record<string, Array<{ m: number; od: boolean; hs: number }>>>();
+  for (const d of deps) {
+    const mm = /^(\d{1,2}):(\d{2})/.exec(d.time); if (!mm) continue;
+    const h = Number(mm[1]) % 24, m = Number(mm[2]);
+    for (const [k] of present) {
+      if (!d.days.includes(k)) continue;
+      if (!grid.has(h)) grid.set(h, {});
+      const g = grid.get(h)!;
+      (g[k] ??= []).push({ m, od: d.onDemand, hs: d.headsignIdx });
+    }
+  }
+  const hours = [...grid.keys()].sort((a, b) => a - b);
+  const cell = (arr?: Array<{ m: number; od: boolean; hs: number }>) => !arr ? "·"
+    : arr.sort((a, b) => a.m - b.m).map((x) =>
+        `${String(x.m).padStart(2, "0")}${multiDest && line.headsigns[x.hs] ? `<sup>${String.fromCharCode(97 + x.hs)}</sup>` : ""}${x.od ? `<span class="od">☎</span>` : ""}`).join(" ");
+  const head = `<tr><th class="h">ora</th>${present.map(([, lbl]) => `<th>${lbl}</th>`).join("")}</tr>`;
+  const rows = hours.map((h) =>
+    `<tr><th class="h">${String(h).padStart(2, "0")}</th>${present.map(([k]) => `<td>${cell(grid.get(h)![k])}</td>`).join("")}</tr>`).join("");
+  const legend = multiDest
+    ? `<div class="hsleg">${line.headsigns.map((h, i) => h ? `<span><b>${String.fromCharCode(97 + i)}</b> → ${esc(h)}</span>` : "").join("")}</div>`
+    : (line.headsigns[0] ? `<div class="hsleg">→ ${esc(line.headsigns[0])}</div>` : "");
+  const col = lineColor(line.color);
+  return `<div class="palline"><div class="lh" style="border-color:${col}"><span class="lp" style="background:${col}">${esc(line.shortName ?? "?")}</span>${legend}</div><table class="pal"><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+}
+
+function palStopPage(data: PalStop, logo?: string | null): string {
+  const secs = data.categories.map((cat) => {
+    const tables = data.lines.map((l) => palLineTable(l, cat.code)).filter(Boolean).join("");
+    if (!tables) return "";
+    return `<div class="palcat"><div class="cath">${esc(cat.name)}</div><div class="palgrid">${tables}</div></div>`;
+  }).filter(Boolean).join("");
+  const anyOd = data.lines.some((l) => l.departures.some((d) => d.onDemand));
+  const idLabel = data.stop.stopCode ? `ID ${esc(data.stop.stopCode)}` : `ID ${esc(data.stop.stopId)}`;
+  return `
+  <section class="page">
+    <header class="palhead">
+      ${logo ? `<img class="cerbero-h" src="${logo}" alt="Cerbero" />` : ""}
+      <div><h1>${esc(data.stop.stopName)}</h1><div class="pid">Fermata · ${idLabel}</div></div>
+    </header>
+    ${secs || "<p style='padding:12px;color:#666'>Nessuna corsa transita da questa fermata.</p>"}
+    ${anyOd ? `<div class="pal-note"><span class="od" style="color:#6d28d9;font-weight:800">☎</span> = corsa a chiamata (su prenotazione)</div>` : ""}
+  </section>`;
+}
+
+function buildStopPostersHtml(stops: PalStop[], logo?: string | null): string {
+  const has = (s: PalStop) => s.lines.some((l) => l.departures.length > 0);
+  const body = stops.filter(has).map((s) => palStopPage(s, logo)).join("");
+  const gen = new Date().toLocaleString("it-IT");
+  const brandLogo = logo ? `<img class="cerbero" src="${logo}" alt="Cerbero" />` : CERBERO_LOGO;
+  const brand = `<div class="brandfix"><span>Generato il ${gen}</span><span class="pw">${brandLogo}<span>powered by <b>Cerbero Analytics</b></span></span></div>`;
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8"><title>Quadri di palina</title>
+  <style>${PAL_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna partenza per la selezione.</p>"}${brand}</body></html>`;
+}
+
 /* ── ORARIO SETTIMANALE per CALENDARIO (una tabella unica per linea) ──
  * Tutte le corse della categoria (Scuole Aperte / Chiuse) in un'unica tabella
  * Lun→Dom; ogni corsa con validità particolare porta un apice-nota (a chiamata,
@@ -1323,28 +1424,34 @@ export default function TimetablesPage() {
     } finally { setBusy(null); }
   }
 
+  // QUADRO DI PALINA: selezioni le linee → si ricavano TUTTE le loro fermate e
+  // per ciascuna si INCROCIANO tutte le linee che vi transitano, con gli orari
+  // di TUTTE le categorie di calendario (Scuole Aperte/Chiuse) e tipi di giorno.
+  // Un foglio A4 per fermata (o più), intestazione = ID + nome fermata.
   async function printPaline() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
+    const win = openPendingPrintWindow();
+    if (!win) return;
     setBusy("paline");
     try {
       const rs = await apiFetch<{ stops: Array<{ stopId: string; stopName: string; stopCode: string | null }> }>(
         `${ptt}/route-stops?routeIds=${ids.map(encodeURIComponent).join(",")}`,
       );
       const stops = rs.stops ?? [];
-      if (!stops.length) { toast.error("Nessuna fermata per le linee selezionate"); return; }
-      const docs: StopTimetable[] = [];
+      if (!stops.length) { win.close(); toast.error("Nessuna fermata per le linee selezionate"); return; }
+      const docs: PalStop[] = [];
       for (const s of stops) {
-        for (const dt of routeDayTypeIds) {
-          const url = `${ptt}/stop/${encodeURIComponent(s.stopId)}?dayTypeId=${encodeURIComponent(dt)}`;
-          const d = await apiFetch<StopTimetable>(url);
-          docs.push({ ...d, lines: d.lines.map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) });
-        }
+        const full = await apiFetch<PalStop>(`${ptt}/stop/${encodeURIComponent(s.stopId)}/full`);
+        // applica l'eventuale colore operatore personalizzato alle linee
+        full.lines = full.lines.map((l) => ({ ...l, color: effColor(l.routeId, l.color) }));
+        docs.push(full);
       }
-      if (!docs.some((x) => x.lines.length > 0)) { toast.error("Nessuna partenza per la selezione"); return; }
-      openPrintWindow(buildCombinedStopPostersHtml(docs));
+      if (!docs.some((x) => x.lines.some((l) => l.departures.length))) { win.close(); toast.error("Nessuna partenza per la selezione"); return; }
+      const logo = await cerberoLogoDataUrl();
+      fillPrintWindow(win, buildStopPostersHtml(docs, logo));
     } catch (e: any) {
+      win.close();
       toast.error(e?.message ?? "Errore durante la stampa");
     } finally { setBusy(null); }
   }
@@ -1546,28 +1653,17 @@ export default function TimetablesPage() {
               </button>
               <p className="text-[10px] text-muted-foreground">Un foglio per linea: mappa + orari Andata/Ritorno con validità Lun→Dom del calendario scelto. A chiamata e giorni limitati per colore; corse festive in una sezione rossa separata.</p>
 
-              {/* Quadri di palina (per singolo day-type) */}
+              {/* Quadri di palina: un foglio A4 per fermata, tutte le linee × calendari */}
               <div className="pt-2 border-t border-border/40 space-y-2">
-                <div className="flex items-center gap-2 text-[11px] font-semibold text-sky-200"><SignpostBig className="w-3.5 h-3.5" /> Quadri di palina (per day-type)</div>
-                <div className="flex flex-wrap rounded-lg overflow-hidden border border-border/60 w-fit">
-                  {dayTypes.map((d) => (
-                    <button key={d.id} onClick={() => toggleRouteDayType(d.id)}
-                      className={`px-2.5 py-1.5 text-xs transition-colors ${routeDayTypeIds.includes(d.id) ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}>
-                      {d.name}
-                    </button>
-                  ))}
-                  {dayTypes.length === 0 && <span className="px-2.5 py-1.5 text-xs text-muted-foreground">Nessun day-type</span>}
-                </div>
+                <div className="flex items-center gap-2 text-[11px] font-semibold text-sky-200"><SignpostBig className="w-3.5 h-3.5" /> Quadri di palina</div>
                 <button onClick={printPaline}
-                  disabled={anyBusy || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
+                  disabled={anyBusy || selectedRouteIds.length === 0}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg border border-sky-500/60 text-sky-300 hover:bg-sky-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
-                  title="Quadro di palina per ogni fermata delle linee selezionate (day-type scelto).">
+                  title="Un foglio A4 per ogni fermata delle linee selezionate: incrocia TUTTE le linee che vi transitano, con gli orari di tutte le categorie di calendario (Scuole Aperte/Chiuse) e i tipi di giorno.">
                   {busy === "paline" ? <Loader2 className="w-4 h-4 animate-spin" /> : <SignpostBig className="w-4 h-4" />}
-                  Quadri palina
+                  Quadri palina{selectedRouteIds.length ? ` (${selectedRouteIds.length} linee)` : ""}
                 </button>
-                {(selectedRouteIds.length > 0 && routeDayTypeIds.length === 0) && (
-                  <p className="text-[10px] text-amber-400">Scegli almeno un day-type per i quadri di palina.</p>
-                )}
+                <p className="text-[10px] text-muted-foreground">Genera automaticamente tutte le fermate delle linee scelte, incrociando le altre linee che vi passano. Un foglio A4 per fermata.</p>
               </div>
             </div>
 
