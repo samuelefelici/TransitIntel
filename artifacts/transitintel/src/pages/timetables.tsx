@@ -1169,13 +1169,14 @@ export default function TimetablesPage() {
       const docs: LineTTDoc[] = [];
       for (const rid of ids) {
         let route: RouteTimetable["route"] | null = null;
-        let mapStops: LineTTDoc["mapStops"] = [];
+        let mapStops: LineTTDoc["mapStops"] = [];   // fermate della prima direzione con corse (pruned)
+        let mapFallback: LineTTDoc["mapStops"] = []; // ripiego se nessuna direzione ha corse
         const directions: UniDir[] = [];
         for (const dir of dirs) {
           const rt = await apiFetch<RouteTimetable>(`${ptt}/route/${encodeURIComponent(rid)}?directionId=${dir}`);
           if (!route) route = { ...rt.route, color: effColor(rt.route.routeId, rt.route.color) };
-          if (!mapStops.length && rt.stops.length >= 2) {
-            mapStops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
+          if (!mapFallback.length && rt.stops.length >= 2) {
+            mapFallback = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
           }
           if (!rt.trips.length) continue;
           const stops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
@@ -1242,14 +1243,28 @@ export default function TimetablesPage() {
                 seen.add(k); return true;
               });
           };
+          const regular = dedup(built.filter((x) => x.days.slice(0, 6).some(Boolean)), false);
+          const festive = dedup(built.filter((x) => x.days[6]), true);
+
+          // Rimuovi le FERMATE senza alcun transito in NESSUNA corsa (né feriale
+          // né festiva): righe tutte vuote = solo ingombro. Poi allinea le celle
+          // di ogni corsa e ricalcola i capolinea sulle fermate rimaste.
+          const allT = [...regular, ...festive];
+          const keep = stops.map((_, i) => allT.some((t) => t.cells[i]));
+          const keptStops = stops
+            .filter((_, i) => keep[i])
+            .map((s, i, arr) => ({ name: s.name, term: i === 0 || i === arr.length - 1 }));
+          const prune = (t: UniTrip): UniTrip => ({ ...t, cells: t.cells.filter((_, i) => keep[i]) });
+          if (!mapStops.length && keptStops.length >= 2) mapStops = keptStops;
+
           directions.push({
             dirLabel: dir === "0" ? "Andata" : "Ritorno",
-            stops,
-            regular: dedup(built.filter((x) => x.days.slice(0, 6).some(Boolean)), false),
-            festive: dedup(built.filter((x) => x.days[6]), true),
+            stops: keptStops,
+            regular: regular.map(prune),
+            festive: festive.map(prune),
           });
         }
-        if (route) docs.push({ route, mapStops, category: { code: weekCategory, name: catName }, directions });
+        if (route) docs.push({ route, mapStops: mapStops.length ? mapStops : mapFallback, category: { code: weekCategory, name: catName }, directions });
       }
       if (!docs.some((d) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0))) {
         win.close();
