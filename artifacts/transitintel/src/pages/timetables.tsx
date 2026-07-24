@@ -218,7 +218,6 @@ interface WeekTimetable {
   trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[]; onDemand: boolean; days: boolean[] }>;
 }
 
-const DOW_ABBR = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 
 /* ── Helper orari + schematizzazione linea/rete (condivisa da mappa e stampe) ── */
 
@@ -701,8 +700,15 @@ function schematicInnerSvg(
  *      SEZIONE ROSSA separata, per non mischiarle col servizio feriale.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-/** Corsa nella vista unica: orari + validità Lun→Dom + a chiamata. */
-interface UniTrip { dep: string; cells: string[]; onDemand: boolean; note: string }
+/** Iniziali compatte dei giorni feriali (Lun-Sab) per le note in colonna. */
+const WD_INI = ["L", "Ma", "Me", "G", "V", "S"];
+
+/** Restrizione di validità di una corsa (mostrata come iniziali colorate +
+ *  descrizione in legenda): `excl` = esclusi alcuni giorni (iniziali rosse),
+ *  `only` = circola solo in alcuni giorni (iniziali verdi). */
+interface UniRestr { kind: "excl" | "only"; idxs: number[]; desc: string }
+/** Corsa nella vista unica: orari + eventuale restrizione + a chiamata. */
+interface UniTrip { dep: string; cells: string[]; onDemand: boolean; restr: UniRestr | null }
 interface UniDir {
   dirLabel: string;
   stops: Array<{ name: string; term: boolean }>;
@@ -733,28 +739,25 @@ const LINE_TT_CSS = `
   table.ltt th.stop.head { background: #0f172a; color: #fff; }
   table.ltt th.stop.term { background: #e2e8f0; }
   table.ltt td.term { font-weight: 800; }
-  table.ltt th.trip { color: #fff; font-weight: 800; vertical-align: top; }
+  table.ltt th.trip { color: #fff; font-weight: 800; vertical-align: top; background: #334155; }
+  table.ltt th.trip.fe { background: #dc2626; }               /* colonna festiva/domenica */
   table.ltt th.trip .dep { font-size: 10px; }
-  table.ltt th.trip .dow { font-size: 6.5px; font-weight: 700; letter-spacing: .4px; margin-top: 1px; }
-  table.ltt th.trip .dow .on { color: #fff; }
-  table.ltt th.trip .dow .off { color: rgba(255,255,255,.45); text-decoration: line-through; }
-  table.ltt th.trip .badge { font-size: 6.5px; font-weight: 700; margin-top: 1px; line-height: 1.1; white-space: normal; }
-  table.ltt th.trip .dep .tel { font-size: 9px; vertical-align: 1px; }
-  /* colore colonna per tipo di validità */
-  table.ltt th.trip.no { background: #334155; }               /* servizio ordinario */
-  table.ltt th.trip.sp { background: #b45309; }               /* validità particolare (giorni limitati) */
-  table.ltt th.trip.od { background: #6d28d9; }               /* a chiamata */
-  table.ltt th.trip.fe { background: #dc2626; }               /* festivo/domenica */
-  table.ltt td.no { background: #fff; }
-  table.ltt td.sp { background: #fffbeb; }
-  table.ltt td.od { background: #f5f3ff; }
+  /* marcatori COMPATTI: ☎ a chiamata (viola), iniziali giorni rosse (escluso)
+     o verdi (solo) — la descrizione completa è in legenda */
+  table.ltt th.trip .marks { margin-top: 1px; font-size: 8.5px; font-weight: 800; letter-spacing: .5px; line-height: 1; }
+  table.ltt th.trip .marks .tel { color: #c4b5fd; font-size: 10px; }
+  table.ltt th.trip .marks .excl { color: #fca5a5; }
+  table.ltt th.trip .marks .only { color: #86efac; }
   table.ltt td.fe { background: #fef2f2; }
+  table.ltt tbody tr:nth-child(even) td { background: #fafafa; }
+  table.ltt tbody tr:nth-child(even) td.fe { background: #fde8e8; }
   .ltt-legend { margin-top: 6px; font-size: 9px; color: #222; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .ltt-legend .lg-lbl { font-weight: 800; }
   .ltt-legend .sw { display: inline-block; width: 11px; height: 11px; border: 1px solid #94a3b8; margin-right: 4px; vertical-align: -2px; border-radius: 2px; }
-  .ltt-legend .sw.sp { background: #b45309; }
-  .ltt-legend .sw.od { background: #6d28d9; }
   .ltt-legend .sw.fe { background: #dc2626; }
+  .ltt-legend .k-tel { color: #6d28d9; font-weight: 800; }
+  .ltt-legend .k-excl { color: #dc2626; font-weight: 800; }
+  .ltt-legend .k-only { color: #16a34a; font-weight: 800; }
 `;
 
 /** Striscia di linea ORIZZONTALE (stile diagramma metro): fermate equidistanti
@@ -785,12 +788,6 @@ function lineStripSvg(stops: Array<{ name: string; term: boolean }>, color: stri
   return `<svg viewBox="0 0 ${W} ${H.toFixed(0)}" width="100%" style="display:block; max-height:70mm">${line}${dots}${names}</svg>`;
 }
 
-/** classe-colore della colonna: a chiamata → viola; validità particolare
- *  (non copre tutti i Lun-Ven) → ambra; altrimenti ordinario neutro. */
-function uniCls(t: UniTrip): "no" | "sp" | "od" {
-  return t.onDemand ? "od" : t.note ? "sp" : "no";
-}
-
 function lineTimetableDoc(doc: LineTTDoc): string {
   const col = lineColor(doc.route.color);
   const gen = new Date().toLocaleString("it-IT");
@@ -799,25 +796,25 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     ? `<div class="linemap">${lineStripSvg(doc.mapStops, doc.route.color)}</div>` : "";
 
   const PER = 20; // corse per tabella (larghezza foglio)
-  // una tabella (paginata in blocchi di colonne); `fe` = sezione festiva rossa
+  // Intestazione COMPATTA: solo l'orario + marcatori (☎ a chiamata, iniziali
+  // rosse=giorni esclusi, verdi=unici giorni). Le descrizioni stanno in legenda.
   const renderTables = (stops: UniDir["stops"], trips: UniTrip[], fe: boolean) => {
     const chunks: UniTrip[][] = [];
     for (let i = 0; i < trips.length; i += PER) chunks.push(trips.slice(i, i + PER));
     return chunks.map((ch) => {
       const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => {
-        const cls = fe ? "fe" : uniCls(t);
-        // nota di validità testuale (solo tabella feriale); a chiamata sempre.
-        // Le corse a chiamata portano anche un'icona ☎ per riconoscerle subito.
-        const note = fe ? "" : t.note;
-        const badge = [t.onDemand ? "A chiamata" : "", note].filter(Boolean).join(" · ");
-        const tel = t.onDemand ? ` <span class="tel">☎</span>` : "";
-        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}${tel}</div>${badge ? `<div class="badge">${esc(badge)}</div>` : ""}</th>`;
+        const marks: string[] = [];
+        if (t.onDemand) marks.push(`<span class="tel">☎</span>`);
+        if (!fe && t.restr) {
+          const cl = t.restr.kind === "excl" ? "excl" : "only";
+          marks.push(`<span class="${cl}">${t.restr.idxs.map((i) => WD_INI[i]).join(" ")}</span>`);
+        }
+        const m = marks.length ? `<div class="marks">${marks.join(" ")}</div>` : "";
+        return `<th class="trip${fe ? " fe" : ""}"><div class="dep">${esc(t.dep)}</div>${m}</th>`;
       }).join("")}</tr>`;
       const rows = stops.map((s, i) =>
-        `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) => {
-          const cls = fe ? "fe" : uniCls(t);
-          return `<td class="${cls}${s.term ? " term" : ""}">${t.cells[i] || "·"}</td>`;
-        }).join("")}</tr>`).join("");
+        `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) =>
+          `<td class="${fe ? "fe" : ""}${s.term ? " term" : ""}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
       return `<table class="ltt"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
     }).join("");
   };
@@ -833,17 +830,24 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     return `<div class="dirgrp"><h3 class="dirh"><span class="arrow" style="background:${col}"></span>${esc(dir.dirLabel)} · ${nTot} corse</h3>${parts.join("")}</div>`;
   }).join("");
 
-  // legenda: solo i marcatori effettivamente presenti
-  let anySp = false, anyOd = false, anyFe = false;
+  // legenda: descrizioni delle note (iniziali colorate) + a chiamata + festive
+  let anyOd = false, anyFe = false;
+  const restrs = new Map<string, UniRestr>(); // desc → restr (deduplicato)
   for (const d of doc.directions) {
-    for (const t of d.regular) { if (t.onDemand) anyOd = true; if (t.note) anySp = true; }
+    for (const t of d.regular) { if (t.onDemand) anyOd = true; if (t.restr) restrs.set(t.restr.desc, t.restr); }
     if (d.festive.length) anyFe = true;
     for (const t of d.festive) if (t.onDemand) anyOd = true;
   }
   const legItems: string[] = [];
-  legItems.push(`<span>Senza nota = corsa feriale (Lun-Sab)</span>`);
-  if (anySp) legItems.push(`<span><span class="sw sp"></span>Con nota: circola solo nei giorni indicati</span>`);
-  if (anyOd) legItems.push(`<span><span class="sw od"></span>☎ A chiamata (su prenotazione)</span>`);
+  legItems.push(`<span>Senza note = corsa feriale (Lun-Sab)</span>`);
+  // prima gli "esclusi" (rosso), poi i "solo" (verde)
+  const restrList = [...restrs.values()].sort((a, b) =>
+    a.kind === b.kind ? a.desc.localeCompare(b.desc) : (a.kind === "excl" ? -1 : 1));
+  for (const r of restrList) {
+    const cl = r.kind === "excl" ? "k-excl" : "k-only";
+    legItems.push(`<span><span class="${cl}">${r.idxs.map((i) => WD_INI[i]).join(" ")}</span> = ${esc(r.desc)}</span>`);
+  }
+  if (anyOd) legItems.push(`<span><span class="k-tel">☎</span> = a chiamata (su prenotazione)</span>`);
   if (anyFe) legItems.push(`<span><span class="sw fe"></span>Corse festive / domenicali (colonne rosse)</span>`);
   const legend = `<div class="ltt-legend"><span class="lg-lbl">Legenda:</span>${legItems.join("")}</div>`;
 
@@ -1157,7 +1161,6 @@ export default function TimetablesPage() {
     const catName = weekCategories.find((c) => c.code === weekCategory)?.name
       ?? (weekCategory === "scuole_chiuse" ? "Scuole Chiuse" : "Scuole Aperte");
     const WD_FULL = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"];
-    const WD_SHORT = ["lun", "mar", "mer", "gio", "ven", "sab"];
     // Apri SUBITO la finestra (dentro il click) così non viene bloccata dopo i fetch.
     const win = openPendingPrintWindow();
     if (!win) return;
@@ -1211,15 +1214,18 @@ export default function TimetablesPage() {
             return { dep, cells, onDemand: !!t.onDemand, days, sort: hhmmToMin(dep) ?? 9999 };
           }).filter((c) => c.cells.some((x) => x));
 
-          // NOTA di validità sul FERIALE (Lun-Sab = normalità → nessuna nota):
-          // se manca UN giorno → "Escluso il <giorno>"; se ne circola solo
-          // qualcuno → "Valida il <giorni>".
-          const lunSabNote = (days: boolean[]): string => {
+          // RESTRIZIONE sul FERIALE (Lun-Sab = normalità → nessuna nota):
+          // se manca qualche giorno ma i più ci sono → "Escluso il <giorno>"
+          // (iniziali rosse); se ne circola solo qualcuno → "Circola solo il
+          // <giorni>" (iniziali verdi). Descrizione completa in legenda.
+          const lunSabRestr = (days: boolean[]): UniRestr | null => {
             const on = [0, 1, 2, 3, 4, 5].filter((i) => days[i]);
             const off = [0, 1, 2, 3, 4, 5].filter((i) => !days[i]);
-            if (on.length === 6 || on.length === 0) return "";
-            const fmt = (idx: number[]) => idx.length === 1 ? WD_FULL[idx[0]] : idx.map((i) => WD_SHORT[i]).join(", ");
-            return off.length < on.length ? `Escluso il ${fmt(off)}` : `Valida il ${fmt(on)}`;
+            if (on.length === 6 || on.length === 0) return null;
+            const fmt = (idx: number[]) => idx.map((i) => WD_FULL[i]).join(", ");
+            return off.length < on.length
+              ? { kind: "excl", idxs: off, desc: `Escluso il ${fmt(off)}` }
+              : { kind: "only", idxs: on, desc: `Circola solo il ${fmt(on)}` };
           };
 
           // regular = circola almeno un giorno Lun-Sab; festive = circola la
@@ -1229,9 +1235,9 @@ export default function TimetablesPage() {
             const seen = new Set<string>();
             return arr
               .sort((a, b) => a.sort - b.sort)
-              .map((x) => ({ dep: x.dep, cells: x.cells, onDemand: x.onDemand, note: forFestive ? "" : lunSabNote(x.days) }))
+              .map((x) => ({ dep: x.dep, cells: x.cells, onDemand: x.onDemand, restr: forFestive ? null : lunSabRestr(x.days) }))
               .filter((u) => {
-                const k = `${u.onDemand ? "od" : ""}|${u.note}|${u.cells.join("|")}`;
+                const k = `${u.onDemand ? "od" : ""}|${u.restr?.desc ?? ""}|${u.cells.join("|")}`;
                 if (seen.has(k)) return false;
                 seen.add(k); return true;
               });
