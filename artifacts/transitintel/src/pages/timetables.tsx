@@ -722,9 +722,17 @@ interface LineTTDoc {
   directions: UniDir[];
 }
 
+/** Marchio Cerbero: tre teste di cane stilizzate (blu) — logo del footer stampa. */
+const cerbHead = (cx: number, cy: number) =>
+  `<path d="M${cx - 9} ${cy - 3} L${cx - 11} ${cy - 13} L${cx - 2} ${cy - 8} Z"/>`
+  + `<path d="M${cx + 9} ${cy - 3} L${cx + 11} ${cy - 13} L${cx + 2} ${cy - 8} Z"/>`
+  + `<circle cx="${cx}" cy="${cy}" r="8"/>`
+  + `<path d="M${cx - 4} ${cy + 5} L${cx + 4} ${cy + 5} L${cx + 2} ${cy + 12} L${cx - 2} ${cy + 12} Z"/>`;
+const CERBERO_LOGO = `<svg class="cerbero" viewBox="0 0 66 34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g fill="#1d4ed8">${cerbHead(15, 18)}${cerbHead(51, 18)}${cerbHead(33, 13)}</g></svg>`;
+
 const LINE_TT_CSS = `
   ${PRINT_BASE_CSS}
-  @page { size: A4 landscape; margin: 8mm; }
+  @page { size: A4 landscape; margin: 8mm 8mm 12mm; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   header.doc h1 .desc { font-weight: 400; font-size: 15px; color: #334155; }
   .cal-badge { display: inline-block; background: #0e7490; color: #fff; font-size: 11px; font-weight: 800; border-radius: 6px; padding: 2px 10px; }
@@ -758,6 +766,11 @@ const LINE_TT_CSS = `
   .ltt-legend .k-tel { color: #6d28d9; font-weight: 800; }
   .ltt-legend .k-excl { color: #dc2626; font-weight: 800; }
   .ltt-legend .k-only { color: #16a34a; font-weight: 800; }
+  /* marchio ripetuto su OGNI foglio (footer fisso, molto piccolo) */
+  .brandfix { position: fixed; left: 8mm; right: 8mm; bottom: 4mm; display: flex; align-items: center; justify-content: space-between; font-size: 7px; color: #64748b; }
+  .brandfix .pw { display: flex; align-items: center; gap: 4px; }
+  .brandfix .pw b { color: #1d4ed8; font-weight: 800; }
+  .cerbero { height: 12px; width: auto; display: inline-block; vertical-align: middle; }
 `;
 
 /** Striscia di linea ORIZZONTALE (stile diagramma metro): fermate equidistanti
@@ -790,7 +803,6 @@ function lineStripSvg(stops: Array<{ name: string; term: boolean }>, color: stri
 
 function lineTimetableDoc(doc: LineTTDoc): string {
   const col = lineColor(doc.route.color);
-  const gen = new Date().toLocaleString("it-IT");
 
   const map = doc.mapStops.length >= 2
     ? `<div class="linemap">${lineStripSvg(doc.mapStops, doc.route.color)}</div>` : "";
@@ -862,16 +874,18 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     ${map}
     ${dirBlocks || "<p style='padding:12px;color:#666'>Nessuna corsa per il calendario selezionato.</p>"}
     ${legend}
-    <footer class="doc"><span>TransitIntel · orario linea ${esc(doc.route.shortName ?? "")} · ${esc(doc.category.name)}</span><span>Generato il ${gen}</span></footer>
   </section>`;
 }
 
 function buildLineTimetableHtml(docs: LineTTDoc[]): string {
   const has = (d: LineTTDoc) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0);
   const body = docs.filter(has).map(lineTimetableDoc).join("");
+  const gen = new Date().toLocaleString("it-IT");
+  // marchio ripetuto su OGNI foglio (footer fisso, molto piccolo)
+  const brand = `<div class="brandfix"><span>Generato il ${gen}</span><span class="pw">${CERBERO_LOGO}<span>powered by <b>Cerbero Analytics</b></span></span></div>`;
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Orari di linea</title>
-  <style>${LINE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
+  <style>${LINE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}${brand}</body></html>`;
 }
 
 /* ── Mappa di rete (SVG): linee selezionate + interscambi (fermate condivise) ── */
