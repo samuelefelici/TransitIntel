@@ -308,3 +308,73 @@ export async function computeActiveDatesByTrip(
   for (const arr of result.values()) arr.sort();
   return result;
 }
+
+/**
+ * Validità SETTIMANALE (Lun→Dom) di ogni corsa DENTRO una categoria del
+ * calendario aziendale — per la stampa "orario per calendario".
+ *
+ * Idea: la categoria (es. Scuole Aperte / Scuole Chiuse) è un PERIODO reale
+ * del calendario del progetto. Prendiamo una SETTIMANA campione dentro quel
+ * periodo (7 date reali, una per giorno-settimana) e valutiamo ogni corsa su
+ * quelle date con la logica autoritativa (isTripActiveOnDate via
+ * computeActiveDatesByTrip) — così i day-type reali, le eccezioni, i patroni e
+ * il vincolo categoria (la domenica dentro "scuole aperte" è festività, ecc.)
+ * vengono rispettati: una corsa che di sabato non circola produce da sola il
+ * giorno "off" → nota "escluso il sabato".
+ *
+ * categoryCode: 'scuole_aperte' | 'festivita' → match esatto; 'scuole_chiuse'
+ * → famiglia (ombrello: scuole_chiuse + scuole_chiuse_<slug> dei periodi).
+ * Ritorna repDates[7] (ISO o null) e, per ogni tripId, days[7] (Lun..Dom).
+ */
+export async function computeWeekValidityByTrip(
+  projectId: string,
+  categoryCode: string,
+  tripIds: string[],
+): Promise<{ repDates: (string | null)[]; daysByTrip: Map<string, boolean[]> }> {
+  const empty: (string | null)[] = [null, null, null, null, null, null, null];
+  if (!tripIds.length || !categoryCode) return { repDates: empty, daysByTrip: new Map() };
+
+  const now = new Date();
+  const fmt = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  const from0 = fmt(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+  const to0 = plusDays(from0, 430);
+
+  // calendario categorie del progetto (merged project > global) nel range
+  const calR = await db.execute<any>(sql`
+    SELECT DISTINCT ON (c.date) to_char(c.date, 'YYYY-MM-DD') AS date, cat.code
+      FROM ps_validity_category_calendar c
+      LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
+     WHERE (c.project_id = ${projectId}::uuid OR c.project_id IS NULL)
+       AND c.date >= ${from0}::date AND c.date <= ${to0}::date
+     ORDER BY c.date, c.project_id ASC NULLS LAST
+  `);
+  const inFamily = (code: string) =>
+    categoryCode === "scuole_chiuse" ? code.startsWith("scuole_chiuse") : code === categoryCode;
+  const famDates = ((calR.rows ?? []) as any[])
+    .filter((r) => inFamily(String(r.code ?? "")))
+    .map((r) => r.date as string)
+    .sort();
+  if (!famDates.length) return { repDates: empty, daysByTrip: new Map() };
+
+  const periodMin = famDates[0], periodMax = famDates[famDates.length - 1];
+  // settimana campione: prime 7 date consecutive dentro il periodo → una per DOW
+  const repDates: (string | null)[] = [null, null, null, null, null, null, null];
+  for (let k = 0; k < 7; k++) {
+    const d = plusDays(periodMin, k);
+    if (d > periodMax) break;
+    const wd = wdIndexOf(d);
+    if (repDates[wd] == null) repDates[wd] = d;
+  }
+  const present = repDates.filter((d): d is string => !!d);
+  if (!present.length) return { repDates, daysByTrip: new Map() };
+
+  const active = await computeActiveDatesByTrip({
+    projectId, from: present[0], to: present[present.length - 1], tripIds,
+  });
+  const daysByTrip = new Map<string, boolean[]>();
+  for (const tid of tripIds) {
+    const set = new Set(active.get(tid) ?? []);
+    daysByTrip.set(tid, repDates.map((d) => !!d && set.has(toGtfsDate(d))));
+  }
+  return { repDates, daysByTrip };
+}

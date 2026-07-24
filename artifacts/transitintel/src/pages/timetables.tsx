@@ -15,9 +15,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
+  ArrowLeftRight, CalendarRange, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
 
 const MAPBOX_TOKEN: string = (import.meta as any).env?.VITE_MAPBOX_TOKEN || "";
@@ -242,6 +243,122 @@ function buildCombinedRouteTimetableHtml(docs: RouteTimetable[]): string {
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Orari per il pubblico</title>
   <style>${ROUTE_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per la selezione.</p>"}</body></html>`;
+}
+
+/* ── ORARIO SETTIMANALE per CALENDARIO (una tabella unica per linea) ──
+ * Tutte le corse della categoria (Scuole Aperte / Chiuse) in un'unica tabella
+ * Lun→Dom; ogni corsa con validità particolare porta un apice-nota (a chiamata,
+ * escluso sabato/domenica…) spiegato nella legenda. */
+interface WeekTimetable {
+  route: { routeId: string; shortName: string | null; longName: string | null; color: string | null };
+  directionId: number | null;
+  category: { code: string; name: string };
+  repDates: (string | null)[];
+  stops: Array<{ stopId: string; stopName: string }>;
+  trips: Array<{ tripId: string; headsign: string | null; directionId: number | null; times: (string | null)[]; onDemand: boolean; days: boolean[] }>;
+}
+
+const DOW_ABBR = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+
+/** Nota di validità leggibile dal vettore Lun→Dom + flag a chiamata.
+ *  Stringa vuota = corsa giornaliera senza particolarità (nessun apice). */
+function weekValidityNote(days: boolean[], onDemand: boolean): string {
+  const n = days.filter(Boolean).length;
+  const feriali = days.slice(0, 5).every(Boolean);
+  const noneFeriali = days.slice(0, 5).every((d) => !d);
+  const sab = days[5], dom = days[6];
+  let base = "";
+  if (n === 0 || n === 7) base = "";
+  else if (feriali && !sab && !dom) base = "Solo feriale (Lun-Ven)";
+  else if (feriali && sab && !dom) base = "Lun-Sab (escluso festivi/domenica)";
+  else if (feriali && !sab && dom) base = "Feriale e festivo (escluso il sabato)";
+  else if (noneFeriali && sab && !dom) base = "Solo il sabato";
+  else if (noneFeriali && !sab && dom) base = "Solo festivo/domenica";
+  else if (noneFeriali && sab && dom) base = "Sabato e festivo";
+  else {
+    const excl = DOW_ABBR.filter((_, i) => !days[i]);
+    const incl = DOW_ABBR.filter((_, i) => days[i]);
+    base = excl.length <= incl.length ? `Escluso ${excl.join(", ")}` : `Solo ${incl.join(", ")}`;
+  }
+  if (onDemand) base = base ? `A chiamata · ${base}` : "A chiamata (su prenotazione)";
+  return base;
+}
+
+const WEEK_TT_CSS = `
+  ${PRINT_BASE_CSS}
+  @page { size: A4 landscape; margin: 8mm; }
+  table.wt { width: 100%; border-collapse: collapse; }
+  table.wt th, table.wt td { border: 1px solid #999; font-size: 9.5px; padding: 2px 4px; text-align: center; font-variant-numeric: tabular-nums; }
+  table.wt th.stop { text-align: left; background: #f1f1f1; font-weight: 600; max-width: 52mm; min-width: 38mm; }
+  table.wt th.stop.head { background: #111; color: #fff; }
+  table.wt th.trip { background: #111; color: #fff; vertical-align: bottom; }
+  table.wt th.trip .hs { font-size: 7px; font-weight: 600; max-width: 16mm; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  table.wt th.trip .dow { font-size: 6.5px; font-weight: 700; letter-spacing: .5px; margin-top: 1px; }
+  table.wt th.trip .dow .on { color: #fff; }
+  table.wt th.trip .dow .off { color: #777; text-decoration: line-through; }
+  table.wt th.trip sup { color: #fde047; font-weight: 800; }
+  table.wt tbody tr:nth-child(even) td { background: #fafafa; }
+  table.wt td { font-weight: 600; }
+  .cal-badge { display:inline-block; background:#0e7490; color:#fff; font-size:11px; font-weight:800; border-radius:6px; padding:2px 10px; }
+  .wt-legend { margin-top: 6px; font-size: 9px; color: #222; display:flex; gap:14px; flex-wrap:wrap; }
+  .wt-legend b { color:#000; }
+  .wt-note { font-size: 8.5px; color:#555; margin-top:3px; }
+`;
+
+function weekTimetablePages(data: WeekTimetable): string {
+  const gen = new Date().toLocaleString("it-IT");
+  const col = lineColor(data.route.color);
+  const PER_PAGE = 16;
+  // nota per corsa + mappa nota→simbolo (a,b,c…), condivisa su tutta la linea
+  const noteByTrip = data.trips.map((t) => weekValidityNote(t.days, t.onDemand));
+  const distinct: string[] = [];
+  for (const nt of noteByTrip) if (nt && !distinct.includes(nt)) distinct.push(nt);
+  const symOf = (nt: string) => (nt ? String.fromCharCode(97 + distinct.indexOf(nt)) : "");
+
+  const chunks: WeekTimetable["trips"][] = [];
+  for (let i = 0; i < data.trips.length; i += PER_PAGE) chunks.push(data.trips.slice(i, i + PER_PAGE));
+  if (chunks.length === 0) chunks.push([]);
+  const dirLabel = data.directionId == null ? "Andata + Ritorno" : data.directionId === 0 ? "Andata" : "Ritorno";
+
+  const legend = distinct.length
+    ? `<div class="wt-legend">${distinct.map((nt, i) => `<span><b>${String.fromCharCode(97 + i)}</b> = ${esc(nt)}</span>`).join("")}</div>`
+    : "";
+
+  return chunks.map((chunk, pi) => {
+    const gi = pi * PER_PAGE;
+    const headRow = chunk.map((t, ci) => {
+      const nt = noteByTrip[gi + ci];
+      const dow = DOW_ABBR.map((d, di) => `<span class="${t.days[di] ? "on" : "off"}">${d[0]}</span>`).join("");
+      return `<th class="trip"><div class="hs">${esc(t.headsign ?? "")}${nt ? `<sup>${symOf(nt)}</sup>` : ""}</div><div class="dow">${dow}</div></th>`;
+    }).join("");
+    const bodyRows = data.stops.map((s, si) => `
+      <tr>
+        <th class="stop">${esc(s.stopName)}</th>
+        ${chunk.map((t) => `<td>${t.times[si] ?? "·"}</td>`).join("")}
+      </tr>`).join("");
+    return `
+    <section class="page">
+      <header class="doc">
+        <div class="pill" style="background:${col}">${esc(data.route.shortName ?? "?")}</div>
+        <h1>${esc(data.route.longName ?? "Orario di linea")}</h1>
+        <div class="day"><span class="cal-badge">${esc(data.category.name)}</span><br>Lun→Dom · ${dirLabel}${chunks.length > 1 ? `<br><small style="font-weight:400">pagina ${pi + 1}/${chunks.length}</small>` : ""}</div>
+      </header>
+      <table class="wt">
+        <thead><tr><th class="stop head">Fermata</th>${headRow}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+      ${pi === chunks.length - 1 ? legend : ""}
+      <div class="wt-note">La riga sotto la destinazione indica i giorni di effettuazione (L M M G V S D): in grassetto i giorni attivi, barrati i non effettuati. Le distanze/orari seguono il calendario aziendale di Planner Studio.</div>
+      <footer class="doc"><span>TransitIntel · orario ${esc(data.category.name)} · linea ${esc(data.route.shortName ?? "")}</span><span>Generato il ${gen}</span></footer>
+    </section>`;
+  }).join("");
+}
+
+function buildWeekTimetableHtml(docs: WeekTimetable[]): string {
+  const body = docs.filter((d) => d.trips.length > 0).map(weekTimetablePages).join("");
+  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
+  <title>Orario settimanale per calendario</title>
+  <style>${WEEK_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per il calendario selezionato.</p>"}</body></html>`;
 }
 
 /* ── Locandina di linea (A4 verticale): percorso stilizzato + partenze cadenzate ── */
@@ -1023,6 +1140,26 @@ export default function TimetablesPage() {
   });
   const dayTypes: PsDayType[] = useMemo(() => dayTypesQ.data?.dayTypes ?? [], [dayTypesQ.data]);
 
+  // CATEGORIE del calendario aziendale (Scuole Aperte / Chiuse / …) per la
+  // stampa settimanale unica. Elenco globale, ma solo quelle rilevanti in UI.
+  const categoriesQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+    staleTime: 5 * 60 * 1000,
+  });
+  // Solo le macro-categorie "periodo" utili per la stampa: scuole_aperte,
+  // scuole_chiuse (ombrello, non i singoli slug), festivita.
+  const weekCategories = useMemo(
+    () => (categoriesQ.data ?? []).filter((c) => ["scuole_aperte", "scuole_chiuse", "festivita"].includes(c.code)),
+    [categoriesQ.data],
+  );
+  const [weekCategory, setWeekCategory] = useState<string>("scuole_aperte");
+  useEffect(() => {
+    if (weekCategories.length && !weekCategories.some((c) => c.code === weekCategory)) {
+      setWeekCategory(weekCategories[0].code);
+    }
+  }, [weekCategories, weekCategory]);
+
   // default: appena arrivano i day-type, seleziona "feriale" (o il primo)
   useEffect(() => {
     if (!dayTypes.length) return;
@@ -1077,6 +1214,32 @@ export default function TimetablesPage() {
   }
   function selectedIdsOrdered(): string[] {
     return sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId);
+  }
+
+  // Stampa SETTIMANALE per calendario: una tabella unica per linea con tutte
+  // le corse Lun→Dom della categoria scelta + note di validità. Un click.
+  async function printWeek() {
+    const ids = selectedIdsOrdered();
+    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    if (!weekCategory) { toast.error("Seleziona un calendario"); return; }
+    setPrinting(true);
+    try {
+      const docs: WeekTimetable[] = [];
+      for (const rid of ids) {
+        const url = `${ptt}/route/${encodeURIComponent(rid)}/week?category=${encodeURIComponent(weekCategory)}`
+          + (directionId !== "all" ? `&directionId=${directionId}` : "");
+        docs.push(await apiFetch<WeekTimetable>(url));
+      }
+      if (!docs.some((x) => x.trips.length > 0)) {
+        toast.error("Nessuna corsa per il calendario selezionato", {
+          description: "La linea potrebbe non avere corse in questo periodo, o mancano i bollini di validità in Planner Studio.",
+        });
+        return;
+      }
+      openPrintWindow(buildWeekTimetableHtml(docs));
+    } catch (e: any) {
+      toast.error(e?.message ?? "Errore durante la stampa");
+    } finally { setPrinting(false); }
   }
 
   async function printPublic() {
@@ -1553,6 +1716,27 @@ export default function TimetablesPage() {
                 {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
                 Stampa orari pubblico{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
               </button>
+              {/* ── Stampa SETTIMANALE per calendario: un click, Lun→Dom ── */}
+              <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-border/50">
+                <select
+                  value={weekCategory}
+                  onChange={(e) => setWeekCategory(e.target.value)}
+                  className="px-2 py-2.5 rounded-lg bg-card border border-emerald-500/50 text-xs outline-none focus:border-emerald-500"
+                  title="Calendario aziendale di Planner Studio: la stampa settimanale prende i giorni reali di questo periodo."
+                >
+                  {weekCategories.length === 0 && <option value="scuole_aperte">Scuole Aperte</option>}
+                  {weekCategories.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                </select>
+                <button
+                  onClick={printWeek}
+                  disabled={printing || selectedRouteIds.length === 0}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                  title="UNA tabella per linea con tutte le corse Lun→Dom del calendario scelto; le corse a chiamata e quelle non effettuate sabato/domenica sono annotate in legenda."
+                >
+                  {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarRange className="w-4 h-4" />}
+                  Stampa settimana (Lun→Dom)
+                </button>
+              </div>
             </div>
           </div>
 
