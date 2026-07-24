@@ -354,27 +354,84 @@ export async function computeWeekValidityByTrip(
     .filter((r) => inFamily(String(r.code ?? "")))
     .map((r) => r.date as string)
     .sort();
-  if (!famDates.length) return { repDates: empty, daysByTrip: new Map() };
 
-  const periodMin = famDates[0], periodMax = famDates[famDates.length - 1];
-  // settimana campione: prime 7 date consecutive dentro il periodo → una per DOW
+  // Settimana campione (repDates: una data reale per giorno-settimana Lun→Dom).
   const repDates: (string | null)[] = [null, null, null, null, null, null, null];
-  for (let k = 0; k < 7; k++) {
-    const d = plusDays(periodMin, k);
-    if (d > periodMax) break;
-    const wd = wdIndexOf(d);
-    if (repDates[wd] == null) repDates[wd] = d;
+  if (famDates.length) {
+    // periodo reale della categoria → prima settimana dentro il periodo
+    const periodMin = famDates[0], periodMax = famDates[famDates.length - 1];
+    for (let k = 0; k < 7; k++) {
+      const d = plusDays(periodMin, k);
+      if (d > periodMax) break;
+      const wd = wdIndexOf(d);
+      if (repDates[wd] == null) repDates[wd] = d;
+    }
+  } else {
+    // Nessuna data della categoria. Se il progetto NON ha proprio un calendario
+    // categorie, ripieghiamo su una settimana generica (prossimo Lun→Dom) e sulla
+    // MASCHERA weekdays delle corse: così i progetti che codificano la validità
+    // solo con la maschera stampano comunque. Se invece il calendario esiste ma
+    // QUESTA categoria è vuota, la risposta resta vuota (davvero nessun servizio).
+    const anyCalR = await db.execute<any>(sql`
+      SELECT EXISTS(
+        SELECT 1 FROM ps_validity_category_calendar c
+         WHERE c.project_id = ${projectId}::uuid OR c.project_id IS NULL
+      ) AS has`);
+    if (anyCalR.rows?.[0]?.has) return { repDates: empty, daysByTrip: new Map() };
+    const monday = plusDays(from0, (7 - wdIndexOf(from0)) % 7); // prossimo lunedì
+    for (let k = 0; k < 7; k++) repDates[k] = plusDays(monday, k);
   }
+
   const present = repDates.filter((d): d is string => !!d);
   if (!present.length) return { repDates, daysByTrip: new Map() };
 
+  // Corse con bollini nella matrice di validità (le altre useranno la maschera).
+  const tripIdsLit = `{${tripIds.join(",")}}`;
+  const matrixTrips = new Set<string>();
+  const tdvR = await db.execute<any>(sql`
+    SELECT DISTINCT trip_id FROM ps_trip_day_validity
+     WHERE trip_id = ANY(${tripIdsLit}::uuid[])`);
+  for (const r of tdvR.rows ?? []) matrixTrips.add(r.trip_id);
+
+  // date effettive dalla matrice (per le corse che la usano)
   const active = await computeActiveDatesByTrip({
     projectId, from: present[0], to: present[present.length - 1], tripIds,
   });
+
+  // dati per il fallback maschera weekdays (corse senza bollini matrice)
+  const needFallback = tripIds.some((id) => !matrixTrips.has(id));
+  const wdByTrip = new Map<string, boolean[] | null>();
+  const metaByTrip = new Map<string, { active: boolean; vf: string | null; vt: string | null; proto: boolean }>();
+  if (needFallback) {
+    const trR = await db.execute<any>(sql`
+      SELECT id, is_active, attributes,
+             to_char(valid_from, 'YYYY-MM-DD') AS vf,
+             to_char(valid_to,   'YYYY-MM-DD') AS vt
+        FROM ps_trips WHERE id = ANY(${tripIdsLit}::uuid[])`);
+    for (const r of trR.rows ?? []) {
+      const wd = (r.attributes as any)?.weekdays;
+      wdByTrip.set(r.id, Array.isArray(wd) && wd.length === 7 ? wd.map((x: any) => x !== false) : null);
+      metaByTrip.set(r.id, { active: r.is_active !== false, vf: r.vf, vt: r.vt, proto: !!(r.attributes as any)?.prototype });
+    }
+  }
+
   const daysByTrip = new Map<string, boolean[]>();
   for (const tid of tripIds) {
-    const set = new Set(active.get(tid) ?? []);
-    daysByTrip.set(tid, repDates.map((d) => !!d && set.has(toGtfsDate(d))));
+    if (matrixTrips.has(tid)) {
+      const set = new Set(active.get(tid) ?? []);
+      daysByTrip.set(tid, repDates.map((d) => !!d && set.has(toGtfsDate(d))));
+      continue;
+    }
+    // fallback: maschera settimanale (nessun bollino matrice per questa corsa)
+    const meta = metaByTrip.get(tid);
+    const wd = wdByTrip.get(tid) ?? null;
+    if (!meta || meta.proto || !meta.active) { daysByTrip.set(tid, [false, false, false, false, false, false, false]); continue; }
+    daysByTrip.set(tid, repDates.map((d, i) => {
+      if (!d) return false;
+      if (meta.vf && d < meta.vf) return false;
+      if (meta.vt && d > meta.vt) return false;
+      return wd ? wd[i] : true;
+    }));
   }
   return { repDates, daysByTrip };
 }
