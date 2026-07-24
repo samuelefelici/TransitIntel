@@ -1061,8 +1061,11 @@ export default function TimetablesPage() {
   const [directionId, setDirectionId] = useState<string>("all");
   const [selectedRouteIds, setSelectedRouteIds] = useState<string[]>([]);
   const [routeSearch, setRouteSearch] = useState("");
-  const [printing, setPrinting] = useState(false);
-  const [sharing, setSharing] = useState(false);
+  // Un'unica azione alla volta: `busy` = id dell'azione in corso (o null).
+  // Fix: prima `printing`/`sharing` erano condivisi → TUTTI i pulsanti
+  // giravano insieme; ora lo spinner appare solo sul pulsante cliccato.
+  const [busy, setBusy] = useState<string | null>(null);
+  const anyBusy = busy !== null;
   const [shareDays, setShareDays] = useState<number>(7); // durata link condiviso (0 = senza scadenza)
   // dialog post-creazione del link Mappa Orari (URL + QR da stampare)
   const [mapShare, setMapShare] = useState<{ url: string; expiresAt: string | null; qr: string | null; linesCount: number } | null>(null);
@@ -1222,13 +1225,14 @@ export default function TimetablesPage() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     if (!weekCategory) { toast.error("Seleziona un calendario"); return; }
-    setPrinting(true);
+    setBusy("week");
     try {
       const docs: WeekTimetable[] = [];
       for (const rid of ids) {
         const url = `${ptt}/route/${encodeURIComponent(rid)}/week?category=${encodeURIComponent(weekCategory)}`
           + (directionId !== "all" ? `&directionId=${directionId}` : "");
-        docs.push(await apiFetch<WeekTimetable>(url));
+        const d = await apiFetch<WeekTimetable>(url);
+        docs.push({ ...d, route: { ...d.route, color: effColor(d.route.routeId, d.route.color) } });
       }
       if (!docs.some((x) => x.trips.length > 0)) {
         toast.error("Nessuna corsa per il calendario selezionato", {
@@ -1239,35 +1243,36 @@ export default function TimetablesPage() {
       openPrintWindow(buildWeekTimetableHtml(docs));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setPrinting(false); }
+    } finally { setBusy(null); }
   }
 
   async function printPublic() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
-    setPrinting(true);
+    setBusy("public");
     try {
       const docs: RouteTimetable[] = [];
       for (const rid of ids) {
         for (const dt of routeDayTypeIds) {
           const url = `${ptt}/route/${encodeURIComponent(rid)}?dayTypeId=${encodeURIComponent(dt)}`
             + (directionId !== "all" ? `&directionId=${directionId}` : "");
-          docs.push(await apiFetch<RouteTimetable>(url));
+          const d = await apiFetch<RouteTimetable>(url);
+          docs.push({ ...d, route: { ...d.route, color: effColor(d.route.routeId, d.route.color) } });
         }
       }
       if (!docs.some((x) => x.trips.length > 0)) { toast.error("Nessuna corsa per la selezione"); return; }
       openPrintWindow(buildCombinedRouteTimetableHtml(docs));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setPrinting(false); }
+    } finally { setBusy(null); }
   }
 
   async function printPaline() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     if (!routeDayTypeIds.length) { toast.error("Seleziona almeno un day-type"); return; }
-    setPrinting(true);
+    setBusy("paline");
     try {
       const rs = await apiFetch<{ stops: Array<{ stopId: string; stopName: string; stopCode: string | null }> }>(
         `${ptt}/route-stops?routeIds=${ids.map(encodeURIComponent).join(",")}`,
@@ -1278,14 +1283,15 @@ export default function TimetablesPage() {
       for (const s of stops) {
         for (const dt of routeDayTypeIds) {
           const url = `${ptt}/stop/${encodeURIComponent(s.stopId)}?dayTypeId=${encodeURIComponent(dt)}`;
-          docs.push(await apiFetch<StopTimetable>(url));
+          const d = await apiFetch<StopTimetable>(url);
+          docs.push({ ...d, lines: d.lines.map((l) => ({ ...l, color: effColor(l.routeId, l.color) })) });
         }
       }
       if (!docs.some((x) => x.lines.length > 0)) { toast.error("Nessuna partenza per la selezione"); return; }
       openPrintWindow(buildCombinedStopPostersHtml(docs));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setPrinting(false); }
+    } finally { setBusy(null); }
   }
 
   // Stampa "locandine di linea": una locandina per linea × direzione.
@@ -1299,7 +1305,7 @@ export default function TimetablesPage() {
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
     const dtByCode = new Map(dayTypes.map((d) => [d.code, d]));
-    setPrinting(true);
+    setBusy("posters");
     try {
       const lines: PosterLine[] = [];
       for (const rid of ids) {
@@ -1404,14 +1410,14 @@ export default function TimetablesPage() {
       openPrintWindow(buildCombinedLinePostersHtml(lines, nodesOnly, cityBg));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setPrinting(false); }
+    } finally { setBusy(null); }
   }
 
   // Stampa "mappa di rete": linee selezionate sovrapposte, interscambi cerchiati.
   async function printNetwork() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    setPrinting(true);
+    setBusy("network");
     try {
       const data = await apiFetch<NetworkData>(`${ptt}/network?routeIds=${ids.map(encodeURIComponent).join(",")}`);
       if (!data.lines?.some((l) => l.stops.length > 0)) { toast.error("Nessuna geometria fermate per le linee selezionate"); return; }
@@ -1420,14 +1426,14 @@ export default function TimetablesPage() {
       openPrintWindow(buildNetworkMapHtml(data2, nodesOnly, cityBg, mapBg, logoUrl, lineStyles, nodeLabels, mapRotate, netStyle === "metro"));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setPrinting(false); }
+    } finally { setBusy(null); }
   }
 
   // Crea un link pubblico condivisibile della Mappa di Rete (selezione linee a video).
   async function shareNetwork() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    setSharing(true);
+    setBusy("shareNet");
     try {
       const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/network-share`, {
         method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays }),
@@ -1439,7 +1445,7 @@ export default function TimetablesPage() {
       window.open(url, "_blank");
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
-    } finally { setSharing(false); }
+    } finally { setBusy(null); }
   }
 
   // Link pubblico MAPPA ORARI per i passeggeri: giorno → linea → mappa →
@@ -1456,7 +1462,7 @@ export default function TimetablesPage() {
       : "Tutte le linee";
     const title = prompt("Nome del link (ti aiuta a riconoscerlo in \"Gestisci link\"):", suggested);
     if (title === null) return;
-    setSharing(true);
+    setBusy("shareMap");
     try {
       const r = await apiFetch<{ token: string; expiresAt: string | null }>(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-share`, {
         method: "POST", body: JSON.stringify({ routeIds: ids, expiresInDays: shareDays, title: title.trim() || undefined }),
@@ -1477,7 +1483,7 @@ export default function TimetablesPage() {
       });
     } catch (e: any) {
       toast.error(e?.message ?? "Errore nella creazione del link");
-    } finally { setSharing(false); }
+    } finally { setBusy(null); }
   }
 
   /* ── Gestione link Mappa Orari esistenti ──
@@ -1566,178 +1572,178 @@ export default function TimetablesPage() {
       {/* ── Tab: orario di linea ── */}
       {tab === "route" && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-xs font-medium text-muted-foreground">Day-type</span>
-            <div className="flex flex-wrap rounded-lg overflow-hidden border border-border/60">
-              {dayTypes.map((d) => (
-                <button
-                  key={d.id}
-                  onClick={() => toggleRouteDayType(d.id)}
-                  className={`px-3 py-2 text-xs transition-colors ${routeDayTypeIds.includes(d.id) ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}
-                >
-                  {d.name}
-                </button>
-              ))}
-              {dayTypes.length === 0 && <span className="px-3 py-2 text-xs text-muted-foreground">Nessun day-type</span>}
-            </div>
-            <select
-              value={directionId}
-              onChange={(e) => setDirectionId(e.target.value)}
-              className="px-3 py-2 rounded-lg bg-card border border-border/60 text-sm outline-none focus:border-sky-500/60"
-            >
-              <option value="all">Andata + Ritorno</option>
-              <option value="0">Andata</option>
-              <option value="1">Ritorno</option>
-            </select>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Riduce lo schema ai soli nodi logici definiti nel Planning Studio (cluster)">
-              <input type="checkbox" checked={nodesOnly} onChange={(e) => setNodesOnly(e.target.checked)} className="accent-fuchsia-500" />
-              Solo nodi logici
-            </label>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Sfondo schematico leggero con i punti principali (nodi logici della città)">
-              <input type="checkbox" checked={cityBg} onChange={(e) => setCityBg(e.target.checked)} className="accent-slate-400" />
-              Sfondo città
-            </label>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" title="Cartografia di sfondo (mappa stilizzata leggera) solo nella Mappa rete">
-              <input type="checkbox" checked={mapBg} onChange={(e) => setMapBg(e.target.checked)} className="accent-emerald-400" />
-              Cartografia (mappa rete)
-            </label>
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none" title="Quali nomi mostrare sui nodi: solo i nodi logici (le altre fermate restano un pallino) o tutte le fermate">
-              <span>Nomi</span>
-              <select
-                value={nodeLabels}
-                onChange={(e) => setNodeLabels(e.target.value as NetNodeLabels)}
-                className="px-2 py-1 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 cursor-pointer"
-              >
-                <option value="logical">Solo nodi logici</option>
-                <option value="all">Tutte le fermate</option>
-              </select>
-            </label>
-            <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={() => setShow3d((v) => !v)}
-                disabled={selectedRouteIds.length === 0}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border disabled:opacity-50 text-sm font-medium transition-colors ${show3d ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" : "border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/10"}`}
-                title="Anteprima mappa 3D interattiva (edifici + terreno) delle linee selezionate"
-              >
-                <MapIcon className="w-4 h-4" /> Mappa 3D
-              </button>
-              <select
-                value={mapRotate}
-                onChange={(e) => setMapRotate(Number(e.target.value))}
-                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60 cursor-pointer"
-                title="Ruota la mappa di rete in stampa (per adattarla meglio al foglio)"
-              >
-                <option value={0}>Rotazione: 0°</option>
-                <option value={90}>Rotazione: 90°</option>
-                <option value={180}>Rotazione: 180°</option>
-                <option value={270}>Rotazione: 270°</option>
-              </select>
-              <select
-                value={netStyle}
-                onChange={(e) => setNetStyle(e.target.value as "geo" | "metro")}
-                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60"
-                title="Stile della mappa di rete: Geografica = posizioni reali delle fermate; Metropolitana = schema geometrico a 45°/90° con distanze uniformi (stile mappa TPL cittadina), la geografia resta riconoscibile ma non in scala."
-              >
-                <option value="geo">Mappa: Geografica</option>
-                <option value="metro">Mappa: Metropolitana</option>
-              </select>
-              <button
-                onClick={printNetwork}
-                disabled={printing || selectedRouteIds.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Mappa di rete: linee selezionate con gli interscambi (fermate condivise). Più evidente con 2+ linee."
-              >
-                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
-                Mappa rete
-              </button>
-              <select
-                value={shareDays}
-                onChange={(e) => setShareDays(Number(e.target.value))}
-                className="px-2 py-2.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-fuchsia-500/60"
-                title="Durata del link condiviso"
-              >
-                <option value={1}>Link: 24 ore</option>
-                <option value={7}>Link: 7 giorni</option>
-                <option value={30}>Link: 30 giorni</option>
-                <option value={90}>Link: 90 giorni</option>
-                <option value={180}>Link: 6 mesi</option>
-                <option value={365}>Link: 1 anno</option>
-                <option value={0}>Link: sempre online</option>
-              </select>
-              <button
-                onClick={shareNetwork}
-                disabled={sharing || selectedRouteIds.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Crea un link pubblico della Mappa di Rete (l'utente sceglie le linee da vedere)"
-              >
-                {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
-                Condividi
-              </button>
-              <button
-                onClick={shareTimetableMap}
-                disabled={sharing}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-500/60 text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Crea un link pubblico MAPPA ORARI: l'utente sceglie la linea, vede percorsi e fermate sulla mappa e, toccando una fermata, gli orari di transito con le corse a chiamata. Linee selezionate = solo quelle; nessuna selezione = tutte."
-              >
-                {sharing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPinned className="w-4 h-4" />}
-                Mappa orari
-              </button>
-              <button
-                onClick={() => setManageOpen(true)}
-                className="flex items-center gap-2 px-3 py-2.5 rounded-lg border border-border/60 text-muted-foreground hover:text-cyan-300 hover:border-cyan-500/40 text-sm font-medium transition-colors"
-                title="Link Mappa Orari già creati: aggiorna le linee incluse o la scadenza SENZA cambiare il QR stampato, riscarica i QR, revoca."
-              >
-                <QrCode className="w-4 h-4" />
-                Gestisci link
-              </button>
-              <button
-                onClick={printPosters}
-                disabled={printing || selectedRouteIds.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Locandina per direzione: tutte le fermate come righe; validità dal calendario aziendale (per macro-categoria: Feriale con sabato fuso + Festivo). Le corse feriali non effettuate il sabato sono evidenziate."
-              >
-                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapIcon className="w-4 h-4" />}
-                Stampa locandine
-              </button>
-              <button
-                onClick={printPaline}
-                disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-sky-500/60 text-sky-300 hover:bg-sky-500/10 disabled:opacity-50 text-sm font-medium transition-colors"
-                title="Quadro di palina per ogni fermata delle linee selezionate"
-              >
-                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <SignpostBig className="w-4 h-4" />}
-                Stampa quadri palina
-              </button>
-              <button
-                onClick={printPublic}
-                disabled={printing || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-              >
-                {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
-                Stampa orari pubblico{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
-              </button>
-              {/* ── Stampa SETTIMANALE per calendario: un click, Lun→Dom ── */}
-              <div className="flex items-center gap-1.5 ml-1 pl-2 border-l border-border/50">
+          {/* ══ Azioni raggruppate per intento ══ */}
+          <div className="grid gap-3 lg:grid-cols-3">
+
+            {/* GRUPPO 1 — ORARI (stampa PDF) */}
+            <div className="rounded-xl border border-sky-500/30 bg-sky-500/[0.04] p-3 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-sky-300"><Printer className="w-4 h-4" /> Orari (stampa PDF)</div>
+              {/* direzione + day-type: pilotano orario pubblico e quadri palina */}
+              <div className="flex flex-wrap items-center gap-2">
                 <select
-                  value={weekCategory}
-                  onChange={(e) => setWeekCategory(e.target.value)}
-                  className="px-2 py-2.5 rounded-lg bg-card border border-emerald-500/50 text-xs outline-none focus:border-emerald-500"
-                  title="Calendario aziendale di Planner Studio: la stampa settimanale prende i giorni reali di questo periodo."
+                  value={directionId}
+                  onChange={(e) => setDirectionId(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60"
                 >
-                  {weekCategories.length === 0 && <option value="scuole_aperte">Scuole Aperte</option>}
-                  {weekCategories.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  <option value="all">Andata + Ritorno</option>
+                  <option value="0">Andata</option>
+                  <option value="1">Ritorno</option>
                 </select>
-                <button
-                  onClick={printWeek}
-                  disabled={printing || selectedRouteIds.length === 0}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-                  title="UNA tabella per linea con tutte le corse Lun→Dom del calendario scelto; le corse a chiamata e quelle non effettuate sabato/domenica sono annotate in legenda."
-                >
-                  {printing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarRange className="w-4 h-4" />}
-                  Stampa settimana (Lun→Dom)
+                <div className="flex flex-wrap rounded-lg overflow-hidden border border-border/60">
+                  {dayTypes.map((d) => (
+                    <button key={d.id} onClick={() => toggleRouteDayType(d.id)}
+                      className={`px-2.5 py-1.5 text-xs transition-colors ${routeDayTypeIds.includes(d.id) ? "bg-emerald-500/20 text-emerald-300 font-medium" : "hover:bg-white/5 text-muted-foreground"}`}>
+                      {d.name}
+                    </button>
+                  ))}
+                  {dayTypes.length === 0 && <span className="px-2.5 py-1.5 text-xs text-muted-foreground">Nessun day-type</span>}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={printPublic}
+                  disabled={anyBusy || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+                  title="Orario generale di linea: una tabella per ogni linea × day-type selezionato (righe = fermate).">
+                  {busy === "public" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+                  Orario di linea{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
+                </button>
+                <button onClick={printPaline}
+                  disabled={anyBusy || selectedRouteIds.length === 0 || routeDayTypeIds.length === 0}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-sky-500/60 text-sky-300 hover:bg-sky-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
+                  title="Quadro di palina per ogni fermata delle linee selezionate (day-type scelto).">
+                  {busy === "paline" ? <Loader2 className="w-4 h-4 animate-spin" /> : <SignpostBig className="w-4 h-4" />}
+                  Quadri palina
                 </button>
               </div>
+              {(selectedRouteIds.length > 0 && routeDayTypeIds.length === 0) && (
+                <p className="text-[10px] text-amber-400">Scegli almeno un day-type per queste due stampe.</p>
+              )}
+              {/* settimana Lun→Dom per CALENDARIO (indipendente dai day-type) */}
+              <div className="pt-2 border-t border-border/40 space-y-2">
+                <div className="flex items-center gap-2 text-[11px] font-semibold text-emerald-300"><CalendarRange className="w-3.5 h-3.5" /> Settimana per calendario</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={weekCategory}
+                    onChange={(e) => setWeekCategory(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-lg bg-card border border-emerald-500/50 text-xs outline-none focus:border-emerald-500"
+                    title="Calendario aziendale di Planner Studio: la stampa settimanale prende i giorni reali di questo periodo."
+                  >
+                    {weekCategories.length === 0 && <option value="scuole_aperte">Scuole Aperte</option>}
+                    {weekCategories.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                  </select>
+                  <button onClick={printWeek}
+                    disabled={anyBusy || selectedRouteIds.length === 0}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+                    title="UNA tabella per linea con tutte le corse Lun→Dom del calendario scelto; a chiamata e giorni non effettuati annotati in legenda.">
+                    {busy === "week" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarRange className="w-4 h-4" />}
+                    Stampa settimana (Lun→Dom)
+                  </button>
+                </div>
+              </div>
             </div>
+
+            {/* GRUPPO 2 — LOCANDINE & MAPPA DI RETE */}
+            <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/[0.04] p-3 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-indigo-300"><MapIcon className="w-4 h-4" /> Locandine & Mappa rete</div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={printPosters}
+                  disabled={anyBusy || selectedRouteIds.length === 0}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-indigo-500/60 text-indigo-300 hover:bg-indigo-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
+                  title="Locandina per direzione: tutte le fermate come righe; validità dal calendario aziendale (Feriale con sabato fuso + Festivo).">
+                  {busy === "posters" ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapIcon className="w-4 h-4" />}
+                  Stampa locandine
+                </button>
+                <button onClick={printNetwork}
+                  disabled={anyBusy || selectedRouteIds.length === 0}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg border border-fuchsia-500/60 text-fuchsia-300 hover:bg-fuchsia-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
+                  title="Mappa di rete: linee selezionate con gli interscambi. Stile e opzioni qui sotto.">
+                  {busy === "network" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Share2 className="w-4 h-4" />}
+                  Stampa mappa rete
+                </button>
+                <button onClick={() => setShow3d((v) => !v)}
+                  disabled={selectedRouteIds.length === 0}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border disabled:opacity-50 text-xs font-medium transition-colors ${show3d ? "bg-emerald-500/20 border-emerald-500/60 text-emerald-300" : "border-emerald-500/60 text-emerald-300 hover:bg-emerald-500/10"}`}
+                  title="Anteprima mappa 3D interattiva (edifici + terreno) — non per la stampa.">
+                  <MapIcon className="w-4 h-4" /> Anteprima 3D
+                </button>
+              </div>
+              {/* opzioni di disegno (locandine usano nodi/sfondo città; il resto è mappa rete) */}
+              <div className="pt-1 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] text-muted-foreground">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Riduce lo schema ai soli nodi logici (cluster) — locandine e mappa rete">
+                  <input type="checkbox" checked={nodesOnly} onChange={(e) => setNodesOnly(e.target.checked)} className="accent-fuchsia-500" /> Solo nodi logici
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Sfondo con i punti principali della città — locandine e mappa rete">
+                  <input type="checkbox" checked={cityBg} onChange={(e) => setCityBg(e.target.checked)} className="accent-slate-400" /> Sfondo città
+                </label>
+                <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Cartografia di sfondo — SOLO mappa rete">
+                  <input type="checkbox" checked={mapBg} onChange={(e) => setMapBg(e.target.checked)} className="accent-emerald-400" /> Cartografia (mappa rete)
+                </label>
+                <label className="flex items-center gap-1.5 select-none" title="Nomi mostrati sui nodi della mappa rete">
+                  <span>Nomi</span>
+                  <select value={nodeLabels} onChange={(e) => setNodeLabels(e.target.value as NetNodeLabels)}
+                    className="px-1.5 py-1 rounded bg-card border border-border/60 text-[11px] outline-none focus:border-sky-500/60 cursor-pointer">
+                    <option value="logical">Solo nodi logici</option>
+                    <option value="all">Tutte le fermate</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-1.5 select-none col-span-2" title="Stile e rotazione della MAPPA RETE in stampa">
+                  <select value={netStyle} onChange={(e) => setNetStyle(e.target.value as "geo" | "metro")}
+                    className="px-2 py-1 rounded bg-card border border-border/60 text-[11px] outline-none focus:border-fuchsia-500/60 cursor-pointer">
+                    <option value="geo">Mappa: Geografica</option>
+                    <option value="metro">Mappa: Metropolitana (A3)</option>
+                  </select>
+                  <select value={mapRotate} onChange={(e) => setMapRotate(Number(e.target.value))}
+                    className="px-2 py-1 rounded bg-card border border-border/60 text-[11px] outline-none focus:border-fuchsia-500/60 cursor-pointer">
+                    <option value={0}>Rotazione 0°</option>
+                    <option value={90}>90°</option>
+                    <option value={180}>180°</option>
+                    <option value={270}>270°</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            {/* GRUPPO 3 — CONDIVISIONE ONLINE (link / QR) */}
+            <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/[0.04] p-3 space-y-2.5">
+              <div className="flex items-center gap-2 text-xs font-bold text-cyan-300"><Link2 className="w-4 h-4" /> Condivisione online</div>
+              <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>Durata link</span>
+                <select value={shareDays} onChange={(e) => setShareDays(Number(e.target.value))}
+                  className="flex-1 px-2 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-cyan-500/60">
+                  <option value={1}>24 ore</option>
+                  <option value={7}>7 giorni</option>
+                  <option value={30}>30 giorni</option>
+                  <option value={90}>90 giorni</option>
+                  <option value={180}>6 mesi</option>
+                  <option value={365}>1 anno</option>
+                  <option value={0}>Sempre online</option>
+                </select>
+              </label>
+              <div className="flex flex-col gap-2">
+                <button onClick={shareTimetableMap}
+                  disabled={anyBusy}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cyan-600/90 hover:bg-cyan-600 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+                  title="Link pubblico MAPPA ORARI per i passeggeri (giorno → linea → mappa → fermata → orari). Linee selezionate = solo quelle; nessuna selezione = tutte.">
+                  {busy === "shareMap" ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPinned className="w-4 h-4" />}
+                  Crea link Mappa Orari
+                </button>
+                <div className="flex gap-2">
+                  <button onClick={shareNetwork}
+                    disabled={anyBusy || selectedRouteIds.length === 0}
+                    className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50 text-xs font-medium transition-colors"
+                    title="Link pubblico della Mappa di Rete (l'utente sceglie le linee da vedere). Richiede almeno una linea selezionata.">
+                    {busy === "shareNet" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
+                    Link mappa rete
+                  </button>
+                  <button onClick={() => setManageOpen(true)}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg border border-border/60 text-muted-foreground hover:text-cyan-300 hover:border-cyan-500/40 text-xs font-medium transition-colors"
+                    title="Link Mappa Orari già creati: aggiorna linee/scadenza SENZA cambiare il QR stampato, riscarica i QR, revoca.">
+                    <QrCode className="w-4 h-4" /> Gestisci
+                  </button>
+                </div>
+              </div>
+            </div>
+
           </div>
 
           {/* Selezione linee */}
