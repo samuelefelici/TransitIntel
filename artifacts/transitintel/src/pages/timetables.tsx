@@ -702,7 +702,7 @@ function schematicInnerSvg(
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /** Corsa nella vista unica: orari + validità Lun→Dom + a chiamata. */
-interface UniTrip { dep: string; cells: string[]; onDemand: boolean; days: boolean[]; restricted: boolean }
+interface UniTrip { dep: string; cells: string[]; onDemand: boolean; note: string }
 interface UniDir {
   dirLabel: string;
   stops: Array<{ name: string; term: boolean }>;
@@ -738,7 +738,7 @@ const LINE_TT_CSS = `
   table.ltt th.trip .dow { font-size: 6.5px; font-weight: 700; letter-spacing: .4px; margin-top: 1px; }
   table.ltt th.trip .dow .on { color: #fff; }
   table.ltt th.trip .dow .off { color: rgba(255,255,255,.45); text-decoration: line-through; }
-  table.ltt th.trip .badge { font-size: 6px; font-weight: 800; letter-spacing: .3px; margin-top: 1px; text-transform: uppercase; }
+  table.ltt th.trip .badge { font-size: 6.5px; font-weight: 700; margin-top: 1px; line-height: 1.1; white-space: normal; }
   /* colore colonna per tipo di validità */
   table.ltt th.trip.no { background: #334155; }               /* servizio ordinario */
   table.ltt th.trip.sp { background: #b45309; }               /* validità particolare (giorni limitati) */
@@ -787,7 +787,7 @@ function lineStripSvg(stops: Array<{ name: string; term: boolean }>, color: stri
 /** classe-colore della colonna: a chiamata → viola; validità particolare
  *  (non copre tutti i Lun-Ven) → ambra; altrimenti ordinario neutro. */
 function uniCls(t: UniTrip): "no" | "sp" | "od" {
-  return t.onDemand ? "od" : t.restricted ? "sp" : "no";
+  return t.onDemand ? "od" : t.note ? "sp" : "no";
 }
 
 function lineTimetableDoc(doc: LineTTDoc): string {
@@ -805,8 +805,10 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     return chunks.map((ch) => {
       const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => {
         const cls = fe ? "fe" : uniCls(t);
-        const dow = DOW_ABBR.map((d, i) => `<span class="${t.days[i] ? "on" : "off"}">${d[0]}</span>`).join("");
-        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}</div><div class="dow">${dow}</div>${t.onDemand ? `<div class="badge">A chiamata</div>` : ""}</th>`;
+        // nota di validità testuale (solo tabella feriale); a chiamata sempre
+        const note = fe ? "" : t.note;
+        const badge = [t.onDemand ? "A chiamata" : "", note].filter(Boolean).join(" · ");
+        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}</div>${badge ? `<div class="badge">${esc(badge)}</div>` : ""}</th>`;
       }).join("")}</tr>`;
       const rows = stops.map((s, i) =>
         `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) => {
@@ -831,15 +833,15 @@ function lineTimetableDoc(doc: LineTTDoc): string {
   // legenda: solo i marcatori effettivamente presenti
   let anySp = false, anyOd = false, anyFe = false;
   for (const d of doc.directions) {
-    for (const t of d.regular) { if (t.onDemand) anyOd = true; else if (t.restricted) anySp = true; }
+    for (const t of d.regular) { if (t.onDemand) anyOd = true; if (t.note) anySp = true; }
     if (d.festive.length) anyFe = true;
     for (const t of d.festive) if (t.onDemand) anyOd = true;
   }
   const legItems: string[] = [];
-  legItems.push(`<span>Sotto l'orario: <b>L M M G V S D</b> = giorni di effettuazione (barrati = non effettuata)</span>`);
-  if (anySp) legItems.push(`<span><span class="sw sp"></span>Validità particolare (solo alcuni giorni)</span>`);
+  legItems.push(`<span>Senza nota = corsa feriale (Lun-Sab)</span>`);
+  if (anySp) legItems.push(`<span><span class="sw sp"></span>Con nota: circola solo nei giorni indicati</span>`);
   if (anyOd) legItems.push(`<span><span class="sw od"></span>A chiamata (su prenotazione)</span>`);
-  if (anyFe) legItems.push(`<span><span class="sw fe"></span>Corse festive / domenicali</span>`);
+  if (anyFe) legItems.push(`<span><span class="sw fe"></span>Corse festive / domenicali (colonne rosse)</span>`);
   const legend = `<div class="ltt-legend"><span class="lg-lbl">Legenda:</span>${legItems.join("")}</div>`;
 
   const desc = doc.route.longName ? ` — <span class="desc">${esc(doc.route.longName)}</span>` : "";
@@ -1151,6 +1153,8 @@ export default function TimetablesPage() {
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
     const catName = weekCategories.find((c) => c.code === weekCategory)?.name
       ?? (weekCategory === "scuole_chiuse" ? "Scuole Chiuse" : "Scuole Aperte");
+    const WD_FULL = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato"];
+    const WD_SHORT = ["lun", "mar", "mer", "gio", "ven", "sab"];
     // Apri SUBITO la finestra (dentro il click) così non viene bloccata dopo i fetch.
     const win = openPendingPrintWindow();
     if (!win) return;
@@ -1186,7 +1190,7 @@ export default function TimetablesPage() {
             return tc.length === 0 || tc.some((id) => selIds.has(id));
           };
 
-          const toUni = (t: RouteTimetable["trips"][number]) => {
+          const built = rt.trips.filter(inCategory).map((t) => {
             const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
             const dep = cells.find((c) => c) ?? "";
             // giorni Lun→Dom: maschera weekdays se presente; altrimenti dai
@@ -1201,29 +1205,39 @@ export default function TimetablesPage() {
                 ? [true, true, true, true, true, true, true]
                 : [codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("feriale"), codes.has("sabato"), codes.has("festivo")];
             }
-            const restricted = !days.slice(0, 5).every(Boolean);
-            return { dep, cells, onDemand: !!t.onDemand, days, restricted, sort: hhmmToMin(dep) ?? 9999 };
-          };
-          const all = rt.trips.filter(inCategory).map(toUni).filter((c) => c.cells.some((x) => x));
+            return { dep, cells, onDemand: !!t.onDemand, days, sort: hhmmToMin(dep) ?? 9999 };
+          }).filter((c) => c.cells.some((x) => x));
 
-          // festiva = circola la domenica MA non nei feriali (servizio festivo puro)
-          const isFestive = (t: typeof all[number]) => t.days[6] && !t.days.slice(0, 5).some(Boolean);
-          const sortDedup = (arr: typeof all): UniTrip[] => {
+          // NOTA di validità sul FERIALE (Lun-Sab = normalità → nessuna nota):
+          // se manca UN giorno → "Escluso il <giorno>"; se ne circola solo
+          // qualcuno → "Valida il <giorni>".
+          const lunSabNote = (days: boolean[]): string => {
+            const on = [0, 1, 2, 3, 4, 5].filter((i) => days[i]);
+            const off = [0, 1, 2, 3, 4, 5].filter((i) => !days[i]);
+            if (on.length === 6 || on.length === 0) return "";
+            const fmt = (idx: number[]) => idx.length === 1 ? WD_FULL[idx[0]] : idx.map((i) => WD_SHORT[i]).join(", ");
+            return off.length < on.length ? `Escluso il ${fmt(off)}` : `Valida il ${fmt(on)}`;
+          };
+
+          // regular = circola almeno un giorno Lun-Sab; festive = circola la
+          // domenica. Una corsa Lun-Dom compare in ENTRAMBE (nel festivo mostra
+          // il servizio domenicale), come richiesto.
+          const dedup = (arr: typeof built, forFestive: boolean): UniTrip[] => {
             const seen = new Set<string>();
             return arr
               .sort((a, b) => a.sort - b.sort)
-              .filter((t) => {
-                const k = `${t.onDemand ? "od" : ""}|${t.days.map((d) => (d ? 1 : 0)).join("")}|${t.cells.join("|")}`;
+              .map((x) => ({ dep: x.dep, cells: x.cells, onDemand: x.onDemand, note: forFestive ? "" : lunSabNote(x.days) }))
+              .filter((u) => {
+                const k = `${u.onDemand ? "od" : ""}|${u.note}|${u.cells.join("|")}`;
                 if (seen.has(k)) return false;
                 seen.add(k); return true;
-              })
-              .map(({ sort: _s, ...t }) => t);
+              });
           };
           directions.push({
             dirLabel: dir === "0" ? "Andata" : "Ritorno",
             stops,
-            regular: sortDedup(all.filter((t) => !isFestive(t))),
-            festive: sortDedup(all.filter(isFestive)),
+            regular: dedup(built.filter((x) => x.days.slice(0, 6).some(Boolean)), false),
+            festive: dedup(built.filter((x) => x.days[6]), true),
           });
         }
         if (route) docs.push({ route, mapStops, category: { code: weekCategory, name: catName }, directions });
