@@ -119,6 +119,32 @@ router.get("/planning-studio/:projectId/timetables/routes", async (req, res): Pr
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+// ── GET /timetables/day-types — day-type per le stampe (system + custom) ──────
+// Stessa apertura in LETTURA delle altre GET di stampa (routes/route/week):
+// nessun gate di accesso stretto, così la pagina Stampa Orari funziona su ogni
+// progetto leggibile. Il CRUD dei day-type resta protetto nel router validità;
+// qui si leggono solo etichette/colori (dati non sensibili).
+router.get("/planning-studio/:projectId/timetables/day-types", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT id, project_id, code, name, color, is_system, is_custom, sort_order
+        FROM ps_day_types
+       WHERE project_id IS NULL OR project_id = ${projectId}::uuid
+       ORDER BY sort_order ASC, name ASC`);
+    res.json({
+      dayTypes: (r.rows as any[]).map((d) => ({
+        id: d.id, projectId: d.project_id, code: d.code, name: d.name, color: d.color,
+        isSystem: !!d.is_system, isCustom: !!d.is_custom, sortOrder: d.sort_order,
+      })),
+    });
+  } catch {
+    // tabelle validità non ancora create sul progetto → nessun day-type
+    res.json({ dayTypes: [] });
+  }
+});
+
 // ── GET /timetables/route-stops?routeIds=a,b — fermate uniche delle linee ─────
 router.get("/planning-studio/:projectId/timetables/route-stops", async (req, res): Promise<void> => {
   try {
