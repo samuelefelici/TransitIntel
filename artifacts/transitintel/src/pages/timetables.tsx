@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeftRight, CalendarRange, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
+  ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
@@ -203,107 +203,6 @@ interface WeekTimetable {
 }
 
 const DOW_ABBR = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
-
-/** Nota di validità leggibile dal vettore Lun→Dom + flag a chiamata.
- *  Stringa vuota = corsa giornaliera senza particolarità (nessun apice). */
-function weekValidityNote(days: boolean[], onDemand: boolean): string {
-  const n = days.filter(Boolean).length;
-  const feriali = days.slice(0, 5).every(Boolean);
-  const noneFeriali = days.slice(0, 5).every((d) => !d);
-  const sab = days[5], dom = days[6];
-  let base = "";
-  if (n === 0 || n === 7) base = "";
-  else if (feriali && !sab && !dom) base = "Solo feriale (Lun-Ven)";
-  else if (feriali && sab && !dom) base = "Lun-Sab (escluso festivi/domenica)";
-  else if (feriali && !sab && dom) base = "Feriale e festivo (escluso il sabato)";
-  else if (noneFeriali && sab && !dom) base = "Solo il sabato";
-  else if (noneFeriali && !sab && dom) base = "Solo festivo/domenica";
-  else if (noneFeriali && sab && dom) base = "Sabato e festivo";
-  else {
-    const excl = DOW_ABBR.filter((_, i) => !days[i]);
-    const incl = DOW_ABBR.filter((_, i) => days[i]);
-    base = excl.length <= incl.length ? `Escluso ${excl.join(", ")}` : `Solo ${incl.join(", ")}`;
-  }
-  if (onDemand) base = base ? `A chiamata · ${base}` : "A chiamata (su prenotazione)";
-  return base;
-}
-
-const WEEK_TT_CSS = `
-  ${PRINT_BASE_CSS}
-  @page { size: A4 landscape; margin: 8mm; }
-  table.wt { width: 100%; border-collapse: collapse; }
-  table.wt th, table.wt td { border: 1px solid #999; font-size: 9.5px; padding: 2px 4px; text-align: center; font-variant-numeric: tabular-nums; }
-  table.wt th.stop { text-align: left; background: #f1f1f1; font-weight: 600; max-width: 52mm; min-width: 38mm; }
-  table.wt th.stop.head { background: #111; color: #fff; }
-  table.wt th.trip { background: #111; color: #fff; vertical-align: bottom; }
-  table.wt th.trip .hs { font-size: 7px; font-weight: 600; max-width: 16mm; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  table.wt th.trip .dow { font-size: 6.5px; font-weight: 700; letter-spacing: .5px; margin-top: 1px; }
-  table.wt th.trip .dow .on { color: #fff; }
-  table.wt th.trip .dow .off { color: #777; text-decoration: line-through; }
-  table.wt th.trip sup { color: #fde047; font-weight: 800; }
-  table.wt tbody tr:nth-child(even) td { background: #fafafa; }
-  table.wt td { font-weight: 600; }
-  .cal-badge { display:inline-block; background:#0e7490; color:#fff; font-size:11px; font-weight:800; border-radius:6px; padding:2px 10px; }
-  .wt-legend { margin-top: 6px; font-size: 9px; color: #222; display:flex; gap:14px; flex-wrap:wrap; }
-  .wt-legend b { color:#000; }
-  .wt-note { font-size: 8.5px; color:#555; margin-top:3px; }
-`;
-
-function weekTimetablePages(data: WeekTimetable): string {
-  const gen = new Date().toLocaleString("it-IT");
-  const col = lineColor(data.route.color);
-  const PER_PAGE = 16;
-  // nota per corsa + mappa nota→simbolo (a,b,c…), condivisa su tutta la linea
-  const noteByTrip = data.trips.map((t) => weekValidityNote(t.days, t.onDemand));
-  const distinct: string[] = [];
-  for (const nt of noteByTrip) if (nt && !distinct.includes(nt)) distinct.push(nt);
-  const symOf = (nt: string) => (nt ? String.fromCharCode(97 + distinct.indexOf(nt)) : "");
-
-  const chunks: WeekTimetable["trips"][] = [];
-  for (let i = 0; i < data.trips.length; i += PER_PAGE) chunks.push(data.trips.slice(i, i + PER_PAGE));
-  if (chunks.length === 0) chunks.push([]);
-  const dirLabel = data.directionId == null ? "Andata + Ritorno" : data.directionId === 0 ? "Andata" : "Ritorno";
-
-  const legend = distinct.length
-    ? `<div class="wt-legend">${distinct.map((nt, i) => `<span><b>${String.fromCharCode(97 + i)}</b> = ${esc(nt)}</span>`).join("")}</div>`
-    : "";
-
-  return chunks.map((chunk, pi) => {
-    const gi = pi * PER_PAGE;
-    const headRow = chunk.map((t, ci) => {
-      const nt = noteByTrip[gi + ci];
-      const dow = DOW_ABBR.map((d, di) => `<span class="${t.days[di] ? "on" : "off"}">${d[0]}</span>`).join("");
-      return `<th class="trip"><div class="hs">${esc(t.headsign ?? "")}${nt ? `<sup>${symOf(nt)}</sup>` : ""}</div><div class="dow">${dow}</div></th>`;
-    }).join("");
-    const bodyRows = data.stops.map((s, si) => `
-      <tr>
-        <th class="stop">${esc(s.stopName)}</th>
-        ${chunk.map((t) => `<td>${t.times[si] ?? "·"}</td>`).join("")}
-      </tr>`).join("");
-    return `
-    <section class="page">
-      <header class="doc">
-        <div class="pill" style="background:${col}">${esc(data.route.shortName ?? "?")}</div>
-        <h1>${esc(data.route.longName ?? "Orario di linea")}</h1>
-        <div class="day"><span class="cal-badge">${esc(data.category.name)}</span><br>Lun→Dom · ${dirLabel}${chunks.length > 1 ? `<br><small style="font-weight:400">pagina ${pi + 1}/${chunks.length}</small>` : ""}</div>
-      </header>
-      <table class="wt">
-        <thead><tr><th class="stop head">Fermata</th>${headRow}</tr></thead>
-        <tbody>${bodyRows}</tbody>
-      </table>
-      ${pi === chunks.length - 1 ? legend : ""}
-      <div class="wt-note">La riga sotto la destinazione indica i giorni di effettuazione (L M M G V S D): in grassetto i giorni attivi, barrati i non effettuati. Le distanze/orari seguono il calendario aziendale di Planner Studio.</div>
-      <footer class="doc"><span>TransitIntel · orario ${esc(data.category.name)} · linea ${esc(data.route.shortName ?? "")}</span><span>Generato il ${gen}</span></footer>
-    </section>`;
-  }).join("");
-}
-
-function buildWeekTimetableHtml(docs: WeekTimetable[]): string {
-  const body = docs.filter((d) => d.trips.length > 0).map(weekTimetablePages).join("");
-  return `<!doctype html><html lang="it"><head><meta charset="utf-8">
-  <title>Orario settimanale per calendario</title>
-  <style>${WEEK_TT_CSS}</style></head><body>${body || "<p style='padding:20mm'>Nessuna corsa per il calendario selezionato.</p>"}</body></html>`;
-}
 
 /* ── Helper orari + schematizzazione linea/rete (condivisa da mappa e stampe) ── */
 
@@ -772,44 +671,47 @@ function schematicInnerSvg(
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * ORARIO DI LINEA UNICO (A4 orizzontale) — unisce "orario di linea" + locandina
+ * STAMPA ORARI UNICA (A4 orizzontale) — per CALENDARIO aziendale
  * ───────────────────────────────────────────────────────────────────────────
- * Un solo documento per linea:
- *   1. intestazione: linea + descrizione;
- *   2. mappa metropolitana ORIZZONTALE della linea (striscia a tutta larghezza,
- *      capolinea in evidenza, nomi a 45°);
- *   3. tabella orari divisa per Andata e Ritorno, TUTTE le corse in un'unica
- *      tabella per direzione: feriali neutre, SABATO e FESTIVO colorati ed
- *      etichettati; note (a chiamata, escluso sabato…) come apici + legenda.
+ * Un solo documento per linea, a partire dal calendario scelto (Scuole Aperte /
+ * Chiuse). Sorgente dati = validità reale Lun→Dom di quel periodo (endpoint
+ * /week). Contenuto:
+ *   1. intestazione: linea + descrizione + badge del calendario;
+ *   2. mappa metropolitana ORIZZONTALE della linea (striscia a tutta larghezza);
+ *   3. orari divisi per Andata e Ritorno, TUTTE le corse in un'unica tabella per
+ *      direzione. Per ogni corsa: striscia L…D (giorni di effettuazione), colore
+ *      colonna + legenda per «a chiamata» (viola) e «validità particolare»
+ *      (ambra, giorni limitati). Le corse FESTIVE/domenicali stanno in una
+ *      SEZIONE ROSSA separata, per non mischiarle col servizio feriale.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-type TTClass = "feriale" | "sabato" | "festivo" | "custom";
-interface LineTTTrip { dep: string; cells: string[]; cls: TTClass; clsLabel: string; notes: string[] }
-interface LineTTDir { dirLabel: string; stops: Array<{ name: string; term: boolean }>; trips: LineTTTrip[] }
+/** Corsa nella vista unica: orari + validità Lun→Dom + a chiamata. */
+interface UniTrip { dep: string; cells: string[]; onDemand: boolean; days: boolean[]; restricted: boolean }
+interface UniDir {
+  dirLabel: string;
+  stops: Array<{ name: string; term: boolean }>;
+  regular: UniTrip[];  // servizio Lun-Sab
+  festive: UniTrip[];  // servizio festivo/domenica → sezione rossa separata
+}
 interface LineTTDoc {
   route: RouteTimetable["route"];
   mapStops: Array<{ name: string; term: boolean }>;
-  directions: LineTTDir[];
+  category: { code: string; name: string };
+  directions: UniDir[];
 }
-
-// colore/etichetta per classe di validità (feriale = neutro, gli altri colorati)
-const TT_CLS: Record<TTClass, { head: string; label: string }> = {
-  feriale: { head: "#334155", label: "Feriale (Lun-Ven)" },
-  sabato: { head: "#0891b2", label: "Sabato" },
-  festivo: { head: "#d97706", label: "Festivo / Domenica" },
-  custom: { head: "#7c3aed", label: "Servizio speciale" },
-};
 
 const LINE_TT_CSS = `
   ${PRINT_BASE_CSS}
   @page { size: A4 landscape; margin: 8mm; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   header.doc h1 .desc { font-weight: 400; font-size: 15px; color: #334155; }
+  .cal-badge { display: inline-block; background: #0e7490; color: #fff; font-size: 11px; font-weight: 800; border-radius: 6px; padding: 2px 10px; }
   .linemap { border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px 10px 0; margin: 6px 0 10px; background: #fff; break-inside: avoid; }
   .dirgrp { margin-bottom: 10px; }
-  .dirh { font-size: 13px; font-weight: 800; color: #0f172a; margin: 8px 0 4px; padding-left: 8px; display: flex; align-items: center; gap: 8px; break-after: avoid; }
+  .dirh { font-size: 13px; font-weight: 800; color: #0f172a; margin: 8px 0 4px; display: flex; align-items: center; gap: 8px; break-after: avoid; }
   .dirh .arrow { display: inline-block; width: 16px; height: 8px; border-radius: 2px; }
-  table.ltt { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+  .festh { font-size: 11px; font-weight: 800; color: #fff; background: #dc2626; padding: 2px 10px; border-radius: 4px; margin: 4px 0 3px; display: inline-block; break-after: avoid; }
+  table.ltt { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
   table.ltt th, table.ltt td { border: 1px solid #cbd5e1; font-size: 9px; padding: 1px 3px; text-align: center; font-variant-numeric: tabular-nums; }
   table.ltt th.stop { text-align: left; background: #f1f5f9; font-weight: 700; max-width: 54mm; min-width: 34mm; }
   table.ltt th.stop.head { background: #0f172a; color: #fff; }
@@ -817,22 +719,25 @@ const LINE_TT_CSS = `
   table.ltt td.term { font-weight: 800; }
   table.ltt th.trip { color: #fff; font-weight: 800; vertical-align: top; }
   table.ltt th.trip .dep { font-size: 10px; }
-  table.ltt th.trip .badge { font-size: 6px; font-weight: 800; letter-spacing: .3px; margin-top: 1px; text-transform: uppercase; opacity: .95; }
-  table.ltt th.trip sup { color: #fde047; font-weight: 800; }
-  table.ltt th.trip.feriale { background: #334155; }
-  table.ltt th.trip.sabato  { background: #0891b2; }
-  table.ltt th.trip.festivo { background: #d97706; }
-  table.ltt th.trip.custom  { background: #7c3aed; }
-  table.ltt td.feriale { background: #fff; }
-  table.ltt td.sabato  { background: #ecfeff; }
-  table.ltt td.festivo { background: #fffbeb; }
-  table.ltt td.custom  { background: #f5f3ff; }
+  table.ltt th.trip .dow { font-size: 6.5px; font-weight: 700; letter-spacing: .4px; margin-top: 1px; }
+  table.ltt th.trip .dow .on { color: #fff; }
+  table.ltt th.trip .dow .off { color: rgba(255,255,255,.45); text-decoration: line-through; }
+  table.ltt th.trip .badge { font-size: 6px; font-weight: 800; letter-spacing: .3px; margin-top: 1px; text-transform: uppercase; }
+  /* colore colonna per tipo di validità */
+  table.ltt th.trip.no { background: #334155; }               /* servizio ordinario */
+  table.ltt th.trip.sp { background: #b45309; }               /* validità particolare (giorni limitati) */
+  table.ltt th.trip.od { background: #6d28d9; }               /* a chiamata */
+  table.ltt th.trip.fe { background: #dc2626; }               /* festivo/domenica */
+  table.ltt td.no { background: #fff; }
+  table.ltt td.sp { background: #fffbeb; }
+  table.ltt td.od { background: #f5f3ff; }
+  table.ltt td.fe { background: #fef2f2; }
   .ltt-legend { margin-top: 6px; font-size: 9px; color: #222; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
   .ltt-legend .lg-lbl { font-weight: 800; }
   .ltt-legend .sw { display: inline-block; width: 11px; height: 11px; border: 1px solid #94a3b8; margin-right: 4px; vertical-align: -2px; border-radius: 2px; }
-  .ltt-legend .sw.sabato  { background: #0891b2; }
-  .ltt-legend .sw.festivo { background: #d97706; }
-  .ltt-legend .sw.custom  { background: #7c3aed; }
+  .ltt-legend .sw.sp { background: #b45309; }
+  .ltt-legend .sw.od { background: #6d28d9; }
+  .ltt-legend .sw.fe { background: #dc2626; }
 `;
 
 /** Striscia di linea ORIZZONTALE (stile diagramma metro): fermate equidistanti
@@ -863,50 +768,63 @@ function lineStripSvg(stops: Array<{ name: string; term: boolean }>, color: stri
   return `<svg viewBox="0 0 ${W} ${H.toFixed(0)}" width="100%" style="display:block; max-height:70mm">${line}${dots}${names}</svg>`;
 }
 
+/** classe-colore della colonna: a chiamata → viola; validità particolare
+ *  (non copre tutti i Lun-Ven) → ambra; altrimenti ordinario neutro. */
+function uniCls(t: UniTrip): "no" | "sp" | "od" {
+  return t.onDemand ? "od" : t.restricted ? "sp" : "no";
+}
+
 function lineTimetableDoc(doc: LineTTDoc): string {
   const col = lineColor(doc.route.color);
   const gen = new Date().toLocaleString("it-IT");
-  // registro NOTE → simbolo (a,b,c…), condiviso su tutta la linea
-  const noteSym = new Map<string, string>();
-  const SYM = "abcdefghijklmnopqrstuvwxyz";
-  for (const d of doc.directions) for (const t of d.trips) for (const nt of t.notes)
-    if (!noteSym.has(nt)) noteSym.set(nt, SYM[noteSym.size] ?? "*");
-  const supOf = (t: LineTTTrip) => {
-    const s = t.notes.map((nt) => noteSym.get(nt)).filter(Boolean).join("");
-    return s ? `<sup>${s}</sup>` : "";
-  };
 
   const map = doc.mapStops.length >= 2
     ? `<div class="linemap">${lineStripSvg(doc.mapStops, doc.route.color)}</div>` : "";
 
   const PER = 20; // corse per tabella (larghezza foglio)
-  const dirBlocks = doc.directions.map((dir) => {
-    if (!dir.trips.length) return "";
-    const chunks: LineTTTrip[][] = [];
-    for (let i = 0; i < dir.trips.length; i += PER) chunks.push(dir.trips.slice(i, i + PER));
-    const tables = chunks.map((ch) => {
+  // una tabella (paginata in blocchi di colonne); `fe` = sezione festiva rossa
+  const renderTables = (stops: UniDir["stops"], trips: UniTrip[], fe: boolean) => {
+    const chunks: UniTrip[][] = [];
+    for (let i = 0; i < trips.length; i += PER) chunks.push(trips.slice(i, i + PER));
+    return chunks.map((ch) => {
       const head = `<tr><th class="stop head">Fermata</th>${ch.map((t) => {
-        const badge = t.cls !== "feriale"
-          ? `<div class="badge">${esc(t.cls === "custom" ? t.clsLabel : TT_CLS[t.cls].label.split(" ")[0])}</div>` : "";
-        return `<th class="trip ${t.cls}"><div class="dep">${esc(t.dep)}${supOf(t)}</div>${badge}</th>`;
+        const cls = fe ? "fe" : uniCls(t);
+        const dow = DOW_ABBR.map((d, i) => `<span class="${t.days[i] ? "on" : "off"}">${d[0]}</span>`).join("");
+        return `<th class="trip ${cls}"><div class="dep">${esc(t.dep)}</div><div class="dow">${dow}</div>${t.onDemand ? `<div class="badge">A chiamata</div>` : ""}</th>`;
       }).join("")}</tr>`;
-      const rows = dir.stops.map((s, i) =>
-        `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) =>
-          `<td class="${t.cls}${s.term ? " term" : ""}">${t.cells[i] || "·"}</td>`).join("")}</tr>`).join("");
+      const rows = stops.map((s, i) =>
+        `<tr><th class="stop${s.term ? " term" : ""}">${esc(s.name)}</th>${ch.map((t) => {
+          const cls = fe ? "fe" : uniCls(t);
+          return `<td class="${cls}${s.term ? " term" : ""}">${t.cells[i] || "·"}</td>`;
+        }).join("")}</tr>`).join("");
       return `<table class="ltt"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
     }).join("");
-    return `<div class="dirgrp"><h3 class="dirh"><span class="arrow" style="background:${col}"></span>${esc(dir.dirLabel)} · ${dir.trips.length} corse</h3>${tables}</div>`;
+  };
+
+  const dirBlocks = doc.directions.map((dir) => {
+    const parts: string[] = [];
+    if (dir.regular.length) parts.push(renderTables(dir.stops, dir.regular, false));
+    if (dir.festive.length) {
+      parts.push(`<div class="festh">Corse festive / domenicali</div>${renderTables(dir.stops, dir.festive, true)}`);
+    }
+    if (!parts.length) return "";
+    const nTot = dir.regular.length + dir.festive.length;
+    return `<div class="dirgrp"><h3 class="dirh"><span class="arrow" style="background:${col}"></span>${esc(dir.dirLabel)} · ${nTot} corse</h3>${parts.join("")}</div>`;
   }).join("");
 
-  // legenda: classi presenti (oltre al feriale) + note
-  const present = new Set<TTClass>();
-  for (const d of doc.directions) for (const t of d.trips) present.add(t.cls);
-  const clsLeg = (["sabato", "festivo", "custom"] as TTClass[])
-    .filter((c) => present.has(c))
-    .map((c) => `<span><span class="sw ${c}"></span>${esc(TT_CLS[c].label)}</span>`);
-  const noteLeg = [...noteSym.entries()].map(([nt, s]) => `<span><b>${s}</b> = ${esc(nt)}</span>`);
-  const legend = (clsLeg.length || noteLeg.length)
-    ? `<div class="ltt-legend"><span class="lg-lbl">Legenda:</span>${[...clsLeg, ...noteLeg].join("")}</div>` : "";
+  // legenda: solo i marcatori effettivamente presenti
+  let anySp = false, anyOd = false, anyFe = false;
+  for (const d of doc.directions) {
+    for (const t of d.regular) { if (t.onDemand) anyOd = true; else if (t.restricted) anySp = true; }
+    if (d.festive.length) anyFe = true;
+    for (const t of d.festive) if (t.onDemand) anyOd = true;
+  }
+  const legItems: string[] = [];
+  legItems.push(`<span>Sotto l'orario: <b>L M M G V S D</b> = giorni di effettuazione (barrati = non effettuata)</span>`);
+  if (anySp) legItems.push(`<span><span class="sw sp"></span>Validità particolare (solo alcuni giorni)</span>`);
+  if (anyOd) legItems.push(`<span><span class="sw od"></span>A chiamata (su prenotazione)</span>`);
+  if (anyFe) legItems.push(`<span><span class="sw fe"></span>Corse festive / domenicali</span>`);
+  const legend = `<div class="ltt-legend"><span class="lg-lbl">Legenda:</span>${legItems.join("")}</div>`;
 
   const desc = doc.route.longName ? ` — <span class="desc">${esc(doc.route.longName)}</span>` : "";
   return `
@@ -914,17 +832,17 @@ function lineTimetableDoc(doc: LineTTDoc): string {
     <header class="doc" style="border-color:${col}">
       <div class="pill" style="background:${col}">${esc(doc.route.shortName ?? "?")}</div>
       <h1>Linea ${esc(doc.route.shortName ?? "")}${desc}</h1>
-      <div class="day">Orario al pubblico<br><small style="font-weight:400">tutte le corse · Andata/Ritorno</small></div>
+      <div class="day"><span class="cal-badge">${esc(doc.category.name)}</span><br><small style="font-weight:400">Lun→Dom · Andata/Ritorno</small></div>
     </header>
     ${map}
-    ${dirBlocks || "<p style='padding:12px;color:#666'>Nessuna corsa per la linea.</p>"}
+    ${dirBlocks || "<p style='padding:12px;color:#666'>Nessuna corsa per il calendario selezionato.</p>"}
     ${legend}
-    <footer class="doc"><span>TransitIntel · orario linea ${esc(doc.route.shortName ?? "")} · colonne = corse, valori = orario di transito</span><span>Generato il ${gen}</span></footer>
+    <footer class="doc"><span>TransitIntel · orario linea ${esc(doc.route.shortName ?? "")} · ${esc(doc.category.name)}</span><span>Generato il ${gen}</span></footer>
   </section>`;
 }
 
 function buildLineTimetableHtml(docs: LineTTDoc[]): string {
-  const has = (d: LineTTDoc) => d.directions.some((x) => x.trips.length > 0);
+  const has = (d: LineTTDoc) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0);
   const body = docs.filter(has).map(lineTimetableDoc).join("");
   return `<!doctype html><html lang="it"><head><meta charset="utf-8">
   <title>Orari di linea</title>
@@ -1135,7 +1053,7 @@ export default function TimetablesPage() {
   // Solo le macro-categorie "periodo" utili per la stampa: scuole_aperte,
   // scuole_chiuse (ombrello, non i singoli slug), festivita.
   const weekCategories = useMemo(
-    () => (categoriesQ.data ?? []).filter((c) => ["scuole_aperte", "scuole_chiuse", "festivita"].includes(c.code)),
+    () => (categoriesQ.data ?? []).filter((c) => ["scuole_aperte", "scuole_chiuse"].includes(c.code)),
     [categoriesQ.data],
   );
   const [weekCategory, setWeekCategory] = useState<string>("scuole_aperte");
@@ -1203,126 +1121,73 @@ export default function TimetablesPage() {
 
   // Stampa SETTIMANALE per calendario: una tabella unica per linea con tutte
   // le corse Lun→Dom della categoria scelta + note di validità. Un click.
-  async function printWeek() {
-    const ids = selectedIdsOrdered();
-    if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
-    if (!weekCategory) { toast.error("Seleziona un calendario"); return; }
-    setBusy("week");
-    try {
-      const docs: WeekTimetable[] = [];
-      for (const rid of ids) {
-        const url = `${ptt}/route/${encodeURIComponent(rid)}/week?category=${encodeURIComponent(weekCategory)}`
-          + (directionId !== "all" ? `&directionId=${directionId}` : "");
-        const d = await apiFetch<WeekTimetable>(url);
-        docs.push({ ...d, route: { ...d.route, color: effColor(d.route.routeId, d.route.color) } });
-      }
-      if (!docs.some((x) => x.trips.length > 0)) {
-        toast.error("Nessuna corsa per il calendario selezionato", {
-          description: "La linea potrebbe non avere corse in questo periodo, o mancano i bollini di validità in Planner Studio.",
-        });
-        return;
-      }
-      openPrintWindow(buildWeekTimetableHtml(docs));
-    } catch (e: any) {
-      toast.error(e?.message ?? "Errore durante la stampa");
-    } finally { setBusy(null); }
-  }
-
-  // Stampa "orario di linea" UNICO: un documento per linea con mappa della linea
-  // + tabella orari Andata/Ritorno. TUTTE le corse in un'unica tabella per
-  // direzione, con SABATO e FESTIVO colorati/etichettati e le note (a chiamata,
-  // escluso il sabato…) come apici. Nessun day-type da scegliere: le validità
-  // sono già integrate nella tabella (unifica ex "Orario di linea" + "Locandine").
+  // STAMPA ORARI (unica): si sceglie il calendario aziendale (Scuole Aperte /
+  // Chiuse) e si generano gli orari di TUTTE le corse con la validità reale
+  // Lun→Dom di quel periodo. Per ogni corsa: colore colonna + striscia L…D +
+  // badge dicono se è a chiamata o valida solo in certi giorni; le corse festive
+  // (domenicali) finiscono in una sezione ROSSA separata per non mischiarle.
   async function printLine() {
     const ids = selectedIdsOrdered();
     if (!ids.length) { toast.error("Seleziona almeno una linea"); return; }
+    if (!weekCategory) { toast.error("Seleziona un calendario (Scuole Aperte/Chiuse)"); return; }
     const dirs = directionId === "all" ? ["0", "1"] : [directionId];
-    const dtByCode = new Map(dayTypes.map((d) => [d.code, d]));
-    const WD_IT = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"];
     setBusy("line");
     try {
       const docs: LineTTDoc[] = [];
       for (const rid of ids) {
         let route: RouteTimetable["route"] | null = null;
         let mapStops: LineTTDoc["mapStops"] = [];
-        const directions: LineTTDir[] = [];
+        let category = { code: weekCategory, name: weekCategory };
+        const directions: UniDir[] = [];
         for (const dir of dirs) {
-          // UNA chiamata per direzione, SENZA filtro day-type: tutte le corse
-          // attive con la loro validità (dayTypeCodes + weekdays + a chiamata).
-          const rt = await apiFetch<RouteTimetable>(`${ptt}/route/${encodeURIComponent(rid)}?directionId=${dir}`);
-          if (!route) route = { ...rt.route, color: effColor(rt.route.routeId, rt.route.color) };
-          // la mappa usa le fermate della prima direzione disponibile (di norma l'andata)
-          if (!mapStops.length && rt.stops.length >= 2) {
-            mapStops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
+          const wt = await apiFetch<WeekTimetable>(
+            `${ptt}/route/${encodeURIComponent(rid)}/week?category=${encodeURIComponent(weekCategory)}&directionId=${dir}`,
+          );
+          if (!route) route = { ...wt.route, color: effColor(wt.route.routeId, wt.route.color) };
+          category = wt.category;
+          if (!mapStops.length && wt.stops.length >= 2) {
+            mapStops = wt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === wt.stops.length - 1 }));
           }
-          if (!rt.trips.length) continue;
+          if (!wt.trips.length) continue;
 
-          const stops = rt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === rt.stops.length - 1 }));
-          // Segnali di validità per corsa: i bollini day-type (feriale/sabato/
-          // festivo) sono la sorgente principale; se il progetto NON usa la
-          // matrice (dayTypeCodes vuoti) si ripiega sulla MASCHERA SETTIMANALE
-          // `weekdays` (L…D), così la classe/colore resta corretta.
-          const wdMask = (t: RouteTimetable["trips"][number]) =>
-            (Array.isArray(t.weekdays) && t.weekdays.length === 7) ? t.weekdays : null;
-          const classify = (t: RouteTimetable["trips"][number]) => {
-            const codes = new Set(t.dayTypeCodes ?? []);
-            const wd = wdMask(t);
-            const fromMask = codes.size === 0 && !!wd;
-            const hasF = fromMask ? wd!.slice(0, 5).some((x) => x !== false) : codes.has("feriale");
-            const hasS = fromMask ? wd![5] !== false : codes.has("sabato");
-            const hasH = fromMask ? wd![6] !== false : codes.has("festivo");
-            return { codes, wd, fromMask, hasF, hasS, hasH };
-          };
-          // c'è servizio del sabato su questa direzione? (per annotare "non il sabato")
-          const hasSatService = rt.trips.some((t) => classify(t).hasS);
-
-          const raw = rt.trips.map((t) => {
+          const stops = wt.stops.map((s, i) => ({ name: s.stopName, term: i === 0 || i === wt.stops.length - 1 }));
+          const all = wt.trips.map((t) => {
             const cells = t.times.map((v) => (v ? v.slice(0, 5) : ""));
             const dep = cells.find((c) => c) ?? "";
-            const { codes, wd, fromMask, hasF, hasS, hasH } = classify(t);
-            // classe (colore) + etichetta: il feriale è il default neutro; sabato e
-            // festivo si distinguono; le validità custom hanno il loro colore.
-            let cls: TTClass = "feriale"; let clsLabel = "Feriale";
-            if (hasF) { cls = "feriale"; clsLabel = "Feriale"; }
-            else if (hasS && hasH) { cls = "festivo"; clsLabel = "Sab. e festivo"; }
-            else if (hasH) { cls = "festivo"; clsLabel = "Festivo"; }
-            else if (hasS) { cls = "sabato"; clsLabel = "Sabato"; }
-            else {
-              const custom = [...codes].filter((c) => c !== "feriale" && c !== "sabato" && c !== "festivo");
-              if (custom.length) { cls = "custom"; clsLabel = custom.map((c) => dtByCode.get(c)?.name ?? c).join(", "); }
-              else { cls = "feriale"; clsLabel = "—"; }
-            }
-            // note automatiche
-            const notes: string[] = [];
-            if (t.onDemand) notes.push("Su prenotazione (a chiamata)");
-            if (hasF && hasSatService && !hasS) notes.push("Non effettuata il sabato");
-            if (wd && hasF) {
-              const excl: string[] = [];
-              for (let i = 0; i < 5; i++) if (wd[i] === false) excl.push(WD_IT[i]);
-              if (excl.length && excl.length < 5) notes.push(`Escluso il ${excl.join(", ")}`);
-            }
-            // avviso SOLO se la corsa non ha davvero alcun segnale di validità
-            // (né bollini né maschera): un dato mancante, non la norma del progetto.
-            if (codes.size === 0 && !wd && !fromMask) notes.push("⚠ Senza validità giorno");
-            return { dep, cells, cls, clsLabel, notes, sort: hhmmToMin(dep) ?? 9999 };
+            const days = Array.isArray(t.days) && t.days.length === 7 ? t.days : [false, false, false, false, false, false, false];
+            // "validità particolare" = non copre tutti i giorni feriali Lun-Ven
+            const restricted = !days.slice(0, 5).every(Boolean);
+            return { dep, cells, onDemand: !!t.onDemand, days, restricted, sort: hhmmToMin(dep) ?? 9999 };
           }).filter((c) => c.cells.some((x) => x));
 
-          // dedup colonne identiche (stessi transiti + classe + note) e ordina per orario
-          const seen = new Set<string>();
-          const trips: LineTTTrip[] = raw
-            .sort((a, b) => a.sort - b.sort)
-            .filter((t) => {
-              const k = `${t.cls}|${t.notes.join(",")}|${t.cells.join("|")}`;
-              if (seen.has(k)) return false;
-              seen.add(k); return true;
-            })
-            .map(({ sort: _s, ...t }) => t);
-
-          directions.push({ dirLabel: dir === "0" ? "Andata" : "Ritorno", stops, trips });
+          // festiva = circola la domenica MA non nei feriali (servizio festivo puro)
+          const isFestive = (t: typeof all[number]) => t.days[6] && !t.days.slice(0, 5).some(Boolean);
+          const sortDedup = (arr: typeof all): UniTrip[] => {
+            const seen = new Set<string>();
+            return arr
+              .sort((a, b) => a.sort - b.sort)
+              .filter((t) => {
+                const k = `${t.onDemand ? "od" : ""}|${t.days.map((d) => (d ? 1 : 0)).join("")}|${t.cells.join("|")}`;
+                if (seen.has(k)) return false;
+                seen.add(k); return true;
+              })
+              .map(({ sort: _s, ...t }) => t);
+          };
+          directions.push({
+            dirLabel: dir === "0" ? "Andata" : "Ritorno",
+            stops,
+            regular: sortDedup(all.filter((t) => !isFestive(t))),
+            festive: sortDedup(all.filter(isFestive)),
+          });
         }
-        if (route) docs.push({ route, mapStops, directions });
+        if (route) docs.push({ route, mapStops, category, directions });
       }
-      if (!docs.some((d) => d.directions.some((x) => x.trips.length > 0))) { toast.error("Nessuna corsa per la selezione"); return; }
+      if (!docs.some((d) => d.directions.some((x) => x.regular.length > 0 || x.festive.length > 0))) {
+        toast.error("Nessuna corsa per il calendario selezionato", {
+          description: "La linea potrebbe non avere corse in questo periodo, o mancano le validità in Planner Studio.",
+        });
+        return;
+      }
       openPrintWindow(buildLineTimetableHtml(docs));
     } catch (e: any) {
       toast.error(e?.message ?? "Errore durante la stampa");
@@ -1520,28 +1385,37 @@ export default function TimetablesPage() {
             {/* GRUPPO 1 — ORARI (stampa PDF) */}
             <div className="rounded-xl border border-sky-500/30 bg-sky-500/[0.04] p-3 space-y-2.5">
               <div className="flex items-center gap-2 text-xs font-bold text-sky-300"><Printer className="w-4 h-4" /> Orari (stampa PDF)</div>
-              {/* direzione: pilota l'orario di linea e la settimana per calendario */}
+              {/* calendario aziendale + direzione: pilotano la stampa orari unica */}
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={weekCategory}
+                  onChange={(e) => setWeekCategory(e.target.value)}
+                  className="px-2.5 py-1.5 rounded-lg bg-card border border-sky-500/50 text-xs outline-none focus:border-sky-500"
+                  title="Calendario aziendale: gli orari usano i giorni reali di questo periodo (Scuole Aperte / Chiuse). Le corse festive vengono messe in una sezione a parte."
+                >
+                  {weekCategories.length === 0 && <option value="scuole_aperte">Scuole Aperte</option>}
+                  {weekCategories.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                </select>
                 <select
                   value={directionId}
                   onChange={(e) => setDirectionId(e.target.value)}
                   className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60"
-                  title="Direzioni incluse nell'orario di linea e nella settimana."
+                  title="Direzioni incluse nella stampa."
                 >
                   <option value="all">Andata + Ritorno</option>
                   <option value="0">Solo Andata</option>
                   <option value="1">Solo Ritorno</option>
                 </select>
               </div>
-              {/* STAMPA UNICA: mappa linea + orari Andata/Ritorno (ex Orario di linea + Locandine) */}
+              {/* STAMPA ORARI UNICA: calendario → mappa linea + orari Lun→Dom */}
               <button onClick={printLine}
                 disabled={anyBusy || selectedRouteIds.length === 0}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-sky-500/90 hover:bg-sky-500 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
-                title="Un documento per linea: nome + descrizione, mappa della linea con le fermate, e gli orari in UN'unica tabella per Andata e Ritorno — feriale, sabato e festivo con colori diversi. Unisce le vecchie stampe Orario di linea + Locandine.">
+                title="Un documento per linea nel calendario scelto: nome + descrizione, mappa della linea, e gli orari di TUTTE le corse (Andata/Ritorno) con la validità reale Lun→Dom. Colori e legenda segnalano corse a chiamata e con validità particolare; le corse festive stanno in una sezione rossa a parte.">
                 {busy === "line" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
-                Stampa orari linea{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
+                Stampa orari{selectedRouteIds.length ? ` (${selectedRouteIds.length})` : ""}
               </button>
-              <p className="text-[10px] text-muted-foreground">Mappa della linea + tabella orari Andata/Ritorno in un unico foglio; sabato e festivo evidenziati e spiegati in legenda.</p>
+              <p className="text-[10px] text-muted-foreground">Un foglio per linea: mappa + orari Andata/Ritorno con validità Lun→Dom del calendario scelto. A chiamata e giorni limitati per colore; corse festive in una sezione rossa separata.</p>
 
               {/* Quadri di palina (per singolo day-type) */}
               <div className="pt-2 border-t border-border/40 space-y-2">
@@ -1565,29 +1439,6 @@ export default function TimetablesPage() {
                 {(selectedRouteIds.length > 0 && routeDayTypeIds.length === 0) && (
                   <p className="text-[10px] text-amber-400">Scegli almeno un day-type per i quadri di palina.</p>
                 )}
-              </div>
-              {/* settimana Lun→Dom per CALENDARIO (indipendente dai day-type) */}
-              <div className="pt-2 border-t border-border/40 space-y-2">
-                <div className="flex items-center gap-2 text-[11px] font-semibold text-emerald-300"><CalendarRange className="w-3.5 h-3.5" /> Settimana per calendario</div>
-                <p className="text-[10px] text-muted-foreground">Diverso da «Stampa orari linea»: qui scegli UN calendario aziendale (es. Scuole Aperte) e ottieni gli orari giorno per giorno da Lunedì a Domenica di quel periodo.</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    value={weekCategory}
-                    onChange={(e) => setWeekCategory(e.target.value)}
-                    className="px-2.5 py-1.5 rounded-lg bg-card border border-emerald-500/50 text-xs outline-none focus:border-emerald-500"
-                    title="Calendario aziendale di Planner Studio: la stampa settimanale prende i giorni reali di questo periodo."
-                  >
-                    {weekCategories.length === 0 && <option value="scuole_aperte">Scuole Aperte</option>}
-                    {weekCategories.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-                  </select>
-                  <button onClick={printWeek}
-                    disabled={anyBusy || selectedRouteIds.length === 0}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-medium transition-colors"
-                    title="UNA tabella per linea con tutte le corse Lun→Dom del calendario scelto; a chiamata e giorni non effettuati annotati in legenda.">
-                    {busy === "week" ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarRange className="w-4 h-4" />}
-                    Stampa settimana (Lun→Dom)
-                  </button>
-                </div>
               </div>
             </div>
 
