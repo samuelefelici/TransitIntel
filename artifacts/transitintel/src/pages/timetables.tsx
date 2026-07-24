@@ -215,7 +215,7 @@ interface PalStop { stop: { stopId: string; stopName: string; stopCode: string |
 
 const PAL_CSS = `
   ${PRINT_BASE_CSS}
-  @page { size: A4 portrait; margin: 8mm 8mm 12mm; }
+  @page { size: A4 landscape; margin: 8mm 8mm 12mm; }
   * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .palhead { display: flex; align-items: center; gap: 12px; border-bottom: 3px solid #0f172a; padding-bottom: 6px; margin-bottom: 8px; }
   .palhead .cerbero-h { height: 34px; width: auto; }
@@ -223,7 +223,7 @@ const PAL_CSS = `
   .palhead .pid { font-size: 11px; color: #475569; font-weight: 700; letter-spacing: .04em; }
   .palcat { margin-bottom: 8px; }
   .cath { font-size: 13px; font-weight: 800; color: #fff; background: #0e7490; padding: 3px 10px; border-radius: 4px; margin: 6px 0 5px; letter-spacing: .04em; break-after: avoid; }
-  .palgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; align-items: start; }
+  .palgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; align-items: start; }
   .palline { break-inside: avoid; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; }
   .palline .lh { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-left: 5px solid #0f172a; background: #f8fafc; }
   .palline .lp { color: #fff; font-weight: 800; border-radius: 5px; padding: 1px 8px; font-size: 13px; min-width: 30px; text-align: center; }
