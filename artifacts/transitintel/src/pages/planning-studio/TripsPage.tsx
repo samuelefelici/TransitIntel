@@ -35,6 +35,7 @@ import {
 } from "@/lib/planning-studio-api";
 import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, getPsTripsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
+import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
  * monotona, altrimenti cumulata haversine. */
@@ -960,6 +961,9 @@ export default function PlanningStudioTripsPage() {
 
   return (
     <div className="h-full w-full min-w-0 flex flex-col bg-slate-950 text-slate-100">
+      {project?.isOperational && (
+        <div className="px-3 pt-3"><OperationalEditWarning isOperational projectName={project?.name} /></div>
+      )}
       {/* Toolbar */}
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>
