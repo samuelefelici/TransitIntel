@@ -3,7 +3,7 @@
  *
  * Sezione separata che mostra le Unità salvate per il progetto. Da qui:
  *   - rinomina / elimina
- *   - vai alla pipeline scheduling (TODO link)
+ *   - vai alla pipeline scheduling (Progetti di Esercizio)
  *
  * Le unità vengono CREATE dalla ValidityPage (dialog "Calcola Unità").
  */
@@ -13,7 +13,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, Layers, Loader2, Pencil, Trash2, Check, X, Calendar as CalendarIcon,
-  ChevronDown, Database, Save,
+  ChevronDown, Database, Save, ClipboardList,
 } from "lucide-react";
 import {
   listPsValidityUnits, deletePsValidityUnit, renamePsValidityUnit, getPsValidityUnitDetail,
@@ -69,8 +69,16 @@ export default function PlanningStudioValidityUnitsPage() {
           <h1 className="font-semibold text-slate-100 shrink-0">
             {projectQ.data?.name ?? "…"}
           </h1>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
             <ValiditySectionNav projectId={projectId} active="units" />
+            <Link href={`/fucina/esercizio/${projectId}`}>
+              <button
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
+                title="Quadro d'esercizio: scheduling per UDP (turni macchina e turni guida)"
+              >
+                <ClipboardList className="h-3.5 w-3.5" /> Progetti di Esercizio
+              </button>
+            </Link>
           </div>
         </div>
       </div>

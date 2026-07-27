@@ -347,7 +347,7 @@ function Board({ psId }: { psId: string }) {
                 <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
                 <div>
                   <strong>{board.programUncoveredTrips} corse non sono in nessuna UDP</strong> (scoperte a monte).
-                  <Link href={`/planning-studio/${psId}/validity-units`}>
+                  <Link href={`/planning-studio/${psId}/validity`}>
                     <button className="ml-1 underline hover:text-rose-100">Assegnale nella Matrice di validità →</button>
                   </Link>
                 </div>
@@ -358,8 +358,8 @@ function Board({ psId }: { psId: string }) {
               <div className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center text-slate-400">
                 <Layers className="h-12 w-12 mx-auto text-slate-600 mb-3" />
                 <p className="font-medium text-slate-200 mb-1">Nessuna UDP in questo progetto</p>
-                <p className="text-xs mb-3">Crea le Unità di Progettazione nella Matrice di validità.</p>
-                <Link href={`/planning-studio/${psId}/validity-units`}>
+                <p className="text-xs mb-3">Crea le Unità di Progettazione nella Matrice di validità (pulsante "Calcola Unità").</p>
+                <Link href={`/planning-studio/${psId}/validity`}>
                   <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500"><Plus className="w-3.5 h-3.5" /> Crea UDP</button>
                 </Link>
               </div>

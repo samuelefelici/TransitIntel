@@ -12,7 +12,7 @@
  *                       spostare, toggle modalità manuale per tratti fuori rete)
  */
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
-import { useLocation, useParams } from "wouter";
+import { Link, useLocation, useParams } from "wouter";
 import Map, {
   Marker, Source, Layer, NavigationControl, Popup,
   type MapRef, type MapMouseEvent,
@@ -1992,6 +1992,9 @@ export default function PlanningStudioEditorPage() {
               count={(clusters.length + globalClusters.length) || undefined} accent="cyan"
               active={activePanel === "clusters" || activePanel === "ne-clusters"}
               onClick={toggleNodesPanel} />
+            <MenuItem icon={Pencil} label="Editor nodi avanzato" note="pagina" accent="cyan"
+              desc="mappa dedicata · lazo poligonale · suggerimenti"
+              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/clusters`); }} />
             <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Landmark} label="Zonizzazione" note="pagina" accent="amber"
               desc="confini comunali · km per comune"
@@ -5345,10 +5348,10 @@ function NeClustersPanel({
           </div>
         </div>
         <div className="flex gap-1">
-          <a href={`/planning-studio/${projectId}/clusters`}
+          <Link href={`/planning-studio/${projectId}/clusters`}
             className="flex-1 text-[11px] px-2 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white inline-flex items-center justify-center gap-1">
             <Pencil className="w-3 h-3" /> Editor avanzato
-          </a>
+          </Link>
           {clusters.length > 0 && (
             <button onClick={handleBulkDelete} disabled={bulkDeleting} title="Elimina tutti"
               className="text-[11px] px-2 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white inline-flex items-center gap-1 disabled:opacity-50">
