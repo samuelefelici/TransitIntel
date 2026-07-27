@@ -26,17 +26,39 @@ import { computeWeekValidityByTrip } from "../lib/planning-studio-validity-eval"
 
 const router: IRouter = Router();
 
-/** True se l'utente è owner o membro del progetto PS (admin sempre true). */
-async function canAccessPsProject(projectId: string, req: any): Promise<boolean> {
+/** True se l'utente è owner o membro del progetto PS (admin sempre true).
+ *  Con allowOperational=true (endpoint di sola lettura) è visibile anche il
+ *  programma di esercizio operativo — stessa semantica della lista progetti. */
+async function canAccessPsProject(
+  projectId: string, req: any, opts?: { allowOperational?: boolean },
+): Promise<boolean> {
   const u = req.user;
   if (!u) return false;
   if (u.role === "admin") return true;
   const r = await db.execute(sql`
     SELECT 1 FROM ps_projects p
       LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${u.id}::uuid
+      LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
      WHERE p.id = ${projectId}::uuid
-       AND (p.owner_user_id = ${u.id}::uuid OR pm.user_id IS NOT NULL) LIMIT 1`);
+       AND (p.owner_user_id = ${u.id}::uuid OR pm.user_id IS NOT NULL
+            OR (${opts?.allowOperational === true}
+                AND p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)))
+     LIMIT 1`);
   return !!((r as any).rows?.length);
+}
+
+/** Gate di lettura per gli endpoint timetables: 400 su id malformato, 403 se
+ *  il progetto non è né proprio né condiviso né operativo. */
+async function requireTimetableRead(projectId: string, req: any, res: any): Promise<boolean> {
+  if (!UUID_RE.test(String(projectId ?? ""))) {
+    res.status(400).json({ error: "projectId non valido" });
+    return false;
+  }
+  if (!(await canAccessPsProject(projectId, req, { allowOperational: true }))) {
+    res.status(403).json({ error: "Accesso negato al progetto" });
+    return false;
+  }
+  return true;
 }
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -106,6 +128,7 @@ router.get("/planning-studio/:projectId/timetables/routes", async (req, res): Pr
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const r = await db.execute<any>(sql`
       SELECT id, short_name, long_name, color
       FROM ps_routes WHERE project_id = ${projectId}::uuid
@@ -120,14 +143,13 @@ router.get("/planning-studio/:projectId/timetables/routes", async (req, res): Pr
 });
 
 // ── GET /timetables/day-types — day-type per le stampe (system + custom) ──────
-// Stessa apertura in LETTURA delle altre GET di stampa (routes/route/week):
-// nessun gate di accesso stretto, così la pagina Stampa Orari funziona su ogni
-// progetto leggibile. Il CRUD dei day-type resta protetto nel router validità;
-// qui si leggono solo etichette/colori (dati non sensibili).
+// Lettura consentita a owner/membri e sul programma operativo (come le altre
+// GET di stampa). Il CRUD dei day-type resta protetto nel router validità.
 router.get("/planning-studio/:projectId/timetables/day-types", async (req, res): Promise<void> => {
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const r = await db.execute<any>(sql`
       SELECT id, project_id, code, name, color, is_system, is_custom, sort_order
         FROM ps_day_types
@@ -150,6 +172,7 @@ router.get("/planning-studio/:projectId/timetables/route-stops", async (req, res
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const ids = String(req.query.routeIds ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     const list = uuidList(ids);
     if (!list) { res.json({ stops: [] }); return; }
@@ -173,6 +196,7 @@ router.get("/planning-studio/:projectId/timetables/stops/search", async (req, re
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) { res.json({ stops: [] }); return; }
     const r = await db.execute<any>(sql`
@@ -204,6 +228,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
     const projectId = String(req.params.projectId);
     const routeId = String(req.params.routeId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(routeId)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const dayTypeId = parseDayTypeId(req.query.dayTypeId);
     const dirRaw = req.query.directionId;
     const directionId = dirRaw === "0" || dirRaw === "1" ? Number(dirRaw) : null;
@@ -380,6 +405,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/week", async (
     const projectId = String(req.params.projectId);
     const routeId = String(req.params.routeId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(routeId)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const categoryCode = typeof req.query.category === "string" ? req.query.category : "";
     const dirRaw = req.query.directionId;
     const directionId = dirRaw === "0" || dirRaw === "1" ? Number(dirRaw) : null;
@@ -452,6 +478,7 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId", async (req, re
     const projectId = String(req.params.projectId);
     const stopId = String(req.params.stopId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(stopId)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const dayTypeId = parseDayTypeId(req.query.dayTypeId);
 
     const stopQ = await db.execute<any>(sql`
@@ -536,6 +563,7 @@ router.get("/planning-studio/:projectId/timetables/stop/:stopId/full", async (re
     const projectId = String(req.params.projectId);
     const stopId = String(req.params.stopId);
     if (!UUID_RE.test(projectId) || !UUID_RE.test(stopId)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
 
     const stopQ = await db.execute<any>(sql`
       SELECT id, name, code FROM ps_stops
@@ -704,6 +732,7 @@ router.get("/planning-studio/:projectId/timetables/network", async (req, res): P
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
     const ids = String(req.query.routeIds ?? "").split(",").map((s) => s.trim()).filter(Boolean);
     res.json(await computeNetwork(projectId, ids));
   } catch (e: any) { res.status(500).json({ error: e.message }); }

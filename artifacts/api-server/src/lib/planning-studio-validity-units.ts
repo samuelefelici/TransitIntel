@@ -54,6 +54,7 @@ async function ensureTables(): Promise<void> {
         PRIMARY KEY (trip_id, category_id)
       )
     `);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_tcv_category ON ps_trip_category_validity(category_id)`);
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_validity_units (
         id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -559,7 +560,10 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
   if (units.length === 0) { res.status(400).json({ error: "units_required" }); return; }
 
   try {
+    // Transazione: il salvataggio di un set di unità è tutto-o-niente — un
+    // errore a metà lasciava salvate solo alcune UDP del calcolo.
     let upsertCount = 0;
+    await db.transaction(async (tx) => {
     for (const u of units) {
       const validityId = String(u.validityId ?? u.validity_id ?? "").trim();
       const name       = String(u.name ?? "").trim();
@@ -572,7 +576,7 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
       const tripCount      = Number.isFinite(u.tripCount) ? u.tripCount : tripIds.length;
       const dayCount       = Number.isFinite(u.dayCount)  ? u.dayCount  : repDates.length;
 
-      await db.execute(sql`
+      await tx.execute(sql`
         INSERT INTO ps_validity_units (
           project_id, validity_id, name, description, category_id, day_type_id,
           trip_ids, trip_count, representative_dates, day_count
@@ -595,6 +599,7 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
       `);
       upsertCount++;
     }
+    });
     res.json({ ok: true, count: upsertCount });
   } catch (e: any) {
     console.error("[ps-validity-units.save] error:", e?.message || e);

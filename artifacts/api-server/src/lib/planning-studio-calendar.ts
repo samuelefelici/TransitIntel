@@ -40,6 +40,35 @@ router.use(async (_req, _res, next) => { await ensureTable(); next(); });
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Gate di accesso al profilo calendario. mode="read": owner/membro/admin o
+ *  programma operativo (come la lista progetti). mode="write": owner o membro
+ *  editor/owner — la PUT riscrive il calendario E risincronizza le categorie
+ *  del progetto, quindi niente scritture cross-progetto. */
+async function requireCalendarAccess(
+  projectId: string, req: any, res: any, mode: "read" | "write",
+): Promise<boolean> {
+  const u = (req as any).user;
+  if (!u) { res.status(401).json({ error: "Non autenticato" }); return false; }
+  if (u.role === "admin") return true;
+  const r = await db.execute<any>(sql`
+    SELECT 1 FROM ps_projects p
+      LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${u.id}::uuid
+      LEFT JOIN gtfs_feeds f ON f.id = p.materialized_feed_id
+     WHERE p.id = ${projectId}::uuid
+       AND (
+         p.owner_user_id = ${u.id}::uuid
+         OR (${mode === "write"} AND pm.role IN ('owner','editor'))
+         OR (${mode === "read"} AND (pm.user_id IS NOT NULL
+             OR (p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false))))
+       )
+     LIMIT 1`);
+  if (!r.rows?.length) {
+    res.status(403).json({ error: "Accesso negato al progetto" });
+    return false;
+  }
+  return true;
+}
+
 export async function loadCalendarProfile(projectId: string): Promise<CalendarProfile> {
   await ensureTable();
   return loadProfile(projectId);
@@ -62,6 +91,7 @@ router.get("/planning-studio/projects/:id/calendar-profile", async (req, res): P
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireCalendarAccess(id, req, res, "read"))) return;
     res.json({ profile: await loadProfile(id) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -70,6 +100,7 @@ router.put("/planning-studio/projects/:id/calendar-profile", async (req, res): P
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireCalendarAccess(id, req, res, "write"))) return;
     const b = req.body ?? {};
     const closedPeriods = Array.isArray(b.closedPeriods)
       ? b.closedPeriods
@@ -121,6 +152,7 @@ router.get("/planning-studio/projects/:id/day-classification", async (req, res):
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    if (!(await requireCalendarAccess(id, req, res, "read"))) return;
     const from = String(req.query.from ?? "");
     const to = String(req.query.to ?? "");
     if (!DATE_RE.test(from) || !DATE_RE.test(to) || from > to) {

@@ -582,14 +582,18 @@ router.post("/planning-studio/projects/:id/trips/:tripId/shift", async (req, res
     res.status(400).json({ error: "lo shift porterebbe orari negativi (prima di 00:00)" }); return;
   }
 
-  for (const u of updated) {
-    await db.execute(sql`
-      UPDATE ps_stop_times
-         SET arrival_time = ${secToHms(u.arrivalTime)},
-             departure_time = ${secToHms(u.departureTime)}
-       WHERE trip_id = ${req.params.tripId}::uuid AND stop_seq = ${u.stopSeq}
-    `);
-  }
+  // Transazione: uno shift parziale lascerebbe la corsa con orari misti
+  // (metà traslati e metà no) senza che l'operatore possa accorgersene.
+  await db.transaction(async (tx) => {
+    for (const u of updated) {
+      await tx.execute(sql`
+        UPDATE ps_stop_times
+           SET arrival_time = ${secToHms(u.arrivalTime)},
+               departure_time = ${secToHms(u.departureTime)}
+         WHERE trip_id = ${req.params.tripId}::uuid AND stop_seq = ${u.stopSeq}
+      `);
+    }
+  });
   await logActivity(req.params.id, userId, "trip.shift", "trip", req.params.tripId, { deltaMinutes, count: updated.length });
   res.json({ ok: true, count: updated.length, deltaMinutes });
 });
