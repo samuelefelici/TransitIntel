@@ -435,3 +435,70 @@ export async function computeWeekValidityByTrip(
   }
   return { repDates, daysByTrip };
 }
+
+/**
+ * Staleness HASH-BASED di una UDP salvata: l'unità è per costruzione la classe
+ * di date con lo STESSO insieme di corse attive, quindi basta ri-valutare la
+ * validità sulle sue representative_dates e confrontare l'insieme ottenuto con
+ * i trip_ids salvati. Cattura per costruzione QUALSIASI modifica rilevante
+ * (corse, matrice validità, eccezioni, calendario categorie, weekdays) —
+ * incluse quelle invisibili al confronto per updated_at (feedStale).
+ *
+ * Il confronto è ristretto alle LINEE delle corse salvate: le UDP calcolate
+ * con scope per linea (routeIds) non risultano stantie solo perché altre
+ * linee del progetto hanno corse attive quel giorno.
+ *
+ * Ritorna: true = stantia, false = coerente, null = non verificabile
+ * (nessuna representative date valida o dati mancanti).
+ */
+export async function isValidityUnitStale(
+  projectId: string,
+  unit: { trip_ids: unknown; representative_dates: unknown },
+): Promise<boolean | null> {
+  const saved = Array.isArray(unit.trip_ids)
+    ? [...new Set(unit.trip_ids.map((x: any) => String(x)))] : [];
+  const normDate = (x: any): string | null => {
+    const s = String(x ?? "");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+    return null;
+  };
+  const repDates = (Array.isArray(unit.representative_dates) ? unit.representative_dates : [])
+    .map(normDate).filter((d): d is string => !!d);
+  if (!repDates.length || !saved.length) return null;
+
+  // campione: prima, mediana, ultima (le date di un'unità hanno per costruzione
+  // lo stesso insieme attivo → una basta, tre coprono derive parziali)
+  const sample = [...new Set([
+    repDates[0],
+    repDates[Math.floor(repDates.length / 2)],
+    repDates[repDates.length - 1],
+  ])];
+
+  // linee delle corse salvate (per ristringere il confronto allo scope UDP)
+  const savedLit = `{${saved.join(",")}}`;
+  const routesR = await db.execute<any>(sql`
+    SELECT DISTINCT route_id FROM ps_trips WHERE id = ANY(${savedLit}::uuid[])`);
+  const scopeRoutes = new Set(((routesR.rows ?? []) as any[]).map((r) => String(r.route_id)));
+  const savedSet = new Set(saved);
+
+  for (const d of sample) {
+    const active = await computeActiveDatesByTrip({ projectId, from: d, to: d });
+    const activeIds = [...active.keys()];
+    // (a) una corsa salvata non è più attiva nel suo giorno → stantia
+    for (const id of saved) if (!active.has(id)) return true;
+    // (b) sulla STESSA linea è attiva una corsa fuori dall'insieme → stantia
+    if (activeIds.length) {
+      const extra = activeIds.filter((id) => !savedSet.has(id));
+      if (extra.length) {
+        const exLit = `{${extra.join(",")}}`;
+        const exR = await db.execute<any>(sql`
+          SELECT id::text AS id, route_id FROM ps_trips WHERE id = ANY(${exLit}::uuid[])`);
+        for (const r of (exR.rows ?? []) as any[]) {
+          if (scopeRoutes.has(String(r.route_id))) return true;
+        }
+      }
+    }
+  }
+  return false;
+}

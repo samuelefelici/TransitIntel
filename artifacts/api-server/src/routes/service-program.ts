@@ -2392,6 +2392,11 @@ router.put("/service-program/scenarios/:id", async (req, res) => {
       .where(eq(serviceProgramScenarios.id, req.params.id))
       .returning({ id: serviceProgramScenarios.id });
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    // Salvataggio nuovo = contenuto allineato ai dati correnti → azzera il
+    // flag "dati superati" impostato dal resync (colonna additiva, best-effort)
+    try {
+      await db.execute(sql`UPDATE service_program_scenarios SET stale_since = NULL WHERE id = ${req.params.id}::uuid`);
+    } catch { /* colonna assente su DB legacy */ }
     res.json({ id: row.id, ok: true });
   } catch (err: any) {
     req.log.error(err, "Error updating scenario");

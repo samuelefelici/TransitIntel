@@ -225,6 +225,12 @@ export default function VehicleScenariosPage() {
                         ✓ {s.coveredTrips} corse coperte
                       </span>
                     ) : null}
+                    {s.staleSince && (
+                      <span className="font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 border border-orange-500/30"
+                            title={`Il feed è stato risincronizzato il ${new Date(s.staleSince).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}: questo scenario riflette i dati precedenti. Rigenera o risalva per allinearlo.`}>
+                        ⚠ dati superati
+                      </span>
+                    )}
                     {ownerLabel && (
                       <span className="text-zinc-600">
                         Owner: <span className="text-zinc-400">{ownerLabel}</span>

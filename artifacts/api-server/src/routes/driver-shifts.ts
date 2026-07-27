@@ -1849,6 +1849,13 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
       .where(eq(driverShiftScenarios.id, req.params.id as string))
       .returning();
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    // Salvataggio nuovo = contenuto allineato ai dati correnti → azzera il
+    // flag "dati superati" impostato dal resync (colonna additiva, best-effort)
+    if (result) {
+      try {
+        await db.execute(sql`UPDATE driver_shift_scenarios SET stale_since = NULL WHERE id = ${req.params.id}::uuid`);
+      } catch { /* colonna assente su DB legacy */ }
+    }
     res.json({ ok: true, id: row.id });
   } catch (err: any) {
     req.log.error(err, "Error updating driver shift scenario");

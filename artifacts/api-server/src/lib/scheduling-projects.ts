@@ -115,6 +115,17 @@ async function ensureSchedulingTables(): Promise<void> {
       ALTER TABLE IF EXISTS driver_shift_scenarios
         ADD COLUMN IF NOT EXISTS is_operational boolean NOT NULL DEFAULT false
     `);
+    // "Dati superati": il resync del feed marca gli scenari salvati come
+    // stantii (il loro result riflette il feed precedente). Un nuovo
+    // salvataggio dello scenario azzera il flag.
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS service_program_scenarios
+        ADD COLUMN IF NOT EXISTS stale_since timestamptz
+    `);
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS driver_shift_scenarios
+        ADD COLUMN IF NOT EXISTS stale_since timestamptz
+    `);
 
     /* ─── Condivisione progetti + log attività ─── */
     // Flag esplicito di condivisione (utile anche per owner solitari "in pausa").
@@ -246,6 +257,9 @@ function rowToProject(r: any) {
     // true = il Planning Studio è stato modificato DOPO l'ultima materializzazione
     // del feed: i turni girerebbero su dati vecchi → il client mostra un avviso.
     feedStale: r.feed_stale ?? undefined,
+    // true = l'insieme di corse dell'UDP NON corrisponde più al progetto
+    // (verifica hash-based sulle representative dates): ricalcolare l'unità.
+    udpStale: r.udp_stale ?? undefined,
     psLastChangeAt: r.ps_last_change_at ?? undefined,
     feedSyncedAt: r.feed_synced_at ?? undefined,
     depotConfig: r.depot_config ?? {},
@@ -591,7 +605,27 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
     } catch { /* colonne assenti su DB legacy → nessun segnale di staleness */ }
   }
 
-  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped, feed_stale: feedStale, ps_last_change_at: psLastChangeAt, feed_synced_at: feedSyncedAt }) });
+  // STALENESS HASH-BASED della UDP: ri-valuta la validità sulle representative
+  // dates dell'unità e confronta con i trip_ids salvati. Copre i buchi del
+  // confronto per updated_at (stop_times, matrice validità, eccezioni,
+  // calendario categorie non bumpano nulla): se l'insieme di corse del
+  // giorno-tipo è cambiato, l'UDP va ricalcolata e i turni rigenerati.
+  let udpStale: boolean | undefined;
+  if (row.validity_unit_id && row.planning_studio_project_id) {
+    try {
+      const vuR: any = await db.execute(sql`
+        SELECT trip_ids, representative_dates FROM ps_validity_units
+         WHERE id = ${row.validity_unit_id}::uuid LIMIT 1`);
+      const vu = vuR.rows?.[0];
+      if (vu) {
+        const { isValidityUnitStale } = await import("./planning-studio-validity-eval");
+        const st = await isValidityUnitStale(row.planning_studio_project_id, vu);
+        if (st !== null) udpStale = st;
+      }
+    } catch { /* best-effort: nessun segnale se la valutazione fallisce */ }
+  }
+
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped, feed_stale: feedStale, ps_last_change_at: psLastChangeAt, feed_synced_at: feedSyncedAt, udp_stale: udpStale }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */
@@ -805,6 +839,7 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
 
   const r = await db.execute(sql`
     SELECT id, name, date, created_at, COALESCE(is_operational, false) AS is_operational,
+           stale_since,
            (result->'summary'->>'numVehicles')::int AS num_vehicles,
            (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km,
            -- copertura: il primo numero che si guarda prima di scegliere lo
@@ -823,6 +858,8 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
       date: s.date,
       createdAt: s.created_at,
       isOperational: !!s.is_operational,
+      // valorizzato dal resync del feed: il result riflette dati superati
+      staleSince: s.stale_since ?? null,
       numVehicles: s.num_vehicles,
       totalDeadheadKm: s.total_deadhead_km,
       coveredTrips: s.covered_trips ?? null,
@@ -874,6 +911,7 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
   const r = await db.execute(sql`
     SELECT dss.id, dss.name, dss.created_at, dss.service_program_scenario_id,
            COALESCE(dss.is_operational, false) AS is_operational,
+           dss.stale_since,
            COALESCE(sps.is_operational, false) AS vehicle_is_operational,
            sps.name AS vehicle_scenario_name, sps.date AS vehicle_date,
            -- KPI minimi per scegliere lo scenario senza aprirlo: n. turni e
@@ -892,6 +930,8 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
       name: s.name,
       createdAt: s.created_at,
       isOperational: !!s.is_operational,
+      // valorizzato dal resync del feed: il result riflette dati superati
+      staleSince: s.stale_since ?? null,
       vehicleScenarioId: s.service_program_scenario_id,
       vehicleScenarioName: s.vehicle_scenario_name,
       vehicleScenarioDate: s.vehicle_date,

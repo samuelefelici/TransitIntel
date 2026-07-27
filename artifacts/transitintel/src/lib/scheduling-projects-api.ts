@@ -42,6 +42,9 @@ export interface SchedulingProject {
   /** true = il Planning Studio collegato è stato modificato DOPO l'ultima
    *  materializzazione: i turni girerebbero su dati vecchi → avviso + risincronizza */
   feedStale?: boolean;
+  /** true = l'insieme di corse dell'UDP non corrisponde più al progetto
+   *  (verifica hash-based sulle representative dates): ricalcolare l'unità */
+  udpStale?: boolean;
   /** ISO dell'ultima modifica nel PS (corse/orari/calendari/percorsi) */
   psLastChangeAt?: string;
   /** ISO dell'ultima materializzazione del feed usato */
@@ -204,6 +207,8 @@ export interface ProjectVehicleScenario {
   date: string;
   createdAt: string;
   isOperational?: boolean;
+  /** ISO: il feed è stato risincronizzato DOPO il salvataggio → dati superati */
+  staleSince?: string | null;
   numVehicles?: number | null;
   totalDeadheadKm?: number | null;
   /** corse coperte dai turni (summary.totalTrips) — il primo numero da guardare */
@@ -217,6 +222,8 @@ export interface ProjectDriverScenario {
   name: string;
   createdAt: string;
   isOperational?: boolean;
+  /** ISO: il feed è stato risincronizzato DOPO il salvataggio → dati superati */
+  staleSince?: string | null;
   vehicleScenarioId: string;
   vehicleScenarioName: string;
   vehicleScenarioDate: string;

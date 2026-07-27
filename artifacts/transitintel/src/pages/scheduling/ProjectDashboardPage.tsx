@@ -315,6 +315,27 @@ export default function ProjectDashboardPage() {
               </motion.div>
             )}
 
+            {/* Avviso UDP STANTIA (verifica hash-based): l'insieme di corse
+                dell'unità non corrisponde più al progetto — coglie anche le
+                modifiche invisibili al confronto per data (orari, matrice
+                validità, eccezioni, calendario categorie). */}
+            {project.udpStale && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                className="mb-6 rounded-xl border border-orange-500/40 bg-orange-500/10 p-4 flex items-start gap-3"
+              >
+                <AlertTriangle className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-orange-200">UDP superata: le corse del periodo non corrispondono più al Planning Studio</p>
+                  <p className="text-xs text-orange-300/80 mt-0.5">
+                    L'unità di pianificazione «{project.validityUnitName ?? "—"}» è stata calcolata su un insieme di corse che nel frattempo è cambiato
+                    (corse aggiunte/rimosse, orari, validità o calendario aziendale). Ricalcola le unità in Planning Studio → Validità
+                    e ricrea il progetto di scheduling sull'unità aggiornata prima di generare nuovi turni.
+                  </p>
+                </div>
+              </motion.div>
+            )}
+
             {/* Stage map (visual) */}
             <div className="mb-8 rounded-xl border border-zinc-800/60 bg-black/30 p-4">
               <div className="flex items-center justify-between mb-3">
