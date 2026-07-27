@@ -35,7 +35,10 @@ interface RosterDuty {
   residenzaName?: string | null; residenzaColor?: string | null;
   segments?: DutySegment[];
 }
-interface RosterAssignment { id: string; driverId: string; day: string; dutyCode: string; dssId: string }
+/** Snapshot minimo del turno al momento dell'assegnazione (P6): lo storico
+ *  resta leggibile anche se il DSS viene versionato o il duty rinumerato. */
+interface DutySnapshot { start?: string | null; end?: string | null; paidHours?: unknown; name?: string | null }
+interface RosterAssignment { id: string; driverId: string; day: string; dutyCode: string; dssId: string; snapshot?: DutySnapshot | null }
 interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string }
 interface VoceDef { code: string; label: string }
 type VociCatalog = { assenza: VoceDef[]; presenza: VoceDef[] };
@@ -63,6 +66,9 @@ interface Board {
   entries?: RosterEntry[];
   /** residenza di servizio (deposito) dello scenario → colore dei turni */
   residenza?: { name: string; color: string } | null;
+  /** Modalità AUTO (dssId="auto"): duty raggruppati per DSS + DSS competente per giorno */
+  dutiesByDss?: Record<string, RosterDuty[]>;
+  dssByDay?: Record<string, string | null>;
 }
 
 const DUTY_TYPE_COLOR: Record<string, string> = {
@@ -190,8 +196,8 @@ export default function RosterPage() {
   });
 
   const assignMut = useMutation({
-    mutationFn: (input: { driverId: string; day: string; dutyCode: string }) =>
-      apiFetch("/api/roster/assignments", { method: "POST", body: JSON.stringify({ ...input, dssId }) }),
+    mutationFn: (input: { driverId: string; day: string; dutyCode: string; dssId: string }) =>
+      apiFetch("/api/roster/assignments", { method: "POST", body: JSON.stringify(input) }),
     onSuccess: () => { setCut(null); setSelDuty(null); invalidateBoard(); },
     onError: (e: Error) => toast.error("Assegnazione fallita", { description: e.message }),
   });
@@ -266,7 +272,24 @@ export default function RosterPage() {
   };
 
   const board = boardQ.data;
+  const isAuto = dssId === "auto";
   const dutyByCode = useMemo(() => new Map((board?.duties ?? []).map((d) => [d.code, d])), [board?.duties]);
+  /** Dettaglio turno di un'assegnazione: in AUTO cerca nel DSS dell'assegnazione
+   *  (dutiesByDss) e in ultima istanza ricostruisce dallo snapshot salvato. */
+  const dutyFor = (a: RosterAssignment): RosterDuty | undefined => {
+    if (isAuto) {
+      const d = board?.dutiesByDss?.[a.dssId]?.find((x) => x.code === a.dutyCode);
+      if (d) return d;
+      if (a.snapshot) {
+        return {
+          code: a.dutyCode, type: null, start: a.snapshot.start ?? null, end: a.snapshot.end ?? null,
+          nastro: null, work: null, interruption: null, ripreseCount: 0, tripsCount: 0, costEuro: null,
+        };
+      }
+      return undefined;
+    }
+    return dutyByCode.get(a.dutyCode);
+  };
   const assignmentsByCell = useMemo(() => {
     const m = new Map<string, RosterAssignment[]>();
     for (const a of board?.assignments ?? []) {
@@ -287,18 +310,30 @@ export default function RosterPage() {
     const m = new Map<string, RosterDuty[]>();
     if (!board) return m;
     for (const day of board.days) {
-      const taken = new Set(board.assignments.filter((a) => a.day === day).map((a) => a.dutyCode));
-      m.set(day, board.duties.filter((d) => !taken.has(d.code)));
+      // In AUTO i turni del giorno sono quelli del DSS competente per QUELLA
+      // data (dssByDay, dai periodi P5); coprono solo le assegnazioni sul
+      // medesimo DSS — un turno omonimo del DSS vecchio non copre il nuovo.
+      const competent = isAuto ? (board.dssByDay?.[day] ?? null) : null;
+      const dayDuties = isAuto
+        ? (competent ? board.dutiesByDss?.[competent] ?? [] : [])
+        : board.duties;
+      const taken = new Set(board.assignments
+        .filter((a) => a.day === day && (!isAuto || a.dssId === competent))
+        .map((a) => a.dutyCode));
+      m.set(day, dayDuties.filter((d) => !taken.has(d.code)));
     }
     return m;
-  }, [board]);
+  }, [board, isAuto]);
 
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   function doPaste() {
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!selDriver) { toast.info("Seleziona un conducente a sinistra"); return; }
+    // In AUTO l'assegnazione va sul DSS competente per la data del turno.
+    const effDss = isAuto ? (board?.dssByDay?.[cut.day] ?? null) : dssId;
+    if (!effDss) { toast.error("Nessun turno guida competente per questa data (periodo di validità mancante)"); return; }
     // Un conducente può avere più turni nello stesso giorno: nessun blocco.
-    assignMut.mutate({ driverId: selDriver, day: cut.day, dutyCode: cut.code });
+    assignMut.mutate({ driverId: selDriver, day: cut.day, dutyCode: cut.code, dssId: effDss });
   }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -416,6 +451,7 @@ export default function RosterPage() {
           className="min-w-64 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-sm outline-none focus:border-violet-500"
         >
           <option value="">— Fonte turni (DSS) —</option>
+          <option value="auto">🗓 Auto — DSS per data (periodi di validità)</option>
           {sourcesQ.data?.sources.map((s) => (
             <option key={s.dssId} value={s.dssId}>
               {s.isOperational ? "● " : ""}{s.validityUnitName ? `${s.validityUnitName} · ` : ""}{s.name} · {s.dutyCount} turni
@@ -539,7 +575,11 @@ export default function RosterPage() {
                       <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW} ${festBg(day)}`}>
                         <span className={`uppercase text-[9px] ${festLevel(day) ? "text-rose-300/80" : "text-slate-500"}`}>{dow} </span>
                         <span className="font-semibold text-[11px]">{dm}</span>
-                        {dssId && cellSize !== "small" && <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>}
+                        {dssId && cellSize !== "small" && (
+                          isAuto && !board?.dssByDay?.[day]
+                            ? <span className="block text-[9px] font-mono text-slate-600">—</span>
+                            : <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>
+                        )}
                       </th>
                     );
                   })}
@@ -594,7 +634,7 @@ export default function RosterPage() {
                                   {items.map((it, idx) => {
                                     const big = idx === 0;
                                     if (it.kind === "duty") {
-                                      const duty = dutyByCode.get(it.a.dutyCode);
+                                      const duty = dutyFor(it.a);
                                       return (
                                         <button key={it.a.id}
                                           onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${it.a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(it.a.id); }}
@@ -659,7 +699,9 @@ export default function RosterPage() {
                       </div>
                       <div className="flex-1 overflow-y-auto p-1 space-y-1">
                         {list.length === 0 ? (
-                          <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
+                          isAuto && !board?.dssByDay?.[day]
+                            ? <div className="text-[10px] text-slate-500 px-1">nessun DSS competente</div>
+                            : <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
                         ) : list.map((d) => {
                           const isSel = selDuty?.day === day && selDuty?.code === d.code;
                           const isCut = cut?.day === day && cut?.code === d.code;
@@ -719,7 +761,7 @@ export default function RosterPage() {
               <div className="p-2 space-y-1 max-h-[50vh] overflow-auto">
                 {items.map((it) => {
                   const isDuty = it.kind === "duty";
-                  const duty = isDuty ? dutyByCode.get(it.a.dutyCode) : undefined;
+                  const duty = isDuty ? dutyFor(it.a) : undefined;
                   const code = isDuty ? it.a.dutyCode : it.en.code;
                   const sub = isDuty ? `${duty?.type ?? "turno"}${duty?.start ? ` · ${duty.start}–${duty.end}` : ""}` : (it.en.category === "assenza" ? "assenza" : "presenza");
                   return (

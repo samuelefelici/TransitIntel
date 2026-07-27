@@ -37,6 +37,9 @@ async function ensureTable(): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `);
+  // ANCORA di fase del ciclo: la prima generazione la fissa; le rigenerazioni
+  // successive mantengono la stessa fase anche partendo da una data diversa.
+  await db.execute(sql`ALTER TABLE roster_rotazioni_riposi ADD COLUMN IF NOT EXISTS anchor_date date`);
   // Assegnazione conducenti agli scaglioni (righe = settimane) di una rotazione.
   // week_index = riga di partenza (scaglione, 0-based). Un conducente ha un solo
   // scaglione per rotazione.
@@ -233,12 +236,27 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", async (req, res): Prom
     const codeDefault = String(b.code ?? "R").trim().toUpperCase().slice(0, 8) || "R";
 
     const rot = await db.execute<any>(sql`
-      SELECT pattern, weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid
+      SELECT pattern, weeks, to_char(anchor_date, 'YYYY-MM-DD') AS anchor_date
+        FROM roster_rotazioni_riposi WHERE id = ${id}::uuid
     `);
     if (!rot.rows[0]) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
     const pattern: (string | null)[][] = rot.rows[0].pattern;
     const weeks = Number(rot.rows[0].weeks);
     if (!Array.isArray(pattern) || weeks < 1) { res.status(400).json({ error: "Pattern rotazione non valido" }); return; }
+
+    // STORICO IMMUTABILE: la rigenerazione non riscrive mai i giorni già
+    // trascorsi — la finestra effettiva parte al più presto da OGGI.
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const effStartStr = startDate > todayStr ? startDate : todayStr;
+    // ANCORA di fase: la prima generazione la fissa (= startDate richiesto);
+    // le successive riusano quella salvata, così ripartire da una data diversa
+    // non ri-fasa silenziosamente i riposi di tutti.
+    let anchorStr: string = rot.rows[0].anchor_date ?? "";
+    if (!anchorStr) {
+      anchorStr = startDate;
+      await db.execute(sql`
+        UPDATE roster_rotazioni_riposi SET anchor_date = ${startDate}::date WHERE id = ${id}::uuid`);
+    }
 
     // Scope = conducenti attivi che rientrano nei filtri categoria/deposito
     // (o tutti se nessun filtro). Le loro voci-rotazione nel range vengono
@@ -257,17 +275,17 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", async (req, res): Prom
     const scopeIds: string[] = scope.rows.map((r: any) => r.id);
     if (scopeIds.length === 0) { res.json({ ok: true, drivers: 0, created: 0, cleared: 0 }); return; }
 
-    // Range date
-    const start = new Date(`${startDate}T00:00:00Z`);
+    // Range date EFFETTIVO (mai nel passato) + fase dal Lunedì dell'ANCORA.
+    const start = new Date(`${effStartStr}T00:00:00Z`);
     const endStr = new Date(start.getTime() + days * DAY_MS).toISOString().slice(0, 10);
-    // Lunedì della settimana di partenza (allineamento Lun..Dom).
-    const startMonday = new Date(start.getTime() - weekdayMon0(start) * DAY_MS);
+    const anchor = new Date(`${anchorStr}T00:00:00Z`);
+    const startMonday = new Date(anchor.getTime() - weekdayMon0(anchor) * DAY_MS);
 
-    // 1) Pulisci le voci-rotazione precedenti nello scope e nel range.
+    // 1) Pulisci le voci-rotazione precedenti nello scope e nel range (solo futuro).
     const del = await db.execute<any>(sql`
       DELETE FROM roster_entries
        WHERE source = ${`rotazione:${id}`}
-         AND day >= ${startDate}::date AND day < ${endStr}::date
+         AND day >= ${effStartStr}::date AND day < ${endStr}::date
          AND driver_id = ANY(${uuidArrayLiteral(scopeIds)}::uuid[])
     `);
     const cleared = del.rowCount ?? 0;
