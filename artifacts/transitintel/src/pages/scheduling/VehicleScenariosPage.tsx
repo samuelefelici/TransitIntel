@@ -231,6 +231,16 @@ export default function VehicleScenariosPage() {
                         ⚠ dati superati
                       </span>
                     )}
+                    {(s.validFrom || s.validTo) && (
+                      <span className="font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/25"
+                            title="Periodo di validità del programma (successione automatica alla messa in esercizio)">
+                        {s.validFrom ? `dal ${new Date(`${s.validFrom}T00:00:00`).toLocaleDateString("it-IT")}` : ""}
+                        {s.validTo ? ` al ${new Date(`${s.validTo}T00:00:00`).toLocaleDateString("it-IT")}` : ""}
+                      </span>
+                    )}
+                    {(s.version ?? 1) > 1 && (
+                      <span className="text-zinc-500" title="Versione dello scenario">v{s.version}</span>
+                    )}
                     {ownerLabel && (
                       <span className="text-zinc-600">
                         Owner: <span className="text-zinc-400">{ownerLabel}</span>

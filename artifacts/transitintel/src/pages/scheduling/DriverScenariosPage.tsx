@@ -72,9 +72,29 @@ export default function DriverScenariosPage() {
 
   async function toggleDriverOperational(d: ProjectDriverScenario) {
     if (!projectId) return;
+    // DECORRENZA opzionale alla messa in esercizio: chiude il periodo dei turni
+    // precedenti a X-1 e apre questi da X (vuoto = da oggi).
+    let validFrom: string | undefined;
+    if (!d.isOperational) {
+      const v = prompt(
+        "Data di DECORRENZA di questi turni (AAAA-MM-GG).\n\n" +
+        "Lascia vuoto per metterli in esercizio da OGGI.\n" +
+        "Il periodo dei turni precedenti verrà chiuso al giorno prima.",
+        "",
+      );
+      if (v === null) return; // annullato
+      const vt = v.trim();
+      if (vt && !/^\d{4}-\d{2}-\d{2}$/.test(vt)) {
+        toast.error("Data non valida", { description: "Usa il formato AAAA-MM-GG, o lascia vuoto per decorrenza da oggi." });
+        return;
+      }
+      validFrom = vt || undefined;
+    }
     try {
-      await setDriverScenarioOperational(projectId, d.id, !d.isOperational);
-      toast.success(d.isOperational ? "Rimosso dall'esercizio" : "Turni guida messi in esercizio");
+      await setDriverScenarioOperational(projectId, d.id, !d.isOperational, validFrom);
+      toast.success(d.isOperational ? "Rimosso dall'esercizio"
+        : validFrom ? `Turni guida in esercizio dal ${new Date(`${validFrom}T00:00:00`).toLocaleDateString("it-IT")}`
+        : "Turni guida messi in esercizio");
       await reload();
     } catch (e: any) { toast.error(e?.message ?? "Errore"); }
   }
@@ -270,6 +290,16 @@ export default function DriverScenariosPage() {
                                         title={`Il feed è stato risincronizzato il ${new Date(d.staleSince).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}: questi turni riflettono i dati precedenti. Rigenera o risalva per allinearli.`}>
                                     ⚠ dati superati
                                   </span>
+                                )}
+                                {(d.validFrom || d.validTo) && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/25"
+                                        title="Periodo di validità dei turni (successione automatica alla messa in esercizio)">
+                                    {d.validFrom ? `dal ${new Date(`${d.validFrom}T00:00:00`).toLocaleDateString("it-IT")}` : ""}
+                                    {d.validTo ? ` al ${new Date(`${d.validTo}T00:00:00`).toLocaleDateString("it-IT")}` : ""}
+                                  </span>
+                                )}
+                                {(d.version ?? 1) > 1 && (
+                                  <span className="text-zinc-500" title="Versione: i salvataggi su turni referenziati dal roster creano una nuova versione (lo storico resta intatto)">v{d.version}</span>
                                 )}
                                 {ownerLabel && <span className="text-zinc-600">Owner: <span className="text-zinc-400">{ownerLabel}</span></span>}
                                 {memberCount > 0 && (

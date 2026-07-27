@@ -126,6 +126,25 @@ async function ensureSchedulingTables(): Promise<void> {
       ALTER TABLE IF EXISTS driver_shift_scenarios
         ADD COLUMN IF NOT EXISTS stale_since timestamptz
     `);
+    // VERSIONING + PERIODO DI VALIDITÀ degli scenari: il salvataggio su un DSS
+    // referenziato dal roster crea una riga NUOVA (version+1, superseded_by
+    // sulla vecchia) invece di sovrascrivere lo storico; valid_from/valid_to
+    // esprimono "questi turni valgono dal X al Y" (successione automatica alla
+    // messa in esercizio, risoluzione per data lato roster).
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS service_program_scenarios
+        ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1,
+        ADD COLUMN IF NOT EXISTS superseded_by uuid,
+        ADD COLUMN IF NOT EXISTS valid_from date,
+        ADD COLUMN IF NOT EXISTS valid_to date
+    `);
+    await db.execute(sql`
+      ALTER TABLE IF EXISTS driver_shift_scenarios
+        ADD COLUMN IF NOT EXISTS version integer NOT NULL DEFAULT 1,
+        ADD COLUMN IF NOT EXISTS superseded_by uuid,
+        ADD COLUMN IF NOT EXISTS valid_from date,
+        ADD COLUMN IF NOT EXISTS valid_to date
+    `);
 
     /* ─── Condivisione progetti + log attività ─── */
     // Flag esplicito di condivisione (utile anche per owner solitari "in pausa").
@@ -839,7 +858,9 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
 
   const r = await db.execute(sql`
     SELECT id, name, date, created_at, COALESCE(is_operational, false) AS is_operational,
-           stale_since,
+           stale_since, COALESCE(version, 1) AS version, superseded_by,
+           to_char(valid_from, 'YYYY-MM-DD') AS valid_from,
+           to_char(valid_to,   'YYYY-MM-DD') AS valid_to,
            (result->'summary'->>'numVehicles')::int AS num_vehicles,
            (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km,
            -- copertura: il primo numero che si guarda prima di scegliere lo
@@ -860,6 +881,10 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
       isOperational: !!s.is_operational,
       // valorizzato dal resync del feed: il result riflette dati superati
       staleSince: s.stale_since ?? null,
+      version: Number(s.version ?? 1),
+      supersededBy: s.superseded_by ?? null,
+      validFrom: s.valid_from ?? null,
+      validTo: s.valid_to ?? null,
       numVehicles: s.num_vehicles,
       totalDeadheadKm: s.total_deadhead_km,
       coveredTrips: s.covered_trips ?? null,
@@ -911,7 +936,9 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
   const r = await db.execute(sql`
     SELECT dss.id, dss.name, dss.created_at, dss.service_program_scenario_id,
            COALESCE(dss.is_operational, false) AS is_operational,
-           dss.stale_since,
+           dss.stale_since, COALESCE(dss.version, 1) AS version, dss.superseded_by,
+           to_char(dss.valid_from, 'YYYY-MM-DD') AS valid_from,
+           to_char(dss.valid_to,   'YYYY-MM-DD') AS valid_to,
            COALESCE(sps.is_operational, false) AS vehicle_is_operational,
            sps.name AS vehicle_scenario_name, sps.date AS vehicle_date,
            -- KPI minimi per scegliere lo scenario senza aprirlo: n. turni e
@@ -932,6 +959,10 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
       isOperational: !!s.is_operational,
       // valorizzato dal resync del feed: il result riflette dati superati
       staleSince: s.stale_since ?? null,
+      version: Number(s.version ?? 1),
+      supersededBy: s.superseded_by ?? null,
+      validFrom: s.valid_from ?? null,
+      validTo: s.valid_to ?? null,
       vehicleScenarioId: s.service_program_scenario_id,
       vehicleScenarioName: s.vehicle_scenario_name,
       vehicleScenarioDate: s.vehicle_date,
@@ -959,7 +990,29 @@ router.post("/scheduling/projects/:id/vehicle-scenarios/:scenarioId/operational"
     SELECT 1 FROM service_program_scenarios WHERE id = ${scenarioId}::uuid AND project_id = ${id}::uuid LIMIT 1`);
   if (!((chk as any).rows?.length)) { res.status(404).json({ error: "Scenario non nel progetto" }); return; }
 
+  // DECORRENZA opzionale (validFrom YYYY-MM-DD): "questi turni valgono dal X".
+  // Alla promozione, il periodo del TM precedentemente operativo viene CHIUSO
+  // a X-1 (successione automatica): lo storico dei periodi resta coerente.
+  const vfRaw = typeof req.body?.validFrom === "string" ? req.body.validFrom.trim() : "";
+  if (vfRaw && !/^\d{4}-\d{2}-\d{2}$/.test(vfRaw)) {
+    res.status(400).json({ error: "validFrom non valida (atteso YYYY-MM-DD)" }); return;
+  }
+
   if (operational) {
+    try {
+      // chiudi il periodo del TM che sta per perdere l'esercizio (se aperto)
+      await db.execute(sql`
+        UPDATE service_program_scenarios
+           SET valid_to = (COALESCE(${vfRaw || null}::date, CURRENT_DATE) - 1)
+         WHERE project_id = ${id}::uuid AND id <> ${scenarioId}::uuid
+           AND COALESCE(is_operational, false) = true AND valid_to IS NULL`);
+      // periodo del nuovo operativo: decorrenza esplicita, o da oggi se assente
+      await db.execute(sql`
+        UPDATE service_program_scenarios
+           SET valid_from = COALESCE(${vfRaw || null}::date, COALESCE(valid_from, CURRENT_DATE)),
+               valid_to = NULL
+         WHERE id = ${scenarioId}::uuid`);
+    } catch { /* colonne periodo assenti su DB legacy */ }
     // esclusività: azzera gli altri turni-macchina del progetto (e i loro TG)
     await db.execute(sql`
       UPDATE driver_shift_scenarios SET is_operational = false
@@ -974,7 +1027,7 @@ router.post("/scheduling/projects/:id/vehicle-scenarios/:scenarioId/operational"
     await db.execute(sql`UPDATE driver_shift_scenarios SET is_operational = false WHERE service_program_scenario_id = ${scenarioId}::uuid`);
   }
   await logActivity(id, req.user!.id, "scenario.operational.vehicle", {
-    targetType: "vehicle_scenario", targetId: scenarioId, payload: { operational },
+    targetType: "vehicle_scenario", targetId: scenarioId, payload: { operational, validFrom: vfRaw || undefined },
   });
   res.json({ ok: true, operational });
 });
@@ -999,7 +1052,40 @@ router.post("/scheduling/projects/:id/driver-scenarios/:scenarioId/operational",
   const spsId = (chk as any).rows?.[0]?.sps_id;
   if (!spsId) { res.status(404).json({ error: "Turni guida non nel progetto" }); return; }
 
+  // DECORRENZA opzionale (validFrom YYYY-MM-DD): chiude il periodo del TG (e
+  // del TM) precedentemente operativi a X-1 e apre quello nuovo da X.
+  const vfRaw = typeof req.body?.validFrom === "string" ? req.body.validFrom.trim() : "";
+  if (vfRaw && !/^\d{4}-\d{2}-\d{2}$/.test(vfRaw)) {
+    res.status(400).json({ error: "validFrom non valida (atteso YYYY-MM-DD)" }); return;
+  }
+
   if (operational) {
+    try {
+      // chiudi i periodi aperti di TG e TM che stanno per perdere l'esercizio
+      await db.execute(sql`
+        UPDATE driver_shift_scenarios d
+           SET valid_to = (COALESCE(${vfRaw || null}::date, CURRENT_DATE) - 1)
+          FROM service_program_scenarios s
+         WHERE d.service_program_scenario_id = s.id AND s.project_id = ${id}::uuid
+           AND d.id <> ${scenarioId}::uuid
+           AND COALESCE(d.is_operational, false) = true AND d.valid_to IS NULL`);
+      await db.execute(sql`
+        UPDATE service_program_scenarios
+           SET valid_to = (COALESCE(${vfRaw || null}::date, CURRENT_DATE) - 1)
+         WHERE project_id = ${id}::uuid AND id <> ${spsId}::uuid
+           AND COALESCE(is_operational, false) = true AND valid_to IS NULL`);
+      // apri i periodi del TG promosso e del suo TM genitore
+      await db.execute(sql`
+        UPDATE driver_shift_scenarios
+           SET valid_from = COALESCE(${vfRaw || null}::date, COALESCE(valid_from, CURRENT_DATE)),
+               valid_to = NULL
+         WHERE id = ${scenarioId}::uuid`);
+      await db.execute(sql`
+        UPDATE service_program_scenarios
+           SET valid_from = COALESCE(${vfRaw || null}::date, COALESCE(valid_from, CURRENT_DATE)),
+               valid_to = NULL
+         WHERE id = ${spsId}::uuid`);
+    } catch { /* colonne periodo assenti su DB legacy */ }
     // promuovi il TM genitore (esclusivo nel progetto) + azzera i TG degli altri TM
     await db.execute(sql`
       UPDATE driver_shift_scenarios SET is_operational = false
@@ -1017,7 +1103,7 @@ router.post("/scheduling/projects/:id/driver-scenarios/:scenarioId/operational",
     await db.execute(sql`UPDATE driver_shift_scenarios SET is_operational = false WHERE id = ${scenarioId}::uuid`);
   }
   await logActivity(id, req.user!.id, "scenario.operational.driver", {
-    targetType: "driver_scenario", targetId: scenarioId, payload: { operational },
+    targetType: "driver_scenario", targetId: scenarioId, payload: { operational, validFrom: vfRaw || undefined },
   });
   res.json({ ok: true, operational });
 });

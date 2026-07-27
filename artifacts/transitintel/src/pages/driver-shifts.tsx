@@ -1295,8 +1295,18 @@ function DriverShiftsPageInner() {
                       body: JSON.stringify({ result }),
                     });
                     if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    const j = await r.json().catch(() => ({} as any));
                     setModifiedCount(0);
-                    toast.success("Turni guida salvati", { description: "Scenario aggiornato (sovrascritto)." });
+                    // Il server crea una VERSIONE NUOVA quando il DSS è referenziato
+                    // dal roster (storico immutabile): da qui in poi si lavora sull'id nuovo.
+                    if (j?.id && j.id !== loadedDssId) {
+                      setLoadedDssId(j.id);
+                      toast.success("Creata nuova versione dei turni guida", {
+                        description: "Lo scenario era referenziato dal roster: lo storico resta sul precedente, da ora lavori sulla nuova versione.",
+                      });
+                    } else {
+                      toast.success("Turni guida salvati", { description: "Scenario aggiornato (sovrascritto)." });
+                    }
                   } catch (e: any) {
                     toast.error("Errore salvataggio", { description: e?.message });
                   }
