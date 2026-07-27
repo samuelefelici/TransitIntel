@@ -116,12 +116,33 @@ export default function PlanningStudioListPage() {
       `programma operativo unico: Sala Operativa, AVM, GTFS-RT e tariffe punteranno ` +
       `al suo feed. Gli altri programmi restano modificabili ma non operativi.`,
     )) return;
+    // DECORRENZA opzionale: vuoto = subito; una data futura = lo snapshot viene
+    // materializzato ora (congelato e verificabile) ma lo switch avviene quel giorno.
+    const eff = prompt(
+      "Data di DECORRENZA (AAAA-MM-GG).\n\n" +
+      "Lascia vuoto per mettere in esercizio SUBITO.\n" +
+      "Con una data futura, il programma viene preparato ora e diventerà operativo quel giorno.",
+      "",
+    );
+    if (eff === null) return; // annullato
+    const effTrim = eff.trim();
+    if (effTrim && !/^\d{4}-\d{2}-\d{2}$/.test(effTrim)) {
+      toast.error("Data non valida", { description: "Usa il formato AAAA-MM-GG (es. 2026-09-01), o lascia vuoto per attivare subito." });
+      return;
+    }
     const tid = toast.loading(`Metto in esercizio "${p.name}"…`, {
       description: "Materializzazione del programma in corso…",
     });
     try {
-      await activatePsProject(p.id);
-      toast.success(`"${p.name}" è ora il programma di esercizio operativo`, { id: tid });
+      const r = await activatePsProject(p.id, effTrim || undefined);
+      if (r.scheduledFor) {
+        toast.success(`"${p.name}" programmato per il ${new Date(`${r.scheduledFor}T00:00:00`).toLocaleDateString("it-IT")}`, {
+          id: tid,
+          description: "Lo snapshot è già materializzato; lo switch a operativo avverrà automaticamente alla decorrenza.",
+        });
+      } else {
+        toast.success(`"${p.name}" è ora il programma di esercizio operativo`, { id: tid });
+      }
       refresh();
     } catch (e: any) {
       toast.error("Messa in esercizio fallita", { id: tid, description: e?.message });

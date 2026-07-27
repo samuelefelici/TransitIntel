@@ -249,9 +249,12 @@ export async function duplicatePsProject(id: string, name?: string): Promise<PsP
 /** "Metti in esercizio": promuove il feed materializzato a feed attivo unico.
  * Da quel momento Sala Operativa, AVM, GTFS-RT e tariffe puntano a questo
  * programma. Richiede progetto già materializzato (sync PS → feed). */
-export async function activatePsProject(id: string): Promise<{ ok: true; feedId: string }> {
-  return apiFetch<{ ok: true; feedId: string }>(`/api/planning-studio/projects/${id}/activate`, {
+/** Metti in esercizio. `effectiveFrom` (YYYY-MM-DD) opzionale: se futura, lo
+ *  snapshot viene materializzato subito ma lo switch avviene alla decorrenza. */
+export async function activatePsProject(id: string, effectiveFrom?: string): Promise<{ ok: true; feedId: string; scheduledFor?: string }> {
+  return apiFetch<{ ok: true; feedId: string; scheduledFor?: string }>(`/api/planning-studio/projects/${id}/activate`, {
     method: "POST",
+    ...(effectiveFrom ? { body: JSON.stringify({ effectiveFrom }) } : {}),
   });
 }
 
