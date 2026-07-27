@@ -65,6 +65,7 @@ import {
   type DayType as AlgoDayType, type Trip as AlgoTrip, type MatrixContext,
 } from "@/lib/planning-studio/validity-matrix";
 import ValiditySectionNav from "./ValiditySectionNav";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 
 /* ════════════════════════════════════════════════════════════
@@ -747,6 +748,7 @@ export default function PlanningStudioValidityPage() {
           </div>
         </div>
       </div>
+      <PsProjectNav projectId={projectId} active="validity" />
 
       {/* ─── Action bar (riga 2: filtri + azioni raggruppate) ───────── */}
       <div className="border-b border-slate-800 bg-slate-900/60 px-4 py-2.5 flex items-center gap-2 flex-wrap shrink-0">

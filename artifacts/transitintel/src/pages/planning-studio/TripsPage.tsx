@@ -15,6 +15,7 @@ import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
@@ -985,6 +986,7 @@ export default function PlanningStudioTripsPage() {
         )}
         <span className="ml-2"><TripCountBadge projectId={projectId} /></span>
       </div>
+      <PsProjectNav projectId={projectId} active="trips" />
 
       {/* Filtri (flex-wrap: con le azioni bulk attive va a capo invece di uscire dallo schermo) */}
       <div className="min-h-12 border-b border-slate-800 bg-slate-900/40 px-4 py-1.5 flex items-center gap-3 text-xs flex-wrap">

@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { getApiBase, apiFetch } from "@/lib/api";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import {
@@ -2066,6 +2067,7 @@ export default function PlanningStudioEditorPage() {
           <Plus className="w-3.5 h-3.5" /> Nuovo Scheduling
         </button>
       </div>
+      <PsProjectNav projectId={projectId} active="editor" />
 
       {/* ─── Area di lavoro: mappa full + overlays ─── */}
       <div ref={mapContainerRef} className="flex-1 relative overflow-hidden">

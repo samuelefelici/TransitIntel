@@ -16,6 +16,7 @@ import Map, { Source, Layer, NavigationControl, type MapRef } from "react-map-gl
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import {
   ArrowLeft, Landmark, Upload, Trash2, Calculator, Download, Loader2,
   ChevronRight, ChevronDown, Info, Bus, FileText,
@@ -352,6 +353,7 @@ export default function PlanningStudioZonesPage() {
           </button>
         )}
       </div>
+      <PsProjectNav projectId={projectId} active="zones" />
 
       <div className="flex-1 flex overflow-hidden">
         {/* ─── Pannello sinistro: calcolo + risultati ─── */}

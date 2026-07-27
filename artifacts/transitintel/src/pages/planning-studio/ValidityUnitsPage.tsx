@@ -21,6 +21,7 @@ import {
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
 import ValiditySectionNav from "./ValiditySectionNav";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 
 export default function PlanningStudioValidityUnitsPage() {
   const params = useParams<{ id: string }>();
@@ -81,6 +82,7 @@ export default function PlanningStudioValidityUnitsPage() {
             </Link>
           </div>
         </div>
+        <PsProjectNav projectId={projectId} active="units" />
       </div>
 
       <div className="flex-1 overflow-auto p-6">
