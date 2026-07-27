@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download, Search, X,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import {
@@ -43,6 +43,27 @@ export default function PlanningStudioListPage() {
 
   const ownedCount = useMemo(() => projects.filter(p => p.myRole === "owner").length, [projects]);
   const sharedCount = projects.length - ownedCount;
+
+  // ── Ricerca + ordinamento lista ──
+  const [query, setQuery] = useState("");
+  const [sortBy, setSortBy] = useState<"updated" | "name" | "created" | "trips">("updated");
+  const visibleProjects = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? projects.filter(p =>
+          p.name.toLowerCase().includes(q)
+          || (p.agencyName ?? "").toLowerCase().includes(q)
+          || (p.description ?? "").toLowerCase().includes(q))
+      : projects;
+    const sorted = [...filtered];
+    // Il progetto in esercizio resta sempre in testa, poi il criterio scelto.
+    const op = (p: PsProject) => (p.isOperational ? 0 : 1);
+    if (sortBy === "name") sorted.sort((a, b) => op(a) - op(b) || a.name.localeCompare(b.name, "it"));
+    else if (sortBy === "created") sorted.sort((a, b) => op(a) - op(b) || b.createdAt.localeCompare(a.createdAt));
+    else if (sortBy === "trips") sorted.sort((a, b) => op(a) - op(b) || (b.counts?.trips ?? 0) - (a.counts?.trips ?? 0));
+    else sorted.sort((a, b) => op(a) - op(b) || b.updatedAt.localeCompare(a.updatedAt));
+    return sorted;
+  }, [projects, query, sortBy]);
 
   async function handleCreate() {
     if (!name.trim()) { toast.error("Nome obbligatorio"); return; }
@@ -180,6 +201,46 @@ export default function PlanningStudioListPage() {
           <StatCard label="Condivisi con te" value={sharedCount} icon={Users} accent="indigo" />
         </div>
 
+        {/* Ricerca + ordinamento */}
+        {projects.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3 mb-5">
+            <div className="relative flex-1 min-w-56 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+              <input
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Cerca per nome, agenzia o descrizione…"
+                className="w-full pl-9 pr-8 py-2 rounded-lg bg-slate-900 border border-slate-800 text-sm focus:outline-none focus:border-emerald-500 placeholder:text-slate-600"
+              />
+              {query && (
+                <button onClick={() => setQuery("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-500 hover:text-slate-200"
+                  title="Pulisci ricerca">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              Ordina per
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as typeof sortBy)}
+                className="px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
+              >
+                <option value="updated">Ultima modifica</option>
+                <option value="name">Nome (A→Z)</option>
+                <option value="created">Data creazione</option>
+                <option value="trips">Numero corse</option>
+              </select>
+            </label>
+            {query && (
+              <span className="text-xs text-slate-500">
+                {visibleProjects.length} su {projects.length} progetti
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Lista */}
         {loading ? (
           <div className="flex items-center justify-center py-24 text-slate-500">
@@ -187,9 +248,14 @@ export default function PlanningStudioListPage() {
           </div>
         ) : projects.length === 0 ? (
           <EmptyState onCreate={() => setCreateOpen(true)} />
+        ) : visibleProjects.length === 0 ? (
+          <div className="text-center py-16 text-slate-500 text-sm">
+            Nessun progetto corrisponde a "{query}".
+            <button onClick={() => setQuery("")} className="ml-2 underline hover:text-slate-300">Pulisci la ricerca</button>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map(p => (
+            {visibleProjects.map(p => (
               <ProjectCard key={p.id} project={p}
                 onOpen={() => navigate(`/planning-studio/${p.id}`)}
                 onDelete={() => handleDelete(p)}
