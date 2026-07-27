@@ -139,6 +139,7 @@ async function ensurePsTables(): Promise<void> {
       )
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_variants_route ON ps_route_variants(route_id)`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_variants_project ON ps_route_variants(project_id)`);
     // Vista di compatibilità: planning-studio-network.ts interroga "ps_variants".
     // Creata solo se non esiste già nulla con quel nome (in alcuni DB storici
     // può esistere come oggetto creato fuori dal bootstrap).
@@ -183,6 +184,7 @@ async function ensurePsTables(): Promise<void> {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_shapes_project ON ps_shapes(project_id)`);
 
     /* ─── L5 — Calendari di validità ─── */
     await db.execute(sql`
@@ -234,6 +236,7 @@ async function ensurePsTables(): Promise<void> {
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_project ON ps_trips(project_id)`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_variant ON ps_trips(variant_id)`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_cal ON ps_trips(calendar_id)`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_route ON ps_trips(route_id)`);
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_stop_times (
@@ -249,6 +252,9 @@ async function ensurePsTables(): Promise<void> {
         PRIMARY KEY (trip_id, stop_seq)
       )
     `);
+    // Quadri di palina e join variante→transiti filtrano per stop_id: senza
+    // questo indice ogni stampa scansiona l'intera tabella (la più grande).
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_st_stop ON ps_stop_times(stop_id)`);
 
     /* ─── Cache routing OSRM ─── */
     // Chiave logica: mode + coordinate from/to arrotondate a 6 decimali (~10 cm).
@@ -398,6 +404,8 @@ async function ensurePsTables(): Promise<void> {
         PRIMARY KEY (trip_id, date)
       )
     `);
+    // La matrice di validità carica le eccezioni per range di date.
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trip_exc_date ON ps_trip_exceptions(date)`);
 
     /* §2.6 — Service Periods (Estate/Inverno/Scolastico…) */
     await db.execute(sql`

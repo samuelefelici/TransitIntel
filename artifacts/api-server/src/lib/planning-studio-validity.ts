@@ -156,6 +156,7 @@ async function ensureValidityTables(): Promise<void> {
         PRIMARY KEY (trip_id, category_id)
       )
     `);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_tcv_category ON ps_trip_category_validity(category_id)`);
 
     /* ─── Seed system day-types globali ─── */
     for (const dt of SYSTEM_DAY_TYPES) {
@@ -845,19 +846,18 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       if (Number(((ownR as any).rows ?? [])[0]?.c) !== tripIds.length) {
         res.status(404).json({ error: "trip not in project" }); return;
       }
-      let count = 0;
-      for (const tripId of tripIds) {
-        for (const dtId of dayTypeIds) {
-          if (typeof dtId !== "string") continue;
-          await db.execute(sql`
-            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-            VALUES (${tripId}::uuid, ${dtId}::uuid, ${isValid}, now())
-            ON CONFLICT (trip_id, day_type_id) DO UPDATE
-              SET is_valid = EXCLUDED.is_valid, updated_at = now()
-          `);
-          count++;
-        }
-      }
+      const dtIds: string[] = dayTypeIds.filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      // Un solo statement set-based (corse × day-type): atomico e senza N+1 —
+      // prima erano trip×dayType INSERT separati fuori transazione.
+      const upsert = await db.execute(sql`
+        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+        SELECT t.tid, d.dtid, ${isValid}, now()
+          FROM unnest(${`{${tripIds.join(",")}}`}::uuid[]) AS t(tid)
+         CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+        ON CONFLICT (trip_id, day_type_id) DO UPDATE
+          SET is_valid = EXCLUDED.is_valid, updated_at = now()
+      `);
+      const count = (upsert as any).rowCount ?? tripIds.length * dtIds.length;
       await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripIds[0], { count, isValid, trips: tripIds.length });
       telemetry("bulk.trip-row", req.params.id, { tripId: tripIds[0], count, isValid });
       res.json({ ok: true, count });
@@ -883,30 +883,34 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
         res.status(404).json({ error: "trip not in project" }); return;
       }
       const mode = body.mode === "add" ? "add" : "replace";
-      if (mode === "replace") {
-        await db.execute(sql`
-          DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
-        `);
-      }
+      // Transazione: in replace il DELETE e la re-INSERT devono essere atomici
+      // (prima un errore a metà cancellava le categorie senza ripristinarle).
       let count = 0;
-      for (const tripId of tripIds) {
-        for (const catId of categoryIds) {
-          await db.execute(sql`
+      await db.transaction(async (tx) => {
+        if (mode === "replace") {
+          await tx.execute(sql`
+            DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+          `);
+        }
+        if (categoryIds.length > 0) {
+          const ins = await tx.execute(sql`
             INSERT INTO ps_trip_category_validity (trip_id, category_id)
-            VALUES (${tripId}::uuid, ${catId}::uuid)
+            SELECT t.tid, c.cid
+              FROM unnest(${`{${tripIds.join(",")}}`}::uuid[]) AS t(tid)
+             CROSS JOIN unnest(${`{${categoryIds.join(",")}}`}::uuid[]) AS c(cid)
             ON CONFLICT DO NOTHING
           `);
-          count++;
+          count = (ins as any).rowCount ?? tripIds.length * categoryIds.length;
         }
-      }
-      // Curatela MANUALE: da qui in poi le categorie di queste corse vincono sul
-      // calendario aziendale — l'auto-sync non le sovrascrive più (protegge la
-      // doppia validità inserita a mano e le validità azzerate volontariamente).
-      await db.execute(sql`
-        UPDATE ps_trips
-           SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
-         WHERE id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
-      `);
+        // Curatela MANUALE: da qui in poi le categorie di queste corse vincono sul
+        // calendario aziendale — l'auto-sync non le sovrascrive più (protegge la
+        // doppia validità inserita a mano e le validità azzerate volontariamente).
+        await tx.execute(sql`
+          UPDATE ps_trips
+             SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+           WHERE id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
+        `);
+      });
       await logActivity(req.params.id, userId, "validity.bulk.trip-categories", "trip", tripIds[0], { trips: tripIds.length, categories: categoryIds.length });
       telemetry("bulk.trip-categories", req.params.id, { trips: tripIds.length, categories: categoryIds.length });
       res.json({ ok: true, count });
