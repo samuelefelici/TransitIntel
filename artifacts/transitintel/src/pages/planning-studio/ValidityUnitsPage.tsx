@@ -22,6 +22,7 @@ import {
 import { getPsProject } from "@/lib/planning-studio-api";
 import ValiditySectionNav from "./ValiditySectionNav";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 
 export default function PlanningStudioValidityUnitsPage() {
   const params = useParams<{ id: string }>();
@@ -48,6 +49,7 @@ export default function PlanningStudioValidityUnitsPage() {
     onSuccess: () => { toast.success("Unità eliminata"); invalidate(); },
     onError: (e: Error) => toast.error(e.message),
   });
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
 
   const sorted = useMemo(() => {
     const list = unitsQ.data ?? [];
@@ -117,14 +119,24 @@ export default function PlanningStudioValidityUnitsPage() {
                 key={u.id}
                 unit={u}
                 projectId={projectId}
-                onDelete={() => {
-                  if (confirm(`Eliminare l'unità "${u.name}"?`)) delMut.mutate(u.id);
-                }}
+                onDelete={() => setConfirmReq({
+                  title: `Eliminare l'unità "${u.name}"?`,
+                  message: (
+                    <>
+                      L'unità copre <b>{u.dayCount}</b> giorni con <b>{u.tripCount}</b> corse.
+                      Se un progetto di scheduling la referenzia, l'eliminazione fallirà.
+                    </>
+                  ),
+                  confirmLabel: "Elimina",
+                  onConfirm: () => delMut.mutateAsync(u.id).then(() => undefined),
+                })}
               />
             ))}
           </div>
         )}
       </div>
+
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
     </div>
   );
 }

@@ -66,6 +66,7 @@ import {
 } from "@/lib/planning-studio/validity-matrix";
 import ValiditySectionNav from "./ValiditySectionNav";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 
 /* ════════════════════════════════════════════════════════════
@@ -1407,6 +1408,7 @@ interface DayTypeEditorProps {
 
 function DayTypeEditor({ projectId, dayTypes, onClose, canEdit }: DayTypeEditorProps) {
   const qc = useQueryClient();
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [newCode, setNewCode] = useState("");
   const [newName, setNewName] = useState("");
@@ -1469,11 +1471,12 @@ function DayTypeEditor({ projectId, dayTypes, onClose, canEdit }: DayTypeEditorP
                 dt={dt}
                 canEdit={canEdit}
                 onSave={(patch) => updateMut.mutate({ id: dt.id, patch })}
-                onDelete={() => {
-                  if (confirm(`Eliminare "${dt.name}"? L'azione fallisce se è referenziato.`)) {
-                    deleteMut.mutate(dt.id);
-                  }
-                }}
+                onDelete={() => setConfirmReq({
+                  title: `Eliminare il day-type "${dt.name}"?`,
+                  message: "L'eliminazione fallisce se il day-type è ancora referenziato da validità di corse o dal calendario giorni.",
+                  confirmLabel: "Elimina",
+                  onConfirm: () => deleteMut.mutateAsync(dt.id).then(() => undefined),
+                })}
               />
             ))}
             {dayTypes.length === 0 && (
@@ -1481,6 +1484,7 @@ function DayTypeEditor({ projectId, dayTypes, onClose, canEdit }: DayTypeEditorP
             )}
           </div>
         </div>
+        <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
 
         {canEdit && (
           <div className="border-t border-slate-800 p-3 bg-slate-950/40">
@@ -1913,6 +1917,7 @@ function CategoryEditorDialog(props: {
 
 function CategoryRow({ category }: { category: PsValidityCategory }) {
   const qc = useQueryClient();
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(category.name);
   const [color, setColor] = useState(category.color || "#6366f1");
@@ -1975,9 +1980,12 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
             Modifica
           </button>
           <button
-            onClick={() => {
-              if (confirm(`Eliminare la categoria "${category.name}"?`)) deleteMut.mutate();
-            }}
+            onClick={() => setConfirmReq({
+              title: `Eliminare la categoria "${category.name}"?`,
+              message: "La categoria è un'anagrafica condivisa: il suo calendario e le assegnazioni alle corse che la usano perdono il riferimento.",
+              confirmLabel: "Elimina",
+              onConfirm: () => deleteMut.mutateAsync().then(() => undefined),
+            })}
             disabled={deleteMut.isPending}
             className="px-2.5 py-1 text-xs rounded-md border border-rose-500/30 bg-rose-500/5 text-rose-300 hover:bg-rose-500/15 transition-colors"
           >
@@ -1985,6 +1993,7 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
           </button>
         </>
       )}
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
     </div>
   );
 }

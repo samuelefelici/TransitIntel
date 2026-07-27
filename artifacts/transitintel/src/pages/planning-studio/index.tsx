@@ -96,9 +96,12 @@ export default function PlanningStudioListPage() {
     }
   }
 
-  async function handleDuplicate(p: PsProject) {
-    const name = prompt("Nome della copia:", `${p.name} (copia)`);
-    if (name === null) return;
+  // Dialog in-app (niente prompt/confirm nativi: i browser possono sopprimerli
+  // rendendo il click un no-op silenzioso — vedi nota su handleDelete).
+  const [dupTarget, setDupTarget] = useState<PsProject | null>(null);
+  const [activateTarget, setActivateTarget] = useState<PsProject | null>(null);
+
+  async function doDuplicate(p: PsProject, name: string) {
     const tid = toast.loading(`Duplico "${p.name}"…`, { description: "Copia del programma in corso…" });
     try {
       const copy = await duplicatePsProject(p.id, name.trim() || undefined);
@@ -106,6 +109,7 @@ export default function PlanningStudioListPage() {
       refresh();
     } catch (e: any) {
       toast.error("Duplicazione fallita", { id: tid, description: e?.message });
+      throw e;
     }
   }
 
@@ -130,27 +134,9 @@ export default function PlanningStudioListPage() {
     }
   }
 
-  async function handleActivate(p: PsProject) {
-    if (!confirm(
-      `Mettere in esercizio "${p.name}"?\n\n` +
-      `Il programma verrà materializzato (tutte le corse attive) e diventerà il ` +
-      `programma operativo unico: Sala Operativa, AVM, GTFS-RT e tariffe punteranno ` +
-      `al suo feed. Gli altri programmi restano modificabili ma non operativi.`,
-    )) return;
-    // DECORRENZA opzionale: vuoto = subito; una data futura = lo snapshot viene
-    // materializzato ora (congelato e verificabile) ma lo switch avviene quel giorno.
-    const eff = prompt(
-      "Data di DECORRENZA (AAAA-MM-GG).\n\n" +
-      "Lascia vuoto per mettere in esercizio SUBITO.\n" +
-      "Con una data futura, il programma viene preparato ora e diventerà operativo quel giorno.",
-      "",
-    );
-    if (eff === null) return; // annullato
-    const effTrim = eff.trim();
-    if (effTrim && !/^\d{4}-\d{2}-\d{2}$/.test(effTrim)) {
-      toast.error("Data non valida", { description: "Usa il formato AAAA-MM-GG (es. 2026-09-01), o lascia vuoto per attivare subito." });
-      return;
-    }
+  // Invocata dal dialog di attivazione: effTrim vuoto = subito, altrimenti
+  // decorrenza futura (snapshot materializzato ora, switch automatico quel giorno).
+  async function doActivate(p: PsProject, effTrim: string) {
     const tid = toast.loading(`Metto in esercizio "${p.name}"…`, {
       description: "Materializzazione del programma in corso…",
     });
@@ -167,6 +153,7 @@ export default function PlanningStudioListPage() {
       refresh();
     } catch (e: any) {
       toast.error("Messa in esercizio fallita", { id: tid, description: e?.message });
+      throw e;
     }
   }
 
@@ -260,8 +247,8 @@ export default function PlanningStudioListPage() {
                 onOpen={() => navigate(`/planning-studio/${p.id}`)}
                 onDelete={() => handleDelete(p)}
                 onShare={() => setShareProject(p)}
-                onActivate={() => handleActivate(p)}
-                onDuplicate={() => handleDuplicate(p)}
+                onActivate={() => setActivateTarget(p)}
+                onDuplicate={() => setDupTarget(p)}
                 onExportGtfs={() => handleExportGtfs(p)}
               />
             ))}
@@ -327,6 +314,24 @@ export default function PlanningStudioListPage() {
           canManage={shareProject.myRole === "owner"}
           onClose={() => setShareProject(null)}
           onChange={refresh}
+        />
+      )}
+
+      {/* Dialog duplica (niente prompt nativo) */}
+      {dupTarget && (
+        <DuplicateProjectDialog
+          project={dupTarget}
+          onClose={() => setDupTarget(null)}
+          onConfirm={(name) => doDuplicate(dupTarget, name)}
+        />
+      )}
+
+      {/* Dialog messa in esercizio con decorrenza */}
+      {activateTarget && (
+        <ActivateProjectDialog
+          project={activateTarget}
+          onClose={() => setActivateTarget(null)}
+          onConfirm={(eff) => doActivate(activateTarget, eff)}
         />
       )}
     </div>
@@ -510,6 +515,157 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       >
         <Plus className="w-4 h-4" /> Nuovo progetto
       </button>
+    </div>
+  );
+}
+
+/* ── Dialog duplica progetto (sostituisce il prompt() nativo) ── */
+function DuplicateProjectDialog({
+  project, onClose, onConfirm,
+}: {
+  project: PsProject;
+  onClose: () => void;
+  onConfirm: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(`${project.name} (copia)`);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim() || busy) return;
+    setBusy(true);
+    try { await onConfirm(name); onClose(); } catch { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !busy && onClose()}>
+      <motion.div
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-md mx-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl"
+      >
+        <div className="px-6 py-4 border-b border-slate-800">
+          <h2 className="text-lg font-semibold flex items-center gap-2"><Copy className="w-4 h-4 text-cyan-400" /> Duplica progetto</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Copia profonda di "{project.name}": rete, corse, calendari e classificazione giorni.
+            La copia nasce non operativa — è la base per la prossima versione del servizio.
+          </p>
+        </div>
+        <div className="px-6 py-5">
+          <label className="block text-xs font-medium text-slate-400 mb-1.5">Nome della copia *</label>
+          <input value={name} onChange={e => setName(e.target.value)} autoFocus
+            onKeyDown={e => { if (e.key === "Enter") submit(); if (e.key === "Escape" && !busy) onClose(); }}
+            className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-emerald-500"
+          />
+        </div>
+        <div className="px-6 py-4 border-t border-slate-800 flex justify-end gap-2">
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-40">Annulla</button>
+          <button onClick={submit} disabled={!name.trim() || busy}
+            className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+          >
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />} Duplica
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+/* ── Dialog messa in esercizio: subito o con DECORRENZA ──
+ * Sostituisce la sequenza confirm()+prompt() (sopprimibile dal browser e
+ * fragile sul formato data) con un'unica scelta esplicita + date-picker. */
+function ActivateProjectDialog({
+  project, onClose, onConfirm,
+}: {
+  project: PsProject;
+  onClose: () => void;
+  onConfirm: (effectiveFrom: string) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"now" | "scheduled">("now");
+  const [date, setDate] = useState("");
+  const [busy, setBusy] = useState(false);
+  const tomorrow = useMemo(() => {
+    const d = new Date(Date.now() + 86_400_000);
+    return d.toISOString().slice(0, 10);
+  }, []);
+  const canSubmit = !busy && (mode === "now" || (date && date >= tomorrow));
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    try { await onConfirm(mode === "scheduled" ? date : ""); onClose(); } catch { setBusy(false); }
+  };
+  const c = project.counts;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => !busy && onClose()}>
+      <motion.div
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-lg mx-4 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl"
+      >
+        <div className="px-6 py-4 border-b border-slate-800">
+          <h2 className="text-lg font-semibold flex items-center gap-2"><Power className="w-4 h-4 text-emerald-400" /> Metti in esercizio</h2>
+          <p className="text-xs text-slate-500 mt-0.5">"{project.name}" diventerà il programma operativo unico.</p>
+        </div>
+        <div className="px-6 py-5 space-y-4">
+          {/* Riepilogo impatto */}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs text-slate-300 space-y-1.5">
+            {c && (
+              <p>
+                Verranno materializzate <b className="text-slate-100">{c.trips.toLocaleString("it-IT")}</b> corse
+                su <b className="text-slate-100">{c.routes}</b> linee ({c.stops.toLocaleString("it-IT")} fermate).
+              </p>
+            )}
+            <p>
+              Sala Operativa, AVM, GTFS-RT e tariffe punteranno al feed di questo programma;
+              il feed operativo precedente viene <b>archiviato</b> (non cancellato) e resta consultabile nello storico attivazioni.
+            </p>
+          </div>
+
+          {/* Scelta: subito o con decorrenza */}
+          <div className="space-y-2">
+            <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
+              mode === "now" ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-800 hover:border-slate-700"
+            }`}>
+              <input type="radio" checked={mode === "now"} onChange={() => setMode("now")} className="mt-0.5 accent-emerald-500" />
+              <span>
+                <span className="block text-sm font-medium text-slate-100">Attiva subito</span>
+                <span className="block text-xs text-slate-500">Lo switch avviene immediatamente.</span>
+              </span>
+            </label>
+            <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
+              mode === "scheduled" ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-800 hover:border-slate-700"
+            }`}>
+              <input type="radio" checked={mode === "scheduled"} onChange={() => setMode("scheduled")} className="mt-0.5 accent-emerald-500" />
+              <span className="flex-1">
+                <span className="block text-sm font-medium text-slate-100">Attiva con decorrenza</span>
+                <span className="block text-xs text-slate-500 mb-2">
+                  Lo snapshot viene preparato ORA (congelato e verificabile); lo switch a operativo
+                  avviene automaticamente il giorno scelto. Il programma attuale resta in esercizio fino ad allora.
+                </span>
+                {mode === "scheduled" && (
+                  <input
+                    type="date" value={date} min={tomorrow}
+                    onChange={e => setDate(e.target.value)}
+                    className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-emerald-500 [color-scheme:dark]"
+                  />
+                )}
+                {mode === "scheduled" && date && date < tomorrow && (
+                  <span className="block text-[11px] text-rose-400 mt-1">La decorrenza deve essere una data futura.</span>
+                )}
+              </span>
+            </label>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-slate-800 flex justify-end gap-2">
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-40">Annulla</button>
+          <button onClick={submit} disabled={!canSubmit}
+            className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2"
+          >
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+            <Power className="w-4 h-4" />
+            {mode === "now" ? "Metti in esercizio" : "Programma attivazione"}
+          </button>
+        </div>
+      </motion.div>
     </div>
   );
 }

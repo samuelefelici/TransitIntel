@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
@@ -881,6 +882,7 @@ export default function PlanningStudioTripsPage() {
 
   /* ─── Drawer dettaglio corsa ─── */
   const [detailTripId, setDetailTripId] = useState<string | null>(null);
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
   const detailTrip = useMemo(
     () => filteredTrips.find(t => t.id === detailTripId) ?? null,
     [detailTripId, filteredTrips],
@@ -987,6 +989,7 @@ export default function PlanningStudioTripsPage() {
         <span className="ml-2"><TripCountBadge projectId={projectId} /></span>
       </div>
       <PsProjectNav projectId={projectId} active="trips" />
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
 
       {/* Filtri (flex-wrap: con le azioni bulk attive va a capo invece di uscire dallo schermo) */}
       <div className="min-h-12 border-b border-slate-800 bg-slate-900/40 px-4 py-1.5 flex items-center gap-3 text-xs flex-wrap">
@@ -1084,15 +1087,19 @@ export default function PlanningStudioTripsPage() {
           {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
         </button>
         <button
-          onClick={() => {
-            const scope = variantId ? "il percorso selezionato" : "TUTTI i percorsi del progetto";
-            if (!confirm(
-              `Creare un PROTOTIPO (Corsa ZERO) per ${scope} che non ha ancora corse?\n\n` +
-              `Per ogni percorso senza corse viene creata una corsa senza orario reale, ` +
-              `con i tempi di percorrenza calcolati dalle distanze. Serve come template per «Genera a cadenza».`
-            )) return;
-            protoMissingMut.mutate();
-          }}
+          onClick={() => setConfirmReq({
+            title: "Creare i prototipi mancanti (Corsa ZERO)?",
+            variant: "primary",
+            message: (
+              <>
+                Ambito: <b>{variantId ? "il percorso selezionato" : "TUTTI i percorsi del progetto"}</b> senza corse.
+                Per ognuno viene creata una corsa senza orario reale, con i tempi di percorrenza
+                calcolati dalle distanze — il template per «Genera a cadenza».
+              </>
+            ),
+            confirmLabel: "Crea prototipi",
+            onConfirm: () => { protoMissingMut.mutate(); },
+          })}
           disabled={protoMissingMut.isPending}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50"
           title="Crea una Corsa ZERO (prototipo) per ogni percorso senza corse: utile quando hai i percorsi ma non le corse (es. GTFS importato e corse cancellate). Poi genera le corse reali con «Genera a cadenza»."
@@ -1376,9 +1383,18 @@ export default function PlanningStudioTripsPage() {
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
-                        onClick={() => {
-                          if (confirm("Eliminare questa corsa?")) deleteMut.mutate(t.id);
-                        }}
+                        onClick={() => setConfirmReq({
+                          title: "Eliminare questa corsa?",
+                          message: (
+                            <>
+                              {t.shortName ? <><b>{t.shortName}</b> · </> : null}
+                              {t.firstDeparture ? <>partenza <b>{t.firstDeparture.slice(0, 5)}</b> · </> : null}
+                              {t.headsign ?? "senza destinazione"}
+                            </>
+                          ),
+                          confirmLabel: "Elimina",
+                          onConfirm: () => { deleteMut.mutate(t.id); },
+                        })}
                         className="p-1 rounded text-rose-400 hover:bg-rose-500/10"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1401,7 +1417,18 @@ export default function PlanningStudioTripsPage() {
           onChange={() => qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] })}
           onRequestCopy={() => { setCopyTripId(detailTrip.id); setDetailTripId(null); }}
           onToggleActive={() => updateMut.mutate({ id: detailTrip.id, patch: { isActive: !detailTrip.isActive } })}
-          onDelete={() => { if (confirm("Eliminare questa corsa?")) { deleteMut.mutate(detailTrip.id); setDetailTripId(null); } }}
+          onDelete={() => setConfirmReq({
+            title: "Eliminare questa corsa?",
+            message: (
+              <>
+                {detailTrip.shortName ? <><b>{detailTrip.shortName}</b> · </> : null}
+                {detailTrip.firstDeparture ? <>partenza <b>{detailTrip.firstDeparture.slice(0, 5)}</b> · </> : null}
+                {detailTrip.headsign ?? "senza destinazione"}
+              </>
+            ),
+            confirmLabel: "Elimina",
+            onConfirm: () => { deleteMut.mutate(detailTrip.id); setDetailTripId(null); },
+          })}
         />
       )}
       {/* ─── Dialog: Stampa elenco corse — scelta linee ─── */}

@@ -32,6 +32,7 @@ import {
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import { getApiBase, apiFetch } from "@/lib/api";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import {
@@ -973,8 +974,54 @@ export default function PlanningStudioEditorPage() {
     }
   }
 
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
+  // Poligono appena chiuso in attesa di nome (dialog zona vietata)
+  const [zoneNameAsk, setZoneNameAsk] = useState<Array<[number, number]> | null>(null);
+  const [zoneNameDraft, setZoneNameDraft] = useState("");
+  const [zoneSaving, setZoneSaving] = useState(false);
+  async function saveNamedZone() {
+    if (!zoneNameAsk || !zoneNameDraft.trim() || zoneSaving) return;
+    setZoneSaving(true);
+    try {
+      await createPsNoGoZone(projectId, { name: zoneNameDraft.trim(), polygon: zoneNameAsk });
+      toast.success("Zona vietata creata", { description: "I percorsi che la attraversano verranno segnalati." });
+      setZoneNameAsk(null); setZoneNameDraft("");
+      await reloadNoGoZones();
+      if (editor && editor.waypoints.length >= 2) recomputeShape(editor.waypoints, editor.shapeMode);
+    } catch (err: any) {
+      toast.error("Errore creazione zona", { description: err?.message });
+    } finally { setZoneSaving(false); }
+  }
+
+  /** Cleanup locale dopo l'eliminazione di una variante (la LINEA resta sempre). */
+  function afterVariantDeleted(id: string) {
+    let ownerRouteId: string | null = null;
+    setRouteVariants(prev => {
+      const next = { ...prev };
+      for (const k of Object.keys(next)) {
+        if (next[k].some(v => v.id === id)) ownerRouteId = k;
+        next[k] = next[k].filter(v => v.id !== id);
+      }
+      return next;
+    });
+    if (ownerRouteId) {
+      setRoutes(rs => rs.map(r => r.id === ownerRouteId
+        ? { ...r, variantCount: Math.max(0, (r.variantCount ?? 1) - 1) } : r));
+    }
+    toast.success("Percorso eliminato", { description: "La linea resta (anche con 0 percorsi)." });
+  }
+
+  function askDeleteStop(id: string) {
+    const st = stops.find(x => x.id === id);
+    setConfirmReq({
+      title: `Eliminare la fermata${st ? ` "${st.name}"` : ""}?`,
+      message: "L'eliminazione fallisce se la fermata è ancora usata da un percorso.",
+      confirmLabel: "Elimina",
+      onConfirm: () => handleDeleteStop(id),
+    });
+  }
+
   async function handleDeleteStop(id: string) {
-    if (!confirm("Eliminare la fermata?")) return;
     try {
       await deletePsStop(projectId, id);
       setStops(s => s.filter(x => x.id !== id));
@@ -2068,6 +2115,35 @@ export default function PlanningStudioEditorPage() {
         </button>
       </div>
       <PsProjectNav projectId={projectId} active="editor" />
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
+      {/* Dialog nome zona vietata (il poligono resta finché non salvi o annulli) */}
+      {zoneNameAsk && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+          onClick={() => { if (!zoneSaving) { setZoneNameAsk(null); setZoneNameDraft(""); } }}>
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm text-slate-100"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-slate-800">
+              <h2 className="text-sm font-semibold flex items-center gap-2"><Ban className="w-4 h-4 text-red-400" /> Nuova zona vietata</h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">{zoneNameAsk.length} vertici · i percorsi che la attraversano verranno segnalati</p>
+            </div>
+            <div className="px-5 py-4">
+              <label className="block text-[11px] text-slate-400 mb-1.5">Nome della zona *</label>
+              <input value={zoneNameDraft} onChange={(e) => setZoneNameDraft(e.target.value)} autoFocus
+                placeholder="es. ZTL centro storico"
+                onKeyDown={(e) => { if (e.key === "Enter") void saveNamedZone(); }}
+                className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-sm focus:outline-none focus:border-red-500" />
+            </div>
+            <div className="px-5 py-3.5 border-t border-slate-800 flex justify-end gap-2">
+              <button onClick={() => { setZoneNameAsk(null); setZoneNameDraft(""); }} disabled={zoneSaving}
+                className="px-3.5 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40">Annulla</button>
+              <button onClick={() => void saveNamedZone()} disabled={!zoneNameDraft.trim() || zoneSaving}
+                className="px-3.5 py-1.5 text-sm font-medium rounded-lg bg-red-600 hover:bg-red-500 text-white flex items-center gap-1.5 disabled:opacity-50">
+                {zoneSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Crea zona
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ─── Area di lavoro: mappa full + overlays ─── */}
       <div ref={mapContainerRef} className="flex-1 relative overflow-hidden">
@@ -2126,21 +2202,10 @@ export default function PlanningStudioEditorPage() {
                 toast.error("Servono almeno 3 vertici per chiudere la zona");
                 return;
               }
-              const name = prompt("Nome della zona vietata (es. ZTL centro storico):");
+              // Il nome viene chiesto con un dialog in-app (niente prompt nativo,
+              // sopprimibile dal browser: il poligono andava perso in silenzio).
               setZoneDraw(null);
-              if (name && name.trim()) {
-                void (async () => {
-                  try {
-                    await createPsNoGoZone(projectId, { name: name.trim(), polygon: poly });
-                    toast.success("Zona vietata creata", { description: "I percorsi che la attraversano verranno segnalati." });
-                    await reloadNoGoZones();
-                    // se c'è un editor attivo, ricalcola per evidenziare subito eventuali violazioni
-                    if (editor && editor.waypoints.length >= 2) recomputeShape(editor.waypoints, editor.shapeMode);
-                  } catch (err: any) {
-                    toast.error("Errore creazione zona", { description: err?.message });
-                  }
-                })();
-              }
+              setZoneNameAsk(poly);
               return;
             }
             // Chiusura poligono in modalità draw cluster
@@ -2323,9 +2388,10 @@ export default function PlanningStudioEditorPage() {
                 <p className="text-[10px] text-slate-500">Zona vietata bus: i percorsi che la attraversano vengono segnalati.</p>
                 {(project?.myRole === "owner" || project?.myRole === "editor") && (
                   <button
-                    onClick={() => {
-                      if (!confirm(`Eliminare la zona vietata "${zoneInfo.name}"?`)) return;
-                      void (async () => {
+                    onClick={() => setConfirmReq({
+                      title: `Eliminare la zona vietata "${zoneInfo.name}"?`,
+                      confirmLabel: "Elimina",
+                      onConfirm: () => { void (async () => {
                         try {
                           await deletePsNoGoZone(projectId, zoneInfo.id);
                           setZoneInfo(null);
@@ -2333,8 +2399,9 @@ export default function PlanningStudioEditorPage() {
                           await reloadNoGoZones();
                           if (editor && editor.waypoints.length >= 2) recomputeShape(editor.waypoints, editor.shapeMode);
                         } catch (err: any) { toast.error("Errore", { description: err?.message }); }
-                      })();
-                    }}
+                      })(); },
+                    })}
+
                     className="w-full text-[11px] px-2 py-1 rounded bg-red-600 hover:bg-red-500 text-white font-medium"
                   >
                     Elimina zona
@@ -3086,7 +3153,7 @@ export default function PlanningStudioEditorPage() {
                       mapRef.current?.flyTo({ center: [s.lon, s.lat], zoom: 16, duration: 600 });
                     }}
                     onEdit={(s) => setEditingStop(s)}
-                    onDelete={handleDeleteStop}
+                    onDelete={askDeleteStop}
                     onAddNew={() => setTool("addStop")}
                     visibility={stopsFilter}
                     onChangeVisibility={setStopsFilter}
@@ -3115,10 +3182,19 @@ export default function PlanningStudioEditorPage() {
                     }}
                     onCreateRoute={handleCreateRoute}
                     onUpdateRoute={handleUpdateRoute}
-                    onDeleteRoute={async (id) => {
-                      if (!confirm("Eliminare la linea e tutte le sue varianti?")) return;
-                      try { await deletePsRoute(projectId, id); setRoutes(rs => rs.filter(r => r.id !== id)); toast.success("Linea eliminata"); }
-                      catch (e: any) { toast.error("Errore", { description: e?.message }); }
+                    onDeleteRoute={(id) => {
+                      const r = routes.find(x => x.id === id);
+                      setConfirmReq({
+                        title: `Eliminare la linea${r ? ` ${r.shortName}` : ""} e tutte le sue varianti?`,
+                        message: r?.variantCount
+                          ? <>La linea ha <b>{r.variantCount}</b> percorsi: verranno eliminati con lei.</>
+                          : "Verranno eliminati anche i percorsi della linea.",
+                        confirmLabel: "Elimina linea",
+                        onConfirm: async () => {
+                          try { await deletePsRoute(projectId, id); setRoutes(rs => rs.filter(x => x.id !== id)); toast.success("Linea eliminata"); }
+                          catch (e: any) { toast.error("Errore", { description: e?.message }); throw e; }
+                        },
+                      });
                     }}
                     onCreateVariant={handleCreateVariant}
                     onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
@@ -3127,37 +3203,31 @@ export default function PlanningStudioEditorPage() {
                     shownRouteIds={new Set(Object.keys(multiShown))}
                     loadingShowRouteId={multiLoading}
                     onToggleShowRoute={toggleShowRoute}
-                    onDeleteVariant={async (id) => {
-                      if (!confirm("Eliminare il percorso (variante)? La linea resta comunque.")) return;
-                      try {
+                    onDeleteVariant={(id) => setConfirmReq({
+                      title: "Eliminare il percorso (variante)?",
+                      message: "La linea resta comunque, anche con 0 percorsi.",
+                      confirmLabel: "Elimina percorso",
+                      onConfirm: async () => {
                         try {
                           await deletePsVariant(projectId, id);
+                          afterVariantDeleted(id);
                         } catch (e: any) {
-                          // 409 = il percorso ha corse collegate: serve la
-                          // conferma esplicita per eliminarle insieme
-                          if (e?.status !== 409) throw e;
+                          // 409 = il percorso ha corse collegate: SECONDO dialog
+                          // esplicito per eliminarle insieme (force).
+                          if (e?.status !== 409) { toast.error("Errore", { description: e?.message }); throw e; }
                           const n = e?.body?.tripCount;
-                          if (!confirm(`Il percorso ha ${n ?? "delle"} corse collegate.\nEliminare ANCHE le corse insieme al percorso?`)) return;
-                          await deletePsVariant(projectId, id, { force: true });
+                          setTimeout(() => setConfirmReq({
+                            title: `Il percorso ha ${n ?? "delle"} corse collegate`,
+                            message: "Eliminare ANCHE le corse insieme al percorso? Le corse eliminate spariscono da orari, stampe e matrice di validità.",
+                            confirmLabel: "Elimina percorso e corse",
+                            onConfirm: async () => {
+                              try { await deletePsVariant(projectId, id, { force: true }); afterVariantDeleted(id); }
+                              catch (err: any) { toast.error("Errore", { description: err?.message }); throw err; }
+                            },
+                          }), 0);
                         }
-                        let ownerRouteId: string | null = null;
-                        setRouteVariants(prev => {
-                          const next = { ...prev };
-                          for (const k of Object.keys(next)) {
-                            if (next[k].some(v => v.id === id)) ownerRouteId = k;
-                            next[k] = next[k].filter(v => v.id !== id);
-                          }
-                          return next;
-                        });
-                        // Aggiorna il conteggio sulla linea: la LINEA non viene mai
-                        // eliminata, anche a 0 percorsi.
-                        if (ownerRouteId) {
-                          setRoutes(rs => rs.map(r => r.id === ownerRouteId
-                            ? { ...r, variantCount: Math.max(0, (r.variantCount ?? 1) - 1) } : r));
-                        }
-                        toast.success("Percorso eliminato", { description: "La linea resta (anche con 0 percorsi)." });
-                      } catch (e: any) { toast.error("Errore", { description: e?.message }); }
-                    }}
+                      },
+                    })}
                   />
                 )}
                 {activePanel === "clusters" && (
@@ -3315,7 +3385,7 @@ export default function PlanningStudioEditorPage() {
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 text-xs font-medium">
                       <Pencil className="w-3.5 h-3.5" /> Modifica
                     </button>
-                    <button onClick={() => handleDeleteStop(s.id)}
+                    <button onClick={() => askDeleteStop(s.id)}
                       className="px-3 py-2 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -4145,8 +4215,16 @@ function ClustersPanel({
     if (c.centerLat != null && c.centerLon != null) onFlyTo(Number(c.centerLat), Number(c.centerLon));
   }
 
+  const [panelConfirm, setPanelConfirm] = useState<ConfirmRequest | null>(null);
+  function askDelete(c: PsCluster) {
+    setPanelConfirm({
+      title: `Eliminare il cluster "${c.name}"?`,
+      message: "Le fermate verranno scollegate (non cancellate).",
+      confirmLabel: "Elimina",
+      onConfirm: () => handleDelete(c),
+    });
+  }
   async function handleDelete(c: PsCluster) {
-    if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate verranno scollegate (non cancellate).`)) return;
     setBusyId(c.id);
     try {
       await deletePsCluster(projectId, c.id);
@@ -4157,9 +4235,17 @@ function ClustersPanel({
     finally { setBusyId(null); }
   }
 
+  function askBulkDelete() {
+    if (clusters.length === 0) return;
+    setPanelConfirm({
+      title: `Eliminare TUTTI i ${clusters.length} cluster del progetto?`,
+      message: "Le fermate verranno scollegate (non cancellate). Operazione NON reversibile.",
+      confirmLabel: "Elimina tutti",
+      onConfirm: () => handleBulkDelete(),
+    });
+  }
   async function handleBulkDelete() {
     if (clusters.length === 0) return;
-    if (!confirm(`Eliminare TUTTI i ${clusters.length} cluster del progetto?\n\nLe fermate verranno scollegate (non cancellate).\nNON reversibile.`)) return;
     setBulkDeleting(true);
     let ok = 0, ko = 0;
     const POOL = 8;
@@ -4268,6 +4354,7 @@ function ClustersPanel({
 
   return (
     <div className="flex flex-col h-full">
+      <ConfirmDialog req={panelConfirm} onClose={() => setPanelConfirm(null)} />
       {/* ─── PANNELLO EDIT (creazione o modifica) ─── */}
       {clusterDraw ? (
         <div className="flex-1 flex flex-col bg-slate-900 overflow-hidden">
@@ -4506,7 +4593,7 @@ function ClustersPanel({
               </button>
               {clusters.length > 0 && (
                 <button
-                  onClick={handleBulkDelete}
+                  onClick={askBulkDelete}
                   disabled={bulkDeleting}
                   title="Elimina tutti i cluster"
                   className="px-2 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white text-xs inline-flex items-center justify-center disabled:opacity-50"
@@ -4575,7 +4662,7 @@ function ClustersPanel({
                         className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-300">
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => handleDelete(c)} disabled={isBusy} title="Elimina"
+                      <button onClick={() => askDelete(c)} disabled={isBusy} title="Elimina"
                         className="p-1 rounded hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 disabled:opacity-50">
                         {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                       </button>
@@ -5278,8 +5365,16 @@ function NeClustersPanel({
   function showAll() { setHidden(new Set()); }
   function hideAll() { setHidden(new Set(clusters.map(c => c.id))); }
 
+  const [panelConfirm, setPanelConfirm] = useState<ConfirmRequest | null>(null);
+  function askDelete(c: GlobalCluster) {
+    setPanelConfirm({
+      title: `Eliminare il cluster "${c.name}"?`,
+      message: "Le fermate associate verranno scollegate.",
+      confirmLabel: "Elimina",
+      onConfirm: () => handleDelete(c),
+    });
+  }
   async function handleDelete(c: GlobalCluster) {
-    if (!confirm(`Eliminare il cluster "${c.name}"?\nLe fermate associate verranno scollegate.`)) return;
     setBusyId(c.id);
     try {
       const r = await fetch(`${getApiBase()}/api/clusters/${c.id}`, { method: "DELETE" });
@@ -5309,13 +5404,17 @@ function NeClustersPanel({
     } finally { setBusyId(null); }
   }
 
+  function askBulkDelete() {
+    if (clusters.length === 0) return;
+    setPanelConfirm({
+      title: `Eliminare TUTTI i ${clusters.length} cluster?`,
+      message: "Le fermate associate verranno scollegate (ma non cancellate). Operazione NON reversibile.",
+      confirmLabel: "Elimina tutti",
+      onConfirm: () => handleBulkDelete(),
+    });
+  }
   async function handleBulkDelete() {
     if (clusters.length === 0) return;
-    if (!confirm(
-      `Eliminare TUTTI i ${clusters.length} cluster?\n\n` +
-      `Le fermate associate verranno scollegate (ma non cancellate).\n` +
-      `Operazione NON reversibile.`
-    )) return;
     setBulkDeleting(true);
     let ok = 0, ko = 0;
     const POOL = 8;
@@ -5340,6 +5439,7 @@ function NeClustersPanel({
 
   return (
     <div className="flex flex-col h-full">
+      <ConfirmDialog req={panelConfirm} onClose={() => setPanelConfirm(null)} />
       {/* Header con toolbar */}
       <div className="p-2 border-b border-slate-800 space-y-2 shrink-0">
         <div className="flex items-center justify-between">
@@ -5355,7 +5455,7 @@ function NeClustersPanel({
             <Pencil className="w-3 h-3" /> Editor avanzato
           </Link>
           {clusters.length > 0 && (
-            <button onClick={handleBulkDelete} disabled={bulkDeleting} title="Elimina tutti"
+            <button onClick={askBulkDelete} disabled={bulkDeleting} title="Elimina tutti"
               className="text-[11px] px-2 py-1.5 rounded bg-rose-600/80 hover:bg-rose-500 text-white inline-flex items-center gap-1 disabled:opacity-50">
               {bulkDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
             </button>
@@ -5444,7 +5544,7 @@ function NeClustersPanel({
                     className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-amber-300">
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
-                  <button onClick={() => handleDelete(c)} disabled={isBusy} title="Elimina"
+                  <button onClick={() => askDelete(c)} disabled={isBusy} title="Elimina"
                     className="p-1 rounded hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 disabled:opacity-50">
                     {isBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
                   </button>
@@ -5614,8 +5714,16 @@ function DepotEditModal({
     } finally { setSaving(false); }
   }
 
+  const [removeConfirm, setRemoveConfirm] = useState<ConfirmRequest | null>(null);
+  function askRemove() {
+    setRemoveConfirm({
+      title: `Eliminare il deposito "${name}"?`,
+      message: "Il deposito è condiviso da tutto il sistema (scheduling incluso), non solo da questo progetto.",
+      confirmLabel: "Elimina",
+      onConfirm: () => remove(),
+    });
+  }
   async function remove() {
-    if (!confirm(`Eliminare il deposito "${name}"?`)) return;
     setSaving(true);
     try {
       const r = await fetch(`${getApiBase()}/api/depots/${depot.id}`, { method: "DELETE" });
@@ -5629,6 +5737,7 @@ function DepotEditModal({
 
   return (
     <div className="absolute inset-0 z-40 bg-black/60 flex items-center justify-center" onClick={onClose}>
+      <ConfirmDialog req={removeConfirm} onClose={() => setRemoveConfirm(null)} />
       <div className="bg-slate-950 border border-slate-800 rounded-xl shadow-2xl w-[420px] max-w-[90vw] p-5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-semibold text-slate-100 flex items-center gap-2">
@@ -5685,7 +5794,7 @@ function DepotEditModal({
         </div>
         <div className="flex gap-2 mt-5">
           {!isNew && (
-            <button onClick={remove} disabled={saving}
+            <button onClick={askRemove} disabled={saving}
               className="px-3 py-2 rounded bg-red-600/20 hover:bg-red-600/30 text-red-400 text-xs font-medium inline-flex items-center gap-1">
               <Trash2 className="w-3.5 h-3.5" /> Elimina
             </button>
