@@ -53,6 +53,9 @@ async function ensureRosterTables(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
+  // SNAPSHOT minimo del turno al momento dell'assegnazione (inizio/fine/ore/
+  // deposito): se il DSS viene versionato o sparisce, lo storico resta leggibile.
+  await db.execute(sql`ALTER TABLE roster_assignments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
   // Un conducente può fare PIÙ turni nello stesso giorno: togliamo il vincolo
   // "un turno per giorno". Resta UNIQUE(dss_id, day, duty_code): un turno è
   // assegnabile a un solo conducente.
@@ -583,6 +586,69 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       WHERE is_active = true ORDER BY cognome NULLS LAST, nome NULLS LAST, name
     `);
 
+    // ── Modalità AUTO (dssId = "auto"): risoluzione del DSS competente PER
+    // DATA usando i periodi valid_from/valid_to (P5). La settimana a cavallo
+    // di un cambio turni diventa visibile in un'unica board: giorni < X sul
+    // DSS vecchio, giorni ≥ X sul nuovo. I duty arrivano raggruppati per DSS.
+    if (dssId === "auto") {
+      const userId = (req as any).user?.id ?? null;
+      const assignAll = await db.execute<any>(sql`
+        SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.snapshot
+        FROM roster_assignments a
+        WHERE a.day >= ${from}::date AND a.day < ${from}::date + (${days} * interval '1 day')
+      `);
+      // candidati = DSS referenziati dalle assegnazioni nel range ∪ DSS con
+      // periodo che interseca la finestra o attualmente operativi (accessibili)
+      const candQ = await db.execute<any>(sql`
+        SELECT d.id, d.result, COALESCE(d.is_operational, false) AS is_operational,
+               to_char(d.valid_from, 'YYYY-MM-DD') AS valid_from,
+               to_char(d.valid_to,   'YYYY-MM-DD') AS valid_to,
+               d.created_at
+          FROM driver_shift_scenarios d
+         WHERE (d.owner_user_id = ${userId}::uuid OR d.owner_user_id IS NULL)
+           AND (
+             d.id IN (SELECT DISTINCT dss_id FROM roster_assignments
+                       WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day'))
+             OR COALESCE(d.is_operational, false) = true
+             OR (d.valid_from IS NOT NULL AND d.valid_from < ${from}::date + (${days} * interval '1 day')
+                 AND (d.valid_to IS NULL OR d.valid_to >= ${from}::date))
+           )
+      `);
+      const cands = (candQ.rows ?? []) as any[];
+      const dutiesByDss: Record<string, ReturnType<typeof extractDuties>> = {};
+      for (const c of cands) dutiesByDss[c.id] = extractDuties(c.result);
+      // per ogni giorno: il DSS il cui periodo copre la data (preferendo
+      // l'operativo, poi il più recente); null = nessun turno competente
+      const dssByDay: Record<string, string | null> = {};
+      for (const d of dayList) {
+        const covering = cands.filter((c) =>
+          c.valid_from && c.valid_from <= d && (!c.valid_to || c.valid_to >= d));
+        covering.sort((a, b) => (Number(b.is_operational) - Number(a.is_operational))
+          || String(b.created_at).localeCompare(String(a.created_at)));
+        dssByDay[d] = covering[0]?.id ?? null;
+      }
+      const entriesA = await db.execute<any>(sql`
+        SELECT id, driver_id, day::text AS day, category, code, source
+          FROM roster_entries
+         WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
+      `);
+      res.json({
+        from, days: dayList,
+        drivers: driversQ.rows.map(rowToDriver),
+        duties: [], residenza: null,
+        dutiesByDss, dssByDay,
+        assignments: assignAll.rows.map((a: any) => ({
+          id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
+          snapshot: a.snapshot ?? null,
+        })),
+        entries: entriesA.rows.map((e: any) => ({
+          id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
+          source: e.source ?? null,
+        })),
+      });
+      return;
+    }
+
     let duties: ReturnType<typeof extractDuties> = [];
     if (dssId) {
       // IDOR fix: verifica che l'utente possa leggere QUESTO scenario turni
@@ -649,14 +715,30 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       res.status(400).json({ error: "driverId, day (YYYY-MM-DD), dutyCode e dssId richiesti" });
       return;
     }
+    // SNAPSHOT del turno al momento dell'assegnazione: inizio/fine/ore pagate/
+    // nome, così lo storico resta leggibile anche se il DSS viene versionato
+    // (P5) o il duty rinumerato. Best-effort: mai bloccare l'assegnazione.
+    let snapshot: string | null = null;
+    try {
+      const dQ = await db.execute<any>(sql`
+        SELECT result FROM driver_shift_scenarios WHERE id = ${dssId}::uuid LIMIT 1`);
+      const duty = extractDuties(dQ.rows[0]?.result).find((x: any) => String(x.code) === String(dutyCode));
+      if (duty) {
+        snapshot = JSON.stringify({
+          start: (duty as any).start ?? null, end: (duty as any).end ?? null,
+          paidHours: (duty as any).paidHours ?? null, name: (duty as any).name ?? null,
+        });
+      }
+    } catch { /* snapshot facoltativo */ }
     // Un conducente può avere più turni in un giorno. Il turno resta però
     // assegnabile a un solo conducente (UNIQUE dss_id/day/duty_code): riassegnarlo
     // lo sposta sul nuovo conducente.
     const r = await db.execute<any>(sql`
-      INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code)
-      VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode})
+      INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code, snapshot)
+      VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode}, ${snapshot}::jsonb)
       ON CONFLICT (dss_id, day, duty_code)
-      DO UPDATE SET driver_id = EXCLUDED.driver_id
+      DO UPDATE SET driver_id = EXCLUDED.driver_id,
+                    snapshot = COALESCE(roster_assignments.snapshot, EXCLUDED.snapshot)
       RETURNING id
     `);
     res.status(201).json({ ok: true, id: r.rows[0]?.id });
