@@ -474,6 +474,20 @@ async function ensurePsTables(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_ps_activation_log_proj
         ON ps_activation_log (project_id, activated_at DESC)
     `);
+    /* Attivazioni PROGRAMMATE (decorrenza): il feed è già materializzato e
+       validato; lo switch a operativo avviene alla data effective_from
+       (runner periodico processPendingActivations). Una sola per progetto:
+       ri-programmare sostituisce la precedente. */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_pending_activations (
+        id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id     uuid NOT NULL UNIQUE REFERENCES ps_projects(id) ON DELETE CASCADE,
+        feed_id        uuid NOT NULL,
+        user_id        uuid,
+        effective_from date NOT NULL,
+        created_at     timestamptz NOT NULL DEFAULT now()
+      )
+    `);
 
     bootstrapped = true;
     console.log("[planning-studio] tables ready (epic schema v2)");
@@ -949,31 +963,13 @@ async function copyDayValidity(tx: any, src: string): Promise<void> {
  * resto del sistema — Sala Operativa, AVM Caronte, GTFS-RT, tariffe — risolve
  * automaticamente questo feed (getLatestFeedId / ORDER BY is_active DESC).
  */
-router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
-  const proj = await requireProject(req, res); if (!proj) return;
-  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
-
-  // "Metti in esercizio" materializza SEMPRE l'INTERO programma (tutte le corse
-  // attive) e poi lo promuove a feed operativo. Prima serviva un passaggio
-  // manuale nascosto (generare e mandare una UDP dalla Fucina) e, peggio, il
-  // feed materializzato via UDP è SCOPATO → in esercizio finiva un programma
-  // PARZIALE. Rimaterializzando qui a colpo pieno il feed operativo riflette il
-  // progetto corrente e completo.
-  let feedId: string;
-  try {
-    const { materializePsToFeed } = await import("./planning-studio-materialize");
-    const r = await materializePsToFeed(proj.id, req.user!.id); // nessuno scope → tutto il progetto
-    feedId = r.feedId;
-  } catch (e: any) {
-    req.log?.error?.({ err: e?.message, projectId: proj.id }, "materializzazione in attivazione fallita");
-    res.status(500).json({ error: `Materializzazione fallita: ${e?.message ?? "errore"}` });
-    return;
-  }
-
+/** Flip esclusivo per-tenant + storico attivazioni: promuove `feedId` a
+ *  operativo e registra il periodo su ps_activation_log. Riusata da attivazione
+ *  immediata e dal runner delle attivazioni programmate. */
+async function promoteFeedAndLog(projectId: string, feedId: string, userId: string | null): Promise<void> {
   // Promuovi il nuovo feed a operativo SOLO fra i feed dello STESSO tenant
-  // (owner_user_id del feed appena materializzato). L'UPDATE globale spegneva
-  // is_active/is_default anche sui feed di altri utenti/programmi, mentre la
-  // risoluzione del feed attivo è per-tenant (gtfs-helpers getLatestFeedId).
+  // (owner_user_id del feed). L'UPDATE globale spegnerebbe is_active/is_default
+  // anche sui feed di altri utenti, mentre la risoluzione è per-tenant.
   await db.execute(sql`
     UPDATE gtfs_feeds
        SET is_active = (id = ${feedId}::uuid),
@@ -984,14 +980,14 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
   `);
   // STORICO ATTIVAZIONI: chiudi i periodi ancora aperti del tenant (un solo
   // feed operativo per tenant → qualunque riga aperta è appena stata
-  // disattivata dall'UPDATE sopra) e apri quello del nuovo feed. Non deve
-  // mai far fallire l'attivazione (tabella creata a bootstrap).
+  // disattivata) e apri quello del nuovo feed. Best-effort: non deve mai far
+  // fallire l'attivazione.
   try {
     await db.execute(sql`
       UPDATE ps_activation_log
          SET deactivated_at = now()
        WHERE deactivated_at IS NULL
-         AND (project_id = ${proj.id}::uuid
+         AND (project_id = ${projectId}::uuid
               OR project_id IN (SELECT id FROM ps_projects
                                  WHERE owner_user_id IS NOT DISTINCT FROM (
                                    SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
@@ -999,16 +995,153 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
     `);
     await db.execute(sql`
       INSERT INTO ps_activation_log (project_id, feed_id, user_id)
-      VALUES (${proj.id}::uuid, ${feedId}::uuid, ${req.user!.id}::uuid)
+      VALUES (${projectId}::uuid, ${feedId}::uuid, ${userId}::uuid)
     `);
   } catch (e: any) {
-    req.log?.warn?.({ err: e?.message }, "scrittura ps_activation_log fallita (attivazione comunque riuscita)");
+    console.warn("[planning-studio] scrittura ps_activation_log fallita (attivazione comunque riuscita):", e?.message);
   }
+}
+
+/** Rimuove l'eventuale attivazione programmata del progetto e il suo feed
+ *  pre-costruito (non referenziato da nulla finché non scatta la decorrenza). */
+async function clearPendingActivation(projectId: string, opts?: { keepFeedId?: string }): Promise<void> {
+  try {
+    const r = await db.execute<any>(sql`
+      DELETE FROM ps_pending_activations WHERE project_id = ${projectId}::uuid
+      RETURNING feed_id`);
+    const oldFeed: string | undefined = r.rows?.[0]?.feed_id;
+    if (oldFeed && oldFeed !== opts?.keepFeedId) {
+      await db.execute(sql`
+        DELETE FROM gtfs_feeds
+         WHERE id = ${oldFeed}::uuid
+           AND COALESCE(is_active, false) = false
+           AND id NOT IN (SELECT materialized_feed_id FROM ps_projects WHERE materialized_feed_id IS NOT NULL)
+      `);
+    }
+  } catch { /* tabella assente su DB legacy */ }
+}
+
+/* Runner delle ATTIVAZIONI PROGRAMMATE: quando arriva la decorrenza, completa
+ * lo switch che l'attivazione immediata fa subito — archivia il feed
+ * d'esercizio precedente, aggiorna il puntatore del progetto, promuove il feed
+ * pre-costruito e scrive lo storico. Girato a bootstrap e ogni 5 minuti. */
+export async function processPendingActivations(): Promise<void> {
+  let rows: any[] = [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT id, project_id, feed_id, user_id FROM ps_pending_activations
+       WHERE effective_from <= CURRENT_DATE
+       ORDER BY effective_from, created_at`);
+    rows = r.rows ?? [];
+  } catch { return; /* tabella assente su DB legacy */ }
+  for (const p of rows) {
+    try {
+      const fe = await db.execute<any>(sql`SELECT 1 FROM gtfs_feeds WHERE id = ${p.feed_id}::uuid`);
+      if (!fe.rows?.length) {
+        // feed pre-costruito sparito (cancellato a mano): pending non eseguibile
+        console.warn("[planning-studio] attivazione programmata senza feed, rimossa:", p.project_id);
+        await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
+        continue;
+      }
+      // archivia il feed d'esercizio precedente del progetto (se diverso)
+      await db.execute(sql`
+        UPDATE gtfs_feeds
+           SET is_active = false, is_default = false, archived_at = now()
+         WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${p.project_id}::uuid)
+           AND id <> ${p.feed_id}::uuid
+      `);
+      await db.execute(sql`
+        UPDATE ps_projects
+           SET materialized_feed_id = ${p.feed_id}::uuid, materialized_at = now()
+         WHERE id = ${p.project_id}::uuid
+      `);
+      await promoteFeedAndLog(p.project_id, p.feed_id, p.user_id ?? null);
+      await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
+      await logActivity(p.project_id, p.user_id ?? p.project_id, "ps.project.activate.scheduled", {
+        targetType: "feed", targetId: p.feed_id,
+      }).catch(() => { /* best-effort */ });
+      console.log("[planning-studio] attivazione programmata eseguita:", p.project_id, "→ feed", p.feed_id);
+    } catch (e: any) {
+      console.error("[planning-studio] attivazione programmata fallita (riprovo al prossimo giro):", e?.message);
+    }
+  }
+}
+// bootstrap + controllo periodico (il modulo viene importato una volta sola)
+setTimeout(() => { void processPendingActivations(); }, 15_000);
+setInterval(() => { void processPendingActivations(); }, 5 * 60 * 1000);
+
+router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
+
+  // Decorrenza opzionale: 'YYYY-MM-DD'. Assente o non futura → attivazione
+  // immediata (comportamento storico). Futura → si materializza SUBITO lo
+  // snapshot (validato, congelato) ma lo switch avviene alla data indicata.
+  const effRaw = typeof req.body?.effectiveFrom === "string" ? req.body.effectiveFrom.trim() : "";
+  if (effRaw && !/^\d{4}-\d{2}-\d{2}$/.test(effRaw)) {
+    res.status(400).json({ error: "effectiveFrom non valida (atteso YYYY-MM-DD)" }); return;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const scheduled = !!effRaw && effRaw > today;
+
+  // "Metti in esercizio" materializza SEMPRE l'INTERO programma (tutte le corse
+  // attive). Percorso IMMEDIATO: rimpiazza il feed d'esercizio del progetto
+  // (quello vecchio viene archiviato). Percorso PROGRAMMATO: il feed nuovo
+  // nasce STANDALONE (non tocca né il puntatore né il feed live) — lo switch
+  // completo lo fa il runner alla decorrenza.
+  let feedId: string;
+  try {
+    const { materializePsToFeed } = await import("./planning-studio-materialize");
+    const r = scheduled
+      ? await materializePsToFeed(proj.id, req.user!.id, { replaceFeedId: null, updateProjectPointer: false })
+      : await materializePsToFeed(proj.id, req.user!.id); // nessuno scope → tutto il progetto
+    feedId = r.feedId;
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, projectId: proj.id }, "materializzazione in attivazione fallita");
+    res.status(500).json({ error: `Materializzazione fallita: ${e?.message ?? "errore"}` });
+    return;
+  }
+
+  if (scheduled) {
+    // sostituisce l'eventuale programmazione precedente (e il suo feed pre-costruito)
+    await clearPendingActivation(proj.id, { keepFeedId: feedId });
+    try {
+      await db.execute(sql`
+        INSERT INTO ps_pending_activations (project_id, feed_id, user_id, effective_from)
+        VALUES (${proj.id}::uuid, ${feedId}::uuid, ${req.user!.id}::uuid, ${effRaw}::date)
+        ON CONFLICT (project_id) DO UPDATE
+          SET feed_id = EXCLUDED.feed_id, user_id = EXCLUDED.user_id,
+              effective_from = EXCLUDED.effective_from, created_at = now()
+      `);
+    } catch (e: any) {
+      res.status(500).json({ error: `Programmazione fallita: ${e?.message ?? "errore"}` }); return;
+    }
+    await logActivity(proj.id, req.user!.id, "ps.project.activate.schedule", {
+      targetType: "feed", targetId: feedId,
+      payload: { name: proj.name, effectiveFrom: effRaw },
+    });
+    res.json({ ok: true, feedId, scheduledFor: effRaw });
+    return;
+  }
+
+  // IMMEDIATO: un'attivazione adesso supera qualunque programmazione in sospeso
+  await clearPendingActivation(proj.id, { keepFeedId: feedId });
+  await promoteFeedAndLog(proj.id, feedId, req.user!.id);
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
     targetType: "feed", targetId: feedId,
     payload: { name: proj.name },
   });
   res.json({ ok: true, feedId });
+});
+
+/* DELETE /api/planning-studio/projects/:id/activations/pending — annulla la
+ * attivazione programmata (e il suo feed pre-costruito). */
+router.delete("/planning-studio/projects/:id/activations/pending", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
+  await clearPendingActivation(proj.id);
+  await logActivity(proj.id, req.user!.id, "ps.project.activate.unschedule", { targetId: proj.id });
+  res.json({ ok: true });
 });
 
 /* GET /api/planning-studio/projects/:id/activations — storico "in esercizio".
@@ -1031,7 +1164,18 @@ router.get("/planning-studio/projects/:id/activations", async (req, res): Promis
        WHERE l.project_id = ${proj.id}::uuid
        ORDER BY l.activated_at DESC
     `);
+    // attivazione PROGRAMMATA in sospeso (decorrenza futura), se presente
+    let pending: any = null;
+    try {
+      const pr = await db.execute<any>(sql`
+        SELECT feed_id, user_id, to_char(effective_from, 'YYYY-MM-DD') AS effective_from,
+               to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS created_at
+          FROM ps_pending_activations WHERE project_id = ${proj.id}::uuid LIMIT 1`);
+      const p = pr.rows?.[0];
+      if (p) pending = { feedId: p.feed_id, userId: p.user_id, effectiveFrom: p.effective_from, createdAt: p.created_at };
+    } catch { /* tabella assente su DB legacy */ }
     res.json({
+      pending,
       activations: (r.rows as any[]).map((x) => ({
         id: x.id, feedId: x.feed_id, userId: x.user_id,
         activatedAt: x.activated_at, deactivatedAt: x.deactivated_at,
