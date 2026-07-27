@@ -757,7 +757,9 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
  * Duplica un intero programma di esercizio in un progetto nuovo (di proprietà
  * dell'utente): fermate, cluster, linee, percorsi, orari, calendari, corse,
  * transiti, validità (giorni + categorie), eccezioni, no-go, periodi, profilo
- * calendario aziendale. NON copia il feed materializzato (la copia nasce non
+ * calendario aziendale, classificazione giorni (ps_day_calendar) e calendario
+ * categorie per-progetto (ps_validity_category_calendar). NON copia il feed
+ * materializzato (la copia nasce non
  * operativa) né le UDP/scenari (artefatti generati). Copia GENERICA e set-based:
  * mappe id vecchio→nuovo in tabelle temporanee + lista colonne da
  * information_schema (così prende anche le colonne aggiunte da ALTER). */
@@ -860,6 +862,38 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
           INSERT INTO ps_calendar_profiles (project_id, closed_periods, summer_period, extra_holidays)
           SELECT ${dst}::uuid, closed_periods, summer_period, extra_holidays
             FROM ps_calendar_profiles WHERE project_id = ${src}::uuid`);
+      }
+
+      // CLASSIFICAZIONE GIORNI del progetto (bootstrap lazy come i profili):
+      // senza queste due copie il clone perde i giorni classificati a mano e
+      // il calendario categorie → le UDP del duplicato nascerebbero sbagliate.
+      // ps_day_calendar: date→day-type per-progetto; day_type rimappato SOLO se
+      // custom (i system restano condivisi, come in copyDayValidity).
+      const hasDayCal = await tx.execute<any>(sql`SELECT to_regclass('public.ps_day_calendar') AS t`);
+      if (hasDayCal.rows[0]?.t) {
+        await tx.execute(sql`
+          INSERT INTO ps_day_calendar (project_id, date, day_type_id, source, note)
+          SELECT ${dst}::uuid, s.date, COALESCE(fd.new_id, s.day_type_id), s.source, s.note
+            FROM ps_day_calendar s
+            LEFT JOIN m_dt fd ON fd.old_id = s.day_type_id
+           WHERE s.project_id = ${src}::uuid
+          ON CONFLICT DO NOTHING`);
+      }
+      // ps_validity_category_calendar: date→categoria per-progetto (5B). Le
+      // categorie sono un dizionario GLOBALE → nessuna rimappa. Su DB legacy la
+      // colonna project_id può non esserci ancora → in quel caso non c'è nulla
+      // di per-progetto da copiare.
+      const hasVcc = await tx.execute<any>(sql`
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='ps_validity_category_calendar'
+           AND column_name='project_id'`);
+      if (hasVcc.rows.length) {
+        await tx.execute(sql`
+          INSERT INTO ps_validity_category_calendar (project_id, date, category_id)
+          SELECT ${dst}::uuid, s.date, s.category_id
+            FROM ps_validity_category_calendar s
+           WHERE s.project_id = ${src}::uuid
+          ON CONFLICT DO NOTHING`);
       }
 
       return dst;
