@@ -445,7 +445,8 @@ async function ensurePsTables(): Promise<void> {
       await db.execute(sql`
         ALTER TABLE gtfs_feeds
         ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false,
-        ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false
+        ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS archived_at timestamptz
       `);
       // Colonna "a chiamata" sul feed materializzato (scheduling TM/TG)
       await db.execute(sql`
@@ -454,6 +455,25 @@ async function ensurePsTables(): Promise<void> {
     } catch (e: any) {
       console.warn("[planning-studio] gtfs ALTER rinviato (tabelle feed non ancora presenti):", e?.message || e);
     }
+
+    /* Storico attivazioni: chi/quando ha messo in esercizio quale feed di
+       quale progetto, e fino a quando è rimasto operativo. Risponde a
+       "cosa era in produzione il giorno X" — prima impossibile perché la
+       ri-attivazione cancellava lo snapshot precedente. */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS ps_activation_log (
+        id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id     uuid NOT NULL REFERENCES ps_projects(id) ON DELETE CASCADE,
+        feed_id        uuid NOT NULL,
+        user_id        uuid,
+        activated_at   timestamptz NOT NULL DEFAULT now(),
+        deactivated_at timestamptz
+      )
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS idx_ps_activation_log_proj
+        ON ps_activation_log (project_id, activated_at DESC)
+    `);
 
     bootstrapped = true;
     console.log("[planning-studio] tables ready (epic schema v2)");
@@ -962,11 +982,66 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
              SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
            )
   `);
+  // STORICO ATTIVAZIONI: chiudi i periodi ancora aperti del tenant (un solo
+  // feed operativo per tenant → qualunque riga aperta è appena stata
+  // disattivata dall'UPDATE sopra) e apri quello del nuovo feed. Non deve
+  // mai far fallire l'attivazione (tabella creata a bootstrap).
+  try {
+    await db.execute(sql`
+      UPDATE ps_activation_log
+         SET deactivated_at = now()
+       WHERE deactivated_at IS NULL
+         AND (project_id = ${proj.id}::uuid
+              OR project_id IN (SELECT id FROM ps_projects
+                                 WHERE owner_user_id IS NOT DISTINCT FROM (
+                                   SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
+                                 )))
+    `);
+    await db.execute(sql`
+      INSERT INTO ps_activation_log (project_id, feed_id, user_id)
+      VALUES (${proj.id}::uuid, ${feedId}::uuid, ${req.user!.id}::uuid)
+    `);
+  } catch (e: any) {
+    req.log?.warn?.({ err: e?.message }, "scrittura ps_activation_log fallita (attivazione comunque riuscita)");
+  }
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
     targetType: "feed", targetId: feedId,
     payload: { name: proj.name },
   });
   res.json({ ok: true, feedId });
+});
+
+/* GET /api/planning-studio/projects/:id/activations — storico "in esercizio".
+ * Risponde a "cosa era in produzione il giorno X": ogni riga è un periodo di
+ * esercizio [activated_at, deactivated_at) con il feed archiviato collegato
+ * (i feed d'esercizio rimpiazzati vengono ARCHIVIATI, non più cancellati). */
+router.get("/planning-studio/projects/:id/activations", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT l.id, l.feed_id, l.user_id,
+             to_char(l.activated_at,   'YYYY-MM-DD"T"HH24:MI:SSZ') AS activated_at,
+             to_char(l.deactivated_at, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS deactivated_at,
+             f.filename, f.feed_start_date, f.feed_end_date,
+             COALESCE(f.is_active, false) AS feed_is_active,
+             (f.archived_at IS NOT NULL) AS feed_archived,
+             (f.id IS NULL) AS feed_deleted
+        FROM ps_activation_log l
+        LEFT JOIN gtfs_feeds f ON f.id = l.feed_id
+       WHERE l.project_id = ${proj.id}::uuid
+       ORDER BY l.activated_at DESC
+    `);
+    res.json({
+      activations: (r.rows as any[]).map((x) => ({
+        id: x.id, feedId: x.feed_id, userId: x.user_id,
+        activatedAt: x.activated_at, deactivatedAt: x.deactivated_at,
+        feed: x.feed_deleted ? null : {
+          filename: x.filename, startDate: x.feed_start_date, endDate: x.feed_end_date,
+          isActive: !!x.feed_is_active, archived: !!x.feed_archived,
+        },
+      })),
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /api/planning-studio/projects/:id — dettaglio + counts
