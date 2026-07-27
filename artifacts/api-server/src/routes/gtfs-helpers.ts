@@ -119,14 +119,28 @@ export async function getLatestFeedId(req?: any): Promise<string | null> {
     // colonna is_active o owner_user_id può non esistere ancora: ignoriamo
   }
   try {
+    // Esclude gli SNAPSHOT ARCHIVIATI (feed d'esercizio rimpiazzati, tenuti per
+    // storico): non devono mai risolversi come "feed corrente".
     const r = await db.execute(sql`
       SELECT id FROM gtfs_feeds
-       WHERE ${tenantSql}
+       WHERE ${tenantSql} AND archived_at IS NULL
        ORDER BY uploaded_at DESC LIMIT 1
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     if (row?.id) return row.id as string;
-  } catch {}
+  } catch {
+    // colonna archived_at non ancora presente (DB legacy): senza colonna non
+    // esistono archiviati → la query senza filtro è equivalente e corretta
+    try {
+      const r = await db.execute(sql`
+        SELECT id FROM gtfs_feeds
+         WHERE ${tenantSql}
+         ORDER BY uploaded_at DESC LIMIT 1
+      `);
+      const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+      if (row?.id) return row.id as string;
+    } catch {}
+  }
   // Nessun feed accessibile all'utente: NIENTE fallback globale (leakava il
   // feed più recente di un altro tenant). Fail-closed → null.
   return null;

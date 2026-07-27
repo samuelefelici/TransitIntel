@@ -339,7 +339,7 @@ router.get("/gtfs/feeds", async (req, res) => {
              COALESCE(is_active, false) AS "isActive",
              owner_user_id AS "ownerUserId"
         FROM gtfs_feeds
-       WHERE ${where}
+       WHERE ${where} AND archived_at IS NULL
        ORDER BY uploaded_at DESC
     `);
     const rows: any = (feeds as any).rows ?? feeds;
@@ -371,6 +371,7 @@ async function ensureFeedActiveColumn(): Promise<void> {
   try {
     await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false`);
     await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false`);
+    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS archived_at timestamptz`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_active ON gtfs_feeds(is_active) WHERE is_active = true`);
     feedActiveColumnEnsured = true;
   } catch (e: any) {

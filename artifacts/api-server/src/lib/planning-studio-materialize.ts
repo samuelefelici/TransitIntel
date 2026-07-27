@@ -514,11 +514,25 @@ export async function materializePsToFeed(
     `);
   }
 
-  /* ── 6b. (delete-last) Ora che il nuovo feed è completo e agganciato,
-   * rimuovo il vecchio feed che questo rimpiazza (CASCADE pulisce gtfs_*).
-   * Cancello SOLO il feed indicato: le UDP sorelle e l'esercizio restano. */
+  /* ── 6b. Sorte del feed VECCHIO, ora che il nuovo è completo e agganciato.
+   * - Percorso d'ESERCIZIO (updateProjectPointer): il feed rimpiazzato è lo
+   *   SNAPSHOT che era in produzione → si ARCHIVIA (archived_at), non si
+   *   cancella: "cosa era in esercizio il giorno X" resta interrogabile e il
+   *   rollback resta possibile. Gli archiviati sono esclusi da risoluzione
+   *   feed attivo e liste (gtfs-helpers / gtfs-upload).
+   * - Percorso UDP (scoped, replaceFeedId esplicito): il feed è un artefatto
+   *   di lavoro rigenerabile → si CANCELLA come prima (CASCADE su gtfs_*),
+   *   per non accumulare copie a ogni resync. */
   if (replaceFeedId && replaceFeedId !== feedId) {
-    await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${replaceFeedId}::uuid`);
+    if (updateProjectPointer) {
+      await db.execute(sql`
+        UPDATE gtfs_feeds
+           SET is_active = false, is_default = false, archived_at = now()
+         WHERE id = ${replaceFeedId}::uuid
+      `);
+    } else {
+      await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${replaceFeedId}::uuid`);
+    }
   }
 
   /* ── 7. Counts finali per la response (singola query aggregata) ── */
