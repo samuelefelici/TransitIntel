@@ -1479,6 +1479,18 @@ router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) =>
       });
       return;
     }
+    // STORICO IMMUTABILE: un DSS referenziato dallo storico assegnazioni del
+    // roster non si elimina — le righe passate diventerebbero illeggibili.
+    try {
+      const rr = await db.execute<any>(sql`
+        SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.dssId}::uuid`);
+      if (Number(rr.rows?.[0]?.c ?? 0) > 0) {
+        res.status(409).json({
+          error: "Turni guida referenziati dallo storico roster: non eliminabili (le assegnazioni passate resterebbero orfane).",
+        });
+        return;
+      }
+    } catch { /* tabella roster assente: nessun vincolo */ }
     await db.delete(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
@@ -1840,6 +1852,46 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
     }
     const { name, result, config } = (req.body ?? {}) as any;
     if (!result && !name && config === undefined) { res.status(400).json({ error: "niente da salvare" }); return; }
+
+    // STORICO IMMUTABILE: se il DSS è referenziato da roster_assignments,
+    // sovrascriverne il result riscriverebbe retroattivamente i giorni già
+    // assegnati (il board rilegge il jsonb live). In quel caso il salvataggio
+    // del contenuto crea una VERSIONE NUOVA (version+1) e marca la vecchia
+    // superseded_by; il client adotta l'id nuovo. Rinominare o cambiare config
+    // senza toccare il result resta un update in place.
+    if (result) {
+      let rosterRefs = 0;
+      try {
+        const rr = await db.execute<any>(sql`
+          SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.id}::uuid`);
+        rosterRefs = Number(rr.rows?.[0]?.c ?? 0);
+      } catch { /* tabella roster assente: nessun vincolo */ }
+      if (rosterRefs > 0) {
+        try {
+          const ins = await db.execute<any>(sql`
+            INSERT INTO driver_shift_scenarios
+              (service_program_scenario_id, name, result, config, project_id, owner_user_id, version, valid_from)
+            SELECT service_program_scenario_id,
+                   ${typeof name === "string" && name ? name : sql`name`},
+                   ${JSON.stringify(result)}::jsonb,
+                   ${config !== undefined ? sql`${JSON.stringify(config)}::jsonb` : sql`config`},
+                   project_id, owner_user_id, COALESCE(version, 1) + 1, valid_from
+              FROM driver_shift_scenarios WHERE id = ${req.params.id}::uuid
+            RETURNING id`);
+          const newId: string | undefined = ins.rows?.[0]?.id;
+          if (newId) {
+            await db.execute(sql`
+              UPDATE driver_shift_scenarios SET superseded_by = ${newId}::uuid
+               WHERE id = ${req.params.id}::uuid`);
+            res.json({ ok: true, id: newId, versionedFrom: req.params.id });
+            return;
+          }
+        } catch (verErr: any) {
+          req.log.warn({ err: verErr?.message }, "versioning DSS fallito, fallback a overwrite");
+        }
+      }
+    }
+
     const [row] = await db.update(driverShiftScenarios)
       .set({
         ...(name ? { name } : {}),

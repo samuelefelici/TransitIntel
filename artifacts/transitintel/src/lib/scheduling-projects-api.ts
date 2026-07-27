@@ -209,6 +209,12 @@ export interface ProjectVehicleScenario {
   isOperational?: boolean;
   /** ISO: il feed è stato risincronizzato DOPO il salvataggio → dati superati */
   staleSince?: string | null;
+  /** versione (1 = originale; salvataggi su scenari referenziati creano v+1) */
+  version?: number;
+  supersededBy?: string | null;
+  /** periodo di validità dei turni ("valgono dal X al Y"); successione automatica alla messa in esercizio */
+  validFrom?: string | null;
+  validTo?: string | null;
   numVehicles?: number | null;
   totalDeadheadKm?: number | null;
   /** corse coperte dai turni (summary.totalTrips) — il primo numero da guardare */
@@ -224,6 +230,12 @@ export interface ProjectDriverScenario {
   isOperational?: boolean;
   /** ISO: il feed è stato risincronizzato DOPO il salvataggio → dati superati */
   staleSince?: string | null;
+  /** versione (1 = originale; salvataggi su DSS referenziati dal roster creano v+1) */
+  version?: number;
+  supersededBy?: string | null;
+  /** periodo di validità dei turni ("valgono dal X al Y"); successione automatica alla messa in esercizio */
+  validFrom?: string | null;
+  validTo?: string | null;
   vehicleScenarioId: string;
   vehicleScenarioName: string;
   vehicleScenarioDate: string;
@@ -264,20 +276,20 @@ export async function attachVehicleScenarioToProject(
 /* ───── "In esercizio": marca lo scenario scelto (turni macchina / turni guida) ───── */
 
 export async function setVehicleScenarioOperational(
-  projectId: string, scenarioId: string, operational: boolean,
+  projectId: string, scenarioId: string, operational: boolean, validFrom?: string,
 ): Promise<void> {
   await apiFetch(
     `/api/scheduling/projects/${projectId}/vehicle-scenarios/${scenarioId}/operational`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational }) },
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational, ...(validFrom ? { validFrom } : {}) }) },
   );
 }
 
 export async function setDriverScenarioOperational(
-  projectId: string, scenarioId: string, operational: boolean,
+  projectId: string, scenarioId: string, operational: boolean, validFrom?: string,
 ): Promise<void> {
   await apiFetch(
     `/api/scheduling/projects/${projectId}/driver-scenarios/${scenarioId}/operational`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational }) },
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operational, ...(validFrom ? { validFrom } : {}) }) },
   );
 }
 
