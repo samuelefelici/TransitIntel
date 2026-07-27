@@ -265,6 +265,12 @@ export default function DriverScenariosPage() {
                                     ⚠ {d.uncoveredTrips} corse scoperte
                                   </span>
                                 )}
+                                {d.staleSince && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 border border-orange-500/30"
+                                        title={`Il feed è stato risincronizzato il ${new Date(d.staleSince).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}: questi turni riflettono i dati precedenti. Rigenera o risalva per allinearli.`}>
+                                    ⚠ dati superati
+                                  </span>
+                                )}
                                 {ownerLabel && <span className="text-zinc-600">Owner: <span className="text-zinc-400">{ownerLabel}</span></span>}
                                 {memberCount > 0 && (
                                   <span className="inline-flex items-center gap-1 text-cyan-400/80">

@@ -690,6 +690,25 @@ export function startSyncJob(
                updated_at = now()
          WHERE id = ${projectId}::uuid
       `);
+      // Il feed è cambiato sotto gli scenari salvati: il loro result riflette
+      // il feed precedente → marcali "dati superati" (stale_since). Un nuovo
+      // salvataggio dello scenario azzera il flag. Best-effort su DB legacy.
+      try {
+        await db.execute(sql`
+          UPDATE service_program_scenarios
+             SET stale_since = COALESCE(stale_since, now())
+           WHERE project_id = ${projectId}::uuid
+        `);
+        await db.execute(sql`
+          UPDATE driver_shift_scenarios d
+             SET stale_since = COALESCE(d.stale_since, now())
+            FROM service_program_scenarios s
+           WHERE d.service_program_scenario_id = s.id
+             AND (s.project_id = ${projectId}::uuid OR d.project_id = ${projectId}::uuid)
+        `);
+      } catch (staleErr: any) {
+        logger?.warn?.({ err: staleErr?.message, projectId }, "marcatura stale_since scenari fallita (sync comunque ok)");
+      }
       job.status = "done";
       job.result = result;
       job.finishedAt = Date.now();
