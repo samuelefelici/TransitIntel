@@ -32,6 +32,7 @@ import {
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
 import { getApiBase, apiFetch } from "@/lib/api";
+import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
@@ -1882,6 +1883,9 @@ export default function PlanningStudioEditorPage() {
 
   return (
     <div className="h-full flex flex-col bg-slate-950 text-slate-100 overflow-hidden">
+      {project?.isOperational && (
+        <div className="px-3 pt-3"><OperationalEditWarning isOperational projectName={project?.name} /></div>
+      )}
       {/* ─── Toolbar top ─── */}
       {/* Nota: niente overflow-x sulla barra, altrimenti i menu a tendina verrebbero tagliati */}
       <div className="h-14 border-b border-slate-800 bg-slate-950/95 backdrop-blur flex items-center px-3 gap-2 shrink-0 z-30 whitespace-nowrap">

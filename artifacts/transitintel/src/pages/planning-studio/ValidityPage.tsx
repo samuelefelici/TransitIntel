@@ -66,6 +66,7 @@ import {
   type DayType as AlgoDayType, type Trip as AlgoTrip, type MatrixContext,
 } from "@/lib/planning-studio/validity-matrix";
 import ValiditySectionNav from "./ValiditySectionNav";
+import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 
 /* ════════════════════════════════════════════════════════════
  *  Helpers data
@@ -708,6 +709,9 @@ export default function PlanningStudioValidityPage() {
 
   return (
     <div className="flex flex-col h-full min-w-0 bg-slate-950 text-slate-100">
+      {projectQ.data?.isOperational && (
+        <div className="px-3 pt-3"><OperationalEditWarning isOperational projectName={projectQ.data?.name} /></div>
+      )}
       {/* ─── TopBar (riga 1: identità + undo/redo) ───────────────────── */}
       <div className="h-14 border-b border-slate-800 bg-slate-900 px-4 flex items-center gap-3 shrink-0">
         <Link href={`/planning-studio/${projectId}`}>
