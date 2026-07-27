@@ -14,6 +14,7 @@ import Map, { Marker, Source, Layer, NavigationControl, type MapRef } from "reac
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import {
   ArrowLeft, Plus, Trash2, Save, X, Sparkles, Search, Layers,
   Loader2, Check, MapPin, Pencil, Eye, EyeOff, ChevronRight, ChevronDown,
@@ -388,6 +389,7 @@ export default function PlanningStudioClustersPage() {
           <Plus className="w-4 h-4" /> Nuovo cluster
         </button>
       </div>
+      <PsProjectNav projectId={projectId} active="clusters" />
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar sx */}
         <div className="w-[380px] border-r border-slate-800 bg-slate-900/60 flex flex-col">

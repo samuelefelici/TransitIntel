@@ -21,6 +21,7 @@ import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useAuth } from "@/hooks/use-auth";
 import {
   ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
@@ -1512,6 +1513,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
         </button>
       </div>
+      {!isFullscreen && <PsProjectNav projectId={projectId} active="ttd" />}
 
       {/* Toolbar: linea di riferimento + controlli vista (gli STRUMENTI stanno
           nella barra verticale a destra, un pannello alla volta) */}

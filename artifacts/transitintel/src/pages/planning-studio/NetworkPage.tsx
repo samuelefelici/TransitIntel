@@ -16,6 +16,7 @@ import {
   ArrowLeftRight, Activity, Pencil, Check, X as XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import {
   getPsProject,
   listPsRoutes, type PsRoute,
@@ -117,6 +118,7 @@ export default function PlanningStudioNetworkPage() {
           </span>
         )}
       </div>
+      <PsProjectNav projectId={projectId} active="network" />
 
       {/* 3 colonne */}
       <div className="flex-1 flex overflow-hidden">

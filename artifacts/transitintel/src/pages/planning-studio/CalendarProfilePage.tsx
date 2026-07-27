@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { ArrowLeft, CalendarRange, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import ValiditySectionNav from "./ValiditySectionNav";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 
 type PeriodKind = "estivo" | "invernale";
 interface ClosedPeriod { from: string; to: string; label?: string; kind?: PeriodKind }
@@ -146,7 +147,10 @@ export default function CalendarProfilePage() {
         </button>
       </div>
 
-      <ValiditySectionNav projectId={projectId} active="calendar" />
+      <div className="flex flex-wrap items-center gap-3">
+        <PsProjectNav projectId={projectId} active="calendar" />
+        <ValiditySectionNav projectId={projectId} active="calendar" />
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-4">
         {/* Periodi SCUOLE CHIUSE (vacanze) — il resto è scuole aperte.
