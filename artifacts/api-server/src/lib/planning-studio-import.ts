@@ -782,20 +782,34 @@ router.post(
      * e gli UUID conservati — matrice di validità, cluster, UDP e archi
      * fuorilinea sopravvivono all'aggiornamento del feed. */
     if (String(req.body?.mode ?? "") === "merge") {
+      // dryRun=1 → ANTEPRIMA: si esegue il merge vero dentro la transazione e
+      // poi si forza il ROLLBACK con una sentinella. I conteggi sono quelli
+      // esatti dell'applicazione reale, ma nel DB non resta nulla.
+      const isDryRun = String(req.body?.dryRun ?? "") === "1";
+      class DryRunRollback extends Error {}
       try {
         let mergeCounts: MergeCounts | null = null;
-        await db.transaction(async (tx) => {
-          if (agencyRows[0]?.agency_name) {
-            await tx.execute(sql`
-              UPDATE ps_projects SET agency_name = ${agencyRows[0].agency_name},
-                                     agency_timezone = ${agencyRows[0].agency_timezone || "Europe/Rome"}
-               WHERE id = ${projectId}::uuid
-            `);
-          }
-          mergeCounts = await runMergeImport(tx, projectId,
-            { stopRows, routeRows, tripRows, stopTimeRows, shapeRows, calRows, calDateRows },
-            { keepRoutes, usedStopGtfs, usedServiceGtfs });
-        });
+        try {
+          await db.transaction(async (tx) => {
+            if (agencyRows[0]?.agency_name) {
+              await tx.execute(sql`
+                UPDATE ps_projects SET agency_name = ${agencyRows[0].agency_name},
+                                       agency_timezone = ${agencyRows[0].agency_timezone || "Europe/Rome"}
+                 WHERE id = ${projectId}::uuid
+              `);
+            }
+            mergeCounts = await runMergeImport(tx, projectId,
+              { stopRows, routeRows, tripRows, stopTimeRows, shapeRows, calRows, calDateRows },
+              { keepRoutes, usedStopGtfs, usedServiceGtfs });
+            if (isDryRun) throw new DryRunRollback();
+          });
+        } catch (e) {
+          if (!(e instanceof DryRunRollback)) throw e;
+        }
+        if (isDryRun) {
+          res.json({ ok: true, mode: "merge", dryRun: true, merge: mergeCounts });
+          return;
+        }
         try {
           await db.execute(sql`
             INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, payload)

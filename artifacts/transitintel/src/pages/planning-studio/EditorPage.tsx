@@ -45,7 +45,7 @@ import {
   routeSnap,
   listPsNoGoZones, createPsNoGoZone, deletePsNoGoZone, type PsNoGoZone,
   listPsCalendars, type PsCalendar,
-  importPsGtfs, previewPsGtfs, type PsImportCounts, type PsGtfsPreviewRoute,
+  importPsGtfs, previewPsGtfs, type PsImportCounts, type PsGtfsPreviewRoute, type PsMergeImportCounts,
   listPsClusters, createPsCluster, updatePsCluster, deletePsCluster,
   setPsClusterStops, suggestPsClusters,
   type PsCluster, type PsClusterKind, type PsClusterSuggestion,
@@ -419,6 +419,8 @@ export default function PlanningStudioEditorPage() {
   // Modalità: "merge" = re-import non distruttivo (UUID conservati per chiave
   // stabile: validità/cluster/UDP sopravvivono); "replace" = wipe storico.
   const [importMode, setImportMode] = useState<"replace" | "merge">("replace");
+  // Anteprima del merge (dryRun): conteggi esatti prima di applicare
+  const [importMergePreview, setImportMergePreview] = useState<PsMergeImportCounts | null>(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<PsImportCounts | null>(null);
   // Fase intermedia: dopo la LETTURA del file si sceglie QUALI linee importare.
@@ -1886,6 +1888,14 @@ export default function PlanningStudioEditorPage() {
     if (previewRoutes && routeIds!.length === 0) { toast.error("Seleziona almeno una linea"); return; }
     setImporting(true);
     try {
+      // In modalità Aggiorna il primo passaggio è l'ANTEPRIMA (dryRun): stessi
+      // conteggi dell'applicazione reale, zero scritture. Applica al secondo.
+      if (importMode === "merge" && !importMergePreview) {
+        const prev = await importPsGtfs(projectId, importFile, routeIds, "merge", true);
+        if (prev.merge) setImportMergePreview(prev.merge);
+        setImporting(false);
+        return;
+      }
       const r = await importPsGtfs(projectId, importFile, routeIds, importMode);
       if (r.mode === "merge" && r.merge) {
         const m = r.merge;
@@ -1928,6 +1938,7 @@ export default function PlanningStudioEditorPage() {
     setImportOpen(false);
     setImportFile(null);
     setImportResult(null);
+    setImportMergePreview(null);
     setPreviewRoutes(null);
     setSelectedRouteIds(new Set());
     setRouteSearch("");
@@ -3498,7 +3509,7 @@ export default function PlanningStudioEditorPage() {
                 <p className="text-xs text-slate-500 mt-0.5">Progetto: <span className="text-slate-300">{project.name}</span></p>
               </div>
               <div className="px-6 py-5 space-y-4">
-                {!importResult && !previewRoutes && (
+                {!importResult && !previewRoutes && !importMergePreview && (
                   <>
                     {!isEmpty && (
                       <div className="space-y-2">
@@ -3557,7 +3568,7 @@ export default function PlanningStudioEditorPage() {
                     </div>
                   </>
                 )}
-                {!importResult && previewRoutes && (() => {
+                {!importResult && previewRoutes && !importMergePreview && (() => {
                   const filtered = previewRoutes.filter(r => {
                     const q = routeSearch.trim().toLowerCase();
                     if (!q) return true;
@@ -3612,6 +3623,54 @@ export default function PlanningStudioEditorPage() {
                     </div>
                   );
                 })()}
+                {!importResult && importMergePreview && (() => {
+                  const m = importMergePreview;
+                  const Row = ({ label, children }: { label: string; children: any }) => (
+                    <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/50 text-xs">
+                      <span className="text-slate-400">{label}</span>
+                      <span className="tabular-nums text-slate-100">{children}</span>
+                    </div>
+                  );
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-xs">
+                        <Check className="w-4 h-4 shrink-0 mt-0.5" />
+                        <div>
+                          <strong className="block mb-0.5">Anteprima aggiornamento — nessuna modifica applicata</strong>
+                          Conteggi esatti calcolati sul file: matrice di validità, nodi, UDP e tracciati disegnati
+                          verranno CONSERVATI. Applica per rendere effettivo l'aggiornamento.
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 gap-1.5">
+                        <Row label="Fermate">
+                          <b className="text-emerald-300">+{m.stops.added}</b> nuove · {m.stops.updated} aggiornate
+                        </Row>
+                        <Row label="Linee">
+                          <b className="text-emerald-300">+{m.routes.added}</b> nuove · {m.routes.updated} aggiornate
+                        </Row>
+                        <Row label="Percorsi (varianti)">
+                          <b className="text-emerald-300">+{m.variants.added}</b> nuovi · {m.variants.matched} riconosciuti (UUID conservato)
+                        </Row>
+                        <Row label="Calendari">
+                          <b className="text-emerald-300">+{m.calendars.added}</b> nuovi · {m.calendars.updated} aggiornati
+                        </Row>
+                        <Row label="Corse">
+                          <b className="text-emerald-300">+{m.trips.added}</b> nuove · {m.trips.updated} aggiornate ·{" "}
+                          <b className={m.trips.deactivated > 0 ? "text-amber-300" : ""}>{m.trips.deactivated} disattivate</b> (sparite dal feed)
+                        </Row>
+                        <Row label="Transiti riscritti">{m.stopTimes.toLocaleString("it-IT")}</Row>
+                        {m.trips.keptManual > 0 && (
+                          <Row label="Corse manuali (intatte)">{m.trips.keptManual}</Row>
+                        )}
+                      </div>
+                      {m.trips.deactivated > 0 && (
+                        <p className="text-[11px] text-amber-300/90">
+                          Le corse disattivate restano nel progetto (con la loro validità) e sono riattivabili da Corse.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
                 {importResult && (
                   <div className="space-y-3">
                     <div className="text-center py-2">
@@ -3648,6 +3707,18 @@ export default function PlanningStudioEditorPage() {
                     className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium">
                     Inizia a lavorare
                   </button>
+                ) : importMergePreview ? (
+                  <>
+                    <button onClick={() => setImportMergePreview(null)} disabled={importing}
+                      className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-200 disabled:opacity-50">
+                      Indietro
+                    </button>
+                    <button onClick={handleImport} disabled={importing}
+                      className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2">
+                      {importing && <Loader2 className="w-4 h-4 animate-spin" />}
+                      {importing ? "Applico…" : "Applica aggiornamento"}
+                    </button>
+                  </>
                 ) : previewRoutes ? (
                   <>
                     <button onClick={() => { setPreviewRoutes(null); setSelectedRouteIds(new Set()); setRouteSearch(""); }} disabled={importing}
@@ -3657,7 +3728,11 @@ export default function PlanningStudioEditorPage() {
                     <button onClick={handleImport} disabled={importing || selectedRouteIds.size === 0}
                       className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium disabled:opacity-50 flex items-center gap-2">
                       {importing && <Loader2 className="w-4 h-4 animate-spin" />}
-                      {importing ? "Importazione…" : `Importa ${selectedRouteIds.size} ${selectedRouteIds.size === 1 ? "linea" : "linee"}`}
+                      {importing
+                        ? (importMode === "merge" ? "Calcolo anteprima…" : "Importazione…")
+                        : importMode === "merge"
+                          ? `Anteprima aggiornamento (${selectedRouteIds.size} ${selectedRouteIds.size === 1 ? "linea" : "linee"})`
+                          : `Importa ${selectedRouteIds.size} ${selectedRouteIds.size === 1 ? "linea" : "linee"}`}
                     </button>
                   </>
                 ) : (
