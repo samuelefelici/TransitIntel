@@ -231,14 +231,18 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // in Planner Studio (permesso network) e servono alla pipeline Scheduling
   // (permesso scheduling). Basta uno dei due.
   ["/deadhead-arcs", ["scheduling", "network"]], ["/depots", ["scheduling", "network"]],
-  ["/coincidence-zones", "scheduling"],
+  ["/coincidence-zones", ["scheduling", "network"]],
   // network (Planner Studio, rete, zonizzazione)
   // L'intermodale è una sezione del Planner Studio: stava sotto "analytics"
   // mentre la rotta frontend è gated su "network", così chi aveva solo
   // network vedeva la pagina e prendeva 403 su ogni chiamata, e chi aveva
   // solo analytics veniva rimbalzato alla dashboard.
   ["/planning-studio", "network"], ["/zones", "network"], ["/routes", "network"],
-  ["/stops", "network"], ["/clusters", "network"], ["/intermodal", "network"],
+  ["/stops", "network"],
+  // I nodi sono l'infrastruttura condivisa per eccellenza: il Planner Studio
+  // li disegna, lo Scheduling Engine li usa come punti di cambio vettura.
+  ["/clusters", ["network", "scheduling"]],
+  ["/intermodal", "network"],
   // fares
   ["/fares", "fares"],
   // analytics (analisi, territorio, gtfs, operazioni, orari, intermodale)
@@ -414,7 +418,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const safePerm = {
     analytics: !!(permissions?.analytics ?? true),
     fares:     !!(permissions?.fares     ?? true),
-    scheduling:!!(permissions?.scheduling?? true),
+    // network ⇒ scheduling (dato condiviso tra le due piattaforme): vale
+    // anche per gli utenti salvati prima che l'implicazione fosse imposta.
+    scheduling:!!(permissions?.scheduling?? true) || !!(permissions?.network ?? true),
     network:   !!(permissions?.network   ?? true),
     // FleetCare: abilitazione esplicita → default false
     fleetcare: !!(permissions?.fleetcare ?? false),
@@ -454,10 +460,15 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
   if (role !== undefined) sets.push(sql`role = ${role === "admin" ? "admin" : "user"}`);
   if (permissions !== undefined) {
+    // Planner Studio e Scheduling Engine lavorano sullo STESSO dato
+    // (stessa rete, stessi depositi, stessi nodi, stessi archi): chi ha il
+    // primo ha per forza il secondo, altrimenti l'accesso ai dati condivisi
+    // diverge tra le due piattaforme. L'implicazione è imposta qui, non
+    // lasciata alla disciplina di chi compila la form.
     const p = {
       analytics: !!permissions.analytics,
       fares: !!permissions.fares,
-      scheduling: !!permissions.scheduling,
+      scheduling: !!permissions.scheduling || !!permissions.network,
       network: !!permissions.network,
       fleetcare: !!permissions.fleetcare,
     };

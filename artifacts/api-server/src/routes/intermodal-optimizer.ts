@@ -35,7 +35,7 @@ import {
   dynamicHubSchedules,
   type DiscoveredHub,
 } from "./intermodal";
-import { INTERMODAL_HUBS } from "./coincidence-zones";
+import { INTERMODAL_HUBS, zoneScopeWhere } from "./coincidence-zones";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { db } from "@workspace/db";
 import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsCalendar, gtfsCalendarDates, pointsOfInterest } from "@workspace/db/schema";
@@ -350,7 +350,10 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
       windowAfterArrivalMin?: number;
       windowBeforeDepartureMin?: number;
       maxHubDistM?: number;
+      /** Progetto Planner Studio del giro: limita zone e hub a quel progetto */
+      psProjectId?: string;
     };
+    const psScope = /^[0-9a-f-]{36}$/i.test(String(body.psProjectId ?? "")) ? String(body.psProjectId) : null;
 
     const shifts = Array.isArray(body.shifts) ? body.shifts : [];
     if (shifts.length === 0) {
@@ -514,7 +517,9 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
 
     let hubsRaw: DiscoveredHub[] = [];
     try {
-      const zones = await db.select().from(coincidenceZones);
+      // Globali + zone di QUESTO progetto: le zone di altri progetti non
+      // devono entrare nell'analisi (stessa regola di depositi e archi).
+      const zones = await db.select().from(coincidenceZones).where(zoneScopeWhere(psScope));
       if (zones.length > 0) {
         usedZones = true;
         const zoneIds = zones.map(z => z.id);

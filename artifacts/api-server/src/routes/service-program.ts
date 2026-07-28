@@ -1934,14 +1934,26 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
      * Lavoriamo per stop_id GTFS (chiave usata dal solver).
      */
     const psClustersForPy: { id: string; name: string; kind: string; stopIds: string[] }[] = [];
+    const psProjectIdForClusters = typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)
+      ? body.psProjectId : null;
     try {
-      // 5b.1 — cluster legacy (qualsiasi sorgente, include mirror PS interchange)
+      // La colonna di provenienza nasce col materializzatore PS→legacy: su un
+      // DB dove non è mai girato non esiste, e senza questa ALTER la query
+      // sotto fallirebbe lasciando il solver SENZA nodi.
+      await db.execute(sql`ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid`);
+      // 5b.1 — cluster legacy: SOLO globali + quelli mirrorati da QUESTO
+      // progetto PS. Prima si leggeva l'intera tabella senza filtro: i nodi
+      // di altri progetti entravano nel solver e le loro fermate venivano
+      // trattate come "stesso punto" (fuorilinea 0). Con stop_id GTFS che si
+      // ripetono tra feed diversi, questo falsava la matrice fuorilinea.
       const legacyRows = await db.execute<{ cluster_id: string; name: string; gtfs_stop_id: string }>(sql`
         SELECT scs.cluster_id::text AS cluster_id,
                COALESCE(c.name, 'Cluster') AS name,
                scs.gtfs_stop_id
           FROM stop_cluster_stops scs
           JOIN stop_clusters c ON c.id = scs.cluster_id
+         WHERE c.source_ps_project_id IS NULL
+            OR c.source_ps_project_id = ${psProjectIdForClusters}::uuid
       `);
       const legacyByCluster = new Map<string, { name: string; stopIds: Set<string> }>();
       for (const r of legacyRows.rows) {
@@ -1956,8 +1968,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         }
       }
       // 5b.2 — cluster PS logici (kind != interchange) per il psProjectId, se passato
-      const psProjectId = body.psProjectId;
-      if (psProjectId && typeof psProjectId === "string") {
+      const psProjectId = psProjectIdForClusters;
+      if (psProjectId) {
         const psRows = await db.execute<{ cluster_id: string; name: string; kind: string; gtfs_stop_id: string }>(sql`
           SELECT c.id::text AS cluster_id,
                  COALESCE(NULLIF(c.name, ''), 'Cluster') AS name,
@@ -1984,7 +1996,12 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       }
       if (psClustersForPy.length > 0) {
         const totalStops = psClustersForPy.reduce((s, c) => s + c.stopIds.length, 0);
-        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver`);
+        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver` +
+          (psProjectIdForClusters ? ` [scope PS ${psProjectIdForClusters}]` : " [solo nodi globali: nessun progetto PS nel giro]"));
+      } else if (!psProjectIdForClusters) {
+        // Utile in diagnosi: senza progetto PS restano solo i nodi globali, e
+        // se tutti i nodi sono mirror di progetti l'insieme è vuoto.
+        req.log.info("CP-SAT VSP: nessun nodo utente (nessun progetto PS nel giro e nessun nodo globale)");
       }
     } catch (err: any) {
       req.log.error(`CP-SAT VSP: errore caricamento cluster utente: ${err?.message}`);

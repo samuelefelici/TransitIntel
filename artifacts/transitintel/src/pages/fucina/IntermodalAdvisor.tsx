@@ -186,11 +186,15 @@ export default function IntermodalAdvisor({
   shifts,
   date,
   trigger,
+  psProjectId,
   onApplyScenario,
 }: {
   shifts: VehicleShift[];
   date?: string; // YYYYMMDD
   trigger?: React.ReactNode;
+  /** Progetto Planner Studio del giro: limita le zone di coincidenza a quelle
+   *  del progetto (più le globali), come già fanno depositi e archi. */
+  psProjectId?: string | null;
   /** Callback invocata quando l'utente applica lo scenario alternativo */
   onApplyScenario?: (modifiedShifts: VehicleShift[]) => void;
 }) {
@@ -257,6 +261,7 @@ export default function IntermodalAdvisor({
         body: JSON.stringify({
           shifts,
           date,
+          psProjectId: psProjectId ?? undefined,
           syncSchedules,
           includeExtraurban,
           includeOtherBusRoutes: true,
@@ -334,6 +339,7 @@ export default function IntermodalAdvisor({
         body: JSON.stringify({
           shifts: modified,
           date,
+          psProjectId: psProjectId ?? undefined,
           syncSchedules: false, // evitiamo nuova sincronizzazione lenta
           includeExtraurban,
         }),
