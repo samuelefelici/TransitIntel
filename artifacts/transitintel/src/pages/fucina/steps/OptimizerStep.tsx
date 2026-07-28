@@ -580,6 +580,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         // Depositi selezionati (multi) + capacità → residenza per turno + advisory capacità
         ...(depots && depots.length > 0 ? { depots } : {}),
       };
+      // Chiavi di ambito: valgono per TUTTE le modalità, euristica compresa.
+      // Stavano solo nel ramo CP-SAT/VCSP, così un giro euristico non diceva su
+      // quale progetto stesse lavorando e non vedeva i depositi di progetto.
+      if (projectId) bodyPayload.projectId = projectId;
+      if (psProjectId) bodyPayload.psProjectId = psProjectId;
+
       if (solverMode === "cpsat" || solverMode === "vcsp") {
         bodyPayload.timeLimit = solverIntensity === "fast" ? 60
                                : solverIntensity === "extreme" ? 900
@@ -592,16 +598,11 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           // Parità col CSP standalone: TUTTI i parametri turni guida
           // (BDS, costi, scalini, vincoli…) viaggiano nel giro integrato.
           bodyPayload.crewConfig = { ...crewConfig, bds: { ...(crewConfig as any).bds, serviceType } };
-          // Per i nodi di sosta (restPoints) del progetto corrente
-          if (projectId) bodyPayload.projectId = projectId;
         }
         // Robustezza ai ritardi (buffer δ dal traffico reale): off/media/alta
         if (robustness !== "off") bodyPayload.robustness = robustness;
         // Normativa turni macchina (MAIOR-style): solo le regole attivate
         if (Object.keys(normativa).length > 0) bodyPayload.vspNormativa = normativa;
-        // Planning Studio project (se collegato): backend leggera anche i
-        // cluster PS logici come hint di transfer 0 al CP-SAT.
-        if (psProjectId) bodyPayload.psProjectId = psProjectId;
         // Parametri turni macchina: fonte unica vspConfig (pannello + quick controls).
         // vehicleCosts top-level (VehicleCostRates.from_config) + vspAdvanced (VSPConfig).
         bodyPayload.vehicleCosts = vspConfig.vehicleCosts;

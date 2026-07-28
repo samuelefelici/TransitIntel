@@ -1161,6 +1161,7 @@ router.post("/service-program", async (req, res) => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+    if (rejectWithoutPsProject(req, res)) return;
 
     const body = req.body as {
       date?: string;
@@ -1729,10 +1730,29 @@ function depotCapacityAdvisory(counts: Map<string, number>, caps: Map<string, nu
  *                 forma del CP-SAT (post-processing riusato) + sezione `vcsp`
  *                 con i KPI per round e i turni guida del round migliore.
  */
+/** INVARIANTE: non si ottimizza senza progetto Planner Studio.
+ *  Lo Scheduling Engine lavora solo su feed materializzati dal PS, e tutto il
+ *  dato condiviso (nodi, depositi, archi, zone) è scopato su quel progetto.
+ *  Senza, il giro proseguirebbe in silenzio sui soli dati globali: un
+ *  risultato plausibile ma costruito su un'altra rete. Meglio un errore
+ *  parlante che una soluzione sbagliata.
+ *  Ritorna true se ha già risposto con l'errore. */
+function rejectWithoutPsProject(req: any, res: any): boolean {
+  if (/^[0-9a-f-]{36}$/i.test(String(req.body?.psProjectId ?? ""))) return false;
+  res.status(400).json({
+    error: "Progetto Planner Studio mancante",
+    detail: "L'ottimizzazione richiede un progetto Scheduling collegato a un progetto Planner Studio: "
+      + "nodi, depositi e archi fuorilinea sono definiti lì. Se il progetto è legacy, ricrealo dal Planner Studio.",
+  });
+  return true;
+}
+
 async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp"): Promise<void> {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+
+    if (rejectWithoutPsProject(req, res)) return;
 
     const body = req.body as {
       date?: string;
@@ -1996,12 +2016,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       }
       if (psClustersForPy.length > 0) {
         const totalStops = psClustersForPy.reduce((s, c) => s + c.stopIds.length, 0);
-        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver` +
-          (psProjectIdForClusters ? ` [scope PS ${psProjectIdForClusters}]` : " [solo nodi globali: nessun progetto PS nel giro]"));
-      } else if (!psProjectIdForClusters) {
-        // Utile in diagnosi: senza progetto PS restano solo i nodi globali, e
-        // se tutti i nodi sono mirror di progetti l'insieme è vuoto.
-        req.log.info("CP-SAT VSP: nessun nodo utente (nessun progetto PS nel giro e nessun nodo globale)");
+        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver [scope PS ${psProjectIdForClusters}]`);
       }
     } catch (err: any) {
       req.log.error(`CP-SAT VSP: errore caricamento cluster utente: ${err?.message}`);
