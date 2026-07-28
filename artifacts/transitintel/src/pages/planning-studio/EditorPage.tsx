@@ -69,6 +69,8 @@ interface GlobalCluster {
 interface GlobalDepot {
   id: string; name: string; color: string;
   lat: number | null; lon: number | null;
+  /** null = globale (tutti i progetti); valorizzato = solo quel progetto PS */
+  psProjectId?: string | null;
   address?: string | null;
   capacity?: number | null;
   operatingHoursStart?: string | null;
@@ -564,14 +566,15 @@ export default function PlanningStudioEditorPage() {
   const reloadDepots = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, depots: true }));
     try {
-      const r = await fetch(`${getApiBase()}/api/depots`);
+      // Globali + depositi di QUESTO progetto (quelli di altri progetti restano fuori)
+      const r = await fetch(`${getApiBase()}/api/depots?psProjectId=${projectId}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalDepot[] = Array.isArray(j) ? j : (j.data ?? []);
       setDepots(arr);
     } catch (e: any) { toast.error("Errore caricamento depositi", { description: e?.message }); }
     finally { setOverlayLoading(s => ({ ...s, depots: false })); }
-  }, []);
+  }, [projectId]);
 
   /* ─── Zone vietate: load + geojson ─── */
   const reloadNoGoZones = useCallback(async () => {
@@ -2952,6 +2955,7 @@ export default function PlanningStudioEditorPage() {
         {editingDepot && (
           <DepotEditModal
             depot={editingDepot}
+            projectId={projectId}
             hidden={depotModalHidden}
             onChange={(d) => setEditingDepot(d)}
             onPickLocation={() => { setDepotModalHidden(true); setPickingDepotLocation(true); }}
@@ -5722,7 +5726,7 @@ function NeDepotsPanel({
       {/* Sola lettura: i depositi sono strutturali e si gestiscono in Infrastruttura. */}
       <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-2.5 py-2 text-[10px] text-slate-400 flex items-start gap-1.5">
         <Building2 className="w-3 h-3 shrink-0 mt-0.5 text-orange-400/70" />
-        <span>Sola visualizzazione. I depositi sono condivisi tra tutti i progetti e si gestiscono in <button onClick={onManage} className="text-orange-300 hover:underline font-medium">Infrastruttura →</button></span>
+        <span>Vista globali + di progetto. I depositi si gestiscono in <button onClick={onManage} className="text-orange-300 hover:underline font-medium">Infrastruttura →</button></span>
       </div>
       {loading && <p className="text-[11px] text-slate-500">Caricamento…</p>}
       {!loading && depots.length === 0 && (
@@ -5736,7 +5740,13 @@ function NeDepotsPanel({
               <Building2 className="w-3.5 h-3.5 text-white" />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-slate-200 truncate">{d.name}</p>
+              <p className="text-sm font-medium text-slate-200 truncate flex items-center gap-1.5">
+                {d.name}
+                {d.psProjectId && (
+                  <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded bg-orange-500/15 text-orange-300 border border-orange-500/30 shrink-0"
+                    title="Deposito visibile solo in questo progetto">progetto</span>
+                )}
+              </p>
               <p className="text-[10px] text-slate-500 truncate">
                 {d.address || (d.lat != null && d.lon != null ? `${Number(d.lat).toFixed(4)}, ${Number(d.lon).toFixed(4)}` : "—")}
                 {d.capacity != null && ` · cap ${d.capacity}`}
@@ -5759,9 +5769,11 @@ function NeDepotsPanel({
  *  Modale modifica/creazione deposito (overlay full-screen)
  * ════════════════════════════════════════════════════════════ */
 function DepotEditModal({
-  depot, hidden, onChange, onPickLocation, onClose, onSaved,
+  depot, projectId, hidden, onChange, onPickLocation, onClose, onSaved,
 }: {
   depot: GlobalDepot;
+  /** progetto PS corrente: abilita lo scope "solo questo progetto" */
+  projectId?: string;
   hidden?: boolean;
   onChange?: (d: GlobalDepot) => void;
   onPickLocation?: () => void;
@@ -5769,6 +5781,9 @@ function DepotEditModal({
   onSaved: () => Promise<void> | void;
 }) {
   const isNew = !depot.id;
+  // Scope: nuovo deposito creato DENTRO un progetto → solo progetto di default
+  // (un layout sperimentale non deve comparire nello scheduling degli altri).
+  const [onlyProject, setOnlyProject] = useState<boolean>(isNew ? !!projectId : !!depot.psProjectId);
   const [name, setName] = useState(depot.name || "");
   const [address, setAddress] = useState(depot.address || "");
   const [color, setColor] = useState(depot.color || "#f97316");
@@ -5813,6 +5828,7 @@ function DepotEditModal({
         color,
         lat: latN, lon: lonN,
         capacity: capacity.trim() === "" ? null : Number(capacity),
+        ...(projectId ? { psProjectId: onlyProject ? projectId : null } : {}),
       };
       // URL assoluto verso l'API: i path relativi in prod finiscono sul dominio web (405)
       const r = await fetch(isNew ? `${getApiBase()}/api/depots` : `${getApiBase()}/api/depots/${depot.id}`, {
@@ -5905,6 +5921,19 @@ function DepotEditModal({
                 className="w-full h-9 rounded bg-slate-900 border border-slate-700 cursor-pointer" />
             </div>
           </div>
+          {projectId && (
+            <label className="flex items-start gap-2 text-xs text-slate-300 cursor-pointer pt-1">
+              <input type="checkbox" checked={onlyProject} onChange={e => setOnlyProject(e.target.checked)}
+                className="mt-0.5 accent-orange-500" />
+              <span>
+                <span className="font-medium">Solo questo progetto</span>
+                <span className="block text-[10px] text-slate-500">
+                  Spuntato: il deposito è visibile solo qui (layout sperimentale, non compare
+                  nello scheduling degli altri progetti). Deselezionato: deposito GLOBALE.
+                </span>
+              </span>
+            </label>
+          )}
         </div>
         <div className="flex gap-2 mt-5">
           {!isNew && (

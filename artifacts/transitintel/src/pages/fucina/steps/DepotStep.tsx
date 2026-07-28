@@ -49,12 +49,14 @@ const FLEET_TYPES: { key: string; label: string }[] = [
 ];
 
 interface Props {
+  /** progetto Planner Studio collegato: filtra i depositi (globali + suoi) */
+  psProjectId?: string | null;
   initial?: SelectedDepot[] | null;  // depositi preselezionati (rientro dallo step successivo)
   onBack: () => void;
   onComplete: (depots: SelectedDepot[]) => void;
 }
 
-export default function DepotStep({ initial, onBack, onComplete }: Props) {
+export default function DepotStep({ initial, psProjectId, onBack, onComplete }: Props) {
   const [depots, setDepots] = useState<Depot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -72,7 +74,8 @@ export default function DepotStep({ initial, onBack, onComplete }: Props) {
   /* ── Fetch ── */
   useEffect(() => {
     setLoading(true);
-    fetch(`${getApiBase()}/api/depots`)
+    // Con un progetto PS collegato: depositi globali + di QUEL progetto
+    fetch(`${getApiBase()}/api/depots${psProjectId ? `?psProjectId=${psProjectId}` : ""}`)
       .then(r => r.json())
       .then((data: unknown) => {
         const list: Depot[] = Array.isArray(data) ? data : (data as any)?.data ?? [];
