@@ -221,22 +221,31 @@ export function requirePermission(p: Permission): RequestHandler {
  * path non pertinenti). Ordine: le voci più specifiche PRIMA (es. /planning-studio
  * prima di /planning). Prefisso non mappato ⇒ solo-autenticato.
  */
-const PERMISSION_BY_PREFIX: Array<[string, Permission]> = [
+const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
   ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
   ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
   ["/roster", "scheduling"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
-  ["/deadheads", "scheduling"], ["/deadhead-arcs", "scheduling"], ["/depots", "scheduling"], ["/coincidence-zones", "scheduling"],
+  ["/deadheads", "scheduling"],
+  // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
+  // in Planner Studio (permesso network) e servono alla pipeline Scheduling
+  // (permesso scheduling). Basta uno dei due.
+  ["/deadhead-arcs", ["scheduling", "network"]], ["/depots", ["scheduling", "network"]],
+  ["/coincidence-zones", "scheduling"],
   // network (Planner Studio, rete, zonizzazione)
+  // L'intermodale è una sezione del Planner Studio: stava sotto "analytics"
+  // mentre la rotta frontend è gated su "network", così chi aveva solo
+  // network vedeva la pagina e prendeva 403 su ogni chiamata, e chi aveva
+  // solo analytics veniva rimbalzato alla dashboard.
   ["/planning-studio", "network"], ["/zones", "network"], ["/routes", "network"],
-  ["/stops", "network"], ["/clusters", "network"],
+  ["/stops", "network"], ["/clusters", "network"], ["/intermodal", "network"],
   // fares
   ["/fares", "fares"],
   // analytics (analisi, territorio, gtfs, operazioni, orari, intermodale)
   ["/analysis", "analytics"], ["/territory", "analytics"], ["/gtfs", "analytics"],
   ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
   ["/operations", "analytics"], ["/timetables", "analytics"], ["/planning", "analytics"],
-  ["/intermodal", "analytics"], ["/scenarios", "analytics"], ["/weather", "analytics"],
+  ["/scenarios", "analytics"], ["/weather", "analytics"],
   ["/calendar-presets", "analytics"], ["/settings", "analytics"],
 ];
 
@@ -246,8 +255,9 @@ export const requirePermissionByPath: RequestHandler = (req, res, next) => {
   const path = req.path;
   for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
     if (path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?")) {
-      if (req.user.permissions?.[perm]) { next(); return; }
-      res.status(403).json({ error: `Manca il permesso: ${perm}` });
+      const needed = Array.isArray(perm) ? perm : [perm];
+      if (needed.some(pp => req.user!.permissions?.[pp])) { next(); return; }
+      res.status(403).json({ error: `Manca il permesso: ${needed.join(" o ")}` });
       return;
     }
   }

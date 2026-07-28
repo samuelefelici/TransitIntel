@@ -556,6 +556,12 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             typicalArrivals,
             typicalDepartures,
             source: "curated" as const,
+            // Orari curati dall'utente sulla zona = dato inserito a mano e
+            // verificato da chi pianifica; se invece si ricade sul preset
+            // interno è una stima, e va dichiarato.
+            scheduleSource: (customArr.length > 0 || customDep.length > 0)
+              ? ("live" as const)
+              : ((typicalArrivals.length || typicalDepartures.length) ? ("stima" as const) : ("assente" as const)),
           };
           hubsRaw.push(hub);
 

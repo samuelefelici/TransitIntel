@@ -16,6 +16,8 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { getApiBase } from "@/lib/api";
 import { toast } from "sonner";
+import { useParams } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 
 import type {
   AnalysisResult, HubPoisGroup,
@@ -44,6 +46,13 @@ export interface IntermodalPageProps {
 export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
   const routeIdsKey = routeIds && routeIds.length > 0 ? routeIds.join(",") : "";
+  // Sezione del progetto Planner Studio: l'analisi gira sulla RETE di questo
+  // progetto (feed materializzato) invece che su tutti i feed mescolati.
+  const params = useParams<{ id?: string }>();
+  const projectId = !embedded ? (params?.id ?? "") : "";
+  const psQs = projectId ? `&psProjectId=${projectId}` : "";
+  // Tipo di giorno analizzato: senza, si sommavano feriali+sabati+festivi.
+  const [dayKind, setDayKind] = useState<"feriale" | "sabato" | "festivo">("feriale");
   const mapRef = useRef<MapRef>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("neon");
   const [loading, setLoading] = useState(false);
@@ -106,10 +115,10 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       const routeIdsQs = routeIdsKey && scopeMode === "routes" ? `&routeIds=${encodeURIComponent(routeIdsKey)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
       const [analysisRes, shapesRes, poisRes, hubsRes, syncRes] = await Promise.all([
-        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}${muniQs}${routeIdsQs}`),
-        fetch(`${getApiBase()}/api/intermodal/shapes?radius=${radius}${muniQs}${routeIdsQs}`),
-        fetch(`${getApiBase()}/api/intermodal/pois?radius=${poiRadiusKm}${muniQs}${routeIdsQs}`),
-        fetch(`${getApiBase()}/api/intermodal/hubs?${(muniQs + routeIdsQs).replace(/^&/, "")}`),
+        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/shapes?radius=${radius}${psQs}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/pois?radius=${poiRadiusKm}${psQs}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/hubs?${(psQs + muniQs + routeIdsQs).replace(/^&/, "")}`),
         fetch(`${getApiBase()}/api/intermodal/sync-status`),
       ]);
       const [data, shapes, pois, hubsData, syncStatus] = await Promise.all([
@@ -121,11 +130,11 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       setDiscoveredHubs(Array.isArray(hubsData) ? hubsData : []);
       setLastSync(syncStatus.lastSyncedAt);
     } catch {
-      alert("Errore nell'analisi intermodale");
+      toast.error("Errore nell'analisi intermodale");
     } finally {
       setLoading(false);
     }
-  }, [radius, routeIdsKey, poiRadiusKm, scopeMode, municipality]);
+  }, [radius, routeIdsKey, poiRadiusKm, scopeMode, municipality, dayKind, psQs]);
 
   useEffect(() => { runAnalysis(); }, [runAnalysis]);
 
@@ -182,6 +191,25 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     return () => { cancelled = true; };
   }, [embedded]);
 
+  /** Le proposte sono modifiche d'orario: si portano in Corse. In attesa di
+   *  un'applicazione automatica, si esportano in un formato incollabile. */
+  const copyProposals = useCallback(async (props: AnalysisResult["proposedSchedule"]) => {
+    const csv = [
+      "azione;orario_attuale;orario_proposto;hub;motivo;impatto",
+      ...props.map(p => [
+        p.action === "add" ? "nuova corsa" : p.action === "shift" ? "sposta" : "estendi",
+        p.currentTime ?? "", p.proposedTime, p.hubName,
+        p.reason.replace(/;/g, ","), p.impact.replace(/;/g, ","),
+      ].join(";")),
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(csv);
+      toast.success(`${props.length} proposte copiate`, { description: "Incollale in un foglio o portale nella sezione Corse." });
+    } catch {
+      toast.error("Impossibile copiare negli appunti");
+    }
+  }, []);
+
   const syncSchedules = useCallback(async () => {
     setSyncing(true);
     try {
@@ -211,7 +239,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         await runAnalysis();
       }
     } catch {
-      alert("Errore sincronizzazione orari");
+      toast.error("Errore sincronizzazione orari");
     } finally {
       setSyncing(false);
     }
@@ -346,7 +374,9 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   }
 
   return (
-    <div className="relative w-full h-full overflow-hidden">
+    <div className="w-full h-full flex flex-col overflow-hidden">
+      {projectId && <PsProjectNav projectId={projectId} active="intermodal" />}
+      <div className="relative flex-1 overflow-hidden">
       {/* ── Map ───────────────────────────────────────────── */}
       <Map
         ref={mapRef}
@@ -898,6 +928,45 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     )}
                   </div>
 
+                  {/* Giorno-tipo: senza, si sommavano feriali+sabati+festivi
+                      e frequenze e corse/giorno risultavano gonfiate */}
+                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
+                    <p className="text-[10px] text-slate-300 font-medium">Giorno analizzato</p>
+                    <div className="flex gap-1">
+                      {([
+                        { k: "feriale", label: "Feriale" },
+                        { k: "sabato", label: "Sabato" },
+                        { k: "festivo", label: "Festivo" },
+                      ] as const).map(o => (
+                        <button key={o.k} onClick={() => setDayKind(o.k)}
+                          className={`flex-1 text-[9px] px-2 py-1 rounded transition-all border ${
+                            dayKind === o.k
+                              ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 font-semibold"
+                              : "bg-slate-900/40 text-slate-400 border-slate-700/40 hover:text-slate-200"
+                          }`}>{o.label}</button>
+                      ))}
+                    </div>
+                    {result?.scope && (
+                      <p className="text-[8px] text-slate-500">
+                        {result.scope.calendarApplied
+                          ? `${result.scope.tripsConsidered} corse circolanti su ${result.scope.tripsBeforeCalendar} totali`
+                          : "Calendario GTFS assente: conteggio su tutte le corse"}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Qualità del dato orari: distingue reale da stima */}
+                  {result?.summary && (result.summary.hubsWithEstimatedSchedule ?? 0) > 0 && (
+                    <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                      <p className="text-[9px] text-amber-200/90 leading-relaxed">
+                        {result.summary.hubsWithEstimatedSchedule} hub usano orari <strong>stimati</strong>, non ufficiali
+                        {(result.summary.hubsWithLiveSchedule ?? 0) > 0 ? ` (${result.summary.hubsWithLiveSchedule} con orari reali)` : ""}.
+                        Premi «Sincronizza» per scaricare gli orari veri delle stazioni da ViaggiaTreno.
+                      </p>
+                    </div>
+                  )}
+
                   {/* Sync button */}
                   <div className="flex items-center gap-2 bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40">
                     <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 shrink-0 ${syncing ? "animate-spin" : ""}`} />
@@ -1082,6 +1151,29 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                       <span className="flex items-center gap-1"><Footprints className="w-3 h-3 text-cyan-400" /> Piattaforma → uscita: {hc.hub.platformWalkMinutes} min</span>
                                       {hc.nearbyStops.length > 0 && <span className="flex items-center gap-1"><MapPin className="w-3 h-3 text-amber-400" /> Fermata più vicina: {hc.nearbyStops[0].walkMin} min tot.</span>}
                                     </div>
+
+                                    {/* Provenienza degli orari usati per le coincidenze di QUESTO hub:
+                                        senza questa riga una tabella stimata sembra un orario ufficiale. */}
+                                    {hc.hub.scheduleSource === "stima" && (
+                                      <div className="flex items-start gap-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 px-2 py-1.5">
+                                        <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                                        <p className="text-[9px] text-amber-200/90">
+                                          Orari <strong>stimati</strong> (tabella interna, non ufficiale): le coincidenze qui sotto
+                                          sono indicative. {hc.hub.type === "railway" ? "Sincronizza per scaricare l'orario reale." : "Per porti e aeroporti non esiste una fonte pubblica: inserisci gli orari nella zona di coincidenza."}
+                                        </p>
+                                      </div>
+                                    )}
+                                    {hc.hub.scheduleSource === "live" && (
+                                      <p className="text-[9px] text-emerald-300/80 flex items-center gap-1">
+                                        <Zap className="w-3 h-3" /> Orari reali da ViaggiaTreno
+                                        {hc.hub.scheduleFetchedAt ? ` · ${new Date(hc.hub.scheduleFetchedAt).toLocaleDateString("it-IT")}` : ""}
+                                      </p>
+                                    )}
+                                    {hc.hub.scheduleSource === "assente" && (
+                                      <p className="text-[9px] text-slate-500">
+                                        Nessun orario disponibile per questo nodo: si valuta solo la copertura del servizio bus.
+                                      </p>
+                                    )}
 
                                     {/* ── Orari live ViaggiaTreno per giorno della settimana ── */}
                                     {hc.hub.type === "railway" && (() => {
@@ -1380,6 +1472,31 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                   );
                                 })}
                               </div>
+
+                              {/* Le proposte finivano in un vicolo cieco: la prop
+                                  onApplyProposals esisteva ma non era mai invocata e
+                                  fuori dal flusso embedded non c'era modo di usarle. */}
+                              <div className="mt-2 flex items-center gap-2">
+                                {onApplyProposals ? (
+                                  <button
+                                    onClick={() => onApplyProposals(result.proposedSchedule)}
+                                    className="flex-1 text-[10px] font-semibold px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-300 border border-violet-500/40 hover:bg-violet-500/30 transition-all">
+                                    Applica {result.proposedSchedule.length} proposte
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => copyProposals(result.proposedSchedule)}
+                                    className="flex-1 text-[10px] font-semibold px-3 py-1.5 rounded-lg bg-slate-800/80 text-slate-300 border border-slate-700/50 hover:bg-slate-700 transition-all">
+                                    Copia l'elenco (CSV)
+                                  </button>
+                                )}
+                                {projectId && (
+                                  <a href={`/planning-studio/${projectId}/trips`}
+                                    className="text-[10px] font-semibold px-3 py-1.5 rounded-lg bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/25 transition-all whitespace-nowrap">
+                                    Vai a Corse →
+                                  </a>
+                                )}
+                              </div>
                             </motion.div>
                           )}
                         </AnimatePresence>
@@ -1470,6 +1587,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
             </div>
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );

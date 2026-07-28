@@ -67,10 +67,10 @@ const SECONDARY_TOOLS: ToolCard[] = [
     icon: Zap,
   },
   {
-    href: "/intermodal",
+    href: "/planning-studio",
     title: "Intermodale",
     subtitle: "Treno · gomma",
-    description: "Integrazione intermodale tra modalità di trasporto e gestione dei nodi di scambio.",
+    description: "Coincidenze bus↔treno sui nodi di scambio: si apre dentro un progetto Planner Studio, sulla rete di quel progetto.",
     icon: ArrowRightLeft,
   },
 ];
