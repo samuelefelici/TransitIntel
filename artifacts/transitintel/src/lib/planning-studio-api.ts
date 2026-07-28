@@ -686,6 +686,24 @@ export async function mergePsTwins(
   });
 }
 
+/* ─── Genera a cadenza (server-side, transazione unica) ─── */
+
+export async function generatePsTripsHeadway(projectId: string, body: {
+  baseTripId: string;
+  from: string;            // HH:MM
+  to: string;              // HH:MM
+  headwayMin: number;
+  applyTraffic?: boolean;
+  coeffByHour?: Record<number, number>;
+  dayTypeIds?: string[];   // vuoto = eredita dal template
+  categoryIds?: string[];  // vuoto = eredita dal template
+  removeTemplate?: boolean;
+}): Promise<{ ok: boolean; count: number; tripIds: string[]; templateRemoved: boolean }> {
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/generate`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
 /* ─── Import GTFS ─── */
 
 export interface PsImportCounts {
