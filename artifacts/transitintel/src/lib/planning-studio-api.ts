@@ -719,7 +719,8 @@ export async function importPsGtfs(
   file: File,
   routeIds?: string[],
   mode?: "replace" | "merge",
-): Promise<{ ok: boolean; counts?: PsImportCounts; mode?: string; merge?: PsMergeImportCounts }> {
+  dryRun?: boolean,
+): Promise<{ ok: boolean; counts?: PsImportCounts; mode?: string; dryRun?: boolean; merge?: PsMergeImportCounts }> {
   const fd = new FormData();
   fd.append("file", file);
   // routeIds assente → importa tutte le linee (comportamento storico)
@@ -727,6 +728,8 @@ export async function importPsGtfs(
   // mode="merge" → re-import non distruttivo: UUID conservati per chiave
   // stabile, validità/cluster/UDP sopravvivono; default = sostituzione totale.
   if (mode === "merge") fd.append("mode", "merge");
+  // dryRun → ANTEPRIMA del merge: conteggi esatti, nessuna scrittura (rollback)
+  if (mode === "merge" && dryRun) fd.append("dryRun", "1");
   const res = await fetch(
     `${getApiBase()}/api/planning-studio/projects/${projectId}/import-gtfs`,
     { method: "POST", credentials: "include", body: fd }
