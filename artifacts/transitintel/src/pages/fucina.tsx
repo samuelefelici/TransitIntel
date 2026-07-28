@@ -783,6 +783,7 @@ export default function FucinaPage() {
                   )}
                   {step === 2 && (
                     <DepotStep
+                      psProjectId={psProjectId}
                       initial={selectedDepots.length > 0 ? selectedDepots : (selectedDepotId ? [{ id: selectedDepotId, maxVehicles: null }] : null)}
                       onBack={() => setStep(1)}
                       onComplete={(deps) => {
