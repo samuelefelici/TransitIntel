@@ -16,10 +16,12 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { motion } from "framer-motion";
 import {
   Route as RouteIcon, Loader2, Wand2, Trash2, Building2, MapPin, X,
-  Pencil, RotateCcw, Save, AlertTriangle, Search,
+  Pencil, RotateCcw, Save, AlertTriangle, Search, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
+import { useParams } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -40,6 +42,10 @@ interface Arc {
 
 export default function DeadheadArcsPage() {
   const base = getApiBase();
+  // Dentro un progetto PS lo scope è FISSO su quel progetto (niente selettore):
+  // la pagina mostra gli archi globali + quelli del progetto aperto.
+  const params = useParams<{ id?: string }>();
+  const projectId = params?.id ?? "";
   const mapRef = useRef<MapRef>(null);
 
   const [arcs, setArcs] = useState<Arc[]>([]);
@@ -66,7 +72,8 @@ export default function DeadheadArcsPage() {
    * un id = globali + archi di QUEL progetto; generazione/cancellazione
    * lavorano nello scope scelto. */
   const [psList, setPsList] = useState<{ id: string; name: string }[]>([]);
-  const [psScope, setPsScope] = useState<string>("");
+  const [psScopeSel, setPsScopeSel] = useState<string>("");
+  const psScope = projectId || psScopeSel;
 
   /* editor arco selezionato */
   const [editMin, setEditMin] = useState<string>("");
@@ -290,6 +297,7 @@ export default function DeadheadArcsPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {projectId && <PsProjectNav projectId={projectId} active="arcs" />}
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-amber-500/15 shrink-0">
         <div className="flex items-center gap-3">
@@ -300,6 +308,7 @@ export default function DeadheadArcsPage() {
             <h2 className="text-sm font-bold text-foreground">Archi Fuorilinea</h2>
             <p className="text-[10px] text-muted-foreground">
               Percorsi a vuoto deposito↔capolinea su strada reale — modificabili in percorso e tempi
+              {projectId ? ` · ${arcs.length} archi in questo progetto` : ""}
             </p>
           </div>
         </div>
@@ -311,12 +320,12 @@ export default function DeadheadArcsPage() {
         </div>
       </div>
 
-      {/* Nota scope: lo scheduling usa ancora il calcolo attuale */}
-      <div className="px-5 py-1.5 bg-blue-500/5 border-b border-blue-500/15 shrink-0">
-        <p className="text-[10px] text-blue-300/80 flex items-center gap-1.5">
-          <AlertTriangle className="w-3 h-3 shrink-0" />
-          Per ora l'ottimizzazione (VSP/VCSP) continua a usare il calcolo fuorilinea attuale: questa sezione è
-          l'archivio consultabile e modificabile degli archi — l'aggancio allo scheduling arriverà come passo successivo.
+      {/* Gli override curati a mano sono consumati dal solver (VSP/VCSP) */}
+      <div className="px-5 py-1.5 bg-emerald-500/5 border-b border-emerald-500/15 shrink-0">
+        <p className="text-[10px] text-emerald-300/80 flex items-center gap-1.5">
+          <Check className="w-3 h-3 shrink-0" />
+          I tempi e i km che modifichi qui SOSTITUISCONO il calcolo automatico nell'ottimizzazione
+          (VSP e VCSP){projectId ? " per questo progetto" : ""}: sono la verità per lo scheduling.
         </p>
       </div>
 
@@ -463,8 +472,8 @@ export default function DeadheadArcsPage() {
                   {zonesList.map(z => <option key={z.id} value={z.id}>{z.name}</option>)}
                 </select>
               )}
-              {psList.length > 0 && (
-                <select value={psScope} onChange={e => { setPsScope(e.target.value); setSelectedId(null); }}
+              {!projectId && psList.length > 0 && (
+                <select value={psScope} onChange={e => { setPsScopeSel(e.target.value); setSelectedId(null); }}
                   title="Scope: vista globale, oppure archi globali + di un progetto Planner Studio. Genera/cancella lavorano nello scope scelto."
                   className="bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px] max-w-[150px]">
                   <option value="">Globale (tutti)</option>

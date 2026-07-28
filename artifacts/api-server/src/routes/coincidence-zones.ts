@@ -22,6 +22,7 @@ import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsT
 import { eq, sql } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
 import { haversineKm, walkMinutes as calcWalkMin } from "../lib/geo-utils";
+import { INTERMODAL_HUBS as CORE_HUBS } from "./intermodal";
 
 const router: IRouter = Router();
 
@@ -38,7 +39,14 @@ export interface IntermodalHub {
   typicalDepartures: { destination: string; times: string[] }[];
 }
 
-export const INTERMODAL_HUBS: IntermodalHub[] = [
+/* Geometria canonica degli hub condivisi: viveva duplicata qui e in
+ * intermodal.ts, e i due elenchi erano DIVERSI — "rail-torrette" stava a
+ * ~700 m di distanza nei due file e solo uno aveva le fermate GTFS
+ * associate. Risultato: la pagina Intermodale e l'ottimizzatore (che
+ * importa questa lista) analizzavano nodi diversi con lo stesso id.
+ * Ora posizione e fermate arrivano da un'unica sorgente; qui restano solo
+ * le voci in più (park & ride) e gli orari indicativi. */
+const CANONICAL_HUBS: IntermodalHub[] = [
   {
     id: "rail-ancona", name: "Stazione FS Ancona", type: "railway",
     lat: 43.607348, lng: 13.49776447, gtfsStopIds: ["13","18","153","20006","20044"],
@@ -322,6 +330,14 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/coincidence-zones/:id/schedules
+/** Elenco effettivo: geometria da intermodal.ts dove l'id coincide. */
+export const INTERMODAL_HUBS: IntermodalHub[] = CANONICAL_HUBS.map(h => {
+  const canon = CORE_HUBS.find(c => c.id === h.id);
+  return canon
+    ? { ...h, lat: canon.lat, lng: canon.lng, gtfsStopIds: [...canon.gtfsStopIds] }
+    : h;
+});
+
 // Restituisce gli orari della zona: prima i custom (zone.schedules), poi fallback al preset INTERMODAL_HUBS
 // ═══════════════════════════════════════════════════════════════
 router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {

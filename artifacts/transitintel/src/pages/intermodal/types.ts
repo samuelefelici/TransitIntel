@@ -53,10 +53,23 @@ export interface ArrivalStats {
   avgWaitMin: number | null; avgTotalTransferMin: number | null;
 }
 
+/** Tipi hub prodotti dal backend (bus_terminal mancava e si leggeva con cast). */
+export type HubKind = "railway" | "port" | "airport" | "bus_terminal";
+
+/** Provenienza degli orari mostrati: reale, stima interna o assente. */
+export type ScheduleSource = "live" | "stima" | "assente";
+
 export interface HubAnalysis {
   hub: {
-    id: string; name: string; type: "railway" | "port" | "airport";
+    id: string; name: string; type: HubKind;
     lat: number; lng: number; description: string; platformWalkMinutes: number;
+    source?: "curated" | "gtfs-auto";
+    scheduleSource?: ScheduleSource;
+    scheduleFetchedAt?: string;
+  };
+  serviceScore?: {
+    score: number; level: string; linesServing: number; destinationsReached: number;
+    hoursCovered: number; avgFrequencyMin: number | null;
   };
   isServed: boolean;
   nearbyStops: NearbyStop[];
@@ -95,9 +108,23 @@ export interface AnalysisResult {
     totalDepartures: number; departureCovered: number;
     avgWaitAtStop: number | null; avgTotalTransfer: number | null;
     totalBusLines: number;
+    curatedHubs?: number; discoveredHubs?: number;
+    /** Quanti hub hanno orari reali, stimati o nessuno */
+    hubsWithLiveSchedule?: number;
+    hubsWithEstimatedSchedule?: number;
+    hubsWithoutSchedule?: number;
   };
   suggestions: Suggestion[];
   proposedSchedule: ScheduleProposal[];
+  /** Ambito effettivo dell'analisi (rete, progetto, giorno-tipo) */
+  scope?: {
+    psProjectId: string | null;
+    feedId: string | null;
+    day: "feriale" | "sabato" | "festivo";
+    calendarApplied: boolean;
+    tripsConsidered: number;
+    tripsBeforeCalendar: number;
+  };
   config: { maxWalkKm: number; walkSpeedKmh: number };
 }
 
@@ -107,6 +134,6 @@ export interface HubPoi {
 }
 
 export interface HubPoisGroup {
-  hubId: string; hubName: string; hubType: "railway" | "port" | "airport";
+  hubId: string; hubName: string; hubType: HubKind;
   hubLat: number; hubLng: number; pois: HubPoi[];
 }

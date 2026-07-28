@@ -1,10 +1,111 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsShapes, pointsOfInterest, censusSections } from "@workspace/db/schema";
-import { sql, inArray } from "drizzle-orm";
+import { sql, inArray, eq, and } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
+import { getLatestFeedId } from "./gtfs-helpers";
 
 const router: IRouter = Router();
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  SCOPING — la rete su cui si analizza
+ *
+ *  Prima ogni query leggeva TUTTE le tabelle GTFS senza filtro di feed:
+ *  con più reti importate l'analisi mescolava fermate e corse di aziende
+ *  diverse. Ora l'intermodale è una sezione del progetto Planner Studio:
+ *  con ?psProjectId= si usa il feed di QUEL progetto (materializzato se
+ *  c'è, altrimenti quello sorgente); senza, il feed corrente dell'utente.
+ * ═══════════════════════════════════════════════════════════════════════ */
+export interface IntermodalScope { feedId: string | null; psProjectId: string | null }
+
+export async function resolveScope(req: any): Promise<IntermodalScope> {
+  const psProjectId = String(req?.query?.psProjectId ?? "").trim();
+  if (UUID_RE.test(psProjectId)) {
+    try {
+      const r = await db.execute<any>(sql`
+        SELECT materialized_feed_id, source_feed_id FROM ps_projects WHERE id = ${psProjectId}::uuid`);
+      const row = (r as any).rows?.[0];
+      const feedId = row?.materialized_feed_id ?? row?.source_feed_id ?? null;
+      if (feedId) return { feedId: String(feedId), psProjectId };
+    } catch { /* progetto inesistente: cade sul feed corrente */ }
+  }
+  return { feedId: await getLatestFeedId(req), psProjectId: UUID_RE.test(psProjectId) ? psProjectId : null };
+}
+
+/** Filtro feed riusabile: se il feed non è risolto non filtra (comportamento storico). */
+const feedWhere = (col: any, feedId: string | null) => (feedId ? eq(col, feedId) : sql`TRUE`);
+
+/* ═══════════════════════════════════════════════════════════════════════
+ *  CALENDARIO — quali corse circolano davvero nel giorno analizzato
+ *
+ *  L'analisi sommava TUTTI gli stop_times (feriali + sabati + festivi +
+ *  scolastici): frequenze, corse/giorno e service score risultavano
+ *  gonfiati anche del doppio. Ora si sceglie il tipo di giorno e si
+ *  tengono solo i service_id attivi in quel giorno.
+ * ═══════════════════════════════════════════════════════════════════════ */
+/** Bbox (con margine) del comune ISTAT, dai centroidi delle sezioni di censimento. */
+export async function municipalityBbox(
+  municipality: string,
+): Promise<{ minLat: number; maxLat: number; minLng: number; maxLng: number } | null> {
+  const p6 = municipality.slice(0, 6), p5 = municipality.slice(0, 5);
+  const rows = await db.select({
+    istatCode: censusSections.istatCode,
+    centroidLat: censusSections.centroidLat,
+    centroidLng: censusSections.centroidLng,
+  }).from(censusSections);
+  const matching = rows.filter(r => r.istatCode && (r.istatCode.slice(0, 6) === p6 || r.istatCode.slice(0, 5) === p5));
+  if (matching.length === 0) return null;
+  const lats = matching.map(r => r.centroidLat);
+  const lngs = matching.map(r => r.centroidLng);
+  const padLat = 0.02, padLng = 0.03; // ~2-3 km di margine
+  return {
+    minLat: Math.min(...lats) - padLat, maxLat: Math.max(...lats) + padLat,
+    minLng: Math.min(...lngs) - padLng, maxLng: Math.max(...lngs) + padLng,
+  };
+}
+
+export type DayKind = "feriale" | "sabato" | "festivo";
+const DAY_COLUMN: Record<DayKind, string> = {
+  feriale: "wednesday", sabato: "saturday", festivo: "sunday",
+};
+
+export function parseDayKind(v: unknown): DayKind {
+  const s = String(v ?? "").toLowerCase();
+  if (s === "sabato" || s === "saturday") return "sabato";
+  if (s === "festivo" || s === "domenica" || s === "sunday") return "festivo";
+  return "feriale";
+}
+
+/**
+ * service_id attivi nel giorno scelto. `null` = calendario assente
+ * (feed senza calendar.txt): in quel caso non si filtra, per non
+ * azzerare l'analisi su feed minimali.
+ */
+export async function activeServiceIds(feedId: string | null, day: DayKind): Promise<Set<string> | null> {
+  if (!feedId) return null;
+  try {
+    const col = DAY_COLUMN[day];
+    const r = await db.execute<any>(sql`
+      SELECT service_id FROM gtfs_calendar
+       WHERE feed_id = ${feedId}::uuid AND ${sql.raw(col)} = true`);
+    const ids = new Set<string>(((r as any).rows ?? []).map((x: any) => String(x.service_id)));
+    // Eccezioni "aggiunte" (exception_type = 1) nello stesso tipo di giorno
+    const ex = await db.execute<any>(sql`
+      SELECT DISTINCT service_id, date FROM gtfs_calendar_dates
+       WHERE feed_id = ${feedId}::uuid AND exception_type = 1`);
+    for (const x of ((ex as any).rows ?? [])) {
+      const d = String(x.date ?? "");
+      if (d.length !== 8) continue;
+      const dow = new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)).getDay();
+      const kind: DayKind = dow === 0 ? "festivo" : dow === 6 ? "sabato" : "feriale";
+      if (kind === day) ids.add(String(x.service_id));
+    }
+    return ids.size > 0 ? ids : null;
+  } catch {
+    return null; // calendario non disponibile: nessun filtro
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // INTERMODAL — Analyze bus ↔ rail / ferry connections (GTFS-based)
@@ -13,7 +114,8 @@ const router: IRouter = Router();
 // Known intermodal hubs (Province of Ancona)
 // Now includes ARRIVALS (incoming trains/ferries) — the key use case:
 // passenger arrives by train/ferry → walks to bus stop → catches bus to destination
-const INTERMODAL_HUBS: {
+/** Sorgente unica di posizione/fermate degli hub curati (vedi coincidence-zones). */
+export const INTERMODAL_HUBS: {
   id: string; name: string; type: "railway" | "port" | "airport";
   lat: number; lng: number;
   gtfsStopIds: string[];
@@ -183,6 +285,48 @@ interface HubSchedule {
 const dynamicHubSchedules = new Map<string, HubSchedule>();
 export { dynamicHubSchedules };
 export type { HubSchedule };
+
+/* ── Persistenza degli orari sincronizzati ────────────────────────────
+ * La Map vive nel processo: dopo un restart (o su un'altra replica) gli
+ * orari scaricati sparivano e il frontend rilanciava 112 chiamate a
+ * ViaggiaTreno per stazione. Ora si appoggiano a una tabella additiva. */
+let schedulesTableReady = false;
+async function ensureSchedulesTable(): Promise<void> {
+  if (schedulesTableReady) return;
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS intermodal_hub_schedules (
+      hub_id      text PRIMARY KEY,
+      payload     jsonb NOT NULL,
+      fetched_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  schedulesTableReady = true;
+}
+
+/** Carica in memoria gli orari persistiti (una volta per processo). */
+let persistedLoaded = false;
+export async function loadPersistedSchedules(): Promise<void> {
+  if (persistedLoaded) return;
+  try {
+    await ensureSchedulesTable();
+    const r = await db.execute<any>(sql`SELECT hub_id, payload FROM intermodal_hub_schedules`);
+    for (const row of ((r as any).rows ?? [])) {
+      const p = row.payload;
+      if (p && typeof p === "object") dynamicHubSchedules.set(String(row.hub_id), p as HubSchedule);
+    }
+  } catch { /* tabella non creabile: si resta sulla cache in memoria */ }
+  persistedLoaded = true;
+}
+
+async function persistSchedule(hubId: string, sched: HubSchedule): Promise<void> {
+  try {
+    await ensureSchedulesTable();
+    await db.execute(sql`
+      INSERT INTO intermodal_hub_schedules (hub_id, payload, fetched_at)
+      VALUES (${hubId}, ${JSON.stringify(sched)}::jsonb, now())
+      ON CONFLICT (hub_id) DO UPDATE SET payload = EXCLUDED.payload, fetched_at = now()`);
+  } catch { /* best-effort */ }
+}
 
 /**
  * Prova a recuperare arrivi/partenze treni per una stazione dal suo nome
@@ -381,6 +525,12 @@ interface DiscoveredHub {
   weeklyArrivals?: { origin: string; times: string[] }[][];
   weekStart?: string;
   source: "curated" | "gtfs-auto";
+  /** Da dove vengono gli orari mostrati:
+   *  - "live"    : scaricati da ViaggiaTreno (reali, con data di fetch)
+   *  - "stima"   : tabella indicativa interna, NON verificata
+   *  - "assente" : nessun orario disponibile per questo hub */
+  scheduleSource: "live" | "stima" | "assente";
+  scheduleFetchedAt?: string;
 }
 export type { HubType, DiscoveredHub };
 
@@ -448,6 +598,7 @@ function clusterHubStops(
       typicalDepartures: [],
       typicalArrivals: [],
       source: "gtfs-auto" as const,
+      scheduleSource: "assente" as const,
     };
   });
 }
@@ -463,8 +614,10 @@ export async function discoverHubs(opts: {
   routeIds?: Set<string> | null;
   municipality?: string | null; // codice ISTAT 5-6 cifre (es. 42021 = Jesi)
   includeCurated?: boolean;
+  /** rete su cui cercare gli hub: senza, si leggerebbero tutti i feed insieme */
+  feedId?: string | null;
 }): Promise<DiscoveredHub[]> {
-  const { bbox, routeIds, includeCurated = true } = opts;
+  const { bbox, routeIds, includeCurated = true, feedId = null } = opts;
   const out: DiscoveredHub[] = [];
 
   // 1. Hub curati filtrati per bbox
@@ -477,6 +630,10 @@ export async function discoverHubs(opts: {
       typicalDepartures: h.typicalDepartures,
       typicalArrivals: h.typicalArrivals,
       source: "curated",
+      // Gli orari cablati nel codice sono una STIMA indicativa, non un orario
+      // ufficiale: va dichiarato, altrimenti l'analisi sembra fondata su dati
+      // reali. Il sync ViaggiaTreno li sostituisce (→ "live").
+      scheduleSource: ((h.typicalArrivals.length || h.typicalDepartures.length) ? "stima" : "assente") as "stima" | "assente",
     }));
     for (const h of curated) {
       if (!bbox) { out.push(h); continue; }
@@ -490,7 +647,8 @@ export async function discoverHubs(opts: {
   // Se routeIds è specificato, limitiamo alle fermate di quelle routes
   let candidateStopIds: Set<string> | null = null;
   if (routeIds && routeIds.size > 0) {
-    const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId }).from(gtfsTrips);
+    const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
+      .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
     const relevantTripIds = new Set(tripRows.filter(t => routeIds.has(t.routeId)).map(t => t.tripId));
     candidateStopIds = new Set();
     const tripArr = [...relevantTripIds];
@@ -498,7 +656,8 @@ export async function discoverHubs(opts: {
       const batch = tripArr.slice(i, i + 500);
       if (batch.length === 0) continue;
       const stRows = await db.select({ stopId: gtfsStopTimes.stopId }).from(gtfsStopTimes)
-        .where(sql`${gtfsStopTimes.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+          sql`${gtfsStopTimes.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
       for (const r of stRows) candidateStopIds.add(r.stopId);
     }
   }
@@ -508,7 +667,7 @@ export async function discoverHubs(opts: {
     stopName: gtfsStops.stopName,
     lat: gtfsStops.stopLat,
     lng: gtfsStops.stopLon,
-  }).from(gtfsStops);
+  }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
 
   const hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }> = [];
   for (const s of allStops) {
@@ -532,18 +691,20 @@ export async function discoverHubs(opts: {
   const filtered = discovered.filter(d => !out.some(h => h.type === d.type && haversineKm(h.lat, h.lng, d.lat, d.lng) <= 0.3));
   out.push(...filtered);
 
-  // ─── Applica orari cacheati (dal sync-schedules) ai discovered hubs ──
+  // ─── Applica gli orari sincronizzati (ViaggiaTreno) ─────────────────
+  // Vale per TUTTI gli hub, curati compresi: un orario reale sostituisce
+  // sempre la tabella-stima interna.
+  await loadPersistedSchedules();
   for (const h of out) {
-    if (h.source === "gtfs-auto") {
-      const cached = dynamicHubSchedules.get(h.id);
-      if (cached) {
-        h.typicalArrivals = cached.typicalArrivals;
-        h.typicalDepartures = cached.typicalDepartures;
-        if (cached.weeklyDepartures) h.weeklyDepartures = cached.weeklyDepartures;
-        if (cached.weeklyArrivals) h.weeklyArrivals = cached.weeklyArrivals;
-        if (cached.weekStart) h.weekStart = cached.weekStart;
-      }
-    }
+    const cached = dynamicHubSchedules.get(h.id);
+    if (!cached) continue;
+    h.typicalArrivals = cached.typicalArrivals;
+    h.typicalDepartures = cached.typicalDepartures;
+    if (cached.weeklyDepartures) h.weeklyDepartures = cached.weeklyDepartures;
+    if (cached.weeklyArrivals) h.weeklyArrivals = cached.weeklyArrivals;
+    if (cached.weekStart) h.weekStart = cached.weekStart;
+    h.scheduleSource = "live";
+    h.scheduleFetchedAt = cached.fetchedAt;
   }
 
   // ─── Fallback: se dopo tutto questo non ci sono hub nel bbox ──────
@@ -564,6 +725,7 @@ export async function discoverHubs(opts: {
       typicalDepartures: [],
       typicalArrivals: [],
       source: "gtfs-auto",
+      scheduleSource: "assente",
     });
   }
 
@@ -590,33 +752,15 @@ router.get("/intermodal/hubs", async (req, res) => {
         bbox = { minLat: Math.min(a, c), maxLat: Math.max(a, c), minLng: Math.min(b, d), maxLng: Math.max(b, d) };
       }
     } else if (municipality) {
-      // Deriva bbox dalle census sections del comune
-      const muniPrefix = municipality.slice(0, 6);
-      const muniPrefixShort = municipality.slice(0, 5);
-      const rows = await db.select({
-        istatCode: censusSections.istatCode,
-        centroidLat: censusSections.centroidLat,
-        centroidLng: censusSections.centroidLng,
-      }).from(censusSections);
-      const matching = rows.filter(r =>
-        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
-      );
-      if (matching.length > 0) {
-        const lats = matching.map(r => r.centroidLat);
-        const lngs = matching.map(r => r.centroidLng);
-        const padLat = 0.02, padLng = 0.03; // ~2-3km di margine
-        bbox = {
-          minLat: Math.min(...lats) - padLat, maxLat: Math.max(...lats) + padLat,
-          minLng: Math.min(...lngs) - padLng, maxLng: Math.max(...lngs) + padLng,
-        };
-      }
+      bbox = await municipalityBbox(municipality);
     }
 
     const routeIds = routeIdsCsv
       ? new Set(routeIdsCsv.split(",").map(s => s.trim()).filter(Boolean))
       : null;
 
-    const hubs = await discoverHubs({ bbox, routeIds, municipality });
+    const { feedId } = await resolveScope(req);
+    const hubs = await discoverHubs({ bbox, routeIds, municipality, feedId });
 
     res.json(hubs.map(h => ({
       id: h.id, name: h.name, type: h.type,
@@ -691,30 +835,15 @@ router.get("/intermodal/analyze", async (req, res) => {
       ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
       : null;
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+    // Rete analizzata (progetto PS o feed corrente) e tipo di giorno.
+    const { feedId, psProjectId } = await resolveScope(req);
+    const day = parseDayKind(req.query.day);
+    const serviceIds = await activeServiceIds(feedId, day);
 
     // ─── Hub list: curated + auto-discovered (filtered by ambito) ──────
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
-    if (municipality) {
-      const muniPrefix = municipality.slice(0, 6);
-      const muniPrefixShort = municipality.slice(0, 5);
-      const rows = await db.select({
-        istatCode: censusSections.istatCode,
-        centroidLat: censusSections.centroidLat,
-        centroidLng: censusSections.centroidLng,
-      }).from(censusSections);
-      const matching = rows.filter(r =>
-        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
-      );
-      if (matching.length > 0) {
-        const lats = matching.map(r => r.centroidLat);
-        const lngs = matching.map(r => r.centroidLng);
-        bbox = {
-          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
-          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
-        };
-      }
-    }
-    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality });
+    if (municipality) bbox = await municipalityBbox(municipality);
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId });
 
     // 1. Fetch all GTFS stops & find those near each hub
     const allStops = await db.select({
@@ -722,7 +851,7 @@ router.get("/intermodal/analyze", async (req, res) => {
       stopName: gtfsStops.stopName,
       lat: gtfsStops.stopLat,
       lng: gtfsStops.stopLon,
-    }).from(gtfsStops);
+    }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
 
     // 2. Find nearby bus stops per hub (within maxWalkKm)
     const hubNearbyStops: Record<string, { stopId: string; stopName: string; lat: number; lng: number; distKm: number; walkMin: number }[]> = {};
@@ -765,24 +894,44 @@ router.get("/intermodal/analyze", async (req, res) => {
           arrivalTime: gtfsStopTimes.arrivalTime,
           stopSequence: gtfsStopTimes.stopSequence,
         }).from(gtfsStopTimes)
-          .where(sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+          .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+            sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
         hubStopTimes.push(...rows);
       }
     }
 
-    // 4. Trip → Route mapping
+    // 4. Trip → Route mapping (+ service_id per il filtro calendario)
     const tripIds = [...new Set(hubStopTimes.map(st => st.tripId))];
     const tripRouteMap: Record<string, string> = {};
+    const tripServiceMap: Record<string, string> = {};
     if (tripIds.length > 0) {
       const batchSize = 500;
       for (let i = 0; i < tripIds.length; i += batchSize) {
         const batch = tripIds.slice(i, i + batchSize);
-        const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
+        const tripRows = await db.select({
+          tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId,
+        })
           .from(gtfsTrips)
-          .where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
-        for (const tr of tripRows) tripRouteMap[tr.tripId] = tr.routeId;
+          .where(and(feedWhere(gtfsTrips.feedId, feedId),
+            sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
+        for (const tr of tripRows) {
+          tripRouteMap[tr.tripId] = tr.routeId;
+          if (tr.serviceId) tripServiceMap[tr.tripId] = tr.serviceId;
+        }
       }
     }
+
+    // Filtro CALENDARIO: si contano solo le corse che circolano nel giorno
+    // scelto. Prima si sommavano feriali + sabati + festivi + scolastici, e
+    // frequenze, corse/giorno e service score risultavano gonfiati.
+    const tripsBeforeCalendar = tripIds.length;
+    if (serviceIds) {
+      hubStopTimes = hubStopTimes.filter(st => {
+        const svc = tripServiceMap[st.tripId];
+        return svc ? serviceIds.has(svc) : false;
+      });
+    }
+    const tripsAfterCalendar = new Set(hubStopTimes.map(st => st.tripId)).size;
 
     // Apply routeIds filter (if provided): keep only stop_times belonging to selected routes
     if (routeIdsFilter && routeIdsFilter.size > 0) {
@@ -798,7 +947,7 @@ router.get("/intermodal/analyze", async (req, res) => {
       shortName: gtfsRoutes.routeShortName,
       longName: gtfsRoutes.routeLongName,
       color: gtfsRoutes.routeColor,
-    }).from(gtfsRoutes);
+    }).from(gtfsRoutes).where(feedWhere(gtfsRoutes.feedId, feedId));
     const routeMap: Record<string, { shortName: string | null; longName: string | null; color: string | null }> = {};
     for (const r of gtfsRoutesAll) routeMap[r.routeId] = { shortName: r.shortName, longName: r.longName, color: r.color };
 
@@ -1230,6 +1379,9 @@ router.get("/intermodal/analyze", async (req, res) => {
           description: hub.description,
           platformWalkMinutes: hub.platformWalkMinutes,
           source: hub.source,
+          // Provenienza degli orari usati per le coincidenze di questo hub
+          scheduleSource: hub.scheduleSource,
+          scheduleFetchedAt: hub.scheduleFetchedAt,
         },
         isServed,
         nearbyStops: nearbyStops.slice(0, 20),
@@ -1430,9 +1582,20 @@ router.get("/intermodal/analyze", async (req, res) => {
           return transfers.length > 0 ? Math.round(transfers.reduce((s: number, t: number) => s + t, 0) / transfers.length) : null;
         })(),
         totalBusLines: hubAnalyses.reduce((s: number, h: any) => s + h.busLines.length, 0),
+        // Qualità del dato: quanti hub hanno orari REALI e quanti solo stime
+        hubsWithLiveSchedule: effectiveHubs.filter(h => h.scheduleSource === "live").length,
+        hubsWithEstimatedSchedule: effectiveHubs.filter(h => h.scheduleSource === "stima").length,
+        hubsWithoutSchedule: effectiveHubs.filter(h => h.scheduleSource === "assente").length,
       },
       suggestions,
       proposedSchedule,
+      // Ambito dell'analisi: rete, progetto e giorno-tipo effettivamente usati
+      scope: {
+        psProjectId, feedId, day,
+        calendarApplied: serviceIds !== null,
+        tripsConsidered: tripsAfterCalendar,
+        tripsBeforeCalendar,
+      },
       config: { maxWalkKm, walkSpeedKmh: 4.5 },
     });
   } catch (err) {
@@ -1446,7 +1609,12 @@ router.get("/intermodal/analyze", async (req, res) => {
 // ──────────────────────────────────────────────────────────
 router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
   try {
-    const hub = INTERMODAL_HUBS.find(h => h.id === req.params.hubId);
+    // Cercava solo tra gli hub CURATI: ogni hub auto-scoperto (id
+    // "gtfs-railway-…") dava 404. Ora si passa dalla discovery completa.
+    const { feedId } = await resolveScope(req);
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+    const allHubs = await discoverHubs({ bbox: null, municipality, feedId });
+    const hub = allHubs.find(h => h.id === req.params.hubId);
     if (!hub) { res.status(404).json({ error: "Hub non trovato" }); return; }
 
     const maxWalkKm = parseFloat(req.query.radius as string) || 0.5;
@@ -1457,7 +1625,7 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
       stopName: gtfsStops.stopName,
       lat: gtfsStops.stopLat,
       lng: gtfsStops.stopLon,
-    }).from(gtfsStops);
+    }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
 
     const nearbyStops: { stopId: string; stopName: string; lat: number; lng: number; distKm: number }[] = [];
     for (const stop of allStops) {
@@ -1478,7 +1646,8 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
       stopId: gtfsStopTimes.stopId,
       tripId: gtfsStopTimes.tripId,
     }).from(gtfsStopTimes)
-      .where(sql`${gtfsStopTimes.stopId} IN (${sql.join(stopIds.map(id => sql`${id}`), sql`, `)})`);
+      .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+        sql`${gtfsStopTimes.stopId} IN (${sql.join(stopIds.map(id => sql`${id}`), sql`, `)})`));
 
     const tripIds = [...new Set(stRows.map(r => r.tripId))];
     const tripRouteMap: Record<string, string> = {};
@@ -1487,7 +1656,8 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
         const batch = tripIds.slice(i, i + 500);
         const rows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
           .from(gtfsTrips)
-          .where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+          .where(and(feedWhere(gtfsTrips.feedId, feedId),
+            sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
         for (const r of rows) tripRouteMap[r.tripId] = r.routeId;
       }
     }
@@ -1499,7 +1669,8 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
       longName: gtfsRoutes.routeLongName,
       color: gtfsRoutes.routeColor,
     }).from(gtfsRoutes)
-      .where(sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(id => sql`${id}`), sql`, `)})`);
+      .where(and(feedWhere(gtfsRoutes.feedId, feedId),
+        sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(id => sql`${id}`), sql`, `)})`));
 
     res.json({ hub, nearbyStops, routes });
   } catch (err) {
@@ -1520,12 +1691,21 @@ router.get("/intermodal/shapes", async (req, res) => {
       ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
       : null;
 
-    // Get route IDs serving the requested hub (or all hubs)
-    const hubs = hubId ? INTERMODAL_HUBS.filter(h => h.id === hubId) : INTERMODAL_HUBS;
+    // Prima si guardava solo INTERMODAL_HUBS e si IGNORAVA `municipality`:
+    // scegliendo un comune diverso, la mappa disegnava comunque le linee
+    // attorno agli hub cablati (Ancona). Ora si usa la stessa discovery
+    // dell'analisi, con lo stesso ambito.
+    const { feedId } = await resolveScope(req);
+    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
+    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (municipality) bbox = await municipalityBbox(municipality);
+    const allHubs = await discoverHubs({ bbox, municipality, feedId });
+    const hubs = hubId ? allHubs.filter(h => h.id === hubId) : allHubs;
     if (hubs.length === 0) { res.status(404).json({ error: "Hub non trovato" }); return; }
 
     // Collect nearby stop IDs for these hubs
-    const allStops = await db.select({ stopId: gtfsStops.stopId, lat: gtfsStops.stopLat, lng: gtfsStops.stopLon }).from(gtfsStops);
+    const allStops = await db.select({ stopId: gtfsStops.stopId, lat: gtfsStops.stopLat, lng: gtfsStops.stopLon })
+      .from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
     const nearbyStopIds: Set<string> = new Set();
     const maxWalkKm = parseFloat(req.query.radius as string) || 0.5;
 
@@ -1549,7 +1729,8 @@ router.get("/intermodal/shapes", async (req, res) => {
     for (let i = 0; i < stopIdArr.length; i += 500) {
       const batch = stopIdArr.slice(i, i + 500);
       const rows = await db.select({ tripId: gtfsStopTimes.tripId }).from(gtfsStopTimes)
-        .where(sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+          sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
       stRows.push(...rows);
     }
 
@@ -1559,7 +1740,8 @@ router.get("/intermodal/shapes", async (req, res) => {
     for (let i = 0; i < tripIds.length; i += 500) {
       const batch = tripIds.slice(i, i + 500);
       const rows = await db.select({ routeId: gtfsTrips.routeId }).from(gtfsTrips)
-        .where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+        .where(and(feedWhere(gtfsTrips.feedId, feedId),
+          sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
       for (const r of rows) routeIds.add(r.routeId);
     }
 
@@ -1635,28 +1817,10 @@ router.get("/intermodal/pois", async (req, res) => {
 
     // Calcola bbox dal municipality se fornito
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
-    if (municipality) {
-      const muniPrefix = municipality.slice(0, 6);
-      const muniPrefixShort = municipality.slice(0, 5);
-      const rows = await db.select({
-        istatCode: censusSections.istatCode,
-        centroidLat: censusSections.centroidLat,
-        centroidLng: censusSections.centroidLng,
-      }).from(censusSections);
-      const matching = rows.filter(r =>
-        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
-      );
-      if (matching.length > 0) {
-        const lats = matching.map(r => r.centroidLat);
-        const lngs = matching.map(r => r.centroidLng);
-        bbox = {
-          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
-          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
-        };
-      }
-    }
+    if (municipality) bbox = await municipalityBbox(municipality);
 
-    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality });
+    const { feedId } = await resolveScope(req);
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId });
 
     // Define POI categories per hub type
     const WORK_CATEGORIES = ["office", "hospital", "school", "industrial"];
@@ -1774,28 +1938,10 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
 
     // Calcola bbox dal municipality se fornito (come negli altri endpoint)
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
-    if (municipality) {
-      const muniPrefix = municipality.slice(0, 6);
-      const muniPrefixShort = municipality.slice(0, 5);
-      const rows = await db.select({
-        istatCode: censusSections.istatCode,
-        centroidLat: censusSections.centroidLat,
-        centroidLng: censusSections.centroidLng,
-      }).from(censusSections);
-      const matching = rows.filter(r =>
-        r.istatCode && (r.istatCode.slice(0, 6) === muniPrefix || r.istatCode.slice(0, 5) === muniPrefixShort),
-      );
-      if (matching.length > 0) {
-        const lats = matching.map(r => r.centroidLat);
-        const lngs = matching.map(r => r.centroidLng);
-        bbox = {
-          minLat: Math.min(...lats) - 0.02, maxLat: Math.max(...lats) + 0.02,
-          minLng: Math.min(...lngs) - 0.03, maxLng: Math.max(...lngs) + 0.03,
-        };
-      }
-    }
+    if (municipality) bbox = await municipalityBbox(municipality);
 
-    const effectiveHubs = await discoverHubs({ bbox, municipality });
+    const { feedId } = await resolveScope(req);
+    const effectiveHubs = await discoverHubs({ bbox, municipality, feedId });
 
     // Mappa codice ISTAT → nome comune (per hint a ViaggiaTreno)
     let municipalityName: string | null = null;
@@ -1832,21 +1978,13 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
     }> = [];
 
     for (const h of effectiveHubs) {
-      if (h.source === "curated") {
-        // Hub curati: orari già hardcoded (in futuro: fetch reale da Trenitalia)
-        syncResults.push({
-          id: h.id, name: h.name, type: h.type, source: "curated", status: "ok",
-          arrivals: h.typicalArrivals.reduce((s, a) => s + a.times.length, 0),
-          departures: h.typicalDepartures.reduce((s, d) => s + d.times.length, 0),
-          fetchedFrom: "builtin",
-        });
-        continue;
-      }
-      // Solo railway: proviamo ViaggiaTreno
+      // Le stazioni passano SEMPRE da ViaggiaTreno, anche quelle curate: la
+      // tabella interna è solo una stima e non va spacciata per orario reale.
       if (h.type === "railway") {
         const sched = await fetchTrainScheduleFromViaggiaTreno(h.name, municipalityName);
         if (sched) {
           dynamicHubSchedules.set(h.id, sched);
+          await persistSchedule(h.id, sched);
           const daysCovered = sched.weeklyDepartures
             ? sched.weeklyDepartures.filter(d => d.length > 0).length
             : undefined;
@@ -1860,15 +1998,22 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
           });
         } else {
           syncResults.push({
-            id: h.id, name: h.name, type: h.type, source: "gtfs-auto", status: "failed",
-            arrivals: 0, departures: 0, fetchedFrom: null,
+            id: h.id, name: h.name, type: h.type,
+            source: h.source === "curated" ? "curated" : "gtfs-auto", status: "failed",
+            arrivals: h.source === "curated" ? h.typicalArrivals.reduce((s, a) => s + a.times.length, 0) : 0,
+            departures: h.source === "curated" ? h.typicalDepartures.reduce((s, d) => s + d.times.length, 0) : 0,
+            fetchedFrom: h.source === "curated" ? "stima interna (non verificata)" : null,
           });
         }
       } else {
-        // Port / airport / bus_terminal discovered: skip per ora (no API pubbliche gratuite)
+        // Porti / aeroporti / autostazioni: nessuna API pubblica gratuita.
+        // Gli orari eventualmente presenti restano dichiarati come stima.
         syncResults.push({
-          id: h.id, name: h.name, type: h.type, source: "gtfs-auto", status: "skipped",
-          arrivals: 0, departures: 0, fetchedFrom: null,
+          id: h.id, name: h.name, type: h.type,
+          source: h.source === "curated" ? "curated" : "gtfs-auto", status: "skipped",
+          arrivals: h.typicalArrivals.reduce((s, a) => s + a.times.length, 0),
+          departures: h.typicalDepartures.reduce((s, d) => s + d.times.length, 0),
+          fetchedFrom: h.scheduleSource === "stima" ? "stima interna (non verificata)" : null,
         });
       }
     }

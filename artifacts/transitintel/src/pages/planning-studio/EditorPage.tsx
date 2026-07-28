@@ -27,7 +27,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2, Ban, Undo2,
-  CalendarCheck, Eye, EyeOff, Landmark, CalendarRange, Boxes, Box, LineChart,
+  Eye, EyeOff, PanelLeft,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
@@ -57,7 +57,7 @@ const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 }; // Rom
 type Tool = "select" | "addStop" | "editVariant";
 type DataPanel = "stops" | "routes" | "calendars" | "clusters" | "ne-clusters" | "ne-depots" | null;
 /* Gruppi della toolbar: ogni gruppo apre un menu a tendina con sottovoci */
-type ToolbarMenu = "rete" | "orari" | "validita" | "infrastruttura" | "vista" | "progetto";
+type ToolbarMenu = "pannelli" | "vista" | "progetto";
 
 /* ─── Tipi cluster/depositi globali (Network Engine) ─── */
 interface GlobalClusterStop { gtfsStopId: string; stopName: string; stopLat: number; stopLon: number; }
@@ -2002,96 +2002,44 @@ export default function PlanningStudioEditorPage() {
 
         <div className="h-7 w-px bg-slate-800 mx-1" />
 
-        {/* ─── Barra menu: gruppi a tendina (click fuori per chiudere) ───
-         * Stesse azioni dei vecchi bottoni piatti, riorganizzate per categoria.
-         * Ogni voce resta raggiungibile in ≤2 click. */}
+        {/* ─── Barra strumenti UNICA (menu a tendina) ───────────────────
+         * Qui vivono SOLO gli strumenti dell'editor mappa: pannelli laterali,
+         * layer di vista, azioni di progetto. La NAVIGAZIONE tra le sezioni
+         * del progetto (Corse, Grafico, Calendario, Validità, UDP, Nodi,
+         * Zonizzazione, Depositi, Fuorilinea, Intermodale, Esercizio) sta
+         * tutta e solo in PsProjectNav, la barra qui sotto: prima ogni voce
+         * era duplicata nei menu e nelle tab, con etichette diverse per la
+         * stessa pagina. */}
         <div ref={menuBarRef} className="flex items-center gap-1 shrink-0">
-          {/* Rete: dati di rete del progetto (fermate, linee) + inspector */}
+          {/* Pannelli: i dati del progetto consultabili SULLA mappa */}
           <MenuGroup
-            label="Rete" icon={RouteIcon} accent="emerald"
-            active={activePanel === "stops" || activePanel === "routes"}
-            open={openMenu === "rete"}
-            onToggle={() => setOpenMenu(m => m === "rete" ? null : "rete")}
+            label="Pannelli" icon={PanelLeft} accent="emerald"
+            active={activePanel !== null}
+            open={openMenu === "pannelli"}
+            onToggle={() => setOpenMenu(m => m === "pannelli" ? null : "pannelli")}
           >
             <MenuItem icon={MapPin} label="Fermate" count={stops.length} accent="emerald"
               active={activePanel === "stops"} onClick={() => togglePanel("stops")} />
             <MenuItem icon={Bus} label="Linee & Percorsi" count={routes.length} accent="cyan"
               active={activePanel === "routes"} onClick={() => togglePanel("routes")} />
-            <div className="my-1 h-px bg-slate-800" />
-            <MenuItem icon={Activity} label="Inspector di rete" note="pagina" accent="violet"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/network`); }} />
-          </MenuGroup>
-
-          {/* Orari: corse + orario grafico. I giorni/validità di ogni corsa sono
-              già in Corse (maschera settimanale) e nel Calendario Aziendale →
-              la vecchia sezione "Giorni di circolazione" (calendari) era ridondante. */}
-          <MenuGroup
-            label="Orari" icon={CalendarIcon} accent="indigo"
-            active={false}
-            open={openMenu === "orari"}
-            onToggle={() => setOpenMenu(m => m === "orari" ? null : "orari")}
-          >
-            <MenuItem icon={Bus} label="Corse" note="pagina" accent="amber"
-              desc="elenco, filtri, giorni di validità, genera a cadenza"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/trips`); }} />
-            {/* Orario grafico (time–space / Marey): qui, insieme alle corse —
-                strumenti di scheduling unificati in un solo menu */}
-            <MenuItem icon={LineChart} label="Orario grafico (TTD)" note="pagina" accent="amber"
-              desc="diagramma tempo-distanza delle corse"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/ttd`); }} />
-          </MenuGroup>
-
-          {/* Validità: calendario aziendale → matrice → unità di progettazione */}
-          <MenuGroup
-            label="Validità" icon={CalendarCheck} accent="emerald"
-            active={false}
-            open={openMenu === "validita"}
-            onToggle={() => setOpenMenu(m => m === "validita" ? null : "validita")}
-          >
-            <MenuItem icon={CalendarRange} label="Calendario Aziendale" note="pagina" accent="emerald"
-              desc="scolastico · estivo · festività"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/calendar`); }} />
-            <MenuItem icon={CalendarCheck} label="Matrice di validità" note="pagina" accent="emerald"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity`); }} />
-            <MenuItem icon={Boxes} label="Unità di Progettazione" note="pagina" accent="indigo"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/validity-units`); }} />
-          </MenuGroup>
-
-          {/* Territorio: nodi, zonizzazione (km per comune).
-              I depositi NON stanno più qui: sono strutturali → si vedono solo in
-              "Vista → Overlay depositi" e si gestiscono in Infrastruttura. */}
-          <MenuGroup
-            label="Territorio" icon={Building2} accent="orange"
-            active={activePanel === "clusters" || activePanel === "ne-clusters"}
-            open={openMenu === "infrastruttura"}
-            onToggle={() => setOpenMenu(m => m === "infrastruttura" ? null : "infrastruttura")}
-          >
-            {/* Voce unificata: pannello con tab "Progetto" (ps_stop_clusters) e
-                "Globali legacy" (cluster Network Engine). Conteggio = totale. */}
             <MenuItem icon={Layers} label="Nodi"
               desc="di progetto + globali legacy"
               count={(clusters.length + globalClusters.length) || undefined} accent="cyan"
               active={activePanel === "clusters" || activePanel === "ne-clusters"}
               onClick={toggleNodesPanel} />
-            <MenuItem icon={Pencil} label="Editor nodi avanzato" note="pagina" accent="cyan"
-              desc="mappa dedicata · lazo poligonale · suggerimenti"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/clusters`); }} />
-            <div className="my-1 h-px bg-slate-800" />
-            <MenuItem icon={Landmark} label="Zonizzazione" note="pagina" accent="amber"
-              desc="confini comunali · km per comune"
-              onClick={() => { setOpenMenu(null); navigate(`/planning-studio/${projectId}/zones`); }} />
+            <MenuItem icon={Building2} label="Depositi"
+              desc="accende anche l'overlay sulla mappa"
+              count={depots.length || undefined} accent="orange"
+              active={activePanel === "ne-depots"} onClick={() => togglePanel("ne-depots")} />
           </MenuGroup>
 
-          {/* Vista: toggle 3D e layer overlay (le voci non chiudono il menu) */}
+          {/* Vista: layer overlay della mappa (il toggle 2D/3D è sulla mappa) */}
           <MenuGroup
             label="Vista" icon={Eye} accent="violet"
-            active={is3D || showGlobalClusters || showDepots}
+            active={showGlobalClusters || showDepots || showNoGo}
             open={openMenu === "vista"}
             onToggle={() => setOpenMenu(m => m === "vista" ? null : "vista")}
           >
-            <MenuItem icon={Box} label="Vista 3D (edifici)" accent="violet"
-              active={is3D} onClick={() => setIs3D(v => !v)} />
-            <div className="my-1 h-px bg-slate-800" />
             <MenuItem icon={Grip} label="Overlay nodi globali" accent="cyan"
               active={showGlobalClusters} onClick={() => setShowGlobalClusters(v => !v)} />
             <MenuItem icon={Building2} label="Overlay depositi" accent="orange"
@@ -2108,7 +2056,7 @@ export default function PlanningStudioEditorPage() {
             )}
           </MenuGroup>
 
-          {/* Progetto: import, condivisione, scheduling collegato */}
+          {/* Progetto: azioni sul progetto (non pagine: quelle sono nelle tab) */}
           <MenuGroup
             label="Progetto" icon={FolderOpen} accent="cyan"
             active={false}
@@ -2121,9 +2069,6 @@ export default function PlanningStudioEditorPage() {
             )}
             <MenuItem icon={Share2} label={project.myRole === "owner" ? "Condividi progetto" : "Vedi membri"} accent="cyan"
               onClick={() => { setOpenMenu(null); setShareOpen(true); }} />
-            <div className="my-1 h-px bg-slate-800" />
-            <MenuItem icon={Flame} label="Scheduling collegati" note="pagina" accent="orange"
-              onClick={() => { setOpenMenu(null); navigate(`/fucina?ps=${projectId}`); }} />
           </MenuGroup>
         </div>
 
@@ -3292,7 +3237,7 @@ export default function PlanningStudioEditorPage() {
                     depots={depots}
                     loading={overlayLoading.depots}
                     onReload={reloadDepots}
-                    onManage={() => navigate("/depots")}
+                    onManage={() => navigate(`/planning-studio/${projectId}/depots`)}
                     onFlyTo={(lat, lon) => mapRef.current?.flyTo({ center: [lon, lat], zoom: 14, duration: 600 })}
                   />
                 )}

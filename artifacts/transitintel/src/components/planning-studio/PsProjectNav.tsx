@@ -10,12 +10,14 @@
 import { Link } from "wouter";
 import {
   Map as MapIcon, ScanSearch, Bus, Activity, CalendarRange, Grid3x3, Layers,
-  CircleDot, Landmark, ClipboardList,
+  CircleDot, Landmark, ClipboardList, Building2, Route as RouteIcon,
+  ArrowRightLeft,
 } from "lucide-react";
 
 export type PsNavKey =
   | "editor" | "network" | "trips" | "ttd" | "calendar" | "validity"
-  | "units" | "clusters" | "zones" | "esercizio";
+  | "units" | "clusters" | "zones" | "depots" | "arcs" | "intermodal"
+  | "esercizio";
 
 const TABS: Array<{
   key: PsNavKey; label: string; Icon: typeof MapIcon;
@@ -31,6 +33,13 @@ const TABS: Array<{
   { key: "units",     label: "UDP",          Icon: Layers,        path: "validity-units" },
   { key: "clusters",  label: "Nodi",         Icon: CircleDot,     path: "clusters" },
   { key: "zones",     label: "Zonizzazione", Icon: Landmark,      path: "zones" },
+  // Infrastruttura del progetto: prima erano pagine globali fuori dal Planner
+  // Studio (/depots, /deadhead-arcs, /intermodal) e non sapevano su quale
+  // progetto si stesse lavorando. Ora sono sezioni del progetto e usano lo
+  // scoping ps_project_id (globali + quelli del progetto aperto).
+  { key: "depots",    label: "Depositi",     Icon: Building2,     path: "depots" },
+  { key: "arcs",      label: "Fuorilinea",   Icon: RouteIcon,     path: "deadhead-arcs" },
+  { key: "intermodal", label: "Intermodale", Icon: ArrowRightLeft, path: "intermodal" },
   { key: "esercizio", label: "Esercizio",    Icon: ClipboardList, path: "/fucina/esercizio/:id" },
 ];
 
