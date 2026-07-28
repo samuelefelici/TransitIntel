@@ -15,6 +15,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import {
   ArrowLeft, Plus, Trash2, Save, X, Sparkles, Search, Layers,
   Loader2, Check, MapPin, Pencil, Eye, EyeOff, ChevronRight, ChevronDown,
@@ -134,13 +135,9 @@ export default function PlanningStudioClustersPage() {
   // Bulk delete: utile quando un import è andato male e il progetto è
   // pieno di cluster spazzatura. Esegue le delete in parallelo.
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
   async function deleteAllClusters() {
     if (clusters.length === 0) return;
-    if (!confirm(
-      `Eliminare TUTTI i ${clusters.length} cluster del progetto?\n\n` +
-      `Le fermate associate verranno scollegate (ma non cancellate).\n` +
-      `Operazione NON reversibile.`
-    )) return;
     setBulkDeleting(true);
     let ok = 0, ko = 0;
     // Limita il parallelismo a 8 chiamate alla volta
@@ -367,7 +364,12 @@ export default function PlanningStudioClustersPage() {
         <div className="flex-1" />
         {clusters.length > 0 && (
           <button
-            onClick={deleteAllClusters}
+            onClick={() => setConfirmReq({
+              title: `Eliminare TUTTI i ${clusters.length} cluster del progetto?`,
+              message: "Le fermate associate verranno scollegate (ma non cancellate). Operazione NON reversibile.",
+              confirmLabel: "Elimina tutti",
+              onConfirm: () => { deleteAllClusters(); },
+            })}
             disabled={bulkDeleting}
             title="Elimina tutti i cluster del progetto (utile dopo un import sbagliato)"
             className="px-3 py-1.5 rounded bg-rose-700/80 hover:bg-rose-600 text-white text-sm flex items-center gap-1.5 disabled:opacity-50"
@@ -390,6 +392,7 @@ export default function PlanningStudioClustersPage() {
         </button>
       </div>
       <PsProjectNav projectId={projectId} active="clusters" />
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar sx */}
         <div className="w-[380px] border-r border-slate-800 bg-slate-900/60 flex flex-col">
@@ -519,7 +522,12 @@ export default function PlanningStudioClustersPage() {
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm(`Eliminare "${c.name}"?`)) deleteMut.mutate(c.id);
+                          setConfirmReq({
+                            title: `Eliminare il nodo "${c.name}"?`,
+                            message: "Le fermate associate verranno scollegate (ma non cancellate).",
+                            confirmLabel: "Elimina",
+                            onConfirm: () => { deleteMut.mutate(c.id); },
+                          });
                         }}
                         title="Elimina"
                         className="p-1.5 rounded text-slate-400 hover:bg-rose-500/20 hover:text-rose-300"
@@ -561,9 +569,12 @@ export default function PlanningStudioClustersPage() {
                   className="flex-1 px-2 py-1 rounded bg-slate-800 text-sm border border-slate-700"
                 />
                 <button
-                  onClick={() => {
-                    if (confirm(`Eliminare "${selected.name}"?`)) deleteMut.mutate(selected.id);
-                  }}
+                  onClick={() => setConfirmReq({
+                    title: `Eliminare il nodo "${selected.name}"?`,
+                    message: "Le fermate associate verranno scollegate (ma non cancellate).",
+                    confirmLabel: "Elimina",
+                    onConfirm: () => { deleteMut.mutate(selected.id); },
+                  })}
                   className="p-1.5 rounded text-rose-400 hover:bg-rose-500/10"
                 >
                   <Trash2 className="w-4 h-4" />

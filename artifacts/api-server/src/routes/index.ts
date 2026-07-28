@@ -60,6 +60,7 @@ import planningStudioValidityCategoriesRouter from "../lib/planning-studio-valid
 import planningStudioValidityUnitsRouter from "../lib/planning-studio-validity-units";
 import planningStudioCalendarRouter from "../lib/planning-studio-calendar";
 import planningStudioZonesRouter from "../lib/planning-studio-zones";
+import planningStudioHealthRouter from "../lib/planning-studio-health";
 import planningCompareRouter from "../lib/planning-compare";
 import rosterRotazioniRouter from "../lib/roster-rotazioni";
 
@@ -132,6 +133,7 @@ router.use(planningStudioValidityCategoriesRouter);
 router.use(planningStudioValidityUnitsRouter);
 router.use(planningStudioCalendarRouter); // calendario aziendale + classificazione giorni (albero validità)
 router.use(planningStudioZonesRouter); // zonizzazione: confini comunali + km sviluppati per comune
+router.use(planningStudioHealthRouter); // controllo salute progetto (pre-flight di attivazione)
 router.use(planningCompareRouter); // Planner Legacy: confronto tra due progetti Planning Studio
 
 export default router;

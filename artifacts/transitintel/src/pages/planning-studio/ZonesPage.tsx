@@ -17,6 +17,7 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import {
   ArrowLeft, Landmark, Upload, Trash2, Calculator, Download, Loader2,
   ChevronRight, ChevronDown, Info, Bus, FileText,
@@ -107,6 +108,7 @@ export default function PlanningStudioZonesPage() {
   const [year, setYear] = useState<number>(new Date().getFullYear());
   const [result, setResult] = useState<ComputeResult | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const projectQ = useQuery({
@@ -344,7 +346,18 @@ export default function PlanningStudioZonesPage() {
         </button>
         {zones.length > 0 && (
           <button
-            onClick={() => { if (confirm("Eliminare tutti i confini caricati?")) clearMut.mutate(); }}
+            onClick={() => setConfirmReq({
+              title: "Svuotare i confini comunali caricati?",
+              message: (
+                <>
+                  <b>Attenzione:</b> i confini sono un archivio <b>condiviso da tutti i progetti</b> del
+                  tenant, non solo da questo. Svuotandoli, la zonizzazione smetterà di funzionare ovunque
+                  finché non verranno reimportati.
+                </>
+              ),
+              confirmLabel: "Svuota tutto",
+              onConfirm: () => { clearMut.mutate(); },
+            })}
             disabled={clearMut.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-rose-900/50 text-xs text-slate-400 hover:text-rose-300 border border-slate-700"
           >
@@ -354,6 +367,7 @@ export default function PlanningStudioZonesPage() {
         )}
       </div>
       <PsProjectNav projectId={projectId} active="zones" />
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
 
       <div className="flex-1 flex overflow-hidden">
         {/* ─── Pannello sinistro: calcolo + risultati ─── */}

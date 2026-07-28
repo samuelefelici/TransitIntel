@@ -258,6 +258,21 @@ export async function activatePsProject(id: string, effectiveFrom?: string): Pro
   });
 }
 
+/* ─── Controllo salute progetto (pre-flight di attivazione) ─── */
+
+export interface PsHealthCheck {
+  key: string;
+  level: "error" | "warning";
+  label: string;
+  count: number;
+  samples: string[];
+}
+export interface PsProjectHealth { checks: PsHealthCheck[]; errors: number; warnings: number }
+
+export async function getPsProjectHealth(id: string): Promise<PsProjectHealth> {
+  return apiFetch<PsProjectHealth>(`/api/planning-studio/projects/${id}/health`);
+}
+
 /* ─── Membri / attività ─── */
 
 export async function listPsMembers(projectId: string): Promise<PsMember[]> {
