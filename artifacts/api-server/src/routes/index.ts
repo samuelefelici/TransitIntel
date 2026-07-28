@@ -42,6 +42,7 @@ import depotsRouter from "./depots";
 import deadheadsRouter from "./deadheads";
 import deadheadArcsRouter from "./deadhead-arcs";
 import intermodalOptimizerRouter from "./intermodal-optimizer";
+import intermodalDemandRouter from "./intermodal-demand";
 import aiRouter from "./ai";
 import planningRouter from "./planning";
 import territoryRouter from "./territory";
@@ -94,6 +95,7 @@ router.use(adminRouter); // gate requireAdmin applicato dentro admin.ts (sync di
 router.use(scenariosRouter);
 router.use(intermodalRouter);
 router.use(intermodalOptimizerRouter);
+router.use(intermodalDemandRouter);
 router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);

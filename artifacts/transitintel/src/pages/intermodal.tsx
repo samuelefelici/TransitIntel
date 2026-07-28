@@ -18,6 +18,7 @@ import { getApiBase } from "@/lib/api";
 import { toast } from "sonner";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import DemandCoverage, { type DemandCoverageResult } from "./intermodal/DemandCoverage";
 
 import type {
   AnalysisResult, HubPoisGroup,
@@ -53,6 +54,13 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const psQs = projectId ? `&psProjectId=${projectId}` : "";
   // Tipo di giorno analizzato: senza, si sommavano feriali+sabati+festivi.
   const [dayKind, setDayKind] = useState<"feriale" | "sabato" | "festivo">("feriale");
+  /* Due letture della stessa rete: le coincidenze con treni/navi/voli, e la
+   * copertura dei poli che generano la domanda (stazioni, aeroporti, scuole,
+   * lavoro). La seconda è quella che dice se le corse costruite servono. */
+  const [view, setView] = useState<"coincidenze" | "copertura">("copertura");
+  const [demand, setDemand] = useState<DemandCoverageResult | null>(null);
+  const [demandLoading, setDemandLoading] = useState(false);
+  const [selectedGenerator, setSelectedGenerator] = useState<string | null>(null);
   const mapRef = useRef<MapRef>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("neon");
   const [loading, setLoading] = useState(false);
@@ -137,6 +145,23 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   }, [radius, routeIdsKey, poiRadiusKm, scopeMode, municipality, dayKind, psQs]);
 
   useEffect(() => { runAnalysis(); }, [runAnalysis]);
+
+  /* ─── Copertura dei poli attrattori ─── */
+  const runDemand = useCallback(async () => {
+    setDemandLoading(true);
+    try {
+      const routeIdsQs = routeIdsKey && scopeMode === "routes" ? `&routeIds=${encodeURIComponent(routeIdsKey)}` : "";
+      const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
+      const r = await fetch(`${getApiBase()}/api/intermodal/demand-coverage?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setDemand(await r.json());
+    } catch (e: any) {
+      toast.error("Errore nel calcolo della copertura", { description: e?.message });
+      setDemand(null);
+    } finally { setDemandLoading(false); }
+  }, [radius, dayKind, psQs, scopeMode, municipality, routeIdsKey]);
+
+  useEffect(() => { if (view === "copertura") void runDemand(); }, [view, runDemand]);
 
   // ─── Ricentra mappa quando cambia ambito/hub ─────────────
   // Se ci sono hub nei risultati, calcola bounding box e fitBounds.
@@ -488,8 +513,33 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
           </Source>
         )}
 
+        {/* ── Poli attrattori: colore = verdetto di copertura ──
+             In vista "copertura" i marker degli hub lasciano il posto ai poli
+             (stazioni, aeroporti, scuole, lavoro): sulla mappa si legge subito
+             DOVE la domanda resta scoperta. */}
+        {view === "copertura" && demand?.generators.map(g => {
+          const col = g.status === "servito" ? "#10b981" : g.status === "parziale" ? "#f59e0b" : "#ef4444";
+          const sel = selectedGenerator === g.generator.id;
+          return (
+            <Marker key={g.generator.id} longitude={g.generator.lng} latitude={g.generator.lat} anchor="center">
+              <div
+                onClick={() => { setSelectedGenerator(g.generator.id); }}
+                title={`${g.generator.name} — ${g.status}`}
+                className="cursor-pointer rounded-full border-2 flex items-center justify-center transition-all"
+                style={{
+                  width: sel ? 22 : 14, height: sel ? 22 : 14,
+                  background: `${col}33`, borderColor: col,
+                  boxShadow: sel ? `0 0 0 5px ${col}33, 0 0 14px ${col}` : `0 0 8px ${col}88`,
+                }}
+              >
+                {sel && <div className="rounded-full" style={{ width: 6, height: 6, background: col }} />}
+              </div>
+            </Marker>
+          );
+        })}
+
         {/* Hub Markers */}
-        {result?.hubs.map(h => {
+        {view === "coincidenze" && result?.hubs.map(h => {
           const isAuto = (h.hub as any).source === "gtfs-auto";
           const pct = h.arrivalStats.totalArrivals > 0 ? h.arrivalStats.ok / h.arrivalStats.totalArrivals : 0;
           // Per hub auto-detected usiamo il serviceScore (0-100) → normalizziamo 0-1 per status
@@ -871,6 +921,21 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
 
             {!panelCollapsed && (
               <CardContent className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+                {/* ─── Che cosa si sta valutando ─── */}
+                <div className="flex gap-1 p-0.5 rounded-lg bg-slate-900/60 border border-slate-700/40">
+                  {([
+                    { k: "copertura" as const, label: "Copertura domanda", tip: "Le linee e le corse costruite servono stazioni, aeroporti, scuole e aree di lavoro?" },
+                    { k: "coincidenze" as const, label: "Coincidenze", tip: "Chi arriva in treno, nave o aereo trova un bus?" },
+                  ]).map(o => (
+                    <button key={o.k} title={o.tip} onClick={() => setView(o.k)}
+                      className={`flex-1 text-[10px] px-2 py-1.5 rounded-md transition-all ${
+                        view === o.k
+                          ? "bg-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/40"
+                          : "text-slate-400 hover:text-slate-200 border border-transparent"
+                      }`}>{o.label}</button>
+                  ))}
+                </div>
+
                 {/* Sync + Radius + Toggles */}
                 <div className="space-y-2">
                   {/* ─── Ambito geografico ───────────────────────── */}
@@ -1017,7 +1082,17 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                   </div>
                 </div>
 
-                {result && (
+                {view === "copertura" && (
+                  <DemandCoverage
+                    data={demand} loading={demandLoading}
+                    onFocus={(lat, lng, id) => {
+                      setSelectedGenerator(id);
+                      mapRef.current?.flyTo({ center: [lng, lat], zoom: 15, duration: 900 });
+                    }}
+                  />
+                )}
+
+                {view === "coincidenze" && result && (
                   <>
                     {/* ── HEADLINE ── */}
                     <div className="rounded-xl p-3 border border-cyan-500/20"

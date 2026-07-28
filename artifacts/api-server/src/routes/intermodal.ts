@@ -34,7 +34,7 @@ export async function resolveScope(req: any): Promise<IntermodalScope> {
 }
 
 /** Filtro feed riusabile: se il feed non è risolto non filtra (comportamento storico). */
-const feedWhere = (col: any, feedId: string | null) => (feedId ? eq(col, feedId) : sql`TRUE`);
+export const feedWhere = (col: any, feedId: string | null) => (feedId ? eq(col, feedId) : sql`TRUE`);
 
 /* ═══════════════════════════════════════════════════════════════════════
  *  CALENDARIO — quali corse circolano davvero nel giorno analizzato
