@@ -1,11 +1,17 @@
 /**
- * GESTIONE DEPOSITI
+ * GESTIONE DEPOSITI — sezione del progetto Planner Studio
  *
  * I depositi sono i punti di rimessaggio degli autobus e di presa di servizio
  * dei conducenti. Da qui è possibile creare, modificare ed eliminare i depositi
  * con tutti i dati operativi (posizione, capacità, tipi di rifornimento, orari).
+ *
+ * Montata su /planning-studio/:id/depots: mostra i depositi GLOBALI più quelli
+ * del progetto aperto, e i nuovi depositi nascono di default legati al progetto
+ * (scope ps_project_id). Senza :id nell'URL resta la vecchia vista globale.
  */
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useParams } from "wouter";
+import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { motion, AnimatePresence } from "framer-motion";
 import Map, { Marker, Popup, NavigationControl, type MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -36,6 +42,8 @@ interface Depot {
   cngPoints: number;
   color: string;
   notes: string | null;
+  /** null = deposito globale; valorizzato = solo per quel progetto PS */
+  psProjectId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -70,6 +78,7 @@ function DepotForm({
   onCancel,
   saving,
   pickedLocation,
+  inProject,
 }: {
   initial: Partial<Depot>;
   onSave: (data: Partial<Depot>) => void;
@@ -77,6 +86,8 @@ function DepotForm({
   saving: boolean;
   /** Coordinate scelte cliccando sulla mappa (aggiornano lat/lon del form). */
   pickedLocation?: { lat: number; lon: number } | null;
+  /** Dentro un progetto PS: abilita la scelta dell'ambito del deposito. */
+  inProject?: boolean;
 }) {
   const [form, setForm] = useState<Partial<Depot>>(initial);
 
@@ -319,6 +330,33 @@ function DepotForm({
         />
       </div>
 
+      {/* Ambito: globale vs solo questo progetto (PS14) */}
+      {inProject && (
+        <div className="flex items-center gap-3 rounded-lg border border-border/40 bg-muted/20 px-3 py-2">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Ambito</span>
+          <div className="flex gap-1">
+            {[
+              { v: false, label: "Solo questo progetto", tip: "Visibile e usato solo in questo progetto: layout sperimentale che non entra nello scheduling degli altri." },
+              { v: true, label: "Globale", tip: "Deposito condiviso da tutti i progetti." },
+            ].map(o => {
+              const isGlobal = form.psProjectId === null;
+              const active = o.v === isGlobal;
+              return (
+                <button key={String(o.v)} type="button" title={o.tip}
+                  onClick={() => set("psProjectId", o.v ? null : undefined)}
+                  className={`px-2.5 py-1 rounded-md text-[11px] border transition-all ${
+                    active
+                      ? "bg-orange-500/15 border-orange-500/40 text-orange-300 font-semibold"
+                      : "border-border/30 text-muted-foreground hover:text-foreground"
+                  }`}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Azioni */}
       <div className="flex items-center justify-end gap-2 pt-1">
         <button
@@ -383,6 +421,12 @@ function DepotCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-bold text-foreground truncate">{depot.name}</span>
+            {depot.psProjectId && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full border font-medium bg-orange-500/15 text-orange-300 border-orange-500/30"
+                title="Deposito di questo progetto: non compare negli altri progetti">
+                progetto
+              </span>
+            )}
             {fuelBadges.map(b => (
               <span
                 key={b.label}
@@ -504,6 +548,8 @@ function DepotCard({
 
 /* ── Pagina principale ─────────────────────────────────────── */
 export default function DepotsPage() {
+  const params = useParams<{ id?: string }>();
+  const projectId = params?.id ?? "";
   const [depots, setDepots] = useState<Depot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -522,7 +568,8 @@ export default function DepotsPage() {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${BASE()}/api/depots`);
+      // Dentro un progetto: globali + depositi di QUESTO progetto
+      const r = await fetch(`${BASE()}/api/depots${projectId ? `?psProjectId=${projectId}` : ""}`);
       const data = await r.json();
       setDepots(data.data ?? []);
     } catch (e: any) {
@@ -530,7 +577,7 @@ export default function DepotsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [projectId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -544,7 +591,10 @@ export default function DepotsPage() {
       const r = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        // Scope: dentro un progetto il form decide globale vs solo-progetto
+        body: JSON.stringify(projectId
+          ? { ...form, psProjectId: (form as any).psProjectId === null ? null : projectId }
+          : form),
       });
       if (!r.ok) throw new Error(await r.text());
       setShowForm(false);
@@ -584,8 +634,11 @@ export default function DepotsPage() {
       }
     : { longitude: 12.4964, latitude: 41.9028 }; // default: Roma
 
+  const projectDepots = depots.filter(d => d.psProjectId);
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {projectId && <PsProjectNav projectId={projectId} active="depots" />}
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border/30 shrink-0">
         <div className="flex items-center gap-3">
@@ -593,8 +646,12 @@ export default function DepotsPage() {
             <Building2 className="w-4 h-4 text-orange-400" />
           </div>
           <div>
-            <h1 className="text-sm font-bold text-foreground">Gestione Depositi</h1>
-            <p className="text-[10px] text-muted-foreground">Rimessaggio autobus · presa di servizio conducenti</p>
+            <h1 className="text-sm font-bold text-foreground">Depositi</h1>
+            <p className="text-[10px] text-muted-foreground">
+              {projectId
+                ? `Rimessaggio · presa di servizio — ${depots.length} disponibili in questo progetto${projectDepots.length ? ` (${projectDepots.length} solo di progetto)` : ""}`
+                : "Rimessaggio autobus · presa di servizio conducenti"}
+            </p>
           </div>
         </div>
         <button
@@ -771,6 +828,7 @@ export default function DepotsPage() {
                   onCancel={cancelForm}
                   saving={saving}
                   pickedLocation={pickedLocation}
+                  inProject={!!projectId}
                 />
               </div>
             )}

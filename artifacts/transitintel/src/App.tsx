@@ -177,9 +177,8 @@ function Router() {
             <Route path="/scenarios">
               <Gated perm="network"><ScenariosPage /></Gated>
             </Route>
-            <Route path="/intermodal">
-              <Gated perm="network"><IntermodalPage /></Gated>
-            </Route>
+            {/* Intermodale: sezione di progetto (/planning-studio/:id/intermodal) */}
+            <Route path="/intermodal"><Redirect to="/planning-studio" /></Route>
             <Route path="/coincidence-zones">
               <Gated perm="network"><CoincidenceZonesPage /></Gated>
             </Route>
@@ -228,6 +227,18 @@ function Router() {
             </Route>
             <Route path="/planning-studio/:id/zones">
               <Gated perm="network"><PlanningStudioZonesPage /></Gated>
+            </Route>
+            {/* Infrastruttura del progetto: le stesse pagine che prima vivevano
+                come sezioni globali (/depots, /deadhead-arcs, /intermodal),
+                ora dentro il progetto e scopate su di esso. */}
+            <Route path="/planning-studio/:id/depots">
+              <Gated perm="network"><DepotsPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/deadhead-arcs">
+              <Gated perm="network"><DeadheadArcsPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/intermodal">
+              <Gated perm="network"><IntermodalPage /></Gated>
             </Route>
 
             {/* Bigliettazione (fares) */}
@@ -299,12 +310,11 @@ function Router() {
                 rediretti alla lista progetti Planner Studio. */}
             <Route path="/cluster"><Redirect to="/planning-studio" /></Route>
             <Route path="/cluster-management"><Redirect to="/planning-studio" /></Route>
-            <Route path="/depots">
-              <Gated perm="scheduling"><DepotsPage /></Gated>
-            </Route>
-            <Route path="/deadhead-arcs">
-              <Gated perm="scheduling"><DeadheadArcsPage /></Gated>
-            </Route>
+            {/* Depositi e archi fuorilinea sono infrastruttura DI PROGETTO:
+                si gestiscono in /planning-studio/:id/(depots|deadhead-arcs).
+                Le vecchie pagine globali restano solo come redirect. */}
+            <Route path="/depots"><Redirect to="/planning-studio" /></Route>
+            <Route path="/deadhead-arcs"><Redirect to="/planning-studio" /></Route>
             <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
 
             {/* Admin */}

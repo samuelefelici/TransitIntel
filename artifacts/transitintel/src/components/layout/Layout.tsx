@@ -136,12 +136,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     location.startsWith("/network-engine/") ||
     location === "/planning-studio" ||
     location.startsWith("/planning-studio/") ||
-    location === "/depots" ||
     location === "/scenarios" ||
     location === "/planning" ||
     location.startsWith("/planning/") ||
-    location === "/coincidence-zones" ||
-    location === "/intermodal";
+    location === "/coincidence-zones";
   const isFaresZone =
     location === "/fares-engine" ||
     location === "/fares" ||
@@ -408,17 +406,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {/* ─ Separatore ─ */}
             <div className="my-3 border-t border-purple-900/25" />
 
-            {/* ─ Infrastruttura ─ */}
+            {/* ─ Pianificazione Operativa ─
+             * Depositi, Archi Fuorilinea e Intermodale erano qui come pagine
+             * GLOBALI: non sapevano su quale progetto si stesse lavorando.
+             * Ora sono sezioni del progetto Planner Studio
+             * (/planning-studio/:id/depots|deadhead-arcs|intermodal), come i
+             * cluster. Le vecchie rotte restano solo come redirect. */}
             <p className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/40 px-2 mb-1">
-              Infrastruttura
+              Pianificazione
             </p>
 
             {[
-              // I cluster sono gestiti per-progetto in Planner Studio
-              // (/planning-studio/:id/clusters). La vecchia pagina globale
-              // /cluster era un duplicato e generava confusione.
-              { href: "/depots", label: "Depositi", icon: Building2, desc: "Rimessaggio · rifornimento" },
-              { href: "/deadhead-arcs", label: "Archi Fuorilinea", icon: Route, desc: "Percorsi a vuoto · tempi modificabili" },
+              { href: "/scenarios", label: "Scenari", icon: Route, desc: "Variazioni · ipotesi · A/B" },
+              { href: "/planning", label: "Planner Legacy", icon: Layers, desc: "Confronto tra due scenari" },
+              { href: "/coincidence-zones", label: "Zone Coincidenza", icon: Zap, desc: "Hub · trasbordi" },
             ].map((item) => {
               const isActive = location === item.href;
               const Icon = item.icon;
@@ -448,41 +449,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {/* ─ Separatore ─ */}
             <div className="my-3 border-t border-purple-900/25" />
 
-            {/* ─ Pianificazione Operativa ─ */}
-            <p className="text-[9px] font-semibold uppercase tracking-widest text-purple-400/40 px-2 mb-1">
-              Pianificazione
-            </p>
-
-            {[
-              { href: "/scenarios", label: "Scenari", icon: Route, desc: "Variazioni · ipotesi · A/B" },
-              { href: "/planning", label: "Planner Legacy", icon: Layers, desc: "Confronto tra due scenari" },
-              { href: "/coincidence-zones", label: "Zone Coincidenza", icon: Zap, desc: "Hub · trasbordi" },
-              { href: "/intermodal", label: "Intermodale", icon: ArrowRightLeft, desc: "Treno · gomma · integraz." },
-            ].map((item) => {
-              const isActive = location === item.href;
-              const Icon = item.icon;
-              return (
-                <Link key={item.href} href={item.href}>
-                  <div
-                    onClick={() => setIsMobileOpen(false)}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer group transition-all relative ${
-                      isActive
-                        ? "bg-purple-500/15 text-purple-200"
-                        : "text-purple-300/60 hover:text-purple-200 hover:bg-purple-500/10"
-                    }`}
-                  >
-                    {isActive && (
-                      <motion.div layoutId="active-network" className="absolute left-0 w-0.5 h-5 bg-purple-400 rounded-r-full" initial={false} transition={{ type: "spring", stiffness: 350, damping: 35 }} />
-                    )}
-                    <Icon className={`w-4 h-4 shrink-0 transition-colors ${isActive ? "text-purple-300" : "text-purple-500/60 group-hover:text-purple-300"}`} />
-                    <div className="min-w-0">
-                      <p className="text-[12px] font-medium leading-tight">{item.label}</p>
-                      <p className="text-[9px] text-purple-400/30 font-mono">{item.desc}</p>
-                    </div>
-                  </div>
-                </Link>
-              );
-            })}
 
             {/* ─ Torna ─ */}
             <div className="mt-auto pt-4 border-t border-purple-900/30">
