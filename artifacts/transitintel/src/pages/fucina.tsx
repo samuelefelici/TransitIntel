@@ -736,10 +736,10 @@ export default function FucinaPage() {
                               continuare.
                             </p>
                             <button
-                              onClick={() => navigate("/planner-studio")}
+                              onClick={() => navigate("/planning-studio")}
                               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm border border-purple-500/40 text-purple-300 hover:bg-purple-500/10"
                             >
-                              Vai al Network Engine <ChevronRight className="w-4 h-4" />
+                              Vai al Planner Studio <ChevronRight className="w-4 h-4" />
                             </button>
                           </div>
                         ) : (
