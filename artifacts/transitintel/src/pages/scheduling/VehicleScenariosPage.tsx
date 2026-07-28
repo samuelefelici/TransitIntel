@@ -12,8 +12,9 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   ArrowLeft, Truck, Plus, Loader2, Calendar, FolderOpen, ChevronRight,
-  Share2, Users as UsersIcon, Lock, Power, Trash2, X, AlertTriangle,
+  Share2, Users as UsersIcon, Lock, Power, Trash2, X, AlertTriangle, Boxes,
 } from "lucide-react";
+import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import {
   getProject, listProjectVehicleScenarios, attachVehicleScenarioToProject,
   setVehicleScenarioOperational,
@@ -42,6 +43,7 @@ export default function VehicleScenariosPage() {
   const [deleteTarget, setDeleteTarget] = useState<ProjectVehicleScenario | null>(null);
   const [deleteAck, setDeleteAck] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmReq, setConfirmReq] = useState<ConfirmRequest | null>(null);
 
   async function reload() {
     if (!projectId) return;
@@ -85,6 +87,34 @@ export default function VehicleScenariosPage() {
       toast.success(s.isOperational ? "Rimosso dall'esercizio" : "Turni macchina messi in esercizio");
       await reload();
     } catch (e: any) { toast.error(e?.message ?? "Errore"); }
+  }
+
+  /** Riporta la vetturizzazione dello scenario nel Planner Studio: ogni corsa
+   * riceve il block_id della vettura che la esegue (round-trip col VSP). */
+  function askBlocksToPs(s: ProjectVehicleScenario) {
+    const psId = project?.planningStudioProjectId;
+    if (!psId) return;
+    setConfirmReq({
+      title: `Riportare i blocchi di "${s.name}" nel Planner Studio?`,
+      variant: "primary",
+      message: (
+        <>
+          Ogni corsa del progetto PS riceve il <b>blocco vettura</b> calcolato da questo
+          scenario (block_id). Le assegnazioni blocco precedenti vengono azzerate e
+          sostituite. Il blocco fluisce poi nel feed materializzato e nell'export GTFS.
+        </>
+      ),
+      confirmLabel: "Riporta blocchi",
+      onConfirm: async () => {
+        const r = await apiFetch<{ updated: number; blocks: number }>(
+          `/api/planning-studio/projects/${psId}/blocks/from-scenario`,
+          { method: "POST", body: JSON.stringify({ scenarioId: s.id, reset: true }) },
+        ).catch((e: any) => { toast.error(e?.message ?? "Errore"); throw e; });
+        toast.success(`${r.updated} corse vetturizzate in ${r.blocks} blocchi`, {
+          description: "block_id aggiornato nel Planner Studio: rimaterializza per portarlo nel feed.",
+        });
+      },
+    });
   }
 
   async function doDelete() {
@@ -270,6 +300,16 @@ export default function VehicleScenariosPage() {
                     <Power className="w-3 h-3" />
                     {s.isOperational ? "In esercizio" : "Metti in esercizio"}
                   </button>
+                  {project?.planningStudioProjectId && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); askBlocksToPs(s); }}
+                      title="Riporta i blocchi vettura di questo scenario nel Planner Studio (block_id sulle corse)"
+                      className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
+                    >
+                      <Boxes className="w-3 h-3" />
+                      Blocchi → PS
+                    </button>
+                  )}
                   {sh && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setShareDialog({ id: s.id, name: s.name, canManage: isOwner }); }}
@@ -336,6 +376,8 @@ export default function VehicleScenariosPage() {
           onAttached={() => { setShowAttach(false); void reload(); }}
         />
       )}
+
+      <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
 
       {shareDialog && (
         <ShareScheduleDialog

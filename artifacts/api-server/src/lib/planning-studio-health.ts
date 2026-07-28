@@ -201,6 +201,57 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
     samples: [],
   });
 
+  // ── WARNING: BLOCCHI incoerenti. Stesso block_id (vettura) con corse
+  //    sovrapposte nel tempo, o "teletrasporti" (la corsa successiva parte da
+  //    una fermata diversa dall'arrivo con meno di 5' di stacco: nessun
+  //    trasferimento possibile). Prima i blocchi non erano validati affatto.
+  const blockIssues = await db.execute<any>(sql`
+    WITH bt AS (
+      SELECT t.id, t.block_id,
+             MIN(s.departure_time) AS dep0,
+             MAX(s.arrival_time)  AS arr_n,
+             (array_agg(s.stop_id ORDER BY s.stop_seq ASC))[1]  AS first_stop,
+             (array_agg(s.stop_id ORDER BY s.stop_seq DESC))[1] AS last_stop
+        FROM ps_trips t
+        JOIN ps_stop_times s ON s.trip_id = t.id
+       WHERE t.project_id = ${pid} AND t.is_active = true
+         AND t.block_id IS NOT NULL AND t.block_id <> ''
+       GROUP BY t.id, t.block_id
+    ), seq AS (
+      SELECT *,
+             LAG(arr_n)     OVER w AS prev_arr,
+             LAG(last_stop) OVER w AS prev_last
+        FROM bt
+      WINDOW w AS (PARTITION BY block_id ORDER BY dep0)
+    )
+    SELECT block_id,
+           bool_or(prev_arr IS NOT NULL AND dep0 < prev_arr) AS has_overlap,
+           bool_or(prev_arr IS NOT NULL AND dep0 >= prev_arr
+                   AND prev_last IS DISTINCT FROM first_stop
+                   AND (split_part(dep0, ':', 1)::int * 3600 + split_part(dep0, ':', 2)::int * 60
+                        + split_part(dep0, ':', 3)::int)
+                     - (split_part(prev_arr, ':', 1)::int * 3600 + split_part(prev_arr, ':', 2)::int * 60
+                        + split_part(prev_arr, ':', 3)::int) < 300) AS has_teleport
+      FROM seq
+     GROUP BY block_id
+    HAVING bool_or(prev_arr IS NOT NULL AND dep0 < prev_arr)
+        OR bool_or(prev_arr IS NOT NULL AND dep0 >= prev_arr
+                   AND prev_last IS DISTINCT FROM first_stop
+                   AND (split_part(dep0, ':', 1)::int * 3600 + split_part(dep0, ':', 2)::int * 60
+                        + split_part(dep0, ':', 3)::int)
+                     - (split_part(prev_arr, ':', 1)::int * 3600 + split_part(prev_arr, ':', 2)::int * 60
+                        + split_part(prev_arr, ':', 3)::int) < 300)
+     LIMIT 200
+  `);
+  checks.push({
+    key: "inconsistent_blocks",
+    level: "warning",
+    label: "Blocchi vettura incoerenti (corse sovrapposte nello stesso blocco, o cambio fermata con meno di 5' di stacco)",
+    count: blockIssues.rows.length,
+    samples: blockIssues.rows.slice(0, 5).map((r: any) =>
+      `${r.block_id} (${r.has_overlap ? "sovrapposizione" : ""}${r.has_overlap && r.has_teleport ? " + " : ""}${r.has_teleport ? "stacco impossibile" : ""})`),
+  });
+
   // ── WARNING: linee attive senza corse attive.
   const emptyRoutes = await db.execute<any>(sql`
     SELECT r.id, r.short_name
