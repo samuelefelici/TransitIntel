@@ -843,41 +843,100 @@ export default function PlanningStudioTripsPage() {
    *  (maschera esplicita o pattern del calendario). Con la matrice popolata si
    *  interseca tipo-giorno valido × maschera. */
   function rowDayOn(trip: PsTrip, i: number): boolean {
-    const mask = rowMask(trip);
+    const p = pendingOps.get(trip.id);
+    const mask = p?.weekdays ?? rowMask(trip);
     if (!mask[i]) return false;                       // la corsa non circola quel giorno
     const dv = tripsValQ.data?.dayValidity?.[trip.id];
     if (!dv) return true;                             // nessuna riga in Matrice → circola
     const dt = dtKinds[wdTypicalCode(i)];
     if (!dt) return true;                             // tipo-giorno non classificabile → circola
+    if (dt && p?.dayTypeOn?.includes(dt.id)) return true; // riaccensione in sospeso
     return dv[dt.id] !== false;                       // spento SOLO se esplicitamente non valido
   }
-  const [rowWdBusy, setRowWdBusy] = useState(false);
-  /** Toggle di un giorno direttamente dalla riga (stessa logica del drawer). */
-  async function toggleRowWeekday(trip: PsTrip, i: number) {
-    if (rowWdBusy || !tripsValQ.data || !dayTypesQ.data) return;
-    setRowWdBusy(true);
-    try {
-      const mask = rowMask(trip);
-      const newWd = [...mask];
-      if (rowDayOn(trip, i)) {
-        newWd[i] = false; // spegni SOLO questo giorno
-      } else {
-        newWd[i] = true;
-        const dt = dtKinds[wdTypicalCode(i)];
-        const dv = tripsValQ.data.dayValidity?.[trip.id] ?? {};
-        if (dt && !dv[dt.id]) {
-          for (let j = 0; j < 7; j++) {
-            if (j !== i && wdTypicalCode(j) === wdTypicalCode(i) && !rowDayOn(trip, j)) newWd[j] = false;
-          }
-          await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [trip.id], dayTypeIds: [dt.id], isValid: true });
+  /* ─── MODIFICHE STAGED (pattern del TTD): le modifiche inline della tabella
+   * (pillole giorni, etichetta, a chiamata, attiva) NON partono più come PATCH
+   * immediati — si accumulano qui e si applicano con "Salva modifiche", con
+   * "Annulla" per scartarle. Le azioni strutturali (crea/elimina/copia/genera)
+   * e il drawer di dettaglio restano immediati. ─── */
+  interface PendingTripEdit {
+    serviceLabel?: string | null;
+    isActive?: boolean;
+    onDemand?: boolean;
+    weekdays?: boolean[];
+    /** day-type da riaccendere in matrice (trip-row-set) al salvataggio */
+    dayTypeOn?: string[];
+  }
+  const [pendingOps, setPendingOps] = useState<Map<string, PendingTripEdit>>(new Map());
+  const [savingOps, setSavingOps] = useState(false);
+  const pend = (tripId: string) => pendingOps.get(tripId);
+  const stage = (tripId: string, patch: Partial<PendingTripEdit>) =>
+    setPendingOps(prev => {
+      const next = new Map(prev);
+      const cur = next.get(tripId) ?? {};
+      const merged: PendingTripEdit = { ...cur, ...patch };
+      if (patch.dayTypeOn) merged.dayTypeOn = [...new Set([...(cur.dayTypeOn ?? []), ...patch.dayTypeOn])];
+      next.set(tripId, merged);
+      return next;
+    });
+  // Valori EFFETTIVI mostrati in tabella: salvato + modifica in sospeso
+  const effServiceLabel = (t: PsTrip) => {
+    const p = pend(t.id);
+    return p && p.serviceLabel !== undefined ? p.serviceLabel : (t.serviceLabel ?? null);
+  };
+  const effActive = (t: PsTrip) => pend(t.id)?.isActive ?? t.isActive;
+  const effOnDemand = (t: PsTrip) => pend(t.id)?.onDemand ?? !!t.attributes?.onDemand;
+
+  async function saveAllPending() {
+    if (pendingOps.size === 0 || savingOps) return;
+    setSavingOps(true);
+    let ok = 0, ko = 0;
+    for (const [tripId, p] of pendingOps) {
+      try {
+        if (p.dayTypeOn?.length) {
+          await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: [tripId], dayTypeIds: p.dayTypeOn, isValid: true });
         }
+        const patch: any = {};
+        if (p.serviceLabel !== undefined) patch.serviceLabel = p.serviceLabel;
+        if (p.isActive !== undefined) patch.isActive = p.isActive;
+        const am: Record<string, any> = {};
+        if (p.onDemand !== undefined) am.onDemand = p.onDemand;
+        if (p.weekdays !== undefined) am.weekdays = p.weekdays;
+        if (Object.keys(am).length > 0) patch.attributesMerge = am;
+        if (Object.keys(patch).length > 0) await updatePsTrip(projectId, tripId, patch);
+        ok++;
+      } catch { ko++; }
+    }
+    setPendingOps(new Map());
+    setSavingOps(false);
+    qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+    qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
+    if (ko === 0) toast.success(`${ok} cors${ok === 1 ? "a aggiornata" : "e aggiornate"}`);
+    else toast.warning(`${ok} corse aggiornate · ${ko} errori`, { description: "Ricontrolla le righe non salvate." });
+  }
+
+  /** Toggle di un giorno dalla riga: SOLO staging, nessuna scrittura. */
+  function toggleRowWeekday(trip: PsTrip, i: number) {
+    if (!tripsValQ.data || !dayTypesQ.data) return;
+    const p = pend(trip.id);
+    const mask = p?.weekdays ?? rowMask(trip);
+    const newWd = [...mask];
+    const patch: Partial<PendingTripEdit> = {};
+    if (rowDayOn(trip, i)) {
+      newWd[i] = false; // spegni SOLO questo giorno
+    } else {
+      newWd[i] = true;
+      const dt = dtKinds[wdTypicalCode(i)];
+      const dv = tripsValQ.data.dayValidity?.[trip.id] ?? {};
+      const alreadyStaged = p?.dayTypeOn?.includes(dt?.id ?? "") ?? false;
+      if (dt && !dv[dt.id] && !alreadyStaged) {
+        for (let j = 0; j < 7; j++) {
+          if (j !== i && wdTypicalCode(j) === wdTypicalCode(i) && !rowDayOn(trip, j)) newWd[j] = false;
+        }
+        patch.dayTypeOn = [dt.id];
       }
-      await updatePsTrip(projectId, trip.id, { attributesMerge: { weekdays: newWd } });
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity"] });
-    } catch (e: any) {
-      toast.error("Errore aggiornamento giorni", { description: e?.message });
-    } finally { setRowWdBusy(false); }
+    }
+    patch.weekdays = newWd;
+    stage(trip.id, patch);
   }
 
   /* ─── Drawer dettaglio corsa ─── */
@@ -990,6 +1049,31 @@ export default function PlanningStudioTripsPage() {
       </div>
       <PsProjectNav projectId={projectId} active="trips" />
       <ConfirmDialog req={confirmReq} onClose={() => setConfirmReq(null)} />
+
+      {/* Barra modifiche in sospeso (pattern del TTD): niente si scrive finché
+          non premi Salva; Annulla scarta tutto. */}
+      {pendingOps.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-2.5 rounded-xl border border-sky-500/40 bg-slate-900/95 backdrop-blur shadow-2xl shadow-sky-950/40">
+          <span className="text-xs text-sky-200 font-medium">
+            {pendingOps.size} cors{pendingOps.size === 1 ? "a" : "e"} con modifiche non salvate
+          </span>
+          <button
+            onClick={() => setPendingOps(new Map())}
+            disabled={savingOps}
+            className="text-xs px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+          >
+            ↶ Annulla
+          </button>
+          <button
+            onClick={() => void saveAllPending()}
+            disabled={savingOps}
+            className="text-xs font-semibold px-3 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white flex items-center gap-1.5 disabled:opacity-60"
+          >
+            {savingOps ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Salva modifiche
+          </button>
+        </div>
+      )}
 
       {/* Filtri (flex-wrap: con le azioni bulk attive va a capo invece di uscire dallo schermo) */}
       <div className="min-h-12 border-b border-slate-800 bg-slate-900/40 px-4 py-1.5 flex items-center gap-3 text-xs flex-wrap">
@@ -1251,7 +1335,9 @@ export default function PlanningStudioTripsPage() {
                 return (
                   <tr key={t.id} className={`border-b border-slate-800/60 hover:bg-slate-900/50 ${
                     isSel ? "bg-amber-500/5" : ""
-                  } ${t.attributes?.prototype ? (t.attributes?.prototypeReady ? "bg-violet-500/10" : "bg-amber-500/10") : ""} ${!t.isActive ? "opacity-50" : ""}`}>
+                  } ${t.attributes?.prototype ? (t.attributes?.prototypeReady ? "bg-violet-500/10" : "bg-amber-500/10") : ""} ${!effActive(t) ? "opacity-50" : ""} ${
+                    pendingOps.has(t.id) ? "ring-1 ring-inset ring-sky-500/40 bg-sky-500/5" : ""
+                  }`}>
                     <td className="p-2">
                       <input type="checkbox" checked={isSel} onChange={() => toggleSel(t.id)}
                         className="accent-amber-500" />
@@ -1285,7 +1371,7 @@ export default function PlanningStudioTripsPage() {
                           return (
                             <button key={i}
                               onClick={() => toggleRowWeekday(t, i)}
-                              disabled={rowWdBusy || tripsValQ.isLoading}
+                              disabled={tripsValQ.isLoading}
                               title={`${WD_NAMES[i]} — ${on ? "attivo (clic per spegnere)" : "spento (clic per accendere)"}`}
                               className={`w-[18px] h-[18px] rounded-full text-[9px] font-bold border leading-none transition-colors disabled:opacity-50 ${
                                 on
@@ -1342,10 +1428,11 @@ export default function PlanningStudioTripsPage() {
                     </td>
                     <td className="p-2">
                       <input
-                        defaultValue={t.serviceLabel || ""}
+                        key={`${t.id}:${effServiceLabel(t) ?? ""}`}
+                        defaultValue={effServiceLabel(t) || ""}
                         onBlur={(e) => {
-                          if (e.target.value !== (t.serviceLabel || "")) {
-                            updateMut.mutate({ id: t.id, patch: { serviceLabel: e.target.value || null } });
+                          if (e.target.value !== (effServiceLabel(t) || "")) {
+                            stage(t.id, { serviceLabel: e.target.value || null });
                           }
                         }}
                         placeholder="—"
@@ -1355,23 +1442,23 @@ export default function PlanningStudioTripsPage() {
                     <td className="p-2 text-center">
                       <input
                         type="checkbox"
-                        checked={!!t.attributes?.onDemand}
-                        onChange={e => updateMut.mutate({ id: t.id, patch: { attributesMerge: { onDemand: e.target.checked } } })}
-                        title={t.attributes?.onDemand ? "Corsa A CHIAMATA (clic per renderla ordinaria)" : "Segna come corsa a chiamata"}
+                        checked={effOnDemand(t)}
+                        onChange={e => stage(t.id, { onDemand: e.target.checked })}
+                        title={effOnDemand(t) ? "Corsa A CHIAMATA (clic per renderla ordinaria)" : "Segna come corsa a chiamata"}
                         className="accent-purple-500 cursor-pointer"
                       />
-                      {!!t.attributes?.onDemand && <span className="block text-[9px] text-purple-300 leading-none mt-0.5">📞</span>}
+                      {effOnDemand(t) && <span className="block text-[9px] text-purple-300 leading-none mt-0.5">📞</span>}
                     </td>
                     <td className="p-2 text-center">
                       <button
-                        onClick={() => updateMut.mutate({ id: t.id, patch: { isActive: !t.isActive } })}
+                        onClick={() => stage(t.id, { isActive: !effActive(t) })}
                         className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                          t.isActive
+                          effActive(t)
                             ? "bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
                             : "bg-slate-700 text-slate-400 hover:bg-slate-600"
                         }`}
                       >
-                        {t.isActive ? "ATTIVA" : "OFF"}
+                        {effActive(t) ? "ATTIVA" : "OFF"}
                       </button>
                     </td>
                     <td className="p-2 text-right">
