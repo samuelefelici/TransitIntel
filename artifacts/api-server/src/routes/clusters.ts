@@ -332,8 +332,24 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
     }
     clustersWithStops = Array.from(byCluster.values());
   } else {
-    // Fallback legacy: lista globale stop_clusters (compat).
-    const allClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
+    // Lista legacy stop_clusters. Con ?psScope=<uuid> applica la STESSA regola
+    // che usa il solver (service-program 5b.1): globali + mirror di quel
+    // progetto, mai i nodi di altri progetti. Senza il parametro resta la
+    // lista completa, per compatibilità con le pagine globali.
+    const psScope = String((req.query as any)?.psScope ?? "").trim();
+    const scoped = /^[0-9a-f-]{36}$/i.test(psScope) ? psScope : null;
+    if (scoped) {
+      await db.execute(sql`ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid`);
+    }
+    const allClusters = scoped
+      ? (await db.execute<any>(sql`
+          SELECT * FROM stop_clusters
+           WHERE source_ps_project_id IS NULL OR source_ps_project_id = ${scoped}::uuid
+           ORDER BY name`)).rows.map((r: any) => ({
+            id: r.id, name: r.name, color: r.color,
+            transferFromDepotMin: r.transfer_from_depot_min,
+          }))
+      : await db.select().from(stopClusters).orderBy(stopClusters.name);
     const allClusterStops = await db.select().from(stopClusterStops);
     clustersWithStops = allClusters.map(c => ({
       id: c.id,

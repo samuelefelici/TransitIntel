@@ -2217,6 +2217,7 @@ export default function VehicleWorkspace({
               <IntermodalAdvisor
                 shifts={result.shifts}
                 date={summary?.date}
+                psProjectId={psProjectId}
                 onApplyScenario={handleApplyIntermodalScenario}
               />
             )}

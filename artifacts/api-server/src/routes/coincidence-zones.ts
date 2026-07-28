@@ -25,6 +25,28 @@ import { haversineKm, walkMinutes as calcWalkMin } from "../lib/geo-utils";
 import { INTERMODAL_HUBS as CORE_HUBS } from "./intermodal";
 
 const router: IRouter = Router();
+const ZONE_UUID_RE = /^[0-9a-f-]{36}$/i;
+
+/* SCOPING PER PROGETTO — le zone di coincidenza erano l'ultima tabella
+ * condivisa ancora piatta: le zone di un progetto entravano nell'analisi
+ * intermodale di tutti gli altri. Stessa regola di depositi e archi
+ * (PS14/PS15): NULL = zona globale, valorizzato = solo quel progetto PS. */
+let zonesScopeReady = false;
+async function ensureZoneScope(): Promise<void> {
+  if (zonesScopeReady) return;
+  try {
+    await db.execute(sql`ALTER TABLE coincidence_zones ADD COLUMN IF NOT EXISTS ps_project_id uuid`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_coincidence_zones_ps ON coincidence_zones(ps_project_id)`);
+    zonesScopeReady = true;
+  } catch (e: any) { console.warn("[coincidence-zones] scope bootstrap:", e?.message); }
+}
+
+/** Filtro riusabile: globali + zone del progetto indicato. */
+export function zoneScopeWhere(psProjectId: string | null) {
+  return psProjectId
+    ? sql`(ps_project_id IS NULL OR ps_project_id = ${psProjectId}::uuid)`
+    : sql`TRUE`;
+}
 
 // ── Default radius: 100 metri ──
 const DEFAULT_RADIUS_KM = 0.1;
@@ -199,8 +221,12 @@ router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET /api/coincidence-zones
 // ═══════════════════════════════════════════════════════════════
-router.get("/coincidence-zones", asyncHandler(async (_req, res) => {
-  const zones = await db.select().from(coincidenceZones).orderBy(coincidenceZones.name);
+router.get("/coincidence-zones", asyncHandler(async (req, res) => {
+  await ensureZoneScope();
+  const ps = String(req.query.psProjectId ?? "");
+  const scope = ZONE_UUID_RE.test(ps) ? ps : null;
+  const zones = await db.select().from(coincidenceZones)
+    .where(zoneScopeWhere(scope)).orderBy(coincidenceZones.name);
   const allStops = await db.select().from(coincidenceZoneStops);
   const result = zones.map(z => ({
     ...z,
@@ -217,13 +243,18 @@ router.get("/coincidence-zones", asyncHandler(async (_req, res) => {
 // POST /api/coincidence-zones
 // ═══════════════════════════════════════════════════════════════
 router.post("/coincidence-zones", asyncHandler(async (req, res) => {
+  await ensureZoneScope();
   const { name, hubId, hubName, hubType, hubLat, hubLng, walkMinutes: wm, radiusKm, color, notes, stops } = req.body;
   if (!name || !hubId) { res.status(400).json({ error: "name and hubId required" }); return; }
+  const psScope = ZONE_UUID_RE.test(String(req.body?.psProjectId ?? "")) ? String(req.body.psProjectId) : null;
   const [zone] = await db.insert(coincidenceZones).values({
     name, hubId, hubName: hubName || name, hubType: hubType || "bus-bus",
     hubLat: hubLat || 0, hubLng: hubLng || 0, walkMinutes: wm ?? 2,
     radiusKm: radiusKm ?? DEFAULT_RADIUS_KM, color: color ?? "#06b6d4", notes: notes || null,
   }).returning();
+  if (psScope) {
+    await db.execute(sql`UPDATE coincidence_zones SET ps_project_id = ${psScope}::uuid WHERE id = ${zone.id}::uuid`);
+  }
   if (stops && Array.isArray(stops) && stops.length > 0) {
     await db.insert(coincidenceZoneStops).values(stops.map((s: any) => ({
       zoneId: zone.id, gtfsStopId: s.gtfsStopId || s.stopId, stopName: s.stopName,

@@ -555,14 +555,17 @@ export default function PlanningStudioEditorPage() {
   const reloadGlobalClusters = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, clusters: true }));
     try {
-      const r = await fetch(`${getApiBase()}/api/clusters`);
+      // Stessa regola del solver: globali + mirror di QUESTO progetto. Senza
+      // lo scope il pannello mostrava anche i nodi di altri progetti, che il
+      // solver non usa (e viceversa).
+      const r = await fetch(`${getApiBase()}/api/clusters?psScope=${projectId}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       const arr: GlobalCluster[] = Array.isArray(j) ? j : (j.data ?? []);
       setGlobalClusters(arr);
     } catch (e: any) { toast.error("Errore caricamento cluster", { description: e?.message }); }
     finally { setOverlayLoading(s => ({ ...s, clusters: false })); }
-  }, []);
+  }, [projectId]);
   const reloadDepots = useCallback(async () => {
     setOverlayLoading(s => ({ ...s, depots: true }));
     try {
