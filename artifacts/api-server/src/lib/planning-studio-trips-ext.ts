@@ -712,6 +712,80 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
 
+/* ─── BLOCCHI ← VSP: riporta le vetturizzazioni del solver in PS ────────────
+ * Il block_id era un passante buttato via: importato dal GTFS, mai riempito
+ * dal risultato del VSP. Qui il round-trip si chiude: dato uno scenario turni
+ * macchina (service_program_scenarios.result.shifts, con tripId = uuid ps),
+ * ogni corsa riceve il codice blocco della vettura che la esegue. Da lì il
+ * blocco fluisce nel feed materializzato e nell'export GTFS (block_id).
+ *
+ * Body: { scenarioId, reset? } — reset=true azzera prima i block_id di TUTTE
+ * le corse del progetto (default: aggiorna solo le corse coperte). */
+router.post("/planning-studio/projects/:id/blocks/from-scenario", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+
+  const scenarioId = String(req.body?.scenarioId ?? "");
+  if (!UUID_RE.test(scenarioId)) { res.status(400).json({ error: "scenarioId non valido" }); return; }
+  const reset = req.body?.reset === true;
+
+  // Lo scenario deve appartenere a un progetto di scheduling COLLEGATO a
+  // questo progetto PS (via scheduling_projects.planning_studio_project_id).
+  const scR = await db.execute<any>(sql`
+    SELECT s.id, s.name, s.result
+      FROM service_program_scenarios s
+      JOIN scheduling_projects sp ON sp.id = s.project_id
+     WHERE s.id = ${scenarioId}::uuid
+       AND sp.planning_studio_project_id = ${projId}::uuid
+     LIMIT 1`);
+  const scenario = scR.rows?.[0];
+  if (!scenario) { res.status(404).json({ error: "Scenario non trovato o non collegato a questo progetto PS" }); return; }
+
+  const shifts: any[] = Array.isArray(scenario.result?.shifts) ? scenario.result.shifts : [];
+  if (shifts.length === 0) { res.status(400).json({ error: "Lo scenario non contiene turni macchina (shifts)" }); return; }
+
+  // (tripId ps, blockCode) — il codice blocco è il vehicleId dello shift
+  const pairs: Array<{ id: string; block_id: string }> = [];
+  const blockCodes = new Set<string>();
+  for (const sh of shifts) {
+    const code = String(sh?.vehicleId ?? "").trim();
+    if (!code) continue;
+    blockCodes.add(code);
+    for (const t of (Array.isArray(sh?.trips) ? sh.trips : [])) {
+      if (t?.type !== "trip") continue;
+      const tid = String(t?.tripId ?? "");
+      if (UUID_RE.test(tid)) pairs.push({ id: tid, block_id: code });
+    }
+  }
+  if (pairs.length === 0) { res.status(400).json({ error: "Nessuna corsa (uuid PS) nei turni dello scenario — lo scenario è nato da un feed non PS?" }); return; }
+
+  let updated = 0;
+  await db.transaction(async (tx) => {
+    if (reset) {
+      await tx.execute(sql`
+        UPDATE ps_trips SET block_id = NULL, updated_at = now()
+         WHERE project_id = ${projId}::uuid AND block_id IS NOT NULL`);
+    }
+    for (let i = 0; i < pairs.length; i += 2000) {
+      const slice = pairs.slice(i, i + 2000);
+      const r = await tx.execute<any>(sql`
+        UPDATE ps_trips t
+           SET block_id = d.block_id, updated_at = now()
+          FROM jsonb_to_recordset(${JSON.stringify(slice)}::jsonb) AS d(id uuid, block_id text)
+         WHERE t.id = d.id AND t.project_id = ${projId}::uuid
+      `);
+      updated += (r as any).rowCount ?? 0;
+    }
+  });
+
+  await logActivity(projId, userId, "trip.blocks_from_scenario", "scenario", scenarioId,
+    { updated, blocks: blockCodes.size, reset, scenarioName: scenario.name });
+  res.json({ ok: true, updated, blocks: blockCodes.size, scenarioName: scenario.name });
+});
+
 /* ─── GENERA A CADENZA (server-side, transazione unica) ────────────────────
  * Prima il client calcolava gli N profili traslati e orchestrava 4 chiamate
  * separate (batch-create + validità giorni + categorie + delete prototipo):

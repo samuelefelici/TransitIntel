@@ -366,6 +366,11 @@ export async function materializePsToFeed(
   await db.execute(sql`
     ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text
   `);
+  // blocco vettura (interlining): finora il block_id di ps_trips NON veniva
+  // emesso nel feed — le vetturizzazioni erano invisibili a valle.
+  await db.execute(sql`
+    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS block_id text
+  `);
   if (useEffectiveValidity) {
     // service_id dalla firma di circolazione (JOIN unnest). L'INNER JOIN esclude
     // automaticamente le corse MAI attive nel range (non presenti nella mappa) —
@@ -376,12 +381,13 @@ export async function materializePsToFeed(
       await db.execute(sql`
         INSERT INTO gtfs_trips
                (feed_id, trip_id, route_id, service_id,
-                trip_headsign, direction_id, shape_id, on_demand, variant_code)
+                trip_headsign, direction_id, shape_id, on_demand, variant_code, block_id)
         SELECT ${feedId}::uuid, t.id::text, t.route_id::text, m.service_id,
                t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
                COALESCE((t.attributes->>'onDemand')::boolean, false),
                (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
-                  FROM ps_route_variants v WHERE v.id = t.variant_id)
+                  FROM ps_route_variants v WHERE v.id = t.variant_id),
+               NULLIF(t.block_id, '')
           FROM ps_trips t
           JOIN unnest(${`{${tripArr.join(",")}}`}::text[], ${`{${sigArr.join(",")}}`}::text[])
                AS m(trip_id, service_id) ON m.trip_id = t.id::text
@@ -394,13 +400,14 @@ export async function materializePsToFeed(
     await db.execute(sql`
       INSERT INTO gtfs_trips
              (feed_id, trip_id, route_id, service_id,
-              trip_headsign, direction_id, shape_id, on_demand, variant_code)
+              trip_headsign, direction_id, shape_id, on_demand, variant_code, block_id)
       SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
              COALESCE(t.calendar_id::text, ${fallbackServiceId}),
              t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
              COALESCE((t.attributes->>'onDemand')::boolean, false),
              (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
-                FROM ps_route_variants v WHERE v.id = t.variant_id)
+                FROM ps_route_variants v WHERE v.id = t.variant_id),
+             NULLIF(t.block_id, '')
         FROM ps_trips t
        WHERE t.project_id = ${psProjectId}::uuid
          AND COALESCE(t.is_active, true) = true
