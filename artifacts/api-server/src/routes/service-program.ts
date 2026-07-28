@@ -1444,7 +1444,7 @@ router.post("/service-program", async (req, res) => {
     // 8b. Residenza di servizio per turno (deposito uscita/rientro, geometrico).
     // Depositi scelti dall'utente → assegnazione ristretta + cap morbido.
     const depotSel = parseDepotSelection((body as any).depots);
-    const allDepots = await loadDepotPoints();
+    const allDepots = await loadDepotPoints(String((body as any).projectId ?? "") || null);
     const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
     const depotCounts = assignResidenzaToShifts(allShifts, tripBlocks, depotPoints, depotSel?.caps);
 
@@ -1586,11 +1586,28 @@ async function runVcspOrchestrator(
 
 type DepotPoint = { id: string; name: string; color: string; lat: number; lon: number };
 
-async function loadDepotPoints(): Promise<DepotPoint[]> {
+/** Depositi candidati per il solving. Scope PS14: i depositi legati a un
+ * progetto Planner Studio valgono SOLO per i giri di quel progetto — senza
+ * filtro, un run senza selezione esplicita pescherebbe i depositi
+ * sperimentali di altri progetti come residenze candidate. */
+async function loadDepotPoints(schedProjectId?: string | null): Promise<DepotPoint[]> {
   try {
     const rows = await db.select().from(depots);
+    const scope = new Map<string, string | null>();
+    try {
+      const r = await db.execute<any>(sql`SELECT id, ps_project_id FROM depots`);
+      for (const x of (r as any).rows ?? []) scope.set(x.id, x.ps_project_id ?? null);
+    } catch { /* colonna assente su DB legacy: tutti globali */ }
+    let psProj: string | null = null;
+    if (schedProjectId && /^[0-9a-f-]{36}$/i.test(schedProjectId)) {
+      try {
+        const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectId}::uuid`);
+        psProj = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
+      } catch { /* tabella assente */ }
+    }
     return rows
       .filter((d: any) => d.lat != null && d.lon != null)
+      .filter((d: any) => { const sc = scope.get(d.id) ?? null; return sc == null || sc === psProj; })
       .map((d: any) => ({ id: d.id, name: d.name, color: d.color || "#3b82f6", lat: Number(d.lat), lon: Number(d.lon) }));
   } catch { return []; }
 }
@@ -1978,7 +1995,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     // la matrice copre {depositi}×{capolinea} ∪ {capolinea}×{capolinea} con km
     // stradali OSRM (fallback Haversine×circuità).
     const depotSel = parseDepotSelection((body as any).depots);
-    const allDepots = await loadDepotPoints();
+    const allDepots = await loadDepotPoints(String((body as any).projectId ?? "") || null);
     const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
 
     let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[] | undefined;
