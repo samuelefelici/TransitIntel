@@ -433,6 +433,56 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════════════
+ *  GET /api/intermodal/lines — le linee della rete del progetto
+ *
+ *  Serve al selettore: l'analisi si fa SULLE LINEE SCELTE, quindi l'elenco
+ *  deve venire dalla stessa rete e dallo stesso giorno-tipo dell'analisi,
+ *  altrimenti si potrebbe selezionare una linea che quel giorno non circola.
+ * ═══════════════════════════════════════════════════════════════════════ */
+router.get("/intermodal/lines", async (req: any, res: any) => {
+  try {
+    const { feedId, psProjectId } = await resolveScope(req);
+    if (!feedId) { res.json({ lines: [], scope: { psProjectId, feedId: null } }); return; }
+
+    const day: DayKind = parseDayKind(req.query.day);
+    const serviceIds = await activeServiceIds(feedId, day);
+
+    const routes = await db.select({
+      routeId: gtfsRoutes.routeId,
+      shortName: gtfsRoutes.routeShortName,
+      longName: gtfsRoutes.routeLongName,
+      color: gtfsRoutes.routeColor,
+    }).from(gtfsRoutes).where(feedWhere(gtfsRoutes.feedId, feedId));
+
+    // Corse per linea nel giorno scelto: una linea con 0 corse quel giorno va
+    // mostrata come tale, non nascosta — è un'informazione utile di per sé.
+    const trips = await db.select({
+      routeId: gtfsTrips.routeId, tripId: gtfsTrips.tripId, serviceId: gtfsTrips.serviceId,
+    }).from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
+
+    const countByRoute = new Map<string, number>();
+    for (const t of trips) {
+      if (serviceIds && (!t.serviceId || !serviceIds.has(t.serviceId))) continue;
+      countByRoute.set(t.routeId, (countByRoute.get(t.routeId) ?? 0) + 1);
+    }
+
+    const lines = routes.map(r => ({
+      routeId: r.routeId,
+      label: r.shortName || r.longName || r.routeId,
+      longName: r.longName ?? null,
+      color: r.color ? (r.color.startsWith("#") ? r.color : `#${r.color}`) : null,
+      trips: countByRoute.get(r.routeId) ?? 0,
+    })).sort((a, b) =>
+      a.label.localeCompare(b.label, "it", { numeric: true, sensitivity: "base" }));
+
+    res.json({ lines, scope: { psProjectId, feedId, day, calendarApplied: serviceIds !== null } });
+  } catch (err: any) {
+    req.log?.error?.(err, "intermodal lines");
+    res.status(500).json({ error: "Errore nel caricamento delle linee", detail: err?.message });
+  }
+});
+
 const fmtWindow = (w: Window) => ({ label: w.label, from: minToTime(w.from), to: minToTime(w.to) });
 const emptySummary = () => ({ totale: 0, servito: 0, parziale: 0, nonServito: 0, lineeValutate: 0 });
 

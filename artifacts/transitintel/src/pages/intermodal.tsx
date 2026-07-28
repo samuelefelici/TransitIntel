@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import DemandCoverage, { type DemandCoverageResult } from "./intermodal/DemandCoverage";
+import LinePicker, { lineColor, type NetworkLine } from "./intermodal/LinePicker";
 
 import type {
   AnalysisResult, HubPoisGroup,
@@ -61,6 +62,16 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const [demand, setDemand] = useState<DemandCoverageResult | null>(null);
   const [demandLoading, setDemandLoading] = useState(false);
   const [selectedGenerator, setSelectedGenerator] = useState<string | null>(null);
+
+  /* ─── Selezione delle linee: pilota analisi E mappa ───────────────────
+   * Vuoto = tutta la rete. La stessa selezione filtra copertura,
+   * coincidenze e geometrie disegnate, così pannello e mappa raccontano
+   * sempre la stessa cosa. */
+  const [lines, setLines] = useState<NetworkLine[]>([]);
+  const [linesLoading, setLinesLoading] = useState(false);
+  const [selectedRoutes, setSelectedRoutes] = useState<Set<string>>(new Set());
+  const [showLinesOnMap, setShowLinesOnMap] = useState(true);
+  const selectedKey = useMemo(() => [...selectedRoutes].sort().join(","), [selectedRoutes]);
   const mapRef = useRef<MapRef>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("neon");
   const [loading, setLoading] = useState(false);
@@ -74,7 +85,30 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
 
   // New states
   const [shapesGeoJSON, setShapesGeoJSON] = useState<any>(null);
-  const [showRoutes, setShowRoutes] = useState(true);
+
+  /* Colore del percorso sulla mappa = colore della linea nel selettore.
+   * Il GTFS spesso non porta il colore: senza questa iniezione le linee
+   * sarebbero tutte azzurre e non si potrebbe leggere la mappa insieme
+   * all'elenco. (globalThis.Map: qui `Map` è il componente della mappa.) */
+  const lineColorById = useMemo(() => {
+    const m = new globalThis.Map<string, string>();
+    lines.forEach((l, i) => m.set(l.routeId, lineColor(l, i)));
+    return m;
+  }, [lines]);
+
+  const coloredShapes = useMemo(() => {
+    if (!shapesGeoJSON?.features) return shapesGeoJSON;
+    return {
+      ...shapesGeoJSON,
+      features: shapesGeoJSON.features.map((f: any) => {
+        const rid = f?.properties?.routeId;
+        const col = rid ? lineColorById.get(rid) : null;
+        return col ? { ...f, properties: { ...f.properties, routeColor: col } } : f;
+      }),
+    };
+  }, [shapesGeoJSON, lineColorById]);
+  /* La visibilità dei percorsi ha UN solo comando, quello nel selettore
+   * linee: averne due (qui e nei layer) portava a stati incoerenti. */
   const [hubPoisData, setHubPoisData] = useState<HubPoisGroup[]>([]);
   const [showPois, setShowPois] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -101,12 +135,36 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   type ScopeMode = "province" | "municipality" | "routes";
   const initialScope: ScopeMode = routeIdsKey ? "routes" : "province";
   const [scopeMode, setScopeMode] = useState<ScopeMode>(initialScope);
+  /* Un solo filtro linee per TUTTE le chiamate: la scelta esplicita del
+   * selettore vince, altrimenti valgono le linee passate dal flusso
+   * embedded, altrimenti tutta la rete. */
+  const rawRouteIds = selectedKey
+    || (routeIdsKey && scopeMode === "routes" ? routeIdsKey : "");
+  /* Spuntare otto linee di fila non deve lanciare otto analisi: si aspetta
+   * che la selezione si assesti. */
+  const [effectiveRouteIds, setEffectiveRouteIds] = useState(rawRouteIds);
+  useEffect(() => {
+    const t = setTimeout(() => setEffectiveRouteIds(rawRouteIds), 400);
+    return () => clearTimeout(t);
+  }, [rawRouteIds]);
   const [municipality, setMunicipality] = useState<string>(""); // codice ISTAT 6-digit
   const [municipalities, setMunicipalities] = useState<{ code: string; name: string }[]>([]);
   const [discoveredHubs, setDiscoveredHubs] = useState<Array<{
     id: string; name: string; type: string; lat: number; lng: number;
     source: "curated" | "gtfs-auto"; description: string;
   }>>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLinesLoading(true);
+    const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
+    fetch(`${getApiBase()}/api/intermodal/lines?day=${dayKind}${psQs}${muniQs}`)
+      .then(r => (r.ok ? r.json() : { lines: [] }))
+      .then(d => { if (!cancelled) setLines(Array.isArray(d.lines) ? d.lines : []); })
+      .catch(() => { if (!cancelled) setLines([]); })
+      .finally(() => { if (!cancelled) setLinesLoading(false); });
+    return () => { cancelled = true; };
+  }, [dayKind, psQs, scopeMode, municipality]);
 
   // Carica lista comuni una sola volta
   useEffect(() => {
@@ -120,7 +178,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const runAnalysis = useCallback(async () => {
     setLoading(true);
     try {
-      const routeIdsQs = routeIdsKey && scopeMode === "routes" ? `&routeIds=${encodeURIComponent(routeIdsKey)}` : "";
+      const routeIdsQs = effectiveRouteIds ? `&routeIds=${encodeURIComponent(effectiveRouteIds)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
       const [analysisRes, shapesRes, poisRes, hubsRes, syncRes] = await Promise.all([
         fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`),
@@ -142,7 +200,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     } finally {
       setLoading(false);
     }
-  }, [radius, routeIdsKey, poiRadiusKm, scopeMode, municipality, dayKind, psQs]);
+  }, [radius, effectiveRouteIds, poiRadiusKm, scopeMode, municipality, dayKind, psQs]);
 
   useEffect(() => { runAnalysis(); }, [runAnalysis]);
 
@@ -150,7 +208,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const runDemand = useCallback(async () => {
     setDemandLoading(true);
     try {
-      const routeIdsQs = routeIdsKey && scopeMode === "routes" ? `&routeIds=${encodeURIComponent(routeIdsKey)}` : "";
+      const routeIdsQs = effectiveRouteIds ? `&routeIds=${encodeURIComponent(effectiveRouteIds)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
       const r = await fetch(`${getApiBase()}/api/intermodal/demand-coverage?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -159,7 +217,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       toast.error("Errore nel calcolo della copertura", { description: e?.message });
       setDemand(null);
     } finally { setDemandLoading(false); }
-  }, [radius, dayKind, psQs, scopeMode, municipality, routeIdsKey]);
+  }, [radius, dayKind, psQs, scopeMode, municipality, effectiveRouteIds]);
 
   useEffect(() => { if (view === "copertura") void runDemand(); }, [view, runDemand]);
 
@@ -414,8 +472,8 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         <Source id="mapbox-dem" type="raster-dem" url="mapbox://mapbox.mapbox-terrain-dem-v1" tileSize={512} maxzoom={14} />
 
         {/* ── BUS ROUTE SHAPES — Neon Glow Effect ── */}
-        {showRoutes && shapesGeoJSON && shapesGeoJSON.features?.length > 0 && (
-          <Source id="bus-routes" type="geojson" data={shapesGeoJSON}>
+        {showLinesOnMap && coloredShapes && coloredShapes.features?.length > 0 && (
+          <Source id="bus-routes" type="geojson" data={coloredShapes}>
             <Layer id="bus-routes-glow-outer" type="line" paint={{
               "line-color": ["coalesce", ["get", "routeColor"], "#06b6d4"],
               "line-width": ["interpolate", ["linear"], ["zoom"], 10, 12, 15, 22],
@@ -936,6 +994,14 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                   ))}
                 </div>
 
+                {/* ─── Su quali linee ─── */}
+                <LinePicker
+                  lines={lines} loading={linesLoading}
+                  selected={selectedRoutes} onChange={setSelectedRoutes}
+                  showOnMap={showLinesOnMap} onToggleMap={setShowLinesOnMap}
+                  day={dayKind}
+                />
+
                 {/* Sync + Radius + Toggles */}
                 <div className="space-y-2">
                   {/* ─── Ambito geografico ───────────────────────── */}
@@ -1065,13 +1131,6 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
 
                   {/* Layer toggles */}
                   <div className="flex gap-2">
-                    <button onClick={() => setShowRoutes(v => !v)}
-                      className={`text-[9px] px-2 py-1 rounded-lg flex items-center gap-1 font-medium transition-all border ${
-                        showRoutes ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30" : "bg-slate-800/40 text-slate-500 border-slate-700/30"
-                      }`}>
-                      {showRoutes ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                      Percorsi ({shapesGeoJSON?.total || 0})
-                    </button>
                     <button onClick={() => setShowPois(v => !v)}
                       className={`text-[9px] px-2 py-1 rounded-lg flex items-center gap-1 font-medium transition-all border ${
                         showPois ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-slate-800/40 text-slate-500 border-slate-700/30"
@@ -1633,11 +1692,38 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                 <div className="w-3 h-3 rounded-full bg-amber-400 border border-black/30" />
                 <span className="text-[10px] text-slate-400">Fermata bus</span>
               </div>
-              {showRoutes && (
-                <div className="flex items-center gap-2">
-                  <div className="w-5 h-0.5 rounded bg-cyan-400" style={{ boxShadow: "0 0 6px #06b6d4" }} />
-                  <span className="text-[10px] text-slate-400">Percorso bus</span>
+              {view === "copertura" && (
+                <div className="pt-1 border-t border-slate-700/30 space-y-1">
+                  {([["#10b981", "Polo servito"], ["#f59e0b", "Parziale"], ["#ef4444", "Scoperto"]] as const).map(([c, lab]) => (
+                    <div key={lab} className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full border-2" style={{ borderColor: c, background: `${c}33` }} />
+                      <span className="text-[10px] text-slate-400">{lab}</span>
+                    </div>
+                  ))}
                 </div>
+              )}
+              {showLinesOnMap && (
+                selectedRoutes.size > 0 ? (
+                  /* Con una selezione esplicita la legenda nomina le linee:
+                     così si sa quale traccia è quale, non solo che sono bus. */
+                  <div className="space-y-1">
+                    {lines.filter(l => selectedRoutes.has(l.routeId)).slice(0, 8).map(l => (
+                      <div key={l.routeId} className="flex items-center gap-2">
+                        <div className="w-5 h-0.5 rounded shrink-0"
+                          style={{ background: lineColorById.get(l.routeId), boxShadow: `0 0 6px ${lineColorById.get(l.routeId)}` }} />
+                        <span className="text-[10px] text-slate-400 truncate max-w-[110px]">{l.label}</span>
+                      </div>
+                    ))}
+                    {selectedRoutes.size > 8 && (
+                      <p className="text-[9px] text-slate-500">+{selectedRoutes.size - 8} altre linee</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="w-5 h-0.5 rounded bg-cyan-400" style={{ boxShadow: "0 0 6px #06b6d4" }} />
+                    <span className="text-[10px] text-slate-400">Percorsi bus (tutta la rete)</span>
+                  </div>
+                )
               )}
               {showPois && (
                 <>
