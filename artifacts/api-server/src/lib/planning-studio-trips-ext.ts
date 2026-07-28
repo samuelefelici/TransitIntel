@@ -712,6 +712,182 @@ router.post("/planning-studio/projects/:id/trips/batch-create", async (req, res)
   res.status(201).json({ ok: true, count: tripIds.length, tripIds });
 });
 
+/* ─── GENERA A CADENZA (server-side, transazione unica) ────────────────────
+ * Prima il client calcolava gli N profili traslati e orchestrava 4 chiamate
+ * separate (batch-create + validità giorni + categorie + delete prototipo):
+ * un fallimento a metà lasciava corse senza validità o il prototipo residuo
+ * (i toast di warning lo ammettevano). Qui il SERVER fa tutto in UNA
+ * transazione: partenze t_k = t0 + k·H (even headway, Ceder §4.3), archi
+ * scalati per il coefficiente di traffico della fascia oraria d'ingresso,
+ * validità (giorni + categorie, o eredità dal template), rimozione del
+ * prototipo. O tutto o niente.
+ *
+ * Body: { baseTripId, from: "HH:MM", to: "HH:MM", headwayMin,
+ *         applyTraffic?, coeffByHour?: { [hour]: number },
+ *         dayTypeIds?: uuid[], categoryIds?: uuid[], removeTemplate? } */
+router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+
+  const b = req.body ?? {};
+  const baseTripId = String(b.baseTripId ?? "");
+  if (!UUID_RE.test(baseTripId)) { res.status(400).json({ error: "baseTripId non valido" }); return; }
+  const H = Math.round(Number(b.headwayMin));
+  if (!Number.isFinite(H) || H < 1 || H > 720) { res.status(400).json({ error: "headwayMin deve essere un intero 1–720" }); return; }
+  const HHMM_RE = /^\d{1,2}:\d{2}$/;
+  if (!HHMM_RE.test(String(b.from ?? "")) || !HHMM_RE.test(String(b.to ?? ""))) {
+    res.status(400).json({ error: "from/to devono essere HH:MM" }); return;
+  }
+  const winFrom = hmsToSec(`${b.from}:00`);
+  const winTo = hmsToSec(`${b.to}:00`);
+  if (winTo <= winFrom) { res.status(400).json({ error: "Fascia oraria non valida (fine dopo inizio)" }); return; }
+  const applyTraffic = b.applyTraffic === true;
+  const coeffByHour: Record<number, number> = {};
+  if (applyTraffic && b.coeffByHour && typeof b.coeffByHour === "object") {
+    for (const [h, c] of Object.entries(b.coeffByHour)) {
+      const hh = Number(h), cc = Number(c);
+      if (Number.isInteger(hh) && hh >= 0 && hh <= 30 && Number.isFinite(cc) && cc > 0.2 && cc < 5) coeffByHour[hh] = cc;
+    }
+  }
+  const dayTypeIds: string[] = (Array.isArray(b.dayTypeIds) ? b.dayTypeIds : [])
+    .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
+  const categoryIds: string[] = (Array.isArray(b.categoryIds) ? b.categoryIds : [])
+    .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
+
+  // Template: corsa del progetto con almeno 2 stop_times
+  const tplR = await db.execute<any>(sql`
+    SELECT * FROM ps_trips WHERE id = ${baseTripId}::uuid AND project_id = ${projId}::uuid LIMIT 1`);
+  const tpl = tplR.rows?.[0];
+  if (!tpl) { res.status(404).json({ error: "Corsa template non trovata nel progetto" }); return; }
+  const stR = await db.execute<any>(sql`
+    SELECT stop_seq, stop_id, arrival_time, departure_time, pickup_type, drop_off_type, timepoint
+      FROM ps_stop_times WHERE trip_id = ${baseTripId}::uuid ORDER BY stop_seq ASC`);
+  const sts: any[] = stR.rows ?? [];
+  if (sts.length < 2) { res.status(400).json({ error: "La corsa template non ha orari alle fermate (stop_times)" }); return; }
+
+  // Profilo relativo del template + partenze nella fascia
+  const baseDep = hmsToSec(sts[0].departure_time);
+  const relArr = sts.map((st) => hmsToSec(st.arrival_time) - baseDep);
+  const relDep = sts.map((st) => hmsToSec(st.departure_time) - baseDep);
+  const minOff = Math.min(...relArr);
+  const deps: number[] = [];
+  for (let t = winFrom; t <= winTo; t += H * 60) {
+    if (Math.abs(t - baseDep) < 30) continue; // non duplicare il template
+    if (t + minOff < 0) continue;
+    deps.push(t);
+  }
+  if (deps.length === 0) { res.status(400).json({ error: "Nessuna partenza da generare nella fascia" }); return; }
+  if (deps.length > 200) {
+    res.status(400).json({ error: `${deps.length} corse superano il limite di 200: restringi la fascia o allunga la cadenza` }); return;
+  }
+
+  // Orari finali: arco scalato per il coefficiente della fascia d'ingresso
+  const runTimes = (dep: number): { arr: number[]; dep: number[] } => {
+    const n = relArr.length;
+    const arr: number[] = new Array(n), depT: number[] = new Array(n);
+    arr[0] = dep + relArr[0];
+    depT[0] = dep + relDep[0];
+    for (let i = 1; i < n; i++) {
+      const arcSec = relArr[i] - relDep[i - 1];
+      const dwell = relDep[i] - relArr[i];
+      const c = applyTraffic ? (coeffByHour[Math.floor(depT[i - 1] / 3600)] ?? 1) : 1;
+      arr[i] = depT[i - 1] + Math.round(arcSec * c);
+      depT[i] = arr[i] + dwell;
+    }
+    return { arr, dep: depT };
+  };
+
+  const isPrototype = String(tpl.attributes?.prototype ?? "") === "true" || tpl.attributes?.prototype === true;
+  const removeTemplate = b.removeTemplate === true && isPrototype;
+
+  const tripIds: string[] = [];
+  let templateRemoved = false;
+  try {
+    await db.transaction(async (tx) => {
+      for (const dep of deps) {
+        const times = runTimes(dep);
+        const ins = await tx.execute<any>(sql`
+          INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id,
+                                headsign, direction, service_label, attributes)
+          VALUES (${projId}::uuid, ${tpl.route_id}::uuid, ${tpl.variant_id}::uuid, ${tpl.calendar_id},
+                  ${tpl.headsign}, ${tpl.direction ?? 0}, ${tpl.service_label}, '{}'::jsonb)
+          RETURNING id
+        `);
+        const tripId: string = ins.rows?.[0]?.id;
+        for (let i = 0; i < sts.length; i++) {
+          await tx.execute(sql`
+            INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                       pickup_type, drop_off_type, timepoint)
+            VALUES (${tripId}::uuid, ${i + 1}, ${sts[i].stop_id}::uuid,
+                    ${secToHms(times.arr[i])}, ${secToHms(times.dep[i])},
+                    ${sts[i].pickup_type ?? 0}, ${sts[i].drop_off_type ?? 0}, ${sts[i].timepoint ?? 1})
+          `);
+        }
+        tripIds.push(tripId);
+      }
+
+      const tripsLit = `{${tripIds.join(",")}}`;
+      // Validità GIORNI: esplicita dal body, altrimenti eredità dal template
+      if (dayTypeIds.length > 0) {
+        await tx.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          SELECT t.tid, d.dtid, true, now()
+            FROM unnest(${tripsLit}::uuid[]) AS t(tid)
+           CROSS JOIN unnest(${`{${dayTypeIds.join(",")}}`}::uuid[]) AS d(dtid)
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE SET is_valid = true, updated_at = now()
+        `);
+      } else {
+        await tx.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+          SELECT t.tid, v.day_type_id, v.is_valid
+            FROM unnest(${tripsLit}::uuid[]) AS t(tid)
+            JOIN ps_trip_day_validity v ON v.trip_id = ${baseTripId}::uuid
+          ON CONFLICT DO NOTHING
+        `);
+      }
+      // CATEGORIE: esplicite (con flag categoriesManual) o eredità dal template
+      if (categoryIds.length > 0) {
+        await tx.execute(sql`
+          INSERT INTO ps_trip_category_validity (trip_id, category_id)
+          SELECT t.tid, c.cid
+            FROM unnest(${tripsLit}::uuid[]) AS t(tid)
+           CROSS JOIN unnest(${`{${categoryIds.join(",")}}`}::uuid[]) AS c(cid)
+          ON CONFLICT DO NOTHING
+        `);
+        await tx.execute(sql`
+          UPDATE ps_trips
+             SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+           WHERE id = ANY(${tripsLit}::uuid[])
+        `);
+      } else {
+        await tx.execute(sql`
+          INSERT INTO ps_trip_category_validity (trip_id, category_id)
+          SELECT t.tid, v.category_id
+            FROM unnest(${tripsLit}::uuid[]) AS t(tid)
+            JOIN ps_trip_category_validity v ON v.trip_id = ${baseTripId}::uuid
+          ON CONFLICT DO NOTHING
+        `);
+      }
+
+      // Il PROTOTIPO ha esaurito il suo scopo: rimosso NELLA STESSA transazione
+      if (removeTemplate) {
+        await tx.execute(sql`DELETE FROM ps_trips WHERE id = ${baseTripId}::uuid AND project_id = ${projId}::uuid`);
+        templateRemoved = true;
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Generazione fallita" });
+    return;
+  }
+
+  await logActivity(projId, userId, "trip.generate_headway", "trip", baseTripId,
+    { count: tripIds.length, headwayMin: H, from: b.from, to: b.to, applyTraffic, templateRemoved });
+  res.status(201).json({ ok: true, count: tripIds.length, tripIds, templateRemoved });
+});
+
 /* ─── PROTOTIPI PER I PERCORSI SENZA CORSE ─────────────────────────────────
  * Caso d'uso: import GTFS con TUTTE le corse poi cancellate (o percorsi
  * disegnati a mano). Le varianti restano senza alcuna corsa: manca il template

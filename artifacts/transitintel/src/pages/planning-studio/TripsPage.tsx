@@ -30,6 +30,7 @@ import {
   listPsTrips, deletePsTrip, updatePsTrip, bulkUpdatePsTrips, bulkDeletePsTrips, prototypeMissingPsTrips, splitPsTripByCategories, type PsTrip,
   getPsStopTimes, setPsStopTimes, type PsStopTime,
   batchCreatePsTrips, type PsBatchTripInput,
+  generatePsTripsHeadway,
   mergePsTwins, type MergeTwinsResult,
   getPsCorseKm, type PsCorseKm,
   getPsVariant, type PsVariantStop,
@@ -700,52 +701,28 @@ export default function PlanningStudioTripsPage() {
     });
   }
 
-  /** Step 2 → salvataggio definitivo (con o senza variazione traffico). */
+  /** Step 2 → salvataggio definitivo (con o senza variazione traffico).
+   * UNA sola chiamata: il server genera corse + orari + validità + rimozione
+   * prototipo in un'unica transazione (prima erano 4 chiamate separate e un
+   * fallimento a metà lasciava corse senza validità o il prototipo residuo). */
   async function finalizeGenerate() {
     if (!genProfile) return;
     const tpl = genProfile.tpl;
     setGenBusy(true);
     try {
-      const payload: PsBatchTripInput[] = genProfile.deps.map(dep => {
-        const times = buildRunTimes(dep, genProfile);
-        return {
-          routeId: tpl.routeId,
-          variantId: tpl.variantId,
-          calendarId: tpl.calendarId ?? null,
-          headsign: tpl.headsign ?? null,
-          direction: tpl.direction ?? 0,
-          serviceLabel: tpl.serviceLabel ?? null,
-          stopTimes: genProfile.stopIds.map((stopId, i) => ({
-            stopId,
-            arrivalTime: genSecToHms(times.arr[i]),
-            departureTime: genSecToHms(times.dep[i]),
-            timepoint: 1,
-          })),
-        };
+      const r = await generatePsTripsHeadway(projectId, {
+        baseTripId: tpl.id,
+        from: genFrom,
+        to: genTo,
+        headwayMin: Math.round(Number(genEvery)),
+        applyTraffic: genApplyTraffic,
+        coeffByHour: genApplyTraffic ? genCoeff : undefined,
+        dayTypeIds: [...genDayTypeIds],
+        categoryIds: [...genCategoryIds],
+        removeTemplate: !!tpl.attributes?.prototype,
       });
-      const r = await batchCreatePsTrips(projectId, payload);
-      // Validità per TUTTE le corse generate: giorni (matrice) + categorie (calendario aziendale)
-      if (r.tripIds?.length) {
-        try {
-          if (genDayTypeIds.size > 0) {
-            await postPsValidityBulk(projectId, { op: "trip-row-set", tripIds: r.tripIds, dayTypeIds: [...genDayTypeIds], isValid: true });
-          }
-          if (genCategoryIds.size > 0) {
-            await postPsValidityBulk(projectId, { op: "trip-categories-set", tripIds: r.tripIds, categoryIds: [...genCategoryIds] });
-          }
-        } catch {
-          toast.warning("Corse generate, ma validità non impostate del tutto", { description: "Completa dalla Matrice di validità." });
-        }
-      }
-      // Il PROTOTIPO ha esaurito il suo scopo: una volta generate le corse
-      // reali viene eliminato (con le sue validità, in cascata).
-      let protoRemoved = false;
-      if (tpl.attributes?.prototype) {
-        try { await deletePsTrip(projectId, tpl.id); protoRemoved = true; }
-        catch { toast.warning("Corse create, ma il prototipo non è stato rimosso", { description: "Eliminalo manualmente dall'elenco corse." }); }
-      }
       toast.success(`✅ ${r.count} corse generate e salvate`, {
-        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? `traffico ${TRAFFIC_GROUP_LABEL[genTrafficGroup]}` : "senza variazione traffico"}${protoRemoved ? " · prototipo rimosso" : ""}`,
+        description: `${genFrom}–${genTo} · una ogni ${genEvery} min · ${genApplyTraffic ? `traffico ${TRAFFIC_GROUP_LABEL[genTrafficGroup]}` : "senza variazione traffico"}${r.templateRemoved ? " · prototipo rimosso" : ""}`,
         duration: 6000,
       });
       setGenOpen(false);

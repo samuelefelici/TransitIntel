@@ -19,7 +19,8 @@
  *   trips.txt           → ps_route_variants (raggruppando per stop_pattern) + ps_trips
  *   stop_times.txt      → ps_variant_stops (per la variante) + ps_stop_times (per il trip)
  *
- * Esclusi iter1: agency.txt (solo nome → ps_projects.agency_name), frequencies.txt,
+ * frequencies.txt: ESPANSO in corse concrete (vedi expandFrequencies).
+ * Esclusi iter1: agency.txt (solo nome → ps_projects.agency_name),
  *   transfers.txt, fare_*.txt, feed_info.txt.
  */
 import type { Request, Response } from "express";
@@ -632,6 +633,86 @@ async function runMergeImport(
   return counts;
 }
 
+/* ─── FREQUENCIES.TXT → espansione in corse concrete ────────────────────────
+ * I feed frequency-based erano scartati in silenzio (frequencies.txt ignorato:
+ * restava UNA corsa template per finestra, tutte le ripetizioni perse). Tutto
+ * il sistema a valle (matrice, UDP, scheduler, stampe) ragiona per corse
+ * concrete: le finestre vengono ESPANSE qui, a monte di full e merge — una
+ * corsa per partenza t_k = start + k·headway, profilo del template traslato.
+ * Il gtfs_id sintetico "<trip>#f<k>" è DETERMINISTICO: il re-import merge
+ * riconosce le stesse corse tra un aggiornamento e l'altro.
+ * La riga template originale viene sostituita dalle espansioni. */
+function hmsToSecs(t: string): number {
+  const [h, m, s] = String(t).split(":").map(Number);
+  return (h || 0) * 3600 + (m || 0) * 60 + (s || 0);
+}
+function secsToHms(sec: number): string {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+function expandFrequencies(
+  tripRows: any[], stopTimeRows: any[], freqRows: any[],
+): { tripRows: any[]; stopTimeRows: any[]; expandedTrips: number; templateTrips: number } {
+  if (freqRows.length === 0) return { tripRows, stopTimeRows, expandedTrips: 0, templateTrips: 0 };
+
+  const freqByTrip = new Map<string, Array<{ start: number; end: number; headway: number }>>();
+  for (const f of freqRows) {
+    const tid = f.trip_id?.trim();
+    const headway = parseInt(f.headway_secs, 10);
+    if (!tid || !isFinite(headway) || headway < 30) continue;
+    const start = hmsToSecs(f.start_time || "");
+    const end = hmsToSecs(f.end_time || "");
+    if (end <= start) continue;
+    if (!freqByTrip.has(tid)) freqByTrip.set(tid, []);
+    freqByTrip.get(tid)!.push({ start, end, headway });
+  }
+  if (freqByTrip.size === 0) return { tripRows, stopTimeRows, expandedTrips: 0, templateTrips: 0 };
+
+  const stByTrip = new Map<string, any[]>();
+  for (const st of stopTimeRows) {
+    const tid = st.trip_id?.trim();
+    if (!tid || !freqByTrip.has(tid)) continue;
+    if (!stByTrip.has(tid)) stByTrip.set(tid, []);
+    stByTrip.get(tid)!.push(st);
+  }
+  for (const arr of stByTrip.values()) arr.sort((a, b) => parseInt(a.stop_sequence, 10) - parseInt(b.stop_sequence, 10));
+
+  const outTrips: any[] = [];
+  const outStopTimes: any[] = [...stopTimeRows.filter(st => !freqByTrip.has(st.trip_id?.trim() ?? ""))];
+  let expandedTrips = 0;
+  const CAP_PER_TRIP = 1000, CAP_TOTAL = 50000;
+
+  for (const t of tripRows) {
+    const tid = t.trip_id?.trim();
+    const windows = tid ? freqByTrip.get(tid) : undefined;
+    if (!windows) { outTrips.push(t); continue; }
+    const profile = stByTrip.get(tid!);
+    if (!profile || profile.length < 2) { outTrips.push(t); continue; } // template inutilizzabile: tienilo com'è
+    const baseDep = hmsToSecs(profile[0].departure_time || profile[0].arrival_time || "0:0:0");
+    let k = 0;
+    for (const w of windows) {
+      // GTFS: partenze da start_time INCLUSA fino a end_time ESCLUSA
+      for (let dep = w.start; dep < w.end; dep += w.headway) {
+        if (k >= CAP_PER_TRIP || expandedTrips >= CAP_TOTAL) break;
+        const delta = dep - baseDep;
+        const newTripId = `${tid}#f${k}`;
+        outTrips.push({ ...t, trip_id: newTripId });
+        for (const st of profile) {
+          outStopTimes.push({
+            ...st,
+            trip_id: newTripId,
+            arrival_time: secsToHms(hmsToSecs(st.arrival_time || st.departure_time || "0:0:0") + delta),
+            departure_time: secsToHms(hmsToSecs(st.departure_time || st.arrival_time || "0:0:0") + delta),
+          });
+        }
+        k++; expandedTrips++;
+      }
+    }
+    if (k === 0) outTrips.push(t); // nessuna partenza generata: conserva il template
+  }
+  return { tripRows: outTrips, stopTimeRows: outStopTimes, expandedTrips, templateTrips: freqByTrip.size };
+}
+
 /* ─── Preview: leggi lo zip e restituisci l'elenco linee (senza scrivere) ───
  * Serve alla UI per far scegliere QUALI linee importare prima dell'import vero.
  * Parsa solo routes.txt e trips.txt: veloce anche su feed grandi. */
@@ -724,6 +805,7 @@ router.post(
     const calendarCsv  = readZipFile(zip, "calendar.txt");
     const calDatesCsv  = readZipFile(zip, "calendar_dates.txt");
     const agencyCsv    = readZipFile(zip, "agency.txt");
+    const freqCsv      = readZipFile(zip, "frequencies.txt");
 
     if (!stopsCsv || !routesCsv || !tripsCsv || !stopTimesCsv) {
       res.status(400).json({
@@ -734,12 +816,26 @@ router.post(
 
     const stopRows     = parseCsv(stopsCsv);
     const routeRows    = parseCsv(routesCsv);
-    const tripRows     = parseCsv(tripsCsv);
-    const stopTimeRows = parseCsv(stopTimesCsv);
+    let tripRows       = parseCsv(tripsCsv);
+    let stopTimeRows   = parseCsv(stopTimesCsv);
     const shapeRows    = shapesCsv ? parseCsv(shapesCsv) : [];
     const calRows      = calendarCsv ? parseCsv(calendarCsv) : [];
     const calDateRows  = calDatesCsv ? parseCsv(calDatesCsv) : [];
     const agencyRows   = agencyCsv ? parseCsv(agencyCsv) : [];
+    const freqRows     = freqCsv ? parseCsv(freqCsv) : [];
+
+    // Feed frequency-based: le finestre di frequencies.txt vengono espanse in
+    // corse concrete PRIMA di filtri/full/merge (gtfs_id deterministici).
+    let frequenciesExpanded = 0;
+    if (freqRows.length > 0) {
+      const exp = expandFrequencies(tripRows, stopTimeRows, freqRows);
+      tripRows = exp.tripRows;
+      stopTimeRows = exp.stopTimeRows;
+      frequenciesExpanded = exp.expandedTrips;
+      if (exp.expandedTrips > 0) {
+        console.log(`[ps import] frequencies.txt: ${exp.templateTrips} template espansi in ${exp.expandedTrips} corse concrete`);
+      }
+    }
 
     /* ─── Filtro linee (opzionale): importa solo le route_id scelte dall'utente.
      * Assente/vuoto → importa tutto (compatibile con il comportamento storico).
@@ -819,7 +915,7 @@ router.post(
         } catch (e: any) { console.warn("[ps import merge] activity log failed:", e?.message); }
         // NB: niente auto-import della matrice in merge (sovrascriverebbe le
         // curatele manuali); le corse nuove seguono il fallback standard.
-        res.json({ ok: true, mode: "merge", merge: mergeCounts });
+        res.json({ ok: true, mode: "merge", merge: mergeCounts, frequenciesExpanded });
       } catch (e: any) {
         console.error("[ps import merge] failed:", e);
         res.status(500).json({ error: "Errore durante il re-import (merge) del GTFS" });
@@ -1263,6 +1359,7 @@ router.post(
           stopTimes: counts.stopTimes,
         },
         autoValidity: autoImport?.summary ?? null,
+        frequenciesExpanded,
       });
     } catch (e: any) {
       // dettaglio solo nei log (poteva leakare schema/constraint DB al client)
