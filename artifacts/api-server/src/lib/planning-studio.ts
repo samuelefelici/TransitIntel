@@ -331,6 +331,18 @@ async function ensurePsTables(): Promise<void> {
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_stops_cluster ON ps_stops(cluster_id)`);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_stops_municipality ON ps_stops(project_id, municipality)`);
 
+    /* §2.1b — CHIAVI ESTERNE STABILI (re-import non distruttivo).
+     * L'ID GTFS originale sopravvive al re-import: è la chiave con cui il
+     * re-import in modalità merge riconosce le entità esistenti e ne CONSERVA
+     * gli UUID — così matrice di validità, cluster, UDP e archi fuorilinea
+     * non vengono più orfanizzati da ogni aggiornamento del feed. */
+    await db.execute(sql`ALTER TABLE ps_stops ADD COLUMN IF NOT EXISTS gtfs_id text`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_stops_gtfs ON ps_stops(project_id, gtfs_id)`);
+    await db.execute(sql`ALTER TABLE ps_trips ADD COLUMN IF NOT EXISTS gtfs_id text`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_trips_gtfs ON ps_trips(project_id, gtfs_id)`);
+    await db.execute(sql`ALTER TABLE ps_routes ADD COLUMN IF NOT EXISTS gtfs_id text`);
+    await db.execute(sql`ALTER TABLE ps_calendars ADD COLUMN IF NOT EXISTS gtfs_id text`);
+
     /* §2.2 — Cluster fermate (nodi di interscambio) */
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS ps_stop_clusters (
@@ -368,7 +380,8 @@ async function ensurePsTables(): Promise<void> {
         ADD COLUMN IF NOT EXISTS valid_to date,
         ADD COLUMN IF NOT EXISTS distance_m_cached double precision,
         ADD COLUMN IF NOT EXISTS duration_s_cached double precision,
-        ADD COLUMN IF NOT EXISTS notes text
+        ADD COLUMN IF NOT EXISTS notes text,
+        ADD COLUMN IF NOT EXISTS import_signature text
     `);
     /* La vista di compatibilità ps_variants è SELECT *: le colonne sono
      * congelate alla creazione. Dopo gli ALTER additivi va RICREATA, o le

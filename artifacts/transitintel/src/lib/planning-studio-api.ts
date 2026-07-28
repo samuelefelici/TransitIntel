@@ -704,15 +704,29 @@ export interface PsImportCounts {
  * NOTA: usa fetch raw (non apiFetch) perché FormData richiede che il browser
  * imposti automaticamente Content-Type con il boundary multipart corretto.
  */
+export interface PsMergeImportCounts {
+  stops: { added: number; updated: number };
+  routes: { added: number; updated: number };
+  variants: { added: number; matched: number };
+  calendars: { added: number; updated: number };
+  trips: { added: number; updated: number; deactivated: number; keptManual: number };
+  stopTimes: number;
+  shapes: number;
+}
+
 export async function importPsGtfs(
   projectId: string,
   file: File,
   routeIds?: string[],
-): Promise<{ ok: boolean; counts: PsImportCounts }> {
+  mode?: "replace" | "merge",
+): Promise<{ ok: boolean; counts?: PsImportCounts; mode?: string; merge?: PsMergeImportCounts }> {
   const fd = new FormData();
   fd.append("file", file);
   // routeIds assente → importa tutte le linee (comportamento storico)
   if (routeIds && routeIds.length) fd.append("routeIds", JSON.stringify(routeIds));
+  // mode="merge" → re-import non distruttivo: UUID conservati per chiave
+  // stabile, validità/cluster/UDP sopravvivono; default = sostituzione totale.
+  if (mode === "merge") fd.append("mode", "merge");
   const res = await fetch(
     `${getApiBase()}/api/planning-studio/projects/${projectId}/import-gtfs`,
     { method: "POST", credentials: "include", body: fd }
