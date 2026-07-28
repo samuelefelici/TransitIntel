@@ -4,9 +4,11 @@
  *  Sezione dedicata: genera gli archi deposito↔capolinea (e capolinea↔
  *  capolinea) con percorso REALE su strada (OSRM /route con geometria),
  *  li mostra su mappa e permette di modificarne percorso (via points) e
- *  tempi. NB: per ora lo SCHEDULING continua a usare il calcolo attuale
- *  (matrice OSRM in fase di ottimizzazione) — questa è la base dati che
- *  in futuro potrà fare da override.
+ *  tempi. Gli override (custom_min/custom_km e i percorsi reindirizzati
+ *  source='manual') sono CONSUMATI dallo scheduling: service-program li
+ *  applica alla matrice fuorilinea prima di lanciare il solver VSP/VCSP.
+ *  Scope: ps_project_id NULL = arco globale; valorizzato = arco valido
+ *  solo per quel progetto Planner Studio (vince sull'omologo globale).
  * ═══════════════════════════════════════════════════════════════ */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
@@ -56,8 +58,19 @@ async function ensureTable(): Promise<void> {
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_deadhead_arcs_from ON deadhead_arcs(from_key)`);
+  // Scope per progetto PS: NULL = globale. L'unicità coppia diventa per-scope
+  // (due progetti possono avere versioni diverse dello stesso arco).
+  await db.execute(sql`ALTER TABLE deadhead_arcs ADD COLUMN IF NOT EXISTS ps_project_id uuid`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_deadhead_arcs_ps ON deadhead_arcs(ps_project_id)`);
+  await db.execute(sql`ALTER TABLE deadhead_arcs DROP CONSTRAINT IF EXISTS deadhead_arcs_from_key_to_key_key`);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_deadhead_arcs_pair_scope
+      ON deadhead_arcs (from_key, to_key, COALESCE(ps_project_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  `);
   bootstrapped = true;
 }
+
+const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371, toRad = (d: number) => (d * Math.PI) / 180;
@@ -162,14 +175,19 @@ function rowToArc(r: any) {
     viaPoints: r.via_points ?? null,
     source: r.source,
     note: r.note,
+    psProjectId: r.ps_project_id ?? null,
     updatedAt: r.updated_at,
   };
 }
 
 /* ── GET lista archi ── */
-router.get("/deadhead-arcs", asyncHandler(async (_req, res) => {
+router.get("/deadhead-arcs", asyncHandler(async (req, res) => {
   await ensureTable();
-  const rows = await db.execute<any>(sql`SELECT * FROM deadhead_arcs ORDER BY from_type DESC, from_name, to_name`);
+  const psProjectId = String(req.query.psProjectId ?? "");
+  const rows = UUID_RE.test(psProjectId)
+    // globali + archi di QUEL progetto
+    ? await db.execute<any>(sql`SELECT * FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjectId}::uuid ORDER BY from_type DESC, from_name, to_name`)
+    : await db.execute<any>(sql`SELECT * FROM deadhead_arcs ORDER BY from_type DESC, from_name, to_name`);
   res.json({ arcs: (rows.rows ?? []).map(rowToArc) });
 }));
 
@@ -180,6 +198,8 @@ router.get("/deadhead-arcs", asyncHandler(async (_req, res) => {
 router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
   await ensureTable();
   const { depotIds, routeIds, terminalPairsMaxKm, replace } = (req.body ?? {}) as any;
+  const psProjectId: string | null = UUID_RE.test(String((req.body as any)?.psProjectId ?? ""))
+    ? String((req.body as any).psProjectId) : null;
 
   const feedId = await getLatestFeedId(req);
   if (!feedId) { res.status(400).json({ error: "Nessun feed GTFS disponibile" }); return; }
@@ -211,8 +231,8 @@ router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
     }
   }
 
-  // Salta gli archi già presenti (a meno di replace)
-  const existing = await db.execute<any>(sql`SELECT from_key, to_key FROM deadhead_arcs`);
+  // Salta gli archi già presenti NELLO STESSO SCOPE (a meno di replace)
+  const existing = await db.execute<any>(sql`SELECT from_key, to_key FROM deadhead_arcs WHERE ps_project_id IS NOT DISTINCT FROM ${psProjectId}::uuid`);
   const have = new Set((existing.rows ?? []).map((r: any) => `${r.from_key}|${r.to_key}`));
   let todo = pairs.filter(p => replace || !have.has(`${p.a.key}|${p.b.key}`));
   const truncated = todo.length > MAX_ARCS_PER_RUN;
@@ -230,11 +250,11 @@ router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
       await db.execute(sql`
         INSERT INTO deadhead_arcs (from_key, from_type, from_name, from_lat, from_lon,
                                    to_key, to_type, to_name, to_lat, to_lon,
-                                   geometry, road_km, travel_min, via_points, source, updated_at)
+                                   geometry, road_km, travel_min, via_points, source, ps_project_id, updated_at)
         VALUES (${a.key}, ${a.type}, ${a.name}, ${a.lat}, ${a.lon},
                 ${b.key}, ${b.type}, ${b.name}, ${b.lat}, ${b.lon},
-                ${JSON.stringify(r.geometry)}::jsonb, ${r.km}, ${r.min}, NULL, ${r.source}, now())
-        ON CONFLICT (from_key, to_key) DO UPDATE SET
+                ${JSON.stringify(r.geometry)}::jsonb, ${r.km}, ${r.min}, NULL, ${r.source}, ${psProjectId}::uuid, now())
+        ON CONFLICT (from_key, to_key, COALESCE(ps_project_id, '00000000-0000-0000-0000-000000000000'::uuid)) DO UPDATE SET
           geometry = EXCLUDED.geometry, road_km = EXCLUDED.road_km,
           travel_min = EXCLUDED.travel_min, via_points = NULL,
           source = EXCLUDED.source, updated_at = now()
@@ -316,9 +336,13 @@ router.delete("/deadhead-arcs/:id", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-router.delete("/deadhead-arcs", asyncHandler(async (_req, res) => {
+router.delete("/deadhead-arcs", asyncHandler(async (req, res) => {
   await ensureTable();
-  const r = await db.execute<any>(sql`DELETE FROM deadhead_arcs RETURNING id`);
+  const psProjectId = String(req.query.psProjectId ?? "");
+  const r = UUID_RE.test(psProjectId)
+    // cancella SOLO gli archi di quel progetto (i globali restano)
+    ? await db.execute<any>(sql`DELETE FROM deadhead_arcs WHERE ps_project_id = ${psProjectId}::uuid RETURNING id`)
+    : await db.execute<any>(sql`DELETE FROM deadhead_arcs RETURNING id`);
   res.json({ ok: true, deleted: (r.rows ?? []).length });
 }));
 

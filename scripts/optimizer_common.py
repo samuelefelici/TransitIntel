@@ -932,6 +932,12 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 # minuti (velocità commerciale a vuoto per categoria + buffer).
 _DH_KM_MATRIX: dict[str, float] = {}
 
+# Override MINUTI curati a mano (sezione Archi Fuorilinea, custom_min):
+# stessa chiave coppia. Quando presente, il valore e' il tempo totale del
+# trasferimento (gia' comprensivo di margini) e sostituisce la formula
+# km/velocita'+buffer.
+_DH_MIN_MATRIX: dict[str, float] = {}
+
 
 def dh_key(lat: float, lon: float) -> str:
     return f"{lat:.5f},{lon:.5f}"
@@ -952,6 +958,21 @@ def set_deadhead_matrix(matrix: dict | None) -> int:
     return len(_DH_KM_MATRIX)
 
 
+def set_deadhead_min_matrix(matrix: dict | None) -> int:
+    """Installa gli override di tempo (minuti totali per coppia)."""
+    _DH_MIN_MATRIX.clear()
+    if not isinstance(matrix, dict):
+        return 0
+    for k, v in matrix.items():
+        try:
+            m = float(v)
+            if m >= 0 and isinstance(k, str) and "|" in k:
+                _DH_MIN_MATRIX[k] = m
+        except (TypeError, ValueError):
+            continue
+    return len(_DH_MIN_MATRIX)
+
+
 def estimate_deadhead(
     from_lat: float, from_lon: float,
     to_lat: float, to_lon: float,
@@ -963,15 +984,20 @@ def estimate_deadhead(
     quella; altrimenti stima Haversine × circuità.
     """
     speed = DEADHEAD_SPEED.get(category, 20)
-    if _DH_KM_MATRIX:
-        road = _DH_KM_MATRIX.get(dh_key(from_lat, from_lon) + "|" + dh_key(to_lat, to_lon))
-        if road is not None:
-            minutes = math.ceil((road / speed) * 60) + DEADHEAD_BUFFER
-            return round(road, 1), minutes
-    straight = haversine_km(from_lat, from_lon, to_lat, to_lon)
-    road_km = straight * ROAD_CIRCUITY
-    minutes = math.ceil((road_km / speed) * 60) + DEADHEAD_BUFFER
-    return round(road_km, 1), minutes
+    key = dh_key(from_lat, from_lon) + "|" + dh_key(to_lat, to_lon)
+    road = _DH_KM_MATRIX.get(key) if _DH_KM_MATRIX else None
+    min_override = _DH_MIN_MATRIX.get(key) if _DH_MIN_MATRIX else None
+    if road is None and min_override is None:
+        road = haversine_km(from_lat, from_lon, to_lat, to_lon) * ROAD_CIRCUITY
+    elif road is None:
+        # solo tempo curato a mano: km stimati Haversine
+        road = haversine_km(from_lat, from_lon, to_lat, to_lon) * ROAD_CIRCUITY
+    if min_override is not None:
+        # tempo curato a mano: e' il totale, niente buffer aggiuntivo
+        minutes = int(math.ceil(min_override))
+    else:
+        minutes = math.ceil((road / speed) * 60) + DEADHEAD_BUFFER
+    return round(road, 1), minutes
 
 
 def is_peak_hour(departure_min: int) -> bool:
