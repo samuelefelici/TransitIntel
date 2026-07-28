@@ -143,6 +143,128 @@ router.get("/planning-studio/projects/:id/routes/:routeId/detail", async (req, r
   });
 });
 
+/* ─── SCHEDA LINEA: statistiche di esercizio ───
+ * La classica scheda che l'ufficio programmazione ricostruiva in Excel:
+ * per giorno-tipo → corse, km/giorno, ore di guida, velocità commerciale,
+ * prima/ultima partenza; più il dettaglio per percorso. Tutto da ps_*:
+ * durata corsa = ultimo arrivo − prima partenza; km corsa = lunghezza shape
+ * della variante (0 se il percorso non è tracciato). Solo corse attive non
+ * prototipo. */
+router.get("/planning-studio/projects/:id/routes/:routeId/stats", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId);
+  if (!proj) { res.status(404).json({ error: "not found" }); return; }
+  const projectId = req.params.id;
+  const routeId = req.params.routeId;
+  if (!UUID_RE.test(routeId)) { res.status(400).json({ error: "routeId invalid" }); return; }
+
+  try {
+    // Metriche per corsa (una riga per corsa attiva con orari)
+    const perTrip = sql`
+      SELECT t.id, t.variant_id,
+             MIN(s.departure_time) AS dep0,
+             MAX(s.arrival_time)  AS arr_n,
+             GREATEST(0,
+               (split_part(MAX(s.arrival_time), ':', 1)::int * 3600
+                + split_part(MAX(s.arrival_time), ':', 2)::int * 60
+                + split_part(MAX(s.arrival_time), ':', 3)::int)
+               - (split_part(MIN(s.departure_time), ':', 1)::int * 3600
+                  + split_part(MIN(s.departure_time), ':', 2)::int * 60
+                  + split_part(MIN(s.departure_time), ':', 3)::int)
+             ) AS duration_s
+        FROM ps_trips t
+        JOIN ps_stop_times s ON s.trip_id = t.id
+       WHERE t.project_id = ${projectId}::uuid AND t.route_id = ${routeId}::uuid
+         AND COALESCE(t.is_active, true) = true
+         AND COALESCE(t.attributes->>'prototype', 'false') <> 'true'
+       GROUP BY t.id, t.variant_id`;
+
+    // Totale linea
+    const totR = await db.execute<any>(sql`
+      WITH tm AS (${perTrip})
+      SELECT count(*)::int AS trips,
+             MIN(tm.dep0) AS first_dep,
+             MAX(tm.dep0) AS last_dep,
+             COALESCE(SUM(tm.duration_s), 0)::bigint AS tot_s,
+             COALESCE(SUM(COALESCE(sh.distance_m, 0)), 0)::bigint AS tot_m
+        FROM tm
+        LEFT JOIN ps_shapes sh ON sh.variant_id = tm.variant_id
+    `);
+
+    // Per giorno-tipo (una corsa può valere su più giorni-tipo: le righe si
+    // sovrappongono di proposito — sono i "giorni tipo di esercizio")
+    const byDtR = await db.execute<any>(sql`
+      WITH tm AS (${perTrip})
+      SELECT dt.id, dt.code, dt.name, dt.color,
+             count(*)::int AS trips,
+             MIN(tm.dep0) AS first_dep,
+             MAX(tm.dep0) AS last_dep,
+             COALESCE(SUM(tm.duration_s), 0)::bigint AS tot_s,
+             COALESCE(SUM(COALESCE(sh.distance_m, 0)), 0)::bigint AS tot_m
+        FROM tm
+        JOIN ps_trip_day_validity v ON v.trip_id = tm.id AND v.is_valid = true
+        JOIN ps_day_types dt ON dt.id = v.day_type_id
+        LEFT JOIN ps_shapes sh ON sh.variant_id = tm.variant_id
+       WHERE dt.project_id IS NULL OR dt.project_id = ${projectId}::uuid
+       GROUP BY dt.id, dt.code, dt.name, dt.color, dt.sort_order
+       ORDER BY dt.sort_order NULLS LAST, dt.name
+    `);
+
+    // Corse senza alcun bollino di validità (fuori dalla scheda per giorno-tipo)
+    const unclassR = await db.execute<any>(sql`
+      WITH tm AS (${perTrip})
+      SELECT count(*)::int AS n FROM tm
+       WHERE NOT EXISTS (SELECT 1 FROM ps_trip_day_validity v
+                          WHERE v.trip_id = tm.id AND v.is_valid = true)
+    `);
+
+    // Dettaglio per percorso
+    const byVarR = await db.execute<any>(sql`
+      WITH tm AS (${perTrip})
+      SELECT vv.id, vv.name, vv.direction,
+             count(tm.id)::int AS trips,
+             COALESCE(AVG(tm.duration_s), 0)::int AS avg_s,
+             COALESCE(MAX(sh.distance_m), 0)::int AS dist_m
+        FROM ps_route_variants vv
+        LEFT JOIN tm ON tm.variant_id = vv.id
+        LEFT JOIN ps_shapes sh ON sh.variant_id = vv.id
+       WHERE vv.route_id = ${routeId}::uuid
+       GROUP BY vv.id, vv.name, vv.direction
+       ORDER BY vv.direction, vv.name
+    `);
+
+    const fmt = (r: any) => {
+      const km = Number(r.tot_m ?? 0) / 1000;
+      const hours = Number(r.tot_s ?? 0) / 3600;
+      return {
+        trips: Number(r.trips ?? 0),
+        firstDeparture: r.first_dep ? String(r.first_dep).slice(0, 5) : null,
+        lastDeparture: r.last_dep ? String(r.last_dep).slice(0, 5) : null,
+        km: Math.round(km * 10) / 10,
+        hours: Math.round(hours * 10) / 10,
+        avgSpeedKmh: hours > 0 ? Math.round((km / hours) * 10) / 10 : null,
+      };
+    };
+
+    res.json({
+      total: fmt(totR.rows[0] ?? {}),
+      byDayType: byDtR.rows.map((r: any) => ({
+        dayTypeId: r.id, code: r.code, name: r.name, color: r.color, ...fmt(r),
+      })),
+      byVariant: byVarR.rows.map((r: any) => ({
+        id: r.id, name: r.name, direction: r.direction,
+        trips: Number(r.trips ?? 0),
+        avgDurationMin: Math.round(Number(r.avg_s ?? 0) / 60),
+        km: Math.round(Number(r.dist_m ?? 0) / 100) / 10,
+      })),
+      unclassifiedTrips: Number(unclassR.rows[0]?.n ?? 0),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /* ─── Variant detail aggregato ─── */
 
 router.get("/planning-studio/projects/:id/variants/:variantId/detail", async (req, res): Promise<void> => {

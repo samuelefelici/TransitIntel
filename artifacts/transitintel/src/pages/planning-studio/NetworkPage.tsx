@@ -16,6 +16,7 @@ import {
   ArrowLeftRight, Activity, Pencil, Check, X as XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { apiFetch } from "@/lib/api";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import {
   getPsProject,
@@ -312,6 +313,103 @@ function StopsList({ stops, selectedId, onSelect }: {
 }
 
 /* ─── Dettaglio linea ─── */
+/* ── Scheda linea: statistiche di esercizio (per giorno-tipo e per percorso) ──
+ * La classica scheda che prima si ricostruiva in Excel: corse, km/giorno,
+ * ore di guida, velocità commerciale, prima/ultima partenza. */
+interface RouteStatsBucket {
+  trips: number; firstDeparture: string | null; lastDeparture: string | null;
+  km: number; hours: number; avgSpeedKmh: number | null;
+}
+interface RouteStats {
+  total: RouteStatsBucket;
+  byDayType: Array<RouteStatsBucket & { dayTypeId: string; code: string; name: string; color: string | null }>;
+  byVariant: Array<{ id: string; name: string; direction: number; trips: number; avgDurationMin: number; km: number }>;
+  unclassifiedTrips: number;
+}
+
+function RouteStatsSection({ projectId, routeId }: { projectId: string; routeId: string }) {
+  const q = useQuery({
+    queryKey: ["ps", projectId, "route-stats", routeId],
+    queryFn: () => apiFetch<RouteStats>(`/api/planning-studio/projects/${projectId}/routes/${routeId}/stats`),
+  });
+  if (q.isLoading) {
+    return (
+      <Section title="Scheda linea" icon={<Activity className="w-3.5 h-3.5" />}>
+        <div className="text-xs text-slate-500 flex items-center gap-2"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Calcolo statistiche…</div>
+      </Section>
+    );
+  }
+  const s = q.data;
+  if (!s || s.total.trips === 0) {
+    return (
+      <Section title="Scheda linea" icon={<Activity className="w-3.5 h-3.5" />}>
+        <div className="text-xs text-slate-600">Nessuna corsa attiva con orari: la scheda si popola quando le corse hanno i transiti.</div>
+      </Section>
+    );
+  }
+  const cell = "px-2 py-1 text-right tabular-nums";
+  return (
+    <Section title="Scheda linea" icon={<Activity className="w-3.5 h-3.5" />}>
+      {/* Riga totale */}
+      <div className="text-xs text-slate-300 mb-2">
+        <b>{s.total.trips}</b> corse · <b>{s.total.km.toLocaleString("it-IT")}</b> km/giorno ·{" "}
+        <b>{s.total.hours.toLocaleString("it-IT")}</b> h di guida
+        {s.total.avgSpeedKmh != null && <> · vel. commerciale <b>{s.total.avgSpeedKmh}</b> km/h</>}
+        {s.total.firstDeparture && <> · servizio <b>{s.total.firstDeparture}–{s.total.lastDeparture}</b></>}
+      </div>
+      {/* Per giorno-tipo */}
+      {s.byDayType.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px] text-slate-300">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="px-2 py-1 text-left font-medium">Giorno-tipo</th>
+                <th className={`${cell} font-medium`}>Corse</th>
+                <th className={`${cell} font-medium`}>Km/g</th>
+                <th className={`${cell} font-medium`}>Ore</th>
+                <th className={`${cell} font-medium`}>Km/h</th>
+                <th className={`${cell} font-medium`}>Prima–Ultima</th>
+              </tr>
+            </thead>
+            <tbody>
+              {s.byDayType.map((b) => (
+                <tr key={b.dayTypeId} className="border-t border-slate-800/70">
+                  <td className="px-2 py-1">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: b.color ?? "#64748b" }} />
+                      {b.name}
+                    </span>
+                  </td>
+                  <td className={cell}>{b.trips}</td>
+                  <td className={cell}>{b.km.toLocaleString("it-IT")}</td>
+                  <td className={cell}>{b.hours.toLocaleString("it-IT")}</td>
+                  <td className={cell}>{b.avgSpeedKmh ?? "—"}</td>
+                  <td className={cell}>{b.firstDeparture ?? "—"}{b.lastDeparture ? `–${b.lastDeparture}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {s.unclassifiedTrips > 0 && (
+        <p className="mt-1.5 text-[10px] text-amber-400/90">
+          {s.unclassifiedTrips} corse senza validità per giorno-tipo (fuori dalla tabella): assegnale nella Matrice di validità.
+        </p>
+      )}
+      {/* Per percorso */}
+      {s.byVariant.some(v => v.trips > 0) && (
+        <div className="mt-2 space-y-0.5">
+          {s.byVariant.filter(v => v.trips > 0).map((v) => (
+            <div key={v.id} className="text-[10px] text-slate-500">
+              {v.direction === 0 ? "→" : "←"} {v.name}: {v.trips} corse · {v.km} km · ~{v.avgDurationMin} min/corsa
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, activeDrill }: {
   projectId: string; routeId: string;
   onDrillVariant: (id: string) => void; onDrillStop: (id: string) => void;
@@ -408,6 +506,9 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
           )}
         </div>
       </Section>
+
+      {/* Scheda linea: statistiche di esercizio */}
+      <RouteStatsSection projectId={projectId} routeId={routeId} />
 
       {/* Percorsi */}
       <Section title={`Percorsi (${d.variants.length})`} icon={<RouteIcon className="w-3.5 h-3.5" />}>
