@@ -18,7 +18,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
-import { buildDeadheadKmMatrix, type DHNode } from "../lib/deadhead-matrix";
+import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../lib/deadhead-matrix";
 import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
 } from "./driver-shifts";
@@ -1557,6 +1557,7 @@ async function runCPSATVehicleScheduler(
   psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
   depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[],
   deadheadKm?: Record<string, number>,
+  deadheadMin?: Record<string, number>,
 ): Promise<any> {
   return spawnPythonJson("vehicle_scheduler_cpsat.py", [String(timeLimitSec)], {
     trips: buildPyTrips(tripBlocks),
@@ -1570,6 +1571,8 @@ async function runCPSATVehicleScheduler(
     ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
     // Matrice fuorilinea (km stradali reali, OSRM/fallback) per archi e tratte deposito
     ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
+    // Override tempi curati a mano (Archi Fuorilinea, custom_min)
+    ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
   }, logger, "VSP");
 }
 
@@ -1980,6 +1983,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
 
     let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[] | undefined;
     let deadheadKm: Record<string, number> | undefined;
+    let deadheadMin: Record<string, number> | undefined;
     if (depotSel && depotPoints.length > 0) {
       depotsForPy = depotPoints.map(d => ({
         id: d.id, name: d.name, color: d.color, lat: d.lat, lon: d.lon,
@@ -2003,6 +2007,41 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         const osrm = outM.osrmPairs + inM.osrmPairs + ttM.osrmPairs;
         const total = outM.totalPairs + inM.totalPairs + ttM.totalPairs;
         req.log.info(`CP-SAT VSP: matrice fuorilinea ${total} coppie (${osrm} da OSRM, ${total - osrm} Haversine)`);
+
+        /* Override curati a mano (sezione Archi Fuorilinea): custom_km /
+         * custom_min o percorsi reindirizzati via points (source='manual')
+         * VINCONO sul calcolo OSRM per le coppie che matchano per coordinate.
+         * Scope: archi globali sempre; archi legati a un progetto PS solo se
+         * è il progetto collegato a questo giro (i globali prima, così un
+         * arco di progetto sovrascrive l'omologo globale). */
+        try {
+          let psProj: string | null = null;
+          const schedProjectId = String((body as any).projectId ?? "");
+          if (/^[0-9a-f-]{36}$/i.test(schedProjectId)) {
+            const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectId}::uuid`);
+            psProj = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
+          }
+          const arcs = await db.execute<any>(sql`
+            SELECT from_lat, from_lon, to_lat, to_lon, road_km, travel_min,
+                   custom_km, custom_min, source, ps_project_id
+              FROM deadhead_arcs
+             WHERE custom_km IS NOT NULL OR custom_min IS NOT NULL OR source = 'manual'
+             ORDER BY (ps_project_id IS NOT NULL)`);
+          let applied = 0;
+          const minOverrides: Record<string, number> = {};
+          for (const a of arcs.rows ?? []) {
+            if (a.ps_project_id && a.ps_project_id !== psProj) continue;
+            const key = `${dhKey(Number(a.from_lat), Number(a.from_lon))}|${dhKey(Number(a.to_lat), Number(a.to_lon))}`;
+            if (deadheadKm[key] === undefined) continue; // coppia non usata in questo giro
+            const km = a.custom_km ?? (a.source === "manual" ? a.road_km : null);
+            const min = a.custom_min ?? (a.source === "manual" ? a.travel_min : null);
+            if (km != null && Number.isFinite(Number(km))) deadheadKm[key] = Math.round(Number(km) * 100) / 100;
+            if (min != null && Number.isFinite(Number(min))) minOverrides[key] = Math.round(Number(min) * 10) / 10;
+            if (km != null || min != null) applied++;
+          }
+          if (Object.keys(minOverrides).length > 0) deadheadMin = minOverrides;
+          if (applied > 0) req.log.info(`CP-SAT VSP: ${applied} archi fuorilinea con override manuale applicati (${Object.keys(minOverrides).length} con tempo curato)`);
+        } catch { /* tabella deadhead_arcs assente: nessun override */ }
       } catch (err: any) {
         req.log.warn({ err: err?.message }, "matrice fuorilinea non disponibile, il solver stima Haversine");
       }
@@ -2116,6 +2155,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           psClusters: psClustersForPy,
           ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
           ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
+          ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
         },
         crew: { config: crewConfig },
         vcsp: {
@@ -2132,6 +2172,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         psClustersForPy,
         depotsForPy,
         deadheadKm,
+        deadheadMin,
       );
     }
 

@@ -48,7 +48,7 @@ from optimizer_common import (
     haversine_km, estimate_deadhead, is_peak_hour, can_vehicle_serve,
     min_to_time, fmt_dur,
     load_input, write_output, log, report_progress,
-    set_deadhead_matrix,
+    set_deadhead_matrix, set_deadhead_min_matrix,
 )
 
 # FIX-6: aumentato da 100 a 1000 per evitare che bonus < 0.01 EUR vengano
@@ -3048,6 +3048,9 @@ def run(data: dict) -> dict:
     dh_pairs = set_deadhead_matrix(data.get("deadheadKm"))
     if dh_pairs:
         log(f"  [VSP-DH-MATRIX] {dh_pairs} coppie fuorilinea stradali ricevute")
+    dh_min_pairs = set_deadhead_min_matrix(data.get("deadheadMin"))
+    if dh_min_pairs:
+        log(f"  [VSP-DH-MATRIX] {dh_min_pairs} coppie con TEMPO curato a mano (override)")
 
     # Depositi selezionati (multi-deposito): domiciliazione + cap per deposito
     depots_data = [d for d in (data.get("depots") or [])

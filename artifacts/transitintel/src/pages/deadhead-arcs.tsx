@@ -62,6 +62,11 @@ export default function DeadheadArcsPage() {
   /* Filtro per comune (zonizzazione): tiene gli archi con ALMENO un nodo dentro */
   const [zonesList, setZonesList] = useState<{ id: string; name: string; geometry: any }[]>([]);
   const [comuneId, setComuneId] = useState<string>("");
+  /* Scope per progetto Planner Studio: "" = vista globale (tutti gli archi);
+   * un id = globali + archi di QUEL progetto; generazione/cancellazione
+   * lavorano nello scope scelto. */
+  const [psList, setPsList] = useState<{ id: string; name: string }[]>([]);
+  const [psScope, setPsScope] = useState<string>("");
 
   /* editor arco selezionato */
   const [editMin, setEditMin] = useState<string>("");
@@ -75,12 +80,12 @@ export default function DeadheadArcsPage() {
 
   const refresh = useCallback(() => {
     setLoading(true);
-    fetch(`${base}/api/deadhead-arcs`)
+    fetch(`${base}/api/deadhead-arcs${psScope ? `?psProjectId=${psScope}` : ""}`)
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => setArcs(d.arcs ?? []))
       .catch(() => toast.error("Impossibile caricare gli archi"))
       .finally(() => setLoading(false));
-  }, [base]);
+  }, [base, psScope]);
 
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => {
@@ -98,6 +103,10 @@ export default function DeadheadArcsPage() {
     fetch(`${base}/api/zones`).then(r => (r.ok ? r.json() : null)).then((d: any) => {
       if (d?.zones) setZonesList(d.zones.filter((z: any) => z.geometry));
     }).catch(() => { /* zonizzazione non importata: filtro nascosto */ });
+    fetch(`${base}/api/planning-studio/projects`).then(r => (r.ok ? r.json() : null)).then((d: any) => {
+      const list = (Array.isArray(d) ? d : d?.data ?? d?.projects ?? []).map((x: any) => ({ id: x.id, name: x.name ?? x.id }));
+      setPsList(list);
+    }).catch(() => { /* Planner Studio assente: selettore nascosto */ });
   }, [base]);
 
   /* linee del feed scelto (per il filtro linee della generazione) */
@@ -145,6 +154,7 @@ export default function DeadheadArcsPage() {
         depotIds: [...genDepotIds],
         routeIds: [...genRouteIds],
         terminalPairsMaxKm: genTTKm || 0,
+        psProjectId: psScope || undefined,
       }),
     })
       .then(r => r.json())
@@ -160,7 +170,7 @@ export default function DeadheadArcsPage() {
       })
       .catch(() => toast.error("Errore nella generazione"))
       .finally(() => setGenerating(false));
-  }, [base, genDepotIds, genRouteIds, genTTKm, refresh]);
+  }, [base, genDepotIds, genRouteIds, genTTKm, psScope, refresh]);
 
   const saveCustom = useCallback(() => {
     if (!selected) return;
@@ -453,6 +463,14 @@ export default function DeadheadArcsPage() {
                   {zonesList.map(z => <option key={z.id} value={z.id}>{z.name}</option>)}
                 </select>
               )}
+              {psList.length > 0 && (
+                <select value={psScope} onChange={e => { setPsScope(e.target.value); setSelectedId(null); }}
+                  title="Scope: vista globale, oppure archi globali + di un progetto Planner Studio. Genera/cancella lavorano nello scope scelto."
+                  className="bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px] max-w-[150px]">
+                  <option value="">Globale (tutti)</option>
+                  {psList.map(pp => <option key={pp.id} value={pp.id}>{pp.name}</option>)}
+                </select>
+              )}
               <input value={filter} onChange={e => setFilter(e.target.value)} placeholder={`Cerca tra ${arcs.length} archi…`}
                 className="w-full bg-background/60 border border-border/40 rounded-lg pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:border-amber-500/50" />
             </div>
@@ -525,6 +543,12 @@ export default function DeadheadArcsPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {psScope && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 shrink-0"
+                  title="Gli archi generati saranno visibili e usati solo per questo progetto">
+                  solo progetto: {psList.find(pp => pp.id === psScope)?.name ?? "…"}
+                </span>
+              )}
               <label className="text-[10px] text-muted-foreground w-full">Rete (feed GTFS)
                 <select value={genFeedId} onChange={e => setGenFeedId(e.target.value)}
                   className="w-full mt-0.5 bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px]">
