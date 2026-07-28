@@ -15,7 +15,7 @@ import {
 import { getApiBase } from "@/lib/api";
 import {
   listPsProjects, createPsProject, deletePsProject, activatePsProject, duplicatePsProject,
-  type PsProject,
+  getPsProjectHealth, type PsProjectHealth, type PsProject,
 } from "@/lib/planning-studio-api";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 
@@ -586,7 +586,28 @@ function ActivateProjectDialog({
     const d = new Date(Date.now() + 86_400_000);
     return d.toISOString().slice(0, 10);
   }, []);
-  const canSubmit = !busy && (mode === "now" || (date && date >= tomorrow));
+
+  // ── PRE-FLIGHT: controllo salute del progetto prima dell'attivazione ──
+  // Gli ERRORI (orari non monotoni, finestre di validità impossibili) bloccano
+  // il pulsante finché l'operatore non spunta esplicitamente "attiva comunque";
+  // i warning sono informativi. Se il check fallisce (endpoint giù) non blocca.
+  const [health, setHealth] = useState<PsProjectHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [overrideErrors, setOverrideErrors] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    getPsProjectHealth(project.id)
+      .then((h) => { if (alive) setHealth(h); })
+      .catch(() => { /* pre-flight best-effort: non bloccare l'attivazione */ })
+      .finally(() => { if (alive) setHealthLoading(false); });
+    return () => { alive = false; };
+  }, [project.id]);
+  const failing = (health?.checks ?? []).filter((ch) => ch.count > 0);
+  const hasErrors = failing.some((ch) => ch.level === "error");
+
+  const canSubmit = !busy && !healthLoading
+    && (!hasErrors || overrideErrors)
+    && (mode === "now" || (date && date >= tomorrow));
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
@@ -617,6 +638,48 @@ function ActivateProjectDialog({
               Sala Operativa, AVM, GTFS-RT e tariffe punteranno al feed di questo programma;
               il feed operativo precedente viene <b>archiviato</b> (non cancellato) e resta consultabile nello storico attivazioni.
             </p>
+          </div>
+
+          {/* PRE-FLIGHT: controllo salute progetto */}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 text-xs space-y-2">
+            {healthLoading ? (
+              <p className="text-slate-400 flex items-center gap-2">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Controllo di salute del programma…
+              </p>
+            ) : !health ? (
+              <p className="text-slate-500">Controllo di salute non disponibile (proseguo senza pre-flight).</p>
+            ) : failing.length === 0 ? (
+              <p className="text-emerald-400 font-medium">✓ Controllo di salute superato: nessuna anomalia rilevata.</p>
+            ) : (
+              <>
+                <p className="font-semibold text-slate-200">
+                  Controllo di salute: {health.errors > 0 && <span className="text-rose-400">{health.errors} problem{health.errors === 1 ? "a" : "i"} bloccant{health.errors === 1 ? "e" : "i"}</span>}
+                  {health.errors > 0 && health.warnings > 0 && " · "}
+                  {health.warnings > 0 && <span className="text-amber-400">{health.warnings} avvis{health.warnings === 1 ? "o" : "i"}</span>}
+                </p>
+                <ul className="space-y-1.5">
+                  {failing.map((ch) => (
+                    <li key={ch.key} className={`flex items-start gap-1.5 ${ch.level === "error" ? "text-rose-300" : "text-amber-300/90"}`}>
+                      <span className="shrink-0 mt-px">{ch.level === "error" ? "✕" : "⚠"}</span>
+                      <span>
+                        <b>{ch.count}</b> {ch.label}
+                        {ch.samples.length > 0 && (
+                          <span className="block text-[11px] text-slate-500">
+                            es. {ch.samples.join(" · ")}{ch.count > ch.samples.length ? " …" : ""}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                {hasErrors && (
+                  <label className="flex items-center gap-2 pt-1 text-rose-200 cursor-pointer">
+                    <input type="checkbox" checked={overrideErrors} onChange={(e) => setOverrideErrors(e.target.checked)} className="accent-rose-500" />
+                    Ho verificato: metti in esercizio comunque
+                  </label>
+                )}
+              </>
+            )}
           </div>
 
           {/* Scelta: subito o con decorrenza */}
