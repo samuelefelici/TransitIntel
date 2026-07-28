@@ -26,6 +26,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
+import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { parseCsv } from "../routes/gtfs-helpers";
@@ -130,6 +131,505 @@ async function bulkInsert(
     const tableSql = sql.raw(table);
     await exec.execute(sql`INSERT INTO ${tableSql} (${colsSql}) VALUES ${valuesSql}`);
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * RE-IMPORT NON DISTRUTTIVO (modalità "merge")
+ * ───────────────────────────────────────────────────────────────────
+ * Il wipe totale rigenerava TUTTI gli UUID: matrice di validità, categorie ed
+ * eccezioni cascavano via con le corse, i cluster si svuotavano (fermate
+ * ricreate), le UDP restavano con trip_ids orfani e gli archi fuorilinea
+ * puntavano a fermate inesistenti. In modalità merge le entità vengono
+ * riconosciute con le CHIAVI STABILI (gtfs_id; per le varianti la
+ * import_signature route|direction|pattern) e gli UUID vengono CONSERVATI:
+ *
+ *  - fermate:  matched → UPDATE dei soli campi GTFS (nome/coordinate/…);
+ *              i campi curati in PS (comune, dotazioni, cluster, note, foto)
+ *              NON si toccano. Nuove → INSERT. Assenti dal feed → restano.
+ *  - linee:    matched → UPDATE campi descrittivi; il code (modificabile a
+ *              mano) resta. Nuove → INSERT. Assenti → restano.
+ *  - varianti: matched per firma → UUID conservato (shape e riferimenti dei
+ *              trip sopravvivono); nome operatore conservato. Nuove firme →
+ *              INSERT completo (variant_stops + shape GTFS). Assenti → restano.
+ *  - calendari: matched → UPDATE flag/periodo + rebuild delle date eccezione.
+ *  - corse:    matched per gtfs_id → UPDATE + REPLACE degli stop_times;
+ *              validità/categorie/eccezioni della matrice SOPRAVVIVONO.
+ *              Nuove → INSERT. Assenti dal feed → DISATTIVATE (is_active
+ *              false + attributes.importMissing) — mai cancellate. Le corse
+ *              create A MANO (senza gtfs_id) non vengono toccate.
+ *
+ * L'auto-import della matrice dai calendari NON viene rilanciato in merge:
+ * sovrascriverebbe le curatele manuali. Le corse nuove seguono il fallback
+ * standard ("nessuna riga in matrice → circola") finché non vengono
+ * classificate.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+interface MergeCounts {
+  stops: { added: number; updated: number };
+  routes: { added: number; updated: number };
+  variants: { added: number; matched: number };
+  calendars: { added: number; updated: number };
+  trips: { added: number; updated: number; deactivated: number; keptManual: number };
+  stopTimes: number;
+  shapes: number;
+}
+
+/** UPDATE batch set-based: un solo statement per lotto via jsonb_to_recordset
+ *  (binding sicuro di testo arbitrario, niente literal array fragili). */
+async function batchUpdate(
+  exec: Executor, table: string, setCols: string[], colDefs: string,
+  rows: Record<string, any>[], batchSize = 2000,
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const slice = rows.slice(i, i + batchSize);
+    const sets = sql.raw(setCols.map(c => `${c} = d.${c}`).join(", "));
+    await exec.execute(sql`
+      UPDATE ${sql.raw(table)} s SET ${sets}
+        FROM jsonb_to_recordset(${JSON.stringify(slice)}::jsonb) AS d(${sql.raw(colDefs)})
+       WHERE s.id = d.id
+    `);
+  }
+}
+
+async function runMergeImport(
+  tx: Executor,
+  projectId: string,
+  data: {
+    stopRows: any[]; routeRows: any[]; tripRows: any[]; stopTimeRows: any[];
+    shapeRows: any[]; calRows: any[]; calDateRows: any[];
+  },
+  filters: { keepRoutes: Set<string> | null; usedStopGtfs: Set<string> | null; usedServiceGtfs: Set<string> | null },
+): Promise<MergeCounts> {
+  const { keepRoutes, usedStopGtfs, usedServiceGtfs } = filters;
+  const counts: MergeCounts = {
+    stops: { added: 0, updated: 0 }, routes: { added: 0, updated: 0 },
+    variants: { added: 0, matched: 0 }, calendars: { added: 0, updated: 0 },
+    trips: { added: 0, updated: 0, deactivated: 0, keptManual: 0 },
+    stopTimes: 0, shapes: 0,
+  };
+  const rowsOf = (r: any) => (r as any).rows ?? [];
+
+  /* ── Mappe delle entità esistenti (chiavi stabili → uuid).
+   * Fallback legacy: per linee e calendari importati prima di questa feature
+   * il gtfs_id vive in `code` (l'import lo ha sempre scritto lì). */
+  const exStops = new Map<string, string>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT id, gtfs_id FROM ps_stops WHERE project_id = ${projectId}::uuid AND gtfs_id IS NOT NULL`)))
+    exStops.set(r.gtfs_id, r.id);
+  const exRoutes = new Map<string, string>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT id, COALESCE(gtfs_id, code) AS key FROM ps_routes WHERE project_id = ${projectId}::uuid`)))
+    if (r.key) exRoutes.set(r.key, r.id);
+  const exCals = new Map<string, string>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT id, COALESCE(gtfs_id, code) AS key FROM ps_calendars WHERE project_id = ${projectId}::uuid`)))
+    if (r.key) exCals.set(r.key, r.id);
+  const exVariants = new Map<string, string>(); // signature → uuid
+  const variantCountByRoute = new Map<string, number>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT id, route_id, import_signature FROM ps_route_variants WHERE project_id = ${projectId}::uuid`))) {
+    if (r.import_signature) exVariants.set(r.import_signature, r.id);
+    variantCountByRoute.set(r.route_id, (variantCountByRoute.get(r.route_id) || 0) + 1);
+  }
+  const exTrips = new Map<string, string>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT id, gtfs_id FROM ps_trips WHERE project_id = ${projectId}::uuid AND gtfs_id IS NOT NULL`)))
+    exTrips.set(r.gtfs_id, r.id);
+  const variantsWithShape = new Set<string>();
+  for (const r of rowsOf(await tx.execute(sql`
+    SELECT variant_id FROM ps_shapes WHERE project_id = ${projectId}::uuid`)))
+    variantsWithShape.add(r.variant_id);
+
+  /* ── 1. STOPS: update matched (solo campi GTFS), insert nuove ── */
+  const stopGtfsToUuid = new Map<string, string>();
+  const stopUpdates: Record<string, any>[] = [];
+  const stopInserts: any[][] = [];
+  for (const s of data.stopRows) {
+    const gtfsId = s.stop_id?.trim();
+    if (!gtfsId) continue;
+    if (usedStopGtfs && !usedStopGtfs.has(gtfsId) && !exStops.has(gtfsId)) continue;
+    const lat = num(s.stop_lat, NaN);
+    const lon = num(s.stop_lon, NaN);
+    if (!isFinite(lat) || !isFinite(lon)) continue;
+    const existing = exStops.get(gtfsId);
+    if (existing) {
+      stopGtfsToUuid.set(gtfsId, existing);
+      stopUpdates.push({
+        id: existing, gtfs_id: gtfsId, code: s.stop_code || null,
+        name: s.stop_name || gtfsId, description: s.stop_desc || null,
+        lat, lon, zone_id: s.zone_id || null,
+        location_type: int(s.location_type, 0),
+        wheelchair_boarding: int(s.wheelchair_boarding, 0),
+        platform_code: s.platform_code || null,
+      });
+    } else {
+      if (usedStopGtfs && !usedStopGtfs.has(gtfsId)) continue;
+      const id = crypto.randomUUID();
+      stopGtfsToUuid.set(gtfsId, id);
+      stopInserts.push([
+        id, projectId, gtfsId, s.stop_code || null, s.stop_name || gtfsId,
+        s.stop_desc || null, lat, lon, s.zone_id || null,
+        int(s.location_type, 0), int(s.wheelchair_boarding, 0), s.platform_code || null,
+      ]);
+    }
+  }
+  await batchUpdate(tx, "ps_stops",
+    ["gtfs_id", "code", "name", "description", "lat", "lon", "zone_id", "location_type", "wheelchair_boarding", "platform_code"],
+    "id uuid, gtfs_id text, code text, name text, description text, lat double precision, lon double precision, zone_id text, location_type int, wheelchair_boarding int, platform_code text",
+    stopUpdates);
+  await bulkInsert("ps_stops",
+    ["id", "project_id", "gtfs_id", "code", "name", "description", "lat", "lon", "zone_id",
+     "location_type", "wheelchair_boarding", "platform_code"],
+    stopInserts, tx);
+  counts.stops = { added: stopInserts.length, updated: stopUpdates.length };
+
+  /* ── 2. ROUTES: update campi descrittivi (il code editabile resta), insert nuove ── */
+  const routeGtfsToUuid = new Map<string, string>();
+  const importedRouteUuids: string[] = [];
+  const routeUpdates: Record<string, any>[] = [];
+  const routeInserts: any[][] = [];
+  for (const r of data.routeRows) {
+    const gtfsId = r.route_id?.trim();
+    if (!gtfsId) continue;
+    if (keepRoutes && !keepRoutes.has(gtfsId)) continue;
+    const existing = exRoutes.get(gtfsId);
+    if (existing) {
+      routeGtfsToUuid.set(gtfsId, existing);
+      importedRouteUuids.push(existing);
+      routeUpdates.push({
+        id: existing, gtfs_id: gtfsId,
+        short_name: r.route_short_name || gtfsId,
+        long_name: r.route_long_name || null,
+        description: r.route_desc || null,
+        route_type: int(r.route_type, 3),
+        color: color(r.route_color), text_color: color(r.route_text_color),
+        sort_order: int(r.route_sort_order, 0),
+      });
+    } else {
+      const id = crypto.randomUUID();
+      routeGtfsToUuid.set(gtfsId, id);
+      importedRouteUuids.push(id);
+      routeInserts.push([
+        id, projectId, gtfsId, gtfsId, r.route_short_name || gtfsId,
+        r.route_long_name || null, r.route_desc || null, int(r.route_type, 3),
+        color(r.route_color), color(r.route_text_color), r.agency_id || null,
+        int(r.route_sort_order, 0),
+      ]);
+    }
+  }
+  await batchUpdate(tx, "ps_routes",
+    ["gtfs_id", "short_name", "long_name", "description", "route_type", "color", "text_color", "sort_order"],
+    "id uuid, gtfs_id text, short_name text, long_name text, description text, route_type int, color text, text_color text, sort_order int",
+    routeUpdates);
+  await bulkInsert("ps_routes",
+    ["id", "project_id", "gtfs_id", "code", "short_name", "long_name", "description",
+     "route_type", "color", "text_color", "agency_id", "sort_order"],
+    routeInserts, tx);
+  counts.routes = { added: routeInserts.length, updated: routeUpdates.length };
+
+  /* ── 3. CALENDARS: update matched + rebuild date, insert nuovi ── */
+  const calGtfsToUuid = new Map<string, string>();
+  const calUpdates: Record<string, any>[] = [];
+  const calInserts: any[][] = [];
+  for (const c of data.calRows) {
+    const gtfsId = c.service_id?.trim();
+    if (!gtfsId) continue;
+    if (usedServiceGtfs && !usedServiceGtfs.has(gtfsId) && !exCals.has(gtfsId)) continue;
+    const start = gtfsDate(c.start_date);
+    const end = gtfsDate(c.end_date);
+    if (!start || !end) continue;
+    const existing = exCals.get(gtfsId);
+    if (existing) {
+      calGtfsToUuid.set(gtfsId, existing);
+      calUpdates.push({
+        id: existing, gtfs_id: gtfsId,
+        monday: bool01(c.monday), tuesday: bool01(c.tuesday), wednesday: bool01(c.wednesday),
+        thursday: bool01(c.thursday), friday: bool01(c.friday),
+        saturday: bool01(c.saturday), sunday: bool01(c.sunday),
+        start_date: start, end_date: end,
+      });
+    } else {
+      if (usedServiceGtfs && !usedServiceGtfs.has(gtfsId)) continue;
+      const id = crypto.randomUUID();
+      calGtfsToUuid.set(gtfsId, id);
+      calInserts.push([
+        id, projectId, gtfsId, gtfsId, gtfsId,
+        bool01(c.monday), bool01(c.tuesday), bool01(c.wednesday),
+        bool01(c.thursday), bool01(c.friday), bool01(c.saturday), bool01(c.sunday),
+        start, end,
+      ]);
+    }
+  }
+  // Stub per i service presenti solo in calendar_dates (come nel percorso pieno)
+  const stubDates = new Map<string, string[]>();
+  for (const cd of data.calDateRows) {
+    const sid = cd.service_id?.trim();
+    if (!sid || calGtfsToUuid.has(sid) || exCals.has(sid)) continue;
+    if (usedServiceGtfs && !usedServiceGtfs.has(sid)) continue;
+    const d = gtfsDate(cd.date);
+    if (!d) continue;
+    if (!stubDates.has(sid)) stubDates.set(sid, []);
+    stubDates.get(sid)!.push(d);
+  }
+  for (const [sid, dates] of stubDates) {
+    dates.sort();
+    const id = crypto.randomUUID();
+    calGtfsToUuid.set(sid, id);
+    calInserts.push([
+      id, projectId, sid, sid, sid,
+      false, false, false, false, false, false, false,
+      dates[0], dates[dates.length - 1],
+    ]);
+  }
+  // Anche i matched legacy per gtfs_id (erano in exCals ma non in calGtfsToUuid se il file
+  // li ridefinisce solo via calendar_dates): registra il mapping per i trips.
+  for (const [key, id] of exCals) if (!calGtfsToUuid.has(key)) calGtfsToUuid.set(key, id);
+  await batchUpdate(tx, "ps_calendars",
+    ["gtfs_id", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "start_date", "end_date"],
+    "id uuid, gtfs_id text, monday boolean, tuesday boolean, wednesday boolean, thursday boolean, friday boolean, saturday boolean, sunday boolean, start_date date, end_date date",
+    calUpdates);
+  await bulkInsert("ps_calendars",
+    ["id", "project_id", "gtfs_id", "code", "name",
+     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+     "start_date", "end_date"],
+    calInserts, tx);
+  // Rebuild delle date eccezione per i calendari aggiornati
+  const updatedCalIds = calUpdates.map(c => c.id);
+  if (updatedCalIds.length > 0) {
+    await tx.execute(sql`
+      DELETE FROM ps_calendar_dates WHERE calendar_id = ANY(${`{${updatedCalIds.join(",")}}`}::uuid[])`);
+  }
+  const calDateValues: any[][] = [];
+  for (const cd of data.calDateRows) {
+    const sid = cd.service_id?.trim();
+    const calId = sid ? calGtfsToUuid.get(sid) : undefined;
+    if (!calId) continue;
+    // solo per calendari toccati da QUESTO import (aggiornati o nuovi)
+    if (!updatedCalIds.includes(calId) && !calInserts.some(v => v[0] === calId)) continue;
+    const d = gtfsDate(cd.date);
+    if (!d) continue;
+    calDateValues.push([calId, d, int(cd.exception_type, 1)]);
+  }
+  await bulkInsert("ps_calendar_dates", ["calendar_id", "date", "exception_type"], calDateValues, tx);
+  counts.calendars = { added: calInserts.length, updated: calUpdates.length };
+
+  /* ── 4. STOP_TIMES indicizzati + raggruppamento varianti (stessa logica del full) ── */
+  type StopTime = { seq: number; stopGtfs: string; arr: string; dep: string; pickup: number; dropoff: number; timepoint: number; dist: number | null };
+  const stopTimesByTrip = new Map<string, StopTime[]>();
+  for (const st of data.stopTimeRows) {
+    const tripId = st.trip_id?.trim();
+    if (!tripId) continue;
+    if (!stopTimesByTrip.has(tripId)) stopTimesByTrip.set(tripId, []);
+    stopTimesByTrip.get(tripId)!.push({
+      seq: int(st.stop_sequence, 0),
+      stopGtfs: st.stop_id?.trim() || "",
+      arr: st.arrival_time || "00:00:00",
+      dep: st.departure_time || st.arrival_time || "00:00:00",
+      pickup: int(st.pickup_type, 0),
+      dropoff: int(st.drop_off_type, 0),
+      timepoint: st.timepoint === "0" ? 0 : 1,
+      dist: st.shape_dist_traveled ? num(st.shape_dist_traveled, 0) : null,
+    });
+  }
+  for (const arr of stopTimesByTrip.values()) arr.sort((a, b) => a.seq - b.seq);
+
+  const shapesByGtfsId = new Map<string, { lng: number; lat: number; seq: number }[]>();
+  for (const p of data.shapeRows) {
+    const sid = p.shape_id?.trim();
+    if (!sid) continue;
+    const lng = num(p.shape_pt_lon, NaN);
+    const lat = num(p.shape_pt_lat, NaN);
+    if (!isFinite(lng) || !isFinite(lat)) continue;
+    if (!shapesByGtfsId.has(sid)) shapesByGtfsId.set(sid, []);
+    shapesByGtfsId.get(sid)!.push({ lng, lat, seq: int(p.shape_pt_sequence, 0) });
+  }
+
+  type VariantInfo = {
+    id: string; isNew: boolean; routeId: string; routeGtfs: string; direction: number;
+    headsign: string | null; stopGtfsSeq: string[]; shapeGtfsId: string | null; tripIds: string[];
+  };
+  const variants = new Map<string, VariantInfo>();
+  for (const t of data.tripRows) {
+    const tripGtfs = t.trip_id?.trim();
+    const routeGtfs = t.route_id?.trim();
+    if (!tripGtfs || !routeGtfs) continue;
+    if (keepRoutes && !keepRoutes.has(routeGtfs)) continue;
+    const routeUuid = routeGtfsToUuid.get(routeGtfs);
+    if (!routeUuid) continue;
+    const sts = stopTimesByTrip.get(tripGtfs);
+    if (!sts || sts.length === 0) continue;
+    const stopSeq = sts.map(s => s.stopGtfs);
+    if (stopSeq.some(s => !stopGtfsToUuid.has(s))) continue;
+    const dir = int(t.direction_id, 0);
+    const pattern = stopSeq.join(">");
+    const signature = createHash("sha1").update(`${routeGtfs}|${dir}|${pattern}`).digest("hex");
+    let v = variants.get(signature);
+    if (!v) {
+      const existing = exVariants.get(signature);
+      v = {
+        id: existing ?? crypto.randomUUID(),
+        isNew: !existing,
+        routeId: routeUuid, routeGtfs, direction: dir,
+        headsign: (t.trip_headsign || "").trim() || null,
+        stopGtfsSeq: stopSeq,
+        shapeGtfsId: t.shape_id?.trim() || null,
+        tripIds: [],
+      };
+      variants.set(signature, v);
+    }
+    v.tripIds.push(tripGtfs);
+  }
+
+  /* ── 5. Varianti NUOVE: insert + variant_stops + shape GTFS ── */
+  const variantInserts: any[][] = [];
+  const variantStopInserts: any[][] = [];
+  const shapeInserts: any[][] = [];
+  for (const [signature, v] of variants) {
+    if (!v.isNew) { counts.variants.matched++; continue; }
+    const n = (variantCountByRoute.get(v.routeId) || 0) + 1;
+    variantCountByRoute.set(v.routeId, n);
+    const name = v.headsign
+      ? `${v.headsign}${v.direction === 1 ? " ↩" : ""}`
+      : `Var. ${n}${v.direction === 1 ? " (ritorno)" : ""}`;
+    variantInserts.push([v.id, projectId, v.routeId, name, v.direction, v.headsign, n === 1, signature]);
+    v.stopGtfsSeq.forEach((stopGtfs, idx) => {
+      const stopUuid = stopGtfsToUuid.get(stopGtfs);
+      if (stopUuid) variantStopInserts.push([v.id, idx + 1, stopUuid, 0, 0, 1, null]);
+    });
+  }
+  // Shape dal GTFS: per varianti nuove e per matched SENZA shape (mai
+  // sovrascrivere un tracciato disegnato dall'operatore).
+  for (const v of variants.values()) {
+    if (!v.shapeGtfsId) continue;
+    if (!v.isNew && variantsWithShape.has(v.id)) continue;
+    const pts = shapesByGtfsId.get(v.shapeGtfsId);
+    if (!pts || pts.length < 2) continue;
+    pts.sort((a, b) => a.seq - b.seq);
+    const coords = pts.map(p => [p.lng, p.lat]);
+    let distM = 0;
+    for (let i = 1; i < coords.length; i++) {
+      const [x1, y1] = coords[i - 1];
+      const [x2, y2] = coords[i];
+      const R = 6371000;
+      const dLat = ((y2 - y1) * Math.PI) / 180;
+      const dLon = ((x2 - x1) * Math.PI) / 180;
+      const a = Math.sin(dLat / 2) ** 2 + Math.cos((y1 * Math.PI) / 180) * Math.cos((y2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+      distM += 2 * R * Math.asin(Math.sqrt(a));
+    }
+    shapeInserts.push([
+      crypto.randomUUID(), projectId, v.id, "driving",
+      JSON.stringify({ type: "LineString", coordinates: coords }),
+      JSON.stringify([
+        { lng: coords[0][0], lat: coords[0][1], mode: "snap" },
+        { lng: coords[coords.length - 1][0], lat: coords[coords.length - 1][1], mode: "snap" },
+      ]),
+      distM, distM / 8.33,
+    ]);
+  }
+  await bulkInsert("ps_route_variants",
+    ["id", "project_id", "route_id", "name", "direction", "headsign", "is_default", "import_signature"],
+    variantInserts, tx);
+  await bulkInsert("ps_variant_stops",
+    ["variant_id", "seq", "stop_id", "pickup_type", "drop_off_type", "timepoint", "shape_dist_traveled"],
+    variantStopInserts, tx);
+  await bulkInsert("ps_shapes",
+    ["id", "project_id", "variant_id", "mode", "geometry", "waypoints", "distance_m", "duration_s"],
+    shapeInserts, tx);
+  counts.variants.added = variantInserts.length;
+  counts.shapes = shapeInserts.length;
+
+  /* ── 6. TRIPS: update matched (+ replace stop_times), insert nuove ── */
+  const tripGtfsToVariant = new Map<string, VariantInfo>();
+  for (const v of variants.values()) for (const tid of v.tripIds) tripGtfsToVariant.set(tid, v);
+  const tripUpdates: Record<string, any>[] = [];
+  const tripInserts: any[][] = [];
+  const tripUuidByGtfs = new Map<string, string>();
+  const feedTripGtfs = new Set<string>();
+  for (const t of data.tripRows) {
+    const gtfs = t.trip_id?.trim();
+    if (!gtfs) continue;
+    const v = tripGtfsToVariant.get(gtfs);
+    if (!v) continue;
+    feedTripGtfs.add(gtfs);
+    const calId = t.service_id ? calGtfsToUuid.get(t.service_id.trim()) || null : null;
+    const existing = exTrips.get(gtfs);
+    const common = {
+      route_id: v.routeId, variant_id: v.id, calendar_id: calId,
+      headsign: (t.trip_headsign || "").trim() || null,
+      short_name: (t.trip_short_name || "").trim() || null,
+      direction: int(t.direction_id, 0),
+      block_id: (t.block_id || "").trim() || null,
+    };
+    if (existing) {
+      tripUuidByGtfs.set(gtfs, existing);
+      tripUpdates.push({ id: existing, gtfs_id: gtfs, ...common });
+    } else {
+      const id = crypto.randomUUID();
+      tripUuidByGtfs.set(gtfs, id);
+      tripInserts.push([
+        id, projectId, gtfs, common.route_id, common.variant_id, common.calendar_id,
+        common.headsign, common.short_name, common.direction, common.block_id,
+      ]);
+    }
+  }
+  await batchUpdate(tx, "ps_trips",
+    ["gtfs_id", "route_id", "variant_id", "calendar_id", "headsign", "short_name", "direction", "block_id"],
+    "id uuid, gtfs_id text, route_id uuid, variant_id uuid, calendar_id uuid, headsign text, short_name text, direction smallint, block_id text",
+    tripUpdates);
+  await bulkInsert("ps_trips",
+    ["id", "project_id", "gtfs_id", "route_id", "variant_id", "calendar_id",
+     "headsign", "short_name", "direction", "block_id"],
+    tripInserts, tx);
+  counts.trips.added = tripInserts.length;
+  counts.trips.updated = tripUpdates.length;
+
+  // Replace stop_times per le corse aggiornate; insert per le nuove.
+  const updatedTripIds = tripUpdates.map(t => t.id);
+  for (let i = 0; i < updatedTripIds.length; i += 5000) {
+    const slice = updatedTripIds.slice(i, i + 5000);
+    await tx.execute(sql`
+      DELETE FROM ps_stop_times WHERE trip_id = ANY(${`{${slice.join(",")}}`}::uuid[])`);
+  }
+  const stValues: any[][] = [];
+  for (const [tripGtfs, sts] of stopTimesByTrip) {
+    const tripUuid = tripUuidByGtfs.get(tripGtfs);
+    if (!tripUuid) continue;
+    sts.forEach((st, idx) => {
+      const stopUuid = stopGtfsToUuid.get(st.stopGtfs);
+      if (stopUuid) stValues.push([tripUuid, idx + 1, stopUuid, st.arr, st.dep, st.pickup, st.dropoff, st.timepoint, st.dist]);
+    });
+  }
+  await bulkInsert("ps_stop_times",
+    ["trip_id", "stop_seq", "stop_id", "arrival_time", "departure_time",
+     "pickup_type", "drop_off_type", "timepoint", "shape_dist_traveled"],
+    stValues, tx);
+  counts.stopTimes = stValues.length;
+
+  /* ── 7. Corse SPARITE dal feed: disattiva (mai cancellare). Scope: solo le
+   * linee toccate da QUESTO import (con filtro linee, le altre non c'entrano).
+   * Le corse manuali (gtfs_id NULL) non vengono toccate. ── */
+  if (importedRouteUuids.length > 0) {
+    const deact = await tx.execute(sql`
+      UPDATE ps_trips t
+         SET is_active = false,
+             attributes = COALESCE(t.attributes, '{}'::jsonb) || '{"importMissing":true}'::jsonb,
+             updated_at = now()
+       WHERE t.project_id = ${projectId}::uuid
+         AND t.route_id = ANY(${`{${importedRouteUuids.join(",")}}`}::uuid[])
+         AND t.gtfs_id IS NOT NULL
+         AND t.is_active = true
+         AND NOT EXISTS (
+           SELECT 1 FROM jsonb_array_elements_text(${JSON.stringify([...feedTripGtfs])}::jsonb) e
+            WHERE e.value = t.gtfs_id)
+    `);
+    counts.trips.deactivated = (deact as any).rowCount ?? 0;
+  }
+  const manual = await tx.execute(sql`
+    SELECT count(*)::int AS n FROM ps_trips
+     WHERE project_id = ${projectId}::uuid AND gtfs_id IS NULL`);
+  counts.trips.keptManual = Number(rowsOf(manual)[0]?.n ?? 0);
+
+  return counts;
 }
 
 /* ─── Preview: leggi lo zip e restituisci l'elenco linee (senza scrivere) ───
@@ -277,6 +777,42 @@ router.post(
       }
     }
 
+    /* ─── MODALITÀ MERGE (re-import non distruttivo) ───
+     * mode="merge" nel body: le entità vengono riconosciute per chiave stabile
+     * e gli UUID conservati — matrice di validità, cluster, UDP e archi
+     * fuorilinea sopravvivono all'aggiornamento del feed. */
+    if (String(req.body?.mode ?? "") === "merge") {
+      try {
+        let mergeCounts: MergeCounts | null = null;
+        await db.transaction(async (tx) => {
+          if (agencyRows[0]?.agency_name) {
+            await tx.execute(sql`
+              UPDATE ps_projects SET agency_name = ${agencyRows[0].agency_name},
+                                     agency_timezone = ${agencyRows[0].agency_timezone || "Europe/Rome"}
+               WHERE id = ${projectId}::uuid
+            `);
+          }
+          mergeCounts = await runMergeImport(tx, projectId,
+            { stopRows, routeRows, tripRows, stopTimeRows, shapeRows, calRows, calDateRows },
+            { keepRoutes, usedStopGtfs, usedServiceGtfs });
+        });
+        try {
+          await db.execute(sql`
+            INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, payload)
+            VALUES (${projectId}::uuid, ${userId}::uuid, 'ps.import.gtfs.merge', 'project',
+                    ${JSON.stringify({ fileName: req.file.originalname, sizeKb: Math.round(req.file.size / 1024), counts: mergeCounts })}::jsonb)
+          `);
+        } catch (e: any) { console.warn("[ps import merge] activity log failed:", e?.message); }
+        // NB: niente auto-import della matrice in merge (sovrascriverebbe le
+        // curatele manuali); le corse nuove seguono il fallback standard.
+        res.json({ ok: true, mode: "merge", merge: mergeCounts });
+      } catch (e: any) {
+        console.error("[ps import merge] failed:", e);
+        res.status(500).json({ error: "Errore durante il re-import (merge) del GTFS" });
+      }
+      return;
+    }
+
     // conteggi popolati a fine transazione: le variabili *Values sono scopate
     // dentro la callback, qui teniamo solo i numeri per log e risposta.
     let counts = { stops: 0, routes: 0, variants: 0, trips: 0, stopTimes: 0, calendars: 0, calendarDates: 0, shapes: 0 };
@@ -312,7 +848,7 @@ router.post(
         const id = crypto.randomUUID();
         stopGtfsToUuid.set(gtfsId, id);
         stopValues.push([
-          id, projectId, s.stop_code || null, s.stop_name || gtfsId,
+          id, projectId, gtfsId, s.stop_code || null, s.stop_name || gtfsId,
           s.stop_desc || null, lat, lon, s.zone_id || null,
           int(s.location_type, 0), int(s.wheelchair_boarding, 0),
           s.platform_code || null,
@@ -320,7 +856,7 @@ router.post(
       }
       await bulkInsert(
         "ps_stops",
-        ["id", "project_id", "code", "name", "description", "lat", "lon", "zone_id",
+        ["id", "project_id", "gtfs_id", "code", "name", "description", "lat", "lon", "zone_id",
          "location_type", "wheelchair_boarding", "platform_code"],
         stopValues,
         tx,
@@ -336,7 +872,7 @@ router.post(
         const id = crypto.randomUUID();
         routeGtfsToUuid.set(gtfsId, id);
         routeValues.push([
-          id, projectId, gtfsId,
+          id, projectId, gtfsId, gtfsId,
           r.route_short_name || gtfsId,
           r.route_long_name || null,
           r.route_desc || null,
@@ -349,7 +885,7 @@ router.post(
       }
       await bulkInsert(
         "ps_routes",
-        ["id", "project_id", "code", "short_name", "long_name", "description",
+        ["id", "project_id", "gtfs_id", "code", "short_name", "long_name", "description",
          "route_type", "color", "text_color", "agency_id", "sort_order"],
         routeValues,
         tx,
@@ -368,7 +904,7 @@ router.post(
         const id = crypto.randomUUID();
         calGtfsToUuid.set(gtfsId, id);
         calValues.push([
-          id, projectId, gtfsId, gtfsId,
+          id, projectId, gtfsId, gtfsId, gtfsId,
           bool01(c.monday), bool01(c.tuesday), bool01(c.wednesday),
           bool01(c.thursday), bool01(c.friday), bool01(c.saturday), bool01(c.sunday),
           start, end,
@@ -376,7 +912,7 @@ router.post(
       }
       await bulkInsert(
         "ps_calendars",
-        ["id", "project_id", "code", "name",
+        ["id", "project_id", "gtfs_id", "code", "name",
          "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
          "start_date", "end_date"],
         calValues,
@@ -405,14 +941,14 @@ router.post(
         const id = crypto.randomUUID();
         calGtfsToUuid.set(sid, id);
         stubValues.push([
-          id, projectId, sid, sid,
+          id, projectId, sid, sid, sid,
           false, false, false, false, false, false, false,
           info.dates[0], info.dates[info.dates.length - 1],
         ]);
       }
       await bulkInsert(
         "ps_calendars",
-        ["id", "project_id", "code", "name",
+        ["id", "project_id", "gtfs_id", "code", "name",
          "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
          "start_date", "end_date"],
         stubValues,
@@ -528,14 +1064,20 @@ router.post(
         const name = v.headsign
           ? `${v.headsign}${v.direction === 1 ? " ↩" : ""}`
           : `Var. ${n}${v.direction === 1 ? " (ritorno)" : ""}`;
+        // Firma stabile della variante: sopravvive al re-import (gli UUID no).
+        // Stessa chiave del raggruppamento: route GTFS | direction | stop pattern.
+        const signature = createHash("sha1")
+          .update(`${v.routeGtfs}|${v.direction}|${v.stopGtfsSeq.join(">")}`)
+          .digest("hex");
         variantValues.push([
           v.id, projectId, v.routeId, name, v.direction, v.headsign,
           n === 1, // is_default = la prima variante per route
+          signature,
         ]);
       }
       await bulkInsert(
         "ps_route_variants",
-        ["id", "project_id", "route_id", "name", "direction", "headsign", "is_default"],
+        ["id", "project_id", "route_id", "name", "direction", "headsign", "is_default", "import_signature"],
         variantValues,
         tx,
       );
@@ -611,7 +1153,7 @@ router.post(
         const id = crypto.randomUUID();
         tripGtfsToUuid.set(gtfs, id);
         tripValues.push([
-          id, projectId, routeUuid, variantId, calId,
+          id, projectId, gtfs, routeUuid, variantId, calId,
           (t.trip_headsign || "").trim() || null,
           (t.trip_short_name || "").trim() || null,
           int(t.direction_id, 0),
@@ -620,7 +1162,7 @@ router.post(
       }
       await bulkInsert(
         "ps_trips",
-        ["id", "project_id", "route_id", "variant_id", "calendar_id",
+        ["id", "project_id", "gtfs_id", "route_id", "variant_id", "calendar_id",
          "headsign", "short_name", "direction", "block_id"],
         tripValues,
         tx,

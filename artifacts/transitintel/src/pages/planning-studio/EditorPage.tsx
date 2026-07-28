@@ -416,6 +416,9 @@ export default function PlanningStudioEditorPage() {
   const [importingStops, setImportingStops] = useState(false);
   const stopsTxtRef = useRef<HTMLInputElement>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
+  // Modalità: "merge" = re-import non distruttivo (UUID conservati per chiave
+  // stabile: validità/cluster/UDP sopravvivono); "replace" = wipe storico.
+  const [importMode, setImportMode] = useState<"replace" | "merge">("replace");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<PsImportCounts | null>(null);
   // Fase intermedia: dopo la LETTURA del file si sceglie QUALI linee importare.
@@ -1855,6 +1858,11 @@ export default function PlanningStudioEditorPage() {
   /* ─── Import GTFS ─── */
   const isEmpty = !loading && stops.length === 0 && routes.length === 0;
 
+  useEffect(() => {
+    if (importOpen) setImportMode(isEmpty ? "replace" : "merge");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importOpen]);
+
   /** Fase 1 → 2: legge lo zip e mostra l'elenco linee da scegliere. */
   async function handlePreview() {
     if (!importFile) return;
@@ -1878,11 +1886,22 @@ export default function PlanningStudioEditorPage() {
     if (previewRoutes && routeIds!.length === 0) { toast.error("Seleziona almeno una linea"); return; }
     setImporting(true);
     try {
-      const r = await importPsGtfs(projectId, importFile, routeIds);
-      setImportResult(r.counts);
-      toast.success("Import completato", {
-        description: `${r.counts.stops} fermate · ${r.counts.routes} linee · ${r.counts.trips} corse`,
-      });
+      const r = await importPsGtfs(projectId, importFile, routeIds, importMode);
+      if (r.mode === "merge" && r.merge) {
+        const m = r.merge;
+        toast.success("Aggiornamento completato (merge)", {
+          description:
+            `Corse: +${m.trips.added} nuove · ${m.trips.updated} aggiornate · ${m.trips.deactivated} disattivate (sparite dal feed)` +
+            ` — validità, nodi e UDP conservati.` +
+            (m.trips.keptManual > 0 ? ` ${m.trips.keptManual} corse manuali intatte.` : ""),
+          duration: 10000,
+        });
+      } else if (r.counts) {
+        setImportResult(r.counts);
+        toast.success("Import completato", {
+          description: `${r.counts.stops} fermate · ${r.counts.routes} linee · ${r.counts.trips} corse`,
+        });
+      }
       // Ricarica i dati del progetto
       const results = await Promise.allSettled([
         listPsStops(projectId), listPsRoutes(projectId), listPsCalendars(projectId), listPsClusters(projectId),
@@ -2083,7 +2102,7 @@ export default function PlanningStudioEditorPage() {
             onToggle={() => setOpenMenu(m => m === "progetto" ? null : "progetto")}
           >
             {(project.myRole === "owner" || project.myRole === "editor") && (
-              <MenuItem icon={Upload} label="Importa GTFS" note="sovrascrive" accent="cyan"
+              <MenuItem icon={Upload} label="Importa GTFS" note="aggiorna o sostituisce" accent="cyan"
                 onClick={() => { setOpenMenu(null); setImportOpen(true); }} />
             )}
             <MenuItem icon={Share2} label={project.myRole === "owner" ? "Condividi progetto" : "Vedi membri"} accent="cyan"
@@ -3482,12 +3501,32 @@ export default function PlanningStudioEditorPage() {
                 {!importResult && !previewRoutes && (
                   <>
                     {!isEmpty && (
-                      <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs">
-                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <div>
-                          <strong className="block mb-0.5">Sovrascrittura totale</strong>
-                          Tutti i dati attuali del progetto verranno cancellati e sostituiti con quelli del file caricato.
-                        </div>
+                      <div className="space-y-2">
+                        <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          importMode === "merge" ? "border-emerald-500/50 bg-emerald-500/10" : "border-slate-800 hover:border-slate-700"
+                        }`}>
+                          <input type="radio" checked={importMode === "merge"} onChange={() => setImportMode("merge")} className="mt-0.5 accent-emerald-500" />
+                          <span>
+                            <span className="block text-sm font-medium text-slate-100">Aggiorna (consigliato)</span>
+                            <span className="block text-xs text-slate-500">
+                              Riconosce fermate, linee, percorsi e corse per ID GTFS e le aggiorna CONSERVANDO
+                              il lavoro fatto: matrice di validità, categorie, nodi, UDP e tracciati disegnati.
+                              Le corse sparite dal feed vengono disattivate (mai cancellate); le corse create a mano restano.
+                            </span>
+                          </span>
+                        </label>
+                        <label className={`flex items-start gap-2.5 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          importMode === "replace" ? "border-amber-500/50 bg-amber-500/10" : "border-slate-800 hover:border-slate-700"
+                        }`}>
+                          <input type="radio" checked={importMode === "replace"} onChange={() => setImportMode("replace")} className="mt-0.5 accent-amber-500" />
+                          <span>
+                            <span className="block text-sm font-medium text-slate-100">Sostituisci tutto</span>
+                            <span className="block text-xs text-amber-300/90">
+                              Cancella TUTTI i dati attuali e riparte dal file: si perdono matrice di validità,
+                              assegnazioni ai nodi e collegamenti delle UDP (gli ID vengono rigenerati).
+                            </span>
+                          </span>
+                        </label>
                       </div>
                     )}
                     <div>
