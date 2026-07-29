@@ -24,13 +24,14 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, pointsOfInterest } from "@workspace/db/schema";
-import { sql, inArray, and } from "drizzle-orm";
-import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
+import { pointsOfInterest } from "@workspace/db/schema";
+import { inArray } from "drizzle-orm";
+import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
+import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
-  resolveScope, parseDayKind, activeServiceIds, municipalityBbox,
-  discoverHubs, feedWhere, type DayKind,
-} from "./intermodal";
+  resolveSource, parseDayKind, loadStops, loadRoutes, loadActiveTrips, loadPassages,
+  type DayKind, type Source,
+} from "./intermodal-source";
 
 const router: IRouter = Router();
 
@@ -143,11 +144,13 @@ interface GeneratorCoverage {
  */
 router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
   try {
-    const { feedId, psProjectId } = await resolveScope(req);
-    if (!feedId) { res.status(404).json({ error: "Nessuna rete disponibile per questo progetto" }); return; }
-
+    const src: Source = await resolveSource(req);
+    if (src.kind === "gtfs" && !src.feedId) {
+      res.status(404).json({ error: "Nessuna rete disponibile" }); return;
+    }
     const day: DayKind = parseDayKind(req.query.day);
-    const serviceIds = await activeServiceIds(feedId, day);
+    // Corse che circolano davvero nel giorno scelto, dal progetto VIVO
+    const activeTrips = await loadActiveTrips(src, day);
     const maxWalkKm = Math.min(3, Math.max(0.1, parseFloat(req.query.radius as string) || 0.5));
     const windows = readWindows(req.query);
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
@@ -161,7 +164,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     /* 1. Poli: hub (stazioni/aeroporti) + POI (scuole/lavoro) ─────────── */
     const generators: Generator[] = [];
 
-    const hubs = await discoverHubs({ bbox, municipality, feedId });
+    const hubs = await discoverHubs({ bbox, municipality, feedId: src.feedId, psProjectId: src.psProjectId });
     for (const h of hubs) {
       if (h.type !== "railway" && h.type !== "airport") continue;
       generators.push({
@@ -189,7 +192,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
 
     if (generators.length === 0) {
       res.json({
-        scope: { psProjectId, feedId, day, maxWalkKm },
+        scope: { psProjectId: src.psProjectId, feedId: src.feedId, source: src.kind, day, maxWalkKm },
         generators: [], byKind: {}, byRoute: [], summary: emptySummary(),
         note: "Nessun polo attrattore trovato nell'area: importa i POI (scuole, uffici, industrie) o allarga l'ambito.",
       });
@@ -197,87 +200,43 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     }
 
     /* 2. Fermate della rete ──────────────────────────────────────────── */
-    const stops = await db.select({
-      stopId: gtfsStops.stopId, stopName: gtfsStops.stopName,
-      lat: gtfsStops.stopLat, lng: gtfsStops.stopLon,
-    }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
+    const stops = await loadStops(src);
 
     // Fermate vicine per ciascun polo (una passata sola sulle fermate)
     const nearByGenerator = new Map<string, NearStop[]>();
     const usedStopIds = new Set<string>();
     for (const g of generators) {
       const near: NearStop[] = [];
-      for (const s of stops) {
-        const sLat = typeof s.lat === "string" ? parseFloat(s.lat) : s.lat;
-        const sLng = typeof s.lng === "string" ? parseFloat(s.lng) : s.lng;
-        if (sLat == null || sLng == null || !isFinite(sLat) || !isFinite(sLng)) continue;
-        const d = haversineKm(g.lat, g.lng, sLat, sLng);
+      for (const st of stops) {
+        const d = haversineKm(g.lat, g.lng, st.lat, st.lng);
         if (d > maxWalkKm) continue;
-        near.push({ stopId: s.stopId, stopName: s.stopName || s.stopId, distKm: +d.toFixed(3), walkMin: walkMinutes(d) });
-        usedStopIds.add(s.stopId);
+        near.push({ stopId: st.stopId, stopName: st.stopName, distKm: +d.toFixed(3), walkMin: walkMinutes(d) });
+        usedStopIds.add(st.stopId);
       }
       near.sort((a, b) => a.distKm - b.distKm);
       nearByGenerator.set(g.id, near.slice(0, 12));
     }
 
-    /* 3. Passaggi alle fermate utili, filtrati per giorno e linee ────── */
+    /* 3. Passaggi alle fermate utili ─────────────────────────────────
+     * loadPassages tiene già solo le corse circolanti nel giorno scelto
+     * (activeTrips) e restituisce la linea di ciascuna: qui resta da
+     * applicare l'eventuale filtro sulle linee selezionate. */
     const stopIdArr = [...usedStopIds];
-    type Passage = { stopId: string; tripId: string; time: number };
-    const passages: Passage[] = [];
-    for (let i = 0; i < stopIdArr.length; i += 500) {
-      const batch = stopIdArr.slice(i, i + 500);
-      if (batch.length === 0) continue;
-      const rows = await db.select({
-        stopId: gtfsStopTimes.stopId, tripId: gtfsStopTimes.tripId,
-        departureTime: gtfsStopTimes.departureTime, arrivalTime: gtfsStopTimes.arrivalTime,
-      }).from(gtfsStopTimes)
-        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
-          sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-      for (const r of rows) {
-        const t = r.departureTime || r.arrivalTime;
-        if (!t) continue;
-        passages.push({ stopId: r.stopId, tripId: r.tripId, time: timeToMinutes(t) });
-      }
-    }
+    const passages = await loadPassages(src, stopIdArr, activeTrips);
+    const validPassages = routeFilter
+      ? passages.filter(p => routeFilter.has(p.routeId))
+      : passages;
 
-    // trip → route + service, per filtrare linee e calendario
-    const tripIds = [...new Set(passages.map(p => p.tripId))];
     const tripRoute = new Map<string, string>();
-    const tripService = new Map<string, string>();
-    for (let i = 0; i < tripIds.length; i += 500) {
-      const batch = tripIds.slice(i, i + 500);
-      if (batch.length === 0) continue;
-      const rows = await db.select({
-        tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId,
-      }).from(gtfsTrips)
-        .where(and(feedWhere(gtfsTrips.feedId, feedId),
-          sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-      for (const r of rows) {
-        tripRoute.set(r.tripId, r.routeId);
-        if (r.serviceId) tripService.set(r.tripId, r.serviceId);
-      }
-    }
-
-    const validPassages = passages.filter(p => {
-      const rid = tripRoute.get(p.tripId);
-      if (!rid) return false;
-      if (routeFilter && !routeFilter.has(rid)) return false;
-      if (serviceIds) {
-        const svc = tripService.get(p.tripId);
-        if (!svc || !serviceIds.has(svc)) return false;
-      }
-      return true;
-    });
+    for (const p of passages) tripRoute.set(p.tripId, p.routeId);
 
     // Nome linea leggibile
-    const routeRows = await db.select({
-      routeId: gtfsRoutes.routeId, shortName: gtfsRoutes.routeShortName, longName: gtfsRoutes.routeLongName,
-    }).from(gtfsRoutes).where(feedWhere(gtfsRoutes.feedId, feedId));
+    const routeRows = await loadRoutes(src);
     const routeLabel = new Map<string, string>();
     for (const r of routeRows) routeLabel.set(r.routeId, r.shortName || r.longName || r.routeId);
 
     // Indice: fermata → passaggi
-    const byStop = new Map<string, Passage[]>();
+    const byStop = new Map<string, typeof validPassages>();
     for (const p of validPassages) {
       const arr = byStop.get(p.stopId);
       if (arr) arr.push(p); else byStop.set(p.stopId, [p]);
@@ -415,7 +374,12 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     };
 
     res.json({
-      scope: { psProjectId, feedId, day, maxWalkKm, calendarApplied: serviceIds !== null },
+      scope: {
+        psProjectId: src.psProjectId, feedId: src.feedId,
+        // "ps" = dati vivi del progetto; "gtfs" = feed (uso fuori progetto)
+        source: src.kind, day, maxWalkKm,
+        calendarApplied: activeTrips.size > 0,
+      },
       windows: {
         scuolaIngresso: fmtWindow(windows.scuolaIngresso), scuolaUscita: fmtWindow(windows.scuolaUscita),
         lavoroIngresso: fmtWindow(windows.lavoroIngresso), lavoroUscita: fmtWindow(windows.lavoroUscita),
@@ -442,29 +406,18 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
  * ═══════════════════════════════════════════════════════════════════════ */
 router.get("/intermodal/lines", async (req: any, res: any) => {
   try {
-    const { feedId, psProjectId } = await resolveScope(req);
-    if (!feedId) { res.json({ lines: [], scope: { psProjectId, feedId: null } }); return; }
+    const src: Source = await resolveSource(req);
+    if (src.kind === "gtfs" && !src.feedId) { res.json({ lines: [], scope: { psProjectId: null, feedId: null } }); return; }
 
     const day: DayKind = parseDayKind(req.query.day);
-    const serviceIds = await activeServiceIds(feedId, day);
-
-    const routes = await db.select({
-      routeId: gtfsRoutes.routeId,
-      shortName: gtfsRoutes.routeShortName,
-      longName: gtfsRoutes.routeLongName,
-      color: gtfsRoutes.routeColor,
-    }).from(gtfsRoutes).where(feedWhere(gtfsRoutes.feedId, feedId));
+    const routes = await loadRoutes(src);
+    const activeTrips = await loadActiveTrips(src, day);
 
     // Corse per linea nel giorno scelto: una linea con 0 corse quel giorno va
     // mostrata come tale, non nascosta — è un'informazione utile di per sé.
-    const trips = await db.select({
-      routeId: gtfsTrips.routeId, tripId: gtfsTrips.tripId, serviceId: gtfsTrips.serviceId,
-    }).from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
-
     const countByRoute = new Map<string, number>();
-    for (const t of trips) {
-      if (serviceIds && (!t.serviceId || !serviceIds.has(t.serviceId))) continue;
-      countByRoute.set(t.routeId, (countByRoute.get(t.routeId) ?? 0) + 1);
+    for (const routeId of activeTrips.values()) {
+      countByRoute.set(routeId, (countByRoute.get(routeId) ?? 0) + 1);
     }
 
     const lines = routes.map(r => ({
@@ -476,7 +429,10 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
     })).sort((a, b) =>
       a.label.localeCompare(b.label, "it", { numeric: true, sensitivity: "base" }));
 
-    res.json({ lines, scope: { psProjectId, feedId, day, calendarApplied: serviceIds !== null } });
+    res.json({
+      lines,
+      scope: { psProjectId: src.psProjectId, feedId: src.feedId, source: src.kind, day },
+    });
   } catch (err: any) {
     req.log?.error?.(err, "intermodal lines");
     res.status(500).json({ error: "Errore nel caricamento delle linee", detail: err?.message });
