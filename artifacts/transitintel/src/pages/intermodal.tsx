@@ -188,14 +188,30 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         fetch(`${getApiBase()}/api/intermodal/sync-status`),
       ]);
       const [data, shapes, pois, hubsData, syncStatus] = await Promise.all([
-        analysisRes.json(), shapesRes.json(), poisRes.json(), hubsRes.json(), syncRes.json(),
+        analysisRes.json().catch(() => null), shapesRes.json().catch(() => null),
+        poisRes.json().catch(() => null), hubsRes.json().catch(() => null),
+        syncRes.json().catch(() => null),
       ]);
-      setResult(data);
-      setShapesGeoJSON(shapes);
-      setHubPoisData(pois.hubPois || []);
-      setDiscoveredHubs(Array.isArray(hubsData) ? hubsData : []);
-      setLastSync(syncStatus.lastSyncedAt);
+
+      /* Una risposta di ERRORE non è un risultato: prima veniva messa in
+       * stato comunque, e al primo render `result.hubs.map` andava su
+       * undefined facendo cadere l'intera pagina. Un 500 del backend deve
+       * restare un messaggio, non una schermata bianca. */
+      if (!analysisRes.ok || !data || !Array.isArray(data.hubs)) {
+        setResult(null);
+        toast.error("Analisi coincidenze non disponibile", {
+          description: data?.error ?? data?.detail ?? `Il server ha risposto ${analysisRes.status}.`,
+        });
+      } else {
+        setResult(data);
+      }
+
+      setShapesGeoJSON(shapesRes.ok && shapes?.features ? shapes : null);
+      setHubPoisData(poisRes.ok && Array.isArray(pois?.hubPois) ? pois.hubPois : []);
+      setDiscoveredHubs(hubsRes.ok && Array.isArray(hubsData) ? hubsData : []);
+      setLastSync(syncRes.ok ? syncStatus?.lastSyncedAt ?? null : null);
     } catch {
+      setResult(null);
       toast.error("Errore nell'analisi intermodale");
     } finally {
       setLoading(false);
@@ -211,8 +227,11 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       const routeIdsQs = effectiveRouteIds ? `&routeIds=${encodeURIComponent(effectiveRouteIds)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
       const r = await fetch(`${getApiBase()}/api/intermodal/demand-coverage?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setDemand(await r.json());
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j || !Array.isArray(j.generators)) {
+        throw new Error(j?.error ?? j?.detail ?? `Il server ha risposto ${r.status}.`);
+      }
+      setDemand(j);
     } catch (e: any) {
       toast.error("Errore nel calcolo della copertura", { description: e?.message });
       setDemand(null);
