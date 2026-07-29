@@ -114,7 +114,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const [expandedHub, setExpandedHub] = useState<string | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
-  const [activeTab, setActiveTab] = useState<"arrivi" | "partenze" | "destinazioni">("arrivi");
+  const [activeTab, setActiveTab] = useState<"arrivi" | "partenze" | "destinazioni" | "orari">("arrivi");
 
   // New states
   const [shapesGeoJSON, setShapesGeoJSON] = useState<any>(null);
@@ -1392,6 +1392,46 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                       )}
                     </div>
 
+                    {/* ── Riepilogo PER LINEA: quali linee agganciano i treni ── */}
+                    {(() => {
+                      // NB: in questo file `Map` è l'icona lucide-react (shadow del Map globale),
+                      // quindi si usa un oggetto semplice per il pivot.
+                      const byLine: Record<string, { ok: number; missed: number; hubs: string[] }> = {};
+                      const bump = (line: string | undefined | null, kind: "ok" | "missed", hub: string) => {
+                        if (!line) return;
+                        const e = byLine[line] ?? (byLine[line] = { ok: 0, missed: 0, hubs: [] });
+                        e[kind]++; if (!e.hubs.includes(hub)) e.hubs.push(hub);
+                      };
+                      for (const hc of result.hubs) {
+                        for (const ac of hc.arrivalConnections || []) {
+                          if (ac.firstBus) bump(ac.firstBus.routeShortName, "ok", hc.hub.name);
+                          else if (ac.justMissed?.[0]) bump(ac.justMissed[0].routeShortName, "missed", hc.hub.name);
+                        }
+                        for (const dc of hc.departureConnections || []) {
+                          if (dc.bestBusArrival) bump(dc.bestBusRoute, "ok", hc.hub.name);
+                        }
+                      }
+                      const rows = Object.entries(byLine).sort((a, b) => b[1].ok - a[1].ok);
+                      if (rows.length === 0) return null;
+                      return (
+                        <div className="space-y-1.5">
+                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+                            Per linea {effectiveRouteIds ? "(selezionate)" : ""} · coincidenze coi treni
+                          </p>
+                          <div className="space-y-1">
+                            {rows.map(([line, e]) => (
+                              <div key={line} className="flex items-center gap-2 text-[9px] px-2 py-1 rounded-lg bg-slate-800/40 border border-slate-700/30">
+                                <span className="font-bold text-amber-300 shrink-0">[{line}]</span>
+                                {e.ok > 0 && <span className="text-emerald-400 font-semibold shrink-0">✓ {e.ok}</span>}
+                                {e.missed > 0 && <span className="text-orange-400 font-semibold shrink-0">✗ {e.missed}</span>}
+                                <span className="text-slate-500 truncate">· {[...e.hubs].join(", ")}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* ── Per-hub detail cards ── */}
                     <div className="space-y-2">
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Dettaglio per Hub</p>
@@ -1538,10 +1578,10 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
 
                                     {/* Tabs */}
                                     <div className="flex gap-1 border-b border-slate-700/30 pb-1">
-                                      {(["arrivi", "partenze", "destinazioni"] as const).map(tab => (
-                                        <button key={tab} onClick={e => { e.stopPropagation(); setActiveTab(tab); }}
+                                      {(["arrivi", "partenze", "destinazioni", "orari"] as const).map(tab => (
+                                        <button key={tab} onClick={e => { e.stopPropagation(); setActiveTab(tab); if (tab === "orari" && !hubScheduleCache[hc.hub.id] && hc.hub.type === "railway") loadHubSchedule(hc.hub.id); }}
                                           className={`text-[9px] px-2 py-1 rounded-t font-semibold transition-colors ${activeTab === tab ? "bg-cyan-500/20 text-cyan-400 border-b-2 border-cyan-500" : "text-slate-500 hover:text-slate-300"}`}>
-                                          {tab === "arrivi" ? `🚉 Arrivi (${hc.arrivalConnections.length})` : tab === "partenze" ? `🚌 Partenze (${hc.departureConnections.length})` : `📍 Dest. (${hc.destinationCoverage.length})`}
+                                          {tab === "arrivi" ? `🚉 Arrivi (${hc.arrivalConnections.length})` : tab === "partenze" ? `🚌 Partenze (${hc.departureConnections.length})` : tab === "destinazioni" ? `📍 Dest. (${hc.destinationCoverage.length})` : `🚆 Orari`}
                                         </button>
                                       ))}
                                     </div>
@@ -1629,6 +1669,47 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                         ))}
                                       </div>
                                     )}
+
+                                    {/* TAB: Orari treni COMPLETI della stazione (tutte le destinazioni/origini) */}
+                                    {activeTab === "orari" && (() => {
+                                      const sched = hubScheduleCache[hc.hub.id];
+                                      if (hc.hub.type !== "railway") return <p className="text-[10px] text-slate-500 italic">Orari treni disponibili solo per le stazioni ferroviarie.</p>;
+                                      if (sched === "loading" || !sched) return <p className="text-[10px] text-slate-500 italic flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Carico gli orari…</p>;
+                                      if (sched === "error") return <p className="text-[10px] text-red-400 italic">Errore nel caricamento degli orari.</p>;
+                                      const dep = sched.typicalDepartures || [];
+                                      const arr = sched.typicalArrivals || [];
+                                      const nDep = dep.reduce((s, d) => s + d.times.length, 0);
+                                      const nArr = arr.reduce((s, a) => s + a.times.length, 0);
+                                      return (
+                                        <div className="space-y-2">
+                                          <p className="text-[8px] text-slate-500">{nArr} arrivi · {nDep} partenze {sched.source ? `· ${sched.source}` : ""}</p>
+                                          <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                              <p className="text-[8px] text-sky-400 font-bold mb-0.5">🚆 ARRIVI</p>
+                                              <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                                                {arr.length === 0 ? <p className="text-[9px] text-slate-500 italic">nessuno</p> : arr.map((a, i) => (
+                                                  <div key={i} className="text-[9px] leading-tight">
+                                                    <span className="text-sky-300 font-medium block truncate">← {a.origin}</span>
+                                                    <span className="text-slate-400 font-mono text-[8px]">{a.times.join(" · ")}</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            </div>
+                                            <div>
+                                              <p className="text-[8px] text-emerald-400 font-bold mb-0.5">🚆 PARTENZE</p>
+                                              <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+                                                {dep.length === 0 ? <p className="text-[9px] text-slate-500 italic">nessuna</p> : dep.map((d, i) => (
+                                                  <div key={i} className="text-[9px] leading-tight">
+                                                    <span className="text-emerald-300 font-medium block truncate">→ {d.destination}</span>
+                                                    <span className="text-slate-400 font-mono text-[8px]">{d.times.join(" · ")}</span>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
 
                                     {/* Bus lines */}
                                     {hc.busLines.length > 0 && (
