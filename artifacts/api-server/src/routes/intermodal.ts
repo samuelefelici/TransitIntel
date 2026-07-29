@@ -4,46 +4,27 @@ import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsShapes, pointsOfIn
 import { sql, inArray, eq, and } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
+import {
+  resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages,
+  parseDayKind, type DayKind,
+} from "./intermodal-source";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  SCOPING — la rete su cui si analizza
- *
- *  Prima ogni query leggeva TUTTE le tabelle GTFS senza filtro di feed:
- *  con più reti importate l'analisi mescolava fermate e corse di aziende
- *  diverse. Ora l'intermodale è una sezione del progetto Planner Studio:
- *  con ?psProjectId= si usa il feed di QUEL progetto (materializzato se
- *  c'è, altrimenti quello sorgente); senza, il feed corrente dell'utente.
- * ═══════════════════════════════════════════════════════════════════════ */
-export interface IntermodalScope { feedId: string | null; psProjectId: string | null }
+/* Lo scoping dell'Intermodale vive in ./intermodal-source: legge il
+ * PROGETTO VIVO (ps_*) invece di uno snapshot GTFS. Le vecchie
+ * resolveScope/activeServiceIds risolvevano il feed materializzato o,
+ * peggio, quello sorgente: sono state rimosse perché erano la causa dei
+ * dati diversi da quelli del progetto. Restano qui solo gli helper che
+ * non dipendono da quella risoluzione. */
 
-export async function resolveScope(req: any): Promise<IntermodalScope> {
-  const psProjectId = String(req?.query?.psProjectId ?? "").trim();
-  if (UUID_RE.test(psProjectId)) {
-    try {
-      const r = await db.execute<any>(sql`
-        SELECT materialized_feed_id, source_feed_id FROM ps_projects WHERE id = ${psProjectId}::uuid`);
-      const row = (r as any).rows?.[0];
-      const feedId = row?.materialized_feed_id ?? row?.source_feed_id ?? null;
-      if (feedId) return { feedId: String(feedId), psProjectId };
-    } catch { /* progetto inesistente: cade sul feed corrente */ }
-  }
-  return { feedId: await getLatestFeedId(req), psProjectId: UUID_RE.test(psProjectId) ? psProjectId : null };
-}
-
-/** Filtro feed riusabile: se il feed non è risolto non filtra (comportamento storico). */
+/** Filtro feed riusabile (ramo GTFS, fuori da un progetto). */
 export const feedWhere = (col: any, feedId: string | null) => (feedId ? eq(col, feedId) : sql`TRUE`);
 
-/* ═══════════════════════════════════════════════════════════════════════
- *  CALENDARIO — quali corse circolano davvero nel giorno analizzato
- *
- *  L'analisi sommava TUTTI gli stop_times (feriali + sabati + festivi +
- *  scolastici): frequenze, corse/giorno e service score risultavano
- *  gonfiati anche del doppio. Ora si sceglie il tipo di giorno e si
- *  tengono solo i service_id attivi in quel giorno.
- * ═══════════════════════════════════════════════════════════════════════ */
+export type { DayKind };
+export { parseDayKind };
+
 /** Bbox (con margine) del comune ISTAT, dai centroidi delle sezioni di censimento. */
 export async function municipalityBbox(
   municipality: string,
@@ -65,47 +46,6 @@ export async function municipalityBbox(
   };
 }
 
-export type DayKind = "feriale" | "sabato" | "festivo";
-const DAY_COLUMN: Record<DayKind, string> = {
-  feriale: "wednesday", sabato: "saturday", festivo: "sunday",
-};
-
-export function parseDayKind(v: unknown): DayKind {
-  const s = String(v ?? "").toLowerCase();
-  if (s === "sabato" || s === "saturday") return "sabato";
-  if (s === "festivo" || s === "domenica" || s === "sunday") return "festivo";
-  return "feriale";
-}
-
-/**
- * service_id attivi nel giorno scelto. `null` = calendario assente
- * (feed senza calendar.txt): in quel caso non si filtra, per non
- * azzerare l'analisi su feed minimali.
- */
-export async function activeServiceIds(feedId: string | null, day: DayKind): Promise<Set<string> | null> {
-  if (!feedId) return null;
-  try {
-    const col = DAY_COLUMN[day];
-    const r = await db.execute<any>(sql`
-      SELECT service_id FROM gtfs_calendar
-       WHERE feed_id = ${feedId}::uuid AND ${sql.raw(col)} = true`);
-    const ids = new Set<string>(((r as any).rows ?? []).map((x: any) => String(x.service_id)));
-    // Eccezioni "aggiunte" (exception_type = 1) nello stesso tipo di giorno
-    const ex = await db.execute<any>(sql`
-      SELECT DISTINCT service_id, date FROM gtfs_calendar_dates
-       WHERE feed_id = ${feedId}::uuid AND exception_type = 1`);
-    for (const x of ((ex as any).rows ?? [])) {
-      const d = String(x.date ?? "");
-      if (d.length !== 8) continue;
-      const dow = new Date(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)).getDay();
-      const kind: DayKind = dow === 0 ? "festivo" : dow === 6 ? "sabato" : "feriale";
-      if (kind === day) ids.add(String(x.service_id));
-    }
-    return ids.size > 0 ? ids : null;
-  } catch {
-    return null; // calendario non disponibile: nessun filtro
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // INTERMODAL — Analyze bus ↔ rail / ferry connections (GTFS-based)
@@ -616,8 +556,10 @@ export async function discoverHubs(opts: {
   includeCurated?: boolean;
   /** rete su cui cercare gli hub: senza, si leggerebbero tutti i feed insieme */
   feedId?: string | null;
+  /** progetto Planner Studio: gli hub si scoprono dalle SUE fermate vive */
+  psProjectId?: string | null;
 }): Promise<DiscoveredHub[]> {
-  const { bbox, routeIds, includeCurated = true, feedId = null } = opts;
+  const { bbox, routeIds, includeCurated = true, feedId = null, psProjectId = null } = opts;
   const out: DiscoveredHub[] = [];
 
   // 1. Hub curati filtrati per bbox
@@ -662,12 +604,20 @@ export async function discoverHubs(opts: {
     }
   }
 
-  const allStops = await db.select({
-    stopId: gtfsStops.stopId,
-    stopName: gtfsStops.stopName,
-    lat: gtfsStops.stopLat,
-    lng: gtfsStops.stopLon,
-  }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
+  /* Le fermate su cui si cercano stazioni/porti/aeroporti devono essere
+   * quelle del PROGETTO quando si lavora dentro un progetto: leggere il
+   * feed materializzato significherebbe scoprire hub su fermate che
+   * nel progetto sono già state cancellate. */
+  const allStops = psProjectId
+    ? (((await db.execute<any>(sql`
+        SELECT id::text AS "stopId", name AS "stopName", lat, lon AS lng
+          FROM ps_stops WHERE project_id = ${psProjectId}::uuid`)) as any).rows ?? [])
+    : await db.select({
+        stopId: gtfsStops.stopId,
+        stopName: gtfsStops.stopName,
+        lat: gtfsStops.stopLat,
+        lng: gtfsStops.stopLon,
+      }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
 
   const hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }> = [];
   for (const s of allStops) {
@@ -759,8 +709,8 @@ router.get("/intermodal/hubs", async (req, res) => {
       ? new Set(routeIdsCsv.split(",").map(s => s.trim()).filter(Boolean))
       : null;
 
-    const { feedId } = await resolveScope(req);
-    const hubs = await discoverHubs({ bbox, routeIds, municipality, feedId });
+    const srcH = await resolveSource(req);
+    const hubs = await discoverHubs({ bbox, routeIds, municipality, feedId: srcH.feedId, psProjectId: srcH.psProjectId });
 
     res.json(hubs.map(h => ({
       id: h.id, name: h.name, type: h.type,
@@ -836,22 +786,24 @@ router.get("/intermodal/analyze", async (req, res) => {
       : null;
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
     // Rete analizzata (progetto PS o feed corrente) e tipo di giorno.
-    const { feedId, psProjectId } = await resolveScope(req);
+    /* Anche le coincidenze devono guardare il progetto VIVO: altrimenti
+     * una linea cancellata continuerebbe a comparire tra i bus che
+     * servono la stazione. */
+    const srcA = await resolveSource(req);
+    const feedId = srcA.feedId;
+    const psProjectId = srcA.psProjectId;
     const day = parseDayKind(req.query.day);
-    const serviceIds = await activeServiceIds(feedId, day);
+    const activeTripsA = await loadActiveTrips(srcA, day);
 
     // ─── Hub list: curated + auto-discovered (filtered by ambito) ──────
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
     if (municipality) bbox = await municipalityBbox(municipality);
-    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId });
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId, psProjectId });
 
-    // 1. Fetch all GTFS stops & find those near each hub
-    const allStops = await db.select({
-      stopId: gtfsStops.stopId,
-      stopName: gtfsStops.stopName,
-      lat: gtfsStops.stopLat,
-      lng: gtfsStops.stopLon,
-    }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
+    // 1. Fermate della rete del progetto (o del feed, fuori da un progetto)
+    const allStops = (await loadStops(srcA)).map(x => ({
+      stopId: x.stopId, stopName: x.stopName, lat: x.lat, lng: x.lng,
+    }));
 
     // 2. Find nearby bus stops per hub (within maxWalkKm)
     const hubNearbyStops: Record<string, { stopId: string; stopName: string; lat: number; lng: number; distKm: number; walkMin: number }[]> = {};
@@ -882,55 +834,15 @@ router.get("/intermodal/analyze", async (req, res) => {
     ];
     const uniqueStopIds = [...new Set(allRelevantStopIds)];
 
-    let hubStopTimes: { stopId: string; tripId: string; departureTime: string | null; arrivalTime: string | null; stopSequence: number | null }[] = [];
-    if (uniqueStopIds.length > 0) {
-      const batchSize = 500;
-      for (let i = 0; i < uniqueStopIds.length; i += batchSize) {
-        const batch = uniqueStopIds.slice(i, i + batchSize);
-        const rows = await db.select({
-          stopId: gtfsStopTimes.stopId,
-          tripId: gtfsStopTimes.tripId,
-          departureTime: gtfsStopTimes.departureTime,
-          arrivalTime: gtfsStopTimes.arrivalTime,
-          stopSequence: gtfsStopTimes.stopSequence,
-        }).from(gtfsStopTimes)
-          .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
-            sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-        hubStopTimes.push(...rows);
-      }
-    }
+    /* Passaggi alle fermate rilevanti: loadPassages legge il progetto vivo
+     * e tiene già solo le corse circolanti nel giorno scelto, restituendo
+     * la linea di ciascuna. */
+    let hubStopTimes = await loadPassages(srcA, uniqueStopIds, activeTripsA);
 
-    // 4. Trip → Route mapping (+ service_id per il filtro calendario)
-    const tripIds = [...new Set(hubStopTimes.map(st => st.tripId))];
     const tripRouteMap: Record<string, string> = {};
-    const tripServiceMap: Record<string, string> = {};
-    if (tripIds.length > 0) {
-      const batchSize = 500;
-      for (let i = 0; i < tripIds.length; i += batchSize) {
-        const batch = tripIds.slice(i, i + batchSize);
-        const tripRows = await db.select({
-          tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId,
-        })
-          .from(gtfsTrips)
-          .where(and(feedWhere(gtfsTrips.feedId, feedId),
-            sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-        for (const tr of tripRows) {
-          tripRouteMap[tr.tripId] = tr.routeId;
-          if (tr.serviceId) tripServiceMap[tr.tripId] = tr.serviceId;
-        }
-      }
-    }
+    for (const p of hubStopTimes) tripRouteMap[p.tripId] = p.routeId;
 
-    // Filtro CALENDARIO: si contano solo le corse che circolano nel giorno
-    // scelto. Prima si sommavano feriali + sabati + festivi + scolastici, e
-    // frequenze, corse/giorno e service score risultavano gonfiati.
-    const tripsBeforeCalendar = tripIds.length;
-    if (serviceIds) {
-      hubStopTimes = hubStopTimes.filter(st => {
-        const svc = tripServiceMap[st.tripId];
-        return svc ? serviceIds.has(svc) : false;
-      });
-    }
+    const tripsBeforeCalendar = activeTripsA.size;
     const tripsAfterCalendar = new Set(hubStopTimes.map(st => st.tripId)).size;
 
     // Apply routeIds filter (if provided): keep only stop_times belonging to selected routes
@@ -1592,7 +1504,9 @@ router.get("/intermodal/analyze", async (req, res) => {
       // Ambito dell'analisi: rete, progetto e giorno-tipo effettivamente usati
       scope: {
         psProjectId, feedId, day,
-        calendarApplied: serviceIds !== null,
+        // "ps" = dati vivi del progetto; "gtfs" = feed (uso fuori progetto)
+        source: srcA.kind,
+        calendarApplied: activeTripsA.size > 0,
         tripsConsidered: tripsAfterCalendar,
         tripsBeforeCalendar,
       },
@@ -1611,21 +1525,17 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
   try {
     // Cercava solo tra gli hub CURATI: ogni hub auto-scoperto (id
     // "gtfs-railway-…") dava 404. Ora si passa dalla discovery completa.
-    const { feedId } = await resolveScope(req);
+    const srcR = await resolveSource(req);
+    const feedId = srcR.feedId;
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
-    const allHubs = await discoverHubs({ bbox: null, municipality, feedId });
+    const allHubs = await discoverHubs({ bbox: null, municipality, feedId, psProjectId: srcR.psProjectId });
     const hub = allHubs.find(h => h.id === req.params.hubId);
     if (!hub) { res.status(404).json({ error: "Hub non trovato" }); return; }
 
     const maxWalkKm = parseFloat(req.query.radius as string) || 0.5;
 
     // Find nearby stops
-    const allStops = await db.select({
-      stopId: gtfsStops.stopId,
-      stopName: gtfsStops.stopName,
-      lat: gtfsStops.stopLat,
-      lng: gtfsStops.stopLon,
-    }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
+    const allStops = await loadStops(srcR);
 
     const nearbyStops: { stopId: string; stopName: string; lat: number; lng: number; distKm: number }[] = [];
     for (const stop of allStops) {
@@ -1685,116 +1595,17 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
 // ──────────────────────────────────────────────────────────
 router.get("/intermodal/shapes", async (req, res) => {
   try {
-    const hubId = req.query.hubId as string | undefined;
+    /* Le geometrie disegnate devono essere quelle del PROGETTO VIVO: prima
+     * si leggevano da gtfs_shapes del feed materializzato, quindi una linea
+     * cancellata dal progetto continuava a comparire sulla mappa. */
+    const src = await resolveSource(req);
     const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
     const routeIdsFilter: Set<string> | null = routeIdsParam
       ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
       : null;
 
-    // Prima si guardava solo INTERMODAL_HUBS e si IGNORAVA `municipality`:
-    // scegliendo un comune diverso, la mappa disegnava comunque le linee
-    // attorno agli hub cablati (Ancona). Ora si usa la stessa discovery
-    // dell'analisi, con lo stesso ambito.
-    const { feedId } = await resolveScope(req);
-    const municipality = (req.query.municipality as string | undefined)?.trim() || null;
-    let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
-    if (municipality) bbox = await municipalityBbox(municipality);
-    const allHubs = await discoverHubs({ bbox, municipality, feedId });
-    const hubs = hubId ? allHubs.filter(h => h.id === hubId) : allHubs;
-    if (hubs.length === 0) { res.status(404).json({ error: "Hub non trovato" }); return; }
-
-    // Collect nearby stop IDs for these hubs
-    const allStops = await db.select({ stopId: gtfsStops.stopId, lat: gtfsStops.stopLat, lng: gtfsStops.stopLon })
-      .from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
-    const nearbyStopIds: Set<string> = new Set();
-    const maxWalkKm = parseFloat(req.query.radius as string) || 0.5;
-
-    for (const hub of hubs) {
-      for (const sid of hub.gtfsStopIds) nearbyStopIds.add(sid);
-      for (const stop of allStops) {
-        const sLat = typeof stop.lat === "string" ? parseFloat(stop.lat) : stop.lat;
-        const sLng = typeof stop.lng === "string" ? parseFloat(stop.lng) : stop.lng;
-        if (!sLat || !sLng) continue;
-        if (haversineKm(hub.lat, hub.lng, sLat as number, sLng as number) <= maxWalkKm) {
-          nearbyStopIds.add(stop.stopId);
-        }
-      }
-    }
-
-    // Get trip IDs from these stops
-    const stopIdArr = [...nearbyStopIds];
-    if (stopIdArr.length === 0) { res.json({ type: "FeatureCollection", features: [] }); return; }
-
-    const stRows: { tripId: string }[] = [];
-    for (let i = 0; i < stopIdArr.length; i += 500) {
-      const batch = stopIdArr.slice(i, i + 500);
-      const rows = await db.select({ tripId: gtfsStopTimes.tripId }).from(gtfsStopTimes)
-        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
-          sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-      stRows.push(...rows);
-    }
-
-    // Get route IDs from trips
-    const tripIds = [...new Set(stRows.map(r => r.tripId))];
-    const routeIds: Set<string> = new Set();
-    for (let i = 0; i < tripIds.length; i += 500) {
-      const batch = tripIds.slice(i, i + 500);
-      const rows = await db.select({ routeId: gtfsTrips.routeId }).from(gtfsTrips)
-        .where(and(feedWhere(gtfsTrips.feedId, feedId),
-          sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
-      for (const r of rows) routeIds.add(r.routeId);
-    }
-
-    // Fetch shapes for these routes
-    const routeIdArr = routeIdsFilter
-      ? [...routeIds].filter(r => routeIdsFilter.has(r))
-      : [...routeIds];
-    if (routeIdArr.length === 0) { res.json({ type: "FeatureCollection", features: [] }); return; }
-
-    const shapes: { shapeId: string; routeId: string | null; routeShortName: string | null; routeColor: string | null; geojson: any }[] = [];
-    for (let i = 0; i < routeIdArr.length; i += 100) {
-      const batch = routeIdArr.slice(i, i + 100);
-      const rows = await db.select({
-        shapeId: gtfsShapes.shapeId,
-        routeId: gtfsShapes.routeId,
-        routeShortName: gtfsShapes.routeShortName,
-        routeColor: gtfsShapes.routeColor,
-        geojson: gtfsShapes.geojson,
-      }).from(gtfsShapes)
-        .where(sql`${gtfsShapes.routeId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
-      shapes.push(...rows);
-    }
-
-    // Build FeatureCollection
-    const seenRoutes = new Set<string>();
-    const features = shapes
-      .filter(s => {
-        // Dedupe by routeId (one shape per route)
-        const key = s.routeId || s.shapeId;
-        if (seenRoutes.has(key)) return false;
-        seenRoutes.add(key);
-        return true;
-      })
-      .map(s => {
-        const geo = typeof s.geojson === "string" ? JSON.parse(s.geojson) : s.geojson;
-        return {
-          type: "Feature" as const,
-          properties: {
-            shapeId: s.shapeId,
-            routeId: s.routeId,
-            routeShortName: s.routeShortName,
-            routeColor: s.routeColor ? `#${s.routeColor.replace("#", "")}` : "#06b6d4",
-          },
-          geometry: geo.type === "FeatureCollection"
-            ? (geo.features?.[0]?.geometry || geo)
-            : geo.type === "Feature"
-              ? geo.geometry
-              : geo,
-        };
-      })
-      .filter(f => f.geometry && (f.geometry.type === "LineString" || f.geometry.type === "MultiLineString"));
-
-    res.json({ type: "FeatureCollection", features, total: features.length });
+    const fc = await loadShapes(src, routeIdsFilter);
+    res.json(fc);
   } catch (err) {
     req.log.error(err, "Error fetching intermodal shapes");
     res.status(500).json({ error: "Internal server error" });
@@ -1819,8 +1630,8 @@ router.get("/intermodal/pois", async (req, res) => {
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
     if (municipality) bbox = await municipalityBbox(municipality);
 
-    const { feedId } = await resolveScope(req);
-    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId });
+    const srcP = await resolveSource(req);
+    const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId: srcP.feedId, psProjectId: srcP.psProjectId });
 
     // Define POI categories per hub type
     const WORK_CATEGORIES = ["office", "hospital", "school", "industrial"];
@@ -1940,8 +1751,8 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
     if (municipality) bbox = await municipalityBbox(municipality);
 
-    const { feedId } = await resolveScope(req);
-    const effectiveHubs = await discoverHubs({ bbox, municipality, feedId });
+    const srcS = await resolveSource(req);
+    const effectiveHubs = await discoverHubs({ bbox, municipality, feedId: srcS.feedId, psProjectId: srcS.psProjectId });
 
     // Mappa codice ISTAT → nome comune (per hint a ViaggiaTreno)
     let municipalityName: string | null = null;

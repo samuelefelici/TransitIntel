@@ -29,7 +29,12 @@ export interface GeneratorCoverage {
   routes: string[];
 }
 export interface DemandCoverageResult {
-  scope: { psProjectId: string | null; feedId: string | null; day: string; maxWalkKm: number; calendarApplied?: boolean };
+  scope: {
+    psProjectId: string | null; feedId: string | null; day: string; maxWalkKm: number;
+    calendarApplied?: boolean;
+    /** "ps" = dati vivi del progetto, "gtfs" = feed (fuori da un progetto) */
+    source?: "ps" | "gtfs";
+  };
   windows?: Record<string, { label: string; from: string; to: string }>;
   generators: GeneratorCoverage[];
   byKind: Record<string, { totale: number; servito: number; parziale: number; nonServito: number }>;
@@ -109,6 +114,21 @@ export default function DemandCoverage({
           <span className="text-amber-400">{data.summary.parziale} parziali</span>
           <span className="text-red-400">{data.summary.nonServito} scoperti</span>
           <span className="text-slate-500 ml-auto">{data.summary.lineeValutate} linee · {data.scope.day}</span>
+        </div>
+        {/* Da dove vengono i dati: dentro un progetto devono essere i suoi,
+            vivi. Se si sta guardando un feed, va detto. */}
+        <div className="flex items-center gap-1.5">
+          {data.scope.source === "gtfs" ? (
+            <>
+              <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+              <span className="text-[9px] text-amber-300/90">Dati da feed GTFS, non da un progetto</span>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="w-3 h-3 text-emerald-400/70 shrink-0" />
+              <span className="text-[9px] text-slate-500">Rete del progetto, aggiornata in tempo reale</span>
+            </>
+          )}
         </div>
       </div>
 
