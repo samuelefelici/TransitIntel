@@ -91,7 +91,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   /* Due letture della stessa rete: le coincidenze con treni/navi/voli, e la
    * copertura dei poli che generano la domanda (stazioni, aeroporti, scuole,
    * lavoro). La seconda è quella che dice se le corse costruite servono. */
-  const [view, setView] = useState<"coincidenze" | "copertura">("copertura");
+  const [view, setView] = useState<"coincidenze" | "copertura" | "orari">("copertura");
   const [demand, setDemand] = useState<DemandCoverageResult | null>(null);
   const [demandLoading, setDemandLoading] = useState(false);
   const [selectedGenerator, setSelectedGenerator] = useState<string | null>(null);
@@ -403,14 +403,16 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   // Fetch on-demand dello schedule settimanale di un singolo hub.
   // NIENTE auto-fetch: l'utente deve cliccare il pulsante "Carica orari treni"
   // nel pannello hub. Questo evita richieste invasive ad ogni selezione.
-  const loadHubSchedule = useCallback(async (hubId: string, force = false) => {
+  const loadHubSchedule = useCallback(async (hubId: string, force = false, silent = false) => {
     if (!force && hubScheduleCache[hubId] && hubScheduleCache[hubId] !== "error") return;
     setHubScheduleCache(prev => ({ ...prev, [hubId]: "loading" }));
     try {
       const r = await fetch(`${getApiBase()}/api/intermodal/hub-schedule/${encodeURIComponent(hubId)}`);
       if (!r.ok) {
         setHubScheduleCache(prev => ({ ...prev, [hubId]: "error" }));
-        toast.error("Orari non disponibili", { description: "Premi 'Sincronizza orari' nella toolbar in alto." });
+        // Il caricamento in blocco (vista "Orari") non deve inondare di toast:
+        // per i nodi senza orario mostra solo lo stato inline.
+        if (!silent) toast.error("Orari non disponibili", { description: "Premi 'Sincronizza orari' nella toolbar in alto." });
         return;
       }
       const data = await r.json();
@@ -426,6 +428,20 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       setHubScheduleCache(prev => ({ ...prev, [hubId]: "error" }));
     }
   }, [hubScheduleCache]);
+
+  /* Quando si apre il quadro "Orari", tira giù gli orari dei nodi con un
+   * orario noto (stazioni ferroviarie live/curate, porto e aeroporto curati)
+   * che non li hanno ancora in cache: così la scheda si popola da sola senza
+   * dover aprire ogni hub a mano. In "silent" per non inondare di toast. */
+  useEffect(() => {
+    if (view !== "orari" || !result) return;
+    for (const h of result.hubs) {
+      const hasSchedule = h.hub.type === "railway" || h.hub.source === "curated";
+      if (hasSchedule && !hubScheduleCache[h.hub.id]) {
+        void loadHubSchedule(h.hub.id, false, true);
+      }
+    }
+  }, [view, result, hubScheduleCache, loadHubSchedule]);
 
   const selectedHubData = useMemo(() => {
     if (!result || !selectedHub) return null;
@@ -668,8 +684,9 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
           );
         })}
 
-        {/* Hub Markers */}
-        {view === "coincidenze" && result?.hubs.map(h => {
+        {/* Hub Markers — visibili sia in "coincidenze" sia nel quadro "Orari",
+             così la mappa resta un riferimento mentre si leggono i tabelloni. */}
+        {(view === "coincidenze" || view === "orari") && result?.hubs.map(h => {
           const isAuto = (h.hub as any).source === "gtfs-auto";
           const pct = h.arrivalStats.totalArrivals > 0 ? h.arrivalStats.ok / h.arrivalStats.totalArrivals : 0;
           // Per hub auto-detected usiamo il serviceScore (0-100) → normalizziamo 0-1 per status
@@ -1056,6 +1073,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                   {([
                     { k: "copertura" as const, label: "Copertura domanda", tip: "Le linee e le corse costruite servono stazioni, aeroporti, scuole e aree di lavoro?" },
                     { k: "coincidenze" as const, label: "Coincidenze", tip: "Chi arriva in treno, nave o aereo trova un bus?" },
+                    { k: "orari" as const, label: "Orari", tip: "Il quadro orario: treni e tue corse bus affiancati, nodo per nodo." },
                   ]).map(o => (
                     <button key={o.k} title={o.tip} onClick={() => setView(o.k)}
                       className={`flex-1 text-[10px] px-2 py-1.5 rounded-md transition-all ${
@@ -1278,6 +1296,146 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     </button>
                   </div>
                 </div>
+
+                {/* ─── QUADRO ORARI: treni/navi/voli + le corse bus del progetto ─── */}
+                {view === "orari" && result && (
+                  <div className="space-y-3">
+                    <div className="rounded-xl p-3 border border-cyan-500/20"
+                      style={{ background: "linear-gradient(135deg, rgba(6,182,212,0.1), rgba(139,92,246,0.08))" }}>
+                      <p className="text-[10px] font-semibold text-cyan-400 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                        <Clock className="w-3 h-3" /> Quadro orari — treni e tue corse
+                      </p>
+                      <p className="text-[10px] text-slate-400 leading-relaxed">
+                        Nodo per nodo: gli orari di treni, navi e voli affiancati alle corse bus del tuo progetto.
+                        Gli orari treni si aggiornano da ViaggiaTreno — se un nodo è vuoto, premi
+                        {" "}<strong className="text-slate-200">Sincronizza orari</strong> nella toolbar in alto.
+                      </p>
+                    </div>
+
+                    {(() => {
+                      const TYPE_ORDER: Record<string, number> = { railway: 0, port: 1, airport: 2, bus_terminal: 3 };
+                      const boardHubs = result.hubs
+                        .filter(h => h.hub.type === "railway" || h.hub.type === "port" || h.hub.type === "airport")
+                        .slice()
+                        .sort((a, b) => (TYPE_ORDER[a.hub.type] ?? 9) - (TYPE_ORDER[b.hub.type] ?? 9));
+
+                      if (boardHubs.length === 0) {
+                        return (
+                          <p className="text-[11px] text-slate-500 italic px-1">
+                            Nessun nodo con orari (stazioni, porto, aeroporto) nell'ambito selezionato.
+                            Allarga l'ambito o seleziona altre linee.
+                          </p>
+                        );
+                      }
+
+                      return boardHubs.map(hc => {
+                        const sched = hubScheduleCache[hc.hub.id];
+                        const ready = sched && sched !== "loading" && sched !== "error";
+                        const arr = ready ? (sched.typicalArrivals || []) : [];
+                        const dep = ready ? (sched.typicalDepartures || []) : [];
+                        const nArr = arr.reduce((s, a) => s + a.times.length, 0);
+                        const nDep = dep.reduce((s, d) => s + d.times.length, 0);
+                        const nBus = hc.busLines.reduce((s, b) => s + b.times.length, 0);
+                        const tLabel = hubTransportLabel(hc.hub.type); // treno / nave / volo
+                        const emoji = hc.hub.type === "airport" ? "✈️" : hc.hub.type === "port" ? "⛴️" : "🚆";
+                        const iconColor = hc.hub.type === "airport" ? "text-amber-400" : hc.hub.type === "port" ? "text-violet-400" : "text-cyan-400";
+                        return (
+                          <div key={hc.hub.id} className="rounded-xl border border-slate-700/40 bg-slate-900/40 overflow-hidden">
+                            {/* Intestazione nodo */}
+                            <div className="flex items-center gap-2 px-3 py-2 border-b border-slate-700/40 bg-slate-800/40">
+                              <span className={iconColor}>{hubIcon(hc.hub.type, "w-4 h-4")}</span>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] font-bold text-white truncate">{shortHubName(hc.hub.name)}</p>
+                                <p className="text-[8px] text-slate-500">{nArr} arrivi · {nDep} partenze {tLabel} · {nBus} corse bus</p>
+                              </div>
+                              {hc.hub.scheduleSource === "live" && (
+                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold shrink-0">live</span>
+                              )}
+                              {hc.hub.scheduleSource === "stima" && (
+                                <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold shrink-0">stima</span>
+                              )}
+                              <button onClick={() => loadHubSchedule(hc.hub.id, true)} title="Aggiorna orari"
+                                className="text-slate-400 hover:text-cyan-300 transition shrink-0">
+                                <RefreshCw className="w-3 h-3" />
+                              </button>
+                            </div>
+
+                            <div className="p-3 space-y-3">
+                              {/* ── Orari treno/nave/volo ── */}
+                              <div>
+                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">{emoji} Orari {tLabel}</p>
+                                {(!sched || sched === "loading") ? (
+                                  <p className="text-[10px] text-slate-500 italic flex items-center gap-1.5">
+                                    <RefreshCw className="w-3 h-3 animate-spin" /> Carico gli orari…
+                                    {hc.hub.type === "railway" && <span className="text-slate-600">(ViaggiaTreno, ~15-30s)</span>}
+                                  </p>
+                                ) : sched === "error" ? (
+                                  <button onClick={() => loadHubSchedule(hc.hub.id, true)}
+                                    className="w-full text-[10px] px-2 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 transition flex items-center justify-center gap-1.5 font-semibold">
+                                    <RefreshCw className="w-3 h-3" /> Orari non in cache — riprova o sincronizza
+                                  </button>
+                                ) : (arr.length === 0 && dep.length === 0) ? (
+                                  <p className="text-[10px] text-slate-500 italic">Nessun orario disponibile per questo nodo.</p>
+                                ) : (
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                      <p className="text-[8px] text-sky-400 font-bold mb-0.5">← ARRIVI</p>
+                                      <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                                        {arr.length === 0 ? <p className="text-[9px] text-slate-500 italic">nessuno</p> : arr.map((a, i) => (
+                                          <div key={i} className="text-[9px] leading-tight">
+                                            <span className="text-sky-300 font-medium block truncate">← {a.origin}</span>
+                                            <span className="text-slate-400 font-mono text-[8px] break-words">{a.times.join(" · ")}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <p className="text-[8px] text-emerald-400 font-bold mb-0.5">PARTENZE →</p>
+                                      <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                                        {dep.length === 0 ? <p className="text-[9px] text-slate-500 italic">nessuna</p> : dep.map((d, i) => (
+                                          <div key={i} className="text-[9px] leading-tight">
+                                            <span className="text-emerald-300 font-medium block truncate">→ {d.destination}</span>
+                                            <span className="text-slate-400 font-mono text-[8px] break-words">{d.times.join(" · ")}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* ── Le corse bus del progetto a questo nodo ── */}
+                              <div>
+                                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">🚌 Le tue corse</p>
+                                {hc.busLines.length === 0 ? (
+                                  <p className="text-[10px] text-slate-500 italic">Nessuna corsa bus nel raggio a piedi da questo nodo.</p>
+                                ) : (
+                                  <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                                    {hc.busLines.map(bl => {
+                                      const dest = bl.destinations.filter(Boolean).join(" · ");
+                                      const badgeColor = bl.routeColor ? `#${bl.routeColor.replace("#", "")}` : "#94a3b8";
+                                      return (
+                                        <div key={bl.routeId} className="rounded-lg bg-slate-800/40 border border-slate-700/30 px-2 py-1.5">
+                                          <div className="flex items-center gap-1.5 mb-0.5">
+                                            <span className="text-[9px] px-1.5 py-0.5 rounded font-bold shrink-0"
+                                              style={{ backgroundColor: `${badgeColor}22`, color: badgeColor }}>{bl.routeShortName}</span>
+                                            <span className="text-[9px] text-slate-300 truncate flex-1">{bl.routeLongName || dest || "—"}</span>
+                                            <span className="text-[8px] text-slate-500 shrink-0">{bl.times.length} corse</span>
+                                          </div>
+                                          <p className="text-slate-400 font-mono text-[8px] leading-relaxed break-words">{bl.times.join(" · ")}</p>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                )}
 
                 {view === "copertura" && (
                   <DemandCoverage
