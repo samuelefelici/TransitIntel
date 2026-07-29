@@ -95,6 +95,12 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
     const out: Record<string, any> = {
       generatoIl: new Date().toISOString(),
       note: "Dati vivi del progetto (tabelle ps_*), non uno snapshot GTFS.",
+      /* Il progetto dice cosa c'è nella rete, non cosa c'è INTORNO: per
+       * quello ci sono le rotte territorio (Mapbox mediato dal server). */
+      territorio: {
+        descrizione: "Dati cartografici sul territorio attorno a un punto",
+        capacita: "/api/ai/argos/territory",
+      },
     };
 
     if (include.has("progetto")) {

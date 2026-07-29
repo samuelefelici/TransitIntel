@@ -146,6 +146,42 @@ export async function loadValidities(src: Source): Promise<SrcValidity[]> {
   }));
 }
 
+/* ── Giorni-tipo dal CALENDARIO AZIENDALE ────────────────────────────
+ * "feriale / sabato / festivo" è una semplificazione che l'azienda non
+ * usa: il calendario aziendale distingue Lu-Ve scuole aperte, Lu-Ve
+ * scuole chiuse, sabato scolastico, sabato estivo, festivo… e ogni corsa
+ * appartiene a una o più di queste categorie. Sono QUELLE i giorni-tipo
+ * su cui ha senso analizzare un orario. */
+export interface SrcDayType {
+  id: string; code: string; name: string; color: string | null;
+  /** quante corse del progetto appartengono a questa categoria */
+  trips: number;
+  /** quanti giorni dell'anno ricadono in questa categoria */
+  giorni: number;
+}
+
+export async function loadDayTypes(src: Source): Promise<SrcDayType[]> {
+  if (src.kind !== "ps") return [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT c.id::text AS id, c.code, c.name, c.color, c.sort_order,
+             (SELECT count(*) FROM ps_trip_category_validity tcv
+                JOIN ps_trips t ON t.id = tcv.trip_id
+               WHERE tcv.category_id = c.id AND t.project_id = ${src.psProjectId}::uuid)::int AS trips,
+             (SELECT count(*) FROM ps_validity_category_calendar cc
+               WHERE cc.category_id = c.id)::int AS giorni
+        FROM ps_validity_categories c
+       WHERE c.project_id = ${src.psProjectId}::uuid OR c.project_id IS NULL
+       ORDER BY c.sort_order, c.name`);
+    return ((r as any).rows ?? []).map((x: any) => ({
+      id: String(x.id), code: x.code, name: x.name, color: x.color ?? null,
+      trips: Number(x.trips ?? 0), giorni: Number(x.giorni ?? 0),
+    }));
+  } catch {
+    return []; // tabelle categorie assenti su progetti vecchi
+  }
+}
+
 /* ── Corse circolanti nel giorno-tipo ────────────────────────────────── */
 /**
  * tripId → routeId delle sole corse attive nel giorno scelto.
@@ -153,12 +189,24 @@ export async function loadValidities(src: Source): Promise<SrcValidity[]> {
  * tutto che restituire zero corse e far sembrare la rete inesistente).
  */
 export async function loadActiveTrips(
-  src: Source, day: DayKind, calendarId?: string | null,
+  src: Source, day: DayKind, calendarId?: string | null, categoryId?: string | null,
 ): Promise<Map<string, string>> {
   const col = DAY_COLUMN[day];
   const out = new Map<string, string>();
 
   if (src.kind === "ps") {
+    /* GIORNO-TIPO AZIENDALE: si prendono le corse che appartengono a quella
+     * categoria del calendario (Lu-Ve scuole chiuse, sabato estivo…). È il
+     * modo in cui l'azienda ragiona davvero sull'orario. */
+    if (categoryId && UUID_RE.test(categoryId)) {
+      const trips = await db.execute<any>(sql`
+        SELECT t.id::text AS trip_id, t.route_id::text AS route_id
+          FROM ps_trips t
+          JOIN ps_trip_category_validity tcv ON tcv.trip_id = t.id
+         WHERE t.project_id = ${src.psProjectId}::uuid AND tcv.category_id = ${categoryId}::uuid`);
+      for (const t of ((trips as any).rows ?? [])) out.set(String(t.trip_id), String(t.route_id));
+      return out;
+    }
     /* Con una VALIDITÀ scelta si guardano solo le corse di quel calendario:
      * è più preciso del giorno-tipo, perché una rete reale ha più validità
      * che insistono sullo stesso giorno (scolastico, estivo, festivo…) e

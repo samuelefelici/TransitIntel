@@ -63,7 +63,15 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     days: boolean[]; startDate: string | null; endDate: string | null; trips: number;
   }>>([]);
   const [calendarId, setCalendarId] = useState<string>("");
-  const calQs = calendarId ? `&calendarId=${calendarId}` : "";
+  /* Giorni-tipo del CALENDARIO AZIENDALE (Lu-Ve scuole chiuse, sabato
+   * estivo, festivo…): è così che l'azienda ragiona sull'orario, non con
+   * un feriale/sabato/festivo astratto. */
+  const [dayTypes, setDayTypes] = useState<Array<{
+    id: string; code: string; name: string; color: string | null; trips: number; giorni: number;
+  }>>([]);
+  const [categoryId, setCategoryId] = useState<string>("");
+  const calQs = (calendarId ? `&calendarId=${calendarId}` : "")
+    + (categoryId ? `&categoryId=${categoryId}` : "");
   /* Due letture della stessa rete: le coincidenze con treni/navi/voli, e la
    * copertura dei poli che generano la domanda (stazioni, aeroporti, scuole,
    * lavoro). La seconda è quella che dice se le corse costruite servono. */
@@ -182,6 +190,16 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       .then(r => (r.ok ? r.json() : { validities: [] }))
       .then(d => { if (!cancelled) setValidities(Array.isArray(d.validities) ? d.validities : []); })
       .catch(() => { if (!cancelled) setValidities([]); });
+    return () => { cancelled = true; };
+  }, [psQs]);
+
+  useEffect(() => {
+    if (!psQs) { setDayTypes([]); return; }
+    let cancelled = false;
+    fetch(`${getApiBase()}/api/intermodal/day-types?${psQs.replace(/^&/, "")}`)
+      .then(r => (r.ok ? r.json() : { dayTypes: [] }))
+      .then(d => { if (!cancelled) setDayTypes(Array.isArray(d.dayTypes) ? d.dayTypes : []); })
+      .catch(() => { if (!cancelled) setDayTypes([]); });
     return () => { cancelled = true; };
   }, [psQs]);
 
@@ -1131,12 +1149,41 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     </div>
                   )}
 
-                  {/* Giorno-tipo: senza, si sommavano feriali+sabati+festivi
-                      e frequenze e corse/giorno risultavano gonfiate */}
+                  {/* Giorno-tipo AZIENDALE: le categorie del calendario
+                      (Lu-Ve scuole chiuse, sabato estivo, festivo…) con le
+                      corse che vi appartengono. */}
+                  {dayTypes.length > 0 && (
+                    <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
+                      <p className="text-[10px] text-slate-300 font-medium">Giorno-tipo (calendario aziendale)</p>
+                      <select
+                        value={categoryId}
+                        onChange={e => setCategoryId(e.target.value)}
+                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
+                        <option value="">— scegli un giorno-tipo —</option>
+                        {dayTypes.map(d => (
+                          <option key={d.id} value={d.id}>
+                            {d.name} · {d.trips} corse{d.giorni ? ` · ${d.giorni} gg/anno` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      {!categoryId && (
+                        <p className="text-[9px] text-slate-500">
+                          Senza scelta si usa il giorno generico qui sotto, che somma categorie diverse.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Giorno-tipo generico: usato solo se non si sceglie una
+                      categoria aziendale */}
                   <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
                     <p className="text-[10px] text-slate-300 font-medium">
                       Giorno analizzato
-                      {calendarId && <span className="text-slate-500 font-normal"> · ignorato: vale la validità scelta</span>}
+                      {(calendarId || categoryId) && (
+                        <span className="text-slate-500 font-normal">
+                          {" "}· ignorato: vale {categoryId ? "il giorno-tipo aziendale" : "la validità"}
+                        </span>
+                      )}
                     </p>
                     <div className="flex gap-1">
                       {([

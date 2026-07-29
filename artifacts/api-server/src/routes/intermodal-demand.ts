@@ -30,19 +30,25 @@ import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
   resolveSource, parseDayKind, loadStops, loadRoutes, loadActiveTrips, loadPassages,
-  loadValidities, type DayKind, type Source,
+  loadValidities, loadDayTypes, type DayKind, type Source,
 } from "./intermodal-source";
 
 const router: IRouter = Router();
 
 /* ── Poli e finestre ──────────────────────────────────────────────────── */
-export type GeneratorKind = "stazione" | "aeroporto" | "scuola" | "lavoro";
+export type GeneratorKind = "stazione" | "aeroporto" | "scuola" | "lavoro" | "ospedale";
 
+/* L'ospedale era conteggiato sotto "lavoro" e quindi non si trovava come
+ * categoria: è un polo a sé, e con un profilo di domanda diverso — non ha
+ * due punte come un ufficio, ma visite, degenze e turni del personale
+ * distribuiti sull'arco della giornata, comprese le prime ore. */
 const POI_CATEGORY_OF: Record<string, GeneratorKind> = {
   school: "scuola",
   office: "lavoro",
   industrial: "lavoro",
-  hospital: "lavoro", // grande polo di occupazione oltre che servizio
+  hospital: "ospedale",
+  clinic: "ospedale",
+  doctors: "ospedale",
 };
 
 /** Finestra oraria in minuti dalla mezzanotte. */
@@ -52,12 +58,18 @@ interface Window { label: string; from: number; to: number }
 interface WindowConfig {
   scuolaIngresso: Window; scuolaUscita: Window;
   lavoroIngresso: Window; lavoroUscita: Window;
+  /* L'ospedale ha il cambio turno del personale (mattina presto e
+   * pomeriggio) e la fascia visite/ambulatori: sono momenti diversi da
+   * quelli di un ufficio. */
+  ospedaleTurni: Window; ospedaleVisite: Window;
 }
 const DEFAULT_WINDOWS: WindowConfig = {
   scuolaIngresso: { label: "ingresso scuole", from: 7 * 60, to: 8 * 60 + 15 },
   scuolaUscita:   { label: "uscita scuole",   from: 12 * 60 + 45, to: 14 * 60 + 30 },
   lavoroIngresso: { label: "ingresso lavoro", from: 7 * 60, to: 9 * 60 },
   lavoroUscita:   { label: "uscita lavoro",   from: 16 * 60 + 30, to: 19 * 60 },
+  ospedaleTurni:  { label: "cambio turno",    from: 5 * 60 + 30,  to: 7 * 60 + 30 },
+  ospedaleVisite: { label: "visite e ambulatori", from: 8 * 60,   to: 13 * 60 },
 };
 
 function parseHHMM(v: unknown, fallback: number): number {
@@ -75,6 +87,8 @@ function readWindows(q: any): WindowConfig {
     scuolaUscita:   { ...d.scuolaUscita,   from: parseHHMM(q.scuolaUscitaDa, d.scuolaUscita.from),     to: parseHHMM(q.scuolaUscitaA, d.scuolaUscita.to) },
     lavoroIngresso: { ...d.lavoroIngresso, from: parseHHMM(q.lavoroIngressoDa, d.lavoroIngresso.from), to: parseHHMM(q.lavoroIngressoA, d.lavoroIngresso.to) },
     lavoroUscita:   { ...d.lavoroUscita,   from: parseHHMM(q.lavoroUscitaDa, d.lavoroUscita.from),     to: parseHHMM(q.lavoroUscitaA, d.lavoroUscita.to) },
+    ospedaleTurni:  { ...d.ospedaleTurni,  from: parseHHMM(q.ospedaleTurniDa, d.ospedaleTurni.from),   to: parseHHMM(q.ospedaleTurniA, d.ospedaleTurni.to) },
+    ospedaleVisite: { ...d.ospedaleVisite, from: parseHHMM(q.ospedaleVisiteDa, d.ospedaleVisite.from), to: parseHHMM(q.ospedaleVisiteA, d.ospedaleVisite.to) },
   };
 }
 
@@ -217,7 +231,10 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
      * giorno insistono più validità (scolastico, estivo, festivo…) e
      * sommarle darebbe un orario che non esiste in nessun periodo. */
     const calendarId = String(req.query.calendarId ?? "").trim() || null;
-    const activeTrips = await loadActiveTrips(src, day, calendarId);
+    /* Giorno-tipo AZIENDALE (Lu-Ve scuole chiuse, sabato estivo…): è il modo
+     * in cui l'azienda ragiona sull'orario, e vince sul giorno astratto. */
+    const categoryId = String(req.query.categoryId ?? "").trim() || null;
+    const activeTrips = await loadActiveTrips(src, day, calendarId, categoryId);
     const maxWalkKm = Math.min(3, Math.max(0.1, parseFloat(req.query.radius as string) || 0.5));
     const windows = readWindows(req.query);
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
@@ -386,7 +403,9 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       // Scuole e lavoro: due finestre rigide
       const [wIn, wOut] = g.kind === "scuola"
         ? [windows.scuolaIngresso, windows.scuolaUscita]
-        : [windows.lavoroIngresso, windows.lavoroUscita];
+        : g.kind === "ospedale"
+          ? [windows.ospedaleTurni, windows.ospedaleVisite]
+          : [windows.lavoroIngresso, windows.lavoroUscita];
 
       const inTrips = tripsForEntry(items, wIn);
       const outTrips = tripsForExit(items, wOut);
@@ -458,6 +477,53 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       }))
       .sort((a, b) => b.trips - a.trips);
 
+    /* ── Indicatori di rete ──────────────────────────────────────────
+     * Non basta l'elenco dei poli: servono le misure che dicono se
+     * l'orario regge nel suo insieme, e dove intervenire per primo. */
+    const tuttiTempi = validPassages.map(p => p.time);
+    const reteShape = scheduleShape(tuttiTempi);
+
+    // Fascia di punta e di morbida: dove si concentra e dove manca il servizio
+    const oraPiuServita = reteShape.hourly.indexOf(Math.max(...reteShape.hourly));
+    const oreScoperte = reteShape.hourly
+      .map((n, h) => ({ h, n }))
+      .filter(x => x.n === 0 && x.h >= 6 && x.h <= 21)
+      .map(x => x.h);
+
+    // Accessibilità: quanto è lontano in media un polo dalla fermata più vicina
+    const distanze = coverage
+      .filter(c => c.nearStops.length > 0)
+      .map(c => c.nearStops[0].walkMin);
+    const camminoMedio = distanze.length > 0
+      ? Math.round(distanze.reduce((a, b) => a + b, 0) / distanze.length) : null;
+    const poliIrraggiungibili = coverage.filter(c => c.nearStops.length === 0).length;
+
+    /* Criticità in ordine di gravità: prima chi non ha proprio fermate,
+     * poi chi ha fermate ma nessuna corsa utile, poi chi è coperto a metà.
+     * È l'ordine in cui un pianificatore mette mano al problema. */
+    const criticita = coverage
+      .filter(c => c.status !== "servito")
+      .map(c => {
+        const gravita = c.nearStops.length === 0 ? 3
+          : (c.schedule?.trips ?? 0) === 0 ? 2
+          : c.status === "non-servito" ? 1 : 0;
+        const azione = c.nearStops.length === 0
+          ? "Nessuna fermata a distanza pedonale: serve avvicinare un percorso o istituire una fermata."
+          : (c.schedule?.trips ?? 0) === 0
+            ? "Le fermate ci sono ma nessuna corsa vi transita in questo giorno-tipo: estendere una linea esistente."
+            : c.windows.some(w => !w.ok)
+              ? `Fascia scoperta (${c.windows.filter(w => !w.ok).map(w => w.label).join(", ")}): spostare o aggiungere corse in quella finestra.`
+              : (c.schedule?.maxGapMin ?? 0) >= 120
+                ? `Buco di ${Math.round((c.schedule!.maxGapMin! / 60) * 10) / 10} h dalle ${c.schedule!.maxGapFrom}: inserire una corsa intermedia.`
+                : "Servizio limitato: valutare un potenziamento.";
+        return {
+          polo: c.generator.name, famiglia: c.generator.kind,
+          stato: c.status, gravita, motivo: c.reason, azione,
+          lat: c.generator.lat, lng: c.generator.lng,
+        };
+      })
+      .sort((a, b) => b.gravita - a.gravita || a.polo.localeCompare(b.polo));
+
     const summary = {
       totale: coverage.length,
       servito: coverage.filter(c => c.status === "servito").length,
@@ -470,12 +536,13 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       scope: {
         psProjectId: src.psProjectId, feedId: src.feedId,
         // "ps" = dati vivi del progetto; "gtfs" = feed (uso fuori progetto)
-        source: src.kind, day, calendarId, maxWalkKm,
+        source: src.kind, day, calendarId, categoryId, maxWalkKm,
         calendarApplied: activeTrips.size > 0,
       },
       windows: {
         scuolaIngresso: fmtWindow(windows.scuolaIngresso), scuolaUscita: fmtWindow(windows.scuolaUscita),
         lavoroIngresso: fmtWindow(windows.lavoroIngresso), lavoroUscita: fmtWindow(windows.lavoroUscita),
+        ospedaleTurni: fmtWindow(windows.ospedaleTurni), ospedaleVisite: fmtWindow(windows.ospedaleVisite),
       },
       // I poli scoperti prima: sono quelli su cui si interviene
       generators: coverage.sort((a, b) => {
@@ -485,6 +552,16 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       byKind, byRoute, summary,
       // Come è fatto l'orario, linea per linea
       schedules,
+      // Lettura d'insieme della rete
+      rete: {
+        ...reteShape,
+        oraPiuServita: oraPiuServita >= 0 ? `${String(oraPiuServita).padStart(2, "0")}:00` : null,
+        oreScoperteDiurne: oreScoperte.map(h => `${String(h).padStart(2, "0")}:00`),
+        camminoMedioMin: camminoMedio,
+        poliIrraggiungibili,
+      },
+      // Che cosa fare, in ordine di gravità
+      criticita: criticita.slice(0, 40),
     });
   } catch (err: any) {
     req.log?.error?.(err, "demand-coverage");
@@ -506,8 +583,9 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
 
     const day: DayKind = parseDayKind(req.query.day);
     const calendarId = String(req.query.calendarId ?? "").trim() || null;
+    const categoryId = String(req.query.categoryId ?? "").trim() || null;
     const routes = await loadRoutes(src);
-    const activeTrips = await loadActiveTrips(src, day, calendarId);
+    const activeTrips = await loadActiveTrips(src, day, calendarId, categoryId);
 
     // Corse per linea nel giorno scelto: una linea con 0 corse quel giorno va
     // mostrata come tale, non nascosta — è un'informazione utile di per sé.
@@ -532,6 +610,26 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
   } catch (err: any) {
     req.log?.error?.(err, "intermodal lines");
     res.status(500).json({ error: "Errore nel caricamento delle linee", detail: err?.message });
+  }
+});
+
+/* GET /api/intermodal/day-types — i giorni-tipo del CALENDARIO AZIENDALE
+ * (Lu-Ve scuole aperte/chiuse, sabato, festivo…), con quante corse e
+ * quanti giorni dell'anno ricadono in ciascuno. */
+router.get("/intermodal/day-types", async (req: any, res: any) => {
+  try {
+    const src = await resolveSource(req);
+    const dayTypes = await loadDayTypes(src);
+    res.json({
+      dayTypes,
+      scope: { psProjectId: src.psProjectId, source: src.kind },
+      note: dayTypes.length === 0
+        ? "Nessuna categoria nel calendario aziendale: si usa il giorno-tipo generico."
+        : undefined,
+    });
+  } catch (err: any) {
+    req.log?.error?.(err, "intermodal day-types");
+    res.status(500).json({ error: "Errore nel caricamento dei giorni-tipo", detail: err?.message });
   }
 });
 
