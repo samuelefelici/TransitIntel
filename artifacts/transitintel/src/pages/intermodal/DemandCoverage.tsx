@@ -19,6 +19,15 @@ export interface WindowVerdict {
   trips: number; firstTime: string | null; lastTime: string | null;
   routes: string[]; ok: boolean;
 }
+/** Come è distribuito l'orario: il "quante corse" da solo non basta. */
+export interface ScheduleShape {
+  trips: number; firstTime: string | null; lastTime: string | null;
+  hourly: number[]; hoursCovered: number;
+  medianHeadwayMin: number | null;
+  maxGapMin: number | null; maxGapFrom: string | null;
+  emptyHoursInSpan: number;
+}
+
 export interface GeneratorCoverage {
   generator: { id: string; kind: GeneratorKind; name: string; lat: number; lng: number; detail?: string };
   nearStops: { stopId: string; stopName: string; distKm: number; walkMin: number }[];
@@ -26,6 +35,7 @@ export interface GeneratorCoverage {
   reason: string;
   windows: WindowVerdict[];
   span: { trips: number; firstTime: string | null; lastTime: string | null; hoursCovered: number } | null;
+  schedule?: ScheduleShape;
   routes: string[];
 }
 export interface DemandCoverageResult {
@@ -40,6 +50,8 @@ export interface DemandCoverageResult {
   byKind: Record<string, { totale: number; servito: number; parziale: number; nonServito: number }>;
   byRoute: { route: string; poli: number; perKind: Record<string, number> }[];
   summary: { totale: number; servito: number; parziale: number; nonServito: number; lineeValutate: number };
+  /** Analisi dell'orario per linea */
+  schedules?: Array<{ routeId: string; route: string } & ScheduleShape>;
   note?: string;
 }
 
@@ -242,6 +254,41 @@ export default function DemandCoverage({
                     </div>
                   )}
 
+                  {/* Come è distribuito l'orario: dieci corse concentrate in
+                      due ore e dieci ben spalmate danno lo stesso numero. */}
+                  {g.schedule && g.schedule.trips > 0 && (
+                    <div className="rounded px-2 py-1.5 border bg-slate-900/40 border-slate-700/40 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[9px] text-slate-400">
+                        <Clock className="w-3 h-3 text-cyan-400" />
+                        <span>{g.schedule.firstTime}–{g.schedule.lastTime}</span>
+                        {g.schedule.medianHeadwayMin != null && (
+                          <span>· ogni ~{g.schedule.medianHeadwayMin}′</span>
+                        )}
+                        {g.schedule.maxGapMin != null && g.schedule.maxGapMin >= 60 && (
+                          <span className="text-amber-400 ml-auto">
+                            buco {Math.round(g.schedule.maxGapMin / 6) / 10}h dalle {g.schedule.maxGapFrom}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-end gap-[1px] h-6">
+                        {g.schedule.hourly.map((n, h) => {
+                          const max = Math.max(...g.schedule!.hourly, 1);
+                          return (
+                            <div key={h} title={`${String(h).padStart(2, "0")}:00 — ${n} ${n === 1 ? "corsa" : "corse"}`}
+                              className="flex-1 rounded-t"
+                              style={{
+                                height: `${Math.max(n > 0 ? 12 : 2, (n / max) * 100)}%`,
+                                background: n === 0 ? "rgba(100,116,139,0.25)" : "rgba(6,182,212,0.75)",
+                              }} />
+                          );
+                        })}
+                      </div>
+                      <div className="flex justify-between text-[8px] text-slate-600 font-mono">
+                        <span>0</span><span>6</span><span>12</span><span>18</span><span>23</span>
+                      </div>
+                    </div>
+                  )}
+
                   {g.routes.length > 0 && (
                     <p className="text-[9px] text-slate-400 flex items-start gap-1">
                       <RouteIcon className="w-3 h-3 shrink-0 mt-0.5 text-cyan-400" />
@@ -260,6 +307,37 @@ export default function DemandCoverage({
           );
         })}
       </div>
+
+      {/* ─── Orario per linea ─── */}
+      {data.schedules && data.schedules.length > 0 && (
+        <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-2.5 space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Orario per linea</p>
+          <div className="grid grid-cols-[42px_1fr_46px_52px] gap-1 text-[8px] text-slate-500 font-semibold pb-0.5 border-b border-slate-700/30">
+            <span>Linea</span><span>Arco</span><span>Corse</span><span>Ogni</span>
+          </div>
+          {data.schedules.slice(0, 14).map(sc => (
+            <div key={sc.routeId} className="grid grid-cols-[42px_1fr_46px_52px] gap-1 items-center text-[10px]">
+              <span className="font-mono font-bold text-cyan-300 truncate">{sc.route}</span>
+              <span className="text-slate-400 font-mono text-[9px]">
+                {sc.firstTime}–{sc.lastTime}
+                {sc.maxGapMin != null && sc.maxGapMin >= 120 && (
+                  <span className="text-amber-400" title={`Buco di ${Math.round(sc.maxGapMin / 6) / 10} h dalle ${sc.maxGapFrom}`}> ⚠</span>
+                )}
+              </span>
+              <span className="text-slate-300 font-mono">{sc.trips}</span>
+              <span className="text-slate-400 font-mono">
+                {sc.medianHeadwayMin != null ? `${sc.medianHeadwayMin}′` : "—"}
+              </span>
+            </div>
+          ))}
+          {data.schedules.length > 14 && (
+            <p className="text-[9px] text-slate-500">+{data.schedules.length - 14} altre linee</p>
+          )}
+          <p className="text-[9px] text-slate-500 pt-1 border-t border-slate-700/30">
+            ⚠ = buco di almeno 2 ore nell'arco di servizio.
+          </p>
+        </div>
+      )}
 
       {/* ─── Contributo per linea ─── */}
       {data.byRoute.length > 0 && (

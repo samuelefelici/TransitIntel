@@ -30,7 +30,7 @@ import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
   resolveSource, parseDayKind, loadStops, loadRoutes, loadActiveTrips, loadPassages,
-  type DayKind, type Source,
+  loadValidities, type DayKind, type Source,
 } from "./intermodal-source";
 
 const router: IRouter = Router();
@@ -99,6 +99,68 @@ export function tripsForExit(items: PoleItem[], w: { from: number; to: number })
   });
 }
 
+/* ── Analisi dell'ORARIO, non solo del "quante corse" ─────────────────
+ * Sapere che a un polo passano 40 corse non dice se il servizio è usabile:
+ * 40 corse tutte fra le 6 e le 9 lasciano scoperto il resto del giorno.
+ * Qui si guarda come sono DISTRIBUITE: fascia oraria per fascia oraria,
+ * intervallo tipico fra una corsa e l'altra, e soprattutto il buco più
+ * lungo — che è quello che l'utente subisce davvero. */
+export interface ScheduleShape {
+  trips: number;
+  firstTime: string | null;
+  lastTime: string | null;
+  /** conteggio per ora del giorno (0..23) */
+  hourly: number[];
+  hoursCovered: number;
+  /** intervallo mediano fra corse consecutive (min) */
+  medianHeadwayMin: number | null;
+  /** buco più lungo nell'arco di servizio, con quando inizia */
+  maxGapMin: number | null;
+  maxGapFrom: string | null;
+  /** ore, entro l'arco di servizio, senza alcuna corsa */
+  emptyHoursInSpan: number;
+}
+
+export function scheduleShape(times: number[]): ScheduleShape {
+  const empty: ScheduleShape = {
+    trips: 0, firstTime: null, lastTime: null, hourly: new Array(24).fill(0),
+    hoursCovered: 0, medianHeadwayMin: null, maxGapMin: null, maxGapFrom: null,
+    emptyHoursInSpan: 0,
+  };
+  if (times.length === 0) return empty;
+
+  const sorted = [...times].sort((a, b) => a - b);
+  const hourly = new Array(24).fill(0);
+  for (const t of sorted) hourly[Math.floor(t / 60) % 24]++;
+
+  const gaps: number[] = [];
+  let maxGap = 0, maxGapAt = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const g = sorted[i] - sorted[i - 1];
+    gaps.push(g);
+    if (g > maxGap) { maxGap = g; maxGapAt = sorted[i - 1]; }
+  }
+  const median = gaps.length > 0
+    ? [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)]
+    : null;
+
+  const firstH = Math.floor(sorted[0] / 60), lastH = Math.floor(sorted[sorted.length - 1] / 60);
+  let emptyInSpan = 0;
+  for (let h = firstH; h <= lastH; h++) if ((hourly[h % 24] ?? 0) === 0) emptyInSpan++;
+
+  return {
+    trips: sorted.length,
+    firstTime: minToTime(sorted[0]),
+    lastTime: minToTime(sorted[sorted.length - 1]),
+    hourly,
+    hoursCovered: hourly.filter(n => n > 0).length,
+    medianHeadwayMin: median,
+    maxGapMin: gaps.length > 0 ? maxGap : null,
+    maxGapFrom: gaps.length > 0 ? minToTime(maxGapAt) : null,
+    emptyHoursInSpan: emptyInSpan,
+  };
+}
+
 /* ── Strutture ────────────────────────────────────────────────────────── */
 interface Generator {
   id: string; kind: GeneratorKind; name: string;
@@ -129,6 +191,8 @@ interface GeneratorCoverage {
   windows: WindowVerdict[];
   /** ampiezza del servizio: usata per stazioni e aeroporti */
   span: { trips: number; firstTime: string | null; lastTime: string | null; hoursCovered: number } | null;
+  /** come è distribuito l'orario a questo polo (per OGNI famiglia di polo) */
+  schedule: ScheduleShape;
   routes: string[];
 }
 
@@ -149,8 +213,11 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       res.status(404).json({ error: "Nessuna rete disponibile" }); return;
     }
     const day: DayKind = parseDayKind(req.query.day);
-    // Corse che circolano davvero nel giorno scelto, dal progetto VIVO
-    const activeTrips = await loadActiveTrips(src, day);
+    /* Validità esplicita: più precisa del giorno-tipo, perché su uno stesso
+     * giorno insistono più validità (scolastico, estivo, festivo…) e
+     * sommarle darebbe un orario che non esiste in nessun periodo. */
+    const calendarId = String(req.query.calendarId ?? "").trim() || null;
+    const activeTrips = await loadActiveTrips(src, day, calendarId);
     const maxWalkKm = Math.min(3, Math.max(0.1, parseFloat(req.query.radius as string) || 0.5));
     const windows = readWindows(req.query);
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
@@ -250,7 +317,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
         coverage.push({
           generator: g, nearStops: [], status: "non-servito",
           reason: `Nessuna fermata entro ${Math.round(maxWalkKm * 1000)} m: il polo non è raggiungibile a piedi da nessuna corsa.`,
-          windows: [], span: null, routes: [],
+          windows: [], span: null, schedule: scheduleShape([]), routes: [],
         });
         continue;
       }
@@ -277,10 +344,12 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
           reason: near.length > 0
             ? `Ci sono ${near.length} fermate vicine, ma nessuna corsa vi transita nel giorno ${day}.`
             : "Nessuna corsa.",
-          windows: [], span: null, routes: [],
+          windows: [], span: null, schedule: scheduleShape([]), routes: [],
         });
         continue;
       }
+
+      const shape = scheduleShape(items.map(i => i.time));
 
       if (g.kind === "stazione" || g.kind === "aeroporto") {
         // Domanda distribuita: conta l'ampiezza del servizio
@@ -292,16 +361,24 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
           lastTime: minToTime(times[times.length - 1]),
           hoursCovered: hours.size,
         };
+        /* Non basta contare le ore coperte: un servizio con 12 ore coperte
+         * ma un buco di tre ore a metà giornata non è "servito". Il buco
+         * più lungo entra nel verdetto. */
+        const bigGap = (shape.maxGapMin ?? 0) >= 120;
         const status: GeneratorCoverage["status"] =
-          span.hoursCovered >= 10 ? "servito" : span.hoursCovered >= 5 ? "parziale" : "non-servito";
+          span.hoursCovered >= 10 && !bigGap ? "servito"
+            : span.hoursCovered >= 5 ? "parziale" : "non-servito";
         coverage.push({
           generator: g, nearStops: near, status,
           reason: status === "servito"
-            ? `Servizio ampio: ${span.trips} passaggi su ${span.hoursCovered} ore diverse (${span.firstTime}–${span.lastTime}).`
+            ? `Servizio ampio: ${span.trips} passaggi su ${span.hoursCovered} ore diverse (${span.firstTime}–${span.lastTime})`
+              + (shape.medianHeadwayMin != null ? `, un bus ogni ~${shape.medianHeadwayMin} min.` : ".")
             : status === "parziale"
-              ? `Servizio limitato a ${span.hoursCovered} ore (${span.firstTime}–${span.lastTime}): fasce scoperte per chi arriva o riparte fuori da quell'arco.`
+              ? (bigGap && shape.maxGapMin != null
+                  ? `Buco di ${Math.round(shape.maxGapMin / 60 * 10) / 10} h dalle ${shape.maxGapFrom}: chi arriva in quella fascia non trova il bus (${span.firstTime}–${span.lastTime}).`
+                  : `Servizio limitato a ${span.hoursCovered} ore (${span.firstTime}–${span.lastTime}): fasce scoperte per chi arriva o riparte fuori da quell'arco.`)
               : `Solo ${span.trips} passaggi in ${span.hoursCovered} ore: il polo è di fatto scoperto.`,
-          windows: [], span, routes: routesHere,
+          windows: [], span, schedule: shape, routes: routesHere,
         });
         continue;
       }
@@ -338,7 +415,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
                 ? `Coperto solo l'${wIn.label} (${vIn.trips} corse): chi deve rientrare nella fascia ${vOut.from}–${vOut.to} non ha corse.`
                 : `Coperta solo l'${wOut.label} (${vOut.trips} corse): nessuna corsa porta al polo entro le ${vIn.to}.`)
             : `Ci sono corse nell'arco della giornata, ma nessuna nelle due fasce che contano (${vIn.from}–${vIn.to} e ${vOut.from}–${vOut.to}).`,
-        windows: [vIn, vOut], span: null, routes: routesHere,
+        windows: [vIn, vOut], span: null, schedule: shape, routes: routesHere,
       });
     }
 
@@ -365,6 +442,22 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     }
     const byRoute = [...routeAgg.values()].sort((a, b) => b.poli - a.poli);
 
+    /* Analisi dell'orario per LINEA: quante corse, in che arco, con quale
+     * intervallo e quale buco più lungo. È la lettura che manca quando si
+     * guarda solo la copertura dei poli. */
+    const timesByRoute = new Map<string, number[]>();
+    for (const p of validPassages) {
+      const arr = timesByRoute.get(p.routeId);
+      if (arr) arr.push(p.time); else timesByRoute.set(p.routeId, [p.time]);
+    }
+    const schedules = [...timesByRoute.entries()]
+      .map(([routeId, times]) => ({
+        routeId,
+        route: routeLabel.get(routeId) ?? routeId,
+        ...scheduleShape(times),
+      }))
+      .sort((a, b) => b.trips - a.trips);
+
     const summary = {
       totale: coverage.length,
       servito: coverage.filter(c => c.status === "servito").length,
@@ -377,7 +470,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       scope: {
         psProjectId: src.psProjectId, feedId: src.feedId,
         // "ps" = dati vivi del progetto; "gtfs" = feed (uso fuori progetto)
-        source: src.kind, day, maxWalkKm,
+        source: src.kind, day, calendarId, maxWalkKm,
         calendarApplied: activeTrips.size > 0,
       },
       windows: {
@@ -390,6 +483,8 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
         return rank[a.status] - rank[b.status] || a.generator.name.localeCompare(b.generator.name);
       }),
       byKind, byRoute, summary,
+      // Come è fatto l'orario, linea per linea
+      schedules,
     });
   } catch (err: any) {
     req.log?.error?.(err, "demand-coverage");
@@ -410,8 +505,9 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
     if (src.kind === "gtfs" && !src.feedId) { res.json({ lines: [], scope: { psProjectId: null, feedId: null } }); return; }
 
     const day: DayKind = parseDayKind(req.query.day);
+    const calendarId = String(req.query.calendarId ?? "").trim() || null;
     const routes = await loadRoutes(src);
-    const activeTrips = await loadActiveTrips(src, day);
+    const activeTrips = await loadActiveTrips(src, day, calendarId);
 
     // Corse per linea nel giorno scelto: una linea con 0 corse quel giorno va
     // mostrata come tale, non nascosta — è un'informazione utile di per sé.
@@ -431,11 +527,30 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
 
     res.json({
       lines,
-      scope: { psProjectId: src.psProjectId, feedId: src.feedId, source: src.kind, day },
+      scope: { psProjectId: src.psProjectId, feedId: src.feedId, source: src.kind, day, calendarId },
     });
   } catch (err: any) {
     req.log?.error?.(err, "intermodal lines");
     res.status(500).json({ error: "Errore nel caricamento delle linee", detail: err?.message });
+  }
+});
+
+/* GET /api/intermodal/validities — le validità del progetto.
+ * Servono al selettore: l'analisi si fa su UNA validità, non su un
+ * giorno-tipo astratto. */
+router.get("/intermodal/validities", async (req: any, res: any) => {
+  try {
+    const src = await resolveSource(req);
+    const validities = await loadValidities(src);
+    res.json({
+      validities,
+      scope: { psProjectId: src.psProjectId, source: src.kind },
+      // Fuori da un progetto le validità non esistono: resta il giorno-tipo
+      note: src.kind === "gtfs" ? "Le validità sono disponibili solo dentro un progetto Planner Studio." : undefined,
+    });
+  } catch (err: any) {
+    req.log?.error?.(err, "intermodal validities");
+    res.status(500).json({ error: "Errore nel caricamento delle validità", detail: err?.message });
   }
 });
 
