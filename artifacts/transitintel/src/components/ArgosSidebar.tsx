@@ -41,8 +41,40 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
   // Opt-in perché costa di più sul budget di Argos: si accende solo quando serve.
   const [deep, setDeep] = React.useState(false);
   const [health, setHealth] = React.useState<{ configured: boolean; reachable?: boolean; cerbero?: boolean } | null>(null);
+  // Larghezza del pannello (ridimensionabile trascinando il bordo sinistro).
+  const MIN_W = 320, MAX_W = 900;
+  const [width, setWidth] = React.useState<number>(() => {
+    if (typeof window === "undefined") return 380;
+    const s = Number(localStorage.getItem("argos.panelWidth"));
+    return s >= MIN_W && s <= MAX_W ? s : 380;
+  });
+  const [resizing, setResizing] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const abortRef = React.useRef<AbortController | null>(null);
+
+  // Drag del bordo sinistro: il pannello è ancorato a destra, quindi
+  // larghezza = (distanza del cursore dal bordo destro della finestra).
+  React.useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e: PointerEvent) => {
+      const w = Math.min(Math.min(MAX_W, window.innerWidth - 24), Math.max(MIN_W, window.innerWidth - e.clientX - 12));
+      setWidth(w);
+    };
+    const onUp = () => setResizing(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp, { once: true });
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "ew-resize";
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [resizing]);
+
+  React.useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("argos.panelWidth", String(Math.round(width)));
+  }, [width]);
 
   // Health check al primo open
   React.useEffect(() => {
@@ -209,9 +241,19 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
         {open && (
           <motion.div
             initial={{ x: "100%" }} animate={{ x: 0 }} exit={{ x: "100%" }}
-            transition={{ type: "spring", damping: 28, stiffness: 230 }}
-            className="fixed top-3 right-3 bottom-3 z-50 w-[340px] max-w-[90vw] rounded-2xl bg-gradient-to-b from-zinc-950/95 via-[#120a1c]/95 to-black/95 backdrop-blur-md border border-violet-400/40 flex flex-col shadow-[0_8px_60px_rgba(139,92,246,0.35),0_0_120px_rgba(0,0,0,0.6)] overflow-hidden"
+            transition={resizing ? { duration: 0 } : { type: "spring", damping: 28, stiffness: 230 }}
+            style={{ width }}
+            className="fixed top-3 right-3 bottom-3 z-50 max-w-[95vw] rounded-2xl bg-gradient-to-b from-zinc-950/95 via-[#120a1c]/95 to-black/95 backdrop-blur-md border border-violet-400/40 flex flex-col shadow-[0_8px_60px_rgba(139,92,246,0.35),0_0_120px_rgba(0,0,0,0.6)] overflow-hidden"
           >
+            {/* Handle di ridimensionamento: bordo sinistro, trascina per allargare */}
+            <div
+              onPointerDown={(e) => { e.preventDefault(); setResizing(true); }}
+              onDoubleClick={() => setWidth(380)}
+              title="Trascina per ridimensionare · doppio clic per larghezza standard"
+              className="absolute left-0 top-0 bottom-0 w-2 -ml-1 cursor-ew-resize z-10 group/resize flex items-center justify-center"
+            >
+              <div className="w-1 h-12 rounded-full bg-violet-400/30 group-hover/resize:bg-violet-400/70 transition" />
+            </div>
             {/* Header */}
             <div className="px-4 py-3 border-b border-violet-400/30 bg-black/40 flex items-center justify-between">
               <div className="flex items-center gap-2.5">

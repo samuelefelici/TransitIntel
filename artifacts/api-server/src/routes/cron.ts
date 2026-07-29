@@ -8,6 +8,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline";
+import { syncAllRailwaySchedules } from "./intermodal";
 
 const router: IRouter = Router();
 
@@ -642,6 +643,21 @@ router.post("/cron/traffic", async (req, res) => {
     res.json({ success: true, ...result });
   } catch (err: any) {
     req.log.error(err, "Error in traffic cron");
+    res.status(500).json({ success: false, message: err.message ?? "Internal error" });
+  }
+});
+
+// Orari treni (coincidenze bus↔treno): acquisizione AUTOMATICA da ViaggiaTreno
+// per gli hub ferroviari del feed in esercizio. Schedulalo ~1/giorno (ViaggiaTreno
+// espone solo una finestra mobile di 7 giorni). Poi /intermodal/analyze valuta le
+// coincidenze con gli orari aggiornati.
+router.post("/cron/intermodal-schedules", async (req, res) => {
+  if (!verifyCronSecret(req, res)) return;
+  try {
+    const result = await syncAllRailwaySchedules();
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    req.log.error(err, "Error in intermodal-schedules cron");
     res.status(500).json({ success: false, message: err.message ?? "Internal error" });
   }
 });

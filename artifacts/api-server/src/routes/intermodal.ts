@@ -1888,6 +1888,35 @@ router.get("/intermodal/sync-status", async (_req, res) => {
   });
 });
 
+/**
+ * Sync AUTOMATICA degli orari treni (usata dal cron, senza sessione utente):
+ * per ogni hub FERROVIARIO del feed in esercizio scarica gli orari reali da
+ * ViaggiaTreno e li persiste. È ciò che rende l'acquisizione automatica invece
+ * che manuale (POST /intermodal/sync-schedules). Porti/aeroporti sono saltati
+ * (nessuna API pubblica gratuita).
+ */
+export async function syncAllRailwaySchedules(): Promise<{
+  syncedAt: string; total: number; liveFetched: number; failed: number;
+}> {
+  const feedId = await getLatestFeedId();
+  const effectiveHubs = await discoverHubs({ feedId, psProjectId: null });
+  let liveFetched = 0, failed = 0, total = 0;
+  for (const h of effectiveHubs) {
+    if (h.type !== "railway") continue;
+    total++;
+    const sched = await fetchTrainScheduleFromViaggiaTreno(h.name, null);
+    if (sched) {
+      dynamicHubSchedules.set(h.id, sched);
+      await persistSchedule(h.id, sched);
+      liveFetched++;
+    } else {
+      failed++;
+    }
+  }
+  lastSyncTimestamp = new Date().toISOString();
+  return { syncedAt: lastSyncTimestamp, total, liveFetched, failed };
+}
+
 // GET /api/intermodal/hub-schedule/:hubId
 // Restituisce lo schedule settimanale completo (weeklyDepartures/Arrivals)
 // per un hub. Utile per il popup hub nel frontend.
