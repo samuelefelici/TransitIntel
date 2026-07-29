@@ -6,6 +6,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { mintShortLivedUserToken } from "../lib/auth";
 import { getAnthropic, COPILOT_MODEL, COPILOT_MAX_TOKENS } from "../lib/ai/provider";
 import { SYSTEM_PROMPT } from "../lib/ai/system-prompt";
 import { TOOL_DEFS, executeTool, UI_TOOL_NAMES } from "../lib/ai/tools";
@@ -254,6 +255,10 @@ router.post("/ai/argos/chat", async (req, res) => {
   // Contesto Planning Studio: se c'è un projectId, verifica che l'utente vi
   // abbia accesso PRIMA di girarlo ad Argos (che legge quel progetto).
   let psProjectId: string | null = null;
+  // Token utente a breve scadenza: consente ad Argos di richiamare gli endpoint
+  // /api/ai/argos/* e /api/intermodal/* on-behalf-of-user (context, territorio,
+  // domanda-copertura). Coniato solo dentro un progetto e con accesso verificato.
+  let tiAuthToken: string | null = null;
   if (projectId) {
     if (!UUID_RE.test(projectId)) {
       res.status(400).json({ error: "projectId non valido" });
@@ -270,6 +275,7 @@ router.post("/ai/argos/chat", async (req, res) => {
       return;
     }
     psProjectId = projectId;
+    tiAuthToken = mintShortLivedUserToken(userId);
   }
 
   // Ultimo turno utente = domanda corrente; il resto = storia della conversazione.
@@ -305,6 +311,7 @@ router.post("/ai/argos/chat", async (req, res) => {
         question,
         history,
         planning_studio_project_id: psProjectId,
+        ti_auth_token: tiAuthToken, // token on-behalf-of-user per i callback TransitIntel
         deep: !!deep, // ragionamento profondo (Opus, più giri/verifica) — opt-in dal pannello
       }),
       signal: ctrl.signal,
