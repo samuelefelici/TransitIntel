@@ -44,6 +44,22 @@ export interface IntermodalPageProps {
   poiRadiusKm?: number;
 }
 
+/** Etichetta LEGGIBILE di una validità dal pattern dei giorni, così non si
+ *  mostra il codice GTFS grezzo quando manca il nome del calendario. */
+function giorniLabel(days?: boolean[]): string {
+  if (!days || days.length < 7) return "";
+  const [lu, ma, me, gi, ve, sa, dom] = days;
+  const feriali = lu && ma && me && gi && ve;
+  if (days.every(Boolean)) return "Tutti i giorni";
+  if (feriali && sa && !dom) return "Lun–Sab";
+  if (feriali && !sa && !dom) return "Lun–Ven";
+  if (!lu && !ma && !me && !gi && !ve && sa && dom) return "Sab–Dom (festivo)";
+  if (!lu && !ma && !me && !gi && !ve && sa && !dom) return "Sabato";
+  if (!lu && !ma && !me && !gi && !ve && !sa && dom) return "Domenica / festivo";
+  const GG = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+  return days.map((d, i) => (d ? GG[i] : null)).filter(Boolean).join(" ") || "";
+}
+
 // ─── Component ──────────────────────────────────────────────
 export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
@@ -1127,7 +1143,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                         <option value="">Giorno-tipo (tutte le validità del giorno)</option>
                         {validities.map(v => (
                           <option key={v.id} value={v.id}>
-                            {v.code}{v.name ? ` — ${v.name}` : ""} · {v.trips} corse
+                            {v.name || giorniLabel(v.days) || v.code} · {v.trips} corse
                           </option>
                         ))}
                       </select>
