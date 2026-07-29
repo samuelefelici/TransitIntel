@@ -139,6 +139,14 @@ void ensureUsersTable();
 function signToken(userId: string): string {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: `${JWT_TTL_DAYS}d` });
 }
+
+/** Token a BREVE scadenza per chiamate server-to-server on-behalf-of-user.
+ * Usato dal proxy Argos: Argos lo rigira agli endpoint /api/ai/argos/* e
+ * /api/intermodal/* come Bearer, così il controllo accessi per-utente resta
+ * valido ma il token vive solo per la durata di una risposta. */
+export function mintShortLivedUserToken(userId: string): string {
+  return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: "10m" });
+}
 function verifyToken(token: string): string | null {
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as { sub: string };
