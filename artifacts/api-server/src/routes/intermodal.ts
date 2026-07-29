@@ -577,11 +577,36 @@ export async function discoverHubs(opts: {
       // reali. Il sync ViaggiaTreno li sostituisce (→ "live").
       scheduleSource: ((h.typicalArrivals.length || h.typicalDepartures.length) ? "stima" : "assente") as "stima" | "assente",
     }));
-    for (const h of curated) {
-      if (!bbox) { out.push(h); continue; }
-      if (h.lat >= bbox.minLat && h.lat <= bbox.maxLat && h.lng >= bbox.minLng && h.lng <= bbox.maxLng) {
-        out.push(h);
+    /* Gli hub curati sono cablati su un territorio preciso (provincia di
+     * Ancona). Dentro un progetto di un'altra area comparivano comunque,
+     * come poli fantasma sempre "non serviti": dati che col progetto non
+     * c'entrano nulla. Si tengono solo se cadono nell'area effettivamente
+     * coperta dalle fermate del progetto. */
+    let projectBox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+    if (psProjectId) {
+      const r = await db.execute<any>(sql`
+        SELECT min(lat) AS min_lat, max(lat) AS max_lat, min(lon) AS min_lng, max(lon) AS max_lng
+          FROM ps_stops WHERE project_id = ${psProjectId}::uuid`);
+      const b = (r as any).rows?.[0];
+      if (b?.min_lat != null) {
+        const pad = 0.05; // ~5 km di tolleranza attorno alla rete
+        projectBox = {
+          minLat: Number(b.min_lat) - pad, maxLat: Number(b.max_lat) + pad,
+          minLng: Number(b.min_lng) - pad, maxLng: Number(b.max_lng) + pad,
+        };
+      } else {
+        projectBox = { minLat: 1, maxLat: -1, minLng: 1, maxLng: -1 }; // progetto senza fermate: nessun hub curato
       }
+    }
+    const inBox = (h: DiscoveredHub, b: typeof bbox) =>
+      !b || (h.lat >= b.minLat && h.lat <= b.maxLat && h.lng >= b.minLng && h.lng <= b.maxLng);
+    for (const h of curated) {
+      if (!inBox(h, bbox)) continue;
+      if (!inBox(h, projectBox)) continue;
+      // Le fermate GTFS cablate appartengono a un altro feed: dentro un
+      // progetto non identificano nulla e vanno lasciate fuori.
+      if (psProjectId) h.gtfsStopIds = [];
+      out.push(h);
     }
   }
 

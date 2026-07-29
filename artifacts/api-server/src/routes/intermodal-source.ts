@@ -167,10 +167,17 @@ export async function loadPassages(
   src: Source, stopIds: string[], activeTrips: Map<string, string>,
 ): Promise<SrcPassage[]> {
   const out: SrcPassage[] = [];
-  if (stopIds.length === 0) return out;
 
-  for (let i = 0; i < stopIds.length; i += 500) {
-    const batch = stopIds.slice(i, i + 500);
+  /* Nel progetto le fermate hanno id uuid, ma tra gli id in ingresso
+   * arrivano anche i gtfsStopIds cablati degli hub curati ("13", "18"…):
+   * castarli a uuid fa fallire l'intera query con "invalid input syntax
+   * for type uuid", e l'analisi restituiva 500. Si tengono solo gli id
+   * che possono davvero appartenere alla sorgente. */
+  const ids = src.kind === "ps" ? stopIds.filter(id => UUID_RE.test(id)) : stopIds;
+  if (ids.length === 0) return out;
+
+  for (let i = 0; i < ids.length; i += 500) {
+    const batch = ids.slice(i, i + 500);
     if (batch.length === 0) continue;
     const rows = src.kind === "ps"
       ? await db.execute<any>(sql`
