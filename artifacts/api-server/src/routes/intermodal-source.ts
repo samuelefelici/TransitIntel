@@ -119,17 +119,58 @@ export async function loadRoutes(src: Source): Promise<SrcRoute[]> {
   }));
 }
 
+/* ── Validità (calendari del progetto) ───────────────────────────────── */
+export interface SrcValidity {
+  id: string; code: string; name: string | null;
+  days: boolean[];           // lun..dom
+  startDate: string | null; endDate: string | null;
+  trips: number;
+}
+
+/** Le validità del progetto, con quante corse ciascuna porta con sé. */
+export async function loadValidities(src: Source): Promise<SrcValidity[]> {
+  if (src.kind !== "ps") return [];
+  const cal = await db.execute<any>(sql`
+    SELECT c.id::text AS id, c.code, c.name,
+           c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday,
+           c.start_date::text AS start_date, c.end_date::text AS end_date,
+           (SELECT count(*) FROM ps_trips t WHERE t.calendar_id = c.id)::int AS trips
+      FROM ps_calendars c
+     WHERE c.project_id = ${src.psProjectId}::uuid
+     ORDER BY c.code`);
+  return ((cal as any).rows ?? []).map((x: any) => ({
+    id: String(x.id), code: x.code ?? String(x.id), name: x.name ?? null,
+    days: [x.monday, x.tuesday, x.wednesday, x.thursday, x.friday, x.saturday, x.sunday].map(Boolean),
+    startDate: x.start_date ?? null, endDate: x.end_date ?? null,
+    trips: Number(x.trips ?? 0),
+  }));
+}
+
 /* ── Corse circolanti nel giorno-tipo ────────────────────────────────── */
 /**
  * tripId → routeId delle sole corse attive nel giorno scelto.
  * Se il progetto/feed non ha calendari, non si filtra (meglio contare
  * tutto che restituire zero corse e far sembrare la rete inesistente).
  */
-export async function loadActiveTrips(src: Source, day: DayKind): Promise<Map<string, string>> {
+export async function loadActiveTrips(
+  src: Source, day: DayKind, calendarId?: string | null,
+): Promise<Map<string, string>> {
   const col = DAY_COLUMN[day];
   const out = new Map<string, string>();
 
   if (src.kind === "ps") {
+    /* Con una VALIDITÀ scelta si guardano solo le corse di quel calendario:
+     * è più preciso del giorno-tipo, perché una rete reale ha più validità
+     * che insistono sullo stesso giorno (scolastico, estivo, festivo…) e
+     * sommarle darebbe un orario che non esiste in nessun periodo. */
+    if (calendarId && UUID_RE.test(calendarId)) {
+      const trips = await db.execute<any>(sql`
+        SELECT id::text AS trip_id, route_id::text AS route_id
+          FROM ps_trips
+         WHERE project_id = ${src.psProjectId}::uuid AND calendar_id = ${calendarId}::uuid`);
+      for (const t of ((trips as any).rows ?? [])) out.set(String(t.trip_id), String(t.route_id));
+      return out;
+    }
     const cal = await db.execute<any>(sql`
       SELECT id::text AS id FROM ps_calendars
        WHERE project_id = ${src.psProjectId}::uuid AND ${sql.raw(col)} = true`);

@@ -55,6 +55,15 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const psQs = projectId ? `&psProjectId=${projectId}` : "";
   // Tipo di giorno analizzato: senza, si sommavano feriali+sabati+festivi.
   const [dayKind, setDayKind] = useState<"feriale" | "sabato" | "festivo">("feriale");
+  /* Validità: più precisa del giorno-tipo, perché su uno stesso giorno
+   * insistono più validità (scolastico, estivo, festivo) e sommarle darebbe
+   * un orario che non esiste in nessun periodo. "" = giorno-tipo. */
+  const [validities, setValidities] = useState<Array<{
+    id: string; code: string; name: string | null; giorni?: string[];
+    days: boolean[]; startDate: string | null; endDate: string | null; trips: number;
+  }>>([]);
+  const [calendarId, setCalendarId] = useState<string>("");
+  const calQs = calendarId ? `&calendarId=${calendarId}` : "";
   /* Due letture della stessa rete: le coincidenze con treni/navi/voli, e la
    * copertura dei poli che generano la domanda (stazioni, aeroporti, scuole,
    * lavoro). La seconda è quella che dice se le corse costruite servono. */
@@ -158,13 +167,23 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     let cancelled = false;
     setLinesLoading(true);
     const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
-    fetch(`${getApiBase()}/api/intermodal/lines?day=${dayKind}${psQs}${muniQs}`)
+    fetch(`${getApiBase()}/api/intermodal/lines?day=${dayKind}${calQs}${psQs}${muniQs}`)
       .then(r => (r.ok ? r.json() : { lines: [] }))
       .then(d => { if (!cancelled) setLines(Array.isArray(d.lines) ? d.lines : []); })
       .catch(() => { if (!cancelled) setLines([]); })
       .finally(() => { if (!cancelled) setLinesLoading(false); });
     return () => { cancelled = true; };
   }, [dayKind, psQs, scopeMode, municipality]);
+
+  useEffect(() => {
+    if (!psQs) { setValidities([]); return; }
+    let cancelled = false;
+    fetch(`${getApiBase()}/api/intermodal/validities?${psQs.replace(/^&/, "")}`)
+      .then(r => (r.ok ? r.json() : { validities: [] }))
+      .then(d => { if (!cancelled) setValidities(Array.isArray(d.validities) ? d.validities : []); })
+      .catch(() => { if (!cancelled) setValidities([]); });
+    return () => { cancelled = true; };
+  }, [psQs]);
 
   // Carica lista comuni una sola volta
   useEffect(() => {
@@ -226,7 +245,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     try {
       const routeIdsQs = effectiveRouteIds ? `&routeIds=${encodeURIComponent(effectiveRouteIds)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
-      const r = await fetch(`${getApiBase()}/api/intermodal/demand-coverage?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`);
+      const r = await fetch(`${getApiBase()}/api/intermodal/demand-coverage?radius=${radius}&day=${dayKind}${calQs}${psQs}${muniQs}${routeIdsQs}`);
       const j = await r.json().catch(() => null);
       if (!r.ok || !j || !Array.isArray(j.generators)) {
         throw new Error(j?.error ?? j?.detail ?? `Il server ha risposto ${r.status}.`);
@@ -236,7 +255,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       toast.error("Errore nel calcolo della copertura", { description: e?.message });
       setDemand(null);
     } finally { setDemandLoading(false); }
-  }, [radius, dayKind, psQs, scopeMode, municipality, effectiveRouteIds]);
+  }, [radius, dayKind, calQs, psQs, scopeMode, municipality, effectiveRouteIds]);
 
   useEffect(() => { if (view === "copertura") void runDemand(); }, [view, runDemand]);
 
@@ -1078,10 +1097,47 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     )}
                   </div>
 
+                  {/* Validità: quando il progetto ne ha, è la scelta giusta —
+                      un giorno-tipo somma validità che non coesistono. */}
+                  {validities.length > 0 && (
+                    <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
+                      <p className="text-[10px] text-slate-300 font-medium">Validità analizzata</p>
+                      <select
+                        value={calendarId}
+                        onChange={e => setCalendarId(e.target.value)}
+                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
+                        <option value="">Giorno-tipo (tutte le validità del giorno)</option>
+                        {validities.map(v => (
+                          <option key={v.id} value={v.id}>
+                            {v.code}{v.name ? ` — ${v.name}` : ""} · {v.trips} corse
+                          </option>
+                        ))}
+                      </select>
+                      {calendarId ? (() => {
+                        const v = validities.find(x => x.id === calendarId);
+                        if (!v) return null;
+                        const GG = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"];
+                        const on = (v.days ?? []).map((d, i) => (d ? GG[i] : null)).filter(Boolean);
+                        return (
+                          <p className="text-[9px] text-slate-500">
+                            {on.join(" ")} {v.startDate ? `· dal ${v.startDate}` : ""} {v.endDate ? `al ${v.endDate}` : ""}
+                          </p>
+                        );
+                      })() : (
+                        <p className="text-[9px] text-slate-500">
+                          Senza una validità si sommano tutte quelle attive nel giorno: un orario che non esiste in nessun periodo.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   {/* Giorno-tipo: senza, si sommavano feriali+sabati+festivi
                       e frequenze e corse/giorno risultavano gonfiate */}
                   <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                    <p className="text-[10px] text-slate-300 font-medium">Giorno analizzato</p>
+                    <p className="text-[10px] text-slate-300 font-medium">
+                      Giorno analizzato
+                      {calendarId && <span className="text-slate-500 font-normal"> · ignorato: vale la validità scelta</span>}
+                    </p>
                     <div className="flex gap-1">
                       {([
                         { k: "feriale", label: "Feriale" },
