@@ -9,9 +9,10 @@ import { useMemo, useState } from "react";
 import {
   TrainFront, Plane, GraduationCap, Briefcase, Loader2, ChevronDown, ChevronUp,
   CheckCircle2, AlertTriangle, XCircle, Footprints, Clock, Route as RouteIcon,
+  Cross, Wrench,
 } from "lucide-react";
 
-export type GeneratorKind = "stazione" | "aeroporto" | "scuola" | "lavoro";
+export type GeneratorKind = "stazione" | "aeroporto" | "scuola" | "lavoro" | "ospedale";
 type Status = "servito" | "parziale" | "non-servito";
 
 export interface WindowVerdict {
@@ -52,6 +53,18 @@ export interface DemandCoverageResult {
   summary: { totale: number; servito: number; parziale: number; nonServito: number; lineeValutate: number };
   /** Analisi dell'orario per linea */
   schedules?: Array<{ routeId: string; route: string } & ScheduleShape>;
+  /** Lettura d'insieme della rete */
+  rete?: ScheduleShape & {
+    oraPiuServita: string | null;
+    oreScoperteDiurne: string[];
+    camminoMedioMin: number | null;
+    poliIrraggiungibili: number;
+  };
+  /** Che cosa fare, in ordine di gravità */
+  criticita?: Array<{
+    polo: string; famiglia: GeneratorKind; stato: Status;
+    gravita: number; motivo: string; azione: string; lat: number; lng: number;
+  }>;
   note?: string;
 }
 
@@ -60,6 +73,7 @@ const KIND_META: Record<GeneratorKind, { label: string; plural: string; Icon: ty
   aeroporto: { label: "Aeroporto", plural: "Aeroporti",       Icon: Plane,         color: "#a855f7" },
   scuola:    { label: "Scuola",    plural: "Scuole",          Icon: GraduationCap, color: "#f59e0b" },
   lavoro:    { label: "Lavoro",    plural: "Aree di lavoro",  Icon: Briefcase,     color: "#10b981" },
+  ospedale:  { label: "Ospedale",  plural: "Sanità",          Icon: Cross,         color: "#ef4444" },
 };
 
 const STATUS_META: Record<Status, { label: string; color: string; bg: string; Icon: typeof CheckCircle2 }> = {
@@ -143,6 +157,50 @@ export default function DemandCoverage({
           )}
         </div>
       </div>
+
+      {/* ─── La rete nel suo insieme ─── */}
+      {data.rete && data.rete.trips > 0 && (
+        <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-2.5 space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">La rete nel giorno scelto</p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
+            <span className="text-slate-500">Servizio</span>
+            <span className="text-slate-200 font-mono text-right">{data.rete.firstTime}–{data.rete.lastTime}</span>
+            <span className="text-slate-500">Ora di punta</span>
+            <span className="text-slate-200 font-mono text-right">{data.rete.oraPiuServita ?? "—"}</span>
+            {data.rete.camminoMedioMin != null && (<>
+              <span className="text-slate-500">Cammino medio ai poli</span>
+              <span className="text-slate-200 font-mono text-right">{data.rete.camminoMedioMin}′</span>
+            </>)}
+            {data.rete.poliIrraggiungibili > 0 && (<>
+              <span className="text-red-400/80">Poli senza fermate</span>
+              <span className="text-red-400 font-mono text-right">{data.rete.poliIrraggiungibili}</span>
+            </>)}
+          </div>
+          {data.rete.oreScoperteDiurne.length > 0 && (
+            <p className="text-[9px] text-amber-300/90">
+              Ore diurne senza corse: {data.rete.oreScoperteDiurne.join(", ")}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ─── Che cosa fare, in ordine ─── */}
+      {data.criticita && data.criticita.length > 0 && (
+        <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1.5">
+          <p className="text-[10px] uppercase tracking-wide text-amber-300/90 font-semibold flex items-center gap-1">
+            <Wrench className="w-3 h-3" /> Dove intervenire ({data.criticita.length})
+          </p>
+          {data.criticita.slice(0, 6).map((c, i) => (
+            <div key={i} className="text-[10px] space-y-0.5 pb-1.5 border-b border-amber-500/10 last:border-0">
+              <p className="font-semibold text-slate-200 truncate">{c.polo}</p>
+              <p className="text-slate-400 leading-snug">{c.azione}</p>
+            </div>
+          ))}
+          {data.criticita.length > 6 && (
+            <p className="text-[9px] text-slate-500">+{data.criticita.length - 6} altri poli da sistemare</p>
+          )}
+        </div>
+      )}
 
       {/* ─── Per famiglia di polo ─── */}
       <div className="grid grid-cols-2 gap-1.5">
