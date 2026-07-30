@@ -30,7 +30,7 @@ import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
   resolveSource, parseDayKind, loadStops, loadRoutes, loadActiveTrips, loadPassages,
-  loadValidities, loadDayTypes, type DayKind, type Source,
+  loadValidities, loadDayTypes, projectBbox, type DayKind, type Source,
 } from "./intermodal-source";
 
 const router: IRouter = Router();
@@ -238,7 +238,10 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     const maxWalkKm = Math.min(3, Math.max(0.1, parseFloat(req.query.radius as string) || 0.5));
     const windows = readWindows(req.query);
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
-    const bbox = municipality ? await municipalityBbox(municipality) : null;
+    /* Area di riferimento: il comune scelto, altrimenti l'impronta della rete
+     * del progetto. Senza, i poli venivano presi da tutta la provincia (anche
+     * a decine di km) e "servito %" crollava a zero. */
+    const bbox = municipality ? await municipalityBbox(municipality) : await projectBbox(src);
 
     const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
     const routeFilter: Set<string> | null = routeIdsParam

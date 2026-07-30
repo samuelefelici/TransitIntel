@@ -67,6 +67,30 @@ export async function resolveSource(req: any): Promise<Source> {
   return { kind: "gtfs", psProjectId: null, feedId: await getLatestFeedId(req) };
 }
 
+export interface Bbox { minLat: number; maxLat: number; minLng: number; maxLng: number }
+
+/**
+ * Bounding box delle fermate del progetto (con tolleranza), o null fuori da
+ * un progetto. Serve a confinare i poli attrattori (POI) all'AREA della rete:
+ * senza, la copertura della domanda pescava i POI di tutta la provincia —
+ * poli a decine di km che un urbano non può servire — e il "servito %"
+ * risultava schiacciato a zero.
+ */
+export async function projectBbox(src: Source, padKm = 1.5): Promise<Bbox | null> {
+  if (src.kind !== "ps" || !src.psProjectId) return null;
+  const r = await db.execute<any>(sql`
+    SELECT min(lat) AS min_lat, max(lat) AS max_lat, min(lon) AS min_lng, max(lon) AS max_lng
+      FROM ps_stops WHERE project_id = ${src.psProjectId}::uuid`);
+  const b = (r as any).rows?.[0];
+  if (b?.min_lat == null) return null;
+  const padLat = padKm / 111;                    // ~111 km per grado di latitudine
+  const padLng = padKm / 85;                     // ~85 km per grado a lat. 43° (Marche)
+  return {
+    minLat: Number(b.min_lat) - padLat, maxLat: Number(b.max_lat) + padLat,
+    minLng: Number(b.min_lng) - padLng, maxLng: Number(b.max_lng) + padLng,
+  };
+}
+
 const hhmmToMin = (t: string | null): number | null => {
   if (!t) return null;
   const m = /^(\d{1,3}):(\d{2})/.exec(t);
