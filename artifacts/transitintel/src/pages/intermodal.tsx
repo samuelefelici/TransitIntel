@@ -355,9 +355,12 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         const hoursSince = status.lastSyncedAt
           ? (Date.now() - new Date(status.lastSyncedAt).getTime()) / 36e5
           : Infinity;
-        // Ri-sincronizza se mai fatto o se passate più di 6 ore
+        // Ri-sincronizza se mai fatto o se passate più di 6 ore.
+        // Scoping al progetto: senza psProjectId la sync girava su tutta la
+        // provincia (feed GTFS), fuori tema e pesante.
         if (hoursSince >= 6 && !cancelled) {
-          await fetch(`${getApiBase()}/api/intermodal/sync-schedules`, { method: "POST" });
+          const qs = psQs ? `?${psQs.replace(/^&/, "")}` : "";
+          await fetch(`${getApiBase()}/api/intermodal/sync-schedules${qs}`, { method: "POST" });
           if (!cancelled) {
             const s2 = await fetch(`${getApiBase()}/api/intermodal/sync-status`);
             const d2 = await s2.json();
@@ -367,7 +370,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       } catch { /* silent */ }
     })();
     return () => { cancelled = true; };
-  }, [embedded]);
+  }, [embedded, psQs]);
 
   /** Le proposte sono modifiche d'orario: si portano in Corse. In attesa di
    *  un'applicazione automatica, si esportano in un formato incollabile. */
@@ -391,8 +394,16 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const syncSchedules = useCallback(async () => {
     setSyncing(true);
     try {
-      const muniQs = scopeMode === "municipality" && municipality ? `?municipality=${encodeURIComponent(municipality)}` : "";
-      const r = await fetch(`${getApiBase()}/api/intermodal/sync-schedules${muniQs}`, { method: "POST" });
+      /* La sync deve girare sulla RETE DEL PROGETTO, non sul feed GTFS: senza
+       * psProjectId il backend scopriva gli hub su tutta la provincia (troppi,
+       * e con orari che col progetto non c'entrano). Il comune resta solo un
+       * filtro geografico. */
+      const parts = [
+        psQs.replace(/^&/, ""),
+        scopeMode === "municipality" && municipality ? `municipality=${encodeURIComponent(municipality)}` : "",
+      ].filter(Boolean);
+      const qs = parts.length ? `?${parts.join("&")}` : "";
+      const r = await fetch(`${getApiBase()}/api/intermodal/sync-schedules${qs}`, { method: "POST" });
       const data = await r.json();
       if (data.success) {
         setLastSync(data.syncedAt);
@@ -421,7 +432,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     } finally {
       setSyncing(false);
     }
-  }, [runAnalysis, scopeMode, municipality]);
+  }, [runAnalysis, scopeMode, municipality, psQs]);
 
   // Fetch on-demand dello schedule settimanale di un singolo hub.
   // NIENTE auto-fetch: l'utente deve cliccare il pulsante "Carica orari treni"
