@@ -66,6 +66,8 @@ export interface HubAnalysis {
     source?: "curated" | "gtfs-auto";
     scheduleSource?: ScheduleSource;
     scheduleFetchedAt?: string;
+    /** Vocabolario unico per il badge di fiducia (TrustChip). */
+    dataTrust?: "reale" | "stima" | "assente";
   };
   serviceScore?: {
     score: number; level: string; linesServing: number; destinationsReached: number;
