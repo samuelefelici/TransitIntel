@@ -61,6 +61,23 @@ function giorniLabel(days?: boolean[]): string {
 }
 
 // ─── Component ──────────────────────────────────────────────
+/** Badge di fiducia sul dato-orario: reale (con data) / stima / assente.
+ *  È l'UNICO badge, così l'utente non deve interpretare token grezzi. */
+function TrustChip({ trust, fetchedAt }: { trust?: "reale" | "stima" | "assente"; fetchedAt?: string | null }) {
+  const t = trust ?? "assente";
+  const meta = t === "reale"
+    ? { label: fetchedAt ? `Orari reali · ${new Date(fetchedAt).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" })}` : "Orari reali (ViaggiaTreno)", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" }
+    : t === "stima"
+      ? { label: "Stima non verificata", cls: "bg-amber-500/15 text-amber-300 border-amber-500/40" }
+      : { label: "Nessun orario", cls: "bg-slate-600/20 text-slate-400 border-slate-600/40" };
+  return (
+    <span className={`inline-flex items-center gap-1 text-[8px] font-semibold px-1.5 py-0.5 rounded border ${meta.cls}`}>
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: "currentColor" }} />
+      {meta.label}
+    </span>
+  );
+}
+
 export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
   const routeIdsKey = routeIds && routeIds.length > 0 ? routeIds.join(",") : "";
@@ -95,6 +112,10 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const [demand, setDemand] = useState<DemandCoverageResult | null>(null);
   const [demandLoading, setDemandLoading] = useState(false);
   const [selectedGenerator, setSelectedGenerator] = useState<string | null>(null);
+  /* POI cliccabile: prima erano puntini muti. Al click apriamo un popup che
+   * dice CHE COSA è (nome, categoria, distanza dall'hub). */
+  const [selectedPoi, setSelectedPoi] = useState<{ lng: number; lat: number; name: string; hasName: boolean; category: string; travelContext?: string; distKm: number | null } | null>(null);
+  const [hoveringPoi, setHoveringPoi] = useState(false);
 
   /* ─── Selezione delle linee: pilota analisi E mappa ───────────────────
    * Vuoto = tutta la rete. La stessa selezione filtra copertura,
@@ -151,6 +172,8 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   type WeeklyHubSchedule = {
     hubId: string;
     source: string;
+    dataTrust?: "reale" | "stima" | "assente";
+    fetchedAt?: string | null;
     weekStart: string | null;
     weeklyDepartures: { destination: string; times: string[] }[][] | null;
     weeklyArrivals: { origin: string; times: string[] }[][] | null;
@@ -234,7 +257,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       const routeIdsQs = effectiveRouteIds ? `&routeIds=${encodeURIComponent(effectiveRouteIds)}` : "";
       const muniQs = scopeMode === "municipality" && municipality ? `&municipality=${encodeURIComponent(municipality)}` : "";
       const [analysisRes, shapesRes, poisRes, hubsRes, syncRes] = await Promise.all([
-        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}&day=${dayKind}${psQs}${muniQs}${routeIdsQs}`),
+        fetch(`${getApiBase()}/api/intermodal/analyze?radius=${radius}&day=${dayKind}${calQs}${psQs}${muniQs}${routeIdsQs}`),
         fetch(`${getApiBase()}/api/intermodal/shapes?radius=${radius}${psQs}${muniQs}${routeIdsQs}`),
         fetch(`${getApiBase()}/api/intermodal/pois?radius=${poiRadiusKm}${psQs}${muniQs}${routeIdsQs}`),
         fetch(`${getApiBase()}/api/intermodal/hubs?${(psQs + muniQs + routeIdsQs).replace(/^&/, "")}`),
@@ -269,7 +292,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     } finally {
       setLoading(false);
     }
-  }, [radius, effectiveRouteIds, poiRadiusKm, scopeMode, municipality, dayKind, psQs]);
+  }, [radius, effectiveRouteIds, poiRadiusKm, scopeMode, municipality, dayKind, calQs, psQs]);
 
   useEffect(() => { runAnalysis(); }, [runAnalysis]);
 
@@ -504,7 +527,10 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     const features = hubPoisData.flatMap(hp =>
       hp.pois.filter(p => { if (seen.has(p.id)) return false; seen.add(p.id); return true; }).map(p => ({
         type: "Feature" as const,
-        properties: { name: p.name || p.category, category: p.category, travelContext: p.travelContext },
+        properties: {
+          name: p.name || "", hasName: p.name ? 1 : 0, category: p.category,
+          travelContext: p.travelContext, distKm: p.distKm ?? null,
+        },
         geometry: { type: "Point" as const, coordinates: [p.lng, p.lat] },
       }))
     );
@@ -555,6 +581,22 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         mapStyle={MAP_STYLES[viewMode]}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%" }}
+        interactiveLayerIds={showPois ? ["poi-markers-dot"] : []}
+        cursor={hoveringPoi ? "pointer" : undefined}
+        onMouseMove={(e) => setHoveringPoi(!!e.features?.length)}
+        onClick={(e) => {
+          const f = e.features?.[0];
+          if (f && f.layer?.id === "poi-markers-dot") {
+            const pr = f.properties as any;
+            const c = (f.geometry as any)?.coordinates;
+            setSelectedPoi({
+              lng: c?.[0], lat: c?.[1],
+              name: pr?.name ?? "", hasName: !!Number(pr?.hasName),
+              category: pr?.category ?? "", travelContext: pr?.travelContext,
+              distKm: pr?.distKm != null && pr?.distKm !== "" ? Number(pr.distKm) : null,
+            });
+          }
+        }}
         fog={{ color: "rgb(10, 10, 30)", "high-color": "rgb(20, 10, 50)", "horizon-blend": 0.08, "star-intensity": 0.2 } as any}
       >
         <Source id="mapbox-dem" type="raster-dem" url="mapbox://mapbox.mapbox-terrain-dem-v1" tileSize={512} maxzoom={14} />
@@ -619,6 +661,30 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
               "circle-stroke-color": "#000", "circle-stroke-width": 0.5, "circle-opacity": 0.8,
             }} />
           </Source>
+        )}
+
+        {/* ── POPUP POI: dice CHE COSA è il puntino ── */}
+        {selectedPoi && selectedPoi.lng != null && (
+          <Popup longitude={selectedPoi.lng} latitude={selectedPoi.lat} anchor="bottom"
+            offset={12} closeButton onClose={() => setSelectedPoi(null)} className="poi-popup">
+            <div className="px-2 py-1.5 min-w-[150px]">
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span style={{ color: POI_ICONS[selectedPoi.category]?.color ?? "#888" }}>
+                  {POI_ICONS[selectedPoi.category]?.icon}
+                </span>
+                <span className="text-xs font-bold text-slate-100">
+                  {selectedPoi.hasName ? selectedPoi.name : <span className="italic text-slate-400">Senza nome</span>}
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                {POI_ICONS[selectedPoi.category]?.label ?? selectedPoi.category}
+                {selectedPoi.distKm != null ? ` · ${Math.round(selectedPoi.distKm * 1000)} m dall'hub` : ""}
+              </p>
+              {selectedPoi.travelContext && (
+                <p className="text-[9px] text-slate-500 mt-0.5">{selectedPoi.travelContext}</p>
+              )}
+            </div>
+          </Popup>
         )}
 
         {/* Hub walk radius circles */}
@@ -880,7 +946,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                         </div>
                       </div>
                     )}
-                    <p className="text-[8px] text-slate-600 mt-1.5 italic">Fonte: {sched.source}</p>
+                    <div className="mt-1.5"><TrustChip trust={sched.dataTrust ?? (sched.source === "curated" ? "stima" : sched.source === "live" ? "reale" : "assente")} fetchedAt={sched.fetchedAt} /></div>
                   </div>
                 );
               })()}
@@ -1149,95 +1215,65 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     )}
                   </div>
 
-                  {/* Validità: quando il progetto ne ha, è la scelta giusta —
-                      un giorno-tipo somma validità che non coesistono. */}
-                  {validities.length > 0 && (
-                    <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                      <p className="text-[10px] text-slate-300 font-medium">Validità analizzata</p>
-                      <select
-                        value={calendarId}
-                        onChange={e => setCalendarId(e.target.value)}
-                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
-                        <option value="">Giorno-tipo (tutte le validità del giorno)</option>
-                        {validities.map(v => (
-                          <option key={v.id} value={v.id}>
-                            {v.name || giorniLabel(v.days) || v.code} · {v.trips} corse
-                          </option>
-                        ))}
-                      </select>
-                      {calendarId ? (() => {
+                  {/* ── UN SOLO controllo "Periodo analizzato" ──────────────
+                      Prima c'erano tre selettori sovrapposti (giorno-tipo
+                      aziendale / validità / giorno generico) che si
+                      oscuravano a vicenda. Ora uno solo, con gruppi ordinati
+                      dal più fedele al più grezzo. La scelta è mutuamente
+                      esclusiva: sceglierne una azzera le altre. */}
+                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
+                    <p className="text-[10px] text-slate-300 font-medium">Periodo analizzato</p>
+                    <select
+                      value={categoryId ? `cat:${categoryId}` : calendarId ? `cal:${calendarId}` : `day:${dayKind}`}
+                      onChange={e => {
+                        const v = e.target.value;
+                        if (v.startsWith("cat:")) { setCategoryId(v.slice(4)); setCalendarId(""); }
+                        else if (v.startsWith("cal:")) { setCalendarId(v.slice(4)); setCategoryId(""); }
+                        else { setDayKind(v.slice(4) as "feriale" | "sabato" | "festivo"); setCategoryId(""); setCalendarId(""); }
+                      }}
+                      className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
+                      {dayTypes.length > 0 && (
+                        <optgroup label="Giorno-tipo aziendale (consigliato)">
+                          {dayTypes.map(d => (
+                            <option key={d.id} value={`cat:${d.id}`}>
+                              {d.name} · {d.trips} corse{d.giorni ? ` · ${d.giorni} gg/anno` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {validities.length > 0 && (
+                        <optgroup label="Validità di servizio">
+                          {validities.map(v => (
+                            <option key={v.id} value={`cal:${v.id}`}>
+                              {v.name || giorniLabel(v.days) || v.code} · {v.trips} corse
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="Giorno generico (ripiego)">
+                        <option value="day:feriale">Feriale</option>
+                        <option value="day:sabato">Sabato</option>
+                        <option value="day:festivo">Festivo</option>
+                      </optgroup>
+                    </select>
+                    {/* Riga di tracciabilità: che cosa si sta davvero analizzando */}
+                    {(() => {
+                      if (categoryId) {
+                        const d = dayTypes.find(x => x.id === categoryId);
+                        return d ? <p className="text-[9px] text-emerald-400/80">Giorno-tipo aziendale: {d.name} — le corse di questa categoria.</p> : null;
+                      }
+                      if (calendarId) {
                         const v = validities.find(x => x.id === calendarId);
                         if (!v) return null;
-                        const GG = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"];
-                        const on = (v.days ?? []).map((d, i) => (d ? GG[i] : null)).filter(Boolean);
-                        return (
-                          <p className="text-[9px] text-slate-500">
-                            {on.join(" ")} {v.startDate ? `· dal ${v.startDate}` : ""} {v.endDate ? `al ${v.endDate}` : ""}
-                          </p>
-                        );
-                      })() : (
-                        <p className="text-[9px] text-slate-500">
-                          Senza una validità si sommano tutte quelle attive nel giorno: un orario che non esiste in nessun periodo.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Giorno-tipo AZIENDALE: le categorie del calendario
-                      (Lu-Ve scuole chiuse, sabato estivo, festivo…) con le
-                      corse che vi appartengono. */}
-                  {dayTypes.length > 0 && (
-                    <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                      <p className="text-[10px] text-slate-300 font-medium">Giorno-tipo (calendario aziendale)</p>
-                      <select
-                        value={categoryId}
-                        onChange={e => setCategoryId(e.target.value)}
-                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
-                        <option value="">— scegli un giorno-tipo —</option>
-                        {dayTypes.map(d => (
-                          <option key={d.id} value={d.id}>
-                            {d.name} · {d.trips} corse{d.giorni ? ` · ${d.giorni} gg/anno` : ""}
-                          </option>
-                        ))}
-                      </select>
-                      {!categoryId && (
-                        <p className="text-[9px] text-slate-500">
-                          Senza scelta si usa il giorno generico qui sotto, che somma categorie diverse.
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Giorno-tipo generico: usato solo se non si sceglie una
-                      categoria aziendale */}
-                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                    <p className="text-[10px] text-slate-300 font-medium">
-                      Giorno analizzato
-                      {(calendarId || categoryId) && (
-                        <span className="text-slate-500 font-normal">
-                          {" "}· ignorato: vale {categoryId ? "il giorno-tipo aziendale" : "la validità"}
-                        </span>
-                      )}
-                    </p>
-                    <div className="flex gap-1">
-                      {([
-                        { k: "feriale", label: "Feriale" },
-                        { k: "sabato", label: "Sabato" },
-                        { k: "festivo", label: "Festivo" },
-                      ] as const).map(o => (
-                        <button key={o.k} onClick={() => setDayKind(o.k)}
-                          className={`flex-1 text-[9px] px-2 py-1 rounded transition-all border ${
-                            dayKind === o.k
-                              ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 font-semibold"
-                              : "bg-slate-900/40 text-slate-400 border-slate-700/40 hover:text-slate-200"
-                          }`}>{o.label}</button>
-                      ))}
-                    </div>
+                        return <p className="text-[9px] text-slate-500">Validità: {v.name || v.code}{v.startDate ? ` · ${v.startDate}→${v.endDate}` : ""}.</p>;
+                      }
+                      return <p className="text-[9px] text-amber-300/70">Giorno generico: somma le validità attive quel giorno — un orario che non esiste in nessun periodo. Scegli un giorno-tipo aziendale per un dato fedele.</p>;
+                    })()}
                     {result?.scope && (
                       <p className="text-[8px] text-slate-500">
                         {result.scope.calendarApplied
                           ? `${result.scope.tripsConsidered} corse circolanti su ${result.scope.tripsBeforeCalendar} totali`
-                          : "Calendario GTFS assente: conteggio su tutte le corse"}
+                          : "Calendario assente: conteggio su tutte le corse"}
                       </p>
                     )}
                   </div>
@@ -1840,7 +1876,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                       const nArr = arr.reduce((s, a) => s + a.times.length, 0);
                                       return (
                                         <div className="space-y-2">
-                                          <p className="text-[8px] text-slate-500">{nArr} arrivi · {nDep} partenze {sched.source ? `· ${sched.source}` : ""}</p>
+                                          <p className="text-[8px] text-slate-500 flex items-center gap-1">{nArr} arrivi · {nDep} partenze <TrustChip trust={sched.dataTrust ?? (sched.source === "curated" ? "stima" : sched.source === "live" ? "reale" : "assente")} fetchedAt={sched.fetchedAt} /></p>
                                           <div className="grid grid-cols-2 gap-2">
                                             <div>
                                               <p className="text-[8px] text-sky-400 font-bold mb-0.5">🚆 ARRIVI</p>
@@ -2103,16 +2139,15 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                 )
               )}
               {showPois && (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Briefcase className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="text-[10px] text-slate-400">POI lavoro (treno)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Palmtree className="w-3.5 h-3.5 text-violet-400" />
-                    <span className="text-[10px] text-slate-400">POI turismo (porto)</span>
-                  </div>
-                </>
+                <div className="pt-1 border-t border-slate-700/30 grid grid-cols-2 gap-x-2 gap-y-1">
+                  {Object.entries(POI_ICONS).map(([cat, meta]) => (
+                    <div key={cat} className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta.color }} />
+                      <span className="text-[9px] text-slate-400 truncate">{meta.label}</span>
+                    </div>
+                  ))}
+                  <p className="col-span-2 text-[8px] text-slate-600">Clicca un punto per identificarlo.</p>
+                </div>
               )}
               <div className="pt-1 border-t border-slate-700/30 flex flex-wrap gap-1.5">
                 <div className="flex items-center gap-1"><div className="w-4 h-4 rounded-full border-2 border-emerald-400 bg-transparent" /><span className="text-[9px] text-slate-500">≥70%</span></div>
