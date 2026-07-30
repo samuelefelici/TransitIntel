@@ -279,6 +279,7 @@ async function persistSchedule(hubId: string, sched: HubSchedule): Promise<void>
 export async function fetchTrainScheduleFromViaggiaTreno(
   stationName: string,
   hint?: string | null,
+  deadline?: number,
 ): Promise<HubSchedule | null> {
   // Lista di candidate query: prima pulita dallo stopName, poi il hint
   const candidates: string[] = [];
@@ -295,13 +296,14 @@ export async function fetchTrainScheduleFromViaggiaTreno(
   if (hint && hint.length >= 3) candidates.push(hint.toUpperCase());
 
   for (const q of candidates) {
-    const sched = await tryFetchViaggiaTreno(q);
+    if (deadline && Date.now() > deadline) break;
+    const sched = await tryFetchViaggiaTreno(q, deadline);
     if (sched) return sched;
   }
   return null;
 }
 
-async function tryFetchViaggiaTreno(query: string): Promise<HubSchedule | null> {
+async function tryFetchViaggiaTreno(query: string, deadline?: number): Promise<HubSchedule | null> {
   try {
     // 1) Autocomplete per trovare stationCode
     const autocompleteUrl = `http://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno/autocompletaStazione/${encodeURIComponent(query)}`;
@@ -348,6 +350,15 @@ async function tryFetchViaggiaTreno(query: string): Promise<HubSchedule | null> 
     // Batch di 6 chiamate parallele per non stressare l'API (totale 84/stazione)
     const BATCH = 6;
     for (let i = 0; i < jobs.length; i += BATCH) {
+      // Budget di tempo: se lo scaricamento completo (7 giorni × 8 fasce) non
+      // sta nel tempo concesso alla richiesta HTTP, ci si ferma e si restituisce
+      // ciò che si è raccolto finora. Il resto lo completa il cron notturno.
+      // Senza questo, una singola stazione poteva superare il timeout del
+      // gateway e far fallire l'intero endpoint con un 500.
+      if (deadline && Date.now() > deadline) {
+        console.warn(`[viaggiatreno] deadline raggiunta per ${stationCode}: dati parziali (${i}/${jobs.length} job)`);
+        break;
+      }
       const batch = jobs.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(({ url }) =>
         fetch(url, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null).catch(() => null),
@@ -2005,11 +2016,36 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
       fetchedFrom: string | null;
     }> = [];
 
+    /* Budget di tempo per l'intera richiesta: lo scraping ViaggiaTreno è
+     * pesante (fino a ~112 chiamate per stazione) e con più hub ferroviari
+     * poteva superare il timeout del gateway → 500. Con un budget, ogni
+     * stazione scarica finché c'è tempo e poi ci si ferma: il cron notturno
+     * completa il resto. Gli hub non raggiunti restano "skipped". */
+    const syncDeadline = Date.now() + 18000;
+
     for (const h of effectiveHubs) {
       // Le stazioni passano SEMPRE da ViaggiaTreno, anche quelle curate: la
       // tabella interna è solo una stima e non va spacciata per orario reale.
       if (h.type === "railway") {
-        const sched = await fetchTrainScheduleFromViaggiaTreno(h.name, municipalityName);
+        // Oltre il budget non si avviano nuove stazioni: si segnano come non
+        // ancora sincronizzate, senza rischiare il timeout dell'endpoint.
+        if (Date.now() > syncDeadline) {
+          syncResults.push({
+            id: h.id, name: h.name, type: h.type,
+            source: h.source === "curated" ? "curated" : "gtfs-auto", status: "skipped",
+            arrivals: 0, departures: 0,
+            fetchedFrom: "in coda: verrà completato dalla sync automatica",
+          });
+          continue;
+        }
+        // Ogni stazione isolata: un errore o una lentezza non deve far fallire
+        // l'intero endpoint (prima un singolo throw → 500 per tutto).
+        let sched: HubSchedule | null = null;
+        try {
+          sched = await fetchTrainScheduleFromViaggiaTreno(h.name, municipalityName, syncDeadline);
+        } catch (e) {
+          console.warn(`[sync-schedules] hub ${h.name} fallito:`, (e as Error).message);
+        }
         if (sched) {
           dynamicHubSchedules.set(h.id, sched);
           await persistSchedule(h.id, sched);
