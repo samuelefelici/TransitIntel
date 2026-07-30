@@ -247,15 +247,23 @@ export async function loadActiveTrips(
       SELECT id::text AS id FROM ps_calendars
        WHERE project_id = ${src.psProjectId}::uuid AND ${sql.raw(col)} = true`);
     const active = new Set<string>(((cal as any).rows ?? []).map((x: any) => String(x.id)));
-    const hasCalendars = await db.execute<any>(sql`
-      SELECT count(*)::int AS n FROM ps_calendars WHERE project_id = ${src.psProjectId}::uuid`);
-    const anyCal = Number((hasCalendars as any).rows?.[0]?.n ?? 0) > 0;
+    /* Filtriamo per giorno SOLO se il progetto usa davvero i flag settimanali
+     * (lunedì…domenica) sui calendari. Molte reti aziendali modellano la
+     * validità come periodi/categorie e lasciano quei flag a zero: in quel
+     * caso "active" sarebbe vuoto e scartare ogni corsa con calendar_id
+     * azzererebbe l'intera rete — la corsa c'è, ma il giorno-tipo generico la
+     * buttava via. Senza flag settimanali si contano tutte le corse. */
+    const flags = await db.execute<any>(sql`
+      SELECT count(*)::int AS n FROM ps_calendars
+       WHERE project_id = ${src.psProjectId}::uuid
+         AND (monday OR tuesday OR wednesday OR thursday OR friday OR saturday OR sunday)`);
+    const weekdayModelUsed = Number((flags as any).rows?.[0]?.n ?? 0) > 0;
 
     const trips = await db.execute<any>(sql`
       SELECT id::text AS trip_id, route_id::text AS route_id, calendar_id::text AS calendar_id
         FROM ps_trips WHERE project_id = ${src.psProjectId}::uuid`);
     for (const t of ((trips as any).rows ?? [])) {
-      if (anyCal && t.calendar_id && !active.has(String(t.calendar_id))) continue;
+      if (weekdayModelUsed && t.calendar_id && !active.has(String(t.calendar_id))) continue;
       out.set(String(t.trip_id), String(t.route_id));
     }
     return out;
