@@ -6,7 +6,7 @@ import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-u
 import { getLatestFeedId } from "./gtfs-helpers";
 import {
   resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages,
-  parseDayKind, type DayKind,
+  parseDayKind, projectBbox, type DayKind,
 } from "./intermodal-source";
 
 const router: IRouter = Router();
@@ -1854,19 +1854,23 @@ router.get("/intermodal/pois", async (req, res) => {
       : null;
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
 
-    // Calcola bbox dal municipality se fornito
+    const srcP = await resolveSource(req);
+    // Area di riferimento: comune scelto, altrimenti l'impronta della rete del
+    // progetto. Confina i POI mostrati sulla mappa all'area effettiva.
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
     if (municipality) bbox = await municipalityBbox(municipality);
+    else bbox = await projectBbox(srcP);
 
-    const srcP = await resolveSource(req);
     const effectiveHubs = await discoverHubs({ bbox, routeIds: routeIdsFilter, municipality, feedId: srcP.feedId, psProjectId: srcP.psProjectId });
+    const inArea = (lat: number, lng: number) =>
+      !bbox || (lat >= bbox.minLat && lat <= bbox.maxLat && lng >= bbox.minLng && lng <= bbox.maxLng);
 
     // Define POI categories per hub type
     const WORK_CATEGORIES = ["office", "hospital", "school", "industrial"];
     const TOURISM_CATEGORIES = ["leisure", "shopping"];
 
     // Fetch all relevant POIs
-    const workPois = await db.select({
+    const workPois = (await db.select({
       id: pointsOfInterest.id,
       name: pointsOfInterest.name,
       category: pointsOfInterest.category,
@@ -1874,9 +1878,9 @@ router.get("/intermodal/pois", async (req, res) => {
       lat: pointsOfInterest.lat,
     }).from(pointsOfInterest)
       .where(inArray(pointsOfInterest.category, WORK_CATEGORIES))
-      .limit(5000);
+      .limit(5000)).filter(p => inArea(p.lat, p.lng));
 
-    const tourismPois = await db.select({
+    const tourismPois = (await db.select({
       id: pointsOfInterest.id,
       name: pointsOfInterest.name,
       category: pointsOfInterest.category,
@@ -1884,7 +1888,7 @@ router.get("/intermodal/pois", async (req, res) => {
       lat: pointsOfInterest.lat,
     }).from(pointsOfInterest)
       .where(inArray(pointsOfInterest.category, TOURISM_CATEGORIES))
-      .limit(3000);
+      .limit(3000)).filter(p => inArea(p.lat, p.lng));
 
     // For each hub, find relevant POIs within radius and build connections
     const hubPois: {
