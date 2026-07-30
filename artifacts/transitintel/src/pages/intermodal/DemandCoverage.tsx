@@ -9,8 +9,9 @@ import { useMemo, useState } from "react";
 import {
   TrainFront, Plane, GraduationCap, Briefcase, Loader2, ChevronDown, ChevronUp,
   CheckCircle2, AlertTriangle, XCircle, Footprints, Clock, Route as RouteIcon,
-  Cross, Wrench,
+  Cross, Wrench, Download, Printer, Table2,
 } from "lucide-react";
+import { exportCoverageCsv, exportSchedulesCsv, openCoverageReport } from "./intermodal-export";
 
 export type GeneratorKind = "stazione" | "aeroporto" | "scuola" | "lavoro" | "ospedale";
 type Status = "servito" | "parziale" | "non-servito";
@@ -124,6 +125,25 @@ export default function DemandCoverage({
 
   return (
     <div className="space-y-3">
+      {/* ─── Esportazioni: tabelle per foglio di calcolo + report stampabile ─── */}
+      <div className="flex gap-1">
+        <button onClick={() => exportCoverageCsv(data)}
+          title="Scarica la tabella dei poli (CSV)"
+          className="flex-1 flex items-center justify-center gap-1 text-[9px] px-2 py-1.5 rounded border border-slate-700/50 text-slate-300 hover:bg-slate-700/40 transition-colors">
+          <Table2 className="w-3 h-3" /> Poli CSV
+        </button>
+        <button onClick={() => exportSchedulesCsv(data)} disabled={!data.schedules?.length}
+          title="Scarica l'orario per linea (CSV)"
+          className="flex-1 flex items-center justify-center gap-1 text-[9px] px-2 py-1.5 rounded border border-slate-700/50 text-slate-300 hover:bg-slate-700/40 disabled:opacity-40 transition-colors">
+          <Download className="w-3 h-3" /> Orari CSV
+        </button>
+        <button onClick={() => openCoverageReport(data)}
+          title="Apri il report stampabile (PDF)"
+          className="flex-1 flex items-center justify-center gap-1 text-[9px] px-2 py-1.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/15 transition-colors">
+          <Printer className="w-3 h-3" /> Report
+        </button>
+      </div>
+
       {/* ─── Verdetto complessivo ─── */}
       <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-3 space-y-2">
         <div className="flex items-baseline justify-between">
@@ -158,13 +178,60 @@ export default function DemandCoverage({
         </div>
       </div>
 
+      {/* ─── VERDETTO IN PROSA — la lettura da 5 secondi ─── */}
+      {(() => {
+        const s = data.summary, r = data.rete;
+        if (s.totale === 0) return null;
+        const bigGap = (r?.maxGapMin ?? 0) >= 120;
+        const level = pct >= 75 && !bigGap ? "adeguata"
+          : pct >= 45 ? "da rinforzare" : "insufficiente";
+        const lv = level === "adeguata"
+          ? { txt: "Rete adeguata", col: "#10b981", bg: "bg-emerald-500/10 border-emerald-500/30" }
+          : level === "da rinforzare"
+            ? { txt: "Rete da rinforzare", col: "#f59e0b", bg: "bg-amber-500/10 border-amber-500/30" }
+            : { txt: "Copertura insufficiente", col: "#ef4444", bg: "bg-red-500/10 border-red-500/30" };
+        const worst = (data.criticita ?? []).slice(0, 3).map(c => c.polo);
+        return (
+          <div className={`rounded-xl border p-3 space-y-1.5 ${lv.bg}`}>
+            <p className="text-sm font-bold" style={{ color: lv.col }}>{lv.txt}</p>
+            <p className="text-[11px] text-slate-200 leading-relaxed">
+              Le linee servono <strong>{s.servito} poli su {s.totale}</strong> ({pct}%)
+              {r && r.medianHeadwayMin != null ? <>, un bus ogni ~<strong>{r.medianHeadwayMin}′</strong></> : null}
+              {r && bigGap ? <>, con un buco fino a <strong>{Math.round(r.maxGapMin! / 6) / 10} h</strong> dalle {r.maxGapFrom}</> : null}.
+            </p>
+            {s.nonServito + s.parziale > 0 && (
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                <strong>{s.nonServito} scoperti</strong> e {s.parziale} coperti a metà
+                {worst.length > 0 ? <>: i più critici sono <span className="text-white">{worst.join(", ")}</span></> : null}.
+              </p>
+            )}
+            <p className="text-[11px] text-slate-300 leading-relaxed">
+              {level === "adeguata"
+                ? "La domanda è servita in modo diffuso; guarda comunque i poli parziali per rifinire le fasce."
+                : level === "da rinforzare"
+                  ? "Intervieni sui poli scoperti qui sotto, in ordine: ognuno riporta l'azione consigliata."
+                  : "Buona parte della domanda non è raggiunta: parti dai poli senza fermate, poi dalle fasce vuote."}
+            </p>
+          </div>
+        );
+      })()}
+
       {/* ─── La rete nel suo insieme ─── */}
       {data.rete && data.rete.trips > 0 && (
         <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-2.5 space-y-1.5">
-          <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">La rete nel giorno scelto</p>
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">La rete nel periodo scelto</p>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
             <span className="text-slate-500">Servizio</span>
             <span className="text-slate-200 font-mono text-right">{data.rete.firstTime}–{data.rete.lastTime}</span>
+            <span className="text-slate-500">Corse totali</span>
+            <span className="text-slate-200 font-mono text-right">{data.rete.trips}</span>
+            <span className="text-slate-500">Intervallo tipico</span>
+            <span className="text-slate-200 font-mono text-right">{data.rete.medianHeadwayMin != null ? `${data.rete.medianHeadwayMin}′` : "—"}</span>
+            <span className="text-slate-500">Buco più lungo</span>
+            <span className={`font-mono text-right ${(data.rete.maxGapMin ?? 0) >= 120 ? "text-amber-400" : "text-slate-200"}`}>
+              {data.rete.maxGapMin != null ? `${Math.round(data.rete.maxGapMin / 6) / 10} h` : "—"}
+              {data.rete.maxGapFrom ? <span className="text-slate-500"> dalle {data.rete.maxGapFrom}</span> : null}
+            </span>
             <span className="text-slate-500">Ora di punta</span>
             <span className="text-slate-200 font-mono text-right">{data.rete.oraPiuServita ?? "—"}</span>
             {data.rete.camminoMedioMin != null && (<>
@@ -184,21 +251,31 @@ export default function DemandCoverage({
         </div>
       )}
 
-      {/* ─── Che cosa fare, in ordine ─── */}
+      {/* ─── Che cosa fare, in ordine — ogni voce clicca sulla mappa ─── */}
       {data.criticita && data.criticita.length > 0 && (
-        <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1.5">
+        <div className="rounded-xl border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
           <p className="text-[10px] uppercase tracking-wide text-amber-300/90 font-semibold flex items-center gap-1">
             <Wrench className="w-3 h-3" /> Dove intervenire ({data.criticita.length})
           </p>
-          {data.criticita.slice(0, 6).map((c, i) => (
-            <div key={i} className="text-[10px] space-y-0.5 pb-1.5 border-b border-amber-500/10 last:border-0">
-              <p className="font-semibold text-slate-200 truncate">{c.polo}</p>
-              <p className="text-slate-400 leading-snug">{c.azione}</p>
-            </div>
-          ))}
-          {data.criticita.length > 6 && (
-            <p className="text-[9px] text-slate-500">+{data.criticita.length - 6} altri poli da sistemare</p>
-          )}
+          <div className="max-h-52 overflow-y-auto space-y-1 pr-0.5">
+            {data.criticita.map((c, i) => {
+              const cm = KIND_META[c.famiglia];
+              return (
+                <button key={i}
+                  onClick={() => onFocus?.(c.lat, c.lng, `crit-${i}`)}
+                  className="w-full text-left text-[10px] space-y-0.5 rounded px-1.5 py-1 hover:bg-amber-500/10 transition-colors">
+                  <p className="font-semibold text-slate-200 truncate flex items-center gap-1">
+                    {cm && <cm.Icon className="w-3 h-3 shrink-0" style={{ color: cm.color }} />}
+                    {c.polo}
+                    <span className="ml-auto text-[8px] font-normal shrink-0" style={{ color: STATUS_META[c.stato].color }}>
+                      {STATUS_META[c.stato].label}
+                    </span>
+                  </p>
+                  <p className="text-slate-400 leading-snug">{c.azione}</p>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 

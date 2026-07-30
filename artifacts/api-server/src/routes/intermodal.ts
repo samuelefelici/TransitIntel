@@ -474,6 +474,25 @@ interface DiscoveredHub {
 }
 export type { HubType, DiscoveredHub };
 
+/** Fiducia sul dato-orario, normalizzata: è l'UNICO vocabolario usato dal
+ *  frontend per il badge. "reale" = scaricato (ViaggiaTreno) con data,
+ *  "stima" = tabella interna non verificata, "assente" = nessun orario. */
+export type DataTrust = "reale" | "stima" | "assente";
+export function scheduleTrust(src: "live" | "stima" | "assente" | undefined | null): DataTrust {
+  return src === "live" ? "reale" : src === "stima" ? "stima" : "assente";
+}
+
+/** ID hub STABILE: non deve cambiare tra sync, analyze e GET, altrimenti gli
+ *  orari salvati non si ritrovano più. Derivato dal tipo + dagli stopId
+ *  ordinati (hash deterministico), non da group[0].stopId che dipende
+ *  dall'ordine di query. */
+export function stableHubId(type: string, stopIds: string[]): string {
+  const key = [...stopIds].filter(Boolean).sort().join("|");
+  let h = 0;
+  for (let i = 0; i < key.length; i++) { h = (h * 31 + key.charCodeAt(i)) | 0; }
+  return `gtfs-${type}-${(h >>> 0).toString(36)}`;
+}
+
 const HUB_PATTERNS: Array<{ re: RegExp; type: HubType; walkMin: number }> = [
   { re: /\b(aeroporto|airport)\b/i,                                                                           type: "airport",       walkMin: 5 },
   { re: /\b(porto|scalo maritti|ferry|marina)\b/i,                                                            type: "port",          walkMin: 4 },
@@ -486,8 +505,21 @@ const HUB_PATTERNS: Array<{ re: RegExp; type: HubType; walkMin: number }> = [
  */
 function classifyStopAsHub(stopName: string | null): { type: HubType; walkMin: number } | null {
   if (!stopName) return null;
-  for (const p of HUB_PATTERNS) {
-    if (p.re.test(stopName)) return { type: p.type, walkMin: p.walkMin };
+  const n = stopName.toLowerCase();
+  // Segnali FORTI: qualificano senza ambiguità.
+  if (/\b(aeroporto|airport)\b/.test(n)) return { type: "airport", walkMin: 5 };
+  if (/\b(porto|scalo maritti|imbarco|terminal traghett|ferry)\b/.test(n)) return { type: "port", walkMin: 4 };
+  if (/\b(autostazione|stazione autolinee|terminal bus|capolinea bus)\b/.test(n)) return { type: "bus_terminal", walkMin: 1 };
+  // Railway forte: "stazione FS/ferroviaria", binario, treno, ferrovia.
+  if (/\b(stazione\s+(fs|ferroviaria|centrale)|ferrovia(ria)?|\bf\.?s\.?\b|binari?o?|treno|scalo ferroviario|railway)\b/.test(n)) {
+    return { type: "railway", walkMin: 2 };
+  }
+  /* Railway DEBOLE: "stazione"/"staz." da sole generano fantasmi
+   * ("Via Stazione", "Piazza della Stazione"). Le accettiamo solo se il
+   * nome NON è chiaramente una via/piazza e verrà confermato altrove
+   * (prossimità a una stazione reale — vedi discoverHubs). */
+  if (/\bstaz(ione|\.)\b/.test(n) && !/\b(via|viale|piazza|largo|corso|rotonda|parcheggio)\b/.test(n)) {
+    return { type: "railway", walkMin: 3 };
   }
   return null;
 }
@@ -515,18 +547,28 @@ function clusterHubStops(
     }
     clusters.push(group);
   }
-  return clusters.map((group, idx) => {
+  return clusters.map((group) => {
+    /* Nome e coordinata dalla fermata più "ferroviaria" del gruppo, non da
+     * group[0]: così lo scalo prende il nome del fabbricato/binario e non
+     * quello di una fermata bus vicina, e il punto è la stazione, non la
+     * media del gruppo. */
+    const railScore = (nm: string) =>
+      /\b(stazione\s+(fs|ferroviaria|centrale)|ferrovia|\bf\.?s\.?\b|binari?o?|treno)\b/i.test(nm) ? 2
+        : /\bstaz/i.test(nm) ? 1 : 0;
+    const anchor = [...group].sort((a, b) => railScore(b.stopName) - railScore(a.stopName))[0];
     const latAvg = group.reduce((s, x) => s + x.lat, 0) / group.length;
     const lngAvg = group.reduce((s, x) => s + x.lng, 0) / group.length;
-    const baseName = group[0].stopName.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    const baseName = (anchor.stopName || group[0].stopName).replace(/\s*\([^)]*\)\s*$/, "").trim();
     const cleanName = baseName.length > 60 ? baseName.slice(0, 57) + "…" : baseName;
+    const stopIds = group.map(g => g.stopId);
     return {
-      id: `gtfs-${group[0].type}-${group[0].stopId}`,
+      id: stableHubId(group[0].type, stopIds),
       name: cleanName,
       type: group[0].type,
-      lat: latAvg,
-      lng: lngAvg,
-      gtfsStopIds: group.map(g => g.stopId),
+      // Per lo scalo ferroviario, il punto è la stazione (anchor), non la media.
+      lat: group[0].type === "railway" ? anchor.lat : latAvg,
+      lng: group[0].type === "railway" ? anchor.lng : lngAvg,
+      gtfsStopIds: stopIds,
       description: group[0].type === "railway"
         ? "Stazione rilevata automaticamente dai dati GTFS"
         : group[0].type === "bus_terminal"
@@ -635,14 +677,14 @@ export async function discoverHubs(opts: {
    * nel progetto sono già state cancellate. */
   const allStops = psProjectId
     ? (((await db.execute<any>(sql`
-        SELECT id::text AS "stopId", name AS "stopName", lat, lon AS lng
-          FROM ps_stops WHERE project_id = ${psProjectId}::uuid`)) as any).rows ?? [])
-    : await db.select({
-        stopId: gtfsStops.stopId,
-        stopName: gtfsStops.stopName,
-        lat: gtfsStops.stopLat,
-        lng: gtfsStops.stopLon,
-      }).from(gtfsStops).where(feedWhere(gtfsStops.feedId, feedId));
+        SELECT id::text AS "stopId", name AS "stopName", lat, lon AS lng, location_type AS "locationType"
+          FROM ps_stops WHERE project_id = ${psProjectId}::uuid
+         ORDER BY id`)) as any).rows ?? [])
+    : (((await db.execute<any>(sql`
+        SELECT stop_id AS "stopId", stop_name AS "stopName", stop_lat AS lat, stop_lon AS lng,
+               location_type AS "locationType"
+          FROM gtfs_stops WHERE ${feedId ? sql`feed_id = ${feedId}::uuid` : sql`TRUE`}
+         ORDER BY stop_id`)) as any).rows ?? []);
 
   const hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }> = [];
   for (const s of allStops) {
@@ -651,7 +693,11 @@ export async function discoverHubs(opts: {
     if (!sLat || !sLng) continue;
     if (bbox && (sLat < bbox.minLat || sLat > bbox.maxLat || sLng < bbox.minLng || sLng > bbox.maxLng)) continue;
     if (candidateStopIds && !candidateStopIds.has(s.stopId)) continue;
-    const cls = classifyStopAsHub(s.stopName);
+    /* Le fermate marcate come STAZIONE nei dati (location_type=1) sono la
+     * verità: valgono come ferroviarie anche se il gestore le chiama
+     * "Piazza Rosselli". È l'aggancio reale che rende robusta la detection. */
+    const isRealStation = Number((s as any).locationType) === 1;
+    const cls = isRealStation ? { type: "railway" as HubType, walkMin: 2 } : classifyStopAsHub(s.stopName);
     if (!cls) continue;
     // Evita duplicati con hub curati (match diretto su stopId)
     if (out.some(h => h.gtfsStopIds.includes(s.stopId))) continue;
@@ -689,7 +735,7 @@ export async function discoverHubs(opts: {
   // stazioni/autostazioni (es. linee urbane di servizio).
   if (out.length === 0 && bbox) {
     out.push({
-      id: `synthetic-center-${Date.now().toString(36)}`,
+      id: `synthetic-center-${[bbox.minLat, bbox.minLng, bbox.maxLat, bbox.maxLng].map(v => v.toFixed(3)).join("_")}`,
       name: "Centro urbano (riferimento)",
       type: "bus_terminal",
       lat: (bbox.minLat + bbox.maxLat) / 2,
@@ -818,7 +864,9 @@ router.get("/intermodal/analyze", async (req, res) => {
     const feedId = srcA.feedId;
     const psProjectId = srcA.psProjectId;
     const day = parseDayKind(req.query.day);
-    const activeTripsA = await loadActiveTrips(srcA, day);
+    const calendarId = String(req.query.calendarId ?? "").trim() || null;
+    const categoryId = String(req.query.categoryId ?? "").trim() || null;
+    const activeTripsA = await loadActiveTrips(srcA, day, calendarId, categoryId);
 
     // ─── Hub list: curated + auto-discovered (filtered by ambito) ──────
     let bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
@@ -1319,6 +1367,8 @@ router.get("/intermodal/analyze", async (req, res) => {
           // Provenienza degli orari usati per le coincidenze di questo hub
           scheduleSource: hub.scheduleSource,
           scheduleFetchedAt: hub.scheduleFetchedAt,
+          // Vocabolario unico per il badge di fiducia lato frontend
+          dataTrust: scheduleTrust(hub.scheduleSource),
         },
         isServed,
         nearbyStops: nearbyStops.slice(0, 20),
@@ -1922,27 +1972,19 @@ export async function syncAllRailwaySchedules(): Promise<{
 // per un hub. Utile per il popup hub nel frontend.
 router.get("/intermodal/hub-schedule/:hubId", async (req, res) => {
   const hubId = req.params.hubId;
-  // 1) Hub curato? Restituisci typical (no weekly per ora)
-  const curated = INTERMODAL_HUBS.find(h => h.id === hubId);
-  if (curated) {
-    res.json({
-      hubId,
-      source: "curated",
-      typicalDepartures: curated.typicalDepartures,
-      typicalArrivals: curated.typicalArrivals,
-      weeklyDepartures: null,
-      weeklyArrivals: null,
-      weekStart: null,
-      fetchedAt: null,
-    });
-    return;
-  }
-  // 2) Hub dinamico (cache da sync)
+  // Idrata la persistenza PRIMA del lookup: dopo un riavvio gli orari
+  // salvati sono su DB, non in memoria — senza questo la GET dava 404.
+  await loadPersistedSchedules();
+
+  // 1) L'orario REALE sincronizzato (ViaggiaTreno) VINCE sempre: prima si
+  //    restituiva il curato-stima e il frontend mostrava "live" su numeri
+  //    inventati. Ora la cache dinamica ha la precedenza.
   const dyn = dynamicHubSchedules.get(hubId);
   if (dyn) {
     res.json({
       hubId,
       source: dyn.source,
+      dataTrust: "reale",
       typicalDepartures: dyn.typicalDepartures,
       typicalArrivals: dyn.typicalArrivals,
       weeklyDepartures: dyn.weeklyDepartures || null,
@@ -1952,7 +1994,25 @@ router.get("/intermodal/hub-schedule/:hubId", async (req, res) => {
     });
     return;
   }
-  res.status(404).json({ error: "Hub schedule non trovato — sincronizza prima" });
+  // 2) Solo in fallback: la tabella curata, dichiarata come STIMA.
+  const curated = INTERMODAL_HUBS.find(h => h.id === hubId);
+  if (curated) {
+    const hasTimes = curated.typicalArrivals.length || curated.typicalDepartures.length;
+    res.json({
+      hubId,
+      source: "curated",
+      dataTrust: hasTimes ? "stima" : "assente",
+      typicalDepartures: curated.typicalDepartures,
+      typicalArrivals: curated.typicalArrivals,
+      weeklyDepartures: null,
+      weeklyArrivals: null,
+      weekStart: null,
+      fetchedAt: null,
+    });
+    return;
+  }
+  res.json({ hubId, source: "none", dataTrust: "assente", typicalDepartures: [], typicalArrivals: [],
+    weeklyDepartures: null, weeklyArrivals: null, weekStart: null, fetchedAt: null });
 });
 
 export default router;
