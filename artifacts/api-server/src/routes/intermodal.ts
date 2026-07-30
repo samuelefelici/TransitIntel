@@ -586,10 +586,134 @@ function clusterHubStops(
 }
 
 /**
+ * Stazioni ferroviarie dai POI Google già sincronizzati.
+ *
+ * discoverHubs scopre gli hub SOLO dalle fermate del progetto: una stazione
+ * reale che non ha una fermata-bus omonima (è il caso di Jesi) restava
+ * invisibile. I POI di categoria "transit" importati da Google Places
+ * (cron.ts → syncPoiFromGoogle) contengono le stazioni con
+ * properties.types = [train_station, transit_station, …]: sono la sorgente
+ * autorevole per agganciarle sulla mappa, senza chiamate live a ogni richiesta.
+ */
+async function discoverStationsFromPois(
+  bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null,
+): Promise<DiscoveredHub[]> {
+  try {
+    const rows: any[] = (((await db.execute<any>(sql`
+      SELECT id::text AS id, name, lat, lng, properties
+        FROM points_of_interest
+       WHERE category = 'transit'
+       ${bbox
+          ? sql`AND lat BETWEEN ${bbox.minLat} AND ${bbox.maxLat}
+                AND lng BETWEEN ${bbox.minLng} AND ${bbox.maxLng}`
+          : sql``}`)) as any).rows) ?? [];
+    const out: DiscoveredHub[] = [];
+    for (const r of rows) {
+      const props = typeof r.properties === "string" ? JSON.parse(r.properties) : (r.properties ?? {});
+      const types: string[] = Array.isArray(props.types) ? props.types : [];
+      const name: string = r.name || "";
+      // Solo ferrovie: train_station diretto, oppure transit_station col nome
+      // che parla di stazione (evita fermate bus taggate transit_station).
+      const isTrain = types.includes("train_station")
+        || (types.includes("transit_station") && /stazione|ferroviar|\bfs\b|\bf\.s\.\b/i.test(name));
+      if (!isTrain) continue;
+      const lat = typeof r.lat === "string" ? parseFloat(r.lat) : r.lat;
+      const lng = typeof r.lng === "string" ? parseFloat(r.lng) : r.lng;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      const placeId: string = props.place_id || r.id;
+      out.push({
+        // ID stabile ancorato al place_id Google: gli orari sincronizzati si
+        // ritrovano tra sync/analyze/GET anche senza fermate GTFS.
+        id: stableHubId("railway", [`gpoi:${placeId}`]),
+        name: (name.replace(/\s*\([^)]*\)\s*$/, "").trim()) || "Stazione ferroviaria",
+        type: "railway",
+        lat, lng,
+        gtfsStopIds: [],
+        description: "Stazione ferroviaria rilevata dai POI Google Places",
+        platformWalkMinutes: 2,
+        typicalDepartures: [],
+        typicalArrivals: [],
+        source: "gtfs-auto",
+        scheduleSource: "assente",
+      });
+    }
+    return out;
+  } catch {
+    // POI non ancora sincronizzati o tabella assente: non è un errore bloccante.
+    return [];
+  }
+}
+
+/* Cache in-memory delle stazioni chieste live a Google: le stazioni non si
+ * spostano, quindi una TTL lunga evita di pagare/rallentare ogni richiesta. */
+const liveStationCache = new Map<string, { at: number; hubs: DiscoveredHub[] }>();
+const LIVE_STATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+
+/**
+ * Fallback live: se nei POI sincronizzati non c'è una stazione per l'area,
+ * la si chiede a Google Places (type=train_station) attorno al box del
+ * progetto. Serve quando il sync POI non ha ancora popolato la categoria
+ * "transit". Nessuna chiave configurata → nessuna chiamata, nessun errore.
+ */
+async function liveGoogleStations(
+  box: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null,
+): Promise<DiscoveredHub[]> {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey || !box || box.minLat > box.maxLat) return [];
+  const cacheKey = [box.minLat, box.minLng, box.maxLat, box.maxLng].map(v => v.toFixed(2)).join("_");
+  const cached = liveStationCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < LIVE_STATION_TTL_MS) return cached.hubs;
+
+  const lat = (box.minLat + box.maxLat) / 2;
+  const lng = (box.minLng + box.maxLng) / 2;
+  // Raggio = mezza diagonale del box (in metri), con un minimo utile e il
+  // tetto di 50 km imposto dall'API.
+  const halfDiagKm = haversineKm(box.minLat, box.minLng, box.maxLat, box.maxLng) / 2;
+  const radius = Math.min(50000, Math.max(3000, Math.round(halfDiagKm * 1000)));
+  try {
+    const params = new URLSearchParams({
+      location: `${lat},${lng}`, radius: String(radius), type: "train_station", key: apiKey,
+    });
+    const resp = await fetch(
+      `https://maps.googleapis.com/maps/api/place/nearbysearch/json?${params}`,
+      { signal: AbortSignal.timeout(10000) },
+    );
+    if (!resp.ok) throw new Error(`Google Places HTTP ${resp.status}`);
+    const json = await resp.json() as any;
+    if (json.status !== "OK" && json.status !== "ZERO_RESULTS") {
+      throw new Error(`Google Places: ${json.status}`);
+    }
+    const hubs: DiscoveredHub[] = [];
+    for (const place of (json.results ?? [])) {
+      const pLat = place.geometry?.location?.lat, pLng = place.geometry?.location?.lng;
+      const name: string = place.name || "";
+      const placeId: string = place.place_id;
+      if (!Number.isFinite(pLat) || !Number.isFinite(pLng) || !placeId) continue;
+      // Confina all'area richiesta: nearbysearch è circolare e sfora il box.
+      if (pLat < box.minLat || pLat > box.maxLat || pLng < box.minLng || pLng > box.maxLng) continue;
+      hubs.push({
+        id: stableHubId("railway", [`gpoi:${placeId}`]),
+        name: (name.replace(/\s*\([^)]*\)\s*$/, "").trim()) || "Stazione ferroviaria",
+        type: "railway", lat: pLat, lng: pLng, gtfsStopIds: [],
+        description: "Stazione ferroviaria rilevata da Google Places",
+        platformWalkMinutes: 2, typicalDepartures: [], typicalArrivals: [],
+        source: "gtfs-auto", scheduleSource: "assente",
+      });
+    }
+    liveStationCache.set(cacheKey, { at: Date.now(), hubs });
+    return hubs;
+  } catch {
+    // Rete/quote/chiave: si restituisce la cache stantia se c'è, altrimenti nulla.
+    return cached?.hubs ?? [];
+  }
+}
+
+/**
  * Discovery principale: dati i filtri (bbox / municipality / routeIds)
  * restituisce la lista di hub da considerare, unione di:
  *   1) hub curati (INTERMODAL_HUBS) interni al bbox
  *   2) hub rilevati automaticamente dalle fermate GTFS
+ *   3) stazioni ferroviarie dai POI Google (sorgente reale, non dedotta)
  */
 export async function discoverHubs(opts: {
   bbox?: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null;
@@ -603,6 +727,26 @@ export async function discoverHubs(opts: {
 }): Promise<DiscoveredHub[]> {
   const { bbox, routeIds, includeCurated = true, feedId = null, psProjectId = null } = opts;
   const out: DiscoveredHub[] = [];
+
+  /* Area del progetto (bbox delle sue fermate, con tolleranza): serve sia a
+   * filtrare gli hub curati sia a confinare le stazioni dai POI Google, così
+   * un progetto non eredita stazioni lontane dalla sua rete. */
+  let projectBox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
+  if (psProjectId) {
+    const r = await db.execute<any>(sql`
+      SELECT min(lat) AS min_lat, max(lat) AS max_lat, min(lon) AS min_lng, max(lon) AS max_lng
+        FROM ps_stops WHERE project_id = ${psProjectId}::uuid`);
+    const b = (r as any).rows?.[0];
+    if (b?.min_lat != null) {
+      const pad = 0.05; // ~5 km di tolleranza attorno alla rete
+      projectBox = {
+        minLat: Number(b.min_lat) - pad, maxLat: Number(b.max_lat) + pad,
+        minLng: Number(b.min_lng) - pad, maxLng: Number(b.max_lng) + pad,
+      };
+    } else {
+      projectBox = { minLat: 1, maxLat: -1, minLng: 1, maxLng: -1 }; // progetto senza fermate
+    }
+  }
 
   // 1. Hub curati filtrati per bbox
   if (includeCurated) {
@@ -624,22 +768,6 @@ export async function discoverHubs(opts: {
      * come poli fantasma sempre "non serviti": dati che col progetto non
      * c'entrano nulla. Si tengono solo se cadono nell'area effettivamente
      * coperta dalle fermate del progetto. */
-    let projectBox: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null = null;
-    if (psProjectId) {
-      const r = await db.execute<any>(sql`
-        SELECT min(lat) AS min_lat, max(lat) AS max_lat, min(lon) AS min_lng, max(lon) AS max_lng
-          FROM ps_stops WHERE project_id = ${psProjectId}::uuid`);
-      const b = (r as any).rows?.[0];
-      if (b?.min_lat != null) {
-        const pad = 0.05; // ~5 km di tolleranza attorno alla rete
-        projectBox = {
-          minLat: Number(b.min_lat) - pad, maxLat: Number(b.max_lat) + pad,
-          minLng: Number(b.min_lng) - pad, maxLng: Number(b.max_lng) + pad,
-        };
-      } else {
-        projectBox = { minLat: 1, maxLat: -1, minLng: 1, maxLng: -1 }; // progetto senza fermate: nessun hub curato
-      }
-    }
     const inBox = (h: DiscoveredHub, b: typeof bbox) =>
       !b || (h.lat >= b.minLat && h.lat <= b.maxLat && h.lng >= b.minLng && h.lng <= b.maxLng);
     for (const h of curated) {
@@ -711,6 +839,20 @@ export async function discoverHubs(opts: {
   // Evita duplicati per vicinanza con hub curati (≤ 300m stesso tipo)
   const filtered = discovered.filter(d => !out.some(h => h.type === d.type && haversineKm(h.lat, h.lng, d.lat, d.lng) <= 0.3));
   out.push(...filtered);
+
+  // 3. Stazioni ferroviarie dai POI Google (sorgente reale): coprono le
+  //    stazioni prive di una fermata-bus omonima nel progetto (es. Jesi).
+  //    Confinate all'area rilevante (bbox esplicito o box del progetto).
+  const stationBox = bbox ?? projectBox;
+  let poiStations = await discoverStationsFromPois(stationBox);
+  // Se i POI sincronizzati non hanno stazioni per l'area, chiedile a Google live.
+  if (poiStations.length === 0) poiStations = await liveGoogleStations(stationBox);
+  for (const st of poiStations) {
+    if (out.some(h => h.id === st.id)) continue; // stesso place_id già presente
+    // Niente doppioni con una stazione già rilevata a ≤ 400 m.
+    if (out.some(h => h.type === "railway" && haversineKm(h.lat, h.lng, st.lat, st.lng) <= 0.4)) continue;
+    out.push(st);
+  }
 
   // ─── Applica gli orari sincronizzati (ViaggiaTreno) ─────────────────
   // Vale per TUTTI gli hub, curati compresi: un orario reale sostituisce
