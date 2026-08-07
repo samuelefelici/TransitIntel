@@ -445,4 +445,120 @@ router.delete("/ai/argos/history", async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─────────────────────────────────────────────────────────────
+// L2 "agente su obiettivo" — Argos pianifica verso un obiettivo e PROPONE.
+// Il browser passa sempre da qui: verifichiamo l'accesso al progetto, coniamo
+// il token utente e inoltriamo ad Argos /agent/*. Restano sola-proposta:
+// nessuna scrittura sui dati del progetto (le proposte vivono lato Argos).
+// ─────────────────────────────────────────────────────────────
+
+/** GET autenticato verso un endpoint Argos, inoltrando la risposta JSON. */
+async function argosGet(path: string, res: any): Promise<void> {
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}${path}`, { signal: AbortSignal.timeout(15000) });
+    const data = await upstream.json().catch(() => ({}));
+    res.status(upstream.ok ? 200 : upstream.status).json(data);
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || "Argos irraggiungibile" });
+  }
+}
+
+// POST /api/ai/argos/agent/goal { projectId, objective } → avvia un run
+router.post("/ai/argos/agent/goal", async (req, res) => {
+  const { projectId, objective } = req.body as { projectId?: string; objective?: string };
+  const obj = (objective || "").trim();
+  if (!obj) {
+    res.status(400).json({ error: "objective richiesto" });
+    return;
+  }
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const tiAuthToken = mintShortLivedUserToken(userId);
+  try {
+    // La pianificazione è multi-step (più letture + Opus): timeout generoso.
+    const upstream = await fetch(`${ARGOS_URL}/agent/goal`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_slug: ARGOS_CLIENT_SLUG,
+        project_id: projectId,
+        objective: obj,
+        ti_auth_token: tiAuthToken,
+      }),
+      signal: AbortSignal.timeout(180000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` });
+      return;
+    }
+    res.json(data);
+  } catch (err: any) {
+    logger.error({ err: err?.message }, "Argos agent goal proxy error");
+    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
+// GET /api/ai/argos/agent/runs?projectId=... → storico run del progetto
+router.get("/ai/argos/agent/runs", async (req, res) => {
+  const projectId = String(req.query.projectId || "");
+  const userId = await requireProjectMember(req, res, projectId);
+  if (!userId) return;
+  const limit = String(req.query.limit || "30");
+  await argosGet(`/agent/runs?project_id=${encodeURIComponent(projectId)}&limit=${encodeURIComponent(limit)}`, res);
+});
+
+// GET /api/ai/argos/agent/runs/:id?projectId=... → un run con le proposte
+router.get("/ai/argos/agent/runs/:id", async (req, res) => {
+  const projectId = String(req.query.projectId || "");
+  const userId = await requireProjectMember(req, res, projectId);
+  if (!userId) return;
+  const runId = String(req.params.id || "");
+  if (!/^\d+$/.test(runId)) {
+    res.status(400).json({ error: "id non valido" });
+    return;
+  }
+  await argosGet(`/agent/runs/${runId}?project_id=${encodeURIComponent(projectId)}`, res);
+});
+
+// POST /api/ai/argos/agent/proposals/:id { projectId, status } → revisione umana
+router.post("/ai/argos/agent/proposals/:id", async (req, res) => {
+  const { projectId, status } = req.body as { projectId?: string; status?: string };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const proposalId = String(req.params.id || "");
+  if (!/^\d+$/.test(proposalId)) {
+    res.status(400).json({ error: "id non valido" });
+    return;
+  }
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/proposals/${proposalId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status, project_id: projectId }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` });
+      return;
+    }
+    res.json(data);
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
 export default router;
