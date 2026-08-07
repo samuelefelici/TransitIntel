@@ -184,32 +184,190 @@ export interface SrcDayType {
   giorni: number;
 }
 
+/* ── Corse che circolano in una DATA precisa ─────────────────────────────
+ * È l'"intreccio" vero del calendario aziendale con le validità delle
+ * singole corse, la stessa regola delle unità di validità (UDP):
+ *   1. eccezioni per corsa (ps_trip_exceptions: forzata sì/no in quel giorno)
+ *   2. calendario della corsa (ps_calendars: giorni settimana + range,
+ *      con le eccezioni ps_calendar_dates) — è qui che vivono le validità
+ *      tipo "682_CodUdp:D1885" o "Unione corse gemelle"
+ *   3. in mancanza di calendario: matrice corsa × giorno-tipo
+ *      (ps_trip_day_validity, se il progetto la usa)
+ *   4. maschera giorni-settimana della corsa (attributes.weekdays)
+ *   5. vincolo categorie del calendario aziendale (una corsa marcata
+ *      "Scuole Chiuse" vale solo nei giorni di quella classe). */
+export async function tripsOnDate(projectId: string, iso: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const [yy, mm, dd] = iso.split("-").map(Number);
+  const dow = new Date(Date.UTC(yy, mm - 1, dd)).getUTCDay(); // 0=dom
+  const wdIdx = (dow + 6) % 7;                                // 0=lun (attributes.weekdays)
+  const DOWCOLS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const col = DOWCOLS[dow];
+
+  const rows = await db.execute<any>(sql`
+    SELECT t.id::text AS trip_id, t.route_id::text AS route_id, t.attributes,
+           c.id::text AS cal_id,
+           c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday,
+           c.start_date::text AS cal_start, c.end_date::text AS cal_end
+      FROM ps_trips t
+      LEFT JOIN ps_calendars c ON c.id = t.calendar_id
+     WHERE t.project_id = ${projectId}::uuid
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+       AND (t.valid_from IS NULL OR t.valid_from <= ${iso}::date)
+       AND (t.valid_to   IS NULL OR t.valid_to   >= ${iso}::date)`);
+  const trips = ((rows as any).rows ?? []) as any[];
+  if (trips.length === 0) return out;
+
+  // Eccezioni del calendario legacy per la data (1 = aggiunta, 2 = rimossa)
+  const excCal = new Map<string, number>();
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT cd.calendar_id::text AS cal_id, cd.exception_type
+        FROM ps_calendar_dates cd JOIN ps_calendars c ON c.id = cd.calendar_id
+       WHERE c.project_id = ${projectId}::uuid AND cd.date = ${iso}::date`);
+    for (const x of ((r as any).rows ?? [])) excCal.set(String(x.cal_id), Number(x.exception_type));
+  } catch { /* tabella assente */ }
+
+  // Eccezioni per corsa nella data
+  const excTrip = new Map<string, number>();
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT e.trip_id::text AS trip_id, e.exception_type
+        FROM ps_trip_exceptions e JOIN ps_trips t ON t.id = e.trip_id
+       WHERE t.project_id = ${projectId}::uuid AND e.date = ${iso}::date`);
+    for (const x of ((r as any).rows ?? [])) excTrip.set(String(x.trip_id), Number(x.exception_type));
+  } catch { /* tabella assente */ }
+
+  // Matrice corsa × giorno-tipo (solo per corse SENZA calendario legacy)
+  let tdv: Map<string, boolean> | null = null;
+  try {
+    const dtR = await db.execute<any>(sql`
+      SELECT day_type_id::text AS id FROM ps_day_calendar
+       WHERE date = ${iso}::date AND (project_id = ${projectId}::uuid OR project_id IS NULL)
+       ORDER BY project_id NULLS LAST LIMIT 1`);
+    let dayTypeId: string | null = ((dtR as any).rows?.[0]?.id as string | undefined) ?? null;
+    if (!dayTypeId) {
+      const code = dow === 0 ? "festivo" : dow === 6 ? "sabato" : "feriale";
+      const sysR = await db.execute<any>(sql`
+        SELECT id::text AS id FROM ps_day_types WHERE project_id IS NULL AND code = ${code} LIMIT 1`);
+      dayTypeId = ((sysR as any).rows?.[0]?.id as string | undefined) ?? null;
+    }
+    if (dayTypeId) {
+      const r = await db.execute<any>(sql`
+        SELECT v.trip_id::text AS trip_id, v.is_valid
+          FROM ps_trip_day_validity v JOIN ps_trips t ON t.id = v.trip_id
+         WHERE t.project_id = ${projectId}::uuid AND v.day_type_id = ${dayTypeId}::uuid`);
+      tdv = new Map();
+      for (const x of ((r as any).rows ?? [])) tdv.set(String(x.trip_id), !!x.is_valid);
+    }
+  } catch { /* tabelle assenti: si resta sul calendario legacy */ }
+
+  // Vincolo categorie del calendario aziendale (guardato: tabelle opzionali)
+  const tripCats = new Map<string, Set<string>>();
+  const umbrellaChiuse = new Set<string>();
+  let catOfDate: { id: string; code: string | null } | null = null;
+  try {
+    const cR = await db.execute<any>(sql`
+      SELECT DISTINCT ON (c.date) c.category_id::text AS id, cat.code
+        FROM ps_validity_category_calendar c
+        LEFT JOIN ps_validity_categories cat ON cat.id = c.category_id
+       WHERE (c.project_id = ${projectId}::uuid OR c.project_id IS NULL) AND c.date = ${iso}::date
+       ORDER BY c.date, c.project_id ASC NULLS LAST`);
+    const row = ((cR as any).rows ?? [])[0];
+    if (row) catOfDate = { id: String(row.id), code: row.code ?? null };
+    const tcR = await db.execute<any>(sql`
+      SELECT tc.trip_id::text AS trip_id, tc.category_id::text AS category_id, cat.code
+        FROM ps_trip_category_validity tc
+        JOIN ps_trips t ON t.id = tc.trip_id
+        LEFT JOIN ps_validity_categories cat ON cat.id = tc.category_id
+       WHERE t.project_id = ${projectId}::uuid`);
+    for (const x of ((tcR as any).rows ?? [])) {
+      const id = String(x.trip_id);
+      if (!tripCats.has(id)) tripCats.set(id, new Set());
+      tripCats.get(id)!.add(String(x.category_id));
+      if (x.code === "scuole_chiuse") umbrellaChiuse.add(id);
+    }
+  } catch { /* tabelle assenti */ }
+
+  for (const t of trips) {
+    const id = String(t.trip_id);
+    const exc = excTrip.get(id);
+    let active: boolean;
+    if (exc === 2) active = false;
+    else if (exc === 1) active = true;
+    else if (t.cal_id) {
+      active = !!t[col]
+        && (!t.cal_start || t.cal_start <= iso)
+        && (!t.cal_end || t.cal_end >= iso);
+      const ce = excCal.get(String(t.cal_id));
+      if (ce === 1) active = true; else if (ce === 2) active = false;
+    } else if (tdv) {
+      active = tdv.get(id) ?? false;
+    } else {
+      active = true; // nessun sistema di validità configurato: non si filtra
+    }
+    const wd = t.attributes?.weekdays;
+    if (active && Array.isArray(wd) && wd.length === 7 && wd[wdIdx] === false) active = false;
+    const cats = tripCats.get(id);
+    if (active && cats && cats.size > 0) {
+      let match = !!catOfDate && cats.has(catOfDate.id);
+      if (!match && catOfDate?.code && umbrellaChiuse.has(id) && catOfDate.code.startsWith("scuole_chiuse")) {
+        match = true;
+      }
+      active = match;
+    }
+    if (active) out.set(id, String(t.route_id));
+  }
+  return out;
+}
+
 export async function loadDayTypes(src: Source): Promise<SrcDayType[]> {
   if (src.kind !== "ps") return [];
   try {
-    /* Il CALENDARIO AZIENDALE vive in ps_day_types / ps_day_calendar /
-     * ps_trip_day_validity (le stesse tabelle della pagina Calendario del
-     * progetto). Prima si leggeva ps_validity_categories — un sistema
-     * diverso, vuoto per questi progetti — e il selettore mostrava solo le
-     * validità grezze del feed invece delle categorie aziendali. */
-    const r = await db.execute<any>(sql`
-      SELECT dt.id::text AS id, dt.code, dt.name, dt.color, dt.sort_order,
-             (SELECT count(*) FROM ps_trip_day_validity v
-                JOIN ps_trips t ON t.id = v.trip_id
-               WHERE v.day_type_id = dt.id AND v.is_valid = true
-                 AND t.project_id = ${src.psProjectId}::uuid)::int AS trips,
-             (SELECT count(*) FROM ps_day_calendar dc
-               WHERE dc.day_type_id = dt.id
-                 AND (dc.project_id = ${src.psProjectId}::uuid OR dc.project_id IS NULL))::int AS giorni
-        FROM ps_day_types dt
-       WHERE dt.project_id = ${src.psProjectId}::uuid OR dt.project_id IS NULL
-       ORDER BY dt.sort_order, dt.name`);
-    return ((r as any).rows ?? []).map((x: any) => ({
-      id: String(x.id), code: x.code, name: x.name, color: x.color ?? null,
-      trips: Number(x.trips ?? 0), giorni: Number(x.giorni ?? 0),
-    }));
+    /* Il CALENDARIO AZIENDALE della pagina /calendar è il profilo a classi
+     * (planning-studio-calendar + day-classifier): "Scuole Aperte",
+     * "Scuole Chiuse · Estivo", "Festivo"… Qui si enumerano i prossimi 120
+     * giorni, si classifica ciascuno, e ogni classe diventa un'opzione del
+     * periodo con una DATA RAPPRESENTATIVA (la prima occorrenza): l'analisi
+     * gira su un giorno che esiste davvero, con le corse che circolano
+     * davvero quel giorno secondo l'intreccio completo delle validità. */
+    const { loadCalendarProfile } = await import("../lib/planning-studio-calendar");
+    const { classifyDate, italianHolidays } = await import("../lib/day-classifier");
+    const profile = await loadCalendarProfile(src.psProjectId!);
+    const holidaysByYear = new Map<number, Set<string>>();
+    const classes = new Map<string, { key: string; label: string; dates: string[] }>();
+    const base = new Date();
+    for (let i = 0; i < 120; i++) {
+      const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const y = d.getFullYear();
+      if (!holidaysByYear.has(y)) holidaysByYear.set(y, italianHolidays(y));
+      const c = classifyDate(iso, profile, holidaysByYear.get(y));
+      const e = classes.get(c.key) ?? { key: c.key, label: c.label, dates: [] };
+      e.dates.push(iso);
+      classes.set(c.key, e);
+    }
+    const GG = ["dom", "lun", "mar", "mer", "gio", "ven", "sab"];
+    const out: SrcDayType[] = [];
+    for (const c of classes.values()) {
+      const rep = c.dates[0];
+      const trips = await tripsOnDate(src.psProjectId!, rep);
+      const [ry, rm, rd] = rep.split("-").map(Number);
+      const gg = GG[new Date(Date.UTC(ry, rm - 1, rd)).getUTCDay()];
+      out.push({
+        id: `date:${rep}`,
+        code: c.key,
+        name: `${c.label} · es. ${gg} ${String(rd).padStart(2, "0")}/${String(rm).padStart(2, "0")}`,
+        color: null,
+        trips: trips.size,
+        giorni: 0, // l'etichetta "gg/anno" non ha senso su un orizzonte di 120 giorni
+      });
+    }
+    out.sort((a, b) => a.id.localeCompare(b.id)); // prima occorrenza più vicina in cima
+    return out;
   } catch {
-    return []; // tabelle del calendario assenti su progetti vecchi
+    return []; // profilo calendario assente
   }
 }
 
@@ -229,6 +387,14 @@ export async function loadActiveTrips(
     /* GIORNO-TIPO AZIENDALE: si prendono le corse che appartengono a quella
      * categoria del calendario (Lu-Ve scuole chiuse, sabato estivo…). È il
      * modo in cui l'azienda ragiona davvero sull'orario. */
+    /* Classe del calendario aziendale, risolta su una data rappresentativa:
+     * si calcolano le corse che circolano DAVVERO quel giorno (intreccio
+     * completo: eccezioni, calendario della corsa, matrice giorno-tipo,
+     * maschera settimanale, vincolo categorie). */
+    if (categoryId && categoryId.startsWith("date:")) {
+      const iso = categoryId.slice(5);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) return tripsOnDate(src.psProjectId!, iso);
+    }
     if (categoryId && UUID_RE.test(categoryId)) {
       const trips = await db.execute<any>(sql`
         SELECT t.id::text AS trip_id, t.route_id::text AS route_id

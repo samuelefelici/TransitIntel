@@ -25,7 +25,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { pointsOfInterest } from "@workspace/db/schema";
-import { inArray, sql } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
@@ -674,25 +674,12 @@ router.get("/intermodal/day-types", async (req: any, res: any) => {
      * somma validità diverse e non corrisponde a nessun orario reale. */
     let todayId: string | null = null;
     if (src.kind === "ps") {
-      try {
-        /* Stessa regola della pagina Calendario: override in ps_day_calendar
-         * (il progetto vince sul globale), altrimenti inferenza dal giorno
-         * della settimana (dom→festivo, sab→sabato, altrimenti feriale). */
-        const r = await db.execute<any>(sql`
-          SELECT day_type_id::text AS id
-            FROM ps_day_calendar
-           WHERE date = CURRENT_DATE
-             AND (project_id = ${src.psProjectId}::uuid OR project_id IS NULL)
-           ORDER BY project_id NULLS LAST
-           LIMIT 1`);
-        todayId = ((r as any).rows?.[0]?.id as string | undefined) ?? null;
-        if (!todayId) {
-          const dow = new Date().getDay(); // 0=dom
-          const code = dow === 0 ? "festivo" : dow === 6 ? "sabato" : "feriale";
-          todayId = dayTypes.find(d => d.code === code)?.id ?? null;
-        }
-        if (todayId && !dayTypes.some(d => d.id === todayId)) todayId = null;
-      } catch { /* progetti senza calendario */ }
+      /* Le opzioni sono classi del calendario aziendale risolte su date
+       * rappresentative; l'enumerazione parte da oggi, quindi la classe di
+       * oggi ha come data rappresentativa oggi stesso. */
+      const t = new Date();
+      const iso = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+      todayId = dayTypes.find(d => d.id === `date:${iso}`)?.id ?? null;
     }
     res.json({
       dayTypes,
