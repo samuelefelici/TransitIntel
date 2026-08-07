@@ -253,9 +253,11 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
           autoPeriodRef.current = true;
           setCategoryId(prev => {
             if (prev) return prev; // l'utente ha già scelto
-            const today = typeof d.todayId === "string" && list.some((x: any) => x.id === d.todayId) ? d.todayId : null;
-            const best = [...list].sort((a: any, b: any) => (b.trips ?? 0) - (a.trips ?? 0))[0];
-            return today ?? best?.id ?? "";
+            // Solo giorni-tipo con corse: agganciarsi a uno vuoto darebbe un'analisi a zero
+            const withTrips = list.filter((x: any) => (x.trips ?? 0) > 0);
+            const today = typeof d.todayId === "string" ? withTrips.find((x: any) => x.id === d.todayId) : null;
+            const best = [...withTrips].sort((a: any, b: any) => (b.trips ?? 0) - (a.trips ?? 0))[0];
+            return today?.id ?? best?.id ?? "";
           });
         }
       })
