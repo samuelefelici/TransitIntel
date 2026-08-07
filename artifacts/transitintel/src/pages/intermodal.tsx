@@ -20,6 +20,7 @@ import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import DemandCoverage, { type DemandCoverageResult } from "./intermodal/DemandCoverage";
 import TrainConnections from "./intermodal/TrainConnections";
+import { openFullReport } from "./intermodal/intermodal-export";
 import LinePicker, { lineColor, type NetworkLine } from "./intermodal/LinePicker";
 
 import type {
@@ -633,25 +634,31 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
               ? `Validità: ${(() => { const v = validities.find(x => x.id === calendarId); return v ? (v.name || v.code) + (v.startDate ? ` · ${v.startDate}→${v.endDate}` : "") : ""; })()}`
               : "Giorno generico: somma le validità attive quel giorno. Scegli un giorno-tipo aziendale per un dato fedele."}
           className="text-[10px] bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-md px-2 py-1.5 max-w-[220px] focus:outline-none focus:border-cyan-500/50">
-          {dayTypes.length > 0 && (
-            <optgroup label="Giorno-tipo aziendale (consigliato)">
+          {dayTypes.length > 0 ? (
+            /* Le classi del calendario aziendale sono l'UNICA scelta: le
+               validità grezze e il giorno generico confondevano — restano
+               solo come ripiego quando il calendario non è configurato. */
+            <optgroup label="Calendario aziendale">
               {dayTypes.map(d => (
                 <option key={d.id} value={`cat:${d.id}`}>{d.name} · {d.trips} corse</option>
               ))}
             </optgroup>
+          ) : (
+            <>
+              {validities.length > 0 && (
+                <optgroup label="Validità di servizio">
+                  {validities.map(v => (
+                    <option key={v.id} value={`cal:${v.id}`}>{v.name || giorniLabel(v.days) || v.code} · {v.trips} corse</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="Giorno generico (ripiego)">
+                <option value="day:feriale">Feriale</option>
+                <option value="day:sabato">Sabato</option>
+                <option value="day:festivo">Festivo</option>
+              </optgroup>
+            </>
           )}
-          {validities.length > 0 && (
-            <optgroup label="Validità di servizio">
-              {validities.map(v => (
-                <option key={v.id} value={`cal:${v.id}`}>{v.name || giorniLabel(v.days) || v.code} · {v.trips} corse</option>
-              ))}
-            </optgroup>
-          )}
-          <optgroup label="Giorno generico (ripiego)">
-            <option value="day:feriale">Feriale</option>
-            <option value="day:sabato">Sabato</option>
-            <option value="day:festivo">Festivo</option>
-          </optgroup>
         </select>
 
         {/* Ambito geografico */}
@@ -737,6 +744,26 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
           className="text-[10px] px-2 py-1.5 rounded-md flex items-center gap-1.5 font-semibold border border-slate-700/50 bg-slate-800/80 text-slate-300 hover:text-white transition-colors disabled:opacity-50">
           <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin text-cyan-400" : ""}`} />
           <span className="hidden lg:inline">{syncing ? "Sync…" : "Sync orari"}</span>
+        </button>
+
+        {/* Report unico: grafici + tutti i dettagli, stampabile in PDF */}
+        <button
+          disabled={!demand}
+          onClick={() => {
+            if (!demand) return;
+            const periodoLabel = categoryId
+              ? (dayTypes.find(x => x.id === categoryId)?.name ?? "")
+              : calendarId
+                ? (() => { const v = validities.find(x => x.id === calendarId); return v ? (v.name || v.code) : ""; })()
+                : `Giorno ${dayKind}`;
+            const ambitoLabel = scopeMode === "municipality" && municipality
+              ? `Comune di ${municipalities.find(m => m.code === municipality)?.name ?? municipality}`
+              : scopeMode === "routes" ? "Linee selezionate" : "Provincia";
+            openFullReport(demand, result, { periodoLabel, ambitoLabel });
+          }}
+          className="text-[10px] px-2 py-1.5 rounded-md flex items-center gap-1.5 font-semibold border border-slate-700/50 bg-slate-800/80 text-slate-300 hover:text-white transition-colors disabled:opacity-50"
+          title="Report completo: quadro, timeline, coincidenze, poli e linee — stampabile in PDF">
+          🖨 <span className="hidden lg:inline">Report</span>
         </button>
 
         {/* Ricalcola tutto */}

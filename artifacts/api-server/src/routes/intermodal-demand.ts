@@ -24,7 +24,7 @@
  * ═══════════════════════════════════════════════════════════════════════ */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { pointsOfInterest } from "@workspace/db/schema";
+import { pointsOfInterest, censusSections } from "@workspace/db/schema";
 import { inArray } from "drizzle-orm";
 import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
@@ -243,6 +243,33 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
      * a decine di km) e "servito %" crollava a zero. */
     const bbox = municipality ? await municipalityBbox(municipality) : await projectBbox(src);
 
+    /* Con un COMUNE scelto il bbox non basta: è un rettangolo con margine e
+     * porta dentro poli dei comuni confinanti (es. Chiaravalle nell'analisi
+     * di Jesi). Ogni polo si assegna al comune della sezione censuaria più
+     * vicina, e si tiene solo chi appartiene al comune scelto. */
+    let inComune: ((lat: number, lng: number) => boolean) | null = null;
+    if (municipality && bbox) {
+      const p6 = municipality.slice(0, 6);
+      const secs = (await db.select({
+        istatCode: censusSections.istatCode,
+        lat: censusSections.centroidLat,
+        lng: censusSections.centroidLng,
+      }).from(censusSections))
+        .filter(s => s.istatCode && s.lat >= bbox.minLat && s.lat <= bbox.maxLat && s.lng >= bbox.minLng && s.lng <= bbox.maxLng);
+      if (secs.length > 0) {
+        const cosMid = Math.cos(((bbox.minLat + bbox.maxLat) / 2) * Math.PI / 180);
+        inComune = (lat, lng) => {
+          let best = Infinity, bestCode: string | null = null;
+          for (const s of secs) {
+            const dLat = lat - s.lat, dLng = (lng - s.lng) * cosMid;
+            const d2 = dLat * dLat + dLng * dLng;
+            if (d2 < best) { best = d2; bestCode = s.istatCode; }
+          }
+          return bestCode != null && bestCode.slice(0, 6) === p6;
+        };
+      }
+    }
+
     const routeIdsParam = (req.query.routeIds as string | undefined)?.trim();
     const routeFilter: Set<string> | null = routeIdsParam
       ? new Set(routeIdsParam.split(",").map(s => s.trim()).filter(Boolean))
@@ -254,6 +281,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     const hubs = await discoverHubs({ bbox, municipality, feedId: src.feedId, psProjectId: src.psProjectId });
     for (const h of hubs) {
       if (h.type !== "railway" && h.type !== "airport") continue;
+      if (inComune && !inComune(h.lat, h.lng)) continue;
       generators.push({
         id: h.id, kind: h.type === "railway" ? "stazione" : "aeroporto",
         name: h.name, lat: h.lat, lng: h.lng,
@@ -271,6 +299,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
       const kind = POI_CATEGORY_OF[p.category];
       if (!kind) continue;
       if (bbox && (p.lat < bbox.minLat || p.lat > bbox.maxLat || p.lng < bbox.minLng || p.lng > bbox.maxLng)) continue;
+      if (inComune && !inComune(p.lat, p.lng)) continue;
       generators.push({
         id: `poi-${p.id}`, kind, name: p.name || p.category,
         lat: p.lat, lng: p.lng, detail: p.category,
@@ -467,10 +496,19 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     /* Analisi dell'orario per LINEA: quante corse, in che arco, con quale
      * intervallo e quale buco più lungo. È la lettura che manca quando si
      * guarda solo la copertura dei poli. */
-    const timesByRoute = new Map<string, number[]>();
+    /* Una CORSA tocca più fermate: contarla a ogni passaggio gonfiava le
+     * "corse totali" e schiacciava l'intervallo tipico a ~0′. Qui ogni
+     * corsa conta UNA volta, al suo primo passaggio nell'area analizzata:
+     * i numeri di rete diventano corse vere del giorno-tipo scelto. */
+    const tripFirstTime = new Map<string, { time: number; routeId: string }>();
     for (const p of validPassages) {
-      const arr = timesByRoute.get(p.routeId);
-      if (arr) arr.push(p.time); else timesByRoute.set(p.routeId, [p.time]);
+      const cur = tripFirstTime.get(p.tripId);
+      if (!cur || p.time < cur.time) tripFirstTime.set(p.tripId, { time: p.time, routeId: p.routeId });
+    }
+    const timesByRoute = new Map<string, number[]>();
+    for (const t of tripFirstTime.values()) {
+      const arr = timesByRoute.get(t.routeId);
+      if (arr) arr.push(t.time); else timesByRoute.set(t.routeId, [t.time]);
     }
     const schedules = [...timesByRoute.entries()]
       .map(([routeId, times]) => ({
@@ -483,7 +521,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     /* ── Indicatori di rete ──────────────────────────────────────────
      * Non basta l'elenco dei poli: servono le misure che dicono se
      * l'orario regge nel suo insieme, e dove intervenire per primo. */
-    const tuttiTempi = validPassages.map(p => p.time);
+    const tuttiTempi = [...tripFirstTime.values()].map(t => t.time);
     const reteShape = scheduleShape(tuttiTempi);
 
     /* ── LINEA DEL TEMPO DELLA DOMANDA ───────────────────────────────
@@ -497,26 +535,56 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     const perKind: Record<"scuola" | "lavoro" | "ospedale" | "treni", number[]> = {
       scuola: zeros(), lavoro: zeros(), ospedale: zeros(), treni: zeros(),
     };
-    const addWindow = (arr: number[], w: Window) => {
+    /* Dettaglio per ora: CHI genera la domanda e COSA la serve — è quello
+     * che si apre cliccando una colonna del grafico. */
+    type HourDetail = { treni: string[]; scuola: string[]; lavoro: string[]; ospedale: string[]; linee: string[] };
+    const dettaglioOre: HourDetail[] = Array.from({ length: 24 }, () => ({
+      treni: [], scuola: [], lavoro: [], ospedale: [], linee: [],
+    }));
+    const addWindow = (kind: "scuola" | "lavoro" | "ospedale", name: string, w: Window) => {
       const h0 = Math.floor(w.from / 60), h1 = Math.floor(Math.max(w.from, w.to - 1) / 60);
-      for (let h = h0; h <= h1 && h < 24; h++) arr[h] += 1;
+      for (let h = h0; h <= h1 && h < 24; h++) {
+        perKind[kind][h] += 1;
+        if (!dettaglioOre[h][kind].includes(name)) dettaglioOre[h][kind].push(name);
+      }
     };
     for (const c of coverage) {
       const k = c.generator.kind;
-      if (k === "scuola") { addWindow(perKind.scuola, windows.scuolaIngresso); addWindow(perKind.scuola, windows.scuolaUscita); }
-      else if (k === "lavoro") { addWindow(perKind.lavoro, windows.lavoroIngresso); addWindow(perKind.lavoro, windows.lavoroUscita); }
-      else if (k === "ospedale") { addWindow(perKind.ospedale, windows.ospedaleTurni); addWindow(perKind.ospedale, windows.ospedaleVisite); }
+      const nm = c.generator.name;
+      if (k === "scuola") { addWindow("scuola", nm, windows.scuolaIngresso); addWindow("scuola", nm, windows.scuolaUscita); }
+      else if (k === "lavoro") { addWindow("lavoro", nm, windows.lavoroIngresso); addWindow("lavoro", nm, windows.lavoroUscita); }
+      else if (k === "ospedale") { addWindow("ospedale", nm, windows.ospedaleTurni); addWindow("ospedale", nm, windows.ospedaleVisite); }
     }
     // Treni/voli: ogni partenza o arrivo è domanda di adduzione/distribuzione
     for (const h of hubs) {
       if (h.type !== "railway" && h.type !== "airport") continue;
       for (const dep of h.typicalDepartures) for (const t of dep.times) {
         const hh = parseInt(t.slice(0, 2), 10);
-        if (Number.isFinite(hh) && hh >= 0 && hh < 24) perKind.treni[hh] += 1;
+        if (!Number.isFinite(hh) || hh < 0 || hh >= 24) continue;
+        perKind.treni[hh] += 1;
+        dettaglioOre[hh].treni.push(`${t} → ${dep.destination}`);
       }
       for (const arr of h.typicalArrivals) for (const t of arr.times) {
         const hh = parseInt(t.slice(0, 2), 10);
-        if (Number.isFinite(hh) && hh >= 0 && hh < 24) perKind.treni[hh] += 1;
+        if (!Number.isFinite(hh) || hh < 0 || hh >= 24) continue;
+        perKind.treni[hh] += 1;
+        dettaglioOre[hh].treni.push(`${t} ← ${arr.origin}`);
+      }
+    }
+    // Le linee che servono ciascuna ora (dalle corse uniche)
+    {
+      const lineeOra: Array<Set<string>> = Array.from({ length: 24 }, () => new Set<string>());
+      for (const t of tripFirstTime.values()) {
+        const hh = Math.floor(t.time / 60) % 24;
+        lineeOra[hh].add(routeLabel.get(t.routeId) ?? "linea");
+      }
+      for (let h = 0; h < 24; h++) dettaglioOre[h].linee = [...lineeOra[h]].sort();
+    }
+    // Ordina i treni per orario e taglia le liste lunghe (payload contenuto)
+    for (const d of dettaglioOre) {
+      d.treni.sort();
+      for (const k of ["treni", "scuola", "lavoro", "ospedale"] as const) {
+        if (d[k].length > 12) d[k] = [...d[k].slice(0, 12), `…e altri ${d[k].length - 12}`];
       }
     }
     const demandHourly = zeros();
@@ -528,7 +596,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
         oreCritiche.push({ hour: h, demand: demandHourly[h], service: 0 });
       }
     }
-    const timeline = { demandHourly, serviceHourly: reteShape.hourly, perKind, oreCritiche };
+    const timeline = { demandHourly, serviceHourly: reteShape.hourly, perKind, oreCritiche, dettaglioOre };
 
     // Fascia di punta e di morbida: dove si concentra e dove manca il servizio
     const oraPiuServita = reteShape.hourly.indexOf(Math.max(...reteShape.hourly));
