@@ -235,12 +235,30 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     return () => { cancelled = true; };
   }, [psQs]);
 
+  /* Il periodo di default è il CALENDARIO AZIENDALE, non il "feriale"
+   * generico: appena i giorni-tipo arrivano, l'analisi si aggancia a quello
+   * di oggi (o, se oggi non è mappato, al più rappresentativo per corse).
+   * Solo come primo default: una scelta esplicita dell'utente non si tocca. */
+  const autoPeriodRef = useRef(false);
   useEffect(() => {
     if (!psQs) { setDayTypes([]); return; }
     let cancelled = false;
     fetch(`${getApiBase()}/api/intermodal/day-types?${psQs.replace(/^&/, "")}`)
       .then(r => (r.ok ? r.json() : { dayTypes: [] }))
-      .then(d => { if (!cancelled) setDayTypes(Array.isArray(d.dayTypes) ? d.dayTypes : []); })
+      .then(d => {
+        if (cancelled) return;
+        const list = Array.isArray(d.dayTypes) ? d.dayTypes : [];
+        setDayTypes(list);
+        if (!autoPeriodRef.current && list.length > 0) {
+          autoPeriodRef.current = true;
+          setCategoryId(prev => {
+            if (prev) return prev; // l'utente ha già scelto
+            const today = typeof d.todayId === "string" && list.some((x: any) => x.id === d.todayId) ? d.todayId : null;
+            const best = [...list].sort((a: any, b: any) => (b.trips ?? 0) - (a.trips ?? 0))[0];
+            return today ?? best?.id ?? "";
+          });
+        }
+      })
       .catch(() => { if (!cancelled) setDayTypes([]); });
     return () => { cancelled = true; };
   }, [psQs]);
