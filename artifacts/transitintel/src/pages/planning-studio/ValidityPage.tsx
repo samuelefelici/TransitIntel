@@ -877,7 +877,7 @@ export default function PlanningStudioValidityPage() {
         <button
           onClick={() => setAutoImportOpen(true)}
           className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 hover:border-amber-500/50 transition-colors"
-          title="Accendi automaticamente i bollini di validità leggendo i calendari GTFS (lun-ven → Feriale, sab → Sabato, dom → Festivo, + eccezioni). Mostra prima un'anteprima."
+          title="Accendi automaticamente i bollini di validità leggendo i calendari GTFS: dai giorni settimanali (lun-ven → Feriale, sab → Sabato, dom → Festivo) oppure, per i calendari a sole date esplicite, dalle date reali di circolazione. Aggiunge le eccezioni e intreccia il Calendario Aziendale. Mostra prima un'anteprima."
         >
           <Wand2 className="h-3.5 w-3.5" />
           Sincronizza GTFS
