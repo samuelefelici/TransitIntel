@@ -25,7 +25,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { pointsOfInterest } from "@workspace/db/schema";
-import { inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
 import {
@@ -669,8 +669,26 @@ router.get("/intermodal/day-types", async (req: any, res: any) => {
   try {
     const src = await resolveSource(req);
     const dayTypes = await loadDayTypes(src);
+    /* Il giorno-tipo di OGGI secondo il calendario aziendale: è il default
+     * naturale dell'analisi — senza, si partiva dal "feriale" generico che
+     * somma validità diverse e non corrisponde a nessun orario reale. */
+    let todayId: string | null = null;
+    if (src.kind === "ps") {
+      try {
+        const r = await db.execute<any>(sql`
+          SELECT cc.category_id::text AS id
+            FROM ps_validity_category_calendar cc
+            JOIN ps_validity_categories c ON c.id = cc.category_id
+           WHERE cc.date = CURRENT_DATE
+             AND (c.project_id = ${src.psProjectId}::uuid OR c.project_id IS NULL)
+           LIMIT 1`);
+        todayId = ((r as any).rows?.[0]?.id as string | undefined) ?? null;
+        if (todayId && !dayTypes.some(d => d.id === todayId)) todayId = null;
+      } catch { /* progetti senza calendario per categorie */ }
+    }
     res.json({
       dayTypes,
+      todayId,
       scope: { psProjectId: src.psProjectId, source: src.kind },
       note: dayTypes.length === 0
         ? "Nessuna categoria nel calendario aziendale: si usa il giorno-tipo generico."
