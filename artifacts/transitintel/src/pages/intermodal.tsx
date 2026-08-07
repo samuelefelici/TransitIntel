@@ -10,7 +10,7 @@ import {
   Clock, ArrowRight, Lightbulb, Timer, PlusCircle,
   ArrowRightLeft, MapPin, Building2, Moon, Satellite, Route,
   Footprints, XCircle, MapPinned,
-  Users, RefreshCw, Briefcase, Palmtree,
+  Users, RefreshCw, Briefcase, Palmtree, Bus,
   Zap, Eye, EyeOff, Plane, HelpCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -105,10 +105,13 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const [categoryId, setCategoryId] = useState<string>("");
   const calQs = (calendarId ? `&calendarId=${calendarId}` : "")
     + (categoryId ? `&categoryId=${categoryId}` : "");
-  /* Due letture della stessa rete: le coincidenze con treni/navi/voli, e la
-   * copertura dei poli che generano la domanda (stazioni, aeroporti, scuole,
-   * lavoro). La seconda è quella che dice se le corse costruite servono. */
-  const [view, setView] = useState<"coincidenze" | "copertura">("copertura");
+  /* ─── PANNELLO STUDIO: un tab, una domanda ────────────────────────────
+   * Quadro: "come sta la rete?" · Treni↔Corse: "le coincidenze reggono?" ·
+   * Poli: "chi è scoperto?" · Linee: "dove intervengo?". La mappa segue il
+   * tab: poli attrattori nei tab della copertura, hub nel tab dei treni. */
+  const [tab, setTab] = useState<"quadro" | "treni" | "poli" | "linee">("quadro");
+  const view: "coincidenze" | "copertura" = tab === "treni" ? "coincidenze" : "copertura";
+  const [showLinesMenu, setShowLinesMenu] = useState(false);
   const [demand, setDemand] = useState<DemandCoverageResult | null>(null);
   const [demandLoading, setDemandLoading] = useState(false);
   const [selectedGenerator, setSelectedGenerator] = useState<string | null>(null);
@@ -133,7 +136,6 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   const [radius, setRadius] = useState(0.5);
   const [selectedHub, setSelectedHub] = useState<string | null>(null);
   const [expandedHub, setExpandedHub] = useState<string | null>(null);
-  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
   const [activeTab, setActiveTab] = useState<"arrivi" | "partenze" | "destinazioni" | "orari">("arrivi");
 
@@ -314,7 +316,9 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
     } finally { setDemandLoading(false); }
   }, [radius, dayKind, calQs, psQs, scopeMode, municipality, effectiveRouteIds]);
 
-  useEffect(() => { if (view === "copertura") void runDemand(); }, [view, runDemand]);
+  /* La copertura serve a 3 tab su 4 (Quadro, Poli, Linee) ed è la vista
+   * d'apertura: si calcola sempre, non più a richiesta del toggle. */
+  useEffect(() => { void runDemand(); }, [runDemand]);
 
   // ─── Ricentra mappa quando cambia ambito/hub ─────────────
   // Se ci sono hub nei risultati, calcola bounding box e fitBounds.
@@ -337,7 +341,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       const padLng = (maxLng - minLng) * 0.2 + 0.005;
       mapRef.current?.fitBounds(
         [[minLng - padLng, minLat - padLat], [maxLng + padLng, maxLat + padLat]],
-        { padding: { top: 80, bottom: 80, left: 460, right: 80 }, duration: 1200, maxZoom: 14 },
+        { padding: { top: 80, bottom: 80, left: 80, right: 80 }, duration: 1200, maxZoom: 14 },
       );
     }
   }, [result]);
@@ -584,7 +588,175 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
   return (
     <div className="w-full h-full flex flex-col overflow-hidden">
       {projectId && <PsProjectNav projectId={projectId} active="intermodal" />}
-      <div className="relative flex-1 overflow-hidden">
+
+      {/* ═══ BARRA DI REGIA — tutte le impostazioni dell'analisi in una riga,
+           fuori dal pannello: il pannello resta per STUDIARE, non per configurare. ═══ */}
+      <div className="shrink-0 z-30 flex items-center gap-2 flex-wrap px-3 py-1.5 bg-slate-900 border-b border-slate-700/50">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Zap className="w-4 h-4 text-cyan-400" />
+          <span className="text-xs font-bold text-white hidden xl:inline">Intermodale</span>
+        </div>
+
+        {/* Periodo analizzato — un solo controllo, dal più fedele al più grezzo */}
+        <select
+          value={categoryId ? `cat:${categoryId}` : calendarId ? `cal:${calendarId}` : `day:${dayKind}`}
+          onChange={e => {
+            const v = e.target.value;
+            if (v.startsWith("cat:")) { setCategoryId(v.slice(4)); setCalendarId(""); }
+            else if (v.startsWith("cal:")) { setCalendarId(v.slice(4)); setCategoryId(""); }
+            else { setDayKind(v.slice(4) as "feriale" | "sabato" | "festivo"); setCategoryId(""); setCalendarId(""); }
+          }}
+          title={categoryId
+            ? `Giorno-tipo aziendale: ${dayTypes.find(x => x.id === categoryId)?.name ?? ""} — le corse di questa categoria.`
+            : calendarId
+              ? `Validità: ${(() => { const v = validities.find(x => x.id === calendarId); return v ? (v.name || v.code) + (v.startDate ? ` · ${v.startDate}→${v.endDate}` : "") : ""; })()}`
+              : "Giorno generico: somma le validità attive quel giorno. Scegli un giorno-tipo aziendale per un dato fedele."}
+          className="text-[10px] bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-md px-2 py-1.5 max-w-[220px] focus:outline-none focus:border-cyan-500/50">
+          {dayTypes.length > 0 && (
+            <optgroup label="Giorno-tipo aziendale (consigliato)">
+              {dayTypes.map(d => (
+                <option key={d.id} value={`cat:${d.id}`}>{d.name} · {d.trips} corse</option>
+              ))}
+            </optgroup>
+          )}
+          {validities.length > 0 && (
+            <optgroup label="Validità di servizio">
+              {validities.map(v => (
+                <option key={v.id} value={`cal:${v.id}`}>{v.name || giorniLabel(v.days) || v.code} · {v.trips} corse</option>
+              ))}
+            </optgroup>
+          )}
+          <optgroup label="Giorno generico (ripiego)">
+            <option value="day:feriale">Feriale</option>
+            <option value="day:sabato">Sabato</option>
+            <option value="day:festivo">Festivo</option>
+          </optgroup>
+        </select>
+
+        {/* Ambito geografico */}
+        <select value={scopeMode} onChange={e => setScopeMode(e.target.value as ScopeMode)}
+          title="Ambito geografico dell'analisi"
+          className="text-[10px] bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-md px-2 py-1.5 focus:outline-none focus:border-cyan-500/50">
+          <option value="province">Provincia</option>
+          <option value="municipality">Comune…</option>
+          {routeIdsKey && <option value="routes">Linee sel.</option>}
+        </select>
+        {scopeMode === "municipality" && (
+          <select value={municipality} onChange={e => setMunicipality(e.target.value)}
+            className="text-[10px] bg-slate-800/80 text-slate-200 border border-slate-700/50 rounded-md px-2 py-1.5 max-w-[150px] focus:outline-none focus:border-cyan-500/50">
+            <option value="">— Comune —</option>
+            {municipalities.map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
+          </select>
+        )}
+
+        {/* Linee analizzate — il selettore completo vive in un menu */}
+        <div className="relative">
+          <button onClick={() => setShowLinesMenu(v => !v)}
+            className={`flex items-center gap-1.5 text-[10px] px-2 py-1.5 rounded-md border transition-colors ${
+              showLinesMenu || selectedRoutes.size > 0
+                ? "bg-cyan-500/15 text-cyan-300 border-cyan-500/40"
+                : "bg-slate-800/80 text-slate-300 border-slate-700/50 hover:text-white"
+            }`}>
+            <Bus className="w-3.5 h-3.5" />
+            {selectedRoutes.size === 0 ? `Tutte le linee (${lines.length})` : `${selectedRoutes.size} linee`}
+            <ChevronDown className={`w-3 h-3 transition-transform ${showLinesMenu ? "rotate-180" : ""}`} />
+          </button>
+          {showLinesMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowLinesMenu(false)} />
+              <div className="absolute left-0 top-full mt-1.5 z-50 w-[340px] max-h-[70vh] overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-900 shadow-2xl p-1.5"
+                style={{ boxShadow: "0 12px 40px rgba(0,0,0,0.6)" }}>
+                <LinePicker
+                  lines={lines} loading={linesLoading}
+                  selected={selectedRoutes} onChange={setSelectedRoutes}
+                  showOnMap={showLinesOnMap} onToggleMap={setShowLinesOnMap}
+                  day={dayKind}
+                />
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Raggio di cammino */}
+        <div className="flex items-center gap-1.5" title="Raggio di cammino alle fermate">
+          <Footprints className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <input type="range" min={0.2} max={1.5} step={0.1} value={radius}
+            onChange={e => setRadius(+e.target.value)} className="w-24 h-1 accent-cyan-500" />
+          <span className="text-[10px] font-mono font-semibold text-white w-12">{radius} km</span>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Provenienza del dato: sempre visibile, mai da cercare */}
+        {demand?.scope && (
+          demand.scope.source === "gtfs" ? (
+            <span className="hidden sm:flex items-center gap-1 text-[9px] text-amber-300/90 border border-amber-500/30 bg-amber-500/10 rounded-full px-2 py-1">
+              <AlertTriangle className="w-3 h-3" /> Feed GTFS
+            </span>
+          ) : (
+            <span className="hidden sm:flex items-center gap-1 text-[9px] text-emerald-300/90 border border-emerald-500/25 bg-emerald-500/5 rounded-full px-2 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Rete progetto · live
+            </span>
+          )
+        )}
+
+        {/* POI on/off */}
+        <button onClick={() => setShowPois(v => !v)}
+          title={`POI sulla mappa (${hubPoisData.reduce((s, h) => s + h.pois.length, 0)})`}
+          className={`text-[10px] px-2 py-1.5 rounded-md flex items-center gap-1 font-medium transition-all border ${
+            showPois ? "bg-violet-500/15 text-violet-300 border-violet-500/30" : "bg-slate-800/60 text-slate-500 border-slate-700/40"
+          }`}>
+          {showPois ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+          <span className="hidden lg:inline">POI</span>
+        </button>
+
+        {/* Sync orari treni/navi */}
+        <button onClick={syncSchedules} disabled={syncing}
+          title={lastSync ? `Ultimo sync orari: ${new Date(lastSync).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "Scarica gli orari reali delle stazioni (ViaggiaTreno)"}
+          className="text-[10px] px-2 py-1.5 rounded-md flex items-center gap-1.5 font-semibold border border-slate-700/50 bg-slate-800/80 text-slate-300 hover:text-white transition-colors disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin text-cyan-400" : ""}`} />
+          <span className="hidden lg:inline">{syncing ? "Sync…" : "Sync orari"}</span>
+        </button>
+
+        {/* Ricalcola tutto */}
+        <button onClick={() => { void runAnalysis(); void runDemand(); }}
+          className="text-[10px] px-3 py-1.5 rounded-md font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30 transition-colors"
+          style={{ boxShadow: "0 0 10px rgba(6,182,212,0.15)" }}>
+          Ricalcola
+        </button>
+
+        {/* Come funziona */}
+        <div className="relative">
+          <button onClick={() => setShowInfoTooltip(v => !v)}
+            className="w-6 h-6 rounded-full bg-slate-800/80 hover:bg-cyan-500/30 flex items-center justify-center transition-colors border border-slate-700/50">
+            <HelpCircle className="w-3.5 h-3.5 text-slate-400" />
+          </button>
+          <AnimatePresence>
+            {showInfoTooltip && (
+              <motion.div initial={{ opacity: 0, y: -5, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -5, scale: 0.95 }}
+                className="absolute right-0 top-8 w-72 z-50 rounded-xl p-3 text-[10px] leading-relaxed text-slate-300 border border-cyan-500/30"
+                style={{ background: "linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,20,60,0.98))", boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 15px rgba(6,182,212,0.15)" }}>
+                <p className="font-semibold text-cyan-400 mb-1.5 text-[11px]">Come funziona l'analisi?</p>
+                <p className="mb-1.5">Per ogni <strong className="text-white">arrivo</strong> di treno, nave o volo, simuliamo il percorso del passeggero:</p>
+                <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                  <li>Il passeggero <strong className="text-white">scende</strong> dal mezzo (treno/nave/aereo)</li>
+                  <li><strong className="text-white">Cammina</strong> dalla banchina/terminal alla fermata bus più vicina (a {result?.config.walkSpeedKmh || 4.5} km/h)</li>
+                  <li>Verifichiamo se trova un <strong className="text-white">bus entro 60 min</strong></li>
+                  <li>Classifichiamo: <span className="text-emerald-400">OK ≤25'</span>, <span className="text-amber-400">attesa lunga</span>, <span className="text-orange-400">appena perso</span>, <span className="text-red-400">nessun bus</span></li>
+                </ol>
+                <p className="mt-1.5 text-slate-500">Raggio fermate: {result?.config.maxWalkKm || 0.5} km · {result?.hubs.length || 0} hub analizzati · Dati GTFS reali</p>
+                <button onClick={() => setShowInfoTooltip(false)} className="absolute top-2 right-2 text-slate-500 hover:text-white transition-colors">
+                  <XCircle className="w-3.5 h-3.5" />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      {/* ═══ AREA DI STUDIO: mappa (il DOVE) | pannello (il QUANDO) ═══ */}
+      <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
+      <div className="relative flex-none h-[38vh] md:h-auto md:flex-1 min-w-0 overflow-hidden">
       {/* ── Map ───────────────────────────────────────────── */}
       <Map
         ref={mapRef}
@@ -1097,265 +1269,163 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
         )}
       </AnimatePresence>
 
-      {/* ── Left Panel ── */}
-      <div className="absolute top-4 left-4 bottom-4 z-20 pointer-events-none" style={{ width: panelCollapsed ? 48 : 420 }}>
-        <motion.div initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="h-full pointer-events-auto">
-          <Card className="h-full bg-slate-900/90 backdrop-blur-2xl border-slate-700/50 shadow-2xl overflow-hidden flex flex-col"
-            style={{ boxShadow: "0 0 40px rgba(0,0,0,0.4)" }}>
-            {/* Header */}
-            <div className="px-4 py-3 border-b border-slate-700/40 flex items-center gap-2 shrink-0">
-              {!panelCollapsed && (
-                <>
-                  <div className="w-7 h-7 rounded-lg bg-cyan-500/20 flex items-center justify-center">
-                    <Zap className="w-4 h-4 text-cyan-400" />
+      {/* ── Comandi stile mappa (in mappa, basso-destra) ── */}
+      <div className="absolute bottom-4 right-3 flex flex-col gap-2 pointer-events-auto z-10">
+        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700/50 shadow-xl rounded-xl p-1 flex gap-1"
+          style={{ boxShadow: "0 0 20px rgba(0,0,0,0.3)" }}>
+          {([
+            { key: "neon" as ViewMode, icon: <Zap className="w-3.5 h-3.5" />, label: "Neon" },
+            { key: "midnight" as ViewMode, icon: <Moon className="w-3.5 h-3.5" />, label: "Midnight" },
+            { key: "blueprint" as ViewMode, icon: <Building2 className="w-3.5 h-3.5" />, label: "Blueprint" },
+            { key: "satellite" as ViewMode, icon: <Satellite className="w-3.5 h-3.5" />, label: "Sat" },
+          ]).map(({ key, icon, label }) => (
+            <button key={key} title={label} onClick={() => setViewMode(key)}
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                viewMode === key ? "bg-cyan-500/20 text-cyan-400 shadow-sm border border-cyan-500/30" : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/60 border border-transparent"
+              }`}>
+              {icon}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Legenda (in mappa, alto-sinistra: cosa sono i simboli) ── */}
+      <div className="absolute top-3 left-3 z-10 pointer-events-auto max-h-[calc(100%-5rem)] overflow-y-auto">
+        <Card className="bg-slate-900/90 backdrop-blur-xl border-slate-700/50 shadow-xl" style={{ boxShadow: "0 0 20px rgba(0,0,0,0.3)" }}>
+          <CardContent className="p-2.5 space-y-1.5">
+            <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide">Legenda</p>
+            {view === "coincidenze" ? (
+              <div className="space-y-1">
+                {([["#06b6d4", <TrainFront key="t" className="w-2.5 h-2.5 text-white" />, "Stazione"],
+                   ["#8b5cf6", <Ship key="s" className="w-2.5 h-2.5 text-white" />, "Porto"],
+                   ["#f59e0b", <Plane key="p" className="w-2.5 h-2.5 text-white" />, "Aeroporto"]] as const).map(([c, ic, lab]) => (
+                  <div key={lab} className="flex items-center gap-1.5">
+                    <div className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: `${c}cc` }}>{ic}</div>
+                    <span className="text-[9px] text-slate-400">{lab}</span>
                   </div>
-                  <span className="text-sm font-bold flex-1 text-white">Intermodale — Esperienza Passeggero</span>
-                  <div className="relative">
-                    <button onClick={() => setShowInfoTooltip(v => !v)}
-                      className="w-5 h-5 rounded-full bg-slate-700/60 hover:bg-cyan-500/30 flex items-center justify-center transition-colors border border-slate-600/40">
-                      <HelpCircle className="w-3 h-3 text-slate-400" />
-                    </button>
-                    <AnimatePresence>
-                      {showInfoTooltip && (
-                        <motion.div initial={{ opacity: 0, y: -5, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -5, scale: 0.95 }}
-                          className="absolute right-0 top-7 w-72 z-50 rounded-xl p-3 text-[10px] leading-relaxed text-slate-300 border border-cyan-500/30"
-                          style={{ background: "linear-gradient(145deg, rgba(15,23,42,0.98), rgba(30,20,60,0.98))", boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 15px rgba(6,182,212,0.15)" }}>
-                          <p className="font-semibold text-cyan-400 mb-1.5 text-[11px]">Come funziona l'analisi?</p>
-                          <p className="mb-1.5">Per ogni <strong className="text-white">arrivo</strong> di treno, nave o volo, simuliamo il percorso del passeggero:</p>
-                          <ol className="list-decimal list-inside space-y-1 text-slate-400">
-                            <li>Il passeggero <strong className="text-white">scende</strong> dal mezzo (treno/nave/aereo)</li>
-                            <li><strong className="text-white">Cammina</strong> dalla banchina/terminal alla fermata bus più vicina (a {result?.config.walkSpeedKmh || 4.5} km/h)</li>
-                            <li>Verifichiamo se trova un <strong className="text-white">bus entro 60 min</strong></li>
-                            <li>Classifichiamo: <span className="text-emerald-400">OK ≤25'</span>, <span className="text-amber-400">attesa lunga</span>, <span className="text-orange-400">appena perso</span>, <span className="text-red-400">nessun bus</span></li>
-                          </ol>
-                          <p className="mt-1.5 text-slate-500">Raggio fermate: {result?.config.maxWalkKm || 0.5} km · {result?.hubs.length || 0} hub analizzati · Dati GTFS reali</p>
-                          <button onClick={() => setShowInfoTooltip(false)} className="absolute top-2 right-2 text-slate-500 hover:text-white transition-colors">
-                            <XCircle className="w-3.5 h-3.5" />
-                          </button>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                ))}
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2.5 h-2.5 rounded-full bg-amber-400 border border-black/30" />
+                  <span className="text-[9px] text-slate-400">Fermata bus</span>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {([["#10b981", "Polo servito"], ["#f59e0b", "Parziale"], ["#ef4444", "Scoperto"]] as const).map(([c, lab]) => (
+                  <div key={lab} className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full border-2" style={{ borderColor: c, background: `${c}33` }} />
+                    <span className="text-[9px] text-slate-400">{lab}</span>
                   </div>
-                </>
-              )}
-              <button onClick={() => setPanelCollapsed(v => !v)} className="text-slate-400 hover:text-white transition-colors">
-                {panelCollapsed ? <ChevronDown className="w-4 h-4 rotate-[-90deg]" /> : <ChevronUp className="w-4 h-4 rotate-[-90deg]" />}
-              </button>
+                ))}
+              </div>
+            )}
+            {showLinesOnMap && selectedRoutes.size > 0 && (
+              <div className="pt-1 border-t border-slate-700/30 space-y-1">
+                {lines.filter(l => selectedRoutes.has(l.routeId)).slice(0, 8).map(l => (
+                  <div key={l.routeId} className="flex items-center gap-1.5">
+                    <div className="w-4 h-0.5 rounded shrink-0"
+                      style={{ background: lineColorById.get(l.routeId), boxShadow: `0 0 6px ${lineColorById.get(l.routeId)}` }} />
+                    <span className="text-[9px] text-slate-400 truncate max-w-[100px]">{l.label}</span>
+                  </div>
+                ))}
+                {selectedRoutes.size > 8 && <p className="text-[8px] text-slate-500">+{selectedRoutes.size - 8} altre</p>}
+              </div>
+            )}
+            {showPois && (
+              <div className="pt-1 border-t border-slate-700/30 grid grid-cols-2 gap-x-2 gap-y-0.5">
+                {Object.entries(POI_ICONS).map(([cat, meta]) => (
+                  <div key={cat} className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: meta.color }} />
+                    <span className="text-[8px] text-slate-400 truncate">{meta.label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+      </div>
+
+      {/* ═══ PANNELLO STUDIO — un tab, una domanda ═══ */}
+      <aside className="flex-1 md:flex-none md:w-[46%] md:min-w-[420px] md:max-w-[780px] min-h-0 border-t md:border-t-0 md:border-l border-slate-700/50 bg-slate-900 flex flex-col">
+        <div className="flex border-b border-slate-700/40 shrink-0 overflow-x-auto">
+          {([
+            { k: "quadro" as const, label: "Quadro", badge: null as React.ReactNode },
+            { k: "treni" as const, label: "Treni ↔ Corse",
+              badge: result && result.summary.arrivalNoBus > 0
+                ? <span className="text-[8px] font-bold px-1 rounded bg-red-500/25 text-red-300">{result.summary.arrivalNoBus}</span> : null },
+            { k: "poli" as const, label: "Poli",
+              badge: demand && demand.summary.nonServito > 0
+                ? <span className="text-[8px] font-bold px-1 rounded bg-red-500/25 text-red-300">{demand.summary.nonServito}</span> : null },
+            { k: "linee" as const, label: "Linee", badge: null as React.ReactNode },
+          ]).map(t => (
+            <button key={t.k} onClick={() => setTab(t.k)}
+              className={`flex items-center gap-1.5 px-3.5 py-2.5 text-[11px] font-semibold border-b-2 whitespace-nowrap transition-colors ${
+                tab === t.k ? "text-cyan-300 border-cyan-400 bg-cyan-500/5" : "text-slate-400 border-transparent hover:text-slate-200"
+              }`}>
+              {t.label}{t.badge}
+            </button>
+          ))}
+        </div>
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      {/* ── (ex pannello flottante) ── */}
+
+          {/* ─── TAB QUADRO: sempre montato (anche se nascosto) perché il
+               confronto prima→dopo vive nel suo stato interno e non deve
+               azzerarsi passando da un tab all'altro. ─── */}
+          <div className={tab === "quadro" ? "space-y-4" : "hidden"}>
+            <DemandCoverage
+              data={demand} loading={demandLoading} section="quadro"
+              onFocus={(lat, lng, id) => {
+                setSelectedGenerator(id);
+                mapRef.current?.flyTo({ center: [lng, lat], zoom: 15, duration: 900 });
+              }}
+            />
+            {result?.scope && (
+              <p className="text-[9px] text-slate-500 px-1">
+                {result.scope.calendarApplied
+                  ? `${result.scope.tripsConsidered} corse circolanti su ${result.scope.tripsBeforeCalendar} totali nel periodo scelto.`
+                  : "Calendario assente: conteggio su tutte le corse."}
+              </p>
+            )}
+          </div>
+
+          {/* ─── TAB POLI: chi è scoperto ─── */}
+          {tab === "poli" && (
+            <DemandCoverage
+              data={demand} loading={demandLoading} section="poli"
+              onFocus={(lat, lng, id) => {
+                setSelectedGenerator(id);
+                mapRef.current?.flyTo({ center: [lng, lat], zoom: 15, duration: 900 });
+              }}
+            />
+          )}
+
+          {/* ─── TAB LINEE: dove intervengo ─── */}
+          {tab === "linee" && (
+            <DemandCoverage data={demand} loading={demandLoading} section="linee" />
+          )}
+
+          {/* ─── TAB TRENI ↔ CORSE: le coincidenze reggono? ─── */}
+          {tab === "treni" && !result && (
+            <div className="flex items-center justify-center gap-2 py-12 text-slate-400">
+              <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+              <span className="text-xs">Analizzo treni e coincidenze…</span>
             </div>
-
-            {!panelCollapsed && (
-              <CardContent className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-                {/* ─── Che cosa si sta valutando ─── */}
-                <div className="flex gap-1 p-0.5 rounded-lg bg-slate-900/60 border border-slate-700/40">
-                  {([
-                    { k: "copertura" as const, label: "Copertura domanda", tip: "Le linee e le corse costruite servono stazioni, aeroporti, scuole e aree di lavoro?" },
-                    { k: "coincidenze" as const, label: "Coincidenze e orari", tip: "Treni in partenza/arrivo incrociati con le tue corse: chi arriva trova un bus, chi parte è raggiunto in tempo?" },
-                  ]).map(o => (
-                    <button key={o.k} title={o.tip} onClick={() => setView(o.k)}
-                      className={`flex-1 text-[10px] px-2 py-1.5 rounded-md transition-all ${
-                        view === o.k
-                          ? "bg-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/40"
-                          : "text-slate-400 hover:text-slate-200 border border-transparent"
-                      }`}>{o.label}</button>
-                  ))}
-                </div>
-
-                {/* ─── Su quali linee ─── */}
-                <LinePicker
-                  lines={lines} loading={linesLoading}
-                  selected={selectedRoutes} onChange={setSelectedRoutes}
-                  showOnMap={showLinesOnMap} onToggleMap={setShowLinesOnMap}
-                  day={dayKind}
-                />
-
-                {/* Sync + Radius + Toggles */}
-                <div className="space-y-2">
-                  {/* ─── Ambito geografico ───────────────────────── */}
-                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                    <div className="flex items-center gap-2">
-                      <MapPinned className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <p className="text-[10px] text-slate-300 font-medium">Ambito analisi</p>
-                      {discoveredHubs.length > 0 && (
-                        <span className="ml-auto text-[9px] text-slate-500">
-                          {discoveredHubs.length} hub
-                          {discoveredHubs.filter(h => h.source === "gtfs-auto").length > 0 &&
-                            ` (${discoveredHubs.filter(h => h.source === "gtfs-auto").length} auto)`}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex gap-1">
-                      <button
-                        onClick={() => setScopeMode("province")}
-                        className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
-                          scopeMode === "province"
-                            ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-                            : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
-                        }`}
-                      >Provincia</button>
-                      <button
-                        onClick={() => setScopeMode("municipality")}
-                        className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
-                          scopeMode === "municipality"
-                            ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-                            : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
-                        }`}
-                      >Comune</button>
-                      {routeIdsKey && (
-                        <button
-                          onClick={() => setScopeMode("routes")}
-                          className={`flex-1 text-[9px] px-2 py-1 rounded font-medium transition-all border ${
-                            scopeMode === "routes"
-                              ? "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-                              : "bg-slate-900/40 text-slate-500 border-slate-700/30 hover:text-slate-300"
-                          }`}
-                        >Linee sel.</button>
-                      )}
-                    </div>
-                    {scopeMode === "municipality" && (
-                      <select
-                        value={municipality}
-                        onChange={e => setMunicipality(e.target.value)}
-                        className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50"
-                      >
-                        <option value="">— Seleziona comune —</option>
-                        {municipalities.map(m => (
-                          <option key={m.code} value={m.code}>{m.name}</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  {/* ── UN SOLO controllo "Periodo analizzato" ──────────────
-                      Prima c'erano tre selettori sovrapposti (giorno-tipo
-                      aziendale / validità / giorno generico) che si
-                      oscuravano a vicenda. Ora uno solo, con gruppi ordinati
-                      dal più fedele al più grezzo. La scelta è mutuamente
-                      esclusiva: sceglierne una azzera le altre. */}
-                  <div className="bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40 space-y-1.5">
-                    <p className="text-[10px] text-slate-300 font-medium">Periodo analizzato</p>
-                    <select
-                      value={categoryId ? `cat:${categoryId}` : calendarId ? `cal:${calendarId}` : `day:${dayKind}`}
-                      onChange={e => {
-                        const v = e.target.value;
-                        if (v.startsWith("cat:")) { setCategoryId(v.slice(4)); setCalendarId(""); }
-                        else if (v.startsWith("cal:")) { setCalendarId(v.slice(4)); setCategoryId(""); }
-                        else { setDayKind(v.slice(4) as "feriale" | "sabato" | "festivo"); setCategoryId(""); setCalendarId(""); }
-                      }}
-                      className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded px-2 py-1 focus:outline-none focus:border-cyan-500/50">
-                      {dayTypes.length > 0 && (
-                        <optgroup label="Giorno-tipo aziendale (consigliato)">
-                          {dayTypes.map(d => (
-                            <option key={d.id} value={`cat:${d.id}`}>
-                              {d.name} · {d.trips} corse{d.giorni ? ` · ${d.giorni} gg/anno` : ""}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {validities.length > 0 && (
-                        <optgroup label="Validità di servizio">
-                          {validities.map(v => (
-                            <option key={v.id} value={`cal:${v.id}`}>
-                              {v.name || giorniLabel(v.days) || v.code} · {v.trips} corse
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      <optgroup label="Giorno generico (ripiego)">
-                        <option value="day:feriale">Feriale</option>
-                        <option value="day:sabato">Sabato</option>
-                        <option value="day:festivo">Festivo</option>
-                      </optgroup>
-                    </select>
-                    {/* Riga di tracciabilità: che cosa si sta davvero analizzando */}
-                    {(() => {
-                      if (categoryId) {
-                        const d = dayTypes.find(x => x.id === categoryId);
-                        return d ? <p className="text-[9px] text-emerald-400/80">Giorno-tipo aziendale: {d.name} — le corse di questa categoria.</p> : null;
-                      }
-                      if (calendarId) {
-                        const v = validities.find(x => x.id === calendarId);
-                        if (!v) return null;
-                        return <p className="text-[9px] text-slate-500">Validità: {v.name || v.code}{v.startDate ? ` · ${v.startDate}→${v.endDate}` : ""}.</p>;
-                      }
-                      return <p className="text-[9px] text-amber-300/70">Giorno generico: somma le validità attive quel giorno — un orario che non esiste in nessun periodo. Scegli un giorno-tipo aziendale per un dato fedele.</p>;
-                    })()}
-                    {result?.scope && (
-                      <p className="text-[8px] text-slate-500">
-                        {result.scope.calendarApplied
-                          ? `${result.scope.tripsConsidered} corse circolanti su ${result.scope.tripsBeforeCalendar} totali`
-                          : "Calendario assente: conteggio su tutte le corse"}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Qualità del dato orari: distingue reale da stima */}
-                  {result?.summary && (result.summary.hubsWithEstimatedSchedule ?? 0) > 0 && (
-                    <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                      <p className="text-[9px] text-amber-200/90 leading-relaxed">
-                        {result.summary.hubsWithEstimatedSchedule} hub usano orari <strong>stimati</strong>, non ufficiali
-                        {(result.summary.hubsWithLiveSchedule ?? 0) > 0 ? ` (${result.summary.hubsWithLiveSchedule} con orari reali)` : ""}.
-                        Premi «Sincronizza» per scaricare gli orari veri delle stazioni da ViaggiaTreno.
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Sync button */}
-                  <div className="flex items-center gap-2 bg-slate-800/60 rounded-lg px-3 py-2 border border-slate-700/40">
-                    <RefreshCw className={`w-3.5 h-3.5 text-cyan-400 shrink-0 ${syncing ? "animate-spin" : ""}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[10px] text-slate-300 font-medium">Orari treni/navi</p>
-                      {lastSync && (
-                        <p className="text-[8px] text-slate-500 truncate">
-                          Ultimo sync: {new Date(lastSync).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                        </p>
-                      )}
-                    </div>
-                    <button onClick={syncSchedules} disabled={syncing}
-                      className="text-[9px] bg-cyan-500/20 text-cyan-400 px-3 py-1.5 rounded-lg hover:bg-cyan-500/30 transition-all font-semibold border border-cyan-500/30 disabled:opacity-50"
-                      style={{ boxShadow: "0 0 8px rgba(6,182,212,0.15)" }}>
-                      {syncing ? "Sync…" : "Sincronizza"}
-                    </button>
-                  </div>
-
-                  {/* Radius */}
-                  <div className="flex items-center gap-2">
-                    <Footprints className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                    <label className="text-[10px] text-slate-400 whitespace-nowrap">Raggio:</label>
-                    <input type="range" min={0.2} max={1.5} step={0.1} value={radius}
-                      onChange={e => setRadius(+e.target.value)} className="flex-1 h-1 accent-cyan-500" />
-                    <span className="text-[10px] font-mono font-semibold w-10 text-right text-white">{radius} km</span>
-                    <button onClick={runAnalysis}
-                      className="text-[9px] bg-cyan-500/20 text-cyan-400 px-2 py-1 rounded hover:bg-cyan-500/30 transition-colors font-semibold">
-                      Aggiorna
-                    </button>
-                  </div>
-
-                  {/* Layer toggles */}
-                  <div className="flex gap-2">
-                    <button onClick={() => setShowPois(v => !v)}
-                      className={`text-[9px] px-2 py-1 rounded-lg flex items-center gap-1 font-medium transition-all border ${
-                        showPois ? "bg-violet-500/20 text-violet-400 border-violet-500/30" : "bg-slate-800/40 text-slate-500 border-slate-700/30"
-                      }`}>
-                      {showPois ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
-                      POI ({hubPoisData.reduce((s, h) => s + h.pois.length, 0)})
-                    </button>
-                  </div>
-                </div>
-
-                {/* ─── QUADRO ORARI: treni/navi/voli + le corse bus del progetto ─── */}
-                {view === "copertura" && (
-                  <DemandCoverage
-                    data={demand} loading={demandLoading}
-                    onFocus={(lat, lng, id) => {
-                      setSelectedGenerator(id);
-                      mapRef.current?.flyTo({ center: [lng, lat], zoom: 15, duration: 900 });
-                    }}
-                  />
-                )}
-
-                {view === "coincidenze" && result && (
+          )}
+          {tab === "treni" && result && (
                   <>
+                    {/* Qualità del dato orari: distingue reale da stima */}
+                    {(result.summary.hubsWithEstimatedSchedule ?? 0) > 0 && (
+                      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <p className="text-[9px] text-amber-200/90 leading-relaxed">
+                          {result.summary.hubsWithEstimatedSchedule} hub usano orari <strong>stimati</strong>, non ufficiali
+                          {(result.summary.hubsWithLiveSchedule ?? 0) > 0 ? ` (${result.summary.hubsWithLiveSchedule} con orari reali)` : ""}.
+                          Premi «Sync orari» nella barra in alto per scaricare gli orari veri da ViaggiaTreno.
+                        </p>
+                      </div>
+                    )}
                     {/* ── HEADLINE ── */}
                     <div className="rounded-xl p-3 border border-cyan-500/20"
                       style={{ background: "linear-gradient(135deg, rgba(6,182,212,0.1), rgba(139,92,246,0.08))" }}>
@@ -1966,116 +2036,9 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                     )}
                   </>
                 )}
-              </CardContent>
-            )}
-          </Card>
-        </motion.div>
-      </div>
-
-      {/* ── Map style controls — bottom right ── */}
-      <div className="absolute bottom-6 right-4 flex flex-col gap-2 pointer-events-auto z-10">
-        <div className="bg-slate-900/90 backdrop-blur-xl border border-slate-700/50 shadow-xl rounded-xl p-1 flex gap-1"
-          style={{ boxShadow: "0 0 20px rgba(0,0,0,0.3)" }}>
-          {([
-            { key: "neon" as ViewMode, icon: <Zap className="w-3.5 h-3.5" />, label: "Neon" },
-            { key: "midnight" as ViewMode, icon: <Moon className="w-3.5 h-3.5" />, label: "Midnight" },
-            { key: "blueprint" as ViewMode, icon: <Building2 className="w-3.5 h-3.5" />, label: "Blueprint" },
-            { key: "satellite" as ViewMode, icon: <Satellite className="w-3.5 h-3.5" />, label: "Sat" },
-          ]).map(({ key, icon, label }) => (
-            <button key={key} title={label} onClick={() => setViewMode(key)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                viewMode === key ? "bg-cyan-500/20 text-cyan-400 shadow-sm border border-cyan-500/30" : "text-slate-500 hover:text-slate-300 hover:bg-slate-800/60 border border-transparent"
-              }`}>
-              {icon}<span className="hidden sm:inline">{label}</span>
-            </button>
-          ))}
         </div>
-      </div>
+      </aside>
 
-      {/* ── Legend — top right ── */}
-      <div className="absolute top-4 right-4 z-10 pointer-events-auto">
-        <Card className="bg-slate-900/90 backdrop-blur-xl border-slate-700/50 shadow-xl" style={{ boxShadow: "0 0 20px rgba(0,0,0,0.3)" }}>
-          <CardContent className="p-3 space-y-2">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Legenda</p>
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ backgroundColor: "#06b6d4cc", boxShadow: "0 0 8px #06b6d444" }}>
-                  <TrainFront className="w-3 h-3 text-white" />
-                </div>
-                <span className="text-[10px] text-slate-400">Stazione ferroviaria</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ backgroundColor: "#8b5cf6cc", boxShadow: "0 0 8px #8b5cf644" }}>
-                  <Ship className="w-3 h-3 text-white" />
-                </div>
-                <span className="text-[10px] text-slate-400">Terminal portuale</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full flex items-center justify-center" style={{ backgroundColor: "#f59e0bcc", boxShadow: "0 0 8px #f59e0b44" }}>
-                  <Plane className="w-3 h-3 text-white" />
-                </div>
-                <span className="text-[10px] text-slate-400">Aeroporto</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-amber-400 border border-black/30" />
-                <span className="text-[10px] text-slate-400">Fermata bus</span>
-              </div>
-              {view === "copertura" && (
-                <div className="pt-1 border-t border-slate-700/30 space-y-1">
-                  {([["#10b981", "Polo servito"], ["#f59e0b", "Parziale"], ["#ef4444", "Scoperto"]] as const).map(([c, lab]) => (
-                    <div key={lab} className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full border-2" style={{ borderColor: c, background: `${c}33` }} />
-                      <span className="text-[10px] text-slate-400">{lab}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {showLinesOnMap && (
-                selectedRoutes.size > 0 ? (
-                  /* Con una selezione esplicita la legenda nomina le linee:
-                     così si sa quale traccia è quale, non solo che sono bus. */
-                  <div className="space-y-1">
-                    {lines.filter(l => selectedRoutes.has(l.routeId)).slice(0, 8).map(l => (
-                      <div key={l.routeId} className="flex items-center gap-2">
-                        <div className="w-5 h-0.5 rounded shrink-0"
-                          style={{ background: lineColorById.get(l.routeId), boxShadow: `0 0 6px ${lineColorById.get(l.routeId)}` }} />
-                        <span className="text-[10px] text-slate-400 truncate max-w-[110px]">{l.label}</span>
-                      </div>
-                    ))}
-                    {selectedRoutes.size > 8 && (
-                      <p className="text-[9px] text-slate-500">+{selectedRoutes.size - 8} altre linee</p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <div className="w-5 h-0.5 rounded bg-cyan-400" style={{ boxShadow: "0 0 6px #06b6d4" }} />
-                    <span className="text-[10px] text-slate-400">Percorsi bus (tutta la rete)</span>
-                  </div>
-                )
-              )}
-              {showPois && (
-                <div className="pt-1 border-t border-slate-700/30 grid grid-cols-2 gap-x-2 gap-y-1">
-                  {Object.entries(POI_ICONS).map(([cat, meta]) => (
-                    <div key={cat} className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta.color }} />
-                      <span className="text-[9px] text-slate-400 truncate">{meta.label}</span>
-                    </div>
-                  ))}
-                  <p className="col-span-2 text-[8px] text-slate-600">Clicca un punto per identificarlo.</p>
-                </div>
-              )}
-              <div className="pt-1 border-t border-slate-700/30 flex flex-wrap gap-1.5">
-                <div className="flex items-center gap-1"><div className="w-4 h-4 rounded-full border-2 border-emerald-400 bg-transparent" /><span className="text-[9px] text-slate-500">≥70%</span></div>
-                <div className="flex items-center gap-1"><div className="w-4 h-4 rounded-full border-2 border-amber-400 bg-transparent" /><span className="text-[9px] text-slate-500">40-70%</span></div>
-                <div className="flex items-center gap-1"><div className="w-4 h-4 rounded-full border-2 border-red-500 bg-transparent" /><span className="text-[9px] text-slate-500">&lt;40%</span></div>
-              </div>
-            </div>
-            <div className="pt-1 border-t border-slate-700/20">
-              <p className="text-[8px] text-slate-500">Velocità cammino: {result?.config.walkSpeedKmh || 4.5} km/h · Attesa max: 60 min</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
       </div>
     </div>
   );
