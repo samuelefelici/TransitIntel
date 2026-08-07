@@ -72,6 +72,10 @@ export interface DemandCoverageResult {
     serviceHourly: number[];
     perKind: Record<"scuola" | "lavoro" | "ospedale" | "treni", number[]>;
     oreCritiche: Array<{ hour: number; demand: number; service: number }>;
+    /** chi genera la domanda e cosa la serve, ora per ora (per il click) */
+    dettaglioOre?: Array<{
+      treni: string[]; scuola: string[]; lavoro: string[]; ospedale: string[]; linee: string[];
+    }>;
   };
   note?: string;
 }
@@ -107,6 +111,8 @@ export default function DemandCoverage({
   const [statusFilter, setStatusFilter] = useState<Status | "tutti">("tutti");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  /* Ora selezionata sul grafico domanda↔offerta: apre il dettaglio */
+  const [selHour, setSelHour] = useState<number | null>(null);
 
   /* Elenco ordinato per GRAVITÀ (scoperti in cima), filtrato per famiglia,
    * verdetto e ricerca: l'inondazione di poli diventa una tabella. */
@@ -281,43 +287,8 @@ export default function DemandCoverage({
         </div>
       </div>
 
-      {/* ─── VERDETTO IN PROSA — la lettura da 5 secondi ─── */}
-      {(() => {
-        const s = data.summary, r = data.rete;
-        if (s.totale === 0) return null;
-        const bigGap = (r?.maxGapMin ?? 0) >= 120;
-        const level = pct >= 75 && !bigGap ? "adeguata"
-          : pct >= 45 ? "da rinforzare" : "insufficiente";
-        const lv = level === "adeguata"
-          ? { txt: "Rete adeguata", col: "#10b981", bg: "bg-emerald-500/10 border-emerald-500/30" }
-          : level === "da rinforzare"
-            ? { txt: "Rete da rinforzare", col: "#f59e0b", bg: "bg-amber-500/10 border-amber-500/30" }
-            : { txt: "Copertura insufficiente", col: "#ef4444", bg: "bg-red-500/10 border-red-500/30" };
-        const worst = (data.criticita ?? []).slice(0, 3).map(c => c.polo);
-        return (
-          <div className={`rounded-xl border p-3 space-y-1.5 ${lv.bg}`}>
-            <p className="text-sm font-bold" style={{ color: lv.col }}>{lv.txt}</p>
-            <p className="text-[11px] text-slate-200 leading-relaxed">
-              Le linee servono <strong>{s.servito} poli su {s.totale}</strong> ({pct}%)
-              {r && r.medianHeadwayMin != null ? <>, un bus ogni ~<strong>{r.medianHeadwayMin}′</strong></> : null}
-              {r && bigGap ? <>, con un buco fino a <strong>{Math.round(r.maxGapMin! / 6) / 10} h</strong> dalle {r.maxGapFrom}</> : null}.
-            </p>
-            {s.nonServito + s.parziale > 0 && (
-              <p className="text-[11px] text-slate-300 leading-relaxed">
-                <strong>{s.nonServito} scoperti</strong> e {s.parziale} coperti a metà
-                {worst.length > 0 ? <>: i più critici sono <span className="text-white">{worst.join(", ")}</span></> : null}.
-              </p>
-            )}
-            <p className="text-[11px] text-slate-300 leading-relaxed">
-              {level === "adeguata"
-                ? "La domanda è servita in modo diffuso; guarda comunque i poli parziali per rifinire le fasce."
-                : level === "da rinforzare"
-                  ? "Intervieni sui poli scoperti qui sotto, in ordine: ognuno riporta l'azione consigliata."
-                  : "Buona parte della domanda non è raggiunta: parti dai poli senza fermate, poi dalle fasce vuote."}
-            </p>
-          </div>
-        );
-      })()}
+      {/* Il verdetto in prosa è stato tolto su richiesta: i numeri stanno
+          nella barra "Poli serviti", le azioni in "Dove intervenire". */}
 
       {/* ─── La rete nel suo insieme ─── */}
       {data.rete && data.rete.trips > 0 && (
@@ -381,8 +352,10 @@ export default function DemandCoverage({
                   /* h-full è essenziale: senza, la colonna ha altezza auto e
                    * le percentuali dei segmenti si risolvono a 0 — il grafico
                    * mostrava le corse ma NESSUNA domanda. */
-                  <div key={h} className="flex-1 h-full flex flex-col justify-end relative"
-                    title={`${String(h).padStart(2, "0")}:00 — domanda ${n} (${parts.map(p => `${p.k} ${p.v}`).join(", ") || "—"}), corse ${tl.serviceHourly[h] ?? 0}${critical ? " ⚠ SCOPERTA" : ""}`}>
+                  <div key={h}
+                    onClick={() => setSelHour(v => v === h ? null : h)}
+                    className={`flex-1 h-full flex flex-col justify-end relative cursor-pointer ${selHour === h ? "outline outline-1 outline-cyan-400 rounded-sm" : ""}`}
+                    title={`${String(h).padStart(2, "0")}:00 — domanda ${n} (${parts.map(p => `${p.k} ${p.v}`).join(", ") || "—"}), corse ${tl.serviceHourly[h] ?? 0}${critical ? " ⚠ SCOPERTA" : ""} · clicca per il dettaglio`}>
                     {critical && <div className="absolute inset-0 rounded-sm bg-red-500/15 border border-red-500/40" />}
                     {parts.map(p => (
                       <div key={p.k} style={{
@@ -398,8 +371,10 @@ export default function DemandCoverage({
             {/* Offerta (corse per ora), sotto, specchiata */}
             <div className="flex items-start gap-[1px] h-8">
               {tl.serviceHourly.map((n, h) => (
-                <div key={h} className="flex-1"
-                  title={`${String(h).padStart(2, "0")}:00 — ${n} ${n === 1 ? "corsa" : "corse"}`}
+                <div key={h}
+                  onClick={() => setSelHour(v => v === h ? null : h)}
+                  className={`flex-1 cursor-pointer ${selHour === h ? "outline outline-1 outline-cyan-400 rounded-sm" : ""}`}
+                  title={`${String(h).padStart(2, "0")}:00 — ${n} ${n === 1 ? "corsa" : "corse"} · clicca per il dettaglio`}
                   style={{
                     height: `${Math.max(n > 0 ? 12 : 2, (n / maxS) * 100)}%`,
                     background: n === 0 ? "rgba(100,116,139,0.25)" : "rgba(148,163,184,0.8)",
@@ -424,6 +399,43 @@ export default function DemandCoverage({
             ) : (
               <p className="text-[9px] text-emerald-400/80">Ogni fascia con domanda ha almeno una corsa.</p>
             )}
+
+            {/* ── DETTAGLIO DELL'ORA CLICCATA: chi genera la domanda, cosa la serve ── */}
+            {selHour != null && tl.dettaglioOre?.[selHour] && (() => {
+              const det = tl.dettaglioOre![selHour];
+              const critical = tl.oreCritiche.some(c => c.hour === selHour);
+              const hh = `${String(selHour).padStart(2, "0")}:00`;
+              const SECTIONS: Array<{ key: "treni" | "scuola" | "ospedale" | "lavoro"; label: string; color: string }> = [
+                { key: "treni", label: "Treni", color: "#06b6d4" },
+                { key: "scuola", label: "Scuole", color: "#f59e0b" },
+                { key: "ospedale", label: "Sanità", color: "#ef4444" },
+                { key: "lavoro", label: "Lavoro", color: "#10b981" },
+              ];
+              return (
+                <div className={`rounded-lg border p-2 space-y-1.5 ${critical ? "border-red-500/40 bg-red-500/10" : "border-slate-600/50 bg-slate-900/60"}`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-white font-mono">{hh}–{String((selHour + 1) % 24).padStart(2, "0")}:00</span>
+                    <span className="text-[9px] text-slate-400">
+                      domanda <strong className="text-slate-200">{tl.demandHourly[selHour]}</strong> · corse <strong className="text-slate-200">{tl.serviceHourly[selHour] ?? 0}</strong>
+                    </span>
+                    {critical && <span className="text-[8px] font-bold px-1.5 py-0.5 rounded bg-red-500/25 text-red-300 ml-auto">FASCIA SCOPERTA</span>}
+                    <button onClick={() => setSelHour(null)} className="text-slate-500 hover:text-white text-[10px] ml-auto">✕</button>
+                  </div>
+                  {SECTIONS.filter(s => det[s.key].length > 0).map(s => (
+                    <div key={s.key} className="text-[9px] leading-relaxed">
+                      <span className="font-semibold" style={{ color: s.color }}>{s.label} ({det[s.key].length > 12 ? "12+" : det[s.key].length}):</span>{" "}
+                      <span className="text-slate-300">{det[s.key].join(" · ")}</span>
+                    </div>
+                  ))}
+                  <div className="text-[9px] leading-relaxed border-t border-slate-700/40 pt-1">
+                    <span className="font-semibold text-slate-400">Le tue corse:</span>{" "}
+                    {det.linee.length > 0
+                      ? <span className="text-cyan-300">{tl.serviceHourly[selHour]} {tl.serviceHourly[selHour] === 1 ? "corsa" : "corse"} · linee {det.linee.join(", ")}</span>
+                      : <span className="text-red-300">nessuna corsa in questa fascia</span>}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         );
       })()}

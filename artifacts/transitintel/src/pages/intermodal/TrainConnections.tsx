@@ -6,7 +6,7 @@
  * Ogni riga risponde a una domanda sola: "questo treno ha la sua corsa?".
  * Le righe scoperte si isolano con un filtro: è lì che si interviene.
  */
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { TrainFront, ArrowRight, ArrowLeft, Footprints } from "lucide-react";
 import type { HubAnalysis } from "./types";
 import { HUB_COLORS, hubIcon } from "./constants";
@@ -22,6 +22,9 @@ const V = {
   scoperto: { label: "✗ scoperto", cls: "bg-red-500/15 text-red-300 border-red-500/40" },
 } satisfies Record<string, Verdict>;
 
+/** Un passo del viaggio del passeggero, per la striscia grafica. */
+interface JourneyStep { icon: string; label: string; min: number | null; color: string }
+
 interface Row {
   time: string;          // orario del TRENO (l'evento a cui ci si aggancia)
   place: string;         // da dove viene / dove va
@@ -29,6 +32,8 @@ interface Row {
   delta: string | null;  // attesa o margine, in minuti
   verdict: Verdict;
   covered: boolean;
+  /** il viaggio porta-a-porta, mostrato espandendo la riga */
+  journey: JourneyStep[] | null;
 }
 
 function arrivalRows(h: HubAnalysis): Row[] {
@@ -39,6 +44,20 @@ function arrivalRows(h: HubAnalysis): Row[] {
       : ac.status === "long-wait" ? V.attesa
       : ac.status === "just-missed" ? V.perso
       : V.scoperto;
+    const journey: JourneyStep[] | null = ac.firstBus ? [
+      { icon: "🚆", label: `arriva ${ac.arrivalTime} da ${ac.origin}`, min: null, color: "#06b6d4" },
+      { icon: "🚶", label: `cammina fino a ${ac.firstBus.stopName || "fermata"} · in fermata ${ac.atBusStopTime}`, min: ac.walkMin, color: "#f59e0b" },
+      { icon: "⏱", label: "attende il bus", min: ac.firstBus.waitMin, color: ac.firstBus.waitMin > 25 ? "#f59e0b" : "#10b981" },
+      { icon: "🚌", label: `[${ac.firstBus.routeShortName}] parte ${ac.firstBus.departureTime}${ac.firstBus.destination ? ` → ${ac.firstBus.destination}` : ""}`, min: null, color: "#10b981" },
+    ] : ac.justMissed[0] ? [
+      { icon: "🚆", label: `arriva ${ac.arrivalTime} da ${ac.origin}`, min: null, color: "#06b6d4" },
+      { icon: "🚶", label: `cammina · in fermata ${ac.atBusStopTime}`, min: ac.walkMin, color: "#f59e0b" },
+      { icon: "✗", label: `la corsa [${ac.justMissed[0].routeShortName}] delle ${ac.justMissed[0].departureTime} è già partita da ${ac.justMissed[0].missedByMin}′`, min: ac.justMissed[0].missedByMin, color: "#ef4444" },
+    ] : [
+      { icon: "🚆", label: `arriva ${ac.arrivalTime} da ${ac.origin}`, min: null, color: "#06b6d4" },
+      { icon: "🚶", label: `cammina · in fermata ${ac.atBusStopTime}`, min: ac.walkMin, color: "#f59e0b" },
+      { icon: "✗", label: "nessun bus entro 60′", min: null, color: "#ef4444" },
+    ];
     return {
       time: ac.arrivalTime,
       place: ac.origin,
@@ -49,12 +68,13 @@ function arrivalRows(h: HubAnalysis): Row[] {
           : null,
       delta: ac.firstBus ? `${ac.firstBus.waitMin}′`
         : ac.justMissed[0] ? `−${ac.justMissed[0].missedByMin}′` : null,
-      verdict, covered,
+      verdict, covered, journey,
     };
   }).sort((a, b) => a.time.localeCompare(b.time));
 }
 
 function departureRows(h: HubAnalysis): Row[] {
+  const walkMin = h.hub.platformWalkMinutes ?? 0;
   return (h.departureConnections ?? []).map(dc => {
     const covered = dc.bestBusArrival != null;
     /* Margine sotto i 10′: il bus arriva, ma basta un ritardo per perdere
@@ -62,13 +82,25 @@ function departureRows(h: HubAnalysis): Row[] {
     const verdict = covered
       ? ((dc.waitMinutes ?? 99) < 10 ? V.stretto : V.ok)
       : dc.missedBy != null ? V.perso : V.scoperto;
+    const journey: JourneyStep[] | null = dc.bestBusArrival ? [
+      { icon: "🚌", label: `[${dc.bestBusRoute}] arriva in stazione ${dc.bestBusArrival}`, min: null, color: "#10b981" },
+      { icon: "🚶", label: "raggiunge il binario", min: walkMin, color: "#f59e0b" },
+      { icon: "⏱", label: "margine prima del treno", min: dc.waitMinutes, color: (dc.waitMinutes ?? 99) < 10 ? "#f59e0b" : "#10b981" },
+      { icon: "🚆", label: `parte ${dc.departureTime} → ${dc.destination}`, min: null, color: "#06b6d4" },
+    ] : dc.missedBy != null ? [
+      { icon: "🚌", label: "la corsa più vicina arriva troppo tardi", min: dc.missedBy, color: "#ef4444" },
+      { icon: "🚆", label: `il treno ${dc.departureTime} → ${dc.destination} è perso`, min: null, color: "#06b6d4" },
+    ] : [
+      { icon: "✗", label: "nessuna corsa porta in stazione in tempo", min: null, color: "#ef4444" },
+      { icon: "🚆", label: `treno ${dc.departureTime} → ${dc.destination}`, min: null, color: "#06b6d4" },
+    ];
     return {
       time: dc.departureTime,
       place: dc.destination,
       bus: dc.bestBusArrival ? `[${dc.bestBusRoute}] arr. ${dc.bestBusArrival}` : null,
       delta: dc.waitMinutes != null ? `${dc.waitMinutes}′`
         : dc.missedBy != null ? `−${dc.missedBy}′` : null,
-      verdict, covered,
+      verdict, covered, journey,
     };
   }).sort((a, b) => a.time.localeCompare(b.time));
 }
@@ -81,6 +113,8 @@ export default function TrainConnections({
 }) {
   const [dir, setDir] = useState<Dir>("arrivi");
   const [soloScoperti, setSoloScoperti] = useState(false);
+  /* Riga espansa: mostra il viaggio del passeggero passo per passo */
+  const [openRow, setOpenRow] = useState<string | null>(null);
 
   /* Solo i nodi con un orario da incrociare: gli altri non hanno righe. */
   const stations = useMemo(() =>
@@ -165,21 +199,74 @@ export default function TrainConnections({
                     </tr>
                   </thead>
                   <tbody>
-                    {shown.map((r, i) => (
-                      <tr key={i} className={`border-b border-slate-700/15 ${r.covered ? "" : "bg-red-500/5"}`}>
-                        <td className="px-2.5 py-1 font-mono font-semibold text-white whitespace-nowrap">{r.time}</td>
-                        <td className="px-1 py-1 text-slate-400 truncate max-w-[90px]">{r.place}</td>
-                        <td className="px-1 py-1 whitespace-nowrap">
-                          {r.bus
-                            ? <span className={r.covered ? "text-cyan-300 font-mono" : "text-slate-500 font-mono line-through"}>{r.bus}</span>
-                            : <span className="text-slate-600 italic">nessuna utile</span>}
-                        </td>
-                        <td className="px-1 py-1 text-right font-mono text-slate-300 whitespace-nowrap">{r.delta ?? "—"}</td>
-                        <td className="px-2.5 py-1 text-right whitespace-nowrap">
-                          <span className={`inline-block text-[8px] font-bold px-1.5 py-0.5 rounded border ${r.verdict.cls}`}>{r.verdict.label}</span>
-                        </td>
-                      </tr>
-                    ))}
+                    {shown.map((r, i) => {
+                      const rowKey = `${h.hub.id}:${dir}:${i}`;
+                      const isOpen = openRow === rowKey;
+                      return (
+                        <Fragment key={rowKey}>
+                          <tr
+                            onClick={() => setOpenRow(isOpen ? null : rowKey)}
+                            title="Clicca per vedere il viaggio del passeggero"
+                            className={`cursor-pointer border-b border-slate-700/15 transition-colors ${
+                              isOpen ? "bg-slate-700/25" : r.covered ? "hover:bg-slate-700/15" : "bg-red-500/5 hover:bg-red-500/10"
+                            }`}>
+                            <td className="px-2.5 py-1 font-mono font-semibold text-white whitespace-nowrap">{r.time}</td>
+                            <td className="px-1 py-1 text-slate-400 truncate max-w-[90px]">{r.place}</td>
+                            <td className="px-1 py-1 whitespace-nowrap">
+                              {r.bus
+                                ? <span className={r.covered ? "text-cyan-300 font-mono" : "text-slate-500 font-mono line-through"}>{r.bus}</span>
+                                : <span className="text-slate-600 italic">nessuna utile</span>}
+                            </td>
+                            <td className="px-1 py-1 text-right font-mono text-slate-300 whitespace-nowrap">{r.delta ?? "—"}</td>
+                            <td className="px-2.5 py-1 text-right whitespace-nowrap">
+                              <span className={`inline-block text-[8px] font-bold px-1.5 py-0.5 rounded border ${r.verdict.cls}`}>{r.verdict.label}</span>
+                            </td>
+                          </tr>
+                          {/* ── IL VIAGGIO DEL PASSEGGERO: la coincidenza passo per passo,
+                               con i tempi in proporzione — si capisce A COLPO D'OCCHIO
+                               dove il trasbordo regge e dove si rompe. ── */}
+                          {isOpen && r.journey && (
+                            <tr className="border-b border-slate-700/20 bg-slate-900/50">
+                              <td colSpan={5} className="px-2.5 py-2">
+                                <div className="space-y-1.5">
+                                  {/* Barra dei tempi: larghezze ∝ minuti */}
+                                  {(() => {
+                                    const timed = r.journey!.filter(s => s.min != null && s.min > 0);
+                                    const tot = timed.reduce((s, x) => s + (x.min ?? 0), 0);
+                                    if (tot <= 0) return null;
+                                    return (
+                                      <div className="flex h-3 rounded overflow-hidden border border-slate-700/40" title={`${tot}′ porta-a-porta`}>
+                                        {timed.map((s, j) => (
+                                          <div key={j} className="flex items-center justify-center text-[7px] font-bold text-black/70"
+                                            style={{ width: `${((s.min ?? 0) / tot) * 100}%`, minWidth: 22, background: s.color, opacity: 0.9 }}>
+                                            {s.min}′
+                                          </div>
+                                        ))}
+                                      </div>
+                                    );
+                                  })()}
+                                  {/* I passi, in fila */}
+                                  <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[9px]">
+                                    {r.journey.map((s, j) => (
+                                      <Fragment key={j}>
+                                        {j > 0 && <span className="text-slate-600">→</span>}
+                                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700/40 bg-slate-800/60">
+                                          <span>{s.icon}</span>
+                                          <span className="text-slate-200">{s.label}</span>
+                                          {s.min != null && s.min > 0 && (
+                                            <span className="font-mono font-bold" style={{ color: s.color }}>{s.min}′</span>
+                                          )}
+                                        </span>
+                                      </Fragment>
+                                    ))}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
