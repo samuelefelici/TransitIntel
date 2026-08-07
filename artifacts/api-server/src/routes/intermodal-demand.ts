@@ -320,7 +320,7 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     // Nome linea leggibile
     const routeRows = await loadRoutes(src);
     const routeLabel = new Map<string, string>();
-    for (const r of routeRows) routeLabel.set(r.routeId, r.shortName || r.longName || r.routeId);
+    for (const r of routeRows) routeLabel.set(r.routeId, r.shortName || r.longName || "linea");
 
     // Indice: fermata → passaggi
     const byStop = new Map<string, typeof validPassages>();
@@ -645,7 +645,7 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
 
     const lines = routes.map(r => ({
       routeId: r.routeId,
-      label: r.shortName || r.longName || r.routeId,
+      label: r.shortName || r.longName || "linea",
       longName: r.longName ?? null,
       color: r.color ? (r.color.startsWith("#") ? r.color : `#${r.color}`) : null,
       trips: countByRoute.get(r.routeId) ?? 0,
