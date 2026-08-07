@@ -187,22 +187,29 @@ export interface SrcDayType {
 export async function loadDayTypes(src: Source): Promise<SrcDayType[]> {
   if (src.kind !== "ps") return [];
   try {
+    /* Il CALENDARIO AZIENDALE vive in ps_day_types / ps_day_calendar /
+     * ps_trip_day_validity (le stesse tabelle della pagina Calendario del
+     * progetto). Prima si leggeva ps_validity_categories — un sistema
+     * diverso, vuoto per questi progetti — e il selettore mostrava solo le
+     * validità grezze del feed invece delle categorie aziendali. */
     const r = await db.execute<any>(sql`
-      SELECT c.id::text AS id, c.code, c.name, c.color, c.sort_order,
-             (SELECT count(*) FROM ps_trip_category_validity tcv
-                JOIN ps_trips t ON t.id = tcv.trip_id
-               WHERE tcv.category_id = c.id AND t.project_id = ${src.psProjectId}::uuid)::int AS trips,
-             (SELECT count(*) FROM ps_validity_category_calendar cc
-               WHERE cc.category_id = c.id)::int AS giorni
-        FROM ps_validity_categories c
-       WHERE c.project_id = ${src.psProjectId}::uuid OR c.project_id IS NULL
-       ORDER BY c.sort_order, c.name`);
+      SELECT dt.id::text AS id, dt.code, dt.name, dt.color, dt.sort_order,
+             (SELECT count(*) FROM ps_trip_day_validity v
+                JOIN ps_trips t ON t.id = v.trip_id
+               WHERE v.day_type_id = dt.id AND v.is_valid = true
+                 AND t.project_id = ${src.psProjectId}::uuid)::int AS trips,
+             (SELECT count(*) FROM ps_day_calendar dc
+               WHERE dc.day_type_id = dt.id
+                 AND (dc.project_id = ${src.psProjectId}::uuid OR dc.project_id IS NULL))::int AS giorni
+        FROM ps_day_types dt
+       WHERE dt.project_id = ${src.psProjectId}::uuid OR dt.project_id IS NULL
+       ORDER BY dt.sort_order, dt.name`);
     return ((r as any).rows ?? []).map((x: any) => ({
       id: String(x.id), code: x.code, name: x.name, color: x.color ?? null,
       trips: Number(x.trips ?? 0), giorni: Number(x.giorni ?? 0),
     }));
   } catch {
-    return []; // tabelle categorie assenti su progetti vecchi
+    return []; // tabelle del calendario assenti su progetti vecchi
   }
 }
 
@@ -226,8 +233,10 @@ export async function loadActiveTrips(
       const trips = await db.execute<any>(sql`
         SELECT t.id::text AS trip_id, t.route_id::text AS route_id
           FROM ps_trips t
-          JOIN ps_trip_category_validity tcv ON tcv.trip_id = t.id
-         WHERE t.project_id = ${src.psProjectId}::uuid AND tcv.category_id = ${categoryId}::uuid`);
+          JOIN ps_trip_day_validity v ON v.trip_id = t.id
+         WHERE t.project_id = ${src.psProjectId}::uuid
+           AND v.day_type_id = ${categoryId}::uuid
+           AND v.is_valid = true`);
       for (const t of ((trips as any).rows ?? [])) out.set(String(t.trip_id), String(t.route_id));
       return out;
     }

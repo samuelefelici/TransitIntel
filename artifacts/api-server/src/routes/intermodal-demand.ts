@@ -675,16 +675,24 @@ router.get("/intermodal/day-types", async (req: any, res: any) => {
     let todayId: string | null = null;
     if (src.kind === "ps") {
       try {
+        /* Stessa regola della pagina Calendario: override in ps_day_calendar
+         * (il progetto vince sul globale), altrimenti inferenza dal giorno
+         * della settimana (dom→festivo, sab→sabato, altrimenti feriale). */
         const r = await db.execute<any>(sql`
-          SELECT cc.category_id::text AS id
-            FROM ps_validity_category_calendar cc
-            JOIN ps_validity_categories c ON c.id = cc.category_id
-           WHERE cc.date = CURRENT_DATE
-             AND (c.project_id = ${src.psProjectId}::uuid OR c.project_id IS NULL)
+          SELECT day_type_id::text AS id
+            FROM ps_day_calendar
+           WHERE date = CURRENT_DATE
+             AND (project_id = ${src.psProjectId}::uuid OR project_id IS NULL)
+           ORDER BY project_id NULLS LAST
            LIMIT 1`);
         todayId = ((r as any).rows?.[0]?.id as string | undefined) ?? null;
+        if (!todayId) {
+          const dow = new Date().getDay(); // 0=dom
+          const code = dow === 0 ? "festivo" : dow === 6 ? "sabato" : "feriale";
+          todayId = dayTypes.find(d => d.code === code)?.id ?? null;
+        }
         if (todayId && !dayTypes.some(d => d.id === todayId)) todayId = null;
-      } catch { /* progetti senza calendario per categorie */ }
+      } catch { /* progetti senza calendario */ }
     }
     res.json({
       dayTypes,
