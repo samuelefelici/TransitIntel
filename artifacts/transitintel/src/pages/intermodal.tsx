@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import DemandCoverage, { type DemandCoverageResult } from "./intermodal/DemandCoverage";
+import TrainConnections from "./intermodal/TrainConnections";
 import LinePicker, { lineColor, type NetworkLine } from "./intermodal/LinePicker";
 
 import type {
@@ -1483,6 +1484,13 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                       </div>
                     </div>
 
+                    {/* ── LA TABELLA DELLE COINCIDENZE: treno | tua corsa | Δ | esito.
+                         È il dato che prima non si vedeva mai fianco a fianco. ── */}
+                    <TrainConnections
+                      hubs={result.hubs}
+                      onFocus={(lat, lng) => mapRef.current?.flyTo({ center: [lng, lat], zoom: 14, duration: 900 })}
+                    />
+
                     {/* Donut + bar */}
                     <div className="grid grid-cols-2 gap-2">
                       {arrivalStatusData.length > 0 && (
@@ -1760,7 +1768,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                                         {ac.firstBus.destination && <span className="text-[8px] ml-1 text-slate-500">→ {ac.firstBus.destination}</span>}
                                                       </div>
                                                     ) : ac.justMissed.length > 0 ? (
-                                                      <div className="mt-0.5 text-orange-400">⚠ Fermata {ac.atBusStopTime} — bus [{ac.justMissed[0].routeShortName}] partito {ac.justMissed[0].missedByMin}min prima!</div>
+                                                      <div className="mt-0.5 text-orange-400">⚠ Fermata {ac.atBusStopTime} — corsa [{ac.justMissed[0].routeShortName}] {ac.justMissed[0].departureTime} partita {ac.justMissed[0].missedByMin}′ prima!</div>
                                                     ) : (
                                                       <div className="mt-0.5 text-red-400">✗ Fermata {ac.atBusStopTime} — nessun bus entro 60min</div>
                                                     )}
@@ -1819,7 +1827,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                                                             ? `Treno ${c.departureTime}: il bus più vicino arriva ${c.missedBy} min troppo tardi`
                                                             : `Treno ${c.departureTime}: nessun bus in coincidenza`}
                                                         className={`text-[9px] font-mono px-1.5 py-0.5 rounded border cursor-default ${c.bestBusArrival ? "bg-emerald-500/10 border-emerald-500/25 text-emerald-200" : "bg-red-500/10 border-red-500/25 text-red-300"}`}>
-                                                        {c.departureTime}{c.bestBusArrival ? ` · [${c.bestBusRoute}]` : " · ✗"}
+                                                        {c.departureTime}{c.bestBusArrival ? ` ← [${c.bestBusRoute}] ${c.bestBusArrival}` : " · ✗"}
                                                       </span>
                                                     ))}
                                                   </div>

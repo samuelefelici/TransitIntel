@@ -1149,7 +1149,9 @@ router.get("/intermodal/analyze", async (req, res) => {
 
       const busLines = Object.entries(byRoute).map(([rId, info]) => ({
         routeId: rId,
-        routeShortName: routeMap[rId]?.shortName || rId,
+        /* Etichetta = CODICE DELLA LINEA: mai l'id grezzo del feed, che a
+         * schermo sembra un codice-corsa senza significato per l'utente. */
+        routeShortName: routeMap[rId]?.shortName || routeMap[rId]?.longName || "linea",
         routeLongName: routeMap[rId]?.longName || "",
         routeColor: routeMap[rId]?.color || null,
         tripsCount: info.times.size,
@@ -1227,8 +1229,9 @@ router.get("/intermodal/analyze", async (req, res) => {
               const rId = tripRouteMap[st.tripId];
               if (!rId) continue;
               const rInfo = routeMap[rId];
-              const shortName = rInfo?.shortName || rId;
               const longName = rInfo?.longName || "";
+              // Codice della linea, mai l'id grezzo (leggibile solo dal database)
+              const shortName = rInfo?.shortName || longName || "linea";
 
               // Walk time to THIS specific stop
               const walkToThisStop = stopWalkMap[st.stopId] || minWalk;
@@ -1355,7 +1358,7 @@ router.get("/intermodal/analyze", async (req, res) => {
                 if (bestBus === null || bm > bestBus) {
                   bestBus = bm;
                   const rId = tripRouteMap[st.tripId];
-                  bestBusRoute = rId ? (routeMap[rId]?.shortName || rId) : null;
+                  bestBusRoute = rId ? (routeMap[rId]?.shortName || routeMap[rId]?.longName || "linea") : null;
                 }
               }
             }
