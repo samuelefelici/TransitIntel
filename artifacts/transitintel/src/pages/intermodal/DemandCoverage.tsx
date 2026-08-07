@@ -5,11 +5,11 @@
  * costruito servono davvero stazioni, aeroporti, scuole e luoghi di lavoro?".
  * I poli scoperti stanno in cima, perché sono quelli su cui si interviene.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
-  TrainFront, Plane, GraduationCap, Briefcase, Loader2, ChevronDown, ChevronUp,
+  TrainFront, Plane, GraduationCap, Briefcase, Loader2,
   CheckCircle2, AlertTriangle, XCircle, Footprints, Clock, Route as RouteIcon,
-  Cross, Wrench, Download, Printer, Table2,
+  Cross, Wrench, Download, Printer, Table2, Search,
 } from "lucide-react";
 import { exportCoverageCsv, exportSchedulesCsv, openCoverageReport } from "./intermodal-export";
 
@@ -106,13 +106,21 @@ export default function DemandCoverage({
   const [kindFilter, setKindFilter] = useState<GeneratorKind | "tutti">("tutti");
   const [statusFilter, setStatusFilter] = useState<Status | "tutti">("tutti");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [q, setQ] = useState("");
 
+  /* Elenco ordinato per GRAVITÀ (scoperti in cima), filtrato per famiglia,
+   * verdetto e ricerca: l'inondazione di poli diventa una tabella. */
   const shown = useMemo(() => {
     if (!data) return [];
-    return data.generators.filter(g =>
-      (kindFilter === "tutti" || g.generator.kind === kindFilter) &&
-      (statusFilter === "tutti" || g.status === statusFilter));
-  }, [data, kindFilter, statusFilter]);
+    const needle = q.trim().toLowerCase();
+    const sev: Record<Status, number> = { "non-servito": 0, "parziale": 1, "servito": 2 };
+    return data.generators
+      .filter(g =>
+        (kindFilter === "tutti" || g.generator.kind === kindFilter) &&
+        (statusFilter === "tutti" || g.status === statusFilter) &&
+        (!needle || g.generator.name.toLowerCase().includes(needle)))
+      .sort((a, b) => sev[a.status] - sev[b.status] || a.generator.name.localeCompare(b.generator.name));
+  }, [data, kindFilter, statusFilter, q]);
 
   /* ── DELTA PRIMA→DOPO: il feedback sulla manovra ─────────────────────
    * A ogni ricalcolo sullo STESSO periodo/ambito si confronta col giro
@@ -370,12 +378,16 @@ export default function DemandCoverage({
                 const parts = (["treni", "scuola", "ospedale", "lavoro"] as const)
                   .map(k => ({ k, v: tl.perKind[k]?.[h] ?? 0 })).filter(p => p.v > 0);
                 return (
-                  <div key={h} className="flex-1 flex flex-col justify-end relative"
+                  /* h-full è essenziale: senza, la colonna ha altezza auto e
+                   * le percentuali dei segmenti si risolvono a 0 — il grafico
+                   * mostrava le corse ma NESSUNA domanda. */
+                  <div key={h} className="flex-1 h-full flex flex-col justify-end relative"
                     title={`${String(h).padStart(2, "0")}:00 — domanda ${n} (${parts.map(p => `${p.k} ${p.v}`).join(", ") || "—"}), corse ${tl.serviceHourly[h] ?? 0}${critical ? " ⚠ SCOPERTA" : ""}`}>
                     {critical && <div className="absolute inset-0 rounded-sm bg-red-500/15 border border-red-500/40" />}
                     {parts.map(p => (
                       <div key={p.k} style={{
                         height: `${(p.v / maxD) * 100}%`,
+                        minHeight: 2, // un segmento piccolo resta visibile anche accanto a un massimo alto
                         background: KIND_COLORS[p.k], opacity: 0.85,
                       }} />
                     ))}
@@ -487,38 +499,70 @@ export default function DemandCoverage({
         ))}
       </div>
 
-      {/* ─── Elenco poli (scoperti in cima) ─── */}
-      <div className="space-y-1.5">
+      {/* ─── Elenco poli: DATA-TABLE — ricerca, scoperti in cima, dettaglio
+           su selezione. Fine dell'elenco che inonda: righe compatte. ─── */}
+      <div className="flex items-center gap-1.5">
+        <div className="relative flex-1">
+          <Search className="w-3 h-3 text-slate-500 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Cerca un polo… (es. liceo)"
+            className="w-full text-[10px] bg-slate-900/60 text-slate-200 border border-slate-700/50 rounded-md pl-6 pr-2 py-1.5 focus:outline-none focus:border-cyan-500/50 placeholder:text-slate-600" />
+        </div>
+        <span className="text-[9px] text-slate-500 shrink-0 font-mono">{shown.length}/{data.generators.length}</span>
+      </div>
+      <div className="rounded-lg border border-slate-700/40 overflow-hidden">
+        <table className="w-full text-[10px]" style={{ fontVariantNumeric: "tabular-nums" }}>
+          <thead>
+            <tr className="text-[8px] uppercase tracking-wide text-slate-500 bg-slate-900/60 border-b border-slate-700/30">
+              <th className="text-left font-semibold px-2 py-1.5">Polo</th>
+              <th className="text-right font-semibold px-1 py-1.5" title="Cammino alla fermata più vicina">A piedi</th>
+              <th className="text-right font-semibold px-1 py-1.5">Corse</th>
+              <th className="text-right font-semibold px-2 py-1.5">Esito</th>
+            </tr>
+          </thead>
+          <tbody>
         {shown.length === 0 && (
-          <p className="text-[10px] text-slate-500 text-center py-4">Nessun polo con questi filtri.</p>
+          <tr><td colSpan={4} className="text-[10px] text-slate-500 text-center py-4">Nessun polo con questi filtri.</td></tr>
         )}
         {shown.map(g => {
           const m = KIND_META[g.generator.kind];
           const st = STATUS_META[g.status];
           const isOpen = expanded === g.generator.id;
+          const corse = g.schedule?.trips ?? g.span?.trips ?? g.windows.reduce((s, w) => s + w.trips, 0);
           return (
-            <div key={g.generator.id} className={`rounded-lg border ${st.bg}`}>
-              <button
+            <Fragment key={g.generator.id}>
+              <tr
                 onClick={() => {
                   setExpanded(isOpen ? null : g.generator.id);
                   onFocus?.(g.generator.lat, g.generator.lng, g.generator.id);
                 }}
-                className="w-full p-2 flex items-start gap-2 text-left">
-                <m.Icon className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: m.color }} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[11px] font-semibold text-white truncate">{g.generator.name}</p>
-                  <p className="text-[9px] text-slate-400">
-                    {m.label}{g.generator.detail && g.generator.detail !== g.generator.kind ? ` · ${g.generator.detail}` : ""}
-                    {g.nearStops.length > 0 && ` · ${g.nearStops.length} fermate a ≤${g.nearStops[g.nearStops.length - 1].walkMin}′`}
-                  </p>
-                </div>
-                <st.Icon className="w-3.5 h-3.5 shrink-0" style={{ color: st.color }} />
-                {isOpen ? <ChevronUp className="w-3 h-3 text-slate-500 shrink-0 mt-0.5" />
-                        : <ChevronDown className="w-3 h-3 text-slate-500 shrink-0 mt-0.5" />}
-              </button>
+                title={`${m.label}${g.generator.detail && g.generator.detail !== g.generator.kind ? ` · ${g.generator.detail}` : ""}`}
+                className={`cursor-pointer border-b border-slate-700/15 transition-colors ${
+                  isOpen ? "bg-slate-700/25" : g.status === "non-servito" ? "bg-red-500/5 hover:bg-red-500/10" : "hover:bg-slate-700/20"
+                }`}>
+                <td className="px-2 py-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0 max-w-[210px]">
+                    <m.Icon className="w-3.5 h-3.5 shrink-0" style={{ color: m.color }} />
+                    <span className="font-semibold text-white truncate">{g.generator.name}</span>
+                  </div>
+                </td>
+                <td className="px-1 py-1.5 text-right font-mono whitespace-nowrap">
+                  {g.nearStops.length > 0
+                    ? <span className="text-slate-300">{g.nearStops[0].walkMin}′</span>
+                    : <span className="text-red-400" title="Nessuna fermata raggiungibile a piedi">—</span>}
+                </td>
+                <td className="px-1 py-1.5 text-right font-mono text-slate-300">{corse}</td>
+                <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                  <span className="inline-flex items-center gap-1 text-[8px] font-bold px-1.5 py-0.5 rounded border"
+                    style={{ color: st.color, borderColor: `${st.color}55`, background: `${st.color}14` }}>
+                    <st.Icon className="w-2.5 h-2.5" /> {st.label}
+                  </span>
+                </td>
+              </tr>
 
               {isOpen && (
-                <div className="px-2 pb-2 space-y-2 border-t border-slate-700/30 pt-2">
+                <tr className="border-b border-slate-700/20 bg-slate-900/40">
+                  <td colSpan={4}>
+                <div className="px-2 pb-2 space-y-2 pt-2">
                   <p className="text-[10px] text-slate-300 leading-relaxed">{g.reason}</p>
 
                   {/* Finestre (scuole e lavoro) */}
@@ -604,10 +648,14 @@ export default function DemandCoverage({
                     </p>
                   )}
                 </div>
+                  </td>
+                </tr>
               )}
-            </div>
+            </Fragment>
           );
         })}
+          </tbody>
+        </table>
       </div>
 
       </>)}
