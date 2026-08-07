@@ -378,12 +378,16 @@ export default function DemandCoverage({
                 const parts = (["treni", "scuola", "ospedale", "lavoro"] as const)
                   .map(k => ({ k, v: tl.perKind[k]?.[h] ?? 0 })).filter(p => p.v > 0);
                 return (
-                  <div key={h} className="flex-1 flex flex-col justify-end relative"
+                  /* h-full è essenziale: senza, la colonna ha altezza auto e
+                   * le percentuali dei segmenti si risolvono a 0 — il grafico
+                   * mostrava le corse ma NESSUNA domanda. */
+                  <div key={h} className="flex-1 h-full flex flex-col justify-end relative"
                     title={`${String(h).padStart(2, "0")}:00 — domanda ${n} (${parts.map(p => `${p.k} ${p.v}`).join(", ") || "—"}), corse ${tl.serviceHourly[h] ?? 0}${critical ? " ⚠ SCOPERTA" : ""}`}>
                     {critical && <div className="absolute inset-0 rounded-sm bg-red-500/15 border border-red-500/40" />}
                     {parts.map(p => (
                       <div key={p.k} style={{
                         height: `${(p.v / maxD) * 100}%`,
+                        minHeight: 2, // un segmento piccolo resta visibile anche accanto a un massimo alto
                         background: KIND_COLORS[p.k], opacity: 0.85,
                       }} />
                     ))}

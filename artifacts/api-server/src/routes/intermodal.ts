@@ -5,7 +5,7 @@ import { sql, inArray, eq, and } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
 import {
-  resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages,
+  resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages, loadRoutes,
   parseDayKind, projectBbox, type DayKind,
 } from "./intermodal-source";
 
@@ -1079,15 +1079,14 @@ router.get("/intermodal/analyze", async (req, res) => {
       });
     }
 
-    // Route info
-    const gtfsRoutesAll = await db.select({
-      routeId: gtfsRoutes.routeId,
-      shortName: gtfsRoutes.routeShortName,
-      longName: gtfsRoutes.routeLongName,
-      color: gtfsRoutes.routeColor,
-    }).from(gtfsRoutes).where(feedWhere(gtfsRoutes.feedId, feedId));
+    /* Nomi linea dalla STESSA sorgente dei passaggi (progetto vivo o feed).
+     * Prima si leggeva sempre gtfs_routes: per un progetto PS i passaggi
+     * arrivano però dalle tabelle ps_* con gli id del progetto, quindi ogni
+     * lookup falliva e a schermo compariva l'id grezzo (poi il ripiego
+     * "linea") al posto del CODICE LINEA. */
+    const srcRoutesAll = await loadRoutes(srcA);
     const routeMap: Record<string, { shortName: string | null; longName: string | null; color: string | null }> = {};
-    for (const r of gtfsRoutesAll) routeMap[r.routeId] = { shortName: r.shortName, longName: r.longName, color: r.color };
+    for (const r of srcRoutesAll) routeMap[r.routeId] = { shortName: r.shortName, longName: r.longName, color: r.color };
 
     // 5. For each trip, find where it ENDS (destination) by looking at last stop
     // We need trip → last stop name for destination analysis
