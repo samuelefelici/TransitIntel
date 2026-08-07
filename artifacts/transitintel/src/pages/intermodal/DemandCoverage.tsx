@@ -5,7 +5,7 @@
  * costruito servono davvero stazioni, aeroporti, scuole e luoghi di lavoro?".
  * I poli scoperti stanno in cima, perché sono quelli su cui si interviene.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TrainFront, Plane, GraduationCap, Briefcase, Loader2, ChevronDown, ChevronUp,
   CheckCircle2, AlertTriangle, XCircle, Footprints, Clock, Route as RouteIcon,
@@ -66,6 +66,13 @@ export interface DemandCoverageResult {
     polo: string; famiglia: GeneratorKind; stato: Status;
     gravita: number; motivo: string; azione: string; lat: number; lng: number;
   }>;
+  /** Domanda e offerta sulla stessa linea del tempo (per ora del giorno) */
+  timeline?: {
+    demandHourly: number[];
+    serviceHourly: number[];
+    perKind: Record<"scuola" | "lavoro" | "ospedale" | "treni", number[]>;
+    oreCritiche: Array<{ hour: number; demand: number; service: number }>;
+  };
   note?: string;
 }
 
@@ -100,6 +107,46 @@ export default function DemandCoverage({
       (kindFilter === "tutti" || g.generator.kind === kindFilter) &&
       (statusFilter === "tutti" || g.status === statusFilter));
   }, [data, kindFilter, statusFilter]);
+
+  /* ── DELTA PRIMA→DOPO: il feedback sulla manovra ─────────────────────
+   * A ogni ricalcolo sullo STESSO periodo/ambito si confronta col giro
+   * precedente: quanti poli sono passati di stato, quante corse in più o
+   * in meno — e SOPRATTUTTO quali poli (attribuzione). È ciò che dice
+   * all'operatore se la modifica appena fatta va nella direzione giusta.
+   * Cambiare periodo/ambito azzera il confronto (non sarebbe omogeneo). */
+  type PrevRun = {
+    sig: string; servito: number; parziale: number; nonServito: number;
+    trips: number; nonServiti: string[];
+  };
+  const prevRef = useRef<PrevRun | null>(null);
+  const [delta, setDelta] = useState<{
+    servito: number; nonServito: number; trips: number;
+    coperti: string[]; scoperti: string[];
+  } | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const sig = JSON.stringify({ ...data.scope, linee: data.summary.lineeValutate });
+    const nonServiti = data.generators.filter(g => g.status === "non-servito").map(g => g.generator.name);
+    const cur: PrevRun = {
+      sig, servito: data.summary.servito, parziale: data.summary.parziale,
+      nonServito: data.summary.nonServito, trips: data.rete?.trips ?? 0, nonServiti,
+    };
+    const prev = prevRef.current;
+    if (prev && prev.sig === sig) {
+      const coperti = prev.nonServiti.filter(n => !nonServiti.includes(n));
+      const scoperti = nonServiti.filter(n => !prev.nonServiti.includes(n));
+      const d = {
+        servito: cur.servito - prev.servito,
+        nonServito: cur.nonServito - prev.nonServito,
+        trips: cur.trips - prev.trips,
+        coperti, scoperti,
+      };
+      setDelta(d.servito !== 0 || d.nonServito !== 0 || d.trips !== 0 || coperti.length || scoperti.length ? d : null);
+    } else {
+      setDelta(null);
+    }
+    prevRef.current = cur;
+  }, [data]);
 
   if (loading) {
     return (
@@ -143,6 +190,47 @@ export default function DemandCoverage({
           <Printer className="w-3 h-3" /> Report
         </button>
       </div>
+
+      {/* ─── LA MANOVRA APPENA FATTA: prima → dopo ─── */}
+      {delta && (
+        <div className={`rounded-xl border p-3 space-y-1.5 ${
+          delta.scoperti.length > 0 || delta.servito < 0
+            ? "border-red-500/40 bg-red-500/10"
+            : delta.coperti.length > 0 || delta.servito > 0
+              ? "border-emerald-500/40 bg-emerald-500/10"
+              : "border-slate-600/40 bg-slate-800/60"}`}>
+          <p className="text-[10px] uppercase tracking-wide font-semibold text-slate-300">
+            Rispetto all'analisi precedente
+          </p>
+          <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+            {delta.servito !== 0 && (
+              <span className={`px-1.5 py-0.5 rounded border ${delta.servito > 0 ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" : "text-red-300 border-red-500/40 bg-red-500/10"}`}>
+                {delta.servito > 0 ? "▲" : "▼"} {Math.abs(delta.servito)} serviti
+              </span>
+            )}
+            {delta.nonServito !== 0 && (
+              <span className={`px-1.5 py-0.5 rounded border ${delta.nonServito < 0 ? "text-emerald-300 border-emerald-500/40 bg-emerald-500/10" : "text-red-300 border-red-500/40 bg-red-500/10"}`}>
+                {delta.nonServito < 0 ? "▼" : "▲"} {Math.abs(delta.nonServito)} scoperti
+              </span>
+            )}
+            {delta.trips !== 0 && (
+              <span className="px-1.5 py-0.5 rounded border text-slate-300 border-slate-600/50 bg-slate-800/60">
+                {delta.trips > 0 ? "+" : ""}{delta.trips} corse
+              </span>
+            )}
+          </div>
+          {delta.coperti.length > 0 && (
+            <p className="text-[10px] text-emerald-200 leading-snug">
+              ✓ Ora coperti: <span className="font-semibold">{delta.coperti.slice(0, 4).join(", ")}{delta.coperti.length > 4 ? ` +${delta.coperti.length - 4}` : ""}</span>
+            </p>
+          )}
+          {delta.scoperti.length > 0 && (
+            <p className="text-[10px] text-red-200 leading-snug">
+              ✗ Rimasti scoperti ora: <span className="font-semibold">{delta.scoperti.slice(0, 4).join(", ")}{delta.scoperti.length > 4 ? ` +${delta.scoperti.length - 4}` : ""}</span>
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ─── Verdetto complessivo ─── */}
       <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-3 space-y-2">
@@ -250,6 +338,76 @@ export default function DemandCoverage({
           )}
         </div>
       )}
+
+      {/* ─── DOMANDA ↔ OFFERTA sulla stessa linea del tempo ───────────
+          Ogni dato territoriale tradotto in eventi di domanda per ora
+          (finestre scuola/lavoro/ospedale + treni in arrivo/partenza),
+          messo accanto alle corse: si vede subito DOVE l'orario manca
+          la domanda — è il confronto che guida la manovra. ─── */}
+      {data.timeline && data.timeline.demandHourly.some(n => n > 0) && (() => {
+        const tl = data.timeline!;
+        const maxD = Math.max(...tl.demandHourly, 1);
+        const maxS = Math.max(...tl.serviceHourly, 1);
+        const KIND_COLORS: Record<string, string> = {
+          scuola: "#f59e0b", lavoro: "#10b981", ospedale: "#ef4444", treni: "#06b6d4",
+        };
+        return (
+          <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-2.5 space-y-1.5">
+            <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">
+              Domanda ↔ offerta per ora
+            </p>
+            {/* Domanda (impilata per famiglia), sopra */}
+            <div className="flex items-end gap-[1px] h-12">
+              {tl.demandHourly.map((n, h) => {
+                const critical = tl.oreCritiche.some(c => c.hour === h);
+                const parts = (["treni", "scuola", "ospedale", "lavoro"] as const)
+                  .map(k => ({ k, v: tl.perKind[k]?.[h] ?? 0 })).filter(p => p.v > 0);
+                return (
+                  <div key={h} className="flex-1 flex flex-col justify-end relative"
+                    title={`${String(h).padStart(2, "0")}:00 — domanda ${n} (${parts.map(p => `${p.k} ${p.v}`).join(", ") || "—"}), corse ${tl.serviceHourly[h] ?? 0}${critical ? " ⚠ SCOPERTA" : ""}`}>
+                    {critical && <div className="absolute inset-0 rounded-sm bg-red-500/15 border border-red-500/40" />}
+                    {parts.map(p => (
+                      <div key={p.k} style={{
+                        height: `${(p.v / maxD) * 100}%`,
+                        background: KIND_COLORS[p.k], opacity: 0.85,
+                      }} />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Offerta (corse per ora), sotto, specchiata */}
+            <div className="flex items-start gap-[1px] h-8">
+              {tl.serviceHourly.map((n, h) => (
+                <div key={h} className="flex-1"
+                  title={`${String(h).padStart(2, "0")}:00 — ${n} ${n === 1 ? "corsa" : "corse"}`}
+                  style={{
+                    height: `${Math.max(n > 0 ? 12 : 2, (n / maxS) * 100)}%`,
+                    background: n === 0 ? "rgba(100,116,139,0.25)" : "rgba(148,163,184,0.8)",
+                    borderRadius: "0 0 2px 2px",
+                  }} />
+              ))}
+            </div>
+            <div className="flex justify-between text-[8px] text-slate-600 font-mono">
+              <span>0</span><span>6</span><span>12</span><span>18</span><span>23</span>
+            </div>
+            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[8px] text-slate-500">
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm" style={{ background: "#06b6d4" }} />treni</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm" style={{ background: "#f59e0b" }} />scuole</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm" style={{ background: "#ef4444" }} />sanità</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm" style={{ background: "#10b981" }} />lavoro</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm" style={{ background: "rgba(148,163,184,0.8)" }} />le tue corse</span>
+            </div>
+            {tl.oreCritiche.length > 0 ? (
+              <p className="text-[9px] text-red-300/90 leading-snug">
+                ⚠ Domanda senza corse alle {tl.oreCritiche.map(c => `${String(c.hour).padStart(2, "0")}:00`).join(", ")} — è lì che una corsa in più rende di più.
+              </p>
+            ) : (
+              <p className="text-[9px] text-emerald-400/80">Ogni fascia con domanda ha almeno una corsa.</p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ─── Che cosa fare, in ordine — ogni voce clicca sulla mappa ─── */}
       {data.criticita && data.criticita.length > 0 && (

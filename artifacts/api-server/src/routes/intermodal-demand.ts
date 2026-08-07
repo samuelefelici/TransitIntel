@@ -486,6 +486,50 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     const tuttiTempi = validPassages.map(p => p.time);
     const reteShape = scheduleShape(tuttiTempi);
 
+    /* ── LINEA DEL TEMPO DELLA DOMANDA ───────────────────────────────
+     * Tutti i dati territoriali tradotti in un'unica lingua: eventi di
+     * domanda nel tempo. Ogni polo contribuisce nelle SUE finestre
+     * (ingresso/uscita scuole, turni/visite ospedale, punte lavoro);
+     * ogni treno in partenza/arrivo è un evento all'ora sua. Messa
+     * accanto alle corse per ora, dice DOVE l'offerta manca la domanda:
+     * è il confronto che guida la pianificazione, non il conteggio. */
+    const zeros = () => new Array(24).fill(0) as number[];
+    const perKind: Record<"scuola" | "lavoro" | "ospedale" | "treni", number[]> = {
+      scuola: zeros(), lavoro: zeros(), ospedale: zeros(), treni: zeros(),
+    };
+    const addWindow = (arr: number[], w: Window) => {
+      const h0 = Math.floor(w.from / 60), h1 = Math.floor(Math.max(w.from, w.to - 1) / 60);
+      for (let h = h0; h <= h1 && h < 24; h++) arr[h] += 1;
+    };
+    for (const c of coverage) {
+      const k = c.generator.kind;
+      if (k === "scuola") { addWindow(perKind.scuola, windows.scuolaIngresso); addWindow(perKind.scuola, windows.scuolaUscita); }
+      else if (k === "lavoro") { addWindow(perKind.lavoro, windows.lavoroIngresso); addWindow(perKind.lavoro, windows.lavoroUscita); }
+      else if (k === "ospedale") { addWindow(perKind.ospedale, windows.ospedaleTurni); addWindow(perKind.ospedale, windows.ospedaleVisite); }
+    }
+    // Treni/voli: ogni partenza o arrivo è domanda di adduzione/distribuzione
+    for (const h of hubs) {
+      if (h.type !== "railway" && h.type !== "airport") continue;
+      for (const dep of h.typicalDepartures) for (const t of dep.times) {
+        const hh = parseInt(t.slice(0, 2), 10);
+        if (Number.isFinite(hh) && hh >= 0 && hh < 24) perKind.treni[hh] += 1;
+      }
+      for (const arr of h.typicalArrivals) for (const t of arr.times) {
+        const hh = parseInt(t.slice(0, 2), 10);
+        if (Number.isFinite(hh) && hh >= 0 && hh < 24) perKind.treni[hh] += 1;
+      }
+    }
+    const demandHourly = zeros();
+    for (const arr of Object.values(perKind)) for (let h = 0; h < 24; h++) demandHourly[h] += arr[h];
+    // Ore critiche: c'è domanda ma NESSUNA corsa (diurne: 5-23)
+    const oreCritiche: Array<{ hour: number; demand: number; service: number }> = [];
+    for (let h = 5; h <= 23; h++) {
+      if (demandHourly[h] > 0 && (reteShape.hourly[h] ?? 0) === 0) {
+        oreCritiche.push({ hour: h, demand: demandHourly[h], service: 0 });
+      }
+    }
+    const timeline = { demandHourly, serviceHourly: reteShape.hourly, perKind, oreCritiche };
+
     // Fascia di punta e di morbida: dove si concentra e dove manca il servizio
     const oraPiuServita = reteShape.hourly.indexOf(Math.max(...reteShape.hourly));
     const oreScoperte = reteShape.hourly
@@ -553,6 +597,8 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
         return rank[a.status] - rank[b.status] || a.generator.name.localeCompare(b.generator.name);
       }),
       byKind, byRoute, summary,
+      // Domanda e offerta sulla stessa linea del tempo (per ora del giorno)
+      timeline,
       // Come è fatto l'orario, linea per linea
       schedules,
       // Lettura d'insieme della rete
