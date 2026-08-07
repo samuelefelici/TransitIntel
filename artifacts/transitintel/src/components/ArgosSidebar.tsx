@@ -43,7 +43,7 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
   // Ragionamento profondo: Argos passa a Opus, più giri di tool e verifica (deep).
   // Opt-in perché costa di più sul budget di Argos: si accende solo quando serve.
   const [deep, setDeep] = React.useState(false);
-  const [health, setHealth] = React.useState<{ configured: boolean; reachable?: boolean; cerbero?: boolean } | null>(null);
+  const [health, setHealth] = React.useState<{ configured: boolean; reachable?: boolean; cerbero?: boolean; transitintel?: boolean } | null>(null);
   // Larghezza del pannello (ridimensionabile trascinando il bordo sinistro).
   const MIN_W = 320, MAX_W = 900;
   const [width, setWidth] = React.useState<number>(() => {
@@ -310,7 +310,7 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
             </div>
 
             {mode === "agente" ? (
-              <ArgosAgentPanel projectId={projectId} />
+              <ArgosAgentPanel projectId={projectId} tiConfigured={health?.transitintel !== false} />
             ) : (
             <>
             {/* Body */}
