@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import DemandCoverage, { type DemandCoverageResult } from "./intermodal/DemandCoverage";
+import TrainConnections from "./intermodal/TrainConnections";
 import LinePicker, { lineColor, type NetworkLine } from "./intermodal/LinePicker";
 
 import type {
@@ -1482,6 +1483,13 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
                         </div>
                       </div>
                     </div>
+
+                    {/* ── LA TABELLA DELLE COINCIDENZE: treno | tua corsa | Δ | esito.
+                         È il dato che prima non si vedeva mai fianco a fianco. ── */}
+                    <TrainConnections
+                      hubs={result.hubs}
+                      onFocus={(lat, lng) => mapRef.current?.flyTo({ center: [lng, lat], zoom: 14, duration: 900 })}
+                    />
 
                     {/* Donut + bar */}
                     <div className="grid grid-cols-2 gap-2">
