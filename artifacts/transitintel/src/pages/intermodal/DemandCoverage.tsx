@@ -91,12 +91,18 @@ const STATUS_META: Record<Status, { label: string; color: string; bg: string; Ic
 };
 
 export default function DemandCoverage({
-  data, loading, onFocus,
+  data, loading, onFocus, section = "tutto",
 }: {
   data: DemandCoverageResult | null;
   loading: boolean;
   onFocus?: (lat: number, lng: number, id: string) => void;
+  /** Quale porzione mostrare: nel pannello studio ogni tab prende la sua.
+   *  "tutto" mantiene il comportamento storico (tutte le sezioni impilate). */
+  section?: "tutto" | "quadro" | "poli" | "linee";
 }) {
+  const showQuadro = section === "tutto" || section === "quadro";
+  const showPoli = section === "tutto" || section === "poli";
+  const showLinee = section === "tutto" || section === "linee";
   const [kindFilter, setKindFilter] = useState<GeneratorKind | "tutti">("tutti");
   const [statusFilter, setStatusFilter] = useState<Status | "tutti">("tutti");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -172,6 +178,7 @@ export default function DemandCoverage({
 
   return (
     <div className="space-y-3">
+      {showQuadro && (<>
       {/* ─── Esportazioni: tabelle per foglio di calcolo + report stampabile ─── */}
       <div className="flex gap-1">
         <button onClick={() => exportCoverageCsv(data)}
@@ -436,7 +443,9 @@ export default function DemandCoverage({
           </div>
         </div>
       )}
+      </>)}
 
+      {showPoli && (<>
       {/* ─── Per famiglia di polo ─── */}
       <div className="grid grid-cols-2 gap-1.5">
         {(Object.keys(KIND_META) as GeneratorKind[]).map(k => {
@@ -601,6 +610,9 @@ export default function DemandCoverage({
         })}
       </div>
 
+      </>)}
+
+      {showLinee && (<>
       {/* ─── Orario per linea ─── */}
       {data.schedules && data.schedules.length > 0 && (
         <div className="rounded-xl border border-slate-700/40 bg-slate-800/40 p-2.5 space-y-1.5">
@@ -648,6 +660,7 @@ export default function DemandCoverage({
           ))}
         </div>
       )}
+      </>)}
     </div>
   );
 }
