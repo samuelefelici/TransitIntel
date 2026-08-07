@@ -189,19 +189,46 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
 
     /* ── Validità ── */
     if (include.has("validita")) {
+      /* ATTENZIONE al caso "calendar_dates only", comune nei GTFS italiani:
+       * i flag settimanali sono TUTTI false per costruzione (stub) e i
+       * giorni di circolazione veri sono le date esplicite in
+       * ps_calendar_dates. Senza questi numeri l'assistente diagnosticava
+       * "calendari senza giorni" su calendari perfettamente validi. */
       const cal = ((await db.execute<any>(sql`
         SELECT c.id::text AS id, c.code, c.name,
                c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday,
                c.start_date::text AS start_date, c.end_date::text AS end_date,
-               (SELECT count(*) FROM ps_trips t WHERE t.calendar_id = c.id)::int AS corse
+               (SELECT count(*) FROM ps_trips t WHERE t.calendar_id = c.id)::int AS corse,
+               (SELECT count(*) FROM ps_calendar_dates cd
+                 WHERE cd.calendar_id = c.id AND COALESCE(cd.exception_type, 1) = 1)::int AS date_attive,
+               (SELECT count(*) FROM ps_calendar_dates cd
+                 WHERE cd.calendar_id = c.id AND cd.exception_type = 2)::int AS date_escluse
           FROM ps_calendars c WHERE c.project_id = ${projectId}::uuid ORDER BY c.code`)) as any).rows ?? [];
       const GIORNI = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"];
-      out.validita = capped(cal.map((c: any) => ({
-        id: c.id, codice: c.code, nome: c.name ?? null,
-        giorni: [c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday]
-          .map((on: boolean, i: number) => (on ? GIORNI[i] : null)).filter(Boolean),
-        dal: c.start_date, al: c.end_date, corse: Number(c.corse ?? 0),
-      })), limit);
+      const items = cal.map((c: any) => {
+        const giorni = [c.monday, c.tuesday, c.wednesday, c.thursday, c.friday, c.saturday, c.sunday]
+          .map((on: boolean, i: number) => (on ? GIORNI[i] : null)).filter(Boolean);
+        const dateAttive = Number(c.date_attive ?? 0);
+        return {
+          id: c.id, codice: c.code, nome: c.name ?? null,
+          giorni,
+          /* dates-only: la validità è definita SOLO dalle date esplicite */
+          soloDateEsplicite: giorni.length === 0 && dateAttive > 0,
+          dateAttive, dateEscluse: Number(c.date_escluse ?? 0),
+          dal: c.start_date, al: c.end_date, corse: Number(c.corse ?? 0),
+        };
+      });
+      const senzaCal = ((await db.execute<any>(sql`
+        SELECT count(*)::int AS c FROM ps_trips
+         WHERE project_id = ${projectId}::uuid AND calendar_id IS NULL
+           AND COALESCE(is_active, true) = true`)) as any).rows?.[0]?.c ?? 0;
+      out.validita = {
+        nota: "giorni=[] con dateAttive>0 è NORMALE (calendario a sole date esplicite, "
+          + "'calendar_dates only'): il calendario è valido e i giorni di circolazione sono le date attive. "
+          + "Le corse senza calendario invece circolano 7/7 nell'export legacy: da sistemare prima di pubblicare.",
+        corseSenzaCalendario: Number(senzaCal),
+        calendari: capped(items, limit),
+      };
     }
 
     /* ── Orari: come è distribuito il servizio ── */
