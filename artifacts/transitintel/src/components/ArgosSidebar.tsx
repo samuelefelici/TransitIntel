@@ -16,6 +16,7 @@ import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Eye, X, Send, Loader2, User, Trash2, Sparkles, Route, Clock, CalendarDays, Brain } from "lucide-react";
 import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
+import ArgosAgentPanel from "@/components/argos/ArgosAgentPanel";
 import { getApiBase } from "@/lib/api";
 
 type Msg = {
@@ -34,6 +35,8 @@ const SUGGESTED_PROMPTS: { label: string; prompt: string; icon: React.ReactNode 
 
 export default function ArgosSidebar({ projectId }: { projectId?: string }) {
   const [open, setOpen] = React.useState(false);
+  // Due modalità: "chat" (domande) e "agente" (dai un obiettivo → Argos pianifica).
+  const [mode, setMode] = React.useState<"chat" | "agente">("chat");
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
@@ -270,20 +273,22 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setDeep(v => !v)}
-                  className={`p-1.5 rounded-lg transition ${
-                    deep
-                      ? "text-violet-200 bg-violet-500/20 ring-1 ring-violet-400/50 drop-shadow-[0_0_6px_rgba(139,92,246,0.6)]"
-                      : "text-zinc-400 hover:bg-white/5 hover:text-violet-300"
-                  }`}
-                  title={deep
-                    ? "Ragionamento profondo ATTIVO — Argos usa Opus, più analisi e verifica (più lento e costoso). Clic per disattivare."
-                    : "Ragionamento profondo — analisi passo-passo con verifica (più lento). Clic per attivare."}
-                >
-                  <Brain className="w-4 h-4" />
-                </button>
-                {msgs.length > 0 && (
+                {mode === "chat" && (
+                  <button
+                    onClick={() => setDeep(v => !v)}
+                    className={`p-1.5 rounded-lg transition ${
+                      deep
+                        ? "text-violet-200 bg-violet-500/20 ring-1 ring-violet-400/50 drop-shadow-[0_0_6px_rgba(139,92,246,0.6)]"
+                        : "text-zinc-400 hover:bg-white/5 hover:text-violet-300"
+                    }`}
+                    title={deep
+                      ? "Ragionamento profondo ATTIVO — Argos usa Opus, più analisi e verifica (più lento e costoso). Clic per disattivare."
+                      : "Ragionamento profondo — analisi passo-passo con verifica (più lento). Clic per attivare."}
+                  >
+                    <Brain className="w-4 h-4" />
+                  </button>
+                )}
+                {mode === "chat" && msgs.length > 0 && (
                   <button onClick={clear} className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-400 hover:text-rose-300 transition" title="Cancella chat">
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -294,6 +299,20 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
               </div>
             </div>
 
+            {/* Selettore modalità: Chat (domande) · Agente (obiettivi → piano) */}
+            <div className="px-3 py-2 border-b border-violet-400/20 bg-black/20 flex gap-1">
+              {([["chat", "Chat"], ["agente", "Agente"]] as const).map(([k, label]) => (
+                <button key={k} onClick={() => setMode(k)}
+                  className={`flex-1 text-[11px] py-1.5 rounded-lg font-bold transition ${
+                    mode === k ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/50" : "text-zinc-400 hover:text-violet-300 hover:bg-white/5"
+                  }`}>{label}</button>
+              ))}
+            </div>
+
+            {mode === "agente" ? (
+              <ArgosAgentPanel projectId={projectId} />
+            ) : (
+            <>
             {/* Body */}
             <div ref={scrollRef} className="flex-1 overflow-y-auto p-3.5 space-y-3 text-[13px]">
               {notReady && (
@@ -370,6 +389,8 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
                 ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
               </p>
             </div>
+            </>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
