@@ -1085,6 +1085,26 @@ export async function runValidityAutoImportFromCalendars(
   let exceptionInserts = 0;
   const perCalendar: any[] = [];
 
+  /* Override data→day-type del calendario aziendale (il progetto vince sul
+   * globale): serve per dedurre i giorni-tipo dei calendari "solo date". */
+  const ovMap = new Map<string, string>();
+  {
+    const ovR = await db.execute(sql`
+      SELECT date::text AS date, day_type_id, project_id FROM ps_day_calendar
+       WHERE project_id = ${projectId}::uuid OR project_id IS NULL
+       ORDER BY project_id NULLS FIRST
+    `);
+    // project_id NULLS FIRST: le righe del progetto arrivano dopo e sovrascrivono
+    for (const r of ((ovR as any).rows ?? [])) ovMap.set(r.date, r.day_type_id);
+  }
+  const dayTypeOfDate = (iso: string): string => {
+    const ov = ovMap.get(iso);
+    if (ov) return ov;
+    const [y, m, d] = iso.split("-").map(Number);
+    const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0=dom
+    return dow === 0 ? dtMap.get("festivo")! : dow === 6 ? dtMap.get("sabato")! : dtMap.get("feriale")!;
+  };
+
   for (const c of cals) {
     const dayTypeIds: string[] = [];
     if (c.monday || c.tuesday || c.wednesday || c.thursday || c.friday) dayTypeIds.push(dtMap.get("feriale")!);
@@ -1100,6 +1120,22 @@ export async function runValidityAutoImportFromCalendars(
       SELECT date::text AS date, exception_type FROM ps_calendar_dates WHERE calendar_id = ${c.id}::uuid
     `);
     const cdates: { date: string; exception_type: number }[] = (cdR as any).rows ?? [];
+
+    /* ── Calendario "SOLO DATE ESPLICITE" (calendar_dates only) ──────────
+     * È lo standard dei GTFS italiani: i flag settimanali sono tutti false
+     * per costruzione e la circolazione vive nelle date attive. Prima
+     * questa mappatura produceva ZERO giorni-tipo e la matrice restava
+     * vuota — la struttura GTFS non veniva mai assorbita in quella nativa.
+     * Qui i giorni-tipo si DEDUCONO dalle date reali (override del
+     * calendario aziendale, altrimenti dal giorno della settimana). */
+    if (dayTypeIds.length === 0 && cdates.length > 0) {
+      const covered = new Set<string>();
+      for (const cd of cdates) {
+        if ((cd.exception_type ?? 1) !== 1) continue;
+        covered.add(dayTypeOfDate(cd.date));
+      }
+      dayTypeIds.push(...covered);
+    }
 
     perCalendar.push({
       calendarId: c.id,
