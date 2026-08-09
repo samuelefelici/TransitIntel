@@ -211,6 +211,9 @@ export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { pr
         patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${err.message}`, streaming: false }));
       }
     } finally {
+      // Lo spinner si risolve SEMPRE, anche se lo stream muore senza {done}
+      // (proxy che chiude, rete): il parziale resta visibile e viene salvato.
+      patchLast(m => ({ ...m, streaming: false }));
       setLoading(false);
       abortRef.current = null;
       if (projectId) {
