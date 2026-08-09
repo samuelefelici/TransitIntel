@@ -23,8 +23,8 @@ const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 /** Accesso al progetto: owner, membro, oppure progetto pubblicato in esercizio.
- *  Stessa regola delle altre rotte Argos. */
-async function hasProjectAccess(projectId: string, userId: string): Promise<boolean> {
+ *  Stessa regola delle altre rotte Argos (riusata anche da argos-insights). */
+export async function hasProjectAccess(projectId: string, userId: string): Promise<boolean> {
   const r = await db.execute<any>(sql`
     SELECT p.id
       FROM ps_projects p
@@ -300,13 +300,25 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
 
     /* ── Poli attrattori con posizione ── */
     if (include.has("poli")) {
+      /* Confinati al bbox del progetto (+~3 km): la query globale restituiva i
+       * POI di tutta la provincia e chi ragionava sui poli del context
+       * sovrastimava i "non serviti" (demand-coverage usa già il bbox). */
       const pois = ((await db.execute<any>(sql`
-        SELECT id::text AS id, name, category, lat, lng
-          FROM points_of_interest
-         WHERE category IN ('school','office','industrial','hospital')`)) as any).rows ?? [];
+        WITH bbox AS (
+          SELECT MIN(lat) - 0.03 AS min_lat, MAX(lat) + 0.03 AS max_lat,
+                 MIN(lon) - 0.04 AS min_lon, MAX(lon) + 0.04 AS max_lon
+            FROM ps_stops WHERE project_id = ${projectId}::uuid
+        )
+        SELECT p.id::text AS id, p.name, p.category, p.lat, p.lng
+          FROM points_of_interest p, bbox b
+         WHERE p.category IN ('school','office','industrial','hospital')
+           AND (b.min_lat IS NULL
+                OR (p.lat BETWEEN b.min_lat AND b.max_lat
+                    AND p.lng BETWEEN b.min_lon AND b.max_lon))`)) as any).rows ?? [];
       out.poli = capped(pois.map((x: any) => ({
         id: x.id, nome: x.name ?? x.category, categoria: x.category,
-        famiglia: x.category === "school" ? "scuola" : "lavoro",
+        famiglia: x.category === "school" ? "scuola"
+          : x.category === "hospital" ? "sanità" : "lavoro",
         lat: Number(x.lat), lon: Number(x.lng),
       })), limit);
     }
