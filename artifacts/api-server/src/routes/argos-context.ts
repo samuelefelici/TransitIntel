@@ -104,10 +104,27 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
     };
 
     if (include.has("progetto")) {
+      /* FASE del progetto: senza corse il metodo di lavoro cambia radicalmente
+       * (si PROGETTA il servizio, non si analizza l'esistente). Dichiararla
+       * esplicitamente evita che l'assistente cerchi calendari/validità di
+       * corse che non esistono ancora. */
+      const tripsR = await db.execute<any>(sql`
+        SELECT count(*)::int AS n FROM ps_trips WHERE project_id = ${projectId}::uuid`);
+      const nTrips = Number((tripsR as any).rows?.[0]?.n) || 0;
+      const fase = nTrips === 0
+        ? "disegno-rete"
+        : p.materialized_at ? "esercizio" : "programmazione-orari";
       out.progetto = {
         id: p.id, nome: p.name, descrizione: p.description ?? null,
         creatoIl: p.created_at, aggiornatoIl: p.updated_at,
         materializzatoIl: p.materialized_at ?? null,
+        corseTotali: nTrips,
+        fase,
+        faseNota: nTrips === 0
+          ? "Il progetto ha linee e percorsi ma NESSUNA corsa: il servizio va "
+            + "PROGETTATO (quadro orario da costruire), non analizzato. Calendari, "
+            + "validità e coincidenze di corse esistenti qui non hanno senso."
+          : null,
         /* Se il progetto è stato modificato dopo l'ultima materializzazione,
          * l'esercizio pubblicato NON riflette il lavoro in corso: è una cosa
          * che l'agente deve poter dire. */
