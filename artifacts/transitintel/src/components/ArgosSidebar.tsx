@@ -24,6 +24,8 @@ type Msg = {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  /** Strumenti letti durante il turno (stile Claude Code: si vede il lavoro). */
+  tools?: { name: string; args?: Record<string, any> }[];
 };
 
 const SUGGESTED_PROMPTS: { label: string; prompt: string; icon: React.ReactNode }[] = [
@@ -180,6 +182,9 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
             // azzera il parziale, la risposta finale arriva dopo.
             assistantAccum = "";
             patchLast(m => ({ ...m, content: "" }));
+          } else if (payload.tool && typeof payload.tool.name === "string") {
+            // Strumento in lettura: mostralo come chip sopra la risposta.
+            patchLast(m => ({ ...m, tools: [...(m.tools || []), payload.tool] }));
           } else if (payload.error) {
             patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${payload.error}`, streaming: false }));
           } else if (payload.done) {
@@ -410,6 +415,23 @@ function MessageBubble({ msg }: { msg: Msg }) {
           : <Eye className="w-3.5 h-3.5 text-violet-300" />}
       </div>
       <div className={`flex-1 min-w-0 ${isUser ? "text-right" : ""}`}>
+        {/* Il lavoro dietro la risposta: chip degli strumenti letti nel turno */}
+        {!isUser && (msg.tools?.length ?? 0) > 0 && (
+          <div className="flex flex-wrap gap-1 mb-1.5">
+            {(msg.tools || []).map((t, i) => {
+              const active = msg.streaming && i === (msg.tools!.length - 1);
+              const label = t.name.replace(/^(ti_|tpl_|ps_)/, "").replace(/_/g, " ");
+              return (
+                <span key={i} className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-md border font-mono ${
+                  active ? "bg-violet-500/20 text-violet-200 border-violet-400/50" : "bg-zinc-900/70 text-zinc-400 border-white/5"
+                }`}>
+                  {active && <Loader2 className="w-2.5 h-2.5 animate-spin" />}
+                  {label}
+                </span>
+              );
+            })}
+          </div>
+        )}
         {msg.content && (
           <div className={`inline-block max-w-full text-left rounded-2xl px-3 py-1.5 text-[11.5px] leading-snug
             ${isUser

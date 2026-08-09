@@ -450,6 +450,9 @@ async function ensurePsTables(): Promise<void> {
       )
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_argos_msgs ON ps_argos_messages(project_id, user_id, id)`);
+    /* Due conversazioni per progetto: 'chat' (domande) e 'agente' (obiettivi →
+       piani). Stessa tabella, thread separati, entrambi persistenti. */
+    await db.execute(sql`ALTER TABLE ps_argos_messages ADD COLUMN IF NOT EXISTS thread text NOT NULL DEFAULT 'chat'`);
 
     /* Programma di esercizio: feed materializzato + flag operativo sui feed.
        (le stesse ALTER vivono anche in planning-studio-materialize.ts e

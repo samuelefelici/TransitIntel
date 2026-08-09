@@ -394,27 +394,35 @@ async function requireProjectMember(req: any, res: any, projectId: string): Prom
   return userId;
 }
 
-// GET /api/ai/argos/history?projectId=... → thread dell'utente per quel progetto
+/** Due conversazioni persistenti per progetto: 'chat' e 'agente'. */
+function threadOf(raw: unknown): "chat" | "agente" {
+  return raw === "agente" ? "agente" : "chat";
+}
+
+// GET /api/ai/argos/history?projectId=...&thread=chat|agente → thread dell'utente
 router.get("/ai/argos/history", async (req, res) => {
   const projectId = String(req.query.projectId || "");
+  const thread = threadOf(req.query.thread);
   const userId = await requireProjectMember(req, res, projectId);
   if (!userId) return;
   const r = await db.execute(sql`
     SELECT id, role, content, created_at
       FROM ps_argos_messages
      WHERE project_id = ${projectId}::uuid AND user_id = ${userId}::uuid
+       AND thread = ${thread}
      ORDER BY id
      LIMIT 2000
   `);
   res.json({ messages: (r as any).rows ?? [] });
 });
 
-// POST /api/ai/argos/history  { projectId, messages:[{role,content}] } → append
+// POST /api/ai/argos/history  { projectId, thread?, messages:[{role,content}] } → append
 router.post("/ai/argos/history", async (req, res) => {
   const { projectId, messages } = req.body as {
     projectId?: string;
     messages?: Array<{ role: string; content: string }>;
   };
+  const thread = threadOf((req.body as any)?.thread);
   const userId = await requireProjectMember(req, res, String(projectId || ""));
   if (!userId) return;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -427,21 +435,23 @@ router.post("/ai/argos/history", async (req, res) => {
     const content = (m?.content || "").slice(0, 100_000);
     if (!content) continue;
     await db.execute(sql`
-      INSERT INTO ps_argos_messages (project_id, user_id, role, content)
-      VALUES (${projectId}::uuid, ${userId}::uuid, ${role}, ${content})
+      INSERT INTO ps_argos_messages (project_id, user_id, role, content, thread)
+      VALUES (${projectId}::uuid, ${userId}::uuid, ${role}, ${content}, ${thread})
     `);
   }
   res.json({ ok: true });
 });
 
-// DELETE /api/ai/argos/history?projectId=... → svuota il thread dell'utente
+// DELETE /api/ai/argos/history?projectId=...&thread=... → svuota QUEL thread
 router.delete("/ai/argos/history", async (req, res) => {
   const projectId = String(req.query.projectId || "");
+  const thread = threadOf(req.query.thread);
   const userId = await requireProjectMember(req, res, projectId);
   if (!userId) return;
   await db.execute(sql`
     DELETE FROM ps_argos_messages
      WHERE project_id = ${projectId}::uuid AND user_id = ${userId}::uuid
+       AND thread = ${thread}
   `);
   res.json({ ok: true });
 });
@@ -505,6 +515,83 @@ router.post("/ai/argos/agent/goal", async (req, res) => {
   } catch (err: any) {
     logger.error({ err: err?.message }, "Argos agent goal proxy error");
     res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
+// POST /api/ai/argos/agent/chat
+// Body: { messages: [{role, content}], projectId }
+// L'agente in CONVERSAZIONE: inoltra ad Argos /agent/chat/stream e ristrasmette
+// lo stream SSE. Eventi: {t} testo · {reset} · {tool:{name,args}} strumento in
+// lettura · {plan:{...}} piano emesso · {error} · {done, tokens, budget}.
+router.post("/ai/argos/agent/chat", async (req, res) => {
+  const { messages, projectId } = req.body as {
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    projectId?: string;
+  };
+  if (!Array.isArray(messages) || messages.length === 0) {
+    res.status(400).json({ error: "messages array richiesto" });
+    return;
+  }
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const tiAuthToken = mintShortLivedUserToken(userId);
+
+  const last = messages[messages.length - 1];
+  const question = (last?.content || "").trim();
+  if (!question) {
+    res.status(400).json({ error: "messaggio vuoto" });
+    return;
+  }
+  const history = messages.slice(0, -1).map((m) => ({ role: m.role, content: m.content }));
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+
+  const sendError = (message: string) => {
+    res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
+  };
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/chat/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_slug: ARGOS_CLIENT_SLUG,
+        project_id: projectId,
+        question,
+        history,
+        ti_auth_token: tiAuthToken,
+      }),
+      signal: ctrl.signal,
+    });
+    if (!upstream.ok || !upstream.body) {
+      const detail = await upstream
+        .json()
+        .then((d: any) => d?.detail || `HTTP ${upstream.status}`)
+        .catch(() => `HTTP ${upstream.status}`);
+      sendError(String(detail));
+      res.end();
+      return;
+    }
+    for await (const chunk of upstream.body as any) {
+      res.write(chunk);
+    }
+    res.end();
+  } catch (err: any) {
+    if (err?.name !== "AbortError") {
+      logger.error({ err: err?.message }, "Argos agent chat proxy error");
+      sendError(err?.message || "Errore proxy Argos");
+    }
+    res.end();
   }
 });
 
