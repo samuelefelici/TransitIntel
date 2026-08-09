@@ -13,7 +13,7 @@
 import React from "react";
 import {
   Target, Loader2, Check, X, ChevronDown, ChevronRight, History,
-  AlertTriangle, Sparkles, TrainFront, Clock, Gauge,
+  AlertTriangle, Sparkles, TrainFront, Clock, Gauge, PlugZap,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 
@@ -71,7 +71,7 @@ const KIND_LABEL: Record<string, string> = {
   other: "Intervento",
 };
 
-export default function ArgosAgentPanel({ projectId }: { projectId?: string }) {
+export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { projectId?: string; tiConfigured?: boolean }) {
   const [objective, setObjective] = React.useState("");
   const [running, setRunning] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -146,6 +146,10 @@ export default function ArgosAgentPanel({ projectId }: { projectId?: string }) {
   };
 
   const notReady = !projectId;
+  // TransitIntel non collegato ad Argos: la modalità agente non può girare
+  // (usa gli endpoint HTTP di TransitIntel). Blocca l'input con una spiegazione,
+  // invece di far scoprire il limite solo al momento del "Genera piano".
+  const tiBlocked = !!projectId && !tiConfigured;
 
   return (
     <div className="flex flex-col h-full">
@@ -160,18 +164,18 @@ export default function ArgosAgentPanel({ projectId }: { projectId?: string }) {
           onChange={e => setObjective(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); runGoal(); } }}
           rows={2}
-          disabled={running || notReady}
-          placeholder={notReady ? "Apri un progetto per usare l'agente…" : "Es. Aggancia le corse ai treni del mattino a Falconara."}
+          disabled={running || notReady || tiBlocked}
+          placeholder={notReady ? "Apri un progetto per usare l'agente…" : tiBlocked ? "TransitIntel non collegato ad Argos…" : "Es. Aggancia le corse ai treni del mattino a Falconara."}
           className="w-full resize-none rounded-xl bg-zinc-900/80 border border-violet-400/25 focus:border-violet-400/60 focus:outline-none focus:ring-2 focus:ring-violet-400/20 px-3 py-2 text-sm text-violet-100 placeholder:text-zinc-500 max-h-32"
         />
         <button
           onClick={() => runGoal()}
-          disabled={!objective.trim() || running || notReady}
+          disabled={!objective.trim() || running || notReady || tiBlocked}
           className="w-full h-9 rounded-xl bg-gradient-to-br from-violet-400 to-fuchsia-400 hover:brightness-110 disabled:opacity-30 disabled:cursor-not-allowed text-black font-bold text-[12px] flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(139,92,246,0.4)] transition"
         >
           {running ? <><Loader2 className="w-4 h-4 animate-spin" /> Sto pianificando…</> : <><Sparkles className="w-4 h-4" /> Genera il piano</>}
         </button>
-        {!current && !running && !notReady && (
+        {!current && !running && !notReady && !tiBlocked && (
           <div className="flex flex-col gap-1 pt-0.5">
             {SUGGESTED.map(s => (
               <button key={s} onClick={() => { setObjective(s); runGoal(s); }}
@@ -185,6 +189,18 @@ export default function ArgosAgentPanel({ projectId }: { projectId?: string }) {
 
       {/* ── Contenuto ── */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3 text-[13px]">
+        {tiBlocked && (
+          <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-amber-200 text-xs">
+            <p className="font-bold mb-1 flex items-center gap-1.5"><PlugZap className="w-3.5 h-3.5" /> TransitIntel non collegato ad Argos</p>
+            <p className="text-amber-200/80 leading-relaxed">
+              La modalità Agente usa gli endpoint di TransitIntel (copertura, coincidenze, orari).
+              Imposta <code className="bg-black/40 px-1.5 py-0.5 rounded text-amber-300">TRANSITINTEL_API_URL</code> nelle
+              variabili d'ambiente di Argos (URL interno dell'API TransitIntel) e riavvia Argos.
+              La <strong>Chat</strong> continua a funzionare comunque.
+            </p>
+          </div>
+        )}
+
         {running && (
           <div className="rounded-xl border border-violet-400/25 bg-violet-500/5 p-3 text-[12px] text-violet-200/90 flex items-start gap-2">
             <Loader2 className="w-4 h-4 animate-spin mt-0.5 shrink-0" />
@@ -225,7 +241,7 @@ export default function ArgosAgentPanel({ projectId }: { projectId?: string }) {
               ))}
             </div>
           ) : (
-            !notReady && (
+            !notReady && !tiBlocked && (
               <div className="text-center pt-8 space-y-3">
                 <div className="mx-auto w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-400/30 flex items-center justify-center">
                   <Target className="w-7 h-7 text-violet-300" />

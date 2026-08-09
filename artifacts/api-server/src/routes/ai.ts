@@ -224,6 +224,7 @@ router.get("/ai/argos/health", async (_req, res) => {
       configured: true,
       reachable: r.ok,
       cerbero: !!d?.cerbero_configured, // true ⇒ Argos può leggere i dati ps_*/gtfs_*
+      transitintel: !!d?.transitintel_configured, // true ⇒ modalità Agente disponibile
     });
   } catch (err: any) {
     res.json({ configured: true, reachable: false, error: err?.message || "unreachable" });
