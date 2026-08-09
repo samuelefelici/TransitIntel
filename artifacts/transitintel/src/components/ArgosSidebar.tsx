@@ -204,6 +204,13 @@ export default function ArgosSidebar({ projectId }: { projectId?: string }) {
         });
       }
     } finally {
+      // Lo spinner si risolve SEMPRE, anche se lo stream muore senza {done}.
+      setMsgs(prev => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last && last.role === "assistant" && last.streaming) next[next.length - 1] = { ...last, streaming: false };
+        return next;
+      });
       setLoading(false);
       abortRef.current = null;
       // Persistenza server: salvo la domanda e (se c'è) la risposta nel thread del
