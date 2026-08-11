@@ -55,7 +55,18 @@ type Msg = {
    * piano: minuti senza testo). Impostata dall'evento tool, azzerata dal primo
    * testo: senza questa riga l'unico segnale era lo spinner 10px sul chip. */
   phase?: string;
+  /* Nota di servizio dal server (es. "collegamento interrotto, riprendo…"):
+   * mostrata al posto della fase finché non arriva altro testo. */
+  note?: string;
 };
+
+/** Cosa dire sotto lo spinner mentre lo stream non produce testo. */
+function streamStatus(msg: Msg): string {
+  if (msg.note) return msg.note;
+  if (msg.phase === TOOL_LABEL.emit_transit_plan) return "sto componendo il piano — può richiedere uno o due minuti…";
+  if (msg.phase) return `${msg.phase} in corso…`;
+  return "sto indagando…";
+}
 
 const SUGGESTED: string[] = [
   "Fai una valutazione completa del progetto.",
@@ -176,10 +187,28 @@ export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { pr
       const decoder = new TextDecoder();
       let buffer = "";
 
+      // Watchdog: il server manda heartbeat ogni pochi secondi, quindi minuti
+      // interi SENZA alcun byte = connessione morta a metà (proxy, rete).
+      // Senza questo limite lo spinner resterebbe lì per sempre.
+      const READ_STALL_MS = 180_000;
+
       while (true) {
-        const { done, value } = await reader.read();
+        let stallTimer: ReturnType<typeof setTimeout> | undefined;
+        let done: boolean, value: Uint8Array | undefined;
+        try {
+          ({ done, value } = await Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) => {
+              stallTimer = setTimeout(
+                () => reject(new Error("nessun dato dal server da 3 minuti: connessione persa. Riprova.")),
+                READ_STALL_MS);
+            }),
+          ]));
+        } finally {
+          clearTimeout(stallTimer);
+        }
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += decoder.decode(value!, { stream: true });
         const parts = buffer.split("\n\n");
         buffer = parts.pop() || "";
         for (const part of parts) {
@@ -194,19 +223,24 @@ export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { pr
 
           if (typeof payload.t === "string") {
             assistantAccum += payload.t;
-            patchLast(m => ({ ...m, content: m.content + payload.t, phase: undefined }));
+            patchLast(m => ({ ...m, content: m.content + payload.t, phase: undefined, note: undefined }));
           } else if (payload.reset) {
             assistantAccum = "";
             patchLast(m => ({ ...m, content: "" }));
+          } else if (typeof payload.note === "string") {
+            // Nota di servizio (es. retry dopo una connessione interrotta):
+            // senza questa riga il retry lato server è uno spinner muto.
+            patchLast(m => ({ ...m, note: payload.note }));
           } else if (payload.tool && typeof payload.tool.name === "string") {
             patchLast(m => ({
               ...m,
               tools: [...(m.tools || []), payload.tool],
               phase: TOOL_LABEL[payload.tool.name] || payload.tool.name,
+              note: undefined,
             }));
           } else if (payload.plan) {
             planForSave = payload.plan;
-            patchLast(m => ({ ...m, plan: payload.plan, phase: undefined }));
+            patchLast(m => ({ ...m, plan: payload.plan, phase: undefined, note: undefined }));
           } else if (payload.error) {
             patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${payload.error}`, streaming: false }));
           } else if (payload.done) {
@@ -218,6 +252,7 @@ export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { pr
       if (err?.name !== "AbortError") {
         patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${err.message}`, streaming: false }));
       }
+      try { ctrl.abort(); } catch { /* connessione già chiusa */ }
     } finally {
       // Lo spinner si risolve SEMPRE, anche se lo stream muore senza {done}
       // (proxy che chiude, rete): il parziale resta visibile e viene salvato.
@@ -384,18 +419,17 @@ function AgentBubble({ msg, onProposalStatus }: { msg: Msg; onProposalStatus: (p
               ? <span className="whitespace-pre-wrap">{msg.content}</span>
               : msg.content
                 ? <ArgosMarkdown className="prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]">{msg.content}</ArgosMarkdown>
-                : <span className="inline-flex items-center gap-2 text-zinc-400 text-xs"><Loader2 className="w-3 h-3 animate-spin" /> sto indagando…</span>}
+                : <span className="inline-flex items-center gap-2 text-zinc-400 text-xs"><Loader2 className="w-3 h-3 animate-spin" /> {streamStatus(msg)}</span>}
           </div>
         )}
 
-        {/* Fase muta in corso (es. composizione del piano): lo stream è vivo
-            ma non produce testo — senza questa riga sembra fermo. */}
-        {!isUser && msg.streaming && msg.phase && msg.content && (
+        {/* Fase muta in corso (es. composizione del piano) o nota di servizio
+            (retry dopo una connessione interrotta): lo stream è vivo ma non
+            produce testo — senza questa riga sembra fermo. */}
+        {!isUser && msg.streaming && (msg.phase || msg.note) && msg.content && (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-[10.5px] text-violet-300/90">
             <Loader2 className="w-3 h-3 animate-spin" />
-            {msg.phase === TOOL_LABEL.emit_transit_plan
-              ? "sto componendo il piano — può richiedere uno o due minuti…"
-              : `${msg.phase} in corso…`}
+            {streamStatus(msg)}
           </div>
         )}
 
