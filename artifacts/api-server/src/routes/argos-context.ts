@@ -270,9 +270,18 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
 
     /* ── Infrastruttura: nodi, depositi, archi fuorilinea (con posizioni) ── */
     if (include.has("infrastruttura")) {
+      /* Un nodo è il punto di CAMBIO curato dal pianificatore: senza l'elenco
+       * delle linee che lo toccano, l'assistente deduceva gli interscambi dai
+       * nomi delle linee invece che da questa mappa. */
       const nodi = ((await db.execute<any>(sql`
         SELECT c.id::text AS id, c.name, c.kind, c.center_lat, c.center_lon, c.radius_m,
-               (SELECT count(*) FROM ps_stops s WHERE s.cluster_id = c.id)::int AS fermate
+               (SELECT count(*) FROM ps_stops s WHERE s.cluster_id = c.id)::int AS fermate,
+               (SELECT array_agg(DISTINCT COALESCE(r.code, r.short_name))
+                  FROM ps_stops s
+                  JOIN ps_variant_stops vs ON vs.stop_id = s.id
+                  JOIN ps_route_variants v ON v.id = vs.variant_id
+                  JOIN ps_routes r ON r.id = v.route_id
+                 WHERE s.cluster_id = c.id AND v.project_id = ${projectId}::uuid) AS linee
           FROM ps_stop_clusters c WHERE c.project_id = ${projectId}::uuid`)) as any).rows ?? [];
 
       let depositi: any[] = [];
@@ -295,6 +304,7 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
       out.infrastruttura = {
         nodi: capped(nodi.map((n: any) => ({
           id: n.id, nome: n.name, tipo: n.kind, fermate: n.fermate,
+          linee: (n.linee ?? []).filter(Boolean),
           lat: n.center_lat != null ? Number(n.center_lat) : null,
           lon: n.center_lon != null ? Number(n.center_lon) : null,
           raggioM: n.radius_m ?? null,
