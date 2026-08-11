@@ -178,6 +178,13 @@ function askToText(ask: Ask): string {
   return `\n\n❓ **${ask.question}**\n${opts}`;
 }
 
+/** Il piano come traccia breve (per history del modello E storico persistente:
+ *  UNA sola definizione, così i due testi non possono divergere). */
+function planTrace(plan: Plan): string {
+  const titles = (plan.proposals || []).map(p => p.title).slice(0, 6).join(" · ");
+  return `\n\n📋 **Piano #${plan.id}** — ${(plan.proposals || []).length} proposte${titles ? `: ${titles}` : ""}`;
+}
+
 /* ══════════════════════ micro-componenti ══════════════════════ */
 
 function CopyButton({ text, title = "Copia" }: { text: string; title?: string }) {
@@ -259,11 +266,11 @@ function AskCard({ ask, disabled, onAnswer, onOther }: {
       </p>
       <p className="text-[12px] font-semibold text-zinc-100 leading-snug">{ask.question}</p>
       <div className="space-y-1.5">
-        {(ask.options || []).map(o => {
+        {(ask.options || []).map((o, i) => {
           const chosen = answered ? ask.answered!.includes(o.label) : selected.includes(o.label);
           return (
             <button
-              key={o.label}
+              key={`${i}-${o.label}`}
               type="button"
               disabled={disabled || !!answered}
               onClick={() => toggle(o.label)}
@@ -514,7 +521,12 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       })
       .catch(() => { if (!cancelled) setMsgs([]); })
       .finally(() => { if (!cancelled) setHistoryLoading(false); });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // Cambio progetto a stream in corso: senza abort il vecchio stream
+      // continuerebbe a scrivere dentro la history del NUOVO progetto.
+      abortRef.current?.abort();
+    };
   }, [projectId]);
 
   // Autoscroll gentile: segue lo stream solo se eri già in fondo.
@@ -549,10 +561,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
    *  per capire "Festivo" come risposta alla SUA domanda del turno prima). */
   const historyContent = (x: Msg): string => {
     let c = x.content;
-    if (x.plan) {
-      const titles = (x.plan.proposals || []).map(p => p.title).slice(0, 6).join(" · ");
-      c += `\n\n📋 **Piano #${x.plan.id}** — ${(x.plan.proposals || []).length} proposte${titles ? `: ${titles}` : ""}`;
-    }
+    if (x.plan) c += planTrace(x.plan);
     if (x.ask) c += askToText(x.ask);
     return c;
   };
@@ -578,6 +587,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     let assistantAccum = "";
     let planForSave: Plan | null = null;
     let askForSave: Ask | null = null;
+    let turnFailed = false;
 
     const endpoint = m === "auto" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = m === "auto"
@@ -655,6 +665,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             planForSave = payload.plan;
             patchLast(x => ({ ...x, plan: payload.plan, phase: undefined, note: undefined }));
           } else if (payload.error) {
+            turnFailed = true;
             patchLast(x => ({ ...x, error: String(payload.error), streaming: false, phase: undefined, note: undefined }));
           } else if (payload.done) {
             patchLast(x => ({ ...x, streaming: false }));
@@ -663,6 +674,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
+        turnFailed = true;
         patchLast(x => ({ ...x, error: String(err?.message || err), streaming: false, phase: undefined, note: undefined }));
       }
       try { ctrl.abort(); } catch { /* connessione già chiusa */ }
@@ -671,15 +683,15 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       patchLast(x => ({ ...x, streaming: false, phase: undefined, note: undefined }));
       setLoading(false);
       abortRef.current = null;
-      if (projectId) {
-        // Piano e domanda vivono nelle rispettive tabelle/carte; nello storico
-        // testuale ne resta una traccia leggibile per i turni successivi.
-        let saved = assistantAccum;
-        if (planForSave) {
-          const titles = (planForSave.proposals || []).map(x => x.title).slice(0, 6).join(" · ");
-          saved += `\n\n📋 **Piano #${planForSave.id}** — ${(planForSave.proposals || []).length} proposte${titles ? `: ${titles}` : ""}`;
-        }
-        if (askForSave) saved += askToText(askForSave);
+      // Piano e domanda vivono nelle rispettive tabelle/carte; nello storico
+      // testuale ne resta una traccia leggibile per i turni successivi.
+      // Un turno FALLITO senza alcuna risposta non si salva: altrimenti ogni
+      // "Riprova" accumulerebbe copie identiche della stessa domanda utente.
+      let saved = assistantAccum;
+      if (planForSave) saved += planTrace(planForSave);
+      if (askForSave) saved += askToText(askForSave);
+      const skipSave = turnFailed && !saved.trim();
+      if (projectId && !skipSave) {
         const toSave: { role: string; content: string }[] = [{ role: "user", content: text }];
         if (saved.trim()) toSave.push({ role: "assistant", content: saved });
         fetch(`${getApiBase()}/api/ai/argos/history`, {
