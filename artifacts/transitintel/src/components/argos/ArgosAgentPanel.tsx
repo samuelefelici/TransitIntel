@@ -51,6 +51,10 @@ type Msg = {
   streaming?: boolean;
   tools?: ToolCall[];
   plan?: Plan;
+  /* Fase in corso quando lo stream è muto (es. il modello sta componendo il
+   * piano: minuti senza testo). Impostata dall'evento tool, azzerata dal primo
+   * testo: senza questa riga l'unico segnale era lo spinner 10px sul chip. */
+  phase?: string;
 };
 
 const SUGGESTED: string[] = [
@@ -190,15 +194,19 @@ export default function ArgosAgentPanel({ projectId, tiConfigured = true }: { pr
 
           if (typeof payload.t === "string") {
             assistantAccum += payload.t;
-            patchLast(m => ({ ...m, content: m.content + payload.t }));
+            patchLast(m => ({ ...m, content: m.content + payload.t, phase: undefined }));
           } else if (payload.reset) {
             assistantAccum = "";
             patchLast(m => ({ ...m, content: "" }));
           } else if (payload.tool && typeof payload.tool.name === "string") {
-            patchLast(m => ({ ...m, tools: [...(m.tools || []), payload.tool] }));
+            patchLast(m => ({
+              ...m,
+              tools: [...(m.tools || []), payload.tool],
+              phase: TOOL_LABEL[payload.tool.name] || payload.tool.name,
+            }));
           } else if (payload.plan) {
             planForSave = payload.plan;
-            patchLast(m => ({ ...m, plan: payload.plan }));
+            patchLast(m => ({ ...m, plan: payload.plan, phase: undefined }));
           } else if (payload.error) {
             patchLast(m => ({ ...m, content: m.content + `\n\n❌ **Errore**: ${payload.error}`, streaming: false }));
           } else if (payload.done) {
@@ -377,6 +385,17 @@ function AgentBubble({ msg, onProposalStatus }: { msg: Msg; onProposalStatus: (p
               : msg.content
                 ? <ArgosMarkdown className="prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]">{msg.content}</ArgosMarkdown>
                 : <span className="inline-flex items-center gap-2 text-zinc-400 text-xs"><Loader2 className="w-3 h-3 animate-spin" /> sto indagando…</span>}
+          </div>
+        )}
+
+        {/* Fase muta in corso (es. composizione del piano): lo stream è vivo
+            ma non produce testo — senza questa riga sembra fermo. */}
+        {!isUser && msg.streaming && msg.phase && msg.content && (
+          <div className="mt-1.5 inline-flex items-center gap-1.5 text-[10.5px] text-violet-300/90">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            {msg.phase === TOOL_LABEL.emit_transit_plan
+              ? "sto componendo il piano — può richiedere uno o due minuti…"
+              : `${msg.phase} in corso…`}
           </div>
         )}
 
