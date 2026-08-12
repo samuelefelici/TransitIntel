@@ -1,23 +1,30 @@
 /**
- * ArgosConversation — la superficie UNICA di conversazione con Argos.
+ * ArgosConversation — le due superfici di conversazione con Argos.
  *
- * Sostituisce la coppia "tab Chat" + "tab Agente": un solo thread, tre POSTURE
- * selezionabili per-messaggio (come i mode di un CLI agentico):
- *   · Auto   → /api/ai/argos/chat        risposte rapide su dati e teoria
- *   · Piano  → /api/ai/argos/agent/chat  (mode=piano)  il turno si chiude SEMPRE
- *              con un piano di proposte approvabili
- *   · Agente → /api/ai/argos/agent/chat  (mode=agente) indagine completa: legge i
- *              dati davanti a te, fa domande quando è incerto, propone quando serve
+ * Due TAB, due mestieri:
+ *   · Chat   → /api/ai/argos/chat        una chat e basta: domande e risposte
+ *              su dati del progetto e teoria del TPL (thread 'chat')
+ *   · Agente → /api/ai/argos/agent/chat  l'agente che lavora sul progetto
+ *              (thread 'agente'), con la MODALITÀ scelta accanto all'input,
+ *              come i permission-mode di un CLI agentico:
+ *                - Auto             (mode=agente) l'agente decide da solo:
+ *                                   indaga, chiede se incerto, propone quando serve
+ *                - Piano            (mode=piano)  il turno si chiude SEMPRE con
+ *                                   un piano di proposte approvabili
+ *                - Accetta modifiche (mode=accetta) come Auto, ma le proposte
+ *                                   emesse arrivano GIÀ accettate (revocabili)
  *
  * Eventi SSE gestiti: {t} {reset} {tool} {note} {plan} {ask} {error} {done}.
- * {ask} è la domanda a risposta multipla: card con opzioni cliccabili.
+ * {done} è OBBLIGATORIO: uno stream che finisce senza è una connessione morta
+ * a metà → card di errore con Riprova + recupero del piano dallo storico run
+ * (Argos lo persiste nel momento dell'emissione, non a fine turno).
  *
  * UX: copia risposta/piano, card di errore con "Riprova", skeleton dello storico,
  * stop dello stream, textarea autosize, autoscroll solo se sei già in fondo.
  */
 import React from "react";
 import {
-  Target, Loader2, Check, X, Send, Trash2, Eye, User, Copy, Square,
+  Target, Loader2, Check, CheckCheck, X, Send, Trash2, Eye, User, Copy, Square,
   AlertTriangle, TrainFront, Clock, Gauge, PlugZap, Wrench, RotateCcw,
   HelpCircle, Zap, Compass, Brain, Sparkles, Route, CalendarDays,
 } from "lucide-react";
@@ -65,46 +72,64 @@ type Msg = {
   note?: string;
 };
 
-export type ArgosMode = "auto" | "piano" | "agente";
+type ArgosTab = "chat" | "agente";
+export type AgentMode = "auto" | "piano" | "accetta";
 
 /* ══════════════════════ costanti ══════════════════════ */
 
-const MODES: Record<ArgosMode, {
+const TABS: Record<ArgosTab, {
   label: string; icon: React.ReactNode; desc: string; placeholder: string; needsProject: boolean;
 }> = {
-  auto: {
-    label: "Auto", icon: <Zap className="w-3 h-3" />,
-    desc: "Risposte rapide su dati del progetto e teoria del TPL.",
+  chat: {
+    label: "Chat", icon: <Sparkles className="w-3 h-3" />,
+    desc: "Una chat e basta: domande e risposte su dati del progetto e teoria del TPL.",
     placeholder: "Chiedi ad Argos…", needsProject: false,
-  },
-  piano: {
-    label: "Piano", icon: <Target className="w-3 h-3" />,
-    desc: "Ogni turno si chiude con un piano di proposte da approvare.",
-    placeholder: "Cosa deve progettare Argos? (es. il servizio domenicale)…", needsProject: true,
   },
   agente: {
     label: "Agente", icon: <Compass className="w-3 h-3" />,
-    desc: "Indagine completa: legge i dati, ti fa domande, propone quando serve.",
+    desc: "L'agente lavora sul progetto: legge i dati, ti fa domande, propone piani.",
     placeholder: "Obiettivo o domanda per l'agente…", needsProject: true,
   },
 };
 
-const SUGGESTED: Record<ArgosMode, { label: string; prompt: string; icon: React.ReactNode }[]> = {
+/** Le modalità dell'AGENTE (solo tab Agente), scelte accanto all'input. */
+const AGENT_MODES: Record<AgentMode, { label: string; icon: React.ReactNode; desc: string }> = {
+  auto: {
+    label: "Auto", icon: <Zap className="w-3 h-3" />,
+    desc: "L'agente decide da solo: indaga, ti chiede se è incerto, propone un piano quando serve.",
+  },
+  piano: {
+    label: "Piano", icon: <Target className="w-3 h-3" />,
+    desc: "Ogni turno si chiude con un piano di proposte da approvare.",
+  },
+  accetta: {
+    label: "Accetta modifiche", icon: <CheckCheck className="w-3 h-3" />,
+    desc: "Come Auto, ma le proposte del piano arrivano già accettate (puoi revocarle una a una).",
+  },
+};
+
+const SUGGESTED_CHAT: { label: string; prompt: string; icon: React.ReactNode }[] = [
+  { label: "Riepilogo progetto", prompt: "Dammi un riepilogo del progetto: quante fermate, linee, corse e calendari ha.", icon: <Sparkles className="w-3 h-3" /> },
+  { label: "Percorso di una linea", prompt: "Che percorso fa la linea 1? Elenca le fermate in ordine.", icon: <Route className="w-3 h-3" /> },
+  { label: "Corse e frequenze", prompt: "Quante corse fa la linea 1 nei giorni feriali e con che frequenza media?", icon: <Clock className="w-3 h-3" /> },
+  { label: "Calendari di servizio", prompt: "Quali calendari di servizio ci sono nel progetto?", icon: <CalendarDays className="w-3 h-3" /> },
+];
+
+const SUGGESTED_AGENT: Record<AgentMode, { label: string; prompt: string; icon: React.ReactNode }[]> = {
   auto: [
-    { label: "Riepilogo progetto", prompt: "Dammi un riepilogo del progetto: quante fermate, linee, corse e calendari ha.", icon: <Sparkles className="w-3 h-3" /> },
-    { label: "Percorso di una linea", prompt: "Che percorso fa la linea 1? Elenca le fermate in ordine.", icon: <Route className="w-3 h-3" /> },
-    { label: "Corse e frequenze", prompt: "Quante corse fa la linea 1 nei giorni feriali e con che frequenza media?", icon: <Clock className="w-3 h-3" /> },
-    { label: "Calendari di servizio", prompt: "Quali calendari di servizio ci sono nel progetto?", icon: <CalendarDays className="w-3 h-3" /> },
+    { label: "Valutazione completa", prompt: "Fai una valutazione completa del progetto.", icon: <Gauge className="w-3 h-3" /> },
+    { label: "Criticità del servizio", prompt: "Quali sono le tre criticità più gravi del servizio attuale? Mostrami le evidenze.", icon: <AlertTriangle className="w-3 h-3" /> },
+    { label: "Migliora le coincidenze", prompt: "Migliora le coincidenze con i treni del mattino nella stazione principale.", icon: <TrainFront className="w-3 h-3" /> },
   ],
   piano: [
     { label: "Servizio domenicale", prompt: "Progetta il servizio domenicale del progetto e proponimi il piano.", icon: <CalendarDays className="w-3 h-3" /> },
     { label: "Coincidenze treno", prompt: "Fai un piano per agganciare le corse ai treni del mattino nella stazione principale.", icon: <TrainFront className="w-3 h-3" /> },
     { label: "Copertura domanda", prompt: "Dove la domanda resta scoperta? Proponi un piano per coprirla.", icon: <Target className="w-3 h-3" /> },
   ],
-  agente: [
-    { label: "Valutazione completa", prompt: "Fai una valutazione completa del progetto.", icon: <Gauge className="w-3 h-3" /> },
-    { label: "Criticità del servizio", prompt: "Quali sono le tre criticità più gravi del servizio attuale? Mostrami le evidenze.", icon: <AlertTriangle className="w-3 h-3" /> },
-    { label: "Migliora le coincidenze", prompt: "Migliora le coincidenze con i treni del mattino nella stazione principale.", icon: <TrainFront className="w-3 h-3" /> },
+  accetta: [
+    { label: "Servizio domenicale", prompt: "Progetta il servizio domenicale del progetto: crea tu le corse con orari realistici.", icon: <CalendarDays className="w-3 h-3" /> },
+    { label: "Chiudi i buchi di validità", prompt: "Trova le corse senza validità e sistemale col giorno-tipo giusto.", icon: <Target className="w-3 h-3" /> },
+    { label: "Coincidenze treno", prompt: "Aggancia le corse ai treni del mattino nella stazione principale.", icon: <TrainFront className="w-3 h-3" /> },
   ],
 };
 
@@ -487,12 +512,18 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [historyLoading, setHistoryLoading] = React.useState(false);
-  const [mode, setMode] = React.useState<ArgosMode>(() => {
-    if (typeof window === "undefined") return "agente";
-    const s = localStorage.getItem("argos.mode");
-    return s === "auto" || s === "piano" || s === "agente" ? s : "agente";
+  const [tab, setTab] = React.useState<ArgosTab>(() => {
+    if (typeof window === "undefined") return "chat";
+    const s = localStorage.getItem("argos.tab");
+    return s === "chat" || s === "agente" ? s : "chat";
   });
-  // Ragionamento profondo (solo Auto): Opus, più giri di tool. Opt-in: costa di più.
+  // Modalità dell'agente (solo tab Agente): scelta accanto all'input.
+  const [agentMode, setAgentMode] = React.useState<AgentMode>(() => {
+    if (typeof window === "undefined") return "auto";
+    const s = localStorage.getItem("argos.agentMode");
+    return s === "auto" || s === "piano" || s === "accetta" ? s : "auto";
+  });
+  // Ragionamento profondo (solo Chat): Opus, più giri di tool. Opt-in: costa di più.
   const [deep, setDeep] = React.useState<boolean>(() =>
     typeof window !== "undefined" && localStorage.getItem("argos.deep") === "1");
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -500,20 +531,22 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   const abortRef = React.useRef<AbortController | null>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
-  React.useEffect(() => { localStorage.setItem("argos.mode", mode); }, [mode]);
+  React.useEffect(() => { localStorage.setItem("argos.tab", tab); }, [tab]);
+  React.useEffect(() => { localStorage.setItem("argos.agentMode", agentMode); }, [agentMode]);
   React.useEffect(() => { localStorage.setItem("argos.deep", deep ? "1" : "0"); }, [deep]);
 
-  // Senza progetto le posture agentiche non hanno dati su cui lavorare.
-  const effectiveMode: ArgosMode = !projectId ? "auto" : mode;
-  const tiBlocked = !!projectId && !tiConfigured && effectiveMode !== "auto";
+  // Senza progetto l'agente non ha dati su cui lavorare: resta solo la Chat.
+  const effectiveTab: ArgosTab = !projectId ? "chat" : tab;
+  const tiBlocked = !!projectId && !tiConfigured && effectiveTab === "agente";
   const blocked = !argosReady || tiBlocked;
+  const thread = effectiveTab; // thread di storico: 'chat' | 'agente'
 
-  // Storico persistente: thread unificato 'agente' (un solo filo per tutte le posture).
+  // Storico persistente: un thread per tab (la chat resta chat, l'agente agente).
   React.useEffect(() => {
     if (!projectId) { setMsgs([]); return; }
     let cancelled = false;
     setHistoryLoading(true);
-    fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}&thread=agente`)
+    fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}&thread=${thread}`)
       .then(r => r.ok ? r.json() : { messages: [] })
       .then(d => {
         if (cancelled) return;
@@ -523,11 +556,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       .finally(() => { if (!cancelled) setHistoryLoading(false); });
     return () => {
       cancelled = true;
-      // Cambio progetto a stream in corso: senza abort il vecchio stream
-      // continuerebbe a scrivere dentro la history del NUOVO progetto.
+      // Cambio progetto/tab a stream in corso: senza abort il vecchio stream
+      // continuerebbe a scrivere dentro la history del NUOVO thread.
       abortRef.current?.abort();
     };
-  }, [projectId]);
+  }, [projectId, thread]);
 
   // Autoscroll gentile: segue lo stream solo se eri già in fondo.
   const onScroll = () => {
@@ -566,14 +599,37 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     return c;
   };
 
+  /** Recupero del piano dopo una connessione morta: Argos lo persiste NEL
+   *  momento dell'emissione, quindi anche se la card non è mai arrivata via
+   *  stream può esistere in agent_runs. Si accetta solo un run recente e mai
+   *  già mostrato in conversazione. */
+  const recoverPlan = async (turnStartMs: number): Promise<Plan | null> => {
+    if (!projectId) return null;
+    try {
+      const r = await fetch(`${getApiBase()}/api/ai/argos/agent/runs?projectId=${projectId}&limit=1`);
+      if (!r.ok) return null;
+      const latest = ((await r.json())?.runs || [])[0];
+      if (!latest?.id || !latest.created_at) return null;
+      // 60s di tolleranza sull'orologio del browser rispetto al server.
+      if (Date.parse(latest.created_at) < turnStartMs - 60_000) return null;
+      if (msgs.some(x => x.plan?.id === latest.id)) return null;
+      const rd = await fetch(`${getApiBase()}/api/ai/argos/agent/runs/${latest.id}?projectId=${projectId}`);
+      if (!rd.ok) return null;
+      const run = (await rd.json())?.run;
+      if (!run?.id) return null;
+      return { id: run.id, status: run.status, summary: run.summary || "", diagnosis: run.diagnosis || "", proposals: run.proposals || [] };
+    } catch { return null; }
+  };
+
   const send = async (textOverride?: string) => {
     const text = (textOverride ?? input).trim();
     if (!text || loading || blocked) return;
-    const m: ArgosMode = effectiveMode;
+    const t: ArgosTab = effectiveTab;
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     setLoading(true);
     stickRef.current = true;
+    const turnStartMs = Date.now();
 
     const history = [...msgs.map(x => ({ role: x.role, content: historyContent(x) })), { role: "user" as const, content: text }];
     setMsgs(prev => [
@@ -588,11 +644,12 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     let planForSave: Plan | null = null;
     let askForSave: Ask | null = null;
     let turnFailed = false;
+    let sawDone = false;
 
-    const endpoint = m === "auto" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
-    const body = m === "auto"
+    const endpoint = t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
+    const body = t === "chat"
       ? { messages: history.slice(-20), projectId, deep }
-      : { messages: history, projectId, mode: m };
+      : { messages: history, projectId, mode: agentMode === "auto" ? "agente" : agentMode };
 
     try {
       const r = await fetch(`${getApiBase()}${endpoint}`, {
@@ -668,9 +725,23 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             turnFailed = true;
             patchLast(x => ({ ...x, error: String(payload.error), streaming: false, phase: undefined, note: undefined }));
           } else if (payload.done) {
+            sawDone = true;
             patchLast(x => ({ ...x, streaming: false }));
           }
         }
+      }
+
+      // Stream finito SENZA {done}: una connessione morta a metà (proxy, rete),
+      // NON una risposta completa. Trattarla come fine normale nasconderebbe il
+      // troncamento: il testo resta a metà parola e la card del piano non
+      // arriva mai. Errore esplicito; il recupero del piano sta nel finally
+      // (vale per OGNI fine anomala, watchdog ed errori di rete compresi).
+      if (!sawDone && !ctrl.signal.aborted && !turnFailed) {
+        turnFailed = true;
+        patchLast(x => ({
+          ...x, streaming: false, phase: undefined, note: undefined,
+          error: "La connessione si è interrotta prima della fine della risposta (il testo può essere troncato).",
+        }));
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -679,6 +750,20 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       }
       try { ctrl.abort(); } catch { /* connessione già chiusa */ }
     } finally {
+      // Recupero del piano su OGNI fine anomala (stream senza {done}, watchdog,
+      // errore di rete, {error} del server): Argos lo persiste NEL momento
+      // dell'emissione, quindi può esistere anche se la card non è mai arrivata.
+      if (!sawDone && !ctrl.signal.aborted && t === "agente" && !planForSave && projectId) {
+        const recovered = await recoverPlan(turnStartMs);
+        if (recovered) {
+          planForSave = recovered;
+          turnFailed = false; // il piano c'è: il turno ha prodotto il suo esito
+          patchLast(x => ({
+            ...x, plan: recovered,
+            error: `${x.error || "La connessione si è interrotta prima della fine della risposta."} Il piano emesso è stato comunque recuperato dallo storico.`,
+          }));
+        }
+      }
       // Lo spinner si risolve SEMPRE, anche se lo stream muore senza {done}.
       patchLast(x => ({ ...x, streaming: false, phase: undefined, note: undefined }));
       setLoading(false);
@@ -697,7 +782,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         fetch(`${getApiBase()}/api/ai/argos/history`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId, thread: "agente", messages: toSave }),
+          body: JSON.stringify({ projectId, thread: t, messages: toSave }),
         }).catch(() => {});
       }
     }
@@ -709,7 +794,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     if (loading) return;
     setMsgs([]);
     if (projectId) {
-      fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}&thread=agente`, { method: "DELETE" }).catch(() => {});
+      fetch(`${getApiBase()}/api/ai/argos/history?projectId=${projectId}&thread=${thread}`, { method: "DELETE" }).catch(() => {});
     }
   };
 
@@ -733,24 +818,24 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     } catch { /* ottimistico; un refresh riallinea */ }
   };
 
-  const meta = MODES[effectiveMode];
-  const suggestions = SUGGESTED[effectiveMode];
+  const meta = TABS[effectiveTab];
+  const suggestions = effectiveTab === "chat" ? SUGGESTED_CHAT : SUGGESTED_AGENT[agentMode];
 
   return (
     <>
-      {/* ── Selettore modalità ── */}
+      {/* ── Tab: la chat è chat, l'agente è agente ── */}
       <div className="px-3 pt-2 pb-1.5 border-b border-violet-400/20 bg-black/20">
         <div className="flex items-center gap-1">
-          {(Object.keys(MODES) as ArgosMode[]).map(k => {
-            const disabled = MODES[k].needsProject && !projectId;
-            const active = effectiveMode === k;
+          {(Object.keys(TABS) as ArgosTab[]).map(k => {
+            const disabled = TABS[k].needsProject && !projectId;
+            const active = effectiveTab === k;
             return (
               <button
                 key={k}
                 type="button"
-                disabled={disabled}
-                onClick={() => setMode(k)}
-                title={disabled ? "Apri un progetto per questa modalità" : MODES[k].desc}
+                disabled={disabled || loading}
+                onClick={() => setTab(k)}
+                title={disabled ? "Apri un progetto per l'agente" : TABS[k].desc}
                 className={`flex-1 inline-flex items-center justify-center gap-1.5 text-[11px] py-1.5 rounded-lg font-bold transition ${
                   active
                     ? "bg-violet-500/25 text-violet-200 ring-1 ring-violet-400/50"
@@ -759,11 +844,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
                       : "text-zinc-400 hover:text-violet-300 hover:bg-white/5"
                 }`}
               >
-                {MODES[k].icon}{MODES[k].label}
+                {TABS[k].icon}{TABS[k].label}
               </button>
             );
           })}
-          {effectiveMode === "auto" && (
+          {effectiveTab === "chat" && (
             <button
               type="button"
               onClick={() => setDeep(v => !v)}
@@ -828,8 +913,10 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
               <h3 className="text-base font-bold text-violet-200">Sono Argos 👁️</h3>
               <p className="text-xs text-zinc-400 mt-1 max-w-[300px] mx-auto">
                 {projectId
-                  ? "Un solo filo di conversazione, tre modalità: risposte rapide (Auto), piani con proposte da approvare (Piano), indagine completa (Agente). Se sono incerto, ti faccio una domanda."
-                  : "Apri un progetto per le modalità Piano e Agente. In Auto posso comunque aiutarti sulla teoria della pianificazione."}
+                  ? effectiveTab === "chat"
+                    ? "Chat sul progetto: domande e risposte sui dati e sulla teoria del TPL. Per piani e interventi passa al tab Agente."
+                    : "L'agente lavora sul progetto: legge i dati davanti a te e ti fa domande se è incerto. Scegli la modalità accanto all'input: Auto, Piano o Accetta modifiche."
+                  : "Apri un progetto per usare l'Agente. In Chat posso comunque aiutarti sulla teoria della pianificazione."}
               </p>
             </div>
             <div className="grid grid-cols-1 gap-2 pt-1">
@@ -861,6 +948,33 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
 
       {/* ── Input ── */}
       <div className="p-3 border-t border-violet-400/30 bg-black/40">
+        {/* Selettore della MODALITÀ dell'agente: sta qui, accanto all'input,
+            come i permission-mode di un CLI agentico. Solo nel tab Agente. */}
+        {effectiveTab === "agente" && (
+          <div className="flex items-center gap-1 mb-2">
+            {(Object.keys(AGENT_MODES) as AgentMode[]).map(k => {
+              const active = agentMode === k;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setAgentMode(k)}
+                  title={AGENT_MODES[k].desc}
+                  className={`inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border font-bold transition ${
+                    active
+                      ? k === "accetta"
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/50 ring-1 ring-emerald-500/30"
+                        : "bg-violet-500/20 text-violet-200 border-violet-400/50 ring-1 ring-violet-400/30"
+                      : "bg-zinc-900/60 text-zinc-500 border-white/10 hover:text-violet-300 hover:border-violet-400/40"
+                  } disabled:opacity-50`}
+                >
+                  {AGENT_MODES[k].icon}{AGENT_MODES[k].label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         <form onSubmit={e => { e.preventDefault(); send(); }} className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -870,7 +984,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
             rows={1}
-            placeholder={blocked ? "Argos non disponibile…" : meta.placeholder}
+            placeholder={blocked ? "Argos non disponibile…"
+              : effectiveTab === "agente" && agentMode === "piano" ? "Cosa deve progettare Argos? (es. il servizio domenicale)…"
+              : meta.placeholder}
             disabled={loading || blocked}
             className="flex-1 resize-none rounded-xl bg-zinc-900/80 border border-violet-400/25 focus:border-violet-400/60 focus:outline-none focus:ring-2 focus:ring-violet-400/20 px-3 py-2 text-sm text-violet-100 placeholder:text-zinc-500"
             style={{ minHeight: 38, maxHeight: 160 }}
@@ -895,9 +1011,10 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           )}
         </form>
         <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
-          {effectiveMode === "auto" && deep && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
-          {effectiveMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
-          {effectiveMode === "agente" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
+          {effectiveTab === "chat" && deep && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
+          {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
+          {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
+          {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ le proposte arrivano già accettate (revocabili) · </span>}
           ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
         </p>
       </div>

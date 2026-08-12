@@ -2,9 +2,10 @@
  * Argos — assistente AI usato SOLO dentro Planning Studio, al posto di Virgilio.
  *
  * Questo file è il GUSCIO: bottone flottante, drawer ridimensionabile, header
- * con lo stato del servizio. La conversazione vera e propria (thread unico con
- * le tre modalità Auto · Piano · Agente, piani approvabili, domande a risposta
- * multipla) vive in ArgosConversation.
+ * con lo stato del servizio. La conversazione vera e propria (tab Chat e tab
+ * Agente — quest'ultimo con le modalità Auto · Piano · Accetta modifiche
+ * scelte accanto all'input, piani approvabili, domande a risposta multipla)
+ * vive in ArgosConversation.
  *
  * Il browser non chiama Argos direttamente: passa dal proxy `/api/ai/argos/*`
  * (stesso dominio, stessa auth), che verifica l'accesso al progetto e conia il
