@@ -11,8 +11,10 @@
  *                                   indaga, chiede se incerto, propone quando serve
  *                - Piano            (mode=piano)  il turno si chiude SEMPRE con
  *                                   un piano di proposte approvabili
- *                - Accetta modifiche (mode=accetta) come Auto, ma le proposte
- *                                   emesse arrivano GIÀ accettate (revocabili)
+ *                - Accetta modifiche (mode=accetta) l'agente APPLICA: crea
+ *                                   corse e validità nel progetto coi tool di
+ *                                   scrittura; il piano finale è il resoconto
+ *                                   (proposte già applicate)
  *
  * Eventi SSE gestiti: {t} {reset} {tool} {note} {plan} {ask} {error} {done}.
  * {done} è OBBLIGATORIO: uno stream che finisce senza è una connessione morta
@@ -104,7 +106,7 @@ const AGENT_MODES: Record<AgentMode, { label: string; icon: React.ReactNode; des
   },
   accetta: {
     label: "Accetta modifiche", icon: <CheckCheck className="w-3 h-3" />,
-    desc: "Come Auto, ma le proposte del piano arrivano già accettate (puoi revocarle una a una).",
+    desc: "L'agente APPLICA davvero: crea corse e validità nel progetto, poi ti consegna il resoconto. Non tocca mai le corse preesistenti.",
   },
 };
 
@@ -173,6 +175,12 @@ const TOOL_LABEL: Record<string, string> = {
   ti_territory_reach: "isocrone pedonali",
   emit_transit_plan: "emissione piano",
   ask_user: "domanda per te",
+  // Tool di SCRITTURA (modalità Accetta modifiche): l'agente applica davvero.
+  ti_generate_trips: "creo corse a cadenza",
+  ti_create_trip_prototype: "creo corsa prototipo",
+  ti_set_trips_validity: "bollino le validità",
+  ti_shift_trip: "traslo una corsa",
+  ti_delete_trips: "elimino corse (create ora)",
 };
 
 function toolLabel(name: string): string {
@@ -1014,7 +1022,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           {effectiveTab === "chat" && deep && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
-          {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ le proposte arrivano già accettate (revocabili) · </span>}
+          {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: crea corse e validità nel progetto · </span>}
           ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
         </p>
       </div>
