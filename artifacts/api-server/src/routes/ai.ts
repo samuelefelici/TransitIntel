@@ -571,8 +571,9 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
         question,
         history,
         ti_auth_token: tiAuthToken,
-        // Postura del turno: 'piano' = card garantite a fine turno; default 'agente'.
-        mode: mode === "piano" ? "piano" : "agente",
+        // Postura del turno: 'piano' = card garantite a fine turno; 'accetta' =
+        // proposte emesse già accettate (revocabili); default 'agente'.
+        mode: mode === "piano" || mode === "accetta" ? mode : "agente",
       }),
       signal: ctrl.signal,
     });
