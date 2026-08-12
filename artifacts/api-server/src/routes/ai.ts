@@ -524,9 +524,10 @@ router.post("/ai/argos/agent/goal", async (req, res) => {
 // lo stream SSE. Eventi: {t} testo · {reset} · {tool:{name,args}} strumento in
 // lettura · {plan:{...}} piano emesso · {error} · {done, tokens, budget}.
 router.post("/ai/argos/agent/chat", async (req, res) => {
-  const { messages, projectId } = req.body as {
+  const { messages, projectId, mode } = req.body as {
     messages: Array<{ role: "user" | "assistant"; content: string }>;
     projectId?: string;
+    mode?: string;
   };
   if (!Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: "messages array richiesto" });
@@ -570,6 +571,8 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
         question,
         history,
         ti_auth_token: tiAuthToken,
+        // Postura del turno: 'piano' = card garantite a fine turno; default 'agente'.
+        mode: mode === "piano" ? "piano" : "agente",
       }),
       signal: ctrl.signal,
     });
