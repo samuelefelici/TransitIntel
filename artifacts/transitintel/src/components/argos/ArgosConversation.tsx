@@ -54,6 +54,8 @@ type Plan = {
   id: number; status: string; summary: string; diagnosis: string; proposals?: Proposal[];
   /** Corse create dall'agente nel turno (per l'annullo one-click). */
   created_trip_ids?: string[] | null;
+  /** Rete creata nel turno (linee/percorsi/fermate nuovi), sempre per l'annullo. */
+  created_network?: { routes?: string[]; variants?: string[]; stops?: string[] } | null;
   /** Valorizzato quando il turno è stato annullato. */
   undone_at?: string | null;
 };
@@ -116,7 +118,7 @@ const AGENT_MODES: Record<AgentMode, { label: string; icon: React.ReactNode; des
   },
   accetta: {
     label: "Accetta modifiche", icon: <CheckCheck className="w-3 h-3" />,
-    desc: "L'agente APPLICA davvero: crea corse e validità nel progetto, poi ti consegna il resoconto. Non tocca mai le corse preesistenti.",
+    desc: "L'agente APPLICA davvero: crea corse, validità e — se l'analisi lo chiede — linee e fermate nuove, poi ti consegna il resoconto. Non tocca mai ciò che esisteva già.",
   },
 };
 
@@ -158,6 +160,8 @@ const KIND_LABEL: Record<string, string> = {
   extend_span: "Estendi arco",
   increase_frequency: "Più frequenza",
   new_connection: "Nuova coincidenza",
+  new_route: "Nuova linea",
+  new_stop: "Nuova fermata",
   other: "Intervento",
 };
 
@@ -191,6 +195,9 @@ const TOOL_LABEL: Record<string, string> = {
   ti_set_trips_validity: "bollino le validità",
   ti_shift_trip: "traslo una corsa",
   ti_delete_trips: "elimino corse (create ora)",
+  ti_stops: "mappa delle fermate",
+  ti_create_line: "creo una linea nuova",
+  ti_create_stop: "creo una fermata",
   remember_note: "prendo nota",
   forget_note: "dimentico una nota",
 };
@@ -370,7 +377,15 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
   undoing?: boolean;
 }) {
   const proposals = plan.proposals || [];
-  const undoable = (plan.created_trip_ids?.length || 0) > 0 && !plan.undone_at;
+  const nTrips = plan.created_trip_ids?.length || 0;
+  const net = plan.created_network || {};
+  const nNet = (net.routes?.length || 0) + (net.variants?.length || 0) + (net.stops?.length || 0);
+  const undoable = (nTrips > 0 || nNet > 0) && !plan.undone_at;
+  const undoLabel = [
+    nTrips > 0 ? `${nTrips} corse` : "",
+    (net.routes?.length || 0) > 0 ? `${net.routes!.length} linee` : "",
+    (net.stops?.length || 0) > 0 ? `${net.stops!.length} fermate` : "",
+  ].filter(Boolean).join(", ");
   return (
     <div className="mt-2 text-left rounded-xl border border-violet-400/30 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/5 p-2.5 space-y-2">
       <div className="flex items-center gap-1.5">
@@ -392,7 +407,7 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
           non tocca mai le preesistenti, quindi l'annullo è sempre sicuro). */}
       {plan.undone_at ? (
         <p className="text-[10.5px] text-zinc-400 flex items-center gap-1.5 pt-0.5">
-          <RotateCcw className="w-3 h-3" /> Interventi annullati: le corse create in questo turno sono state eliminate.
+          <RotateCcw className="w-3 h-3" /> Interventi annullati: corse e rete creati in questo turno sono stati eliminati.
         </p>
       ) : undoable && onUndo ? (
         <div className="pt-0.5">
@@ -401,10 +416,10 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
             disabled={busy || undoing}
             onClick={onUndo}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold text-zinc-400 border border-white/10 hover:text-rose-300 hover:border-rose-400/40 disabled:opacity-40 transition"
-            title="Elimina le corse create dall'agente in questo turno (quelle preesistenti non si toccano)"
+            title="Elimina corse, linee e fermate create dall'agente in questo turno (le preesistenti non si toccano)"
           >
             {undoing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
-            Annulla gli interventi del turno ({plan.created_trip_ids!.length} corse)
+            Annulla gli interventi del turno ({undoLabel})
           </button>
         </div>
       ) : null}
@@ -1161,7 +1176,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           {effectiveTab === "chat" && deep && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
-          {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: crea corse e validità nel progetto · </span>}
+          {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}
           ⏎ invia · ⇧⏎ nuova riga · l'AI può sbagliare, verifica i dati critici
         </p>
       </div>
