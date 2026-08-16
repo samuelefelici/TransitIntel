@@ -161,7 +161,6 @@ const KIND_LABEL: Record<string, string> = {
   increase_frequency: "Più frequenza",
   new_connection: "Nuova coincidenza",
   new_route: "Nuova linea",
-  new_stop: "Nuova fermata",
   other: "Intervento",
 };
 
