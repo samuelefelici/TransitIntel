@@ -599,6 +599,42 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
   }
 });
 
+// POST /api/ai/argos/agent/runs/:id/undo  { projectId }
+// Annulla il turno: Argos elimina da questo progetto le corse CREATE
+// dall'agente in quel run (mai quelle preesistenti). Scrive per conto
+// dell'utente: serve il token on-behalf come per la chat agentica.
+router.post("/ai/argos/agent/runs/:id/undo", async (req, res) => {
+  const { projectId } = req.body as { projectId?: string };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const runId = String(req.params.id || "");
+  if (!/^\d+$/.test(runId)) {
+    res.status(400).json({ error: "id non valido" });
+    return;
+  }
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/runs/${runId}/undo`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project_id: projectId, ti_auth_token: mintShortLivedUserToken(userId) }),
+      signal: AbortSignal.timeout(60000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) {
+      res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` });
+      return;
+    }
+    res.json(data);
+  } catch (err: any) {
+    logger.error({ err: err?.message }, "Argos agent undo proxy error");
+    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
 // GET /api/ai/argos/agent/runs?projectId=... → storico run del progetto
 router.get("/ai/argos/agent/runs", async (req, res) => {
   const projectId = String(req.query.projectId || "");

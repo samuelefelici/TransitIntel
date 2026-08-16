@@ -1,0 +1,25 @@
+# CI di TransitIntel: typecheck dell'intero workspace (libs + artifacts + scripts).
+# Stesso comando del build di deploy, senza la parte Python/ortools.
+name: CI
+
+# Solo pull_request: con anche `push` ogni commit su un branch di PR
+# farebbe partire DUE run identici. workflow_dispatch per i rilanci a mano.
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # versione pnpm letta da packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Installazione workspace
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm run typecheck

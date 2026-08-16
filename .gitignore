@@ -13,3 +13,8 @@ replit.nix
 .neon
 scripts/data/
 __pycache__/
+
+# Artefatti di build TypeScript: MAI committarli — un tsbuildinfo committato
+# con dist/ ignorato fa credere a `tsc --build` (CI, Docker) che le lib siano
+# già costruite: niente emit, e il typecheck a valle esplode con TS6305.
+*.tsbuildinfo

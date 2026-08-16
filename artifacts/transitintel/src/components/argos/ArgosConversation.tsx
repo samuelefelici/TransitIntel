@@ -50,7 +50,16 @@ type Proposal = {
   status: string;
 };
 
-type Plan = { id: number; status: string; summary: string; diagnosis: string; proposals?: Proposal[] };
+type Plan = {
+  id: number; status: string; summary: string; diagnosis: string; proposals?: Proposal[];
+  /** Corse create dall'agente nel turno (per l'annullo one-click). */
+  created_trip_ids?: string[] | null;
+  /** Valorizzato quando il turno è stato annullato. */
+  undone_at?: string | null;
+};
+
+/** Verifica di fine turno: cosa è cambiato DAVVERO nel progetto. */
+type Audit = { created: number; tripsBefore?: number; tripsAfter?: number; kmBefore?: number; kmAfter?: number; prototypes?: number };
 
 type AskOption = { label: string; description?: string | null };
 type Ask = { question: string; options: AskOption[]; multi?: boolean; answered?: string[] };
@@ -65,6 +74,7 @@ type Msg = {
   tools?: ToolCall[];
   plan?: Plan;
   ask?: Ask;
+  audit?: Audit;
   /** Errore del turno (server o rete): card dedicata con Riprova. */
   error?: string;
   /** Testo utente che ha generato questo turno (per il Riprova). */
@@ -181,6 +191,8 @@ const TOOL_LABEL: Record<string, string> = {
   ti_set_trips_validity: "bollino le validità",
   ti_shift_trip: "traslo una corsa",
   ti_delete_trips: "elimino corse (create ora)",
+  remember_note: "prendo nota",
+  forget_note: "dimentico una nota",
 };
 
 function toolLabel(name: string): string {
@@ -349,8 +361,16 @@ function AskCard({ ask, disabled, onAnswer, onOther }: {
   );
 }
 
-function PlanCard({ plan, onStatus }: { plan: Plan; onStatus: (pid: number, status: string) => void }) {
+function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
+  plan: Plan;
+  busy: boolean;
+  onStatus: (pid: number, status: string) => void;
+  onApply: (p: Proposal) => void;
+  onUndo?: () => void;
+  undoing?: boolean;
+}) {
   const proposals = plan.proposals || [];
+  const undoable = (plan.created_trip_ids?.length || 0) > 0 && !plan.undone_at;
   return (
     <div className="mt-2 text-left rounded-xl border border-violet-400/30 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/5 p-2.5 space-y-2">
       <div className="flex items-center gap-1.5">
@@ -364,14 +384,59 @@ function PlanCard({ plan, onStatus }: { plan: Plan; onStatus: (pid: number, stat
       )}
       {proposals.length === 0 ? (
         <p className="text-[11px] text-amber-200 flex items-start gap-1.5"><AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" /> Nessuna proposta in questo turno: guarda la diagnosi qui sopra.</p>
-      ) : proposals.map(p => <ProposalCard key={p.id} p={p} onStatus={onStatus} />)}
+      ) : proposals.map(p => (
+        <ProposalCard key={p.id} p={p} busy={busy} undone={!!plan.undone_at}
+          onStatus={onStatus} onApply={() => onApply(p)} />
+      ))}
+      {/* Annullo one-click: solo per turni che hanno CREATO corse (l'agente
+          non tocca mai le preesistenti, quindi l'annullo è sempre sicuro). */}
+      {plan.undone_at ? (
+        <p className="text-[10.5px] text-zinc-400 flex items-center gap-1.5 pt-0.5">
+          <RotateCcw className="w-3 h-3" /> Interventi annullati: le corse create in questo turno sono state eliminate.
+        </p>
+      ) : undoable && onUndo ? (
+        <div className="pt-0.5">
+          <button
+            type="button"
+            disabled={busy || undoing}
+            onClick={onUndo}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold text-zinc-400 border border-white/10 hover:text-rose-300 hover:border-rose-400/40 disabled:opacity-40 transition"
+            title="Elimina le corse create dall'agente in questo turno (quelle preesistenti non si toccano)"
+          >
+            {undoing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+            Annulla gli interventi del turno ({plan.created_trip_ids!.length} corse)
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function ProposalCard({ p, onStatus }: { p: Proposal; onStatus: (pid: number, status: string) => void }) {
+/** Striscia di verifica di fine turno: il delta MISURATO sul progetto. */
+function AuditStrip({ a }: { a: Audit }) {
+  const parts: string[] = [];
+  if (a.tripsBefore != null && a.tripsAfter != null) parts.push(`corse ${a.tripsBefore} → ${a.tripsAfter}`);
+  parts.push(`${a.created} create dall'agente`);
+  if (a.kmBefore != null && a.kmAfter != null && a.kmAfter !== a.kmBefore) parts.push(`km ${a.kmBefore} → ${a.kmAfter}`);
+  if (a.prototypes) parts.push(`⚠️ ${a.prototypes} prototipi residui`);
+  return (
+    <p className="mt-1.5 text-[10.5px] text-emerald-300/90 flex items-start gap-1.5">
+      <Check className="w-3 h-3 mt-0.5 shrink-0" />
+      <span><span className="font-semibold">Verifica sul progetto · </span>{parts.join(" · ")}</span>
+    </p>
+  );
+}
+
+function ProposalCard({ p, busy, undone, onStatus, onApply }: {
+  p: Proposal;
+  busy: boolean;
+  undone: boolean;
+  onStatus: (pid: number, status: string) => void;
+  onApply: () => void;
+}) {
   const prioCls = PRIORITY_STYLE[p.priority] || PRIORITY_STYLE.media;
   const accepted = p.status === "accepted" || p.status === "applied";
+  const applied = p.status === "applied";
   const rejected = p.status === "rejected";
   return (
     <div className={`rounded-lg border p-2 transition ${
@@ -397,20 +462,37 @@ function ProposalCard({ p, onStatus }: { p: Proposal; onStatus: (pid: number, st
         <span className="text-[9px] text-zinc-500 inline-flex items-center gap-1"><Gauge className="w-2.5 h-2.5" />affidabilità {p.confidence}</span>
         {p.day_type && <span className="text-[9px] text-zinc-500 inline-flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{p.day_type}</span>}
         <div className="ml-auto flex items-center gap-1">
-          <button onClick={() => onStatus(p.id, accepted ? "open" : "accepted")}
-            title={accepted ? "Annulla accettazione" : "Accetta"}
-            className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition border ${
-              accepted ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-zinc-800/60 text-zinc-300 border-white/5 hover:border-emerald-500/40 hover:text-emerald-300"
+          {applied ? (
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 border ${
+              undone ? "bg-zinc-800/60 text-zinc-400 border-white/5" : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
             }`}>
-            <Check className="w-3 h-3" /> {accepted ? "Accettata" : "Accetta"}
-          </button>
-          <button onClick={() => onStatus(p.id, rejected ? "open" : "rejected")}
-            title={rejected ? "Annulla rifiuto" : "Rifiuta"}
-            className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition border ${
-              rejected ? "bg-zinc-700/40 text-zinc-300 border-zinc-600/40" : "bg-zinc-800/60 text-zinc-400 border-white/5 hover:border-rose-500/40 hover:text-rose-300"
-            }`}>
-            <X className="w-3 h-3" /> {rejected ? "Rifiutata" : "Rifiuta"}
-          </button>
+              <CheckCheck className="w-3 h-3" /> {undone ? "Annullata" : "Applicata"}
+            </span>
+          ) : (
+            <>
+              {!rejected && (
+                <button onClick={onApply} disabled={busy}
+                  title="L'agente esegue questa proposta adesso (modalità Accetta modifiche)"
+                  className="px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition border bg-violet-500/15 text-violet-200 border-violet-400/40 hover:bg-violet-500/25 disabled:opacity-40">
+                  <Zap className="w-3 h-3" /> Applica
+                </button>
+              )}
+              <button onClick={() => onStatus(p.id, accepted ? "open" : "accepted")}
+                title={accepted ? "Annulla accettazione" : "Accetta"}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition border ${
+                  accepted ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" : "bg-zinc-800/60 text-zinc-300 border-white/5 hover:border-emerald-500/40 hover:text-emerald-300"
+                }`}>
+                <Check className="w-3 h-3" /> {accepted ? "Accettata" : "Accetta"}
+              </button>
+              <button onClick={() => onStatus(p.id, rejected ? "open" : "rejected")}
+                title={rejected ? "Annulla rifiuto" : "Rifiuta"}
+                className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 transition border ${
+                  rejected ? "bg-zinc-700/40 text-zinc-300 border-zinc-600/40" : "bg-zinc-800/60 text-zinc-400 border-white/5 hover:border-rose-500/40 hover:text-rose-300"
+                }`}>
+                <X className="w-3 h-3" /> {rejected ? "Rifiutata" : "Rifiuta"}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -421,10 +503,13 @@ function ProposalCard({ p, onStatus }: { p: Proposal; onStatus: (pid: number, st
 
 const PROSE_CLS = "prose prose-sm prose-invert max-w-none text-[11.5px] leading-snug prose-p:my-1 prose-headings:text-violet-200 prose-headings:text-[12.5px] prose-headings:mt-2 prose-headings:mb-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-pre:my-1.5 prose-strong:text-violet-200 prose-code:text-fuchsia-300 prose-code:text-[11px] prose-code:bg-black/40 prose-code:px-1 prose-code:rounded prose-a:text-violet-300 prose-table:text-[11px]";
 
-function Bubble({ msg, busy, onProposalStatus, onAskAnswer, onOther, onRetry }: {
+function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry }: {
   msg: Msg;
   busy: boolean;
   onProposalStatus: (pid: number, status: string) => void;
+  onApplyProposal: (p: Proposal) => void;
+  onUndoRun: () => void;
+  undoing: boolean;
   onAskAnswer: (labels: string[]) => void;
   onOther: () => void;
   onRetry: (text: string) => void;
@@ -494,7 +579,13 @@ function Bubble({ msg, busy, onProposalStatus, onAskAnswer, onOther, onRetry }: 
         )}
 
         {/* Card del piano emesso in questo turno */}
-        {msg.plan && <PlanCard plan={msg.plan} onStatus={onProposalStatus} />}
+        {msg.plan && (
+          <PlanCard plan={msg.plan} busy={busy} onStatus={onProposalStatus}
+            onApply={onApplyProposal} onUndo={onUndoRun} undoing={undoing} />
+        )}
+
+        {/* Verifica di fine turno: il delta misurato sul progetto */}
+        {msg.audit && <AuditStrip a={msg.audit} />}
 
         {/* Domanda a risposta multipla */}
         {msg.ask && <AskCard ask={msg.ask} disabled={busy} onAnswer={onAskAnswer} onOther={onOther} />}
@@ -629,10 +720,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     } catch { return null; }
   };
 
-  const send = async (textOverride?: string) => {
+  const send = async (textOverride?: string, modeOverride?: AgentMode) => {
     const text = (textOverride ?? input).trim();
     if (!text || loading || blocked) return;
     const t: ArgosTab = effectiveTab;
+    const m: AgentMode = modeOverride ?? agentMode;
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     setLoading(true);
@@ -657,7 +749,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     const endpoint = t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = t === "chat"
       ? { messages: history.slice(-20), projectId, deep }
-      : { messages: history, projectId, mode: agentMode === "auto" ? "agente" : agentMode };
+      : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
 
     try {
       const r = await fetch(`${getApiBase()}${endpoint}`, {
@@ -729,6 +821,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           } else if (payload.plan) {
             planForSave = payload.plan;
             patchLast(x => ({ ...x, plan: payload.plan, phase: undefined, note: undefined }));
+          } else if (payload.audit && typeof payload.audit.created === "number") {
+            patchLast(x => ({ ...x, audit: payload.audit }));
           } else if (payload.error) {
             turnFailed = true;
             patchLast(x => ({ ...x, error: String(payload.error), streaming: false, phase: undefined, note: undefined }));
@@ -809,6 +903,48 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   const answerAsk = (msgId: string, labels: string[]) => {
     setMsgs(prev => prev.map(x => x.id !== msgId || !x.ask ? x : ({ ...x, ask: { ...x.ask, answered: labels } })));
     send(labels.join("; "));
+  };
+
+  /** A1 — «Applica»: l'agente esegue la proposta ADESSO, in modalità Accetta
+   *  modifiche, con la proposta stessa come obiettivo. Se era open la si
+   *  segna accettata (stai chiedendo di eseguirla: l'accettazione è implicita). */
+  const applyProposal = (msgId: string, planId: number, p: Proposal) => {
+    if (loading || !projectId) return;
+    if (p.status === "open") setProposalStatus(msgId, p.id, "accepted");
+    setAgentMode("accetta");
+    const prompt =
+      `Applica ORA questa proposta del piano #${planId} (proposta #${p.id}): «${p.title}»` +
+      (p.line ? ` — linea ${p.line}` : "") + (p.day_type ? `, giorno-tipo ${p.day_type}` : "") +
+      `.\nIntervento: ${p.detail}` +
+      (p.rationale ? `\nMotivazione: ${p.rationale}` : "") +
+      `\nEsegui con i tool di scrittura, verifica l'esito col quadro orario e chiudi col resoconto.`;
+    send(prompt, "accetta");
+  };
+
+  /** A2 — «Annulla il turno»: elimina da TransitIntel le corse CREATE
+   *  dall'agente in quel run (mai le preesistenti). */
+  const [undoingRunId, setUndoingRunId] = React.useState<number | null>(null);
+  const undoRun = async (msgId: string, runId: number) => {
+    if (!projectId || undoingRunId !== null) return;
+    setUndoingRunId(runId);
+    try {
+      const r = await fetch(`${getApiBase()}/api/ai/argos/agent/runs/${runId}/undo`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+      setMsgs(prev => prev.map(x => x.id !== msgId || !x.plan ? x : ({
+        ...x, plan: { ...x.plan, undone_at: d.undone_at || new Date().toISOString() },
+      })));
+    } catch (err: any) {
+      setMsgs(prev => prev.map(x => x.id !== msgId ? x : ({
+        ...x, error: `Annullo non riuscito: ${String(err?.message || err)}`,
+      })));
+    } finally {
+      setUndoingRunId(null);
+    }
   };
 
   const setProposalStatus = async (msgId: string, pid: number, status: string) => {
@@ -947,6 +1083,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             msg={x}
             busy={loading}
             onProposalStatus={(pid, status) => setProposalStatus(x.id, pid, status)}
+            onApplyProposal={p => x.plan && applyProposal(x.id, x.plan.id, p)}
+            onUndoRun={() => x.plan && undoRun(x.id, x.plan.id)}
+            undoing={undoingRunId !== null && undoingRunId === x.plan?.id}
             onAskAnswer={labels => answerAsk(x.id, labels)}
             onOther={() => inputRef.current?.focus()}
             onRetry={t => send(t)}
