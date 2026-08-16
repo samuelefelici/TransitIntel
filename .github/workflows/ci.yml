@@ -2,10 +2,11 @@
 # Stesso comando del build di deploy, senza la parte Python/ortools.
 name: CI
 
+# Solo pull_request: con anche `push` ogni commit su un branch di PR
+# farebbe partire DUE run identici. workflow_dispatch per i rilanci a mano.
 on:
-  push:
-    branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   typecheck:
