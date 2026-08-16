@@ -118,7 +118,7 @@ const AGENT_MODES: Record<AgentMode, { label: string; icon: React.ReactNode; des
   },
   accetta: {
     label: "Accetta modifiche", icon: <CheckCheck className="w-3 h-3" />,
-    desc: "L'agente APPLICA davvero: crea corse, validità e — se l'analisi lo chiede — linee e fermate nuove, poi ti consegna il resoconto. Non tocca mai ciò che esisteva già.",
+    desc: "L'agente APPLICA davvero: crea corse, validità e — se l'analisi lo chiede — linee nuove su fermate esistenti, poi ti consegna il resoconto. Le fermate non le crea mai; non tocca mai ciò che esisteva già.",
   },
 };
 
@@ -197,7 +197,6 @@ const TOOL_LABEL: Record<string, string> = {
   ti_delete_trips: "elimino corse (create ora)",
   ti_stops: "mappa delle fermate",
   ti_create_line: "creo una linea nuova",
-  ti_create_stop: "creo una fermata",
   remember_note: "prendo nota",
   forget_note: "dimentico una nota",
 };
@@ -384,7 +383,6 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
   const undoLabel = [
     nTrips > 0 ? `${nTrips} corse` : "",
     (net.routes?.length || 0) > 0 ? `${net.routes!.length} linee` : "",
-    (net.stops?.length || 0) > 0 ? `${net.stops!.length} fermate` : "",
   ].filter(Boolean).join(", ");
   return (
     <div className="mt-2 text-left rounded-xl border border-violet-400/30 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/5 p-2.5 space-y-2">
