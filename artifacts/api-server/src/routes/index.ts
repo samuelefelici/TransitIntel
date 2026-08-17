@@ -46,6 +46,7 @@ import intermodalDemandRouter from "./intermodal-demand";
 import argosContextRouter from "./argos-context";
 import argosInsightsRouter from "./argos-insights";
 import argosTerritoryRouter from "./argos-territory";
+import { argosWatchRouter, argosWatchCronRouter } from "./argos-watch";
 import aiRouter from "./ai";
 import planningRouter from "./planning";
 import territoryRouter from "./territory";
@@ -73,6 +74,7 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(authRouter);
 router.use(cronRouter); // pubblico (webhook/job esterni)
+router.use(argosWatchCronRouter); // pubblico (x-cron-secret): tick sorveglianza Argos
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
 router.use("/gtfs-rt", gtfsRtRouter); // pubblico (aggregatori infomobilità): key opzionale GTFS_RT_API_KEY
 router.use(networkShareRouter); // pubblico: mappa di rete condivisa via link
@@ -102,6 +104,7 @@ router.use(intermodalDemandRouter);
 router.use(argosContextRouter);
 router.use(argosInsightsRouter);
 router.use(argosTerritoryRouter);
+router.use(argosWatchRouter);
 router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);

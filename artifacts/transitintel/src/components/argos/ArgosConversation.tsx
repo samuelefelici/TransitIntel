@@ -78,6 +78,20 @@ type Goal = {
   run_id?: number | null;
 };
 
+/** Sorveglianza: il controllo periodico del progetto a pannello chiuso. */
+type Watch = {
+  projectId: string;
+  enabled: boolean;
+  workGoals: boolean;
+  cadenceHours: number;
+  lastRunAt?: string | null;
+  lastStatus?: string | null;
+  lastSummary?: string | null;
+  lastFindings?: { title: string; detail: string; severity?: string; suggestion?: string | null }[];
+  lastGoalNote?: string | null;
+  unseen: boolean;
+};
+
 const GOAL_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   active: { label: "in corso", cls: "bg-violet-500/15 text-violet-300 border-violet-400/40" },
   achieved: { label: "raggiunto", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/40" },
@@ -711,9 +725,41 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       .then(d => setGoals((d.goals || []) as Goal[]))
       .catch(() => {});
   }, [projectId]);
+  // Sorveglianza del progetto (controllo periodico a pannello chiuso).
+  const [watch, setWatch] = React.useState<Watch | null>(null);
+  const loadWatch = React.useCallback(() => {
+    if (!projectId) { setWatch(null); return; }
+    fetch(`${getApiBase()}/api/ai/argos/watch?projectId=${projectId}`)
+      .then(r => r.ok ? r.json() : { watch: null })
+      .then(d => setWatch(d.watch || null))
+      .catch(() => {});
+  }, [projectId]);
   React.useEffect(() => {
-    if (effectiveTab === "agente") loadGoals();
-  }, [effectiveTab, loadGoals]);
+    if (effectiveTab === "agente") { loadGoals(); loadWatch(); }
+  }, [effectiveTab, loadGoals, loadWatch]);
+
+  const updateWatch = async (patch: { enabled?: boolean; workGoals?: boolean }) => {
+    if (!projectId) return;
+    try {
+      const r = await fetch(`${getApiBase()}/api/ai/argos/watch`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, ...patch }),
+      });
+      const d: any = await r.json().catch(() => ({}));
+      if (r.ok && d?.watch) setWatch(d.watch);
+    } catch { /* un refresh riallinea */ }
+  };
+
+  const markWatchSeen = async () => {
+    if (!projectId) return;
+    setWatch(w => w ? { ...w, unseen: false } : w);
+    fetch(`${getApiBase()}/api/ai/argos/watch/seen`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId }),
+    }).catch(() => {});
+  };
 
   // Storico persistente: un thread per tab (la chat resta chat, l'agente agente).
   React.useEffect(() => {
@@ -1285,6 +1331,39 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           </div>
         )}
 
+        {/* ── Sorveglianza: novità dall'ultimo controllo automatico ── */}
+        {effectiveTab === "agente" && watch?.unseen && (
+          <div className="rounded-xl border border-sky-400/40 bg-sky-500/10 p-2.5 space-y-1.5">
+            <p className="text-[10px] font-bold text-sky-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Eye className="w-3 h-3" /> Dalla sorveglianza
+              {watch.lastRunAt && <span className="normal-case font-normal text-sky-300/70">· {new Date(watch.lastRunAt).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>}
+              <button type="button" onClick={markWatchSeen}
+                className="ml-auto text-[10px] px-2 py-0.5 rounded-md border border-sky-400/40 text-sky-200 hover:bg-sky-500/20 transition">
+                Segna letto
+              </button>
+            </p>
+            {watch.lastSummary && <p className="text-[11px] text-zinc-200">{watch.lastSummary}</p>}
+            {(watch.lastFindings || []).map((f, i) => (
+              <div key={i} className="rounded-lg bg-zinc-900/50 border border-white/5 px-2 py-1.5">
+                <p className="text-[11px] font-bold text-zinc-100">
+                  <span className={`mr-1.5 text-[9px] px-1.5 py-0.5 rounded-full border font-bold ${
+                    f.severity === "alta" ? "bg-rose-500/15 text-rose-300 border-rose-500/40"
+                    : f.severity === "bassa" ? "bg-zinc-600/20 text-zinc-400 border-zinc-600/40"
+                    : "bg-amber-500/15 text-amber-300 border-amber-500/40"}`}>{f.severity || "media"}</span>
+                  {f.title}
+                </p>
+                <p className="text-[10.5px] text-zinc-300 mt-0.5">{f.detail}</p>
+                {f.suggestion && <p className="text-[10.5px] text-emerald-300/90 mt-0.5">→ {f.suggestion}</p>}
+              </div>
+            ))}
+            {watch.lastGoalNote && (
+              <p className="text-[10.5px] text-violet-300/90 flex items-start gap-1.5">
+                <Target className="w-3 h-3 mt-0.5 shrink-0" /> Giro automatico sugli obiettivi: {watch.lastGoalNote}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* ── Obiettivi in carico: il lavoro dell'agente oltre il turno ── */}
         {effectiveTab === "agente" && goals.length > 0 && (
           <div className="rounded-xl border border-violet-400/20 bg-black/20 p-2 space-y-1.5">
@@ -1392,6 +1471,40 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             >
               <Target className="w-3 h-3" />Affida obiettivo
             </button>
+            {/* Sorveglianza: controllo periodico automatico del progetto.
+                Chi la attiva ne è l'owner: i giri girano per suo conto. */}
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => updateWatch({ enabled: !(watch?.enabled) })}
+              title={watch?.enabled
+                ? `Sorveglianza ATTIVA (ogni ${watch.cadenceHours}h): controllo automatico di salute, validità e treni; ti avvisa qui solo a novità. Clic per spegnere.${watch.lastStatus ? ` Ultimo giro: ${watch.lastStatus}.` : ""}`
+                : "Attiva la sorveglianza: ogni 24h Argos controlla da solo salute, validità e coincidenze del progetto e ti segnala qui solo le novità."}
+              className={`inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border font-bold transition disabled:opacity-40 ${
+                watch?.enabled
+                  ? "bg-sky-500/15 text-sky-300 border-sky-400/50"
+                  : "bg-zinc-900/60 text-zinc-400 border-white/10 hover:text-sky-300 hover:border-sky-400/40"
+              }`}
+            >
+              <Eye className="w-3 h-3" />Sorveglianza
+            </button>
+            {watch?.enabled && (
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => updateWatch({ workGoals: !watch.workGoals })}
+                title={watch.workGoals
+                  ? "Nei giri automatici l'agente LAVORA anche sull'obiettivo attivo fermo da più tempo (un giro per controllo). Clic per limitarsi a osservare."
+                  : "Fai lavorare l'agente anche sugli obiettivi attivi durante i controlli automatici (un giro per controllo)."}
+                className={`inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border font-bold transition disabled:opacity-40 ${
+                  watch.workGoals
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/50"
+                    : "bg-zinc-900/60 text-zinc-500 border-white/10 hover:text-emerald-300 hover:border-emerald-400/40"
+                }`}
+              >
+                <Zap className="w-3 h-3" />+obiettivi
+              </button>
+            )}
             <span className="w-px h-4 bg-white/10 mx-0.5" />
             {(Object.keys(AGENT_MODES) as AgentMode[]).map(k => {
               const active = agentMode === k;
