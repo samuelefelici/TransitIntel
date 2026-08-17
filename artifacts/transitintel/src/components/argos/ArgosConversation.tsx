@@ -234,6 +234,7 @@ const TOOL_LABEL: Record<string, string> = {
   ti_shift_trip: "traslo una corsa",
   ti_delete_trips: "elimino corse (create ora)",
   ti_stops: "mappa delle fermate",
+  ti_vehicle_feasibility: "giudizio di fattibilità (turni macchina)",
   ti_create_line: "creo una linea nuova",
   remember_note: "prendo nota",
   forget_note: "dimentico una nota",
