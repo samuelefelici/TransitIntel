@@ -817,6 +817,10 @@ router.delete("/planning-studio/projects/:id/validity/exception", async (req, re
  *     → come sopra ma su TUTTE le corse (non prototipo) delle linee indicate:
  *       selezione lato server, niente enumerazione di tripId dal chiamante
  *
+ *   { op: "row-restore", rows: [{tripId, dayTypeId, wasValid|null}] }
+ *     → inverso atomico dei due sopra: ripristina lo stato `previous` che
+ *       essi ritornano (null = riga da cancellare). Usato dall'annullo turno.
+ *
  *   { op: "date-column-set", date, isValid }
  *     → forza eccezione (1=add, 2=remove) su tutti i trip del progetto per quella data
  *
@@ -854,18 +858,36 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       const dtIds: string[] = dayTypeIds.filter((x: any) => typeof x === "string" && UUID_RX.test(x));
       // Un solo statement set-based (corse × day-type): atomico e senza N+1 —
       // prima erano trip×dayType INSERT separati fuori transazione.
-      const upsert = await db.execute(sql`
-        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-        SELECT t.tid, d.dtid, ${isValid}, now()
-          FROM unnest(${`{${tripIds.join(",")}}`}::uuid[]) AS t(tid)
-         CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
-        ON CONFLICT (trip_id, day_type_id) DO UPDATE
-          SET is_valid = EXCLUDED.is_valid, updated_at = now()
-      `);
-      const count = (upsert as any).rowCount ?? tripIds.length * dtIds.length;
+      // `previous` = lo stato PRIMA della scrittura, solo per le coppie che
+      // cambiano davvero (wasValid null = riga assente): è ciò che serve
+      // all'annullo del turno di Argos per RIPRISTINARE i bollini — prima
+      // l'annullo cancellava solo le corse create e i bollini restavano.
+      let previous: Array<{ tripId: string; dayTypeId: string; wasValid: boolean | null }> = [];
+      let count = 0;
+      await db.transaction(async (tx) => {
+        const prevR = await tx.execute(sql`
+          SELECT t.tid AS trip_id, d.dtid AS day_type_id, v.is_valid
+            FROM unnest(${`{${tripIds.join(",")}}`}::uuid[]) AS t(tid)
+           CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+            LEFT JOIN ps_trip_day_validity v ON v.trip_id = t.tid AND v.day_type_id = d.dtid
+           WHERE v.is_valid IS DISTINCT FROM ${isValid}
+        `);
+        previous = (((prevR as any).rows ?? []) as any[]).map(r => ({
+          tripId: r.trip_id, dayTypeId: r.day_type_id, wasValid: r.is_valid ?? null,
+        }));
+        const upsert = await tx.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          SELECT t.tid, d.dtid, ${isValid}, now()
+            FROM unnest(${`{${tripIds.join(",")}}`}::uuid[]) AS t(tid)
+           CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE
+            SET is_valid = EXCLUDED.is_valid, updated_at = now()
+        `);
+        count = (upsert as any).rowCount ?? tripIds.length * dtIds.length;
+      });
       await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripIds[0], { count, isValid, trips: tripIds.length });
       telemetry("bulk.trip-row", req.params.id, { tripId: tripIds[0], count, isValid });
-      res.json({ ok: true, count });
+      res.json({ ok: true, count, previous });
       return;
     }
 
@@ -891,17 +913,38 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       if (Number(((ownR as any).rows ?? [])[0]?.c) !== routeIds.length) {
         res.status(404).json({ error: "route not in project" }); return;
       }
-      const upsert = await db.execute(sql`
-        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-        SELECT t.id, d.dtid, ${isValid}, now()
-          FROM ps_trips t
-         CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
-         WHERE t.project_id = ${req.params.id}::uuid
-           AND t.route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])
-           AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
-        ON CONFLICT (trip_id, day_type_id) DO UPDATE
-          SET is_valid = EXCLUDED.is_valid, updated_at = now()
-      `);
+      // `previous` come in trip-row-set: solo le coppie che cambiano davvero
+      // (wasValid null = riga assente), nella stessa transazione dell'upsert —
+      // è lo stato che l'annullo del turno di Argos ripristina con row-restore.
+      let previous: Array<{ tripId: string; dayTypeId: string; wasValid: boolean | null }> = [];
+      let count = 0;
+      await db.transaction(async (tx) => {
+        const prevR = await tx.execute(sql`
+          SELECT t.id AS trip_id, d.dtid AS day_type_id, v.is_valid
+            FROM ps_trips t
+           CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+            LEFT JOIN ps_trip_day_validity v ON v.trip_id = t.id AND v.day_type_id = d.dtid
+           WHERE t.project_id = ${req.params.id}::uuid
+             AND t.route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])
+             AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+             AND v.is_valid IS DISTINCT FROM ${isValid}
+        `);
+        previous = (((prevR as any).rows ?? []) as any[]).map(r => ({
+          tripId: r.trip_id, dayTypeId: r.day_type_id, wasValid: r.is_valid ?? null,
+        }));
+        const upsert = await tx.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          SELECT t.id, d.dtid, ${isValid}, now()
+            FROM ps_trips t
+           CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+           WHERE t.project_id = ${req.params.id}::uuid
+             AND t.route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])
+             AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE
+            SET is_valid = EXCLUDED.is_valid, updated_at = now()
+        `);
+        count = (upsert as any).rowCount ?? 0;
+      });
       const tR = await db.execute(sql`
         SELECT count(*)::int AS c FROM ps_trips
          WHERE project_id = ${req.params.id}::uuid
@@ -909,10 +952,63 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
            AND COALESCE((attributes->>'prototype')::boolean, false) = false
       `);
       const trips = Number(((tR as any).rows ?? [])[0]?.c) || 0;
-      const count = (upsert as any).rowCount ?? trips * dtIds.length;
+      if (!count) count = trips * dtIds.length;
       await logActivity(req.params.id, userId, "validity.bulk.route-row", "route", routeIds[0], { routes: routeIds.length, trips, count, isValid });
       telemetry("bulk.route-row", req.params.id, { routes: routeIds.length, trips, count, isValid });
-      res.json({ ok: true, count, trips });
+      res.json({ ok: true, count, trips, previous });
+      return;
+    }
+
+    if (op === "row-restore") {
+      // Inverso ATOMICO di trip-row-set/route-row-set: riporta le coppie
+      // (corsa × giorno-tipo) allo stato dichiarato in `rows` — wasValid null
+      // = la riga non esisteva e va CANCELLATA, true/false = valore da
+      // ripristinare. È l'op che usa l'annullo del turno di Argos coi
+      // `previous` raccolti durante le scritture. Idempotente (ri-eseguirla
+      // non cambia nulla) e tollerante: le corse nel frattempo eliminate
+      // (es. corse create dal turno stesso) vengono saltate, non fanno errore.
+      const UUID_RX = /^[0-9a-f-]{36}$/i;
+      const rows: Array<{ tripId: string; dayTypeId: string; wasValid: boolean | null }> =
+        (Array.isArray(body.rows) ? body.rows : []).filter((r: any) =>
+          r && typeof r.tripId === "string" && UUID_RX.test(r.tripId)
+          && typeof r.dayTypeId === "string" && UUID_RX.test(r.dayTypeId)
+          && (r.wasValid === null || typeof r.wasValid === "boolean"));
+      if (rows.length === 0) { res.status(400).json({ error: "rows[] required ({tripId, dayTypeId, wasValid})" }); return; }
+      if (rows.length > 20000) { res.status(400).json({ error: "rows[]: massimo 20000 righe per chiamata" }); return; }
+      const toDelete = rows.filter(r => r.wasValid === null);
+      const toSet = rows.filter(r => r.wasValid !== null);
+      let removed = 0, restored = 0;
+      await db.transaction(async (tx) => {
+        if (toDelete.length > 0) {
+          const del = await tx.execute(sql`
+            DELETE FROM ps_trip_day_validity v
+             USING unnest(${`{${toDelete.map(r => r.tripId).join(",")}}`}::uuid[],
+                          ${`{${toDelete.map(r => r.dayTypeId).join(",")}}`}::uuid[]) AS r(tid, dtid),
+                   ps_trips t
+             WHERE v.trip_id = r.tid AND v.day_type_id = r.dtid
+               AND t.id = r.tid AND t.project_id = ${req.params.id}::uuid
+          `);
+          removed = (del as any).rowCount ?? 0;
+        }
+        if (toSet.length > 0) {
+          const ins = await tx.execute(sql`
+            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+            SELECT r.tid, r.dtid, r.val, now()
+              FROM unnest(${`{${toSet.map(r => r.tripId).join(",")}}`}::uuid[],
+                          ${`{${toSet.map(r => r.dayTypeId).join(",")}}`}::uuid[],
+                          ${`{${toSet.map(r => r.wasValid).join(",")}}`}::boolean[]) AS r(tid, dtid, val)
+              JOIN ps_trips t ON t.id = r.tid AND t.project_id = ${req.params.id}::uuid
+            ON CONFLICT (trip_id, day_type_id) DO UPDATE
+              SET is_valid = EXCLUDED.is_valid, updated_at = now()
+          `);
+          restored = (ins as any).rowCount ?? 0;
+        }
+      });
+      const skipped = rows.length - removed - restored;
+      await logActivity(req.params.id, userId, "validity.bulk.row-restore", null, null,
+        { rows: rows.length, restored, removed, skipped });
+      telemetry("bulk.row-restore", req.params.id, { rows: rows.length, restored, removed, skipped });
+      res.json({ ok: true, restored, removed, skipped });
       return;
     }
 

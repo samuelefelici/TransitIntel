@@ -203,7 +203,15 @@ const cronRouter: IRouter = Router();
  * per il suo OWNER, con cui Argos legge on-behalf-of-user gli endpoint di
  * Planning Studio. Stessa guardia x-cron-secret del tick di sorveglianza: il
  * segreto è condiviso solo col backend di Argos, mai coi client MCP (che
- * hanno la loro chiave dedicata, verificata da Argos). */
+ * hanno la loro chiave dedicata, verificata da Argos).
+ *
+ * userId (opzionale): RINNOVO del token di un turno agente in corso. Il proxy
+ * conia un JWT da 10 minuti per l'intero turno, ma un turno in modalità
+ * accetta (indagine + scritture + fattibilità) può durare di più: a token
+ * scaduto ogni tool successivo falliva a lavoro mezzo fatto. Argos richiede
+ * qui un token fresco PER LO STESSO utente (sub del JWT che sta usando);
+ * si verifica che sia owner o membro del progetto, così l'attribuzione nel
+ * registro attività resta corretta e il perimetro accessi non si allarga. */
 cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
   const secret = req.headers["x-cron-secret"];
   if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
@@ -212,6 +220,23 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
   }
   const projectId = String(req.body?.projectId || "");
   if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+  const userId = String(req.body?.userId || "");
+  if (userId) {
+    if (!UUID_RE.test(userId)) { res.status(400).json({ error: "userId non valido" }); return; }
+    const m = await db.execute(sql`
+      SELECT 1 FROM ps_projects p
+       WHERE p.id = ${projectId}::uuid
+         AND (p.owner_user_id = ${userId}::uuid
+              OR EXISTS (SELECT 1 FROM ps_project_members pm
+                          WHERE pm.project_id = p.id AND pm.user_id = ${userId}::uuid))
+    `);
+    if (((m as any).rows ?? []).length === 0) {
+      res.status(403).json({ error: "utente non membro del progetto" });
+      return;
+    }
+    res.json({ token: mintShortLivedUserToken(userId), expiresInSec: 600 });
+    return;
+  }
   const r = await db.execute(sql`
     SELECT owner_user_id FROM ps_projects WHERE id = ${projectId}::uuid
   `);

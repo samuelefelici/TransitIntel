@@ -67,6 +67,9 @@ type Plan = {
   created_trip_ids?: string[] | null;
   /** Rete creata nel turno (linee/percorsi/fermate nuovi), sempre per l'annullo. */
   created_network?: { routes?: string[]; variants?: string[]; stops?: string[] } | null;
+  /** Bollini di validità toccati sul preesistente (stato precedente registrato):
+   *  l'annullo li RIPRISTINA, non solo elimina le corse create. */
+  validity_changes?: { tripId: string; dayTypeId: string; wasValid?: boolean | null }[] | null;
   /** Valorizzato quando il turno è stato annullato. */
   undone_at?: string | null;
 };
@@ -429,10 +432,14 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
   const nTrips = plan.created_trip_ids?.length || 0;
   const net = plan.created_network || {};
   const nNet = (net.routes?.length || 0) + (net.variants?.length || 0) + (net.stops?.length || 0);
-  const undoable = (nTrips > 0 || nNet > 0) && !plan.undone_at;
+  const nVal = plan.validity_changes?.length || 0;
+  // Annullabile anche un turno di SOLI bollini: prima l'annullo copriva solo
+  // le creazioni e i bollini messi/tolti sul preesistente restavano.
+  const undoable = (nTrips > 0 || nNet > 0 || nVal > 0) && !plan.undone_at;
   const undoLabel = [
     nTrips > 0 ? `${nTrips} corse` : "",
     (net.routes?.length || 0) > 0 ? `${net.routes!.length} linee` : "",
+    nVal > 0 ? `${nVal} bollini` : "",
   ].filter(Boolean).join(", ");
   return (
     <div className="mt-2 text-left rounded-xl border border-violet-400/30 bg-gradient-to-br from-violet-500/10 to-fuchsia-500/5 p-2.5 space-y-2">
@@ -474,11 +481,11 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
         </div>
       )}
 
-      {/* Annullo one-click: solo per turni che hanno CREATO corse (l'agente
-          non tocca mai le preesistenti, quindi l'annullo è sempre sicuro). */}
+      {/* Annullo one-click: elimina ciò che il turno ha CREATO e RIPRISTINA
+          i bollini toccati sul preesistente (stato precedente registrato). */}
       {plan.undone_at ? (
         <p className="text-[10.5px] text-zinc-400 flex items-center gap-1.5 pt-0.5">
-          <RotateCcw className="w-3 h-3" /> Interventi annullati: corse e rete creati in questo turno sono stati eliminati.
+          <RotateCcw className="w-3 h-3" /> Interventi annullati: corse e rete create eliminate{nVal > 0 ? `, ${nVal} bollini di validità ripristinati` : ""}.
         </p>
       ) : undoable && onUndo ? (
         <div className="pt-0.5">
@@ -487,7 +494,7 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
             disabled={busy || undoing}
             onClick={onUndo}
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold text-zinc-400 border border-white/10 hover:text-rose-300 hover:border-rose-400/40 disabled:opacity-40 transition"
-            title="Elimina corse, linee e fermate create dall'agente in questo turno (le preesistenti non si toccano)"
+            title="Elimina corse, linee e fermate create dall'agente in questo turno e ripristina i bollini di validità com'erano prima (le corse preesistenti non si eliminano mai)"
           >
             {undoing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
             Annulla gli interventi del turno ({undoLabel})
