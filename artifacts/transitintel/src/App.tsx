@@ -91,6 +91,7 @@ const PlanningStudioCalendarProfilePage = lazyWithRetry(() => import("@/pages/pl
 const PlanningStudioOperationalBoardPage = lazyWithRetry(() => import("@/pages/planning-studio/OperationalBoardPage"));
 const PlanningStudioTtdPage = lazyWithRetry(() => import("@/pages/planning-studio/TtdPage"));
 const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-studio/ZonesPage"));
+const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -227,6 +228,9 @@ function Router() {
             </Route>
             <Route path="/planning-studio/:id/zones">
               <Gated perm="network"><PlanningStudioZonesPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/activity">
+              <Gated perm="network"><PlanningStudioActivityPage /></Gated>
             </Route>
             {/* Infrastruttura del progetto: le stesse pagine che prima vivevano
                 come sezioni globali (/depots, /deadhead-arcs, /intermodal),

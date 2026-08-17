@@ -11,13 +11,13 @@ import { Link } from "wouter";
 import {
   Map as MapIcon, ScanSearch, Bus, Activity, CalendarRange, Grid3x3, Layers,
   CircleDot, Landmark, ClipboardList, Building2, Route as RouteIcon,
-  ArrowRightLeft,
+  ArrowRightLeft, History,
 } from "lucide-react";
 
 export type PsNavKey =
   | "editor" | "network" | "trips" | "ttd" | "calendar" | "validity"
   | "units" | "clusters" | "zones" | "depots" | "arcs" | "intermodal"
-  | "esercizio";
+  | "activity" | "esercizio";
 
 const TABS: Array<{
   key: PsNavKey; label: string; Icon: typeof MapIcon;
@@ -40,6 +40,8 @@ const TABS: Array<{
   { key: "depots",    label: "Depositi",     Icon: Building2,     path: "depots" },
   { key: "arcs",      label: "Fuorilinea",   Icon: RouteIcon,     path: "deadhead-arcs" },
   { key: "intermodal", label: "Intermodale", Icon: ArrowRightLeft, path: "intermodal" },
+  // Il registro attività: chi ha fatto cosa (operatore o Argos) e quando.
+  { key: "activity",  label: "Registro",     Icon: History,       path: "activity" },
   { key: "esercizio", label: "Esercizio",    Icon: ClipboardList, path: "/fucina/esercizio/:id" },
 ];
 

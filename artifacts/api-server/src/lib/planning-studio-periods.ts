@@ -15,6 +15,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { withVia } from "./agent-context";
 
 const router: IRouter = Router();
 
@@ -53,7 +54,7 @@ async function logActivity(
   try {
     await db.execute(sql`
       INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, target_id, payload)
-      VALUES (${projectId}::uuid, ${userId}::uuid, ${action}, ${targetType}, ${targetId}, ${JSON.stringify(payload)}::jsonb)
+      VALUES (${projectId}::uuid, ${userId}::uuid, ${action}, ${targetType}, ${targetId}, ${JSON.stringify(withVia(payload))}::jsonb)
     `);
   } catch (e: any) {
     console.warn("[ps-periods] activity log error:", e?.message || e);

@@ -17,6 +17,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getVehicleScenarioAccess } from "./scenario-access";
+import { withVia } from "./agent-context";
 
 /* ────────────────────────────────────────────────────────────
  * Bootstrap tabelle
@@ -387,7 +388,7 @@ async function logActivity(
         ${action},
         ${opts.targetType ?? null},
         ${opts.targetId ?? null},
-        ${JSON.stringify(opts.payload ?? {})}::jsonb
+        ${JSON.stringify(withVia(opts.payload))}::jsonb
       )
     `);
   } catch (e: any) {
