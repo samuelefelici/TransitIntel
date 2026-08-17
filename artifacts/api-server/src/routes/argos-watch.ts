@@ -198,6 +198,28 @@ async function runOldestActiveGoal(projectId: string, userId: string): Promise<{
 /* ── Rotta cron (montata PRIMA di requireAuth, guardia x-cron-secret) ────── */
 const cronRouter: IRouter = Router();
 
+/* POST /api/cron/argos-mcp-token — token utente a breve scadenza per il
+ * connettore MCP di Argos (SOLA LETTURA): dato il progetto, si conia un token
+ * per il suo OWNER, con cui Argos legge on-behalf-of-user gli endpoint di
+ * Planning Studio. Stessa guardia x-cron-secret del tick di sorveglianza: il
+ * segreto è condiviso solo col backend di Argos, mai coi client MCP (che
+ * hanno la loro chiave dedicata, verificata da Argos). */
+cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
+  const secret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const projectId = String(req.body?.projectId || "");
+  if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+  const r = await db.execute(sql`
+    SELECT owner_user_id FROM ps_projects WHERE id = ${projectId}::uuid
+  `);
+  const owner = (r as any).rows?.[0]?.owner_user_id;
+  if (!owner) { res.status(404).json({ error: "progetto non trovato" }); return; }
+  res.json({ token: mintShortLivedUserToken(String(owner)), expiresInSec: 600 });
+});
+
 // POST /api/cron/argos-watch — un tick dello scheduler esterno (es. ogni ora)
 cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
   const secret = req.headers["x-cron-secret"];
