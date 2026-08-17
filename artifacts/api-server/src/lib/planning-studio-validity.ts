@@ -812,6 +812,10 @@ router.delete("/planning-studio/projects/:id/validity/exception", async (req, re
  *   { op: "trip-row-set",  tripId, dayTypeIds[], isValid }
  *     → upsert ps_trip_day_validity per (trip × ognuno dei dayTypes)
  *
+ *   { op: "route-row-set", routeIds[], dayTypeIds[], isValid }
+ *     → come sopra ma su TUTTE le corse (non prototipo) delle linee indicate:
+ *       selezione lato server, niente enumerazione di tripId dal chiamante
+ *
  *   { op: "date-column-set", date, isValid }
  *     → forza eccezione (1=add, 2=remove) su tutti i trip del progetto per quella data
  *
@@ -861,6 +865,53 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       await logActivity(req.params.id, userId, "validity.bulk.trip-row", "trip", tripIds[0], { count, isValid, trips: tripIds.length });
       telemetry("bulk.trip-row", req.params.id, { tripId: tripIds[0], count, isValid });
       res.json({ ok: true, count });
+      return;
+    }
+
+    if (op === "route-row-set") {
+      // Bollina/s-bollina TUTTE le corse (prototipi esclusi) di intere LINEE in
+      // un colpo solo: la selezione delle corse avviene QUI, lato server. Nato
+      // per l'agente: enumerare centinaia di tripId dalle timetable (troncate)
+      // fa sfuggire qualche corsa e lascia "corse-zombie" bollinate a metà —
+      // con la selezione per linea l'operazione è atomica e completa.
+      const { dayTypeIds, isValid } = body;
+      const UUID_RX = /^[0-9a-f-]{36}$/i;
+      const routeIds: string[] = (Array.isArray(body.routeIds) ? body.routeIds : [body.routeId])
+        .filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      if (routeIds.length === 0 || !Array.isArray(dayTypeIds) || typeof isValid !== "boolean") {
+        res.status(400).json({ error: "routeId|routeIds[], dayTypeIds[], isValid required" }); return;
+      }
+      const dtIds: string[] = dayTypeIds.filter((x: any) => typeof x === "string" && UUID_RX.test(x));
+      if (dtIds.length === 0) { res.status(400).json({ error: "dayTypeIds[] required" }); return; }
+      const ownR = await db.execute(sql`
+        SELECT count(*)::int AS c FROM ps_routes
+         WHERE id = ANY(${`{${routeIds.join(",")}}`}::uuid[]) AND project_id = ${req.params.id}::uuid
+      `);
+      if (Number(((ownR as any).rows ?? [])[0]?.c) !== routeIds.length) {
+        res.status(404).json({ error: "route not in project" }); return;
+      }
+      const upsert = await db.execute(sql`
+        INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+        SELECT t.id, d.dtid, ${isValid}, now()
+          FROM ps_trips t
+         CROSS JOIN unnest(${`{${dtIds.join(",")}}`}::uuid[]) AS d(dtid)
+         WHERE t.project_id = ${req.params.id}::uuid
+           AND t.route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])
+           AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+        ON CONFLICT (trip_id, day_type_id) DO UPDATE
+          SET is_valid = EXCLUDED.is_valid, updated_at = now()
+      `);
+      const tR = await db.execute(sql`
+        SELECT count(*)::int AS c FROM ps_trips
+         WHERE project_id = ${req.params.id}::uuid
+           AND route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])
+           AND COALESCE((attributes->>'prototype')::boolean, false) = false
+      `);
+      const trips = Number(((tR as any).rows ?? [])[0]?.c) || 0;
+      const count = (upsert as any).rowCount ?? trips * dtIds.length;
+      await logActivity(req.params.id, userId, "validity.bulk.route-row", "route", routeIds[0], { routes: routeIds.length, trips, count, isValid });
+      telemetry("bulk.route-row", req.params.id, { routes: routeIds.length, trips, count, isValid });
+      res.json({ ok: true, count, trips });
       return;
     }
 
