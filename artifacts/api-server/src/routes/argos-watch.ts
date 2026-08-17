@@ -220,6 +220,28 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
   res.json({ token: mintShortLivedUserToken(String(owner)), expiresInSec: 600 });
 });
 
+/* POST /api/cron/argos-mcp-projects — elenco progetti per il connettore MCP:
+ * Claude scopre i projectId da solo (tool argos_projects) senza dover
+ * configurare MCP_PROJECT_ID. Solo metadati minimi (id, nome, stato): i dati
+ * veri passano comunque dai token per-progetto coniati qui sopra. */
+cronRouter.post("/cron/argos-mcp-projects", async (req: any, res: any) => {
+  const secret = req.headers["x-cron-secret"];
+  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  const r = await db.execute(sql`
+    SELECT id, name, status FROM ps_projects
+     ORDER BY last_opened_at DESC NULLS LAST, created_at DESC
+     LIMIT 50
+  `);
+  res.json({
+    projects: ((r as any).rows ?? []).map((p: any) => ({
+      id: p.id, name: p.name, status: p.status,
+    })),
+  });
+});
+
 // POST /api/cron/argos-watch — un tick dello scheduler esterno (es. ogni ora)
 cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
   const secret = req.headers["x-cron-secret"];
