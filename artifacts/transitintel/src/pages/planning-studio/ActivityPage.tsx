@@ -72,6 +72,7 @@ const ACTION_LABEL: Record<string, string> = {
   "validity.bulk.date-column": "Validità applicata a una data",
   "validity.bulk.trip-categories": "Categorie corse aggiornate",
   "validity.bulk.clear-exceptions": "Eccezioni di validità azzerate",
+  "validity.bulk.row-restore": "Bollini ripristinati (annullo turno)",
   "validity.auto-import": "Validità importata automaticamente",
   "validity.generate-unit": "Unità di progettazione generata",
   "validity.day_type.create": "Giorno-tipo creato",
