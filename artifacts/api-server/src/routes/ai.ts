@@ -599,6 +599,114 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
   }
 });
 
+// ── OBIETTIVI PERSISTENTI (Agentic): il lavoro che l'agente ha in carico ──
+
+// GET /api/ai/argos/agent/goals?projectId=… → obiettivi del progetto
+router.get("/ai/argos/agent/goals", async (req, res) => {
+  const projectId = String(req.query.projectId || "");
+  const userId = await requireProjectMember(req, res, projectId);
+  if (!userId) return;
+  await argosGet(`/agent/goals?project_id=${encodeURIComponent(projectId)}`, res);
+});
+
+// POST /api/ai/argos/agent/goals  { projectId, title, objective, successCriteria? }
+router.post("/ai/argos/agent/goals", async (req, res) => {
+  const { projectId, title, objective, successCriteria } = req.body as {
+    projectId?: string; title?: string; objective?: string; successCriteria?: string;
+  };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/goals`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
+        title, objective, success_criteria: successCriteria || "",
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) { res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` }); return; }
+    res.json(data);
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
+// POST /api/ai/argos/agent/goals/:id/status  { projectId, status } → pausa/riattiva/archivia
+router.post("/ai/argos/agent/goals/:id/status", async (req, res) => {
+  const { projectId, status } = req.body as { projectId?: string; status?: string };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const goalId = String(req.params.id || "");
+  if (!/^\d+$/.test(goalId)) { res.status(400).json({ error: "id non valido" }); return; }
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/goals/${goalId}/status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ project_id: projectId, status }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const data = await upstream.json().catch(() => ({}));
+    if (!upstream.ok) { res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` }); return; }
+    res.json(data);
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+  }
+});
+
+// POST /api/ai/argos/agent/goals/:id/run  { projectId, note? }
+// UN GIRO di lavoro sull'obiettivo: SSE ristrasmesso da Argos, col token
+// on-behalf per i tool (lettura E scrittura: il giro lavora in modalità accetta).
+router.post("/ai/argos/agent/goals/:id/run", async (req, res) => {
+  const { projectId, note } = req.body as { projectId?: string; note?: string };
+  const userId = await requireProjectMember(req, res, String(projectId || ""));
+  if (!userId) return;
+  const goalId = String(req.params.id || "");
+  if (!/^\d+$/.test(goalId)) { res.status(400).json({ error: "id non valido" }); return; }
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/agent/goals/${goalId}/run/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
+        ti_auth_token: mintShortLivedUserToken(userId), note: note || "",
+      }),
+      signal: ctrl.signal,
+    });
+    if (!upstream.ok || !upstream.body) {
+      const detail = await upstream.json()
+        .then((d: any) => d?.detail || `HTTP ${upstream.status}`)
+        .catch(() => `HTTP ${upstream.status}`);
+      res.write(`data: ${JSON.stringify({ error: String(detail) })}\n\n`);
+      res.end();
+      return;
+    }
+    for await (const chunk of upstream.body as any) {
+      res.write(chunk);
+    }
+    res.end();
+  } catch (err: any) {
+    if (err?.name !== "AbortError") {
+      logger.error({ err: err?.message }, "Argos goal run proxy error");
+      res.write(`data: ${JSON.stringify({ error: err?.message || "Errore proxy Argos" })}\n\n`);
+    }
+    res.end();
+  }
+});
+
 // POST /api/ai/argos/agent/runs/:id/undo  { projectId }
 // Annulla il turno: Argos elimina da questo progetto le corse CREATE
 // dall'agente in quel run (mai quelle preesistenti). Scrive per conto
