@@ -202,6 +202,8 @@ export interface PsActivity {
   userId: string;
   userEmail?: string | null;
   userFullName?: string | null;
+  /** "argos"/"argos:mcp" se la modifica l'ha eseguita l'agente, null se manuale. */
+  via?: string | null;
 }
 
 /* ─── Progetti ─── */

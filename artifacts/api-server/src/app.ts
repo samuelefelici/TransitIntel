@@ -6,6 +6,7 @@ import router from "./routes";
 import { logger, getRequestId } from "./lib/logger";
 import { errorHandler } from "./middlewares/error-handler";
 import { globalLimiter } from "./middlewares/rate-limit";
+import { agentAttribution } from "./lib/agent-context";
 
 const app: Express = express();
 
@@ -89,6 +90,11 @@ app.use(express.urlencoded({ extended: true, limit: "4mb" }));
 
 // Rate limiting — bucket per utente autenticato (3000/min) o per IP (600/min)
 app.use(globalLimiter);
+
+// Attribuzione agente: le richieste con header X-Argos vengono marcate per
+// l'intera durata (AsyncLocalStorage), così il registro attività distingue
+// gli interventi di Argos da quelli manuali dell'operatore.
+app.use(agentAttribution);
 
 app.use("/api", router);
 

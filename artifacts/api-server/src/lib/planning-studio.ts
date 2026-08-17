@@ -22,6 +22,7 @@ import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { withVia } from "./agent-context";
 
 /* ════════════════════════════════════════════════════════════
  *  Bootstrap tabelle
@@ -718,7 +719,7 @@ async function logActivity(
       INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, target_id, payload)
       VALUES (${projectId}::uuid, ${userId}::uuid, ${action},
               ${opts.targetType ?? null}, ${opts.targetId ?? null},
-              ${JSON.stringify(opts.payload ?? {})}::jsonb)
+              ${JSON.stringify(withVia(opts.payload))}::jsonb)
     `);
   } catch (e: any) {
     console.warn("[ps activity-log] insert failed:", e?.message || e);
@@ -1426,6 +1427,9 @@ router.get("/planning-studio/projects/:id/activity", async (req, res): Promise<v
       userId: r.user_id,
       userEmail: r.user_email,
       userFullName: r.user_full_name,
+      // Attribuzione: "argos"/"argos:mcp" se la modifica l'ha fatta l'agente
+      // (col token dell'utente), null se è stata fatta a mano dall'operatore.
+      via: r.payload?.via ?? null,
     })),
   });
 });
