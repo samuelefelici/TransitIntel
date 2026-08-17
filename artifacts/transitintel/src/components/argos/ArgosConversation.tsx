@@ -48,10 +48,21 @@ type Proposal = {
   confidence: string;
   priority: string;
   status: string;
+  /** Motivo del rifiuto (lezione per i turni futuri dell'agente). */
+  review_note?: string | null;
+};
+
+/** Revisione indipendente: il secondo occhio sul piano, prima dell'utente. */
+type Review = {
+  verdetto: "ok" | "riserve" | "bocciato" | string;
+  nota?: string;
+  rilievi?: { titolo: string; dettaglio?: string; gravita?: string }[];
+  run_id?: number;
 };
 
 type Plan = {
   id: number; status: string; summary: string; diagnosis: string; proposals?: Proposal[];
+  review?: Review | null;
   /** Corse create dall'agente nel turno (per l'annullo one-click). */
   created_trip_ids?: string[] | null;
   /** Rete creata nel turno (linee/percorsi/fermate nuovi), sempre per l'annullo. */
@@ -409,7 +420,7 @@ function AskCard({ ask, disabled, onAnswer, onOther }: {
 function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
   plan: Plan;
   busy: boolean;
-  onStatus: (pid: number, status: string) => void;
+  onStatus: (pid: number, status: string, note?: string) => void;
   onApply: (p: Proposal) => void;
   onUndo?: () => void;
   undoing?: boolean;
@@ -440,6 +451,29 @@ function PlanCard({ plan, busy, onStatus, onApply, onUndo, undoing }: {
         <ProposalCard key={p.id} p={p} busy={busy} undone={!!plan.undone_at}
           onStatus={onStatus} onApply={() => onApply(p)} />
       ))}
+      {/* Revisione indipendente: il secondo occhio, arrivato dopo la card. */}
+      {plan.review && (
+        <div className={`rounded-lg border px-2 py-1.5 ${
+          plan.review.verdetto === "ok" ? "border-emerald-500/30 bg-emerald-500/5"
+          : plan.review.verdetto === "bocciato" ? "border-rose-500/40 bg-rose-500/10"
+          : "border-amber-500/30 bg-amber-500/5"}`}>
+          <p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 text-zinc-300">
+            <Eye className="w-3 h-3" /> Revisione indipendente ·
+            <span className={
+              plan.review.verdetto === "ok" ? "text-emerald-300"
+              : plan.review.verdetto === "bocciato" ? "text-rose-300" : "text-amber-300"
+            }>{plan.review.verdetto}</span>
+          </p>
+          {plan.review.nota && <p className="text-[10.5px] text-zinc-300 mt-0.5">{plan.review.nota}</p>}
+          {(plan.review.rilievi || []).map((r, i) => (
+            <p key={i} className="text-[10.5px] text-zinc-400 mt-0.5">
+              <span className={`font-bold ${r.gravita === "alta" ? "text-rose-300" : r.gravita === "bassa" ? "text-zinc-500" : "text-amber-300"}`}>[{r.gravita || "media"}]</span>{" "}
+              <span className="text-zinc-200 font-semibold">{r.titolo}</span>{r.dettaglio ? ` — ${r.dettaglio}` : ""}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Annullo one-click: solo per turni che hanno CREATO corse (l'agente
           non tocca mai le preesistenti, quindi l'annullo è sempre sicuro). */}
       {plan.undone_at ? (
@@ -483,13 +517,14 @@ function ProposalCard({ p, busy, undone, onStatus, onApply }: {
   p: Proposal;
   busy: boolean;
   undone: boolean;
-  onStatus: (pid: number, status: string) => void;
+  onStatus: (pid: number, status: string, note?: string) => void;
   onApply: () => void;
 }) {
   const prioCls = PRIORITY_STYLE[p.priority] || PRIORITY_STYLE.media;
   const accepted = p.status === "accepted" || p.status === "applied";
   const applied = p.status === "applied";
   const rejected = p.status === "rejected";
+  const [noteText, setNoteText] = React.useState("");
   return (
     <div className={`rounded-lg border p-2 transition ${
       accepted ? "border-emerald-500/40 bg-emerald-500/5"
@@ -510,6 +545,31 @@ function ProposalCard({ p, busy, undone, onStatus, onApply }: {
           {p.impact && <p className="text-[10.5px] text-emerald-300/90 leading-relaxed"><span className="text-emerald-400/80 font-semibold">Impatto · </span>{p.impact}</p>}
         </div>
       )}
+      {/* Il motivo del rifiuto è la lezione che l'agente rileggerà: vale i
+          cinque secondi che costa scriverlo. */}
+      {rejected && (p.review_note ? (
+        <p className="text-[10px] text-zinc-500 mt-1">Motivo · {p.review_note}</p>
+      ) : (
+        <form
+          className="flex items-center gap-1.5 mt-1"
+          onSubmit={e => {
+            e.preventDefault();
+            const t = noteText.trim();
+            if (t) { onStatus(p.id, "rejected", t); setNoteText(""); }
+          }}
+        >
+          <input
+            value={noteText}
+            onChange={e => setNoteText(e.target.value)}
+            placeholder="Perché? (opzionale — Argos impara dai motivi)"
+            className="flex-1 min-w-0 text-[10.5px] bg-zinc-900/60 border border-white/10 rounded-md px-2 py-1 text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-rose-400/40"
+          />
+          <button type="submit" disabled={!noteText.trim()}
+            className="text-[10px] px-2 py-1 rounded-md border border-white/10 text-zinc-400 hover:text-rose-300 hover:border-rose-400/40 disabled:opacity-30 transition">
+            Salva
+          </button>
+        </form>
+      ))}
       <div className="flex items-center gap-2 mt-1.5 pt-1.5 border-t border-white/5">
         <span className="text-[9px] text-zinc-500 inline-flex items-center gap-1"><Gauge className="w-2.5 h-2.5" />affidabilità {p.confidence}</span>
         {p.day_type && <span className="text-[9px] text-zinc-500 inline-flex items-center gap-1"><Clock className="w-2.5 h-2.5" />{p.day_type}</span>}
@@ -558,7 +618,7 @@ const PROSE_CLS = "prose prose-sm prose-invert max-w-none text-[11.5px] leading-
 function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoing, onAskAnswer, onOther, onRetry }: {
   msg: Msg;
   busy: boolean;
-  onProposalStatus: (pid: number, status: string) => void;
+  onProposalStatus: (pid: number, status: string, note?: string) => void;
   onApplyProposal: (p: Proposal) => void;
   onUndoRun: () => void;
   undoing: boolean;
@@ -943,6 +1003,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           } else if (payload.plan) {
             planForSave = payload.plan;
             patchLast(x => ({ ...x, plan: payload.plan, phase: undefined, note: undefined }));
+          } else if (payload.review && typeof payload.review.verdetto === "string") {
+            patchLast(x => x.plan ? ({ ...x, plan: { ...x.plan, review: payload.review }, note: undefined }) : x);
           } else if (payload.audit && typeof payload.audit.created === "number") {
             patchLast(x => ({ ...x, audit: payload.audit }));
           } else if (payload.error) {
@@ -1069,17 +1131,21 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     }
   };
 
-  const setProposalStatus = async (msgId: string, pid: number, status: string) => {
+  const setProposalStatus = async (msgId: string, pid: number, status: string, note?: string) => {
     if (!projectId) return;
     setMsgs(prev => prev.map(x => x.id !== msgId || !x.plan ? x : {
       ...x,
-      plan: { ...x.plan, proposals: (x.plan.proposals || []).map(p => p.id === pid ? { ...p, status } : p) },
+      plan: {
+        ...x.plan,
+        proposals: (x.plan.proposals || []).map(p => p.id === pid
+          ? { ...p, status, ...(note ? { review_note: note } : {}) } : p),
+      },
     }));
     try {
       await fetch(`${getApiBase()}/api/ai/argos/agent/proposals/${pid}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, status }),
+        body: JSON.stringify({ projectId, status, note }),
       });
     } catch { /* ottimistico; un refresh riallinea */ }
   };
@@ -1444,7 +1510,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             key={x.id}
             msg={x}
             busy={loading}
-            onProposalStatus={(pid, status) => setProposalStatus(x.id, pid, status)}
+            onProposalStatus={(pid, status, note) => setProposalStatus(x.id, pid, status, note)}
             onApplyProposal={p => x.plan && applyProposal(x.id, x.plan.id, p)}
             onUndoRun={() => x.plan && undoRun(x.id, x.plan.id)}
             undoing={undoingRunId !== null && undoingRunId === x.plan?.id}

@@ -767,7 +767,7 @@ router.get("/ai/argos/agent/runs/:id", async (req, res) => {
 
 // POST /api/ai/argos/agent/proposals/:id { projectId, status } → revisione umana
 router.post("/ai/argos/agent/proposals/:id", async (req, res) => {
-  const { projectId, status } = req.body as { projectId?: string; status?: string };
+  const { projectId, status, note } = req.body as { projectId?: string; status?: string; note?: string };
   const userId = await requireProjectMember(req, res, String(projectId || ""));
   if (!userId) return;
   const proposalId = String(req.params.id || "");
@@ -783,7 +783,8 @@ router.post("/ai/argos/agent/proposals/:id", async (req, res) => {
     const upstream = await fetch(`${ARGOS_URL}/agent/proposals/${proposalId}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ status, project_id: projectId }),
+      // note (di norma sul rifiuto): diventa una lezione per i turni futuri.
+      body: JSON.stringify({ status, project_id: projectId, note: note || undefined }),
       signal: AbortSignal.timeout(15000),
     });
     const data = await upstream.json().catch(() => ({}));
