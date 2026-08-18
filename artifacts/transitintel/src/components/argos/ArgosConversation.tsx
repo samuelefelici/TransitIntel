@@ -50,6 +50,9 @@ type Proposal = {
   status: string;
   /** Motivo del rifiuto (lezione per i turni futuri dell'agente). */
   review_note?: string | null;
+  /** gia_presente: stato scritto in un turno PRECEDENTE, qui solo verificato —
+   *  la card nasce chiusa («Già a terra»), niente bottone Applica. */
+  target?: { gia_presente?: boolean } | null;
 };
 
 /** Revisione indipendente: il secondo occhio sul piano, prima dell'utente. */
@@ -625,7 +628,7 @@ function ProposalCard({ p, busy, undone, onStatus, onApply }: {
             <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold inline-flex items-center gap-1 border ${
               undone ? "bg-zinc-800/60 text-zinc-400 border-white/5" : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
             }`}>
-              <CheckCheck className="w-3 h-3" /> {undone ? "Annullata" : "Applicata"}
+              <CheckCheck className="w-3 h-3" /> {undone ? "Annullata" : p.target?.gia_presente ? "Già a terra" : "Applicata"}
             </span>
           ) : (
             <>
@@ -1148,7 +1151,9 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       (p.line ? ` — linea ${p.line}` : "") + (p.day_type ? `, giorno-tipo ${p.day_type}` : "") +
       `.\nIntervento: ${p.detail}` +
       (p.rationale ? `\nMotivazione: ${p.rationale}` : "") +
-      `\nEsegui con i tool di scrittura, verifica l'esito col quadro orario e chiudi col resoconto.`;
+      `\nEsegui con i tool di scrittura, verifica l'esito col quadro orario e chiudi col resoconto.` +
+      `\nSe verifichi che lo stato richiesto è GIÀ interamente sul progetto (scritto in un turno precedente), ` +
+      `NON riemettere un piano-fotocopia: dillo in prosa e fermati — rigenerare duplicherebbe le corse.`;
     send(prompt, "accetta");
   };
 
