@@ -114,7 +114,15 @@ const GOAL_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
   archived: { label: "archiviato", cls: "bg-zinc-700/20 text-zinc-500 border-zinc-700/40" },
 };
 
-type AskOption = { label: string; description?: string | null };
+type AskOption = {
+  label: string;
+  description?: string | null;
+  /** Scelta tra SCENARI di orario: i numeri di ti_quick_estimate per questo
+   *  scenario — la domanda diventa una card comparativa, non prosa. */
+  stima?: { vetture?: number; oreServizio?: number; oreVettura?: number; corse?: number } | null;
+  /** Al massimo una: lo scenario che l'agente consiglia (perché nella description). */
+  consigliata?: boolean;
+};
 type Ask = { question: string; options: AskOption[]; multi?: boolean; answered?: string[] };
 
 type ToolCall = { name: string; args?: Record<string, any> };
@@ -278,7 +286,16 @@ function planToMarkdown(plan: Plan): string {
 
 /** La domanda come testo (per lo storico persistente). */
 function askToText(ask: Ask): string {
-  const opts = (ask.options || []).map(o => `· ${o.label}${o.description ? ` — ${o.description}` : ""}`).join("\n");
+  const opts = (ask.options || []).map(o => {
+    const st = o.stima
+      ? " [" + [
+          o.stima.vetture != null ? `${o.stima.vetture} vetture` : "",
+          o.stima.oreServizio != null ? `${o.stima.oreServizio} h servizio` : "",
+          o.stima.corse != null ? `${o.stima.corse} corse` : "",
+        ].filter(Boolean).join(" · ") + "]"
+      : "";
+    return `· ${o.label}${o.consigliata ? " ★" : ""}${st}${o.description ? ` — ${o.description}` : ""}`;
+  }).join("\n");
   return `\n\n❓ **${ask.question}**\n${opts}`;
 }
 
@@ -388,8 +405,31 @@ function AskCard({ ask, disabled, onAnswer, onOther }: {
             >
               <span className="font-bold flex items-center gap-1.5">
                 {chosen && <Check className="w-3 h-3 shrink-0" />}{o.label}
+                {o.consigliata && (
+                  <span className="ml-auto shrink-0 px-1.5 py-px rounded-full text-[9px] font-bold uppercase tracking-wide bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                    Consigliata
+                  </span>
+                )}
               </span>
               {o.description && <span className="block text-[10.5px] opacity-75 mt-0.5">{o.description}</span>}
+              {/* Card comparativa: i numeri dello scenario (ti_quick_estimate),
+                  così la scelta si fa sui fatti, non sulla prosa. */}
+              {o.stima && (
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-[10.5px] tabular-nums">
+                  {o.stima.vetture != null && (
+                    <span className="font-bold text-sky-200">🚌 {o.stima.vetture} vetture</span>
+                  )}
+                  {o.stima.oreServizio != null && (
+                    <span className="opacity-80">{o.stima.oreServizio} h servizio</span>
+                  )}
+                  {o.stima.oreVettura != null && (
+                    <span className="opacity-80">{o.stima.oreVettura} h vettura</span>
+                  )}
+                  {o.stima.corse != null && (
+                    <span className="opacity-80">{o.stima.corse} corse</span>
+                  )}
+                </span>
+              )}
             </button>
           );
         })}
