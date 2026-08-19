@@ -437,6 +437,15 @@ export default function PlanningStudioEditorPage() {
 
   const [openRouteId, setOpenRouteId] = useState<string | null>(null);
   const [editor, setEditor] = useState<VariantEditorState | null>(null);
+  // Stato editor sempre fresco per i gestori che vivono in chiusure vecchie
+  // (click mappa) o che si susseguono più veloci del render: senza, due click
+  // ravvicinati partivano dallo stesso stato e il secondo cancellava il primo.
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
+  // Numerazione delle chiamate di snap: la risposta di una richiesta VECCHIA
+  // (OSRM lento) non deve sovrascrivere il tracciato di una più recente —
+  // era il «cancello le fermate ma il percorso non si aggiorna».
+  const snapSeqRef = useRef(0);
   // Ancora di inserimento: se ≠ null, la prossima fermata cliccata viene inserita
   // PRIMA o DOPO questo indice della sequenza (invece che in coda), secondo
   // insertSide. Con "dopo" l'ancora avanza sulla fermata appena inserita (i
@@ -444,6 +453,15 @@ export default function PlanningStudioEditorPage() {
   // fermata di riferimento (i click entrano in ordine, tutti prima di lei).
   const [insertAfterIdx, setInsertAfterIdx] = useState<number | null>(null);
   const [insertSide, setInsertSide] = useState<"before" | "after">("after");
+  // Ref sempre freschi: il click sulla mappa arriva da un useCallback che non
+  // si ricrea quando cambiano ancora/lato (e su click rapidi lo stato del
+  // render è già vecchio) — leggere dai ref evita che una fermata finisca in
+  // coda ignorando il riferimento appena scelto, o che un click perda il
+  // precedente.
+  const insertAfterIdxRef = useRef(insertAfterIdx);
+  insertAfterIdxRef.current = insertAfterIdx;
+  const insertSideRef = useRef(insertSide);
+  insertSideRef.current = insertSide;
   // Timestamp dell'ultimo salvataggio riuscito della variante (conferma visiva).
   const [variantSavedAt, setVariantSavedAt] = useState<number | null>(null);
   // ── Annulla (editor variante): snapshot di stops+waypoints prima di ogni modifica ──
@@ -1347,6 +1365,7 @@ export default function PlanningStudioEditorPage() {
    * (corsie riservate/varchi che OSRM non conosce). Le zone vietate del
    * progetto vengono verificate server-side → violazioni segnalate. */
   async function recomputeShape(wpts: PsWaypoint[], mode: "driving" | "manual", curbOverride?: boolean) {
+    const seq = ++snapSeqRef.current;
     if (wpts.length < 2) {
       setEditor(prev => prev ? { ...prev, geometry: null, distanceM: 0, durationS: 0, legDistances: null, violations: [], dirty: true } : prev);
       return;
@@ -1357,13 +1376,14 @@ export default function PlanningStudioEditorPage() {
       // Segmento i (tra waypoint i e i+1) manuale se uno dei due estremi è manuale.
       const modes = wpts.slice(0, -1).map((w, i) =>
         (mode === "manual" || w.mode === "manual" || wpts[i + 1].mode === "manual") ? "manual" as const : "driving" as const);
-      const curb = curbOverride ?? editor?.curb ?? false;
+      const curb = curbOverride ?? editorRef.current?.curb ?? false;
       const r = await routeSnap(points, mode, {
         modes,
         curb,
         curbMask: wpts.map(w => !!w.stopId), // curb solo alle fermate, i via liberi restano liberi
         projectId,
       });
+      if (seq !== snapSeqRef.current) return; // è già partito un ricalcolo più recente
       setEditor(prev => prev ? {
         ...prev,
         geometry: r.geometry,
@@ -1409,8 +1429,9 @@ export default function PlanningStudioEditorPage() {
   /* ─── Annulla (editor variante) ─── */
   /** Snapshot per l'Annulla: chiamare PRIMA di modificare stops/waypoints. */
   function pushEditorHistory() {
-    if (!editor) return;
-    const snap = { stops: editor.stops, waypoints: editor.waypoints };
+    const cur = editorRef.current; // ref: vale anche dalle chiusure stantie del click mappa
+    if (!cur) return;
+    const snap = { stops: cur.stops, waypoints: cur.waypoints };
     setEditorHistory(h => [...h.slice(-29), snap]); // max 30 passi
   }
 
@@ -1619,9 +1640,16 @@ export default function PlanningStudioEditorPage() {
     recomputeShape(editor.waypoints, mode);
   }
 
-  /* ─── Variant editor: stops sequence ─── */
+  /* ─── Variant editor: stops sequence ───
+   * Legge TUTTO dai ref: il click sulla mappa arriva da un useCallback che non
+   * si ricrea quando cambia l'ancora (la fermata finiva in coda ignorando il
+   * «prima» appena scelto), e due click ravvicinati partivano dallo stesso
+   * stato perdendo il primo. */
   function addStopToSequence(stop: PsStop) {
-    if (!editor) return;
+    const cur = editorRef.current;
+    if (!cur) return;
+    const anchorIdx = insertAfterIdxRef.current;
+    const side = insertSideRef.current;
     pushEditorHistory();
     const vs: PsVariantStop = {
       seq: 0, // rinumerato sotto
@@ -1632,10 +1660,10 @@ export default function PlanningStudioEditorPage() {
       pickupType: 0, dropOffType: 0, timepoint: 1,
     };
     // Punto di inserimento: prima o dopo l'ancora se attiva, altrimenti in coda.
-    const at = insertAfterIdx != null
-      ? Math.min(insertSide === "before" ? insertAfterIdx : insertAfterIdx + 1, editor.stops.length)
-      : editor.stops.length;
-    const stopsList = [...editor.stops];
+    const at = anchorIdx != null
+      ? Math.min(side === "before" ? anchorIdx : anchorIdx + 1, cur.stops.length)
+      : cur.stops.length;
+    const stopsList = [...cur.stops];
     stopsList.splice(at, 0, vs);
     const renum = stopsList.map((s, i) => ({ ...s, seq: i + 1 }));
 
@@ -1643,27 +1671,33 @@ export default function PlanningStudioEditorPage() {
     // PRIMA o DOPO secondo il lato scelto, così lo shape segue la sequenza.
     const newWpt: PsWaypoint = {
       lng: stop.lon, lat: stop.lat, stopId: stop.id,
-      mode: editor.shapeMode === "manual" ? "manual" : "snap",
+      mode: cur.shapeMode === "manual" ? "manual" : "snap",
     };
-    const wpts = [...editor.waypoints];
+    const wpts = [...cur.waypoints];
     let wAt = wpts.length;
-    if (insertAfterIdx != null && insertAfterIdx >= 0 && insertAfterIdx < editor.stops.length) {
-      const anchorStopId = editor.stops[insertAfterIdx].stopId;
+    if (anchorIdx != null && anchorIdx >= 0 && anchorIdx < cur.stops.length) {
+      const anchorStopId = cur.stops[anchorIdx].stopId;
       const wIdx = wpts.findIndex(w => w.stopId === anchorStopId);
-      if (wIdx >= 0) wAt = insertSide === "before" ? wIdx : wIdx + 1;
+      if (wIdx >= 0) wAt = side === "before" ? wIdx : wIdx + 1;
     }
     wpts.splice(wAt, 0, newWpt);
 
     // UN SOLO setEditor: prima c'erano due update con stato stale e il secondo
     // (waypoints) sovrascriveva il primo → la fermata non entrava in sequenza.
-    setEditor({ ...editor, stops: renum, waypoints: wpts, dirty: true });
-    if (insertAfterIdx != null) {
+    // I ref si aggiornano SUBITO (non al prossimo render): un secondo click
+    // immediato deve partire da questo stato, non da quello di prima.
+    const next = { ...cur, stops: renum, waypoints: wpts, dirty: true };
+    editorRef.current = next;
+    setEditor(next);
+    if (anchorIdx != null) {
       // "dopo": l'ancora avanza sulla fermata inserita → i click successivi in ordine.
       // "prima": l'ancora resta sul riferimento (slittato di 1) → i click
       // successivi entrano in ordine, tutti prima di lei.
-      setInsertAfterIdx(insertSide === "before" ? at + 1 : at);
+      const nextAnchor = side === "before" ? at + 1 : at;
+      insertAfterIdxRef.current = nextAnchor;
+      setInsertAfterIdx(nextAnchor);
     }
-    recomputeShape(wpts, editor.shapeMode);
+    recomputeShape(wpts, cur.shapeMode);
   }
 
   function moveStopInSequence(from: number, to: number) {
@@ -1828,7 +1862,9 @@ export default function PlanningStudioEditorPage() {
    * risolverebbe diversamente (prima il rilascio ricalcolava TUTTO il
    * percorso e la deviazione di un tratto spostava anche gli altri). */
   async function insertViaLocally(insertIdx: number, via: [number, number]) {
+    const editor = editorRef.current; // stato fresco + niente clobber da chiusure vecchie
     if (!editor) return;
+    const seq = ++snapSeqRef.current; // invalida gli snap in volo: vince questa modifica
     pushEditorHistory();
     const A = editor.waypoints[insertIdx - 1], B = editor.waypoints[insertIdx];
     const newWpt: PsWaypoint = { lng: via[0], lat: via[1], mode: editor.shapeMode === "manual" ? "manual" : "snap" };
@@ -1851,6 +1887,7 @@ export default function PlanningStudioEditorPage() {
         curbMask: [!!A.stopId, false, !!B.stopId],
         projectId,
       });
+      if (seq !== snapSeqRef.current) return; // nel frattempo è partita una modifica più recente
       const legCoords = (r.geometry?.coordinates ?? []) as [number, number][];
       if (legCoords.length < 2) throw new Error("nessuna geometria dal tratto");
       // Confini del tratto sul tracciato esistente (proiezione monotona).
@@ -1874,7 +1911,7 @@ export default function PlanningStudioEditorPage() {
       }
       const seenZones = new Set((editor.violations ?? []).map(v => v.zoneId));
       const violations = [...(editor.violations ?? []), ...(r.violations ?? []).filter(v => !seenZones.has(v.zoneId))];
-      setEditor({
+      const nextState: VariantEditorState = {
         ...editor,
         waypoints: wpts,
         geometry: { type: "LineString", coordinates: merged },
@@ -1883,7 +1920,9 @@ export default function PlanningStudioEditorPage() {
         legDistances: legs,
         violations,
         dirty: true,
-      });
+      };
+      editorRef.current = nextState;
+      setEditor(nextState);
       if ((r.violations ?? []).length > 0) {
         toast.warning(`La deviazione attraversa ${r.violations!.length} zona/e vietata/e`, {
           description: r.violations!.map(v => v.name).join(", "),
