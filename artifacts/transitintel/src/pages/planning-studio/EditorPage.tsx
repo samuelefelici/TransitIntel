@@ -1088,13 +1088,22 @@ export default function PlanningStudioEditorPage() {
   // preview_route) disegna invece il percorso PROPOSTO, tratteggiato, prima
   // che esista: si dissolve da sola quando la creazione vera arriva.
   // Best-effort: un fallimento qui non deve disturbare l'editor.
-  const [argosGhost, setArgosGhost] = useState<{ label: string; stopIds: string[] } | null>(null);
+  const [argosGhost, setArgosGhost] = useState<{
+    label: string; stopIds: string[];
+    /** tracciato SU STRADA dallo stesso snap OSRM della creazione (con zone vietate) */
+    geometry?: [number, number][] | null;
+    distanceM?: number | null;
+    violations?: { zoneId: string; name: string }[];
+    snapping?: boolean;
+    snapFailed?: boolean;
+  } | null>(null);
   useEffect(() => {
     const onLive = (e: Event) => {
       const d = (e as CustomEvent<any>).detail;
       if (!d?.ok || !projectId) return;
       if (d.ghost?.stopIds?.length >= 2) {
-        setArgosGhost({ label: String(d.ghost.label || "percorso proposto"), stopIds: d.ghost.stopIds.map(String) });
+        setArgosGhost({ label: String(d.ghost.label || "percorso proposto"),
+                        stopIds: d.ghost.stopIds.map(String), snapping: true });
         return;
       }
       const created = d.created || {};
@@ -1118,21 +1127,60 @@ export default function PlanningStudioEditorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
-  // Il tracciato del fantasma: la polilinea fermata→fermata della sequenza
-  // proposta (dritta, senza snap stradale: è un'anteprima onesta, il tracciato
-  // vero lo calcola la creazione). Ordine = ordine di percorrenza.
+  // Il tracciato del fantasma. Appena arriva, la sequenza viene SNAPPATA su
+  // strada con lo STESSO motore della creazione (routeSnap OSRM + zone
+  // vietate del progetto): l'anteprima mostra gli assi stradali VERI che la
+  // creazione produrrebbe, non i segmenti dritti fermata→fermata — quelli
+  // restano solo come ripiego mentre lo snap calcola o se fallisce.
+  useEffect(() => {
+    if (!argosGhost || !argosGhost.snapping) return;
+    const key = argosGhost.stopIds.join(",");
+    const byId: Record<string, PsStop> = {};
+    for (const s of stops) byId[s.id] = s;
+    const pts = argosGhost.stopIds
+      .map(id => byId[id])
+      .filter((s): s is PsStop => !!s)
+      .map(s => [s.lon, s.lat] as [number, number]);
+    if (pts.length < 2) {
+      setArgosGhost(prev => prev && prev.stopIds.join(",") === key
+        ? { ...prev, snapping: false, snapFailed: true } : prev);
+      return;
+    }
+    void (async () => {
+      try {
+        const r = await routeSnap(pts, "driving", {
+          curb: true,
+          curbMask: pts.map(() => true), // sono tutte fermate: arrivo lato marciapiede
+          projectId,                     // attiva il check delle zone vietate ai bus
+        });
+        setArgosGhost(prev => prev && prev.stopIds.join(",") === key
+          ? { ...prev, snapping: false, geometry: r.geometry?.coordinates ?? null,
+              distanceM: r.distanceM ?? null, violations: r.violations ?? [] }
+          : prev);
+      } catch {
+        setArgosGhost(prev => prev && prev.stopIds.join(",") === key
+          ? { ...prev, snapping: false, snapFailed: true } : prev);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [argosGhost?.snapping, argosGhost?.stopIds.join(",")]);
+
   const argosGhostGeoJSON = useMemo(() => {
     if (!argosGhost) return null;
     // NB: qui `Map` è il componente Mapbox — anagrafica come record semplice.
     const byId: Record<string, PsStop> = {};
     for (const s of stops) byId[s.id] = s;
-    const coords = argosGhost.stopIds
+    const straight = argosGhost.stopIds
       .map(id => byId[id])
       .filter((s): s is PsStop => !!s)
       .map(s => [s.lon, s.lat] as [number, number]);
+    const coords = (argosGhost.geometry && argosGhost.geometry.length >= 2)
+      ? argosGhost.geometry
+      : straight;
     if (coords.length < 2) return null;
     return {
       coords,
+      snapped: !!(argosGhost.geometry && argosGhost.geometry.length >= 2),
       fc: {
         type: "FeatureCollection" as const,
         features: [{ type: "Feature" as const, properties: {},
@@ -2204,8 +2252,23 @@ export default function PlanningStudioEditorPage() {
             L'operatore decide guardando il tracciato, non la prosa della chat. */}
         {argosGhost && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-fuchsia-700/95 text-white px-4 py-2 rounded-lg shadow-xl text-xs font-medium flex items-center gap-3 backdrop-blur">
-            <span>👻 <b>Proposta di Argos</b>: {argosGhost.label} — tracciato indicativo, NON ancora creato</span>
+            <span>👻 <b>Proposta di Argos</b>: {argosGhost.label} — {
+              argosGhost.snapping ? "calcolo il tracciato su strada…"
+              : argosGhost.snapFailed ? "tracciato INDICATIVO (snap stradale non riuscito)"
+              : "tracciato su strada, NON ancora creato"
+            }</span>
             <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">{argosGhost.stopIds.length} fermate</span>
+            {argosGhost.distanceM != null && (
+              <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px] tabular-nums">
+                {(argosGhost.distanceM / 1000).toFixed(1)} km
+              </span>
+            )}
+            {(argosGhost.violations?.length ?? 0) > 0 && (
+              <span className="px-1.5 py-0.5 rounded bg-red-500/80 text-[10px] font-bold"
+                title={argosGhost.violations!.map(v => v.name).join(" · ")}>
+                ⚠ {argosGhost.violations!.length} zone vietate
+              </span>
+            )}
             <button onClick={() => setArgosGhost(null)}
               className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 text-[11px]">Nascondi</button>
           </div>
