@@ -11,11 +11,11 @@ import { Link } from "wouter";
 import {
   Map as MapIcon, ScanSearch, Bus, Activity, CalendarRange, Grid3x3, Layers,
   CircleDot, Landmark, ClipboardList, Building2, Route as RouteIcon,
-  ArrowRightLeft, History,
+  ArrowRightLeft, History, Gauge,
 } from "lucide-react";
 
 export type PsNavKey =
-  | "editor" | "network" | "trips" | "ttd" | "calendar" | "validity"
+  | "editor" | "network" | "trips" | "percorrenze" | "ttd" | "calendar" | "validity"
   | "units" | "clusters" | "zones" | "depots" | "arcs" | "intermodal"
   | "activity" | "esercizio";
 
@@ -27,6 +27,9 @@ const TABS: Array<{
   { key: "editor",    label: "Editor rete",  Icon: MapIcon,       path: "" },
   { key: "network",   label: "Ispettore",    Icon: ScanSearch,    path: "network" },
   { key: "trips",     label: "Corse",        Icon: Bus,           path: "trips" },
+  // Percorrenze: sviluppo dei tempi di percorrenza dai dati di traffico
+  // (moltiplica corsa base / ricalcola cadenza esistente).
+  { key: "percorrenze", label: "Percorrenze", Icon: Gauge,        path: "percorrenze" },
   { key: "ttd",       label: "Grafico",      Icon: Activity,      path: "ttd" },
   { key: "calendar",  label: "Calendario",   Icon: CalendarRange, path: "calendar" },
   { key: "validity",  label: "Validità",     Icon: Grid3x3,       path: "validity" },

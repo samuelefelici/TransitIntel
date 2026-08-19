@@ -91,6 +91,7 @@ const PlanningStudioValidityUnitsPage = lazyWithRetry(() => import("@/pages/plan
 const PlanningStudioCalendarProfilePage = lazyWithRetry(() => import("@/pages/planning-studio/CalendarProfilePage"));
 const PlanningStudioOperationalBoardPage = lazyWithRetry(() => import("@/pages/planning-studio/OperationalBoardPage"));
 const PlanningStudioTtdPage = lazyWithRetry(() => import("@/pages/planning-studio/TtdPage"));
+const PlanningStudioPercorrenzePage = lazyWithRetry(() => import("@/pages/planning-studio/PercorrenzePage"));
 const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-studio/ZonesPage"));
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
@@ -226,6 +227,9 @@ function Router() {
             </Route>
             <Route path="/planning-studio/:id/ttd">
               <Gated perm="network"><PlanningStudioTtdPage /></Gated>
+            </Route>
+            <Route path="/planning-studio/:id/percorrenze">
+              <Gated perm="network"><PlanningStudioPercorrenzePage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/zones">
               <Gated perm="network"><PlanningStudioZonesPage /></Gated>
