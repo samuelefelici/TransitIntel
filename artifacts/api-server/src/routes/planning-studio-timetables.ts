@@ -246,6 +246,7 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
     const rowsQ = await db.execute<any>(sql.raw(`
       SELECT t.id AS trip_id, COALESCE(t.headsign, v.headsign) AS headsign, t.direction,
              t.attributes AS attributes,
+             v.code AS variant_code,
              st.stop_id, st.stop_seq, st.departure_time, st.arrival_time,
              s.name AS stop_name
       FROM ps_trips t
@@ -259,11 +260,11 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       ORDER BY t.id, st.stop_seq
     `));
 
-    interface TripRow { tripId: string; headsign: string | null; directionId: number | null; attributes: any; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
+    interface TripRow { tripId: string; headsign: string | null; directionId: number | null; variantCode: string | null; attributes: any; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
     const trips = new Map<string, TripRow>();
     for (const r of rowsQ.rows as any[]) {
       let t = trips.get(r.trip_id);
-      if (!t) { t = { tripId: r.trip_id, headsign: r.headsign, directionId: r.direction, attributes: r.attributes ?? {}, stops: [] }; trips.set(r.trip_id, t); }
+      if (!t) { t = { tripId: r.trip_id, headsign: r.headsign, directionId: r.direction, variantCode: r.variant_code ?? null, attributes: r.attributes ?? {}, stops: [] }; trips.set(r.trip_id, t); }
       t.stops.push({ stopId: r.stop_id, stopName: r.stop_name, time: (r.departure_time ?? r.arrival_time ?? null) });
     }
 
@@ -340,6 +341,9 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
         const timeBy = new Map(t.stops.map((s2) => [s2.stopId, s2.time]));
         return {
           tripId: t.tripId, headsign: t.headsign, directionId: t.directionId,
+          // Il CODICE PERCORSO della variante segue la corsa: serve alle viste
+          // (elenco corse, locandine) e ad Argos per ragionare per percorso.
+          variantCode: t.variantCode,
           firstTime: t.stops.find((s2) => s2.time)?.time ?? "99:99:99",
           times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
           dayTypeCodes: dayCodesByTrip.get(t.tripId) ?? [],
