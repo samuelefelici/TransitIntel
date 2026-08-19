@@ -438,8 +438,12 @@ export default function PlanningStudioEditorPage() {
   const [openRouteId, setOpenRouteId] = useState<string | null>(null);
   const [editor, setEditor] = useState<VariantEditorState | null>(null);
   // Ancora di inserimento: se ≠ null, la prossima fermata cliccata viene inserita
-  // DOPO questo indice della sequenza (invece che in coda), e l'ancora avanza.
+  // PRIMA o DOPO questo indice della sequenza (invece che in coda), secondo
+  // insertSide. Con "dopo" l'ancora avanza sulla fermata appena inserita (i
+  // click successivi entrano in ordine); con "prima" l'ancora resta sulla
+  // fermata di riferimento (i click entrano in ordine, tutti prima di lei).
   const [insertAfterIdx, setInsertAfterIdx] = useState<number | null>(null);
+  const [insertSide, setInsertSide] = useState<"before" | "after">("after");
   // Timestamp dell'ultimo salvataggio riuscito della variante (conferma visiva).
   const [variantSavedAt, setVariantSavedAt] = useState<number | null>(null);
   // ── Annulla (editor variante): snapshot di stops+waypoints prima di ogni modifica ──
@@ -1627,16 +1631,16 @@ export default function PlanningStudioEditorPage() {
       lat: stop.lat, lon: stop.lon,
       pickupType: 0, dropOffType: 0, timepoint: 1,
     };
-    // Punto di inserimento: dopo l'ancora se attiva, altrimenti in coda.
+    // Punto di inserimento: prima o dopo l'ancora se attiva, altrimenti in coda.
     const at = insertAfterIdx != null
-      ? Math.min(insertAfterIdx + 1, editor.stops.length)
+      ? Math.min(insertSide === "before" ? insertAfterIdx : insertAfterIdx + 1, editor.stops.length)
       : editor.stops.length;
     const stopsList = [...editor.stops];
     stopsList.splice(at, 0, vs);
     const renum = stopsList.map((s, i) => ({ ...s, seq: i + 1 }));
 
-    // Waypoint corrispondente: se inseriamo dopo un'ancora, mettiamo il waypoint
-    // subito dopo quello della fermata-ancora così lo shape segue la sequenza.
+    // Waypoint corrispondente: rispetto al waypoint della fermata-ancora va
+    // PRIMA o DOPO secondo il lato scelto, così lo shape segue la sequenza.
     const newWpt: PsWaypoint = {
       lng: stop.lon, lat: stop.lat, stopId: stop.id,
       mode: editor.shapeMode === "manual" ? "manual" : "snap",
@@ -1646,14 +1650,19 @@ export default function PlanningStudioEditorPage() {
     if (insertAfterIdx != null && insertAfterIdx >= 0 && insertAfterIdx < editor.stops.length) {
       const anchorStopId = editor.stops[insertAfterIdx].stopId;
       const wIdx = wpts.findIndex(w => w.stopId === anchorStopId);
-      if (wIdx >= 0) wAt = wIdx + 1;
+      if (wIdx >= 0) wAt = insertSide === "before" ? wIdx : wIdx + 1;
     }
     wpts.splice(wAt, 0, newWpt);
 
     // UN SOLO setEditor: prima c'erano due update con stato stale e il secondo
     // (waypoints) sovrascriveva il primo → la fermata non entrava in sequenza.
     setEditor({ ...editor, stops: renum, waypoints: wpts, dirty: true });
-    if (insertAfterIdx != null) setInsertAfterIdx(at); // l'ancora avanza: i click successivi inseriscono in ordine
+    if (insertAfterIdx != null) {
+      // "dopo": l'ancora avanza sulla fermata inserita → i click successivi in ordine.
+      // "prima": l'ancora resta sul riferimento (slittato di 1) → i click
+      // successivi entrano in ordine, tutti prima di lei.
+      setInsertAfterIdx(insertSide === "before" ? at + 1 : at);
+    }
     recomputeShape(wpts, editor.shapeMode);
   }
 
@@ -3422,6 +3431,8 @@ export default function PlanningStudioEditorPage() {
                 onClear={clearSequence}
                 insertAfterIdx={insertAfterIdx}
                 onSetInsertAfter={setInsertAfterIdx}
+                insertSide={insertSide}
+                onSetInsertSide={setInsertSide}
                 onFlyToStop={(s) => mapRef.current?.flyTo({ center: [s.lon, s.lat], zoom: 16, duration: 600 })}
                 onToggleCurb={toggleCurb}
                 onUndo={undoEditor}
@@ -4965,7 +4976,8 @@ function ClustersPanel({
 function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
-  insertAfterIdx, onSetInsertAfter, onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
+  insertAfterIdx, onSetInsertAfter, insertSide, onSetInsertSide,
+  onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -4980,6 +4992,8 @@ function VariantEditorPanel({
   onClear: () => void;
   insertAfterIdx: number | null;
   onSetInsertAfter: (idx: number | null) => void;
+  insertSide: "before" | "after";
+  onSetInsertSide: (side: "before" | "after") => void;
   onFlyToStop: (s: PsVariantStop) => void;
   onToggleCurb: () => void;
   onUndo: () => void;
@@ -5131,7 +5145,21 @@ function VariantEditorPanel({
         {insertAfterIdx != null && (
           <div className="flex items-center justify-between gap-2 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
             <span className="text-[10px] text-emerald-300">
-              ⤵ Inserimento attivo: le prossime fermate cliccate entrano <strong>dopo la n. {insertAfterIdx + 1}</strong>
+              {insertSide === "before" ? "⤴" : "⤵"} Inserimento attivo: le prossime fermate entrano
+              {" "}
+              <span className="inline-flex rounded border border-emerald-500/50 overflow-hidden align-middle">
+                <button onClick={() => onSetInsertSide("before")}
+                  title="Le prossime fermate entrano PRIMA del riferimento"
+                  className={`px-1.5 py-0.5 ${insertSide === "before" ? "bg-emerald-600 text-white font-semibold" : "text-emerald-300 hover:bg-emerald-500/20"}`}>
+                  prima
+                </button>
+                <button onClick={() => onSetInsertSide("after")}
+                  title="Le prossime fermate entrano DOPO il riferimento"
+                  className={`px-1.5 py-0.5 ${insertSide === "after" ? "bg-emerald-600 text-white font-semibold" : "text-emerald-300 hover:bg-emerald-500/20"}`}>
+                  dopo
+                </button>
+              </span>
+              {" "}<strong>la n. {insertAfterIdx + 1}</strong>
             </span>
             <button onClick={() => onSetInsertAfter(null)} className="text-[10px] text-emerald-300 hover:text-emerald-100 underline shrink-0">torna in coda</button>
           </div>
@@ -5158,7 +5186,8 @@ function VariantEditorPanel({
               className={`group flex items-center gap-1.5 rounded px-2 py-1.5 border cursor-move transition ${
                 dragIdx === idx ? "border-emerald-500 bg-emerald-500/10"
                 : selIdx.has(idx) ? "border-rose-500/50 bg-rose-500/10"
-                : insertAfterIdx === idx ? "border-emerald-500/60 bg-emerald-500/5 border-b-2 border-b-emerald-400"
+                : insertAfterIdx === idx
+                  ? `border-emerald-500/60 bg-emerald-500/5 ${insertSide === "before" ? "border-t-2 border-t-emerald-400" : "border-b-2 border-b-emerald-400"}`
                 : "border-slate-800 bg-slate-900/40 hover:border-slate-700"
               }`}
             >
@@ -5174,9 +5203,20 @@ function VariantEditorPanel({
                 {idx === 0 ? "0 m" : cumDistM[idx] >= 1000 ? `${(cumDistM[idx] / 1000).toFixed(1)} km` : `${Math.round(cumDistM[idx])} m`}
               </span>
               <span className={`items-center shrink-0 ${insertAfterIdx === idx ? "flex" : "hidden group-hover:flex"}`}>
-                <button onClick={() => onSetInsertAfter(insertAfterIdx === idx ? null : idx)}
-                  className={`p-0.5 ${insertAfterIdx === idx ? "text-emerald-300" : "text-slate-500 hover:text-emerald-300"}`}
-                  title={insertAfterIdx === idx ? "Disattiva inserimento qui (torna in coda)" : "Inserisci le prossime fermate DOPO questa"}>
+                <button onClick={() => {
+                    if (insertAfterIdx === idx && insertSide === "before") { onSetInsertAfter(null); return; }
+                    onSetInsertSide("before"); onSetInsertAfter(idx);
+                  }}
+                  className={`p-0.5 ${insertAfterIdx === idx && insertSide === "before" ? "text-emerald-300" : "text-slate-500 hover:text-emerald-300"}`}
+                  title={insertAfterIdx === idx && insertSide === "before" ? "Disattiva inserimento qui (torna in coda)" : "Inserisci le prossime fermate PRIMA di questa"}>
+                  ⤴
+                </button>
+                <button onClick={() => {
+                    if (insertAfterIdx === idx && insertSide === "after") { onSetInsertAfter(null); return; }
+                    onSetInsertSide("after"); onSetInsertAfter(idx);
+                  }}
+                  className={`p-0.5 ${insertAfterIdx === idx && insertSide === "after" ? "text-emerald-300" : "text-slate-500 hover:text-emerald-300"}`}
+                  title={insertAfterIdx === idx && insertSide === "after" ? "Disattiva inserimento qui (torna in coda)" : "Inserisci le prossime fermate DOPO questa"}>
                   ⤵
                 </button>
                 <button onClick={() => idx > 0 && onMoveStop(idx, idx - 1)} disabled={idx === 0}
