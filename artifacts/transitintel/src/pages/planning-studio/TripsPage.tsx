@@ -39,6 +39,7 @@ import {
 import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, getPsTripsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
+import { useArgosFresh } from "@/hooks/useArgosFresh";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
  * monotona, altrimenti cumulata haversine. */
@@ -346,6 +347,9 @@ export default function PlanningStudioTripsPage() {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
+  // Regia in diretta: corse appena toccate da Argos (righe evidenziate);
+  // il rifetch dei dati lo fa ArgosLiveBridge invalidando le chiavi ["ps"].
+  const argosFresh = useArgosFresh();
 
   /* ─── Queries ─── */
   const projectQ = useQuery({
@@ -1314,6 +1318,9 @@ export default function PlanningStudioTripsPage() {
                     isSel ? "bg-amber-500/5" : ""
                   } ${t.attributes?.prototype ? (t.attributes?.prototypeReady ? "bg-violet-500/10" : "bg-amber-500/10") : ""} ${!effActive(t) ? "opacity-50" : ""} ${
                     pendingOps.has(t.id) ? "ring-1 ring-inset ring-sky-500/40 bg-sky-500/5" : ""
+                  } ${
+                    // Regia in diretta: la corsa è stata appena toccata da Argos
+                    argosFresh.trips.has(t.id) ? "ring-1 ring-inset ring-violet-400/60 bg-violet-500/10 animate-pulse" : ""
                   }`}>
                     <td className="p-2">
                       <input type="checkbox" checked={isSel} onChange={() => toggleSel(t.id)}
