@@ -10,8 +10,9 @@
  *   - hover → tooltip con corsa e orari
  *   - "Moltiplica corsa": cadenzamento da una corsa base → anteprima + creazione batch
  *   - drag orizzontale di una corsa → trasla tutti gli orari di ±N minuti (persistito)
- *   - overlay di altre varianti che condividono ≥2 fermate, proiettate sull'asse
- *     distanza tramite le fermate condivise (segmenti solo dove proiettabili)
+ *   - overlay di altre varianti proiettate sull'asse per NODO (stessa palina,
+ *     stesso cluster o stesso nome entro 150 m): l'asse unione fonde le
+ *     sequenze fermate riconoscendo anche il verso opposto (andata/ritorno)
  *
  * Tutto SVG custom, nessuna libreria grafica aggiuntiva.
  * Gli orari supportano valori > 24:00 (corse dopo mezzanotte).
@@ -283,22 +284,19 @@ export default function PlanningStudioTtdPage() {
     enabled: !!projectId && !!variantId && !!baseVariantQ.data && !!routesQ.data,
     staleTime: 60_000,
     queryFn: async () => {
-      const baseStopIds = new Set((baseVariantQ.data?.stops ?? []).map(s => s.stopId));
       const routesById = new Map((routesQ.data ?? []).map(r => [r.id, r]));
       // UNA sola chiamata bulk: la versione linea-per-linea + variante-per-
       // variante generava centinaia di richieste al mount → 429 su tutta l'API.
       const all = await listPsVariantsWithStops(projectId);
-      const out: { route: PsRoute; variant: PsVariant; stops: PsVariantStop[]; shared: number }[] = [];
+      const out: { route: PsRoute; variant: PsVariant; stops: PsVariantStop[] }[] = [];
       for (const { variant, stops } of all) {
         if (variant.id === variantId) continue;
         const route = routesById.get(variant.routeId);
         if (!route) continue;
         // NIENTE filtro: si possono accendere anche linee SENZA fermate in
-        // comune (il conteggio resta come indicatore di coincidenza).
-        const shared = stops.filter(s => baseStopIds.has(s.stopId)).length;
-        out.push({ route, variant, stops, shared });
+        // comune (il conteggio dei nodi comuni è calcolato a valle, per nodo).
+        out.push({ route, variant, stops });
       }
-      out.sort((x, y) => y.shared - x.shared);
       return out;
     },
   });
@@ -330,50 +328,127 @@ export default function PlanningStudioTtdPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overlayOn, projectId]);
 
-  /* ─── F4: asse UNIONE — con altre linee attive l'asse Y elenca TUTTE le
-     fermate (base + overlay, inserite dopo l'ultima fermata condivisa nella
-     sequenza), e le fermate COMUNI a ≥2 linee sono marcate come interscambi.
+  /* ─── Nodi: fermata → nodo. Cluster se assegnato; altrimenti le fermate con
+     lo STESSO NOME entro 150 m sono lo stesso nodo — la coppia tipica
+     andata/ritorno sui due lati della strada. Le coincidenze e l'asse unione
+     ragionano per nodo, non per palina. ─── */
+  const stopsQ = useQuery({
+    queryKey: ["ps", projectId, "stops"],
+    queryFn: () => listPsStops(projectId),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+  const nodeOfStop = useMemo(() => {
+    const m = new Map<string, string>();
+    const byName = new Map<string, { id: string; lat: number; lon: number }[]>();
+    for (const st of stopsQ.data ?? []) {
+      if (st.clusterId) { m.set(st.id, st.clusterId); continue; }
+      const key = (st.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (!key) { m.set(st.id, st.id); continue; }
+      const group = byName.get(key) ?? [];
+      const anchor = group.find(g => haversineM(g.lat, g.lon, st.lat, st.lon) <= 150);
+      if (anchor) { m.set(st.id, anchor.id); continue; }
+      group.push({ id: st.id, lat: st.lat, lon: st.lon });
+      byName.set(key, group);
+      m.set(st.id, st.id);
+    }
+    return m;
+  }, [stopsQ.data]);
+
+  /* ─── F4: asse UNIONE — con altre linee attive l'asse Y è la fusione per
+     NODO delle sequenze fermate: la base fa da spina dorsale, le fermate delle
+     altre varianti che condividono il nodo cadono sulla STESSA riga e quelle
+     nuove si inseriscono tra i nodi condivisi che le circondano. Una variante
+     percorsa in senso opposto (es. il ritorno sull'andata) viene riconosciuta
+     dall'ordine dei nodi condivisi e allineata al verso della base, non più
+     mescolata. Interscambi = nodi toccati da ≥2 LINEE diverse.
      Attivo in modalità equidistante (in "distanze reali" resta l'asse base). ─── */
   const unionAxis = useMemo(() => {
     if (!baseAxis || yMode !== "equidistante") return null;
     const activeCands = (candidatesQ.data ?? []).filter(c => overlayOn.has(c.variant.id));
     if (activeCands.length === 0) return null;
-    const order: { stopId: string; stopName: string }[] =
-      baseAxis.stops.map(s => ({ stopId: s.stopId, stopName: s.stopName }));
-    const pos = new Map<string, number>();
-    order.forEach((s2, i) => pos.set(s2.stopId, i));
-    const lineHits = new Map<string, number>();
-    for (const s2 of order) lineHits.set(s2.stopId, 1);
-    for (const cand of activeCands) {
-      const seen = new Set<string>();
-      let insertAfter = -1;
-      for (const st of cand.stops) {
-        if (pos.has(st.stopId)) {
-          insertAfter = pos.get(st.stopId)!;
-          if (!seen.has(st.stopId)) lineHits.set(st.stopId, (lineHits.get(st.stopId) ?? 1) + 1);
-        } else {
-          const at = insertAfter + 1;
-          order.splice(at, 0, { stopId: st.stopId, stopName: st.stopName });
-          pos.clear();
-          order.forEach((s3, i) => pos.set(s3.stopId, i));
-          lineHits.set(st.stopId, 1);
-          insertAfter = at;
-        }
-        seen.add(st.stopId);
-      }
+    const nodeOf = (id: string) => nodeOfStop.get(id) ?? id;
+
+    type Row = { nodeId: string; stopId: string; stopName: string };
+    const rows: Row[] = [];
+    const rowOf = new Map<string, number>();
+    const reindex = () => { rowOf.clear(); rows.forEach((r, i) => rowOf.set(r.nodeId, i)); };
+    const routesAtNode = new Map<string, Set<string>>();
+    const touch = (nodeId: string, rId: string) => {
+      const s = routesAtNode.get(nodeId) ?? new Set<string>();
+      s.add(rId); routesAtNode.set(nodeId, s);
+    };
+
+    for (const s of baseAxis.stops) {
+      const n = nodeOf(s.stopId);
+      touch(n, routeId);
+      if (rowOf.has(n)) continue;
+      rows.push({ nodeId: n, stopId: s.stopId, stopName: s.stopName });
+      rowOf.set(n, rows.length - 1);
     }
+
+    for (const cand of activeCands) {
+      // sequenza nodi della variante (nodi consecutivi ripetuti compressi)
+      const seq: Row[] = [];
+      for (const st of cand.stops) {
+        const n = nodeOf(st.stopId);
+        touch(n, cand.route.id);
+        if (seq.length === 0 || seq[seq.length - 1].nodeId !== n) {
+          seq.push({ nodeId: n, stopId: st.stopId, stopName: st.stopName });
+        }
+      }
+      // verso di percorrenza rispetto all'asse: nodi condivisi in ordine
+      // prevalentemente decrescente = variante di ritorno → si percorre la
+      // sequenza al contrario, così gli inserimenti seguono il verso base.
+      const matched = seq.map(s => rowOf.get(s.nodeId)).filter((p): p is number => p != null);
+      let asc = 0, desc = 0;
+      for (let i = 1; i < matched.length; i++) {
+        if (matched[i] > matched[i - 1]) asc++;
+        else if (matched[i] < matched[i - 1]) desc++;
+      }
+      const walk = desc > asc ? [...seq].reverse() : seq;
+      let prevRow = -1;
+      let pending: Row[] = [];
+      const flush = (at: number) => {
+        if (pending.length === 0) return;
+        rows.splice(at, 0, ...pending);
+        pending = [];
+        reindex();
+      };
+      for (const s of walk) {
+        const p = rowOf.get(s.nodeId);
+        if (p == null) { pending.push(s); continue; }
+        if (p >= prevRow) {
+          flush(p);                        // le fermate nuove entrano PRIMA del nodo condiviso
+          prevRow = rowOf.get(s.nodeId)!;  // indice aggiornato dopo lo splice
+        } else {
+          flush(prevRow + 1);              // nodo fuori sequenza: la base non si riordina
+        }
+      }
+      // coda oltre l'ultimo nodo condiviso; variante del tutto disgiunta → in fondo
+      flush(prevRow === -1 ? rows.length : prevRow + 1);
+    }
+
+    // proiezione: OGNI palina il cui nodo ha una riga cade su quella riga
+    // (il ritorno usa paline diverse ma finisce sulle stesse righe dell'andata)
     const byStop = new Map<string, number>();
-    order.forEach((s2, i) => byStop.set(s2.stopId, i));
+    rows.forEach((r, i) => byStop.set(r.stopId, i));
+    const rowOfNode = new Map<string, number>();
+    rows.forEach((r, i) => rowOfNode.set(r.nodeId, i));
+    for (const st of stopsQ.data ?? []) {
+      const i = rowOfNode.get(nodeOf(st.id));
+      if (i != null && !byStop.has(st.id)) byStop.set(st.id, i);
+    }
     const shared = new Set(
-      [...lineHits.entries()].filter(([, c2]) => c2 >= 2).map(([id]) => id),
+      rows.filter(r => (routesAtNode.get(r.nodeId)?.size ?? 0) >= 2).map(r => r.stopId),
     );
     return {
-      stops: order.map((s2, i) => ({ stopId: s2.stopId, stopName: s2.stopName, dist: i })),
+      stops: rows.map((r, i) => ({ stopId: r.stopId, stopName: r.stopName, dist: i })),
       byStop,
-      total: Math.max(1, order.length - 1),
+      total: Math.max(1, rows.length - 1),
       shared,
     };
-  }, [baseAxis, yMode, candidatesQ.data, overlayOn]);
+  }, [baseAxis, yMode, candidatesQ.data, overlayOn, nodeOfStop, stopsQ.data, routeId]);
   // Asse attivo per il disegno: unione se disponibile, altrimenti base.
   const axis = unionAxis ?? (baseAxis ? { ...baseAxis, shared: new Set<string>() } : null);
 
@@ -394,20 +469,6 @@ export default function PlanningStudioTtdPage() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void pageRef.current?.requestFullscreen();
   }
-
-  /* ─── Nodi: fermata → nodo (cluster se assegnato, altrimenti la fermata stessa).
-     Le coincidenze valgono su QUALSIASI nodo condiviso, di cambio o meno. ─── */
-  const stopsQ = useQuery({
-    queryKey: ["ps", projectId, "stops"],
-    queryFn: () => listPsStops(projectId),
-    enabled: !!projectId,
-    staleTime: 60_000,
-  });
-  const nodeOfStop = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const st of stopsQ.data ?? []) m.set(st.id, (st as any).clusterId || st.id);
-    return m;
-  }, [stopsQ.data]);
 
   /* ─── Coincidenze: parametri ─── */
   const [showConn, setShowConn] = useState(true);
@@ -998,7 +1059,22 @@ export default function PlanningStudioTtdPage() {
     return { pts, z: pts.length };
   }, [showConn, axis, baseGeoms, overlayGeoms, nodeOfStop, connMin, connMax]);
 
-  const sharedCandidates = candidatesQ.data ?? [];
+  /* Candidati ordinati per NODI in comune con la base (stessa palina, stesso
+     cluster o stesso nome entro 150 m): così l'andata/ritorno della stessa
+     linea risulta il più affine anche quando usa paline opposte. */
+  const sharedCandidates = useMemo(() => {
+    const baseNodes = new Set(
+      (baseVariantQ.data?.stops ?? []).map(s => nodeOfStop.get(s.stopId) ?? s.stopId),
+    );
+    const list = (candidatesQ.data ?? []).map(c => ({
+      ...c,
+      shared: new Set(
+        c.stops.map(s => nodeOfStop.get(s.stopId) ?? s.stopId).filter(n => baseNodes.has(n)),
+      ).size,
+    }));
+    list.sort((x, y) => y.shared - x.shared);
+    return list;
+  }, [candidatesQ.data, baseVariantQ.data, nodeOfStop]);
 
   /* ─── C4 · Sincronizzatore MULTI-LINEA: CATENA di coincidenze ordinata.
      L'operatore mette in fila le linee per ORDINE DI ARRIVO al nodo:
@@ -2040,7 +2116,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                             className="accent-cyan-500"
                           />
                           <span className="flex-1 truncate text-slate-300">{(c.variant as any).code ? `${(c.variant as any).code} · ` : ""}{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
-                          <span className="text-[10px] text-slate-500">{c.shared} ferm. comuni</span>
+                          <span className="text-[10px] text-slate-500">{c.shared} nodi comuni</span>
                         </label>
                       ))}
                     </div>
