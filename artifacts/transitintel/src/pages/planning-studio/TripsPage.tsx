@@ -1370,7 +1370,11 @@ export default function PlanningStudioTripsPage() {
                     </td>
                     <td className="p-2">
                       <div className="font-medium text-slate-200">{route?.shortName || "?"}</div>
-                      <div className="text-[10px] text-slate-500">{variant?.name || ""}</div>
+                      <div className="text-[10px] text-slate-500">
+                        {/* Il CODICE PERCORSO della variante viaggia con la corsa */}
+                        {variant?.code && <span className="font-bold text-violet-300">{variant.code}</span>}
+                        {variant?.code ? " · " : ""}{variant?.name || ""}
+                      </div>
                     </td>
                     <td className="p-2 text-slate-300">{t.headsign || variant?.headsign || "—"}</td>
                     <td className="p-2">
