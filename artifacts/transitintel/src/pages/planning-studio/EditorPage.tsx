@@ -1081,6 +1081,35 @@ export default function PlanningStudioEditorPage() {
     }
   }
 
+  // REGIA IN DIRETTA: quando l'agente Argos crea rete (evento "argos-live"
+  // dal pannello, emesso a scrittura riuscita), la mappa si aggiorna da sola:
+  // fermate e linee ricaricate, cache varianti azzerata così i percorsi nuovi
+  // compaiono senza ricaricare la pagina. Best-effort: un fallimento qui non
+  // deve disturbare l'editor.
+  useEffect(() => {
+    const onLive = (e: Event) => {
+      const d = (e as CustomEvent<any>).detail;
+      if (!d?.ok || !projectId) return;
+      const created = d.created || {};
+      if ((created.routes?.length || created.variants?.length || created.stops?.length)) {
+        void (async () => {
+          try {
+            const [s, r] = await Promise.all([listPsStops(projectId), listPsRoutes(projectId)]);
+            setStops(s);
+            setRoutes(r);
+            setRouteVariants({}); // le varianti si ricaricano alla prossima apertura
+            toast.info("Argos ha creato rete nuova", {
+              description: "Mappa aggiornata: fermate e linee ricaricate in diretta.",
+            });
+          } catch { /* best-effort */ }
+        })();
+      }
+    };
+    window.addEventListener("argos-live", onLive);
+    return () => window.removeEventListener("argos-live", onLive);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
   async function handleCreateVariant(routeId: string, name: string, direction: number): Promise<PsVariant | undefined> {
     try {
       const v = await createPsVariant(projectId, routeId, { name, direction });

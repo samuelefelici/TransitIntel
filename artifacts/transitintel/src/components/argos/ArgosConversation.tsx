@@ -812,6 +812,11 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   // Ragionamento profondo (solo Chat): Opus, più giri di tool. Opt-in: costa di più.
   const [deep, setDeep] = React.useState<boolean>(() =>
     typeof window !== "undefined" && localStorage.getItem("argos.deep") === "1");
+  // Regia in diretta: contatori vivi delle scritture del turno in corso
+  // (alimentati dagli eventi SSE tool_done, azzerati a ogni nuovo turno).
+  const [liveTurn, setLiveTurn] = React.useState<{
+    corse: number; bollini: number; eliminate: number; percorsi: number;
+  } | null>(null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const stickRef = React.useRef(true); // autoscroll solo se sei già in fondo
   const abortRef = React.useRef<AbortController | null>(null);
@@ -960,6 +965,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     setLoading(true);
+    setLiveTurn(null); // regia in diretta: i contatori ripartono col turno
     stickRef.current = true;
     const turnStartMs = Date.now();
 
@@ -1047,6 +1053,25 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
               phase: toolLabel(payload.tool.name),
               note: undefined,
             }));
+          } else if (payload.tool_done && typeof payload.tool_done.name === "string") {
+            // REGIA IN DIRETTA: una scrittura è appena riuscita. L'evento va
+            // alle schermate aperte (rifetch + evidenziazione via
+            // ArgosLiveBridge/useArgosFresh) e ai contatori vivi del turno.
+            const d = payload.tool_done;
+            if (d.ok) {
+              window.dispatchEvent(new CustomEvent("argos-live", { detail: d }));
+              setLiveTurn(prev => {
+                const c = prev ?? { corse: 0, bollini: 0, eliminate: 0, percorsi: 0 };
+                const nuoveCorse = (d.name === "ti_generate_trips" || d.name === "ti_create_trip_prototype")
+                  ? (d.count || d.tripIds?.length || 0) : 0;
+                return {
+                  corse: c.corse + nuoveCorse,
+                  bollini: c.bollini + (d.validity?.count || 0),
+                  eliminate: c.eliminate + (d.name === "ti_delete_trips" ? (d.count || 0) : 0),
+                  percorsi: c.percorsi + (d.created?.variants?.length || 0),
+                };
+              });
+            }
           } else if (payload.ask && typeof payload.ask.question === "string") {
             askForSave = payload.ask;
             patchLast(x => ({ ...x, ask: payload.ask, phase: undefined, note: undefined }));
@@ -1646,6 +1671,20 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
                 </button>
               );
             })}
+          </div>
+        )}
+        {/* Regia in diretta: cosa sta cambiando SUL PROGETTO in questo turno.
+            I numeri coincidono con l'audit di fine turno e col Registro. */}
+        {liveTurn && (liveTurn.corse > 0 || liveTurn.bollini > 0 || liveTurn.eliminate > 0 || liveTurn.percorsi > 0) && (
+          <div className="flex items-center gap-2 flex-wrap mb-1.5 px-2 py-1 rounded-lg border border-violet-400/30 bg-violet-500/10 text-[10.5px] tabular-nums">
+            <span className={`font-bold text-violet-300 ${loading ? "animate-pulse" : ""}`}>
+              {loading ? "⚡ Turno in corso" : "⚡ Turno"}
+            </span>
+            {liveTurn.percorsi > 0 && <span className="text-sky-200 font-bold">+{liveTurn.percorsi} percorsi</span>}
+            {liveTurn.corse > 0 && <span className="text-emerald-200 font-bold">+{liveTurn.corse} corse</span>}
+            {liveTurn.bollini > 0 && <span className="text-amber-200">{liveTurn.bollini} bollini</span>}
+            {liveTurn.eliminate > 0 && <span className="text-rose-200">−{liveTurn.eliminate} corse</span>}
+            <span className="ml-auto text-zinc-500">le schermate aperte si aggiornano da sole</span>
           </div>
         )}
         <form onSubmit={e => { e.preventDefault(); send(); }} className="flex items-end gap-2">

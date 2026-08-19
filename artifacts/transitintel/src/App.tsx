@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import VirgilioController from "@/components/VirgilioController";
 // VirgilioTentacles disabilitato — mantenuto solo l'highlight CSS sui target
 
@@ -414,6 +415,9 @@ function App() {
               <AuthGate />
             </WouterRouter>
             <Toaster />
+            {/* Regia in diretta: le scritture dell'agente invalidano i dati
+                di Planning Studio e le pagine aperte si aggiornano da sole. */}
+            <ArgosLiveBridge />
           </AuthProvider>
         </TooltipProvider>
       </QueryClientProvider>
