@@ -1084,14 +1084,22 @@ export default function PlanningStudioEditorPage() {
   // REGIA IN DIRETTA: quando l'agente Argos crea rete (evento "argos-live"
   // dal pannello, emesso a scrittura riuscita), la mappa si aggiorna da sola:
   // fermate e linee ricaricate, cache varianti azzerata così i percorsi nuovi
-  // compaiono senza ricaricare la pagina. Best-effort: un fallimento qui non
-  // deve disturbare l'editor.
+  // compaiono senza ricaricare la pagina. L'ANTEPRIMA FANTASMA (tool
+  // preview_route) disegna invece il percorso PROPOSTO, tratteggiato, prima
+  // che esista: si dissolve da sola quando la creazione vera arriva.
+  // Best-effort: un fallimento qui non deve disturbare l'editor.
+  const [argosGhost, setArgosGhost] = useState<{ label: string; stopIds: string[] } | null>(null);
   useEffect(() => {
     const onLive = (e: Event) => {
       const d = (e as CustomEvent<any>).detail;
       if (!d?.ok || !projectId) return;
+      if (d.ghost?.stopIds?.length >= 2) {
+        setArgosGhost({ label: String(d.ghost.label || "percorso proposto"), stopIds: d.ghost.stopIds.map(String) });
+        return;
+      }
       const created = d.created || {};
       if ((created.routes?.length || created.variants?.length || created.stops?.length)) {
+        setArgosGhost(null); // il percorso vero sta arrivando: via il fantasma
         void (async () => {
           try {
             const [s, r] = await Promise.all([listPsStops(projectId), listPsRoutes(projectId)]);
@@ -1109,6 +1117,35 @@ export default function PlanningStudioEditorPage() {
     return () => window.removeEventListener("argos-live", onLive);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // Il tracciato del fantasma: la polilinea fermata→fermata della sequenza
+  // proposta (dritta, senza snap stradale: è un'anteprima onesta, il tracciato
+  // vero lo calcola la creazione). Ordine = ordine di percorrenza.
+  const argosGhostGeoJSON = useMemo(() => {
+    if (!argosGhost) return null;
+    // NB: qui `Map` è il componente Mapbox — anagrafica come record semplice.
+    const byId: Record<string, PsStop> = {};
+    for (const s of stops) byId[s.id] = s;
+    const coords = argosGhost.stopIds
+      .map(id => byId[id])
+      .filter((s): s is PsStop => !!s)
+      .map(s => [s.lon, s.lat] as [number, number]);
+    if (coords.length < 2) return null;
+    return {
+      coords,
+      fc: {
+        type: "FeatureCollection" as const,
+        features: [{ type: "Feature" as const, properties: {},
+                     geometry: { type: "LineString" as const, coordinates: coords } }],
+      },
+    };
+  }, [argosGhost, stops]);
+
+  // All'arrivo del fantasma la mappa lo inquadra: l'operatore deve VEDERLO.
+  useEffect(() => {
+    if (argosGhostGeoJSON) fitToCoords(argosGhostGeoJSON.coords);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [argosGhost]);
 
   async function handleCreateVariant(routeId: string, name: string, direction: number): Promise<PsVariant | undefined> {
     try {
@@ -2163,6 +2200,17 @@ export default function PlanningStudioEditorPage() {
           </div>
         )}
 
+        {/* Anteprima FANTASMA: il percorso che Argos PROPONE, non ancora creato.
+            L'operatore decide guardando il tracciato, non la prosa della chat. */}
+        {argosGhost && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 bg-fuchsia-700/95 text-white px-4 py-2 rounded-lg shadow-xl text-xs font-medium flex items-center gap-3 backdrop-blur">
+            <span>👻 <b>Proposta di Argos</b>: {argosGhost.label} — tracciato indicativo, NON ancora creato</span>
+            <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">{argosGhost.stopIds.length} fermate</span>
+            <button onClick={() => setArgosGhost(null)}
+              className="px-2 py-0.5 rounded bg-white/20 hover:bg-white/30 text-[11px]">Nascondi</button>
+          </div>
+        )}
+
         {/* Banner istruzioni durante draw/stops cluster */}
         {/* Banner disegno zona vietata */}
         {zoneDraw && (
@@ -2355,6 +2403,16 @@ export default function PlanningStudioEditorPage() {
                 paint={{ "line-color": m.color, "line-width": 3, "line-opacity": 0.85 }} />
             </Source>
           ))}
+          {/* Anteprima fantasma di Argos: la sequenza proposta, tratteggiata */}
+          {argosGhostGeoJSON && (
+            <Source id="argos-ghost-src" type="geojson" data={argosGhostGeoJSON.fc as any}>
+              <Layer id="argos-ghost-casing" type="line"
+                paint={{ "line-color": "#000", "line-width": 6, "line-opacity": 0.3 }} />
+              <Layer id="argos-ghost-line" type="line"
+                paint={{ "line-color": "#e879f9", "line-width": 3.5,
+                         "line-dasharray": [2, 1.6], "line-opacity": 0.95 }} />
+            </Source>
+          )}
           {(showNoGo || !!editor || !!zoneDraw) && noGoZonesGeoJSON.features.length > 0 && (
             <Source id="ps-nogo-src" type="geojson" data={noGoZonesGeoJSON}>
               <Layer id="ps-nogo-fill" type="fill"

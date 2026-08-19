@@ -24,6 +24,8 @@ export type ArgosLiveDetail = {
     isValid: boolean; count: number;
     routeIds?: string[]; tripIds?: string[]; dayTypeCodes?: string[];
   };
+  /** Anteprima FANTASMA: percorso proposto, non ancora creato (preview_route). */
+  ghost?: { label: string; stopIds: string[] };
 };
 
 export default function ArgosLiveBridge() {
@@ -32,6 +34,7 @@ export default function ArgosLiveBridge() {
     const onLive = (e: Event) => {
       const d = (e as CustomEvent<ArgosLiveDetail>).detail;
       if (!d?.ok) return;
+      if (d.ghost) return; // anteprima: nessun dato è cambiato, niente rifetch
       // Tutte le chiavi di Planning Studio: una scrittura dell'agente può
       // toccare corse, validità, quadri e conteggi insieme — meglio un
       // rifetch largo e certo che una mappa fine e fragile di dipendenze.
