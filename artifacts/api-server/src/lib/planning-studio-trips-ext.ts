@@ -963,6 +963,117 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
   res.status(201).json({ ok: true, count: tripIds.length, tripIds, templateRemoved });
 });
 
+/* ─── RICALCOLA PERCORRENZE (traffico su cadenza ESISTENTE) ────────────────
+ * Le corse di una variante hanno già la loro cadenza: qui si RIFANNO i tempi
+ * di percorrenza in base ai dati di traffico, senza toccare le partenze.
+ * Il profilo per ARCO viene da una CORSA DI RIFERIMENTO (il profilo neutro);
+ * ogni altra corsa resta ancorata alla SUA partenza attuale e gli archi del
+ * riferimento sono scalati per il coefficiente della fascia oraria in cui il
+ * bus entra nell'arco — la stessa matematica di «genera a cadenza».
+ * La corsa di riferimento NON viene toccata: così il ricalcolo è ripetibile
+ * con coefficienti diversi senza effetti cumulativi.
+ *
+ * Body: { variantId, referenceTripId, coeffByHour: { [hour]: number },
+ *         tripIds?: uuid[] (sottoinsieme; default tutte le corse della variante) } */
+router.post("/planning-studio/projects/:id/trips/retime", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+
+  const b = req.body ?? {};
+  const variantId = String(b.variantId ?? "");
+  const referenceTripId = String(b.referenceTripId ?? "");
+  if (!UUID_RE.test(variantId)) { res.status(400).json({ error: "variantId non valido" }); return; }
+  if (!UUID_RE.test(referenceTripId)) { res.status(400).json({ error: "referenceTripId non valido" }); return; }
+  const coeffByHour: Record<number, number> = {};
+  if (b.coeffByHour && typeof b.coeffByHour === "object") {
+    for (const [h, c] of Object.entries(b.coeffByHour)) {
+      const hh = Number(h), cc = Number(c);
+      if (Number.isInteger(hh) && hh >= 0 && hh <= 30 && Number.isFinite(cc) && cc > 0.2 && cc < 5) coeffByHour[hh] = cc;
+    }
+  }
+  const onlyTripIds: string[] = (Array.isArray(b.tripIds) ? b.tripIds : [])
+    .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
+
+  // Riferimento: corsa della variante con ≥2 stop_times
+  const refTripR = await db.execute<any>(sql`
+    SELECT id FROM ps_trips
+     WHERE id = ${referenceTripId}::uuid AND project_id = ${projId}::uuid AND variant_id = ${variantId}::uuid
+     LIMIT 1`);
+  if (!refTripR.rows?.[0]) { res.status(404).json({ error: "Corsa di riferimento non trovata nella variante" }); return; }
+  const refR = await db.execute<any>(sql`
+    SELECT arrival_time, departure_time
+      FROM ps_stop_times WHERE trip_id = ${referenceTripId}::uuid ORDER BY stop_seq ASC`);
+  const refSts: any[] = refR.rows ?? [];
+  if (refSts.length < 2) { res.status(400).json({ error: "La corsa di riferimento non ha orari alle fermate" }); return; }
+  const refDep = hmsToSec(refSts[0].departure_time);
+  const relArr = refSts.map((st) => hmsToSec(st.arrival_time) - refDep);
+  const relDep = refSts.map((st) => hmsToSec(st.departure_time) - refDep);
+
+  // Corse bersaglio: la variante intera (o il sottoinsieme), MAI il riferimento
+  const targetsR = await db.execute<any>(sql`
+    SELECT t.id,
+           (SELECT count(*) FROM ps_stop_times s WHERE s.trip_id = t.id) AS n_st,
+           (SELECT s.departure_time FROM ps_stop_times s WHERE s.trip_id = t.id ORDER BY s.stop_seq ASC LIMIT 1) AS dep0
+      FROM ps_trips t
+     WHERE t.project_id = ${projId}::uuid AND t.variant_id = ${variantId}::uuid
+       AND t.id <> ${referenceTripId}::uuid
+     ORDER BY dep0 NULLS LAST`);
+  let targets: any[] = targetsR.rows ?? [];
+  if (onlyTripIds.length > 0) {
+    const wanted = new Set(onlyTripIds);
+    targets = targets.filter((t) => wanted.has(t.id));
+  }
+  if (targets.length === 0) { res.status(400).json({ error: "Nessuna corsa da ricalcolare nella variante" }); return; }
+  if (targets.length > 500) {
+    res.status(400).json({ error: `${targets.length} corse superano il limite di 500: restringi con tripIds` }); return;
+  }
+
+  const runTimes = (dep: number): { arr: number[]; dep: number[] } => {
+    const n = relArr.length;
+    const arr: number[] = new Array(n), depT: number[] = new Array(n);
+    arr[0] = dep + relArr[0];
+    depT[0] = dep + relDep[0];
+    for (let i = 1; i < n; i++) {
+      const arcSec = relArr[i] - relDep[i - 1];
+      const dwell = relDep[i] - relArr[i];
+      const c = coeffByHour[Math.floor(depT[i - 1] / 3600)] ?? 1;
+      arr[i] = depT[i - 1] + Math.round(arcSec * c);
+      depT[i] = arr[i] + dwell;
+    }
+    return { arr, dep: depT };
+  };
+
+  const doneIds: string[] = [];
+  const skippedIds: string[] = [];
+  try {
+    await db.transaction(async (tx) => {
+      for (const t of targets) {
+        // pattern diverso dal riferimento (corsa modificata a mano): non si tocca
+        if (Number(t.n_st) !== refSts.length || !t.dep0) { skippedIds.push(t.id); continue; }
+        const times = runTimes(hmsToSec(t.dep0));
+        for (let i = 0; i < refSts.length; i++) {
+          await tx.execute(sql`
+            UPDATE ps_stop_times
+               SET arrival_time = ${secToHms(times.arr[i])}, departure_time = ${secToHms(times.dep[i])}
+             WHERE trip_id = ${t.id}::uuid AND stop_seq = ${i + 1}
+          `);
+        }
+        doneIds.push(t.id);
+      }
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Ricalcolo fallito" });
+    return;
+  }
+
+  await logActivity(projId, userId, "trip.retime_traffic", "variant", variantId,
+    { count: doneIds.length, skipped: skippedIds.length, referenceTripId });
+  res.json({ ok: true, count: doneIds.length, tripIds: doneIds, skippedTripIds: skippedIds });
+});
+
 /* ─── PROTOTIPI PER I PERCORSI SENZA CORSE ─────────────────────────────────
  * Caso d'uso: import GTFS con TUTTE le corse poi cancellate (o percorsi
  * disegnati a mano). Le varianti restano senza alcuna corsa: manca il template

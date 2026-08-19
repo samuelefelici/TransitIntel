@@ -706,6 +706,21 @@ export async function generatePsTripsHeadway(projectId: string, body: {
   });
 }
 
+/** Ricalcola le PERCORRENZE delle corse esistenti di una variante dai dati di
+ * traffico: ogni corsa resta ancorata alla sua partenza attuale, gli archi
+ * della corsa di riferimento (che NON viene toccata) sono scalati per il
+ * coefficiente della fascia oraria d'ingresso. */
+export async function retimePsTripsTraffic(projectId: string, body: {
+  variantId: string;
+  referenceTripId: string;
+  coeffByHour: Record<number, number>;
+  tripIds?: string[];      // sottoinsieme; vuoto/assente = tutte le corse della variante
+}): Promise<{ ok: boolean; count: number; tripIds: string[]; skippedTripIds: string[] }> {
+  return apiFetch(`/api/planning-studio/projects/${projectId}/trips/retime`, {
+    method: "POST", body: JSON.stringify(body),
+  });
+}
+
 /* ─── Import GTFS ─── */
 
 export interface PsImportCounts {
