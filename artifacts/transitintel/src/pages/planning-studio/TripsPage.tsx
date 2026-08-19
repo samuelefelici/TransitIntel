@@ -180,13 +180,21 @@ function buildCorseListHtml(p: {
 }): string {
   const esc = (s: any) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
   const dayOn = (t: PsTrip, i: number): boolean => {
-    const mask = wdMaskOf(t, t.calendarId ? p.calWdById.get(t.calendarId) : null);
+    // Stessa semantica della validità EFFETTIVA (come rowDayOn in tabella):
+    // con la matrice presente il calendario non è un veto e i tipi-giorno
+    // senza riga NON circolano; la maschera esplicita resta un veto reale.
+    const dvRaw = p.dayValidity[t.id];
+    const dv = dvRaw && Object.keys(dvRaw).length > 0 ? dvRaw : null;
+    const w = (t.attributes as any)?.weekdays;
+    const mask = (Array.isArray(w) && w.length === 7)
+      ? w.map((x: any) => x !== false)
+      : dv ? [true, true, true, true, true, true, true]
+      : wdMaskOf(t, t.calendarId ? p.calWdById.get(t.calendarId) : null);
     if (!mask[i]) return false;
-    const dv = p.dayValidity[t.id];
     if (!dv) return true;
     const dt = p.dtKinds[wdTypicalCode(i)];
     if (!dt) return true;
-    return dv[dt.id] !== false;
+    return dv[dt.id] === true;
   };
   const dotsHtml = (t: PsTrip) => WD_LABELS_ROW
     .map((l, i) => `<span class="dot ${dayOn(t, i) ? "on" : ""}">${l}</span>`).join("");
@@ -818,21 +826,38 @@ export default function PlanningStudioTripsPage() {
   }, [calendarsQ.data]);
   const rowMask = (trip: PsTrip): boolean[] =>
     wdMaskOf(trip, trip.calendarId ? calWdById.get(trip.calendarId) : null);
-  /** Il giorno i è attivo per la corsa?
-   *  Se la Matrice di validità non ha ancora righe per la corsa (tipico dopo
-   *  un import GTFS) si mostra direttamente la circolazione settimanale
-   *  (maschera esplicita o pattern del calendario). Con la matrice popolata si
-   *  interseca tipo-giorno valido × maschera. */
+  /** Righe di matrice della corsa (null se la matrice non la conosce). */
+  const matrixOf = (tripId: string): Record<string, boolean> | null => {
+    const dv = tripsValQ.data?.dayValidity?.[tripId];
+    return dv && Object.keys(dv).length > 0 ? dv : null;
+  };
+  /** Maschera settimanale di PARTENZA (display e staging): la esplicita è un
+   *  veto reale e vince; con la MATRICE presente il pattern del calendario
+   *  NON è un veto (la validità effettiva e la materializzazione lo ignorano:
+   *  un template feriale non deve spegnere la D di corse bollinate festivo)
+   *  → tutti i giorni aperti, decide la matrice; senza matrice, il ripiego
+   *  calendario di sempre. */
+  const rowSeedMask = (trip: PsTrip): boolean[] => {
+    const w = (trip.attributes as any)?.weekdays;
+    if (Array.isArray(w) && w.length === 7) return w.map((x: any) => x !== false);
+    if (matrixOf(trip.id)) return [true, true, true, true, true, true, true];
+    return rowMask(trip);
+  };
+  /** Il giorno i è attivo per la corsa? Stessa semantica della validità
+   *  EFFETTIVA (isTripActiveOnDate): con la matrice presente, un tipo-giorno
+   *  SENZA riga valida NON circola (prima `!== false` lo mostrava acceso —
+   *  e il calendario del template spegneva giorni che la matrice accendeva:
+   *  è il caso «non vedo la D» visto in produzione sulle festive generate). */
   function rowDayOn(trip: PsTrip, i: number): boolean {
     const p = pendingOps.get(trip.id);
-    const mask = p?.weekdays ?? rowMask(trip);
-    if (!mask[i]) return false;                       // la corsa non circola quel giorno
-    const dv = tripsValQ.data?.dayValidity?.[trip.id];
-    if (!dv) return true;                             // nessuna riga in Matrice → circola
+    const mask = p?.weekdays ?? rowSeedMask(trip);
+    if (!mask[i]) return false;                       // veto esplicito (o ripiego senza matrice)
+    const dv = matrixOf(trip.id);
+    if (!dv) return true;                             // nessuna riga in Matrice → circolazione settimanale
     const dt = dtKinds[wdTypicalCode(i)];
     if (!dt) return true;                             // tipo-giorno non classificabile → circola
-    if (dt && p?.dayTypeOn?.includes(dt.id)) return true; // riaccensione in sospeso
-    return dv[dt.id] !== false;                       // spento SOLO se esplicitamente non valido
+    if (p?.dayTypeOn?.includes(dt.id)) return true;   // riaccensione in sospeso
+    return dv[dt.id] === true;                        // assente o false = NON valido (come l'effettiva)
   }
   /* ─── MODIFICHE STAGED (pattern del TTD): le modifiche inline della tabella
    * (pillole giorni, etichetta, a chiamata, attiva) NON partono più come PATCH
@@ -899,7 +924,7 @@ export default function PlanningStudioTripsPage() {
   function toggleRowWeekday(trip: PsTrip, i: number) {
     if (!tripsValQ.data || !dayTypesQ.data) return;
     const p = pend(trip.id);
-    const mask = p?.weekdays ?? rowMask(trip);
+    const mask = p?.weekdays ?? rowSeedMask(trip);
     const newWd = [...mask];
     const patch: Partial<PendingTripEdit> = {};
     if (rowDayOn(trip, i)) {
