@@ -1802,6 +1802,100 @@ export default function PlanningStudioEditorPage() {
     setShowOtherStops(false);
   }
 
+  /** Proietta i waypoint sui vertici del tracciato IN ORDINE (robusto ai
+   * passaggi doppi sulla stessa strada): per ogni waypoint cerca il vertice
+   * più vicino a partire da quello del waypoint precedente. */
+  function projectWaypointsOnCoords(coords: [number, number][], wpts: { lng: number; lat: number }[]): number[] {
+    const out: number[] = [];
+    let start = 0;
+    for (const w of wpts) {
+      const kx = Math.cos((w.lat * Math.PI) / 180) * 111320, ky = 110540;
+      let best = Infinity, bi = start;
+      for (let i = start; i < coords.length; i++) {
+        const dx = (coords[i][0] - w.lng) * kx, dy = (coords[i][1] - w.lat) * ky;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; bi = i; }
+      }
+      out.push(bi);
+      start = bi;
+    }
+    return out;
+  }
+
+  /** Drag della linea: inserisce il via ricalcolando SOLO il tratto tra i due
+   * waypoint che lo circondano. Il resto del tracciato resta ESATTAMENTE
+   * com'è — anche quando viene da un disegno salvato che OSRM oggi
+   * risolverebbe diversamente (prima il rilascio ricalcolava TUTTO il
+   * percorso e la deviazione di un tratto spostava anche gli altri). */
+  async function insertViaLocally(insertIdx: number, via: [number, number]) {
+    if (!editor) return;
+    pushEditorHistory();
+    const A = editor.waypoints[insertIdx - 1], B = editor.waypoints[insertIdx];
+    const newWpt: PsWaypoint = { lng: via[0], lat: via[1], mode: editor.shapeMode === "manual" ? "manual" : "snap" };
+    const wpts = [...editor.waypoints];
+    wpts.splice(insertIdx, 0, newWpt);
+    const coords = (editor.geometry?.coordinates ?? null) as [number, number][] | null;
+    if (!coords || coords.length < 2 || !A || !B) {
+      // nessun tracciato da preservare: ricalcolo completo come prima
+      setEditor({ ...editor, waypoints: wpts, dirty: true });
+      recomputeShape(wpts, editor.shapeMode);
+      return;
+    }
+    setSnapBusy(true);
+    try {
+      const legMode = (editor.shapeMode === "manual" || A.mode === "manual" || B.mode === "manual" || newWpt.mode === "manual")
+        ? "manual" as const : "driving" as const;
+      const r = await routeSnap([[A.lng, A.lat], via, [B.lng, B.lat]], legMode, {
+        modes: [legMode, legMode],
+        curb: editor.curb ?? false,
+        curbMask: [!!A.stopId, false, !!B.stopId],
+        projectId,
+      });
+      const legCoords = (r.geometry?.coordinates ?? []) as [number, number][];
+      if (legCoords.length < 2) throw new Error("nessuna geometria dal tratto");
+      // Confini del tratto sul tracciato esistente (proiezione monotona).
+      const proj = projectWaypointsOnCoords(coords, editor.waypoints);
+      const idxA = proj[insertIdx - 1], idxB = proj[insertIdx];
+      const oldLegLen = lineLengthM(coords.slice(idxA, idxB + 1));
+      // giunzione senza vertici doppi ai confini del tratto
+      const merged: [number, number][] = [...coords.slice(0, idxA + 1), ...legCoords, ...coords.slice(idxB)]
+        .filter((p, i, arr) => i === 0 || p[0] !== arr[i - 1][0] || p[1] !== arr[i - 1][1]);
+      const newLegLen = r.distanceM || lineLengthM(legCoords);
+      const oldDist = editor.distanceM || lineLengthM(coords);
+      const newDist = Math.max(0, oldDist - oldLegLen + newLegLen);
+      // durata: riscalata in proporzione (indicativa, come prima dell'edit)
+      const newDur = editor.durationS && oldDist > 0 ? Math.round(editor.durationS * (newDist / oldDist)) : editor.durationS;
+      let legs = editor.legDistances;
+      if (legs && legs.length === editor.waypoints.length - 1 && (r.legDistances?.length ?? 0) === 2) {
+        legs = [...legs];
+        legs.splice(insertIdx - 1, 1, r.legDistances![0], r.legDistances![1]);
+      } else {
+        legs = null;
+      }
+      const seenZones = new Set((editor.violations ?? []).map(v => v.zoneId));
+      const violations = [...(editor.violations ?? []), ...(r.violations ?? []).filter(v => !seenZones.has(v.zoneId))];
+      setEditor({
+        ...editor,
+        waypoints: wpts,
+        geometry: { type: "LineString", coordinates: merged },
+        distanceM: newDist,
+        durationS: newDur,
+        legDistances: legs,
+        violations,
+        dirty: true,
+      });
+      if ((r.violations ?? []).length > 0) {
+        toast.warning(`La deviazione attraversa ${r.violations!.length} zona/e vietata/e`, {
+          description: r.violations!.map(v => v.name).join(", "),
+        });
+      }
+    } catch {
+      // tratto non ricalcolabile: fallback al ricalcolo completo
+      setEditor({ ...editor, waypoints: wpts, dirty: true });
+      recomputeShape(wpts, editor.shapeMode);
+    } finally { setSnapBusy(false); }
+  }
+
   /* Entra in modalità "Edita tracciato": copia di lavoro della LineString.
    * Se la variante non ha ancora uno shape, parte dalla spezzata fermata→fermata. */
   function startShapeEdit() {
@@ -2383,14 +2477,9 @@ export default function PlanningStudioEditorPage() {
             mapRef.current?.getMap()?.dragPan.enable();
             suppressClickRef.current = true; // il click generato al rilascio non deve fare altro
             if (!editor) return;
-            pushEditorHistory();
-            const wpts = [...editor.waypoints];
-            wpts.splice(d.insertIdx, 0, {
-              lng: e.lngLat.lng, lat: e.lngLat.lat,
-              mode: editor.shapeMode === "manual" ? "manual" : "snap",
-            });
-            setEditor({ ...editor, waypoints: wpts, dirty: true });
-            recomputeShape(wpts, editor.shapeMode);
+            // Ricalcolo LOCALE: cambia solo il tratto tra i due waypoint che
+            // circondano la deviazione, il resto del tracciato non si muove.
+            void insertViaLocally(d.insertIdx, [e.lngLat.lng, e.lngLat.lat]);
           }}
           onMouseMove={(e) => {
             // Drag via-point in corso: il segnaposto segue il cursore.
@@ -5183,6 +5272,8 @@ function VariantEditorPanel({
               onDragStart={() => setDragIdx(idx)}
               onDragOver={(e) => e.preventDefault()}
               onDrop={() => { if (dragIdx !== null && dragIdx !== idx) onMoveStop(dragIdx, idx); setDragIdx(null); }}
+              onClick={() => onSetInsertAfter(idx)}
+              title="Clic = questa fermata diventa il RIFERIMENTO: le prossime entrano prima o dopo di lei (frecce ⤴ ⤵)"
               className={`group flex items-center gap-1.5 rounded px-2 py-1.5 border cursor-move transition ${
                 dragIdx === idx ? "border-emerald-500 bg-emerald-500/10"
                 : selIdx.has(idx) ? "border-rose-500/50 bg-rose-500/10"
@@ -5202,8 +5293,11 @@ function VariantEditorPanel({
               <span className="text-[9px] font-mono text-emerald-400/80 shrink-0 tabular-nums" title="Distanza progressiva (in linea d'aria fermata→fermata)">
                 {idx === 0 ? "0 m" : cumDistM[idx] >= 1000 ? `${(cumDistM[idx] / 1000).toFixed(1)} km` : `${Math.round(cumDistM[idx])} m`}
               </span>
-              <span className={`items-center shrink-0 ${insertAfterIdx === idx ? "flex" : "hidden group-hover:flex"}`}>
-                <button onClick={() => {
+              {/* Frecce PRIMA/DOPO sempre visibili: sono il cuore della scelta
+                  del punto di inserimento, non un'azione secondaria da hover. */}
+              <span className="flex items-center shrink-0">
+                <button onClick={(e) => {
+                    e.stopPropagation();
                     if (insertAfterIdx === idx && insertSide === "before") { onSetInsertAfter(null); return; }
                     onSetInsertSide("before"); onSetInsertAfter(idx);
                   }}
@@ -5211,7 +5305,8 @@ function VariantEditorPanel({
                   title={insertAfterIdx === idx && insertSide === "before" ? "Disattiva inserimento qui (torna in coda)" : "Inserisci le prossime fermate PRIMA di questa"}>
                   ⤴
                 </button>
-                <button onClick={() => {
+                <button onClick={(e) => {
+                    e.stopPropagation();
                     if (insertAfterIdx === idx && insertSide === "after") { onSetInsertAfter(null); return; }
                     onSetInsertSide("after"); onSetInsertAfter(idx);
                   }}
@@ -5219,15 +5314,17 @@ function VariantEditorPanel({
                   title={insertAfterIdx === idx && insertSide === "after" ? "Disattiva inserimento qui (torna in coda)" : "Inserisci le prossime fermate DOPO questa"}>
                   ⤵
                 </button>
-                <button onClick={() => idx > 0 && onMoveStop(idx, idx - 1)} disabled={idx === 0}
+              </span>
+              <span className={`items-center shrink-0 ${insertAfterIdx === idx ? "flex" : "hidden group-hover:flex"}`}>
+                <button onClick={(e) => { e.stopPropagation(); if (idx > 0) onMoveStop(idx, idx - 1); }} disabled={idx === 0}
                   className="p-0.5 text-slate-500 hover:text-emerald-300 disabled:opacity-30" title="Sposta su">
                   <ChevronUp className="w-3 h-3" />
                 </button>
-                <button onClick={() => idx < editor.stops.length - 1 && onMoveStop(idx, idx + 1)} disabled={idx === editor.stops.length - 1}
+                <button onClick={(e) => { e.stopPropagation(); if (idx < editor.stops.length - 1) onMoveStop(idx, idx + 1); }} disabled={idx === editor.stops.length - 1}
                   className="p-0.5 text-slate-500 hover:text-emerald-300 disabled:opacity-30" title="Sposta giù">
                   <ChevronDown className="w-3 h-3" />
                 </button>
-                <button onClick={() => onRemoveStop(idx)}
+                <button onClick={(e) => { e.stopPropagation(); onRemoveStop(idx); }}
                   className="p-0.5 text-slate-500 hover:text-red-400" title="Rimuovi dalla sequenza">
                   <X className="w-3 h-3" />
                 </button>
