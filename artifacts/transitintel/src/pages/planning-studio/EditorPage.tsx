@@ -1652,10 +1652,17 @@ export default function PlanningStudioEditorPage() {
     void applyLocalEdit(list, wpts, oldIndexOf);
   }
 
+  /** Cambia la modalità di DEFAULT per i punti NUOVI (fermate e via aggiunti
+   * d'ora in poi). NON ridisegna il percorso esistente: prima il passaggio a
+   * Manuale ricalcolava tutto linearizzando l'intero tracciato. Per forzare
+   * un tratto GIÀ disegnato: trascina la linea (via) e/o clic sul pallino
+   * del via (manuale locale — solo i tratti adiacenti diventano retti). */
   function changeShapeMode(mode: "driving" | "manual") {
-    if (!editor) return;
-    setEditor({ ...editor, shapeMode: mode, dirty: true });
-    recomputeShape(editor.waypoints, mode);
+    const cur = editorRef.current;
+    if (!cur || cur.shapeMode === mode) return;
+    const next: VariantEditorState = { ...cur, shapeMode: mode, dirty: true };
+    editorRef.current = next;
+    setEditor(next);
   }
 
   /* ─── Variant editor: stops sequence ───
@@ -3751,8 +3758,8 @@ export default function PlanningStudioEditorPage() {
                   {snapBusy && <Loader2 className="w-3 h-3 animate-spin ml-1" />}
                 </p>
                 <p className="text-[10px] text-slate-400">
-                  Clic su fermata = aggiungi · <b>Trascina la linea</b> = devia il percorso ·
-                  Clic su un pallino = forza manuale · <b>Ctrl+Z</b> = annulla
+                  Clic su fermata = aggiungi · <b>Trascina la linea</b> = devia SOLO quel tratto ·
+                  Clic su un pallino = quel tratto in manuale · <b>Ctrl+Z</b> = annulla
                 </p>
               </div>
             )}
@@ -5290,17 +5297,25 @@ function VariantEditorPanel({
 
       {/* Mode toggle */}
       <div className="px-4 py-2 border-b border-slate-800 shrink-0">
-        <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Modalità tracciato</p>
+        <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Modalità per i punti nuovi</p>
         <div className="flex gap-1 bg-slate-900 rounded p-0.5 border border-slate-800">
           <button onClick={() => onChangeMode("driving")}
+            title="Le prossime fermate e i prossimi via seguono l'asse strada (OSRM). Il tracciato già disegnato non cambia."
             className={`flex-1 text-xs py-1.5 rounded font-medium transition ${editor.shapeMode === "driving" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>
             🚗 Auto (snap strade)
           </button>
           <button onClick={() => onChangeMode("manual")}
+            title="Le prossime fermate e i prossimi via si collegano in linea retta (mano libera). Il tracciato già disegnato non cambia."
             className={`flex-1 text-xs py-1.5 rounded font-medium transition ${editor.shapeMode === "manual" ? "bg-amber-500 text-white" : "text-slate-400 hover:text-slate-200"}`}>
             ✏️ Manuale
           </button>
         </div>
+        <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+          Vale solo per i punti <strong className="text-slate-300">nuovi</strong> — il disegno esistente non si tocca.
+          Se un tratto auto non segue la strada giusta: <strong className="text-slate-300">trascina la linea</strong> per
+          deviarlo; se non basta, <strong className="text-slate-300">clic sul pallino</strong> del via per forzare
+          quel solo tratto in manuale.
+        </p>
         {/* Import da file: fermate per codice + tracciato */}
         <button onClick={onImportKml}
           title="Carica un file KML/KMZ: le fermate vengono abbinate per codice a quelle a sistema (con anteprima), poi sequenza e tracciato entrano nell'editor — sempre modificabili prima del salvataggio."
