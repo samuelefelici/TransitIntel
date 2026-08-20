@@ -37,7 +37,14 @@ async function canRead(projectId: string, req: any): Promise<boolean> {
   return !!((r as any).rows?.length);
 }
 
-router.post("/planning-studio/:projectId/quick-estimate", async (req, res): Promise<void> => {
+// Il path CANONICO è /planning-studio/projects/:projectId/... come tutti gli
+// altri endpoint Planning Studio: la rotta era nata senza /projects/ e TUTTI
+// i chiamanti (Argos, connettore MCP) rispondevano 404 in produzione.
+// Il vecchio path resta come alias per compatibilità.
+router.post([
+  "/planning-studio/projects/:projectId/quick-estimate",
+  "/planning-studio/:projectId/quick-estimate",
+], async (req, res): Promise<void> => {
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
