@@ -212,6 +212,51 @@ function waypointIndexForStopPos(wpts: PsWaypoint[], stopsList: PsVariantStop[],
   }
   return -1;
 }
+/** Garantisce la corrispondenza sequenza↔waypoint all'APERTURA dell'editor:
+ * ogni fermata ha il SUO waypoint (agganciato per stopId, o per vicinanza
+ * ≤30 m, o creato se manca), i via liberi restano al loro posto, i waypoint
+ * di fermate che non esistono più diventano via liberi. Senza questa bonifica
+ * le modifiche locali non trovavano cosa potare sui tracciati salvati senza
+ * stopId (import GTFS, linee create da Argos, salvataggi vecchi): cancellare
+ * la coda del percorso non accorciava il disegno. */
+function normalizeWaypoints(saved: PsWaypoint[], stops: PsVariantStop[]): PsWaypoint[] {
+  if (stops.length === 0) return saved;
+  if (saved.length === 0) {
+    return stops.map(s => ({ lng: s.lon, lat: s.lat, stopId: s.stopId, mode: "snap" as const }));
+  }
+  const stopIds = new Set(stops.map(s => s.stopId));
+  // waypoint di fermate sparite → via liberi (il disegno ci passa comunque)
+  const wpts: PsWaypoint[] = saved.map(w =>
+    (w.stopId && !stopIds.has(w.stopId)) ? { ...w, stopId: undefined } : { ...w });
+  const nearM = (w: { lng: number; lat: number }, s: PsVariantStop) => {
+    const kx = Math.cos((s.lat * Math.PI) / 180) * 111320, ky = 110540;
+    return Math.hypot((w.lng - s.lon) * kx, (w.lat - s.lat) * ky);
+  };
+  let cursor = 0;
+  const out: PsWaypoint[] = [];
+  for (const s of stops) {
+    let found = -1;
+    for (let i = cursor; i < wpts.length; i++) {
+      if (wpts[i].stopId === s.stopId) { found = i; break; }
+    }
+    if (found < 0) {
+      for (let i = cursor; i < wpts.length; i++) {
+        if (!wpts[i].stopId && nearM(wpts[i], s) <= 30) { found = i; break; }
+      }
+    }
+    if (found >= 0) {
+      // i via liberi prima della fermata restano al loro posto
+      for (let i = cursor; i < found; i++) if (!wpts[i].stopId) out.push(wpts[i]);
+      out.push({ ...wpts[found], stopId: s.stopId });
+      cursor = found + 1;
+    } else {
+      out.push({ lng: s.lon, lat: s.lat, stopId: s.stopId, mode: "snap" as const });
+    }
+  }
+  for (let i = cursor; i < wpts.length; i++) if (!wpts[i].stopId) out.push(wpts[i]);
+  return out;
+}
+
 function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], wIdx: number): number {
   if (!wpts[wIdx]?.stopId) return -1;
   let w = 0;
@@ -1267,7 +1312,7 @@ export default function PlanningStudioEditorPage() {
         routeId,
         routeColor: route?.color || "#10b981",
         stops: data.stops || [],
-        waypoints: data.shape?.waypoints || [],
+        waypoints: normalizeWaypoints((data.shape?.waypoints || []) as PsWaypoint[], data.stops || []),
         shapeMode: ((data.shape?.mode as any) || "driving"),
         geometry: data.shape?.geometry || null,
         distanceM: data.shape?.distanceM ?? null,
@@ -1650,6 +1695,21 @@ export default function PlanningStudioEditorPage() {
     setInsertAfterIdx(null);
     insertAfterIdxRef.current = null;
     void applyLocalEdit(list, wpts, oldIndexOf);
+  }
+
+  /** RICALCOLA TUTTO il tracciato da zero: waypoint = solo le fermate in
+   * sequenza (i via manuali vengono rimossi), snap OSRM completo. Azione
+   * ESPLICITA dell'operatore — la rete di sicurezza quando il disegno non
+   * corrisponde più alla sequenza (es. dati storici incoerenti). */
+  function rebuildFullShape() {
+    const cur = editorRef.current;
+    if (!cur || cur.stops.length < 2) return;
+    pushEditorHistory();
+    const wpts: PsWaypoint[] = cur.stops.map(s => ({ lng: s.lon, lat: s.lat, stopId: s.stopId, mode: "snap" as const }));
+    const next: VariantEditorState = { ...cur, waypoints: wpts, dirty: true };
+    editorRef.current = next;
+    setEditor(next);
+    recomputeShape(wpts, cur.shapeMode);
   }
 
   /** Cambia la modalità di DEFAULT per i punti NUOVI (fermate e via aggiunti
@@ -3641,6 +3701,7 @@ export default function PlanningStudioEditorPage() {
                 onSetInsertSide={setInsertSide}
                 onFlyToStop={(s) => mapRef.current?.flyTo({ center: [s.lon, s.lat], zoom: 16, duration: 600 })}
                 onToggleCurb={toggleCurb}
+                onRebuildShape={rebuildFullShape}
                 onUndo={undoEditor}
                 canUndo={editorHistory.length > 0}
                 savedAt={variantSavedAt}
@@ -5183,7 +5244,7 @@ function VariantEditorPanel({
   editor, stopsAll, snapBusy, saving,
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
   insertAfterIdx, onSetInsertAfter, insertSide, onSetInsertSide,
-  onFlyToStop, onToggleCurb, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
+  onFlyToStop, onToggleCurb, onRebuildShape, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -5202,6 +5263,7 @@ function VariantEditorPanel({
   onSetInsertSide: (side: "before" | "after") => void;
   onFlyToStop: (s: PsVariantStop) => void;
   onToggleCurb: () => void;
+  onRebuildShape: () => void;
   onUndo: () => void;
   canUndo: boolean;
   savedAt: number | null;
@@ -5316,6 +5378,16 @@ function VariantEditorPanel({
           deviarlo; se non basta, <strong className="text-slate-300">clic sul pallino</strong> del via per forzare
           quel solo tratto in manuale.
         </p>
+        {/* Rete di sicurezza: se il disegno non corrisponde più alla sequenza
+            (dati storici incoerenti), lo si ributta su strada da zero. */}
+        <button onClick={() => {
+            if (confirm("Ricalcolare TUTTO il tracciato da zero seguendo l'ordine delle fermate? I via manuali verranno rimossi (Ctrl+Z per annullare).")) onRebuildShape();
+          }}
+          disabled={editor.stops.length < 2 || snapBusy}
+          title="Ributta l'intero percorso su strada seguendo l'ordine attuale delle fermate. Usalo se il disegno non corrisponde più alla sequenza."
+          className="w-full mt-2 text-xs py-1.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 font-medium inline-flex items-center justify-center gap-1.5 disabled:opacity-40">
+          ↻ Ricalcola tutto il tracciato
+        </button>
         {/* Import da file: fermate per codice + tracciato */}
         <button onClick={onImportKml}
           title="Carica un file KML/KMZ: le fermate vengono abbinate per codice a quelle a sistema (con anteprima), poi sequenza e tracciato entrano nell'editor — sempre modificabili prima del salvataggio."
