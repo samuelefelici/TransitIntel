@@ -3598,8 +3598,29 @@ export default function PlanningStudioEditorPage() {
                           : "Verranno eliminati anche i percorsi della linea.",
                         confirmLabel: "Elimina linea",
                         onConfirm: async () => {
-                          try { await deletePsRoute(projectId, id); setRoutes(rs => rs.filter(x => x.id !== id)); toast.success("Linea eliminata"); }
-                          catch (e: any) { toast.error("Errore", { description: e?.message }); throw e; }
+                          try {
+                            await deletePsRoute(projectId, id);
+                            setRoutes(rs => rs.filter(x => x.id !== id));
+                            toast.success("Linea eliminata");
+                          } catch (e: any) {
+                            // 409 = la linea ha corse collegate: SECONDO dialog
+                            // esplicito per eliminarle insieme (force). Prima il
+                            // dialog rimandava la stessa DELETE nuda → loop di 409.
+                            if (e?.status !== 409) { toast.error("Errore", { description: e?.message }); throw e; }
+                            const n = e?.body?.tripCount;
+                            setTimeout(() => setConfirmReq({
+                              title: `La linea ha ${n ?? "delle"} corse collegate`,
+                              message: "Eliminare ANCHE le corse insieme alla linea e ai suoi percorsi? Le corse eliminate spariscono da orari, stampe e matrice di validità.",
+                              confirmLabel: "Elimina linea e corse",
+                              onConfirm: async () => {
+                                try {
+                                  await deletePsRoute(projectId, id, { force: true });
+                                  setRoutes(rs => rs.filter(x => x.id !== id));
+                                  toast.success("Linea eliminata con le sue corse");
+                                } catch (err: any) { toast.error("Errore", { description: err?.message }); throw err; }
+                              },
+                            }), 0);
+                          }
                         },
                       });
                     }}

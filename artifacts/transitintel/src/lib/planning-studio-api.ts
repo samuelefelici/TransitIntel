@@ -334,8 +334,13 @@ export async function updatePsRoute(projectId: string, routeId: string, patch: P
   });
   return r.route;
 }
-export async function deletePsRoute(projectId: string, routeId: string): Promise<void> {
-  await apiFetch<{ ok: boolean }>(`/api/planning-studio/projects/${projectId}/routes/${routeId}`, { method: "DELETE" });
+/** Elimina una linea. Se ha corse collegate il server risponde 409 con
+ *  { tripCount }: ripetere con force=true per eliminare ANCHE le corse. */
+export async function deletePsRoute(projectId: string, routeId: string, opts?: { force?: boolean }): Promise<void> {
+  await apiFetch<{ ok: boolean }>(
+    `/api/planning-studio/projects/${projectId}/routes/${routeId}${opts?.force ? "?force=1" : ""}`,
+    { method: "DELETE" },
+  );
 }
 
 export async function listPsVariants(projectId: string, routeId: string): Promise<PsVariant[]> {
