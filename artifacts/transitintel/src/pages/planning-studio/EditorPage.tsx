@@ -464,8 +464,12 @@ export default function PlanningStudioEditorPage() {
   insertSideRef.current = insertSide;
   // Timestamp dell'ultimo salvataggio riuscito della variante (conferma visiva).
   const [variantSavedAt, setVariantSavedAt] = useState<number | null>(null);
-  // ── Annulla (editor variante): snapshot di stops+waypoints prima di ogni modifica ──
-  const [editorHistory, setEditorHistory] = useState<{ stops: PsVariantStop[]; waypoints: PsWaypoint[] }[]>([]);
+  // ── Annulla (editor variante): snapshot COMPLETO (sequenza + waypoints +
+  // tracciato) prima di ogni modifica — l'annullo ripristina il disegno
+  // esatto senza rifare lo snap (che poteva restituire un percorso diverso). ──
+  type EditorSnapshot = Pick<VariantEditorState,
+    "stops" | "waypoints" | "geometry" | "distanceM" | "durationS" | "legDistances" | "violations">;
+  const [editorHistory, setEditorHistory] = useState<EditorSnapshot[]>([]);
   // ── Drag della linea del percorso (stile Google Maps): via-point in inserimento ──
   const dragViaRef = useRef<{ insertIdx: number } | null>(null);
   const [dragViaPos, setDragViaPos] = useState<[number, number] | null>(null);
@@ -1408,14 +1412,15 @@ export default function PlanningStudioEditorPage() {
     } finally { setSnapBusy(false); }
   }
 
-  /** Alterna il modo di un waypoint: snap ↔ manuale (forza i tratti adiacenti). */
+  /** Alterna il modo di un waypoint: snap ↔ manuale (forza i tratti adiacenti).
+   * Locale: si ricalcolano solo i tratti adiacenti al waypoint cambiato. */
   function toggleWaypointMode(idx: number) {
-    if (!editor) return;
-    pushEditorHistory();
-    const wpts = editor.waypoints.map((w, i) =>
+    const cur = editorRef.current;
+    if (!cur) return;
+    const wpts = cur.waypoints.map((w, i) =>
       i === idx ? { ...w, mode: (w.mode === "manual" ? "snap" : "manual") as PsWaypoint["mode"] } : w);
-    setEditor({ ...editor, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    const oldIndexOf = cur.waypoints.map((_, i) => (i === idx ? -1 : i));
+    void applyLocalEdit(cur.stops, wpts, oldIndexOf);
   }
 
   /** Attiva/disattiva l'arrivo lato marciapiede e ricalcola. */
@@ -1431,7 +1436,11 @@ export default function PlanningStudioEditorPage() {
   function pushEditorHistory() {
     const cur = editorRef.current; // ref: vale anche dalle chiusure stantie del click mappa
     if (!cur) return;
-    const snap = { stops: cur.stops, waypoints: cur.waypoints };
+    const snap = {
+      stops: cur.stops, waypoints: cur.waypoints, geometry: cur.geometry,
+      distanceM: cur.distanceM, durationS: cur.durationS,
+      legDistances: cur.legDistances, violations: cur.violations,
+    };
     setEditorHistory(h => [...h.slice(-29), snap]); // max 30 passi
   }
 
@@ -1588,12 +1597,18 @@ export default function PlanningStudioEditorPage() {
     setKmlPreview(null);
   }
   function undoEditor() {
-    if (!editor || editorHistory.length === 0) return;
+    const cur = editorRef.current;
+    if (!cur || editorHistory.length === 0) return;
     const last = editorHistory[editorHistory.length - 1];
     setEditorHistory(h => h.slice(0, -1));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: last.stops, waypoints: last.waypoints, dirty: true });
-    recomputeShape(last.waypoints, editor.shapeMode);
+    insertAfterIdxRef.current = null;
+    ++snapSeqRef.current; // le risposte snap in volo non devono sovrascrivere il ripristino
+    // Ripristino ESATTO dallo snapshot, tracciato compreso: niente snap che
+    // potrebbe ridisegnare il percorso diverso da come era.
+    const next: VariantEditorState = { ...cur, ...last, dirty: true };
+    editorRef.current = next;
+    setEditor(next);
   }
   // Ctrl/Cmd+Z quando l'editor variante è attivo (non dentro input di testo).
   useEffect(() => {
@@ -1612,26 +1627,29 @@ export default function PlanningStudioEditorPage() {
 
 
   function moveWaypoint(idx: number, lngLat: [number, number]) {
-    if (!editor) return;
-    pushEditorHistory();
-    const wpts = editor.waypoints.map((w, i) => i === idx ? { ...w, lng: lngLat[0], lat: lngLat[1] } : w);
-    setEditor({ ...editor, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    const cur = editorRef.current;
+    if (!cur) return;
+    // Locale: si ricalcolano solo i tratti adiacenti al waypoint spostato.
+    const wpts = cur.waypoints.map((w, i) => i === idx ? { ...w, lng: lngLat[0], lat: lngLat[1] } : w);
+    const oldIndexOf = cur.waypoints.map((_, i) => (i === idx ? -1 : i));
+    void applyLocalEdit(cur.stops, wpts, oldIndexOf);
   }
 
   function removeWaypoint(idx: number) {
-    if (!editor) return;
-    pushEditorHistory();
+    const cur = editorRef.current;
+    if (!cur) return;
     // Se il waypoint è una fermata, va tolta anche dalla sequenza (coerenza
-    // elenco ↔ percorso); i via liberi si rimuovono e basta.
-    const stopPos = stopPosForWaypointIdx(editor.waypoints, editor.stops, idx);
-    const wpts = editor.waypoints.filter((_, i) => i !== idx);
+    // elenco ↔ percorso); i via liberi si rimuovono e basta. Il tracciato si
+    // ricuce SOLO attorno al punto rimosso: alle estremità si pota il tratto.
+    const stopPos = stopPosForWaypointIdx(cur.waypoints, cur.stops, idx);
+    const wpts = cur.waypoints.filter((_, i) => i !== idx);
+    const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i !== idx);
     const list = stopPos >= 0
-      ? editor.stops.filter((_, i) => i !== stopPos).map((s, i) => ({ ...s, seq: i + 1 }))
-      : editor.stops;
+      ? cur.stops.filter((_, i) => i !== stopPos).map((s, i) => ({ ...s, seq: i + 1 }))
+      : cur.stops;
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    insertAfterIdxRef.current = null;
+    void applyLocalEdit(list, wpts, oldIndexOf);
   }
 
   function changeShapeMode(mode: "driving" | "manual") {
@@ -1650,7 +1668,6 @@ export default function PlanningStudioEditorPage() {
     if (!cur) return;
     const anchorIdx = insertAfterIdxRef.current;
     const side = insertSideRef.current;
-    pushEditorHistory();
     const vs: PsVariantStop = {
       seq: 0, // rinumerato sotto
       stopId: stop.id,
@@ -1682,22 +1699,21 @@ export default function PlanningStudioEditorPage() {
     }
     wpts.splice(wAt, 0, newWpt);
 
-    // UN SOLO setEditor: prima c'erano due update con stato stale e il secondo
-    // (waypoints) sovrascriveva il primo → la fermata non entrava in sequenza.
-    // I ref si aggiornano SUBITO (non al prossimo render): un secondo click
-    // immediato deve partire da questo stato, non da quello di prima.
-    const next = { ...cur, stops: renum, waypoints: wpts, dirty: true };
-    editorRef.current = next;
-    setEditor(next);
     if (anchorIdx != null) {
       // "dopo": l'ancora avanza sulla fermata inserita → i click successivi in ordine.
       // "prima": l'ancora resta sul riferimento (slittato di 1) → i click
-      // successivi entrano in ordine, tutti prima di lei.
+      // successivi entrano in ordine, tutti prima di lei. Ref aggiornato
+      // SUBITO: un secondo click immediato parte da questo stato.
       const nextAnchor = side === "before" ? at + 1 : at;
       insertAfterIdxRef.current = nextAnchor;
       setInsertAfterIdx(nextAnchor);
     }
-    recomputeShape(wpts, cur.shapeMode);
+    // Chirurgia locale: solo i tratti attorno alla fermata nuova vengono
+    // chiesti a OSRM (in coda = solo l'ultimo tratto; in testa = solo il
+    // primo), il resto del tracciato resta esattamente com'è.
+    const oldIndexOf = cur.waypoints.map((_, i) => i);
+    oldIndexOf.splice(wAt, 0, -1);
+    void applyLocalEdit(renum, wpts, oldIndexOf);
   }
 
   function moveStopInSequence(from: number, to: number) {
@@ -1716,30 +1732,35 @@ export default function PlanningStudioEditorPage() {
   }
 
   function removeStopFromSequence(idx: number) {
-    if (!editor) return;
-    pushEditorHistory();
-    // Rimuove anche il waypoint corrispondente, così il percorso non ci passa più.
-    const wIdx = waypointIndexForStopPos(editor.waypoints, editor.stops, idx);
-    const wpts = wIdx >= 0 ? editor.waypoints.filter((_, i) => i !== wIdx) : editor.waypoints;
-    const list = editor.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
+    const cur = editorRef.current;
+    if (!cur) return;
+    // Rimuove anche il waypoint corrispondente e RICUCE il tracciato solo lì:
+    // togliere la prima fermata elimina il suo tratto e il resto non si muove.
+    const wIdx = waypointIndexForStopPos(cur.waypoints, cur.stops, idx);
+    const wpts = wIdx >= 0 ? cur.waypoints.filter((_, i) => i !== wIdx) : [...cur.waypoints];
+    const oldIndexOf = wIdx >= 0
+      ? cur.waypoints.map((_, i) => i).filter(i => i !== wIdx)
+      : cur.waypoints.map((_, i) => i);
+    const list = cur.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    insertAfterIdxRef.current = null;
+    void applyLocalEdit(list, wpts, oldIndexOf);
   }
 
   /** Rimuove più fermate dalla sequenza in un colpo solo (selezione multipla). */
   function removeStopsFromSequence(idxs: number[]) {
-    if (!editor || idxs.length === 0) return;
-    pushEditorHistory();
+    const cur = editorRef.current;
+    if (!cur || idxs.length === 0) return;
     const wDrop = new Set(
-      idxs.map(i => waypointIndexForStopPos(editor.waypoints, editor.stops, i)).filter(i => i >= 0),
+      idxs.map(i => waypointIndexForStopPos(cur.waypoints, cur.stops, i)).filter(i => i >= 0),
     );
-    const wpts = editor.waypoints.filter((_, i) => !wDrop.has(i));
+    const wpts = cur.waypoints.filter((_, i) => !wDrop.has(i));
+    const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => !wDrop.has(i));
     const drop = new Set(idxs);
-    const list = editor.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
+    const list = cur.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
-    setEditor({ ...editor, stops: list, waypoints: wpts, dirty: true });
-    recomputeShape(wpts, editor.shapeMode);
+    insertAfterIdxRef.current = null;
+    void applyLocalEdit(list, wpts, oldIndexOf);
   }
 
   /** Inverte l'ordine della sequenza (per creare il percorso di ritorno). */
@@ -1856,83 +1877,133 @@ export default function PlanningStudioEditorPage() {
     return out;
   }
 
-  /** Drag della linea: inserisce il via ricalcolando SOLO il tratto tra i due
-   * waypoint che lo circondano. Il resto del tracciato resta ESATTAMENTE
-   * com'è — anche quando viene da un disegno salvato che OSRM oggi
-   * risolverebbe diversamente (prima il rilascio ricalcolava TUTTO il
-   * percorso e la deviazione di un tratto spostava anche gli altri). */
-  async function insertViaLocally(insertIdx: number, via: [number, number]) {
-    const editor = editorRef.current; // stato fresco + niente clobber da chiusure vecchie
-    if (!editor) return;
+  /** ═══ CHIRURGIA LOCALE DEL TRACCIATO ═══
+   * Ricostruisce il tracciato dopo una modifica locale dei waypoint: i tratti
+   * tra coppie di waypoint sopravvissuti e ADIACENTI anche prima restano la
+   * fetta ESATTA del tracciato esistente; solo i buchi (waypoint rimossi in
+   * mezzo, inseriti, spostati) vengono chiesti a OSRM, in una chiamata per
+   * corsa di tratte contigue. Le estremità tolte si potano e basta — togliere
+   * la prima fermata elimina il suo tratto e NON tocca il resto del percorso.
+   * `oldIndexOf[i]` = indice del waypoint VECCHIO corrispondente all'i-esimo
+   * nuovo, o -1 se è nuovo/cambiato. Ritorna null se serve il ricalcolo
+   * completo (nessuna geometria da preservare, snap fallito). */
+  async function rebuildGeometryLocally(
+    cur: VariantEditorState,
+    newWpts: PsWaypoint[],
+    oldIndexOf: number[],
+  ): Promise<null | Pick<VariantEditorState, "geometry" | "distanceM" | "durationS" | "legDistances" | "violations">> {
+    const coords = (cur.geometry?.coordinates ?? null) as [number, number][] | null;
+    if (!coords || coords.length < 2 || cur.waypoints.length < 2 || newWpts.length < 2) return null;
+    const proj = projectWaypointsOnCoords(coords, cur.waypoints);
+    const oldLegsAligned = !!cur.legDistances && cur.legDistances.length === cur.waypoints.length - 1;
+    const chunks: [number, number][][] = [];
+    const legDists: number[] = [];
+    const violations = [...(cur.violations ?? [])];
+    const seenZones = new Set(violations.map(v => v.zoneId));
+    let newViolations = 0;
+    let i = 0;
+    while (i < newWpts.length - 1) {
+      const u = oldIndexOf[i], v = oldIndexOf[i + 1];
+      if (u >= 0 && v === u + 1) {
+        // tratta SOPRAVVISSUTA: fetta esatta del tracciato esistente
+        const slice = coords.slice(proj[u], proj[v] + 1);
+        chunks.push(slice);
+        legDists.push(oldLegsAligned ? cur.legDistances![u] : lineLengthM(slice));
+        i++;
+        continue;
+      }
+      // corsa di tratte NUOVE contigue → una sola chiamata di snap
+      let j = i + 1;
+      while (j < newWpts.length - 1) {
+        const a = oldIndexOf[j], b = oldIndexOf[j + 1];
+        if (a >= 0 && b === a + 1) break;
+        j++;
+      }
+      const runPts = newWpts.slice(i, j + 1);
+      const modes = runPts.slice(0, -1).map((w, k) =>
+        (cur.shapeMode === "manual" || w.mode === "manual" || runPts[k + 1].mode === "manual") ? "manual" as const : "driving" as const);
+      const r = await routeSnap(runPts.map(w => [w.lng, w.lat] as [number, number]),
+        cur.shapeMode === "manual" ? "manual" : "driving", {
+          modes,
+          curb: cur.curb ?? false,
+          curbMask: runPts.map(w => !!w.stopId),
+          projectId,
+        });
+      const legCoords = (r.geometry?.coordinates ?? []) as [number, number][];
+      if (legCoords.length < 2) return null;
+      chunks.push(legCoords);
+      if (r.legDistances && r.legDistances.length === runPts.length - 1) {
+        legDists.push(...r.legDistances);
+      } else {
+        const per = (r.distanceM || lineLengthM(legCoords)) / (runPts.length - 1);
+        for (let k = 0; k < runPts.length - 1; k++) legDists.push(per);
+      }
+      for (const vv of r.violations ?? []) {
+        if (!seenZones.has(vv.zoneId)) { seenZones.add(vv.zoneId); violations.push(vv); newViolations++; }
+      }
+      i = j;
+    }
+    const merged = chunks.flat().filter((p, k, arr) => k === 0 || p[0] !== arr[k - 1][0] || p[1] !== arr[k - 1][1]);
+    if (merged.length < 2) return null;
+    const newDist = legDists.reduce((s, d) => s + d, 0);
+    const oldDist = cur.distanceM || lineLengthM(coords);
+    const newDur = cur.durationS && oldDist > 0 ? Math.round(cur.durationS * (newDist / Math.max(1, oldDist))) : cur.durationS;
+    if (newViolations > 0) {
+      toast.warning(`Il nuovo tratto attraversa ${newViolations} zona/e vietata/e`, {
+        description: violations.slice(-newViolations).map(v => v.name).join(", "),
+      });
+    }
+    return {
+      geometry: { type: "LineString", coordinates: merged },
+      distanceM: newDist,
+      durationS: newDur,
+      legDistances: legDists,
+      violations,
+    };
+  }
+
+  /** Applica una modifica LOCALE (sequenza + waypoints) e ricuce il tracciato
+   * con rebuildGeometryLocally; fallback al ricalcolo completo solo se non
+   * c'è nulla da preservare o lo snap del tratto fallisce. */
+  async function applyLocalEdit(nextStops: PsVariantStop[], nextWpts: PsWaypoint[], oldIndexOf: number[]) {
+    const cur = editorRef.current;
+    if (!cur) return;
     const seq = ++snapSeqRef.current; // invalida gli snap in volo: vince questa modifica
     pushEditorHistory();
-    const A = editor.waypoints[insertIdx - 1], B = editor.waypoints[insertIdx];
-    const newWpt: PsWaypoint = { lng: via[0], lat: via[1], mode: editor.shapeMode === "manual" ? "manual" : "snap" };
-    const wpts = [...editor.waypoints];
-    wpts.splice(insertIdx, 0, newWpt);
-    const coords = (editor.geometry?.coordinates ?? null) as [number, number][] | null;
-    if (!coords || coords.length < 2 || !A || !B) {
-      // nessun tracciato da preservare: ricalcolo completo come prima
-      setEditor({ ...editor, waypoints: wpts, dirty: true });
-      recomputeShape(wpts, editor.shapeMode);
+    // elenco e waypoint aggiornati SUBITO; la geometria appena è pronta
+    const quick: VariantEditorState = { ...cur, stops: nextStops, waypoints: nextWpts, dirty: true };
+    editorRef.current = quick;
+    setEditor(quick);
+    if (nextWpts.length < 2) {
+      const empty: VariantEditorState = { ...quick, geometry: null, distanceM: 0, durationS: 0, legDistances: null, violations: [] };
+      editorRef.current = empty;
+      setEditor(empty);
       return;
     }
     setSnapBusy(true);
     try {
-      const legMode = (editor.shapeMode === "manual" || A.mode === "manual" || B.mode === "manual" || newWpt.mode === "manual")
-        ? "manual" as const : "driving" as const;
-      const r = await routeSnap([[A.lng, A.lat], via, [B.lng, B.lat]], legMode, {
-        modes: [legMode, legMode],
-        curb: editor.curb ?? false,
-        curbMask: [!!A.stopId, false, !!B.stopId],
-        projectId,
-      });
-      if (seq !== snapSeqRef.current) return; // nel frattempo è partita una modifica più recente
-      const legCoords = (r.geometry?.coordinates ?? []) as [number, number][];
-      if (legCoords.length < 2) throw new Error("nessuna geometria dal tratto");
-      // Confini del tratto sul tracciato esistente (proiezione monotona).
-      const proj = projectWaypointsOnCoords(coords, editor.waypoints);
-      const idxA = proj[insertIdx - 1], idxB = proj[insertIdx];
-      const oldLegLen = lineLengthM(coords.slice(idxA, idxB + 1));
-      // giunzione senza vertici doppi ai confini del tratto
-      const merged: [number, number][] = [...coords.slice(0, idxA + 1), ...legCoords, ...coords.slice(idxB)]
-        .filter((p, i, arr) => i === 0 || p[0] !== arr[i - 1][0] || p[1] !== arr[i - 1][1]);
-      const newLegLen = r.distanceM || lineLengthM(legCoords);
-      const oldDist = editor.distanceM || lineLengthM(coords);
-      const newDist = Math.max(0, oldDist - oldLegLen + newLegLen);
-      // durata: riscalata in proporzione (indicativa, come prima dell'edit)
-      const newDur = editor.durationS && oldDist > 0 ? Math.round(editor.durationS * (newDist / oldDist)) : editor.durationS;
-      let legs = editor.legDistances;
-      if (legs && legs.length === editor.waypoints.length - 1 && (r.legDistances?.length ?? 0) === 2) {
-        legs = [...legs];
-        legs.splice(insertIdx - 1, 1, r.legDistances![0], r.legDistances![1]);
-      } else {
-        legs = null;
-      }
-      const seenZones = new Set((editor.violations ?? []).map(v => v.zoneId));
-      const violations = [...(editor.violations ?? []), ...(r.violations ?? []).filter(v => !seenZones.has(v.zoneId))];
-      const nextState: VariantEditorState = {
-        ...editor,
-        waypoints: wpts,
-        geometry: { type: "LineString", coordinates: merged },
-        distanceM: newDist,
-        durationS: newDur,
-        legDistances: legs,
-        violations,
-        dirty: true,
-      };
-      editorRef.current = nextState;
-      setEditor(nextState);
-      if ((r.violations ?? []).length > 0) {
-        toast.warning(`La deviazione attraversa ${r.violations!.length} zona/e vietata/e`, {
-          description: r.violations!.map(v => v.name).join(", "),
-        });
-      }
+      const g = await rebuildGeometryLocally(cur, nextWpts, oldIndexOf);
+      if (seq !== snapSeqRef.current) return; // è già partita una modifica più recente
+      if (!g) { recomputeShape(nextWpts, cur.shapeMode); return; }
+      const done: VariantEditorState = { ...editorRef.current!, ...g, dirty: true };
+      editorRef.current = done;
+      setEditor(done);
     } catch {
-      // tratto non ricalcolabile: fallback al ricalcolo completo
-      setEditor({ ...editor, waypoints: wpts, dirty: true });
-      recomputeShape(wpts, editor.shapeMode);
+      if (seq === snapSeqRef.current) recomputeShape(nextWpts, cur.shapeMode);
     } finally { setSnapBusy(false); }
+  }
+
+  /** Drag della linea: inserisce il via ricalcolando SOLO il tratto tra i due
+   * waypoint che lo circondano — il resto del tracciato resta com'è. */
+  function insertViaLocally(insertIdx: number, via: [number, number]) {
+    const cur = editorRef.current;
+    if (!cur) return;
+    const newWpt: PsWaypoint = { lng: via[0], lat: via[1], mode: cur.shapeMode === "manual" ? "manual" : "snap" };
+    const wpts = [...cur.waypoints];
+    wpts.splice(insertIdx, 0, newWpt);
+    const oldIndexOf = cur.waypoints.map((_, i) => i);
+    oldIndexOf.splice(insertIdx, 0, -1);
+    void applyLocalEdit(cur.stops, wpts, oldIndexOf);
   }
 
   /* Entra in modalità "Edita tracciato": copia di lavoro della LineString.
