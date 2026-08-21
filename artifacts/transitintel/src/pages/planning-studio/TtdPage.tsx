@@ -290,8 +290,8 @@ export default function PlanningStudioTtdPage() {
 
   /* ─── Overlay: TUTTE le altre varianti (con conteggio fermate in comune) ─── */
   const candidatesQ = useQuery({
-    queryKey: ["ps", projectId, "ttd-candidates", variantId],
-    enabled: !!projectId && !!variantId && !!baseVariantQ.data && !!routesQ.data,
+    queryKey: ["ps", projectId, "ttd-candidates"],
+    enabled: !!projectId && !!routesQ.data,
     staleTime: 60_000,
     queryFn: async () => {
       const routesById = new Map((routesQ.data ?? []).map(r => [r.id, r]));
@@ -300,7 +300,8 @@ export default function PlanningStudioTtdPage() {
       const all = await listPsVariantsWithStops(projectId);
       const out: { route: PsRoute; variant: PsVariant; stops: PsVariantStop[] }[] = [];
       for (const { variant, stops } of all) {
-        if (variant.id === variantId) continue;
+        // TUTTE le varianti del progetto: l'elenco è il menu di selezione,
+        // riferimento compreso (che viene marcato ★ nel pannello).
         const route = routesById.get(variant.routeId);
         if (!route) continue;
         // NIENTE filtro: si possono accendere anche linee SENZA fermate in
@@ -321,6 +322,50 @@ export default function PlanningStudioTtdPage() {
   }, [variantsQ.data, candidatesQ.data]);
 
   const [overlayOn, setOverlayOn] = useState<Set<string>>(new Set());
+
+  /** Spunta/toglie una variante dal grafico. Il RIFERIMENTO (la variante che
+   *  detta l'asse delle fermate) è implicito: è la prima che accendi, e se la
+   *  spegni passa a un'altra accesa. Così si sceglie tutto da un unico menu,
+   *  senza dover prima impostare una base dai menu a tendina. */
+  function toggleVariantOn(vid: string, routeIdOfVariant: string) {
+    if (vid === variantId) {
+      // era il riferimento: passa alla prima accesa, altrimenti resta vuoto
+      const next = [...overlayOn][0];
+      setOverlayOn(prev => { const n = new Set(prev); if (next) n.delete(next); return n; });
+      setVariantId(next ?? "");
+      if (next) {
+        const nextRoute = (candidatesQ.data ?? []).find(c => c.variant.id === next)?.route.id;
+        if (nextRoute) setRouteId(nextRoute);
+      }
+      return;
+    }
+    if (!variantId) { // prima variante accesa: diventa il riferimento
+      setRouteId(routeIdOfVariant);
+      setVariantId(vid);
+      return;
+    }
+    setOverlayOn(prev => {
+      const n = new Set(prev);
+      if (n.has(vid)) n.delete(vid); else n.add(vid);
+      return n;
+    });
+  }
+  /** Tutte le varianti accese, riferimento compreso. */
+  const isVariantOn = (vid: string) => vid === variantId || overlayOn.has(vid);
+  /** Rende una variante già accesa il nuovo RIFERIMENTO dell'asse. */
+  function makeReference(vid: string, routeIdOfVariant: string) {
+    if (vid === variantId) return;
+    const prevBase = variantId;
+    setOverlayOn(prev => {
+      const n = new Set(prev);
+      n.delete(vid);
+      if (prevBase) n.add(prevBase); // la vecchia base resta accesa, da overlay
+      return n;
+    });
+    setRouteId(routeIdOfVariant);
+    setVariantId(vid);
+  }
+
   const [overlayData, setOverlayData] = useState<Record<string, { trips: PsTrip[]; st: Record<string, PsStopTime[]> }>>({});
   /* ─── Area di lavoro: strumento attivo nella barra laterale (un pannello alla volta) ─── */
   const [activeTool, setActiveTool] = useState<null | "valid" | "layers" | "conn" | "sync" | "mult">(null);
@@ -996,6 +1041,7 @@ export default function PlanningStudioTtdPage() {
     if (!axis) return [];
     const out: TripGeom[] = [];
     for (const cand of candidatesQ.data ?? []) {
+      if (cand.variant.id === variantId) continue; // è la base: già disegnata
       if (!overlayOn.has(cand.variant.id)) continue;
       const data = overlayData[cand.variant.id];
       if (!data) continue;
@@ -1014,7 +1060,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, axis, tripPasses, colorByRoute]);
+  }, [candidatesQ.data, overlayOn, overlayData, axis, tripPasses, colorByRoute, variantId]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
@@ -1563,7 +1609,19 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
   const stLoading = !!variantId && (tripsQ.data ?? []).some(t => !(t.id in stMap));
   const project = projectQ.data;
   const calendars = calendarsQ.data ?? [];
-  const variants = variantsQ.data ?? [];
+
+  /** Riepilogo della selezione: quante linee e quanti percorsi sono accesi. */
+  function selezioneLabel(): string {
+    if (!variantId) return "scegli…";
+    const onIds = new Set<string>([variantId, ...overlayOn]);
+    const cands = candidatesQ.data ?? [];
+    const lines = new Set<string>();
+    for (const c of cands) if (onIds.has(c.variant.id)) lines.add(c.route.shortName ?? c.route.id);
+    if (lines.size === 0) return `${onIds.size} percorsi`;
+    const names = [...lines];
+    const head = names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")}…`;
+    return `${head} · ${onIds.size} percors${onIds.size === 1 ? "o" : "i"}`;
+  }
 
   /* ─── Validità: etichetta di riepilogo e tinta per la colorazione ─── */
   const DAY_CODES: { code: string; label: string }[] = [
@@ -1699,28 +1757,19 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
       {/* Toolbar: linea di riferimento + controlli vista (gli STRUMENTI stanno
           nella barra verticale a destra, un pannello alla volta) */}
       <div className="border-b border-slate-800 bg-slate-900/40 px-3 py-1.5 flex items-center gap-2 text-xs shrink-0 flex-wrap">
-        <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Riferimento</span>
-        <select
-          value={routeId} onChange={e => setRouteId(e.target.value)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[140px]"
-          title="Linea di riferimento"
+        {/* Linee e percorsi si scelgono a spunte dal menu: qui il riepilogo. */}
+        <button
+          onClick={() => toggleTool("layers")}
+          title="Apri il menu Linee e percorsi: spunte multiple, la variante ★ ordina l'asse delle fermate"
+          className={`px-2 py-1.5 rounded border text-left min-w-[210px] truncate transition-colors ${
+            variantId
+              ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-200"
+              : "bg-amber-500/15 border-amber-500/50 text-amber-200 animate-pulse"
+          }`}
         >
-          <option value="">Linea…</option>
-          {routes.map(r => (
-            <option key={r.id} value={r.id}>{r.shortName} {r.longName ? `· ${r.longName}` : ""}</option>
-          ))}
-        </select>
-        <select
-          value={variantId} onChange={e => setVariantId(e.target.value)}
-          disabled={!routeId}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[150px] disabled:opacity-40"
-          title="Variante (percorso) di riferimento"
-        >
-          <option value="">Variante…</option>
-          {variants.map(v => (
-            <option key={v.id} value={v.id}>{(v as any).code ? `${(v as any).code} · ` : ""}{v.name} ({v.direction === 0 ? "andata" : "ritorno"})</option>
-          ))}
-        </select>
+          <span className="text-[9px] uppercase tracking-wider opacity-70">Linee e percorsi</span>{" "}
+          {selezioneLabel()}
+        </button>
         {/* La validità si sceglie a spunte dal pannello «Validità» della barra
             strumenti: qui resta il riepilogo di cosa si sta guardando. */}
         <button
@@ -2318,13 +2367,15 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           <div className="w-[320px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
             <div className="p-3 border-b border-slate-800 flex items-center gap-2">
               <Layers className="w-4 h-4 text-cyan-400" />
-              <h3 className="font-semibold text-sm text-cyan-300">Linee sul grafico</h3>
+              <h3 className="font-semibold text-sm text-cyan-300">Linee e percorsi</h3>
               <div className="flex-1" />
               <button onClick={() => setActiveTool(null)} className="p-1 rounded hover:bg-slate-800"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-2 overflow-y-auto text-xs flex-1">
               <p className="px-2 pb-2 text-[10px] text-slate-500">
-                Accendi altre linee per confrontarle con la <strong>{baseRoute?.shortName ?? "base"}</strong>: ogni linea ha un colore, le fermate comuni diventano interscambi ◆ sull'asse.
+                Spunta le <strong className="text-slate-300">linee</strong> e i <strong className="text-slate-300">percorsi</strong> da
+                vedere insieme: ogni linea ha un colore e le fermate comuni diventano interscambi ◆ sull'asse.
+                La variante ★ detta l'ordine delle fermate sull'asse — clicca la stella di un'altra per cambiarla.
               </p>
               <div className="px-2 pb-2">
                 <input value={lineSearch} onChange={e => setLineSearch(e.target.value)}
@@ -2355,7 +2406,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                 }
                 return [...byRoute.values()].map(grp => {
                   const ids = grp.items.map(c => c.variant.id);
-                  const onCount = ids.filter(id => overlayOn.has(id)).length;
+                  const onCount = ids.filter(isVariantOn).length;
                   const groupColor = colorByRoute.get(grp.route.id) ?? routeColor(grp.route.color, "#475569");
                   return (
                     <div key={grp.route.id} className="mb-0.5">
@@ -2364,12 +2415,29 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           type="checkbox"
                           checked={onCount === ids.length && ids.length > 0}
                           ref={el => { if (el) el.indeterminate = onCount > 0 && onCount < ids.length; }}
-                          onChange={() => setOverlayOn(prev => {
-                            const n = new Set(prev);
-                            if (onCount > 0) ids.forEach(id => n.delete(id));
-                            else ids.forEach(id => n.add(id));
-                            return n;
-                          })}
+                          onChange={() => {
+                            if (onCount > 0) {
+                              // spegne l'intera linea; se c'era il riferimento, passa a una superstite
+                              const survivors = [...overlayOn].filter(id => !ids.includes(id));
+                              setOverlayOn(new Set(survivors));
+                              if (ids.includes(variantId)) {
+                                const next = survivors[0] ?? "";
+                                setVariantId(next);
+                                const nr = (candidatesQ.data ?? []).find(c => c.variant.id === next)?.route.id;
+                                setRouteId(next ? (nr ?? "") : "");
+                              }
+                            } else {
+                              // accende tutte le varianti della linea: la prima fa da riferimento se manca
+                              const [first, ...rest] = ids;
+                              if (!variantId) {
+                                setRouteId(grp.route.id);
+                                setVariantId(first);
+                                setOverlayOn(prev => { const n = new Set(prev); rest.forEach(id => n.add(id)); return n; });
+                              } else {
+                                setOverlayOn(prev => { const n = new Set(prev); ids.forEach(id => { if (id !== variantId) n.add(id); }); return n; });
+                              }
+                            }
+                          }}
                           className="accent-cyan-500"
                         />
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: onCount > 0 ? groupColor : "#475569" }} />
@@ -2383,18 +2451,27 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                         <span className="text-[10px] text-slate-500">{onCount}/{ids.length}</span>
                       </label>
                       {grp.items.map(c => (
-                        <label key={c.variant.id} className="flex items-center gap-2 pl-8 pr-2 py-1 rounded hover:bg-slate-800 cursor-pointer">
+                        <label key={c.variant.id}
+                          className={`flex items-center gap-2 pl-8 pr-2 py-1 rounded hover:bg-slate-800 cursor-pointer ${
+                            c.variant.id === variantId ? "bg-amber-500/10" : ""
+                          }`}>
                           <input
                             type="checkbox"
-                            checked={overlayOn.has(c.variant.id)}
-                            onChange={() => setOverlayOn(prev => {
-                              const n = new Set(prev);
-                              if (n.has(c.variant.id)) n.delete(c.variant.id); else n.add(c.variant.id);
-                              return n;
-                            })}
+                            checked={isVariantOn(c.variant.id)}
+                            onChange={() => toggleVariantOn(c.variant.id, c.route.id)}
                             className="accent-cyan-500"
                           />
-                          <span className="flex-1 truncate text-slate-300">{(c.variant as any).code ? `${(c.variant as any).code} · ` : ""}{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
+                          <span className="flex-1 truncate text-slate-300">{c.variant.code ? `${c.variant.code} · ` : ""}{c.variant.name} ({c.variant.direction === 0 ? "→" : "←"})</span>
+                          {isVariantOn(c.variant.id) && (
+                            <button
+                              onClick={e => { e.preventDefault(); e.stopPropagation(); makeReference(c.variant.id, c.route.id); }}
+                              title={c.variant.id === variantId
+                                ? "Riferimento: le fermate di questo percorso ordinano l'asse"
+                                : "Rendi questo percorso il riferimento dell'asse"}
+                              className={`px-1 leading-none ${c.variant.id === variantId ? "text-amber-300" : "text-slate-600 hover:text-amber-300"}`}>
+                              ★
+                            </button>
+                          )}
                           <span className="text-[10px] text-slate-500">{c.shared} nodi comuni</span>
                         </label>
                       ))}
@@ -2722,11 +2799,11 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             title="Validità da mostrare (scelta multipla) e colorazione del grafico" />
           <RailButton
             icon={<Layers className="w-4 h-4" />} label="Linee"
-            active={activeTool === "layers"} disabled={!variantId}
-            badge={overlayOn.size > 0 ? String(overlayOn.size) : null}
+            active={activeTool === "layers"}
+            badge={overlayOn.size + (variantId ? 1 : 0) > 0 ? String(overlayOn.size + (variantId ? 1 : 0)) : null}
             activeCls="bg-cyan-500/15 border-cyan-500/50 text-cyan-300"
             onClick={() => toggleTool("layers")}
-            title="Accendi altre linee sul grafico (un colore per linea)" />
+            title="Scegli linee e percorsi da vedere insieme (spunte multiple)" />
           <RailButton
             icon={<CircleDot className="w-4 h-4" />} label="Coincid."
             active={activeTool === "conn"} disabled={!variantId}
@@ -2770,7 +2847,9 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             )}
           </>
         ) : (
-          <span>Seleziona una linea e una variante di riferimento per iniziare.</span>
+          <button onClick={() => toggleTool("layers")} className="text-amber-300 hover:text-amber-200 underline">
+            Scegli linee e percorsi dal menu «Linee e percorsi» per iniziare.
+          </button>
         )}
         <div className="flex-1" />
         <span className="text-slate-600">rotella = zoom · drag sfondo = pan · drag corsa = trasla orari</span>
