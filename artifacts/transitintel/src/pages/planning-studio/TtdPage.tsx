@@ -513,8 +513,70 @@ export default function PlanningStudioTtdPage() {
       shared,
     };
   }, [baseAxis, yMode, candidatesQ.data, overlayOn, nodeOfStop, stopsQ.data, routeId]);
-  // Asse attivo per il disegno: unione se disponibile, altrimenti base.
-  const axis = unionAxis ?? (baseAxis ? { ...baseAxis, shared: new Set<string>() } : null);
+  // Asse COMPLETO: unione se disponibile, altrimenti base.
+  const axisFull = unionAxis ?? (baseAxis ? { ...baseAxis, shared: new Set<string>() } : null);
+
+  /* ─── Asse COMPATTO: solo le fermate che contano ───
+   * Con tutte le fermate in elenco il grafico diventa illeggibile. In modalità
+   * compatta restano in asse i CAPOLINEA (dell'asse e di ogni percorso acceso),
+   * i NODI DI INTERSCAMBIO (fermate di più linee) e le fermate che stanno in un
+   * NODO/cluster del progetto: sono i punti su cui si ragiona quando si
+   * aggiustano coincidenze e cadenze.
+   * Le fermate nascoste NON spezzano le corse: mantengono una posizione
+   * interpolata tra le due righe visibili che le circondano, così la spezzata
+   * conserva la sua forma (e le pendenze restano quelle vere). */
+  const [stopMode, setStopMode] = useState<"completo" | "compatto">("completo");
+  const clusteredStopIds = useMemo(() => {
+    const s2 = new Set<string>();
+    for (const st of stopsQ.data ?? []) if ((st as any).clusterId) s2.add(st.id);
+    return s2;
+  }, [stopsQ.data]);
+  /** Capolinea di ogni percorso acceso (prima e ultima fermata della sequenza). */
+  const terminalStopIds = useMemo(() => {
+    const s2 = new Set<string>();
+    const add = (stops: { stopId: string }[] | undefined) => {
+      if (!stops?.length) return;
+      s2.add(stops[0].stopId);
+      s2.add(stops[stops.length - 1].stopId);
+    };
+    add(baseVariantQ.data?.stops);
+    for (const c of candidatesQ.data ?? []) if (overlayOn.has(c.variant.id)) add(c.stops);
+    return s2;
+  }, [baseVariantQ.data, candidatesQ.data, overlayOn]);
+
+  const axis = useMemo(() => {
+    // in "distanze reali" l'asse è metrico: le etichette sono già diradate
+    if (!axisFull || stopMode === "completo" || yMode === "distanza") return axisFull;
+    const rows = axisFull.stops;
+    const n = rows.length;
+    if (n < 3) return axisFull;
+    const keep: number[] = [];
+    rows.forEach((s2, i) => {
+      const important = i === 0 || i === n - 1
+        || axisFull.shared.has(s2.stopId)
+        || terminalStopIds.has(s2.stopId)
+        || clusteredStopIds.has(s2.stopId);
+      if (important) keep.push(i);
+    });
+    if (keep.length < 2 || keep.length === n) return axisFull;
+    const posOfRow = (i: number): number => {
+      // riga tenuta → sua posizione; riga nascosta → interpolata nel tratto
+      const k = keep.indexOf(i);
+      if (k >= 0) return k;
+      let j = 0;
+      while (j < keep.length - 1 && keep[j + 1] < i) j++;
+      const a = keep[j], b = keep[j + 1] ?? a;
+      return b > a ? j + (i - a) / (b - a) : j;
+    };
+    const byStop = new globalThis.Map<string, number>();
+    for (const [stopId, rowIdx] of axisFull.byStop.entries()) byStop.set(stopId, posOfRow(rowIdx));
+    return {
+      stops: keep.map((i, k) => ({ ...rows[i], dist: k })),
+      byStop,
+      total: Math.max(1, keep.length - 1),
+      shared: axisFull.shared,
+    };
+  }, [axisFull, stopMode, yMode, terminalStopIds, clusteredStopIds]);
 
   /* ─── Fascia oraria esplicita (filtro vista) ─── */
   const [winFrom, setWinFrom] = useState("04:00");
@@ -1826,6 +1888,24 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
           title="Equidistante = fermate a passo uniforme (più leggibile) · Distanze = proporzionale ai km reali">
           {yMode === "equidistante" ? "≡ Equidistante" : "⇕ Distanze reali"}
+        </button>
+        {/* Quante fermate mostrare in asse: tutte, oppure solo quelle che
+            contano (capolinea, interscambi, nodi del progetto). */}
+        <button
+          onClick={() => setStopMode(m => m === "completo" ? "compatto" : "completo")}
+          disabled={yMode === "distanza"}
+          className={`px-2 py-1 rounded border transition-colors disabled:opacity-40 ${
+            stopMode === "compatto"
+              ? "bg-violet-500/15 border-violet-500/50 text-violet-200"
+              : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+          }`}
+          title={yMode === "distanza"
+            ? "In «distanze reali» l'asse è metrico: le etichette sono già diradate"
+            : "Elenco fermate: COMPLETO (tutte) oppure COMPATTO (capolinea, interscambi ◆ e nodi del progetto). Le corse restano intere: le fermate nascoste non spezzano le spezzate."}
+        >
+          {stopMode === "compatto"
+            ? `▤ Compatto${axisFull && axis && axisFull.stops.length !== axis.stops.length ? ` ${axis.stops.length}/${axisFull.stops.length}` : ""}`
+            : "▦ Tutte le fermate"}
         </button>
         <div className="flex-1" />
         {/* Vista: diagramma oppure libretto orario (le stesse corse, in colonna) */}
