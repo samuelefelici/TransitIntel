@@ -694,26 +694,58 @@ export default function PlanningStudioTtdPage() {
     return s;
   }, [pendingOps]);
 
+  /** Orari di una corsa, ovunque stiano: variante di riferimento (stMap) o
+   *  una delle altre linee accese (overlayData). Serve a far scorrere QUALSIASI
+   *  corsa sul grafico, non solo quelle del riferimento. */
+  const stsOfTrip = useCallback((tripId: string): PsStopTime[] | null => {
+    if (stMap[tripId]) return stMap[tripId];
+    for (const d of Object.values(overlayData)) {
+      if (d.st[tripId]) return d.st[tripId];
+    }
+    return null;
+  }, [stMap, overlayData]);
+  /** Variante che ospita gli orari della corsa (null = riferimento/stMap). */
+  const overlayVidOfTrip = useCallback((tripId: string): string | null => {
+    if (stMap[tripId]) return null;
+    for (const [vid, d] of Object.entries(overlayData)) if (d.st[tripId]) return vid;
+    return null;
+  }, [stMap, overlayData]);
+
+  const bump = (st: PsStopTime, deltaMin: number): PsStopTime => ({
+    ...st,
+    arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+    departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+  });
   const shiftStMapLocal = (tripId: string, deltaMin: number) => {
+    const vid = overlayVidOfTrip(tripId);
+    if (vid) {
+      setOverlayData(prev => {
+        const d = prev[vid]; const sts = d?.st[tripId];
+        if (!sts) return prev;
+        return { ...prev, [vid]: { ...d, st: { ...d.st, [tripId]: sts.map(st => bump(st, deltaMin)) } } };
+      });
+      return;
+    }
     setStMap(prev => {
       const sts = prev[tripId];
       if (!sts) return prev;
-      return { ...prev, [tripId]: sts.map(st => ({
-        ...st,
-        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
-        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
-      })) };
+      return { ...prev, [tripId]: sts.map(st => bump(st, deltaMin)) };
     });
   };
   const shiftNodeLocal = (tripId: string, stIdx: number, deltaMin: number) => {
+    const vid = overlayVidOfTrip(tripId);
+    if (vid) {
+      setOverlayData(prev => {
+        const d = prev[vid]; const sts = d?.st[tripId];
+        if (!sts) return prev;
+        return { ...prev, [vid]: { ...d, st: { ...d.st, [tripId]: sts.map((st, i) => i === stIdx ? bump(st, deltaMin) : st) } } };
+      });
+      return;
+    }
     setStMap(prev => {
       const sts = prev[tripId];
       if (!sts) return prev;
-      return { ...prev, [tripId]: sts.map((st, i) => i === stIdx ? {
-        ...st,
-        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
-        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
-      } : st) };
+      return { ...prev, [tripId]: sts.map((st, i) => i === stIdx ? bump(st, deltaMin) : st) };
     });
   };
 
@@ -797,7 +829,7 @@ export default function PlanningStudioTtdPage() {
             && !localCopies.some(c => c.id === op.tripId)) touched.add(op.tripId);
       }
       for (const id of touched) {
-        const sts = stMap[id] ?? [];
+        const sts = stsOfTrip(id) ?? [];
         if (sts.length) await setPsStopTimes(projectId, id, sts.map(st => ({
           stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
         })));
@@ -814,7 +846,7 @@ export default function PlanningStudioTtdPage() {
     } finally {
       setSavingOps(false);
     }
-  }, [pendingOps, deletedTripIds, localCopies, stMap, projectId, variantId, qc]);
+  }, [pendingOps, deletedTripIds, localCopies, stsOfTrip, projectId, variantId, qc]);
 
 
 
@@ -848,8 +880,8 @@ export default function PlanningStudioTtdPage() {
     }
     if (nodeAttr) {
       const [nTrip, nIdx] = nodeAttr.split("|");
-      if (stMap[nTrip]) dragRef.current = { mode: "node", tripId: nTrip, stIdx: Number(nIdx), startX: pos.x };
-    } else if (tripId && stMap[tripId]) {
+      if (stsOfTrip(nTrip)) dragRef.current = { mode: "node", tripId: nTrip, stIdx: Number(nIdx), startX: pos.x };
+    } else if (tripId && stsOfTrip(tripId)) {
       dragRef.current = { mode: "trip", tripId, startX: pos.x };
     } else {
       dragRef.current = { mode: "pan", startX: pos.x, t0: tDomain.t0, t1: tDomain.t1 };
@@ -888,7 +920,7 @@ export default function PlanningStudioTtdPage() {
       const preview = nodeDragRef.current;
       const deltaMin = Math.round((preview?.deltaSec ?? 0) / 60);
       if (!preview || deltaMin === 0) { setNodeDrag(null); return; }
-      const sts = stMap[d.tripId] ?? [];
+      const sts = stsOfTrip(d.tripId) ?? [];
       const st = sts[d.stIdx];
       if (!st) { setNodeDrag(null); return; }
       const newArr = hmsToSec(st.arrivalTime) + deltaMin * 60;
@@ -910,7 +942,7 @@ export default function PlanningStudioTtdPage() {
     const preview = tripDragRef.current;
     const deltaMinutes = Math.round((preview?.deltaSec ?? 0) / 60);
     if (!preview || deltaMinutes === 0) { setTripDrag(null); return; }
-    const sts = stMap[d.tripId] ?? [];
+    const sts = stsOfTrip(d.tripId) ?? [];
     const minSec = Math.min(...sts.map(s => hmsToSec(s.arrivalTime)));
     if (minSec + deltaMinutes * 60 < 0) {
       setTripDrag(null);
@@ -2154,24 +2186,39 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
 
               <g clipPath="url(#ttd-clip)">
                 {/* Overlay altre linee (sotto le corse base) */}
-                {overlayGeoms.map(g => (
+                {overlayGeoms.map(g => {
+                  const ovDragging = tripDrag?.tripId === g.trip.id;
+                  const ovUnsaved = modifiedTripIds.has(g.trip.id);
+                  return (
                   <g key={`ov-${g.trip.id}`} opacity={g.trip.isActive ? 0.75 : 0.3}>
                     {g.segs.map((seg, i) => (
                       <polyline key={i}
                         points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
-                        fill="none" stroke={strokeOf(g.trip, g.color)} strokeWidth={1.2}
-                        strokeDasharray={dashOf(g.trip)} strokeLinejoin="round" />
+                        fill="none" stroke={ovDragging ? "#fbbf24" : strokeOf(g.trip, g.color)}
+                        strokeWidth={ovDragging ? 2.2 : 1.2}
+                        strokeDasharray={ovUnsaved ? "6 4" : dashOf(g.trip)} strokeLinejoin="round" />
+                    ))}
+                    {/* anteprima della traslazione: l'originale resta fermo finché non rilasci */}
+                    {ovDragging && tripDrag && g.segs.map((seg, i) => (
+                      <polyline key={`ovdrag${i}`}
+                        points={seg.map(p => `${xOf(p.sec + tripDrag.deltaSec)},${yOf(p.dist)}`).join(" ")}
+                        fill="none" stroke="#fbbf24" strokeWidth={1.8}
+                        strokeDasharray="5 4" strokeLinejoin="round" />
                     ))}
                     {/* fascia invisibile più larga per hover */}
+                    {/* fascia di presa: rende TRASCINABILI anche le corse delle
+                        altre linee accese (prima solo quelle del riferimento) */}
                     {g.segs.map((seg, i) => (
-                      <polyline key={`h${i}`}
+                      <polyline key={`h${i}`} data-trip={g.trip.id}
                         points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
                         fill="none" stroke="transparent" strokeWidth={8}
+                        style={{ cursor: "ew-resize" }}
                         onPointerMove={e => onTripHover(e, g)}
                         onPointerLeave={() => setHover(null)} />
                     ))}
                   </g>
-                ))}
+                  );
+                })}
 
                 {/* Corse della variante base */}
                 {baseGeoms.map(g => {
