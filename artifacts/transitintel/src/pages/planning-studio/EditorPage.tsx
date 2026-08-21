@@ -1859,9 +1859,29 @@ export default function PlanningStudioEditorPage() {
     if (!editor) return;
     setSaving(true);
     try {
-      // 1. Salva sequenza fermate
-      await setPsVariantStops(projectId, editor.variantId,
-        editor.stops.map(s => ({ stopId: s.stopId })));
+      // 1. Salva sequenza fermate CON le progressive dai km reali del tracciato:
+      //    servono all'asse distanze del grafico e a interpolare gli orari delle
+      //    fermate nuove quando il server riallinea le corse.
+      const legs = editor.legDistances;
+      const cum: (number | null)[] = [0];
+      for (let i = 1; i < editor.stops.length; i++) {
+        const prev = cum[i - 1];
+        const wA = waypointIndexForStopPos(editor.waypoints, editor.stops, i - 1);
+        const wB = waypointIndexForStopPos(editor.waypoints, editor.stops, i);
+        // somma le tratte di waypoint comprese tra le due fermate (i via in mezzo contano)
+        let seg: number | null = null;
+        if (legs && wA >= 0 && wB > wA && wB - 1 < legs.length) {
+          seg = 0;
+          for (let k = wA; k < wB; k++) {
+            const d = legs[k];
+            if (typeof d !== "number" || !Number.isFinite(d)) { seg = null; break; }
+            seg += d;
+          }
+        }
+        cum.push(prev != null && seg != null ? Math.round((prev + seg) * 10) / 10 : null);
+      }
+      const syncRes = await setPsVariantStops(projectId, editor.variantId,
+        editor.stops.map((s, i) => ({ stopId: s.stopId, shapeDistTraveled: cum[i] })));
       // 2. Salva shape (se ho una geometry)
       if (editor.geometry && editor.geometry.coordinates.length >= 2) {
         await setPsVariantShape(projectId, editor.variantId, {
@@ -1872,10 +1892,23 @@ export default function PlanningStudioEditorPage() {
           durationS: editor.durationS ?? undefined,
         });
       }
+      // Resoconto onesto del riallineamento: l'operatore deve sapere che le
+      // corse hanno cambiato orario, e quali non erano rimodulabili.
+      const sync = syncRes?.tripsAligned
+        ? ` · ${syncRes.tripsAligned} cors${syncRes.tripsAligned === 1 ? "a" : "e"} riallineat${syncRes.tripsAligned === 1 ? "a" : "e"}`
+          + (syncRes.stopsDropped > 0 ? ` (${syncRes.stopsDropped} transiti tolti)` : "")
+          + (syncRes.stopsAdded > 0 ? ` (${syncRes.stopsAdded} transiti stimati)` : "")
+        : "";
       toast.success("✅ Percorso salvato", {
-        description: `${editor.stops.length} fermate · ${editor.geometry ? `${(editor.distanceM! / 1000).toFixed(2)} km di percorso` : "nessun tracciato"} — puoi chiudere l'editor.`,
-        duration: 5000,
+        description: `${editor.stops.length} fermate · ${editor.geometry ? `${(editor.distanceM! / 1000).toFixed(2)} km di percorso` : "nessun tracciato"}${sync} — puoi chiudere l'editor.`,
+        duration: 6000,
       });
+      if (syncRes?.tripsSkipped?.length) {
+        toast.warning(`${syncRes.tripsSkipped.length} corse NON riallineate`, {
+          description: "Restavano con meno di 2 fermate del nuovo percorso: gli orari sono rimasti com'erano. Controllale nella sezione Corse (o eliminale e rigenerale).",
+          duration: 9000,
+        });
+      }
       setVariantSavedAt(Date.now());
       setEditor({ ...editor, dirty: false });
       // Aggiorna flag has_shape sulla lista varianti della route

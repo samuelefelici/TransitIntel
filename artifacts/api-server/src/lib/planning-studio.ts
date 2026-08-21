@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { withVia } from "./agent-context";
+import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 
 /* ════════════════════════════════════════════════════════════
  *  Bootstrap tabelle
@@ -1882,6 +1883,18 @@ router.delete("/planning-studio/projects/:id/variants/:variantId", async (req, r
   res.json({ ok: true, deletedTrips: tripCount });
 });
 
+/* Orari GTFS (ammessi oltre le 24:00) ↔ secondi, per il riallineamento delle
+ * corse quando cambia la sequenza fermate del percorso. */
+function hmsToSecPs(t: string): number {
+  const q = String(t).split(":").map(Number);
+  return (q[0] || 0) * 3600 + (q[1] || 0) * 60 + (q[2] || 0);
+}
+function secToHmsPs(x: number): string {
+  const s = Math.max(0, Math.round(x));
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(Math.floor(s / 3600))}:${p(Math.floor((s % 3600) / 60))}:${p(s % 60)}`;
+}
+
 /** PUT /variants/:variantId/stops — sostituisce l'intera sequenza.
  *  body: { stops: [{ stopId, pickupType?, dropOffType?, timepoint?, shapeDistTraveled? }, ...] } */
 router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req, res): Promise<void> => {
@@ -1893,9 +1906,21 @@ router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req
     res.status(404).json({ error: "Variante non trovata in questo progetto" }); return;
   }
   const list: any[] = Array.isArray(req.body?.stops) ? req.body.stops : [];
+  // Le corse della variante seguono la sequenza: chi non allinea gli orari si
+  // ritrova transiti a fermate che il percorso non tocca più (visibili aprendo
+  // «modifica corsa»). realign=false per salvare la sola sequenza.
+  const realign = req.body?.realign !== false;
+  const newSeq: SeqStop[] = list
+    .filter((s: any) => s?.stopId && UUID_RE.test(String(s.stopId)))
+    .map((s: any) => ({
+      stopId: String(s.stopId),
+      shapeDistTraveled: typeof s.shapeDistTraveled === "number" ? s.shapeDistTraveled : null,
+    }));
   // Transazione: DELETE + reinserimento atomici (un INSERT fallito dopo il
-  // DELETE committato lascerebbe il percorso senza fermate).
+  // DELETE committato lascerebbe il percorso senza fermate). Nella stessa
+  // transazione vengono rimodulate le corse: o cambia tutto, o non cambia nulla.
   let seq = 1;
+  const sync = { trips: 0, aligned: 0, dropped: 0, added: 0, skipped: [] as string[] };
   await db.transaction(async (tx) => {
     await tx.execute(sql`DELETE FROM ps_variant_stops WHERE variant_id = ${variantId}::uuid`);
     for (const s of list) {
@@ -1909,9 +1934,58 @@ router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req
       seq++;
     }
     await tx.execute(sql`UPDATE ps_route_variants SET updated_at = now() WHERE id = ${variantId}::uuid`);
+
+    if (!realign || newSeq.length < 2) return;
+    const tripsR = await tx.execute(sql`
+      SELECT id FROM ps_trips WHERE variant_id = ${variantId}::uuid AND project_id = ${proj.id}::uuid`);
+    const trips: any[] = (tripsR as any).rows ?? [];
+    sync.trips = trips.length;
+    for (const t of trips) {
+      const stR = await tx.execute(sql`
+        SELECT stop_id, arrival_time, departure_time, pickup_type, drop_off_type, timepoint
+          FROM ps_stop_times WHERE trip_id = ${t.id}::uuid ORDER BY stop_seq ASC`);
+      const oldRows: StopTimeRow[] = ((stR as any).rows ?? []).map((r: any) => ({
+        stopId: String(r.stop_id),
+        arrivalSec: hmsToSecPs(String(r.arrival_time)),
+        departureSec: hmsToSecPs(String(r.departure_time)),
+        pickupType: r.pickup_type ?? 0,
+        dropOffType: r.drop_off_type ?? 0,
+        timepoint: r.timepoint ?? 1,
+      }));
+      if (oldRows.length === 0) continue; // prototipo senza orari: nulla da rimodulare
+      const out = realignStopTimes(newSeq, oldRows);
+      sync.dropped += out.dropped;
+      sync.added += out.added;
+      if (!out.rows) { sync.skipped.push(String(t.id)); continue; }
+      if (!out.changed) continue;
+      await tx.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${t.id}::uuid`);
+      let k = 1;
+      for (const r of out.rows) {
+        await tx.execute(sql`
+          INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                     pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+          VALUES (${t.id}::uuid, ${k}, ${r.stopId}::uuid,
+                  ${secToHmsPs(r.arrivalSec)}, ${secToHmsPs(r.departureSec)},
+                  ${r.pickupType ?? 0}, ${r.dropOffType ?? 0}, ${r.timepoint ?? 1},
+                  ${r.shapeDistTraveled ?? null})
+        `);
+        k++;
+      }
+      sync.aligned++;
+    }
   });
-  await logActivity(proj.id, req.user!.id, "ps.variant.sequence", { targetId: variantId, payload: { count: seq - 1 } });
-  res.json({ ok: true, count: seq - 1 });
+  await logActivity(proj.id, req.user!.id, "ps.variant.sequence", {
+    targetId: variantId,
+    payload: { count: seq - 1, corseAllineate: sync.aligned, corseNonAllineabili: sync.skipped.length },
+  });
+  res.json({
+    ok: true, count: seq - 1,
+    tripsAligned: sync.aligned,
+    tripsTotal: sync.trips,
+    stopsDropped: sync.dropped,
+    stopsAdded: sync.added,
+    tripsSkipped: sync.skipped.slice(0, 50),
+  });
 });
 
 /** PUT /variants/:variantId/shape — upsert dello shape della variante.
