@@ -60,6 +60,42 @@ function cumDistsOf(vStops: PsVariantStop[]): number[] {
   return out;
 }
 
+/* ─── Ordinamento della tabella corse ───────────────────────────────────────
+ * Ogni intestazione è un pulsante: 1° clic crescente, 2° decrescente, 3° torna
+ * all'ordine naturale (partenza, poi nome). */
+type TripSortKey =
+  | "partenza" | "linea" | "headsign" | "giorni" | "categorie"
+  | "periodo" | "etichetta" | "chiamata" | "stato";
+type TripSort = { key: TripSortKey; dir: "asc" | "desc" } | null;
+
+/** Intestazione ordinabile: etichetta + freccia dello stato corrente. */
+function SortTh({ label, sortKey, sort, onToggle, title, align = "left", className = "" }: {
+  label: string;
+  sortKey: TripSortKey;
+  sort: TripSort;
+  onToggle: (k: TripSortKey) => void;
+  title?: string;
+  align?: "left" | "center";
+  className?: string;
+}) {
+  const active = sort?.key === sortKey;
+  const arrow = active ? (sort!.dir === "asc" ? "▲" : "▼") : "↕";
+  return (
+    <th className={`p-2 ${align === "center" ? "text-center" : "text-left"} ${className}`}>
+      <button
+        onClick={() => onToggle(sortKey)}
+        title={`${title ? `${title}\n\n` : ""}Clic per ordinare: crescente → decrescente → ordine naturale`}
+        className={`inline-flex items-center gap-1 rounded px-1 -mx-1 py-0.5 transition-colors hover:text-amber-300 ${
+          active ? "text-amber-300 font-semibold" : "text-inherit"
+        }`}
+      >
+        {label}
+        <span className={active ? "text-[9px]" : "text-[9px] text-slate-600"}>{arrow}</span>
+      </button>
+    </th>
+  );
+}
+
 function fmtTime(t?: string | null) {
   if (!t) return "—";
   return t.length >= 5 ? t.slice(0, 5) : t;
@@ -412,6 +448,14 @@ export default function PlanningStudioTripsPage() {
     });
   }, [tripsQ.data, onlyActive, firstTimes]);
 
+  /* ─── Ordinamento per colonna (clic sull'intestazione) ───
+   * null = ordine naturale (partenza, poi nome): il terzo clic ci torna. */
+  const [sort, setSort] = useState<TripSort>(null);
+  const toggleSort = (key: TripSortKey) => setSort(cur =>
+    !cur || cur.key !== key ? { key, dir: "asc" }
+      : cur.dir === "asc" ? { key, dir: "desc" }
+        : null);
+
   /* ─── Selezione bulk ─── */
   const [selected, setSelected] = useState<Set<string>>(new Set());
   function toggleSel(id: string) {
@@ -713,6 +757,7 @@ export default function PlanningStudioTripsPage() {
   const effActive = (t: PsTrip) => pend(t.id)?.isActive ?? t.isActive;
   const effOnDemand = (t: PsTrip) => pend(t.id)?.onDemand ?? !!t.attributes?.onDemand;
 
+
   async function saveAllPending() {
     if (pendingOps.size === 0 || savingOps) return;
     setSavingOps(true);
@@ -846,6 +891,53 @@ export default function PlanningStudioTripsPage() {
   const project = projectQ.data;
   const routes = routesQ.data ?? [];
   const variants = variantsQ.data ?? [];
+
+  /* ─── Righe ORDINATE per la colonna scelta ───
+   * Ordina i valori EFFETTIVI (quelli mostrati, modifiche in sospeso comprese)
+   * e lascia in fondo i vuoti in entrambi i versi: le corse senza orario o
+   * senza periodo non devono coprire quelle buone in cima. Confronto naturale
+   * (numerico) sui nomi linea, così 2 < 10 < 44 e non "10" < "2".
+   * Senza colonna scelta resta l'ordine naturale di filteredTrips. */
+  const sortedTrips = useMemo(() => {
+    if (!sort) return filteredTrips;
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const catsOf = (t: PsTrip) => (tripsValQ.data?.categories?.[t.id] ?? [])
+      .map(cid => catById.get(cid)?.name ?? "").filter(Boolean).sort().join(", ");
+    /** Chiave di confronto della colonna: stringa, numero o null (= vuoto). */
+    const keyOf = (t: PsTrip): string | number | null => {
+      switch (sort.key) {
+        case "partenza": return t.firstDeparture ?? firstTimes[t.id] ?? null;
+        case "linea": {
+          const r = routes.find(x => x.id === t.routeId);
+          const v = variants.find(x => x.id === t.variantId);
+          return `${r?.shortName ?? ""} ${v?.code ?? ""} ${v?.name ?? ""}`.trim() || null;
+        }
+        case "headsign": return t.headsign || variants.find(v => v.id === t.variantId)?.headsign || null;
+        case "giorni": return WD_LABELS_ROW.reduce((n, _l, i) => n + (rowDayOn(t, i) ? 1 : 0), 0);
+        case "categorie": return catsOf(t) || null;
+        case "periodo": return t.validFrom || t.validTo || null;
+        case "etichetta": return effServiceLabel(t) || null;
+        case "chiamata": return effOnDemand(t) ? 0 : 1;   // a chiamata prima in asc
+        case "stato": return effActive(t) ? 0 : 1;        // attive prima in asc
+        default: return null;
+      }
+    };
+    return [...filteredTrips]
+      .map((t, i) => ({ t, i, k: keyOf(t) }))
+      .sort((a, b) => {
+        // I vuoti restano in fondo in ENTRAMBI i versi: le corse senza orario
+        // o senza periodo non devono coprire quelle buone quando si inverte.
+        if (a.k === null && b.k === null) return a.i - b.i;
+        if (a.k === null) return 1;
+        if (b.k === null) return -1;
+        const c = typeof a.k === "number" && typeof b.k === "number"
+          ? a.k - b.k
+          : String(a.k).localeCompare(String(b.k), "it", { numeric: true, sensitivity: "base" });
+        return c !== 0 ? c * dir : a.i - b.i; // parità: ordine naturale, sort stabile
+      })
+      .map(x => x.t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredTrips, sort, firstTimes, routes, variants, tripsValQ.data, catById, pendingOps]);
   const calendars = calendarsQ.data ?? [];
 
   return (
@@ -1143,20 +1235,26 @@ export default function PlanningStudioTripsPage() {
                     onChange={toggleAll}
                     className="accent-amber-500" />
                 </th>
-                <th className="p-2 text-left">Partenza</th>
-                <th className="p-2 text-left">Linea / Variante</th>
-                <th className="p-2 text-left">Headsign</th>
-                <th className="p-2 text-left" title="Giorni della settimana in cui la corsa è valida: clic sul giorno per accendere/spegnere">Giorni validità</th>
-                <th className="p-2 text-left" title="Categorie del calendario aziendale attive sulla corsa (nessuna = vale sempre)">Categorie</th>
-                <th className="p-2 text-left" title="Periodo di esistenza della corsa (vuoto = illimitata)">Periodo</th>
-                <th className="p-2 text-left">Etichetta</th>
-                <th className="p-2 text-center w-16" title="Corsa effettuata solo su prenotazione (servizio a chiamata / DRT)">A chiam.</th>
-                <th className="p-2 text-center w-16">Stato</th>
+                <SortTh label="Partenza" sortKey="partenza" sort={sort} onToggle={toggleSort} />
+                <SortTh label="Linea / Variante" sortKey="linea" sort={sort} onToggle={toggleSort}
+                  title="Ordina per linea, poi codice percorso e nome variante (2 prima di 10)" />
+                <SortTh label="Headsign" sortKey="headsign" sort={sort} onToggle={toggleSort} />
+                <SortTh label="Giorni validità" sortKey="giorni" sort={sort} onToggle={toggleSort}
+                  title="Giorni della settimana in cui la corsa è valida: clic sul giorno per accendere/spegnere. L'ordinamento usa il NUMERO di giorni attivi" />
+                <SortTh label="Categorie" sortKey="categorie" sort={sort} onToggle={toggleSort}
+                  title="Categorie del calendario aziendale attive sulla corsa (nessuna = vale sempre)" />
+                <SortTh label="Periodo" sortKey="periodo" sort={sort} onToggle={toggleSort}
+                  title="Periodo di esistenza della corsa (vuoto = illimitata, resta in fondo)" />
+                <SortTh label="Etichetta" sortKey="etichetta" sort={sort} onToggle={toggleSort} />
+                <SortTh label="A chiam." sortKey="chiamata" sort={sort} onToggle={toggleSort} align="center" className="w-16"
+                  title="Corsa effettuata solo su prenotazione (servizio a chiamata / DRT)" />
+                <SortTh label="Stato" sortKey="stato" sort={sort} onToggle={toggleSort} align="center" className="w-16"
+                  title="Attiva o disattivata" />
                 <th className="p-2 w-20"></th>
               </tr>
             </thead>
             <tbody>
-              {filteredTrips.map(t => {
+              {sortedTrips.map(t => {
                 const route = routes.find(r => r.id === t.routeId);
                 const variant = variants.find(v => v.id === t.variantId);
                 const isSel = selected.has(t.id);
