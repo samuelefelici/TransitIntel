@@ -749,21 +749,80 @@ export default function PlanningStudioTtdPage() {
     });
   };
 
+  /* ─── Spostamenti al MINUTO (tastiera, pulsanti, orario scritto) ───
+   * Il trascinamento col mouse ha la risoluzione del pixel: a grafico largo un
+   * pixel vale parecchi minuti. Qui gli stessi spostamenti si fanno al minuto
+   * esatto, o scrivendo direttamente l'orario. */
+  /** Trasla TUTTA la corsa di N minuti. Ritorna un errore parlante o null. */
+  function shiftTripBy(tripId: string, deltaMin: number): string | null {
+    if (!deltaMin) return null;
+    const sts = stsOfTrip(tripId);
+    if (!sts?.length) return "Orari della corsa non caricati";
+    const minSec = Math.min(...sts.map(x => hmsToSec(x.arrivalTime)));
+    if (minSec + deltaMin * 60 < 0) return "Lo spostamento porterebbe orari prima di 00:00";
+    shiftStMapLocal(tripId, deltaMin);
+    setPendingOps(prev => [...prev, { kind: "shift", tripId, deltaMin }]);
+    return null;
+  }
+  /** Sposta il transito di UN nodo, restando tra la fermata prima e quella dopo. */
+  function shiftNodeBy(tripId: string, stIdx: number, deltaMin: number): string | null {
+    if (!deltaMin) return null;
+    const sts = stsOfTrip(tripId);
+    const st = sts?.[stIdx];
+    if (!sts || !st) return "Nodo non trovato";
+    const newArr = hmsToSec(st.arrivalTime) + deltaMin * 60;
+    const newDep = hmsToSec(st.departureTime) + deltaMin * 60;
+    const prevDep = stIdx > 0 ? hmsToSec(sts[stIdx - 1].departureTime) : -1;
+    const nextArr = stIdx < sts.length - 1 ? hmsToSec(sts[stIdx + 1].arrivalTime) : Infinity;
+    if (newArr < 0) return "Orario prima di 00:00";
+    if (newArr <= prevDep || newDep >= nextArr) return "L'orario deve restare tra la fermata precedente e la successiva";
+    shiftNodeLocal(tripId, stIdx, deltaMin);
+    setPendingOps(prev => [...prev, { kind: "node", tripId, stIdx, deltaMin }]);
+    return null;
+  }
+  /** Porta la PARTENZA della corsa all'orario scritto (HH:MM), traslando tutto. */
+  function setTripDeparture(tripId: string, hhmm: string): string | null {
+    const target = hmToSec(hhmm);
+    if (target == null) return "Orario non valido (usa HH:MM)";
+    const sts = stsOfTrip(tripId);
+    if (!sts?.length) return "Orari della corsa non caricati";
+    const cur = hmsToSec(sts[0].departureTime);
+    return shiftTripBy(tripId, Math.round((target - cur) / 60));
+  }
+  /** Porta il transito di un nodo all'orario scritto (HH:MM). */
+  function setNodeTime(tripId: string, stIdx: number, hhmm: string): string | null {
+    const target = hmToSec(hhmm);
+    if (target == null) return "Orario non valido (usa HH:MM)";
+    const sts = stsOfTrip(tripId);
+    const st = sts?.[stIdx];
+    if (!st) return "Nodo non trovato";
+    return shiftNodeBy(tripId, stIdx, Math.round((target - hmsToSec(st.departureTime)) / 60));
+  }
+  /** Nodo selezionato (doppio clic su un pallino): orario scrivibile. */
+  const [selectedNode, setSelectedNode] = useState<{ tripId: string; stIdx: number } | null>(null);
+
+  /* ─── ANNULLA ───
+   * L'operazione da disfare si legge da un REF sempre fresco e le modifiche si
+   * applicano FUORI dall'updater di stato: prima l'annullo chiamava le
+   * scritture dentro setPendingOps (chiusure del primo render, e in dev
+   * l'updater gira due volte) e la corsa non tornava al suo posto. */
+  const pendingOpsRef = useRef(pendingOps);
+  pendingOpsRef.current = pendingOps;
   const undoLast = useCallback(() => {
-    setPendingOps(prev => {
-      const op = prev[prev.length - 1];
-      if (!op) return prev;
-      if (op.kind === "shift") shiftStMapLocal(op.tripId, -op.deltaMin);
-      else if (op.kind === "node") shiftNodeLocal(op.tripId, op.stIdx, -op.deltaMin);
-      else if (op.kind === "delete") setDeletedTripIds(d => { const n = new Set(d); n.delete(op.tripId); return n; });
-      else if (op.kind === "copy") {
-        setLocalCopies(c => c.filter(t => t.id !== op.tempId));
-        setStMap(m => { const n = { ...m }; delete n[op.tempId]; return n; });
-        setSelectedTripId(cur => (cur === op.tempId ? null : cur));
-      }
-      return prev.slice(0, -1);
-    });
-  }, []);
+    const ops = pendingOpsRef.current;
+    const op = ops[ops.length - 1];
+    if (!op) { toast.info("Niente da annullare"); return; }
+    if (op.kind === "shift") shiftStMapLocal(op.tripId, -op.deltaMin);
+    else if (op.kind === "node") shiftNodeLocal(op.tripId, op.stIdx, -op.deltaMin);
+    else if (op.kind === "delete") setDeletedTripIds(d => { const n = new Set(d); n.delete(op.tripId); return n; });
+    else if (op.kind === "copy") {
+      setLocalCopies(c => c.filter(t => t.id !== op.tempId));
+      setStMap(m => { const n = { ...m }; delete n[op.tempId]; return n; });
+      setSelectedTripId(cur => (cur === op.tempId ? null : cur));
+    }
+    setPendingOps(prev => prev.slice(0, -1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shiftStMapLocal, shiftNodeLocal]);
   /* drag di un SINGOLO nodo (fermata × orario): sposta l'orario di transito */
   const [nodeDrag, setNodeDrag] = useState<{ tripId: string; stIdx: number; deltaSec: number } | null>(null);
   const nodeDragRef = useRef(nodeDrag);
@@ -873,6 +932,12 @@ export default function PlanningStudioTtdPage() {
       && Math.hypot(pos.x - prevClick.x, pos.y - prevClick.y) < 8;
     if (isDouble || e.detail >= 2) {
       const id = clickKey || null;
+      // doppio clic su un pallino: si seleziona anche quel NODO, così se ne può
+      // scrivere l'orario nel pannello della corsa
+      if (nodeAttr) {
+        const [nT, nI] = nodeAttr.split("|");
+        setSelectedNode({ tripId: nT, stIdx: Number(nI) });
+      } else setSelectedNode(null);
       setSelectedTripId(cur => (id && id !== cur ? id : null));
       dragRef.current = null;
       lastClickRef.current = null;
@@ -976,6 +1041,18 @@ export default function PlanningStudioTtdPage() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // FRECCE: spostamento al minuto della corsa (o del nodo) selezionata.
+      // Shift = passo da 5 minuti. È la risoluzione fine che il trascinamento
+      // col mouse non può dare a grafico largo.
+      if (!e.ctrlKey && !e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && selectedTripId) {
+        e.preventDefault();
+        const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 5 : 1);
+        const err = selectedNode?.tripId === selectedTripId
+          ? shiftNodeBy(selectedTripId, selectedNode.stIdx, step)
+          : shiftTripBy(selectedTripId, step);
+        if (err) toast.error(err);
+        return;
+      }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       if (e.key.toLowerCase() === "z") { e.preventDefault(); undoLast(); return; }
@@ -2074,11 +2151,59 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             </div>
           )}
           {selectedTripId && baseAxis && (() => {
-            const g = baseGeoms.find(x => x.trip.id === selectedTripId);
-            const selTrip = visibleTrips.find(t => t.id === selectedTripId);
+            const g = baseGeoms.find(x => x.trip.id === selectedTripId)
+              ?? overlayGeoms.find(x => x.trip.id === selectedTripId);
+            const selTrip = visibleTrips.find(t => t.id === selectedTripId) ?? g?.trip;
+            const isBase = baseGeoms.some(x => x.trip.id === selectedTripId);
+            const selSts = stsOfTrip(selectedTripId);
+            const depNow = selSts?.length ? secToHm(hmsToSec(selSts[0].departureTime)) : "";
+            const node = selectedNode?.tripId === selectedTripId ? selectedNode : null;
+            const nodeSt = node && selSts ? selSts[node.stIdx] : null;
+            const say = (err: string | null) => { if (err) toast.error(err); };
             return (
-              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl">
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl flex-wrap max-w-[92%]">
                 <span className="text-amber-300 font-semibold">Corsa: {g?.label ?? selectedTripId.slice(0, 8)}</span>
+                {/* PARTENZA scrivibile + spostamento al minuto */}
+                <span className="flex items-center gap-1 rounded border border-slate-700 bg-slate-800/60 px-1.5 py-0.5">
+                  <span className="text-[10px] text-slate-400">Partenza</span>
+                  <button onClick={() => say(shiftTripBy(selectedTripId, -1))}
+                    title="Anticipa la corsa di 1 minuto (anche ← da tastiera)"
+                    className="px-1 rounded text-slate-300 hover:bg-slate-700">−</button>
+                  <input
+                    key={`dep:${selectedTripId}:${depNow}`}
+                    defaultValue={depNow}
+                    onBlur={e => { if (e.target.value !== depNow) say(setTripDeparture(selectedTripId, e.target.value)); }}
+                    onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    title="Scrivi l'orario di partenza (HH:MM): tutta la corsa trasla di conseguenza"
+                    className="w-14 px-1 py-0.5 rounded bg-slate-950 border border-slate-700 text-center font-mono text-amber-200" />
+                  <button onClick={() => say(shiftTripBy(selectedTripId, 1))}
+                    title="Posticipa la corsa di 1 minuto (anche → da tastiera)"
+                    className="px-1 rounded text-slate-300 hover:bg-slate-700">+</button>
+                </span>
+                {/* NODO selezionato (doppio clic su un pallino): orario scrivibile */}
+                {node && nodeSt && (
+                  <span className="flex items-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5">
+                    <span className="text-[10px] text-cyan-300 max-w-[120px] truncate" title={nodeSt.stopName}>
+                      {nodeSt.stopName || `nodo ${node.stIdx + 1}`}
+                    </span>
+                    <button onClick={() => say(shiftNodeBy(selectedTripId, node.stIdx, -1))}
+                      className="px-1 rounded text-slate-300 hover:bg-slate-700" title="Anticipa il transito di 1 minuto">−</button>
+                    <input
+                      key={`nd:${selectedTripId}:${node.stIdx}:${nodeSt.departureTime}`}
+                      defaultValue={secToHm(hmsToSec(nodeSt.departureTime))}
+                      onBlur={e => say(setNodeTime(selectedTripId, node.stIdx, e.target.value))}
+                      onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                      title="Scrivi l'orario di transito a questa fermata (HH:MM): resta tra la fermata prima e quella dopo"
+                      className="w-14 px-1 py-0.5 rounded bg-slate-950 border border-cyan-500/40 text-center font-mono text-cyan-200" />
+                    <button onClick={() => say(shiftNodeBy(selectedTripId, node.stIdx, 1))}
+                      className="px-1 rounded text-slate-300 hover:bg-slate-700" title="Posticipa il transito di 1 minuto">+</button>
+                    <button onClick={() => setSelectedNode(null)}
+                      className="px-1 text-slate-500 hover:text-slate-200" title="Deseleziona il nodo">✕</button>
+                  </span>
+                )}
+                {!node && (
+                  <span className="text-[10px] text-slate-500">doppio clic su un pallino = orario di quel nodo</span>
+                )}
                 {/* card validità: categorie del calendario aziendale + giorni */}
                 {(selTrip?.categories ?? []).map(c => (
                   <span key={c.id} className="px-1.5 py-0.5 rounded text-[10px] font-semibold border"
@@ -2093,14 +2218,14 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                     {selTrip!.dayTypeCodes!.map(c => c === "festivo" ? "dom" : c.slice(0, 3)).join("·")}
                   </span>
                 )}
-                <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>
-                <button
+                {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>}
+                {isBase && <button
                   onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}
                   title="Copia questa corsa più volte (cadenzamento): scegli intervallo e fascia"
                   className="px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10">
                   ⧉ Copia più volte
-                </button>
-                <button
+                </button>}
+                {isBase && <button
                   onClick={() => {
                     setDeletedTripIds(d => new Set(d).add(selectedTripId));
                     setPendingOps(prev => [...prev, { kind: "delete", tripId: selectedTripId }]);
@@ -2110,8 +2235,8 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   title="Elimina la corsa (modifica locale: si conferma con Salva modifiche)"
                   className="px-2 py-0.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
                   🗑 Elimina
-                </button>
-                <button onClick={() => setSelectedTripId(null)}
+                </button>}
+                <button onClick={() => { setSelectedTripId(null); setSelectedNode(null); }}
                   className="px-1.5 py-0.5 rounded text-slate-400 hover:text-slate-100">✕</button>
               </div>
             );
@@ -2979,7 +3104,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           </button>
         )}
         <div className="flex-1" />
-        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · drag corsa = trasla orari</span>
+        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · drag corsa = trasla · doppio clic = seleziona · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
