@@ -381,10 +381,18 @@ export async function deletePsVariant(projectId: string, variantId: string, opts
     { method: "DELETE" },
   );
 }
-export async function setPsVariantStops(projectId: string, variantId: string, stops: { stopId: string }[]): Promise<void> {
-  await apiFetch<{ ok: boolean; count: number }>(
+/** Salva la sequenza fermate del percorso. Il server RIALLINEA gli orari delle
+ *  corse della variante (fermate tolte = transiti via, fermate nuove =
+ *  interpolate) e ritorna il resoconto; realign:false salva la sola sequenza. */
+export async function setPsVariantStops(
+  projectId: string,
+  variantId: string,
+  stops: { stopId: string; shapeDistTraveled?: number | null }[],
+  opts?: { realign?: boolean },
+): Promise<{ ok: boolean; count: number; tripsAligned: number; tripsTotal: number; stopsDropped: number; stopsAdded: number; tripsSkipped: string[] }> {
+  return apiFetch(
     `/api/planning-studio/projects/${projectId}/variants/${variantId}/stops`,
-    { method: "PUT", body: JSON.stringify({ stops }) }
+    { method: "PUT", body: JSON.stringify({ stops, ...(opts?.realign === false ? { realign: false } : {}) }) }
   );
 }
 export async function setPsVariantShape(
