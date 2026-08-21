@@ -26,7 +26,7 @@ import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useAuth } from "@/hooks/use-auth";
 import {
   ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
-  X, Check, GitCommitHorizontal, CircleDot, Shuffle,
+  X, Check, GitCommitHorizontal, CircleDot, Shuffle, CalendarRange, Table2, Activity,
 } from "lucide-react";
 import {
   getPsProject,
@@ -165,12 +165,29 @@ export default function PlanningStudioTtdPage() {
   /* ─── Selettori: linea / variante / calendario ─── */
   const [routeId, setRouteId] = useState("");
   const [variantId, setVariantId] = useState("");
-  const [calendarFilter, setCalendarFilter] = useState("");
-  /* filtro per GIORNO dal calendario aziendale: feriale / sabato / festivo.
-   * Le corse senza validità configurata restano sempre visibili. */
-  const [dayFilter, setDayFilter] = useState<"" | "feriale" | "sabato" | "festivo">("");
-  const dayMatch = useCallback((t: { dayTypeCodes?: string[] }) =>
-    !dayFilter || !(t.dayTypeCodes?.length) || t.dayTypeCodes.includes(dayFilter), [dayFilter]);
+  /* ─── VALIDITÀ: selezione MULTIPLA (come nel grafico degli orari di mestiere)
+   * Categorie del calendario aziendale + giorni-tipo si scelgono a spunte: il
+   * grafico mostra insieme, per esempio, «festive» e «festive estive». Vuoto =
+   * nessun filtro. Le corse senza validità configurata restano visibili. ─── */
+  const [catSel, setCatSel] = useState<Set<string>>(new Set());
+  const [daySel, setDaySel] = useState<Set<string>>(new Set());
+  /* Colora in base a: linee (tinta della linea), validità (tinta della
+   * categoria), entrambi (tinta della linea + tratteggio per validità). */
+  const [colorBy, setColorBy] = useState<"linee" | "validita" | "entrambi">("linee");
+  /* Vista: diagramma tempo-distanza oppure LIBRETTO ORARIO (corse in colonna). */
+  const [view, setView] = useState<"grafico" | "libretto">("grafico");
+  /** Passa il filtro di validità? (categorie in OR, giorni-tipo in OR) */
+  const tripPasses = useCallback((t: PsTrip) => {
+    if (catSel.size > 0) {
+      const cats = (t as any).categories as { id: string }[] | undefined;
+      if (!cats?.some(c => catSel.has(c.id))) return false;
+    }
+    if (daySel.size > 0) {
+      const dt = t.dayTypeCodes;
+      if (dt?.length && !dt.some(d => daySel.has(d))) return false;
+    }
+    return true;
+  }, [catSel, daySel]);
 
   const projectQ = useQuery({
     queryKey: ["ps", "project", projectId],
@@ -190,13 +207,6 @@ export default function PlanningStudioTtdPage() {
     queryFn: () => listPsValidityCategories(),
     enabled: !!projectId,
   });
-  // Corse appartenenti alla categoria selezionata (set di tripId)
-  const catTripsQ = useQuery({
-    queryKey: ["ps", projectId, "trips", "by-category", calendarFilter],
-    queryFn: () => listPsTrips(projectId, { categoryId: calendarFilter }),
-    enabled: !!projectId && !!calendarFilter,
-  });
-  const catTripSet = useMemo(() => new Set((catTripsQ.data ?? []).map(t => t.id)), [catTripsQ.data]);
   const variantsQ = useQuery({
     queryKey: ["ps", projectId, "variants", routeId],
     queryFn: () => listPsVariants(projectId, routeId),
@@ -301,10 +311,19 @@ export default function PlanningStudioTtdPage() {
     },
   });
 
+  /** id variante → variante, per TUTTE le varianti del progetto: il libretto
+   *  deve poter scrivere il codice percorso anche delle linee accese. */
+  const allVariantsById = useMemo(() => {
+    const m = new globalThis.Map<string, PsVariant>();
+    for (const v of variantsQ.data ?? []) m.set(v.id, v);
+    for (const c of candidatesQ.data ?? []) m.set(c.variant.id, c.variant);
+    return m;
+  }, [variantsQ.data, candidatesQ.data]);
+
   const [overlayOn, setOverlayOn] = useState<Set<string>>(new Set());
   const [overlayData, setOverlayData] = useState<Record<string, { trips: PsTrip[]; st: Record<string, PsStopTime[]> }>>({});
   /* ─── Area di lavoro: strumento attivo nella barra laterale (un pannello alla volta) ─── */
-  const [activeTool, setActiveTool] = useState<null | "layers" | "conn" | "sync" | "mult">(null);
+  const [activeTool, setActiveTool] = useState<null | "valid" | "layers" | "conn" | "sync" | "mult">(null);
   /* ricerca nel pannello Linee (codice linea o codice percorso) */
   const [lineSearch, setLineSearch] = useState("");
   const toggleTool = (t: NonNullable<typeof activeTool>) => setActiveTool(cur => (cur === t ? null : t));
@@ -451,7 +470,6 @@ export default function PlanningStudioTtdPage() {
   }, [baseAxis, yMode, candidatesQ.data, overlayOn, nodeOfStop, stopsQ.data, routeId]);
   // Asse attivo per il disegno: unione se disponibile, altrimenti base.
   const axis = unionAxis ?? (baseAxis ? { ...baseAxis, shared: new Set<string>() } : null);
-
 
   /* ─── Fascia oraria esplicita (filtro vista) ─── */
   const [winFrom, setWinFrom] = useState("04:00");
@@ -808,11 +826,10 @@ export default function PlanningStudioTtdPage() {
   // Corse base visibili (filtrate per calendario)
   const visibleTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
-    if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    if (dayFilter) trips = trips.filter(dayMatch);
+    trips = trips.filter(tripPasses);
     trips = trips.filter(t => !deletedTripIds.has(t.id));
     return [...trips, ...localCopies.filter(t => !deletedTripIds.has(t.id))];
-  }, [tripsQ.data, calendarFilter, catTripSet, dayMatch, deletedTripIds, localCopies]);
+  }, [tripsQ.data, tripPasses, deletedTripIds, localCopies]);
 
   /* Ctrl+C copia la corsa selezionata · Ctrl+V la incolla alla posizione del
    * mouse (o +60') come COPIA LOCALE · Ctrl+Z annulla l'ultima modifica */
@@ -984,8 +1001,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) continue;
       const color = colorByRoute.get(cand.route.id) ?? routeColor(cand.route.color, "#22d3ee");
       let trips = data.trips;
-      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    if (dayFilter) trips = trips.filter(dayMatch);
+      trips = trips.filter(tripPasses);
       for (const t of trips) {
         const sts = data.st[t.id];
         if (!sts || sts.length < 2) continue;
@@ -998,7 +1014,7 @@ export default function PlanningStudioTtdPage() {
       }
     }
     return out;
-  }, [candidatesQ.data, overlayOn, overlayData, axis, calendarFilter, catTripSet, dayMatch, colorByRoute]);
+  }, [candidatesQ.data, overlayOn, overlayData, axis, tripPasses, colorByRoute]);
 
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
@@ -1094,7 +1110,7 @@ export default function PlanningStudioTtdPage() {
   const [syncBusy, setSyncBusy] = useState(false);
   type SyncPlanItem = { variantId: string; delta: number; zNow: number; zBest: number; moved: number; name: string };
   const [syncPlan, setSyncPlan] = useState<SyncPlanItem[] | null>(null);
-  useEffect(() => { setSyncPlan(null); }, [syncChain, syncSel, connMin, connMax, calendarFilter]);
+  useEffect(() => { setSyncPlan(null); }, [syncChain, syncSel, connMin, connMax, catSel, daySel]);
   useEffect(() => { setSyncChain([{ kind: "base" }]); setSyncSel({}); setSyncPlan(null); }, [variantId]);
   // se una linea viene spenta dal pannello Linee, esce anche dalla catena
   useEffect(() => {
@@ -1109,8 +1125,7 @@ export default function PlanningStudioTtdPage() {
     const data = overlayData[vid];
     if (!data) return [];
     let trips = data.trips;
-    if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    if (dayFilter) trips = trips.filter(dayMatch);
+    trips = trips.filter(tripPasses);
     return trips
       .map(t => ({ trip: t, dep: data.st[t.id]?.length ? hmsToSec(data.st[t.id][0].departureTime) : Number.POSITIVE_INFINITY }))
       .sort((a, b) => a.dep - b.dep);
@@ -1154,7 +1169,7 @@ export default function PlanningStudioTtdPage() {
       return changed ? next : prev;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncChain, overlayData, calendarFilter, catTripSet, dayMatch]);
+  }, [syncChain, overlayData, tripPasses]);
   /** Applica la finestra oraria alla selezione di TUTTE le linee della catena. */
   function applySyncWindow() {
     const a = hmToSec(syncWinFrom), b = hmToSec(syncWinTo);
@@ -1186,8 +1201,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) return m;
       const sel = syncSel[it.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
-      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    if (dayFilter) trips = trips.filter(dayMatch);
+      trips = trips.filter(tripPasses);
       for (const t of trips) for (const st of data.st[t.id] ?? [])
         push(st.stopId, st.stopName, hmsToSec(st.arrivalTime) + deltaSec, hmsToSec(st.departureTime) + deltaSec);
     }
@@ -1289,8 +1303,7 @@ export default function PlanningStudioTtdPage() {
       if (!data) continue;
       const sel = syncSel[p.variantId] ?? new Set<string>();
       let trips = data.trips.filter(t => sel.has(t.id));
-      if (calendarFilter) trips = trips.filter(t => catTripSet.has(t.id));
-    if (dayFilter) trips = trips.filter(dayMatch);
+      trips = trips.filter(tripPasses);
       const geoms: Pt[][][] = [];
       for (const t of trips) {
         const sts = data.st[t.id];
@@ -1314,7 +1327,7 @@ export default function PlanningStudioTtdPage() {
     }
     return { lines, pts, totalZ, movedLines: lines.length };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, calendarFilter, catTripSet, dayMatch, connMin, connMax, baseGeoms, nodeOfStop]);
+  }, [syncOpen, syncPlan, syncChain, syncSel, overlayData, axis, tripPasses, connMin, connMax, baseGeoms, nodeOfStop]);
 
   /** Applica il piano: trasla in sequenza le corse selezionate di ogni linea. */
   async function applySyncPlan() {
@@ -1383,9 +1396,7 @@ export default function PlanningStudioTtdPage() {
     const esc = (s: any) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const now = new Date();
     const deltas = new globalThis.Map(syncPlan.map(p2 => [p2.variantId, p2.delta]));
-    const calLabel = calendarFilter
-      ? (calendars.find(c => c.id === calendarFilter)?.code ?? calendarFilter)
-      : "tutte le categorie (cal. aziendale)";
+    const calLabel = validitaLabel();
     const chainNames = syncChain.map(it => chainName(it));
 
     // dettaglio corse traslate per linea (prima partenza prima → dopo)
@@ -1554,6 +1565,100 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
   const calendars = calendarsQ.data ?? [];
   const variants = variantsQ.data ?? [];
 
+  /* ─── Validità: etichetta di riepilogo e tinta per la colorazione ─── */
+  const DAY_CODES: { code: string; label: string }[] = [
+    { code: "feriale", label: "Feriale" },
+    { code: "sabato", label: "Sabato" },
+    { code: "festivo", label: "Festivo" },
+  ];
+  const DAY_COLOR: Record<string, string> = { feriale: "#38bdf8", sabato: "#f59e0b", festivo: "#f472b6" };
+  function validitaLabel(): string {
+    const parts: string[] = [];
+    for (const c of calendars) if (catSel.has(c.id)) parts.push(c.code || c.name || "");
+    for (const d of DAY_CODES) if (daySel.has(d.code)) parts.push(d.label);
+    if (parts.length === 0) return "tutte";
+    return parts.length <= 2 ? parts.join(" + ") : `${parts.length} selezionate`;
+  }
+  /** Tinta della VALIDITÀ di una corsa: colore della prima categoria che
+   *  soddisfa il filtro (o della prima in assoluto), altrimenti giorno-tipo. */
+  function validityColorOf(t: PsTrip): string | null {
+    const cats = ((t as any).categories ?? []) as { id: string; color?: string | null }[];
+    const hit = cats.find(c => catSel.size === 0 || catSel.has(c.id)) ?? cats[0];
+    if (hit?.color) return hit.color.startsWith("#") ? hit.color : `#${hit.color}`;
+    const dt = (t.dayTypeCodes ?? []).find(d => daySel.size === 0 || daySel.has(d));
+    return dt ? (DAY_COLOR[dt] ?? null) : null;
+  }
+  /** Tratteggio per validità (usato in «entrambi»): una firma per categoria. */
+  const DASH_BY_INDEX = ["", "6 3", "2 3", "10 3 2 3", "1 4"];
+  function validityDashOf(t: PsTrip): string {
+    const cats = ((t as any).categories ?? []) as { id: string }[];
+    const hit = cats.find(c => catSel.size === 0 || catSel.has(c.id)) ?? cats[0];
+    if (!hit) return "";
+    const i = calendars.findIndex(c => c.id === hit.id);
+    return DASH_BY_INDEX[(i < 0 ? 0 : i) % DASH_BY_INDEX.length];
+  }
+  /** Colore effettivo di una corsa nel grafico, secondo «Colora in base a». */
+  function strokeOf(t: PsTrip, lineColor: string): string {
+    if (colorBy === "validita") return validityColorOf(t) ?? lineColor;
+    return lineColor;
+  }
+  function dashOf(t: PsTrip): string | undefined {
+    return colorBy === "entrambi" ? (validityDashOf(t) || undefined) : undefined;
+  }
+
+
+  /* ─── LIBRETTO ORARIO: le stesse corse del grafico, in colonna ───
+   * Righe = fermate nell'ordine dell'asse (base + linee accese, fuse per nodo);
+   * colonne = corse ordinate per partenza, divise per verso (Ascendente /
+   * Discendente) come nel grafico degli orari di mestiere. Ogni colonna porta
+   * linea, validità e CODICE PERCORSO: sono le tre cose che l'operatore cerca
+   * quando legge un libretto. */
+  const libretto = useMemo(() => {
+    if (!axis) return null;
+    const rowOf = (stopId: string) => axis.byStop.get(stopId);
+    type Col = {
+      key: string; trip: PsTrip; linea: string; percorso: string; validita: string;
+      color: string; times: (number | null)[]; dep: number;
+    };
+    const build = (geoms: TripGeom[]): Col[] => {
+      const cols: Col[] = [];
+      for (const g of geoms) {
+        const times: (number | null)[] = new Array(axis.stops.length).fill(null);
+        let dep = Infinity;
+        for (const st of g.sts) {
+          const r = rowOf(st.stopId);
+          if (r == null) continue;
+          const sec = hmsToSec(st.departureTime || st.arrivalTime);
+          // passaggi ripetuti sulla stessa riga: tiene il primo
+          if (times[r] == null) times[r] = sec;
+          dep = Math.min(dep, hmsToSec(g.sts[0].departureTime || g.sts[0].arrivalTime));
+        }
+        if (!Number.isFinite(dep)) continue;
+        const route = routes.find(r2 => r2.id === g.trip.routeId);
+        const variant = allVariantsById.get(g.trip.variantId);
+        const cats = ((g.trip as any).categories ?? []) as { name: string }[];
+        cols.push({
+          key: g.trip.id, trip: g.trip,
+          linea: route?.shortName ?? "?",
+          percorso: variant?.code || variant?.name || "—",
+          validita: cats.map(c => c.name).join(", ")
+            || (g.trip.dayTypeCodes ?? []).join(", ") || "—",
+          color: strokeOf(g.trip, g.color),
+          times, dep,
+        });
+      }
+      return cols.sort((a, b) => a.dep - b.dep);
+    };
+    const all = [...baseGeoms, ...overlayGeoms];
+    return {
+      asc: build(all.filter(g => (g.trip.direction ?? 0) === 0)),
+      desc: build(all.filter(g => (g.trip.direction ?? 0) === 1)),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [axis, baseGeoms, overlayGeoms, routes, allVariantsById, colorBy, catSel, daySel, calendars]);
+
+
+
   /* ════════════════ Render ════════════════ */
   return (
     <div ref={pageRef} className="h-full w-full min-w-0 flex flex-col bg-slate-950 text-slate-100">
@@ -1616,26 +1721,20 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             <option key={v.id} value={v.id}>{(v as any).code ? `${(v as any).code} · ` : ""}{v.name} ({v.direction === 0 ? "andata" : "ritorno"})</option>
           ))}
         </select>
-        <select
-          value={calendarFilter} onChange={e => setCalendarFilter(e.target.value)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[140px]"
-          title="Filtro CALENDARIO AZIENDALE (categorie di validità: feriale, festivo, scolastico…)"
+        {/* La validità si sceglie a spunte dal pannello «Validità» della barra
+            strumenti: qui resta il riepilogo di cosa si sta guardando. */}
+        <button
+          onClick={() => toggleTool("valid")}
+          title="Apri il pannello Validità: categorie del calendario aziendale e giorni-tipo, a scelta multipla"
+          className={`px-2 py-1.5 rounded border text-left min-w-[190px] truncate transition-colors ${
+            catSel.size + daySel.size > 0
+              ? "bg-sky-500/15 border-sky-500/50 text-sky-200"
+              : "bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700"
+          }`}
         >
-          <option value="">Tutte le categorie (cal. aziendale)</option>
-          {calendars.map(c => (
-            <option key={c.id} value={c.id}>{c.code} {c.name ? `· ${c.name}` : ""}</option>
-          ))}
-        </select>
-        <select
-          value={dayFilter} onChange={e => setDayFilter(e.target.value as typeof dayFilter)}
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700"
-          title="Filtro per GIORNO (validità dal calendario aziendale). Le corse senza validità configurata restano visibili."
-        >
-          <option value="">Tutti i giorni</option>
-          <option value="feriale">Feriale</option>
-          <option value="sabato">Sabato</option>
-          <option value="festivo">Domenica / Festivo</option>
-        </select>
+          <span className="text-[9px] uppercase tracking-wider opacity-70">Validità</span>{" "}
+          {validitaLabel()}
+        </button>
 
         <div className="h-5 w-px bg-slate-800 mx-1" />
         <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Fascia</span>
@@ -1680,12 +1779,108 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           {yMode === "equidistante" ? "≡ Equidistante" : "⇕ Distanze reali"}
         </button>
         <div className="flex-1" />
+        {/* Vista: diagramma oppure libretto orario (le stesse corse, in colonna) */}
+        <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden">
+          <button onClick={() => setView("grafico")}
+            title="Diagramma tempo-distanza: sposta le corse, aggiusta le coincidenze"
+            className={`px-2.5 py-1.5 inline-flex items-center gap-1.5 transition-colors ${
+              view === "grafico" ? "bg-amber-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}>
+            <Activity className="w-3.5 h-3.5" /> Grafico
+          </button>
+          <button onClick={() => setView("libretto")}
+            title="Libretto orario: corse in colonna con linea, validità e codice percorso"
+            className={`px-2.5 py-1.5 inline-flex items-center gap-1.5 transition-colors ${
+              view === "libretto" ? "bg-amber-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}>
+            <Table2 className="w-3.5 h-3.5" /> Libretto
+          </button>
+        </div>
       </div>
 
 
       {/* Corpo: grafico + pannello cadenzamento opzionale */}
       <div className="flex-1 flex overflow-hidden">
-        <div ref={containerRef} className="flex-1 relative overflow-hidden select-none">
+        {view === "libretto" && axis && (
+          <div className="flex-1 overflow-auto bg-slate-950 p-3 space-y-4">
+            {(["asc", "desc"] as const).map(dir => {
+              const cols = (dir === "asc" ? libretto?.asc : libretto?.desc) ?? [];
+              return (
+                <div key={dir}>
+                  <h3 className="text-xs font-semibold text-slate-300 mb-1.5">
+                    {dir === "asc" ? "Ascendente" : "Discendente"}
+                    <span className="ml-2 text-[10px] font-normal text-slate-500">{cols.length} corse</span>
+                  </h3>
+                  {cols.length === 0 ? (
+                    <p className="text-[11px] text-slate-600 italic">Nessuna corsa in questo verso con i filtri attivi.</p>
+                  ) : (
+                    <div className="overflow-auto rounded border border-slate-800 max-h-[46vh]">
+                      <table className="text-[11px] border-collapse">
+                        <thead className="sticky top-0 z-10 bg-slate-900">
+                          {([
+                            ["Linea", (c: typeof cols[number]) => c.linea],
+                            ["Validità", (c: typeof cols[number]) => c.validita],
+                            ["Percorso", (c: typeof cols[number]) => c.percorso],
+                          ] as const).map(([label, get]) => (
+                            <tr key={label}>
+                              <th className="text-left px-2 py-1 border-b border-slate-800 text-slate-400 font-medium sticky left-0 bg-slate-900 min-w-[130px] z-10">
+                                {label}
+                              </th>
+                              {cols.map(c => (
+                                <th key={c.key} title={get(c)}
+                                  className="px-2 py-1 border-b border-l border-slate-800 font-medium whitespace-nowrap max-w-[110px] truncate"
+                                  style={{ color: c.color }}>
+                                  {get(c)}
+                                </th>
+                              ))}
+                            </tr>
+                          ))}
+                          <tr>
+                            <th className="text-left px-2 py-1 border-b border-slate-800 text-slate-500 font-medium sticky left-0 bg-slate-900 z-10">
+                              Nodi
+                            </th>
+                            {cols.map((c, i) => (
+                              <th key={c.key} className="px-2 py-1 border-b border-l border-slate-800 text-slate-500 font-mono">
+                                {i + 1}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {axis.stops.map((st, r) => {
+                            // riga vuota per tutte le corse mostrate: non serve stamparla
+                            if (cols.every(c => c.times[r] == null)) return null;
+                            const isNodo = (axis as any).shared?.has(st.stopId);
+                            return (
+                              <tr key={`${st.stopId}-${r}`} className="border-b border-slate-800/60 hover:bg-slate-900/50">
+                                <td className={`px-2 py-0.5 whitespace-nowrap sticky left-0 bg-slate-950 ${isNodo ? "text-amber-300 font-medium" : "text-slate-300"}`}
+                                  title={isNodo ? `${st.stopName} — nodo di interscambio` : st.stopName}>
+                                  {isNodo && "◆ "}{st.stopName}
+                                </td>
+                                {cols.map(c => (
+                                  <td key={c.key} className="px-2 py-0.5 border-l border-slate-800/60 text-center font-mono whitespace-nowrap"
+                                    style={c.times[r] != null ? { color: c.color } : undefined}>
+                                    {c.times[r] != null ? secToHm(c.times[r]!) : <span className="text-slate-700">·</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <p className="text-[10px] text-slate-500">
+              Le corse sono quelle scelte nei pannelli <strong className="text-slate-400">Validità</strong> e{" "}
+              <strong className="text-slate-400">Linee</strong>: la stessa selezione del grafico. Per spostare le corse
+              torna alla vista <strong className="text-slate-400">Grafico</strong>.
+            </p>
+          </div>
+        )}
+        <div ref={containerRef} className={`flex-1 relative overflow-hidden select-none ${view === "libretto" ? "hidden" : ""}`}>
           {!variantId && (
             <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
               Seleziona linea e variante di riferimento per disegnare l'orario grafico.
@@ -1835,7 +2030,8 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                     {g.segs.map((seg, i) => (
                       <polyline key={i}
                         points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
-                        fill="none" stroke={g.color} strokeWidth={1.2} strokeLinejoin="round" />
+                        fill="none" stroke={strokeOf(g.trip, g.color)} strokeWidth={1.2}
+                        strokeDasharray={dashOf(g.trip)} strokeLinejoin="round" />
                     ))}
                     {/* fascia invisibile più larga per hover */}
                     {g.segs.map((seg, i) => (
@@ -1860,9 +2056,9 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                         <polyline key={i}
                           points={seg.map(p => `${xOf(p.sec)},${yOf(p.dist)}`).join(" ")}
                           fill="none"
-                          stroke={dragging ? "#fbbf24" : isMultBase ? "#34d399" : g.color}
+                          stroke={dragging ? "#fbbf24" : isMultBase ? "#34d399" : strokeOf(g.trip, g.color)}
                           strokeWidth={dragging || isMultBase ? 2.5 : 1.6}
-                          strokeDasharray={unsaved ? "6 4" : undefined}
+                          strokeDasharray={unsaved ? "6 4" : dashOf(g.trip)}
                           strokeLinejoin="round" />
                       ))}
                       {/* anteprima TRASLAZIONE corsa: tratteggiata alla nuova posizione,
@@ -1921,7 +2117,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                         return (
                           <g key={`nd${si}`}>
                             <circle cx={xOf(sec)} cy={yOf(dd)} r={isDraggingNode ? 5 : 3.5}
-                              fill={isDraggingNode ? "#fbbf24" : g.color} stroke="#0f172a" strokeWidth={1}
+                              fill={isDraggingNode ? "#fbbf24" : strokeOf(g.trip, g.color)} stroke="#0f172a" strokeWidth={1}
                               data-node={`${g.trip.id}|${si}`}
                               style={{ cursor: "ew-resize" }}>
                               <title>{`${nodeName}\narr ${st.arrivalTime.slice(0, 5)} · part ${st.departureTime.slice(0, 5)}\n(trascina ←→ per spostare l'orario di transito)`}</title>
@@ -2033,6 +2229,89 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           )}
 
         </div>
+
+        {/* ─── Pannello: VALIDITÀ (scelta multipla) + colorazione ─── */}
+        {activeTool === "valid" && (
+          <div className="w-[320px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <CalendarRange className="w-4 h-4 text-sky-400" />
+              <h3 className="font-semibold text-sm text-sky-300">Validità</h3>
+              {(catSel.size + daySel.size) > 0 && (
+                <button onClick={() => { setCatSel(new Set()); setDaySel(new Set()); }}
+                  className="ml-auto text-[10px] text-slate-400 hover:text-slate-200 underline">
+                  ripristina
+                </button>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Periodicità (giorni-tipo)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {DAY_CODES.map(d => {
+                    const on = daySel.has(d.code);
+                    return (
+                      <button key={d.code}
+                        onClick={() => setDaySel(prev => { const n = new Set(prev); n.has(d.code) ? n.delete(d.code) : n.add(d.code); return n; })}
+                        title={`Mostra le corse valide ${d.label.toLowerCase()}`}
+                        className={`px-2.5 py-1 rounded border transition-colors ${
+                          on ? "font-semibold" : "border-slate-700 text-slate-400 hover:bg-slate-800"
+                        }`}
+                        style={on ? { borderColor: DAY_COLOR[d.code], background: `${DAY_COLOR[d.code]}22`, color: DAY_COLOR[d.code] } : undefined}>
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Nessuno = tutti. Le corse senza validità configurata restano visibili.</p>
+              </div>
+
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Validità (calendario aziendale)</p>
+                {calendars.length === 0 && <p className="text-[10px] text-slate-500">Nessuna categoria definita.</p>}
+                <div className="space-y-1">
+                  {calendars.map(c => {
+                    const on = catSel.has(c.id);
+                    const col = c.color || "#38bdf8";
+                    return (
+                      <label key={c.id}
+                        className={`flex items-center gap-2 px-2 py-1 rounded border cursor-pointer select-none transition-colors ${
+                          on ? "" : "border-slate-800 hover:bg-slate-800/60"
+                        }`}
+                        style={on ? { borderColor: col, background: `${col}18` } : undefined}>
+                        <input type="checkbox" checked={on}
+                          onChange={() => setCatSel(prev => { const n = new Set(prev); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })}
+                          className="accent-sky-500" />
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: col }} />
+                        <span className="truncate">{c.code}{c.name ? ` · ${c.name}` : ""}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Più spunte = le corse di TUTTE le validità scelte, insieme sul grafico.</p>
+              </div>
+
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5">Colora in base a</p>
+                <div className="space-y-1">
+                  {([
+                    ["linee", "Linee", "Una tinta per linea (come oggi)"],
+                    ["validita", "Validità", "Una tinta per validità: si vede a colpo d'occhio quale servizio è quale"],
+                    ["entrambi", "Entrambi", "Tinta della linea + tratteggio diverso per validità"],
+                  ] as const).map(([val, label, hint]) => (
+                    <label key={val} className="flex items-start gap-2 cursor-pointer select-none" title={hint}>
+                      <input type="radio" name="ttd-colorby" checked={colorBy === val}
+                        onChange={() => setColorBy(val)} className="accent-sky-500 mt-0.5" />
+                      <span>
+                        <span className={colorBy === val ? "text-sky-300 font-medium" : "text-slate-300"}>{label}</span>
+                        <span className="block text-[10px] text-slate-500 leading-snug">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ─── Pannello: LINEE (overlay altre linee, un colore per linea) ─── */}
         {activeTool === "layers" && (
@@ -2434,6 +2713,13 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
         {/* ─── Barra STRUMENTI verticale (sempre visibile, un pannello alla volta) ─── */}
         <div className="w-[68px] border-l border-slate-800 bg-slate-900 flex flex-col items-stretch py-2 px-1.5 gap-1.5 shrink-0">
           <span className="text-center text-[8px] uppercase tracking-widest text-slate-600 font-semibold pb-0.5">Strumenti</span>
+          <RailButton
+            icon={<CalendarRange className="w-4 h-4" />} label="Validità"
+            active={activeTool === "valid"} disabled={!variantId}
+            badge={(catSel.size + daySel.size) > 0 ? String(catSel.size + daySel.size) : null}
+            activeCls="bg-sky-500/15 border-sky-500/50 text-sky-300"
+            onClick={() => toggleTool("valid")}
+            title="Validità da mostrare (scelta multipla) e colorazione del grafico" />
           <RailButton
             icon={<Layers className="w-4 h-4" />} label="Linee"
             active={activeTool === "layers"} disabled={!variantId}
