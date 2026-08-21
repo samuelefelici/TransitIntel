@@ -10,7 +10,7 @@
  * Le corse vengono modificate con PATCH per singola riga (validità, label,
  * isActive) o in bulk via /trips/bulk-update.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -458,6 +458,13 @@ export default function PlanningStudioTripsPage() {
 
   /* ─── Selezione bulk ─── */
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** Selezione a blocco (Shift+clic), modello «gestore file»: l'ANCORA è
+   * l'ultima spunta senza Shift e la BASE è com'era la selezione in quel
+   * momento. Ogni Shift+clic ridisegna il blocco ancora→riga sopra la base:
+   * così il blocco si allarga e si restringe muovendo il secondo estremo,
+   * senza mai perdere le spunte fatte prima. */
+  const selAnchorRef = useRef<number | null>(null);
+  const selBaseRef = useRef<Set<string>>(new Set());
   function toggleSel(id: string) {
     setSelected(prev => {
       const n = new Set(prev);
@@ -465,11 +472,41 @@ export default function PlanningStudioTripsPage() {
       return n;
     });
   }
+  /** Spunta di riga: con SHIFT seleziona il BLOCCO dall'ancora a qui (nell'ordine
+   * MOSTRATO, ordinamento per colonna compreso), altrimenti spunta singola. */
+  function selectRowAt(idx: number, id: string, shift: boolean, rows: PsTrip[]) {
+    const anchor = selAnchorRef.current;
+    if (shift && anchor != null && anchor < rows.length) {
+      const [a, b] = anchor <= idx ? [anchor, idx] : [idx, anchor];
+      // base + blocco: ri-cliccando più su o più giù il blocco si ridisegna
+      // (niente accumulo di righe rimaste indietro dal tentativo precedente).
+      const next = new Set(selBaseRef.current);
+      for (const t of rows.slice(a, b + 1)) next.add(t.id);
+      setSelected(next);
+      return; // l'ancora NON si sposta: si aggiusta solo il secondo estremo
+    }
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelected(next);
+    selAnchorRef.current = idx;
+    selBaseRef.current = next; // da qui parte il prossimo blocco
+  }
   function toggleAll() {
+    selAnchorRef.current = null;
+    selBaseRef.current = new Set();
     if (selected.size === filteredTrips.length) setSelected(new Set());
     else setSelected(new Set(filteredTrips.map(t => t.id)));
   }
-  useEffect(() => { setSelected(new Set()); }, [routeId, variantId, categoryFilter, onlyActive]);
+  useEffect(() => {
+    setSelected(new Set());
+    selAnchorRef.current = null;
+    selBaseRef.current = new Set();
+  }, [routeId, variantId, categoryFilter, onlyActive]);
+  // Cambiando ordinamento gli indici di riga cambiano significato: l'ancora
+  // vecchia produrrebbe un blocco a caso, quindi si riparte dalla prossima spunta.
+  useEffect(() => { selAnchorRef.current = null; selBaseRef.current = new Set(selected);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort]);
 
   const [newOpen, setNewOpen] = useState(false);
   const [newStart, setNewStart] = useState("07:00");
@@ -1125,6 +1162,9 @@ export default function PlanningStudioTripsPage() {
         {selected.size > 0 && (
           <div className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/10 border border-amber-500/30">
             <span className="text-amber-300 font-medium">{selected.size} selezionate</span>
+            <span className="text-[10px] text-amber-200/60" title="Spunta una corsa, poi tieni SHIFT e spunta un'altra riga: tutte quelle in mezzo (nell'ordine mostrato) entrano nella selezione. Ri-cliccando con SHIFT più su o più giù il blocco si ridisegna, senza perdere le spunte fatte prima.">
+              Shift+clic = blocco
+            </span>
             <button
               onClick={() => bulkMut.mutate({ patch: { isActive: true } })}
               disabled={bulkMut.isPending}
@@ -1254,7 +1294,7 @@ export default function PlanningStudioTripsPage() {
               </tr>
             </thead>
             <tbody>
-              {sortedTrips.map(t => {
+              {sortedTrips.map((t, rowIdx) => {
                 const route = routes.find(r => r.id === t.routeId);
                 const variant = variants.find(v => v.id === t.variantId);
                 const isSel = selected.has(t.id);
@@ -1269,8 +1309,12 @@ export default function PlanningStudioTripsPage() {
                     argosFresh.trips.has(t.id) ? "ring-1 ring-inset ring-violet-400/60 bg-violet-500/10 animate-pulse" : ""
                   }`}>
                     <td className="p-2">
-                      <input type="checkbox" checked={isSel} onChange={() => toggleSel(t.id)}
-                        className="accent-amber-500" />
+                      {/* onClick (non onChange): serve il tasto SHIFT dell'evento
+                          per la selezione a blocco. */}
+                      <input type="checkbox" checked={isSel} readOnly
+                        onClick={(e) => selectRowAt(rowIdx, t.id, e.shiftKey, sortedTrips)}
+                        title="Clic = spunta la corsa · Shift+clic = seleziona il blocco dall'ultima spunta fino a qui (ri-clicca più su o più giù per aggiustarlo)"
+                        className="accent-amber-500 cursor-pointer" />
                     </td>
                     <td className="p-2 font-mono text-slate-300">
                       {t.attributes?.prototype ? (
