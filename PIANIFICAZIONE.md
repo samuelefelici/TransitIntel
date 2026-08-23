@@ -11,9 +11,9 @@ La letteratura OR descrive la pianificazione TPL come processo sequenziale a fas
 
 | Livello | Fase | Modulo TransitIntel |
 |---|---|---|
-| Strategico | 1. Network design (linee, percorsi, fermate) | Planner Studio (rete) |
-| Tattico | 2. Frequency setting | Territory/Analytics (domanda) → Planner Studio |
-| Tattico | 3. Timetabling (orari corse) | Planner Studio (trips/stop_times) |
+| Strategico | 1. Network design (linee, percorsi, fermate) | [Planning Studio](PLANNING_STUDIO.md) · Editor rete |
+| Tattico | 2. Frequency setting | Territory/Analytics (domanda) → [Planning Studio](PLANNING_STUDIO.md) · Percorrenze |
+| Tattico | 3. Timetabling (orari corse) | [Planning Studio](PLANNING_STUDIO.md) · Corse e Grafico |
 | Operativo | 4. Vehicle scheduling (VSP/MDVSP) | Fucina · turni macchina (CP-SAT) |
 | Operativo | 5. Crew scheduling (CSP, run-cutting) | Fucina · turni guida (CP-SAT, RD 148/CCNL) |
 | Operativo | 6. Crew rostering | Roster (`/roster`) |
@@ -22,6 +22,11 @@ La letteratura OR descrive la pianificazione TPL come processo sequenziale a fas
 La struttura dati della suite riflette la gerarchia: **rete → programma di
 esercizio → unità di progettazione → turni macchina → turni guida → roster**,
 con un solo programma **operativo** alla volta (feed attivo).
+
+> 📘 Questo documento spiega **perché** la pipeline è fatta così. Per **com'è
+> fatto** il modulo che copre le fasi 1–3 — sezioni, modello dati, regole
+> dell'editor, riallineamento degli orari, agente Argos — vedi
+> [`PLANNING_STUDIO.md`](PLANNING_STUDIO.md).
 
 ## 2. Giorni-tipo: come tenere POCHE unità di progettazione
 
