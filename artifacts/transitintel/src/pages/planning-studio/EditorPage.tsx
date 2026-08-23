@@ -257,6 +257,20 @@ function normalizeWaypoints(saved: PsWaypoint[], stops: PsVariantStop[]): PsWayp
   return out;
 }
 
+/** Intervallo [lo, hi] di waypoint da eliminare quando si toglie la FERMATA al
+ * waypoint wIdx: la fermata stessa più i via liberi dei suoi due tratti, fino
+ * alla fermata precedente e alla successiva (escluse). I via appartengono ai
+ * tratti che muoiono con la fermata: lasciarli in piedi farebbe passare il
+ * nuovo tratto A→C per i punti di forzatura della fermata cancellata — il
+ * requisito è che cancellando B vari SOLO il percorso tra A e C, e che quel
+ * tratto torni a essere il percorso naturale tra le due fermate. */
+function waypointRangeForStopRemoval(wpts: PsWaypoint[], wIdx: number): [number, number] {
+  let lo = wIdx, hi = wIdx;
+  while (lo - 1 >= 0 && !wpts[lo - 1].stopId) lo--;
+  while (hi + 1 < wpts.length && !wpts[hi + 1].stopId) hi++;
+  return [lo, hi];
+}
+
 function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], wIdx: number): number {
   if (!wpts[wIdx]?.stopId) return -1;
   let w = 0;
@@ -1687,8 +1701,11 @@ export default function PlanningStudioEditorPage() {
     // elenco ↔ percorso); i via liberi si rimuovono e basta. Il tracciato si
     // ricuce SOLO attorno al punto rimosso: alle estremità si pota il tratto.
     const stopPos = stopPosForWaypointIdx(cur.waypoints, cur.stops, idx);
-    const wpts = cur.waypoints.filter((_, i) => i !== idx);
-    const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i !== idx);
+    // Fermata → cade con i via dei suoi due tratti (stessa regola dell'elenco);
+    // via libero → cade solo lui e si ricuce tra i due vicini.
+    const [wLo, wHi] = stopPos >= 0 ? waypointRangeForStopRemoval(cur.waypoints, idx) : [idx, idx];
+    const wpts = cur.waypoints.filter((_, i) => i < wLo || i > wHi);
+    const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i < wLo || i > wHi);
     const list = stopPos >= 0
       ? cur.stops.filter((_, i) => i !== stopPos).map((s, i) => ({ ...s, seq: i + 1 }))
       : cur.stops;
@@ -1801,13 +1818,15 @@ export default function PlanningStudioEditorPage() {
   function removeStopFromSequence(idx: number) {
     const cur = editorRef.current;
     if (!cur) return;
-    // Rimuove anche il waypoint corrispondente e RICUCE il tracciato solo lì:
-    // togliere la prima fermata elimina il suo tratto e il resto non si muove.
+    // Rimuove il waypoint della fermata E i via liberi dei suoi due tratti,
+    // poi RICUCE il tracciato solo lì: cancellare B da A→B→C ricalcola il solo
+    // tratto A→C (senza i via che forzavano i tratti morti) e il resto del
+    // percorso resta vertice per vertice com'era. Togliere la prima fermata
+    // pota il suo tratto, via compresi, e non tocca nient'altro.
     const wIdx = waypointIndexForStopPos(cur.waypoints, cur.stops, idx);
-    const wpts = wIdx >= 0 ? cur.waypoints.filter((_, i) => i !== wIdx) : [...cur.waypoints];
-    const oldIndexOf = wIdx >= 0
-      ? cur.waypoints.map((_, i) => i).filter(i => i !== wIdx)
-      : cur.waypoints.map((_, i) => i);
+    const [wLo, wHi] = wIdx >= 0 ? waypointRangeForStopRemoval(cur.waypoints, wIdx) : [0, -1];
+    const wpts = cur.waypoints.filter((_, i) => i < wLo || i > wHi);
+    const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i < wLo || i > wHi);
     const list = cur.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
     insertAfterIdxRef.current = null;
@@ -1818,9 +1837,15 @@ export default function PlanningStudioEditorPage() {
   function removeStopsFromSequence(idxs: number[]) {
     const cur = editorRef.current;
     if (!cur || idxs.length === 0) return;
-    const wDrop = new Set(
-      idxs.map(i => waypointIndexForStopPos(cur.waypoints, cur.stops, i)).filter(i => i >= 0),
-    );
+    // Per ogni fermata tolta cade anche l'intervallo dei suoi via (i tratti
+    // che muoiono): stessa regola della rimozione singola, a unione di insiemi.
+    const wDrop = new Set<number>();
+    for (const i of idxs) {
+      const wIdx = waypointIndexForStopPos(cur.waypoints, cur.stops, i);
+      if (wIdx < 0) continue;
+      const [lo, hi] = waypointRangeForStopRemoval(cur.waypoints, wIdx);
+      for (let k = lo; k <= hi; k++) wDrop.add(k);
+    }
     const wpts = cur.waypoints.filter((_, i) => !wDrop.has(i));
     const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => !wDrop.has(i));
     const drop = new Set(idxs);
@@ -1985,8 +2010,9 @@ export default function PlanningStudioEditorPage() {
    * corsa di tratte contigue. Le estremità tolte si potano e basta — togliere
    * la prima fermata elimina il suo tratto e NON tocca il resto del percorso.
    * `oldIndexOf[i]` = indice del waypoint VECCHIO corrispondente all'i-esimo
-   * nuovo, o -1 se è nuovo/cambiato. Ritorna null se serve il ricalcolo
-   * completo (nessuna geometria da preservare, snap fallito). */
+   * nuovo, o -1 se è nuovo/cambiato. Ritorna null SOLO se non c'è geometria da
+   * preservare (variante senza shape): lo snap fallito di un tratto NON è più
+   * motivo di ricalcolo completo — quel tratto diventa una retta e basta. */
   async function rebuildGeometryLocally(
     cur: VariantEditorState,
     newWpts: PsWaypoint[],
@@ -2022,23 +2048,41 @@ export default function PlanningStudioEditorPage() {
       const runPts = newWpts.slice(i, j + 1);
       const modes = runPts.slice(0, -1).map((w, k) =>
         (cur.shapeMode === "manual" || w.mode === "manual" || runPts[k + 1].mode === "manual") ? "manual" as const : "driving" as const);
-      const r = await routeSnap(runPts.map(w => [w.lng, w.lat] as [number, number]),
-        cur.shapeMode === "manual" ? "manual" : "driving", {
-          modes,
-          curb: cur.curb ?? false,
-          curbMask: runPts.map(w => !!w.stopId),
-          projectId,
+      // Lo snap può fallire (OSRM giù, risposta vuota): il guasto resta
+      // CONFINATO al tratto — diventa una retta tra i suoi punti — e il resto
+      // del tracciato non si tocca. Prima un fallimento qui faceva ricadere
+      // applyLocalEdit sul ricalcolo COMPLETO, ridisegnando l'intero percorso
+      // per colpa di un buco di rete: la località è un requisito, non un
+      // ottimizzazione da abbandonare al primo errore.
+      let r: Awaited<ReturnType<typeof routeSnap>> | null = null;
+      try {
+        r = await routeSnap(runPts.map(w => [w.lng, w.lat] as [number, number]),
+          cur.shapeMode === "manual" ? "manual" : "driving", {
+            modes,
+            curb: cur.curb ?? false,
+            curbMask: runPts.map(w => !!w.stopId),
+            projectId,
+          });
+      } catch { r = null; }
+      const legCoords = (r?.geometry?.coordinates ?? []) as [number, number][];
+      if (legCoords.length < 2) {
+        const straight = runPts.map(w => [w.lng, w.lat] as [number, number]);
+        chunks.push(straight);
+        for (let k = 0; k < straight.length - 1; k++) legDists.push(lineLengthM([straight[k], straight[k + 1]]));
+        toast.warning("Snap non riuscito su un tratto", {
+          description: "Il tratto modificato è in linea retta (il resto del percorso non è stato toccato): riprova più tardi o forzalo trascinando la linea.",
         });
-      const legCoords = (r.geometry?.coordinates ?? []) as [number, number][];
-      if (legCoords.length < 2) return null;
+        i = j;
+        continue;
+      }
       chunks.push(legCoords);
-      if (r.legDistances && r.legDistances.length === runPts.length - 1) {
-        legDists.push(...r.legDistances);
+      if (r!.legDistances && r!.legDistances.length === runPts.length - 1) {
+        legDists.push(...r!.legDistances);
       } else {
-        const per = (r.distanceM || lineLengthM(legCoords)) / (runPts.length - 1);
+        const per = (r!.distanceM || lineLengthM(legCoords)) / (runPts.length - 1);
         for (let k = 0; k < runPts.length - 1; k++) legDists.push(per);
       }
-      for (const vv of r.violations ?? []) {
+      for (const vv of r!.violations ?? []) {
         if (!seenZones.has(vv.zoneId)) { seenZones.add(vv.zoneId); violations.push(vv); newViolations++; }
       }
       i = j;
