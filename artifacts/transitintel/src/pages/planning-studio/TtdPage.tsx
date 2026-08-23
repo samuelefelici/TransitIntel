@@ -830,6 +830,18 @@ export default function PlanningStudioTtdPage() {
 
   const [hover, setHover] = useState<{ x: number; y: number; lines: string[] } | null>(null);
 
+  /* PALLINI dei nodi (fermata × orario). Prima comparivano solo sotto le 6 ore
+     di finestra e solo sulle corse del riferimento: alla vista di default
+     (04:00–26:00) il grafico era una ragnatela di linee senza un punto su cui
+     posare il cursore. Ora ci sono sempre, su TUTTE le corse accese.
+       auto  = tutte le fermate finché il disegno regge, altrimenti solo i nodi
+               che contano (capolinea, interscambi ◆, nodi del progetto)
+       tutti = tutte le fermate comunque
+       off   = nessun pallino */
+  const [nodesMode, setNodesMode] = useState<"auto" | "tutti" | "off">("auto");
+  /** Oltre questa soglia il disegno diventa una nuvola illeggibile (e lento). */
+  const NODE_BUDGET = 2200;
+
   const shiftMut = useMutation({
     mutationFn: ({ tripId, deltaMinutes }: { tripId: string; deltaMinutes: number }) =>
       shiftPsTripTimes(projectId, tripId, deltaMinutes),
@@ -1777,6 +1789,107 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
     return out;
   }, [axis, innerH]);
 
+  /* ─── Quali fermate meritano un pallino ───────────────────────────────────
+     Con tutte le corse accese e la finestra intera i pallini possibili sono
+     migliaia: oltre il budget si tengono solo i nodi che contano — capolinea,
+     interscambi e nodi del progetto — che è poi ciò che si guarda quando si
+     cercano le coincidenze. Il motivo della riduzione finisce nella barra di
+     stato: chi guarda deve sapere perché non li vede tutti. */
+  const nodeVis = useMemo(() => {
+    if (nodesMode === "off") return { show: false, keyOnly: false, drawn: 0, total: 0 };
+    const geoms = [...baseGeoms, ...overlayGeoms];
+    let total = 0;
+    for (const g of geoms) for (const st of g.sts) if (axis?.byStop.has(st.stopId)) total++;
+    if (nodesMode === "tutti") return { show: true, keyOnly: false, drawn: total, total };
+    if (total <= NODE_BUDGET) return { show: true, keyOnly: false, drawn: total, total };
+    // ridotto ai nodi chiave: ricontiamo per dire il vero nella barra di stato
+    let drawn = 0;
+    for (const g of geoms) {
+      for (let i = 0; i < g.sts.length; i++) {
+        const st = g.sts[i];
+        if (!axis?.byStop.has(st.stopId)) continue;
+        if (i === 0 || i === g.sts.length - 1) { drawn++; continue; }
+        if ((axis as any).shared?.has(st.stopId) || clusteredStopIds.has(st.stopId)) drawn++;
+      }
+    }
+    return { show: true, keyOnly: true, drawn, total };
+  }, [nodesMode, baseGeoms, overlayGeoms, axis, clusteredStopIds]);
+
+  /** Il pallino va disegnato per questa fermata di questa corsa? */
+  const nodeShown = useCallback((g: TripGeom, i: number): boolean => {
+    if (!nodeVis.show) return false;
+    if (!nodeVis.keyOnly) return true;
+    if (i === 0 || i === g.sts.length - 1) return true;
+    const sid = g.sts[i].stopId;
+    return !!((axis as any)?.shared?.has(sid) || clusteredStopIds.has(sid));
+  }, [nodeVis, axis, clusteredStopIds]);
+
+  /** Raggio del pallino: cresce quando si entra nel dettaglio. */
+  const nodeR = useMemo(() => {
+    const span = tDomain.t1 - tDomain.t0;
+    return span < 3 * 3600 ? 4 : span < 8 * 3600 ? 3.2 : 2.4;
+  }, [tDomain]);
+
+  /* ─── Cursore su un pallino: il transito a quell'ora ─────────────────────
+     Il vecchio <title> SVG arrivava dopo un secondo buono e solo centrando un
+     cerchietto di 3 px. Ora il tooltip è quello della pagina, immediato, e la
+     presa è un cerchio trasparente più largo del pallino. */
+  const onNodeHover = useCallback((e: React.PointerEvent, g: TripGeom, i: number) => {
+    if (dragRef.current) return;
+    const rect = svgRef.current?.getBoundingClientRect();
+    const pos = rect ? { x: e.clientX - rect.left, y: e.clientY - rect.top } : { x: 0, y: 0 };
+    const st = g.sts[i];
+    if (!st) return;
+    const arr = hmsToSec(st.arrivalTime), dep = hmsToSec(st.departureTime);
+    const sosta = Math.round((dep - arr) / 60);
+    const prev = i > 0 ? g.sts[i - 1] : null;
+    const perc = prev ? Math.round((arr - hmsToSec(prev.departureTime)) / 60) : null;
+    const lines = [
+      st.stopName || st.stopId,
+      arr === dep
+        ? `transito ${secToHm(arr)}`
+        : `arrivo ${secToHm(arr)} · partenza ${secToHm(dep)}${sosta > 0 ? ` · sosta ${sosta} min` : ""}`,
+      `${g.label}${g.trip.isActive ? "" : " (disattivata)"} · fermata ${i + 1} di ${g.sts.length}`,
+    ];
+    if (perc != null) lines.push(`${perc} min dalla precedente (${prev!.stopName || "—"})`);
+    setHover({ x: pos.x, y: pos.y, lines });
+  }, []);
+
+  /** I pallini di una corsa: stesso disegno per il riferimento e per gli overlay. */
+  function tripNodes(g: TripGeom) {
+    if (!nodeVis.show || !axis) return null;
+    return g.sts.map((st, si) => {
+      if (!nodeShown(g, si)) return null;
+      const dd = axis.byStop.get(st.stopId);
+      if (dd == null) return null;
+      const isDraggingNode = nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si;
+      const extra = isDraggingNode ? nodeDrag!.deltaSec : 0;
+      const sec = hmsToSec(st.departureTime) + extra;
+      const isSelNode = selectedNode?.tripId === g.trip.id && selectedNode.stIdx === si;
+      const cx = xOf(sec), cy = yOf(dd);
+      return (
+        <g key={`nd${si}`}>
+          {/* presa trasparente: si prende il pallino anche senza centrarlo */}
+          <circle cx={cx} cy={cy} r={nodeR + 5} fill="transparent"
+            data-node={`${g.trip.id}|${si}`}
+            style={{ cursor: "ew-resize" }}
+            onPointerMove={e => onNodeHover(e, g, si)}
+            onPointerLeave={() => setHover(null)} />
+          <circle cx={cx} cy={cy} r={isDraggingNode ? nodeR + 1.5 : isSelNode ? nodeR + 1 : nodeR}
+            fill={isDraggingNode ? "#fbbf24" : strokeOf(g.trip, g.color)}
+            stroke={isSelNode ? "#fbbf24" : "#0f172a"} strokeWidth={isSelNode ? 2 : 1}
+            pointerEvents="none" />
+          {isDraggingNode && (
+            <text x={cx + 8} y={cy - 8}
+              fill="#fbbf24" fontSize={11} fontFamily="monospace" fontWeight="bold">
+              {Math.round(nodeDrag!.deltaSec / 60) > 0 ? "+" : ""}{Math.round(nodeDrag!.deltaSec / 60)} min · {secToHm(sec)}
+            </text>
+          )}
+        </g>
+      );
+    });
+  }
+
   const stLoading = !!variantId && (tripsQ.data ?? []).some(t => !(t.id in stMap));
   const project = projectQ.data;
   const calendars = calendarsQ.data ?? [];
@@ -2015,6 +2128,25 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           {stopMode === "compatto"
             ? `▤ Compatto${axisFull && axis && axisFull.stops.length !== axis.stops.length ? ` ${axis.stops.length}/${axisFull.stops.length}` : ""}`
             : "▦ Tutte le fermate"}
+        </button>
+        {/* Pallini dei nodi: quanti mostrarne. In auto scalano da soli quando
+            le corse accese sono troppe per disegnarli tutti. */}
+        <button
+          onClick={() => setNodesMode(m => m === "auto" ? "tutti" : m === "tutti" ? "off" : "auto")}
+          className={`px-2 py-1 rounded border transition-colors ${
+            nodesMode === "off"
+              ? "bg-slate-800 border-slate-700 text-slate-500 hover:bg-slate-700"
+              : "bg-sky-500/15 border-sky-500/50 text-sky-200"
+          }`}
+          title={"Pallini alle fermate: passandoci sopra il cursore leggi il transito a quell'ora.\n"
+            + "AUTO = tutte le fermate finché il disegno regge, poi solo capolinea, interscambi e nodi\n"
+            + "TUTTI = tutte comunque · OFF = nessun pallino"}
+        >
+          {nodesMode === "off"
+            ? "○ Nodi off"
+            : nodesMode === "tutti"
+              ? "● Nodi tutti"
+              : `● Nodi auto${nodeVis.keyOnly ? " ⇣" : ""}`}
         </button>
         <div className="flex-1" />
         {/* Vista: diagramma oppure libretto orario (le stesse corse, in colonna) */}
@@ -2341,6 +2473,9 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                         onPointerMove={e => onTripHover(e, g)}
                         onPointerLeave={() => setHover(null)} />
                     ))}
+                    {/* i pallini valgono per QUALSIASI corsa accesa, non solo
+                        per quelle del percorso di riferimento */}
+                    {tripNodes(g)}
                   </g>
                   );
                 })}
@@ -2405,33 +2540,10 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                           onPointerMove={e => onTripHover(e, g)}
                           onPointerLeave={() => setHover(null)} />
                       ))}
-                      {/* PUNTINI interattivi fermata×orario: hover = orario+nodo,
-                          drag orizzontale = modifica l'orario di transito */}
-                      {(tDomain.t1 - tDomain.t0) < 6 * 3600 && g.sts.map((st, si) => {
-                        const dd = axis!.byStop.get(st.stopId);
-                        if (dd == null) return null;
-                        const extra = nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si ? nodeDrag.deltaSec : 0;
-                        const sec = hmsToSec(st.departureTime) + extra;
-                        const nodeName = (axis!.stops.find(x => x.stopId === st.stopId) as any)?.stopName
-                          ?? (axis!.stops.find(x => x.stopId === st.stopId) as any)?.name ?? st.stopId;
-                        const isDraggingNode = nodeDrag?.tripId === g.trip.id && nodeDrag.stIdx === si;
-                        return (
-                          <g key={`nd${si}`}>
-                            <circle cx={xOf(sec)} cy={yOf(dd)} r={isDraggingNode ? 5 : 3.5}
-                              fill={isDraggingNode ? "#fbbf24" : strokeOf(g.trip, g.color)} stroke="#0f172a" strokeWidth={1}
-                              data-node={`${g.trip.id}|${si}`}
-                              style={{ cursor: "ew-resize" }}>
-                              <title>{`${nodeName}\narr ${st.arrivalTime.slice(0, 5)} · part ${st.departureTime.slice(0, 5)}\n(trascina ←→ per spostare l'orario di transito)`}</title>
-                            </circle>
-                            {isDraggingNode && (
-                              <text x={xOf(sec) + 8} y={yOf(dd) - 8}
-                                fill="#fbbf24" fontSize={11} fontFamily="monospace" fontWeight="bold">
-                                {Math.round(nodeDrag!.deltaSec / 60) > 0 ? "+" : ""}{Math.round(nodeDrag!.deltaSec / 60)} min · {secToHm(sec)}
-                              </text>
-                            )}
-                          </g>
-                        );
-                      })}
+                      {/* PALLINI dei nodi: presenti a ogni zoom, non solo sotto
+                          le 6 ore. Cursore sopra = transito a quell'ora,
+                          trascinamento orizzontale = sposta l'orario. */}
+                      {tripNodes(g)}
                       {/* etichetta delta + NUOVO orario di partenza durante il drag */}
                       {dragging && tripDrag && (
                         <text
@@ -3104,7 +3216,14 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
           </button>
         )}
         <div className="flex-1" />
-        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · drag corsa = trasla · doppio clic = seleziona · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
+        {nodeVis.show && (
+          <span className={nodeVis.keyOnly ? "text-sky-400/80" : "text-slate-600"}>
+            {nodeVis.keyOnly
+              ? `nodi ${nodeVis.drawn}/${nodeVis.total} (solo capolinea, interscambi e nodi: troppe fermate per disegnarle tutte)`
+              : `nodi ${nodeVis.drawn}`}
+          </span>
+        )}
+        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · cursore sul pallino = transito · drag corsa = trasla · doppio clic = seleziona · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
