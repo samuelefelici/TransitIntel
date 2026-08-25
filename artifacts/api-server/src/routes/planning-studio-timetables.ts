@@ -345,6 +345,15 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
           // (elenco corse, locandine) e ad Argos per ragionare per percorso.
           variantCode: t.variantCode,
           firstTime: t.stops.find((s2) => s2.time)?.time ?? "99:99:99",
+          // Arrivo AUTOREVOLE (ultima fermata per stop_seq): partenza/arrivo
+          // NON vanno dedotti dal vettore `times`, che è allineato al master —
+          // e il master, quando si fondono le due direzioni (nessun
+          // directionId), contiene cicli (A dice X→Y, R dice Y→X):
+          // l'ordinamento topologico si spezza, il ripiego appende in ordine
+          // di apparizione e il primo/ultimo valore del vettore non è più il
+          // primo/ultimo transito. I consumatori (Argos, viste) devono usare
+          // firstTime/lastTime, mai gli estremi di `times`.
+          lastTime: [...t.stops].reverse().find((s2) => s2.time)?.time ?? null,
           times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
           dayTypeCodes: dayCodesByTrip.get(t.tripId) ?? [],
           categoryIds: categoryIdsByTrip.get(t.tripId) ?? [],
@@ -454,6 +463,8 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/week", async (
         return {
           tripId: t.tripId, headsign: t.headsign, directionId: t.directionId,
           firstTime: t.stops.find((s2) => s2.time)?.time ?? "99:99:99",
+          // vedi sopra: l'arrivo si legge da qui, mai dagli estremi di `times`
+          lastTime: [...t.stops].reverse().find((s2) => s2.time)?.time ?? null,
           times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
           onDemand: !!t.attributes?.onDemand,
           days: daysByTrip.get(t.tripId) ?? [false, false, false, false, false, false, false],
