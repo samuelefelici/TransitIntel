@@ -80,6 +80,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@types/three": "^0.185.4",
     "chart.js": "^4.4.6",
     "d3-axis": "^3.0.0",
     "d3-scale": "^4.0.2",
@@ -94,6 +95,7 @@
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "three": "^0.185.1"
   }
 }

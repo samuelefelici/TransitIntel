@@ -26,8 +26,13 @@ import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import { useAuth } from "@/hooks/use-auth";
 import {
   ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
-  X, Check, GitCommitHorizontal, CircleDot, Shuffle, CalendarRange, Table2, Activity,
+  X, Check, GitCommitHorizontal, CircleDot, Shuffle, CalendarRange, Table2, Activity, Boxes,
 } from "lucide-react";
+import SpaceTimeCube from "@/components/planning-studio/SpaceTimeCube";
+import {
+  buildProjection, buildThreads, buildNodes, findCoincidences,
+  type CubeStop, type CubeThreadInput,
+} from "@/lib/space-time-cube";
 import {
   getPsProject,
   listPsRoutes, type PsRoute,
@@ -175,7 +180,7 @@ export default function PlanningStudioTtdPage() {
    * categoria), entrambi (tinta della linea + tratteggio per validità). */
   const [colorBy, setColorBy] = useState<"linee" | "validita" | "entrambi">("linee");
   /* Vista: diagramma tempo-distanza oppure LIBRETTO ORARIO (corse in colonna). */
-  const [view, setView] = useState<"grafico" | "libretto">("grafico");
+  const [view, setView] = useState<"grafico" | "libretto" | "3d">("grafico");
   /** Passa il filtro di validità? (categorie in OR, giorni-tipo in OR) */
   const tripPasses = useCallback((t: PsTrip) => {
     if (catSel.size > 0) {
@@ -1245,6 +1250,48 @@ export default function PlanningStudioTtdPage() {
     return out;
   }, [candidatesQ.data, overlayOn, overlayData, axis, tripPasses, colorByRoute, variantId]);
 
+  /* ─── Vista 3D: cubo spazio-tempo ─────────────────────────────────────
+     I fili nascono dai transiti delle corse ACCESE + le coordinate vere
+     delle fermate; i piloni sono gli interscambi dell'asse unione; le
+     coincidenze si ricalcolano dalla soglia scelta. Matematica nel modulo
+     puro lib/space-time-cube.ts, resa in SpaceTimeCube.tsx. */
+  const [coincSoglia, setCoincSoglia] = useState(6);
+  const cube = useMemo(() => {
+    if (view !== "3d") return null;
+    const stopsById = new Map<string, CubeStop>();
+    for (const s of stopsQ.data ?? []) stopsById.set(s.id, { id: s.id, lat: s.lat, lon: s.lon, name: s.name });
+    const inputs: CubeThreadInput[] = [];
+    for (const g of [...baseGeoms, ...overlayGeoms]) {
+      const vid = g.isOverlay ? overlayVidOfTrip(g.trip.id) : null;
+      const cand = vid ? (candidatesQ.data ?? []).find(c => c.variant.id === vid) : null;
+      inputs.push({
+        tripId: g.trip.id,
+        // la LINEA, non la variante: le coincidenze contano tra linee diverse
+        routeKey: g.isOverlay ? (cand?.route.id ?? vid ?? "overlay") : (baseRoute?.id ?? "base"),
+        label: g.label,
+        color: g.color,
+        stops: g.sts.map(st => ({ stopId: st.stopId, sec: hmsToSec(st.departureTime) })),
+      });
+    }
+    let tMinSec = Infinity, tMaxSec = -Infinity;
+    for (const i of inputs) for (const s of i.stops) {
+      if (s.sec < tMinSec) tMinSec = s.sec;
+      if (s.sec > tMaxSec) tMaxSec = s.sec;
+    }
+    if (!Number.isFinite(tMinSec)) return null;
+    const tMin = Math.floor(tMinSec / 3600) * 3600;
+    const tMax = Math.ceil(tMaxSec / 3600) * 3600;
+    const usedStops = [...new Set(inputs.flatMap(i => i.stops.map(s => s.stopId)))]
+      .map(id => stopsById.get(id)).filter((s): s is CubeStop => !!s);
+    if (usedStops.length < 2) return null;
+    const proj = buildProjection(usedStops, tMin, tMax);
+    const threads = buildThreads(inputs, stopsById, proj);
+    const sharedIds = new Set<string>((axis as any)?.shared ?? []);
+    const cubeNodes = buildNodes(sharedIds, nodeOfStop, usedStops, proj);
+    const coincidences = findCoincidences(inputs, stopsById, nodeOfStop, cubeNodes, coincSoglia);
+    return { threads, nodes: cubeNodes, coincidences, proj };
+  }, [view, stopsQ.data, baseGeoms, overlayGeoms, overlayVidOfTrip, candidatesQ.data, baseRoute, axis, nodeOfStop, coincSoglia]);
+
   // Anteprima cadenzamento come geometrie tratteggiate
   const previewGeoms: Pt[][][] = useMemo(() => {
     if (!axis || !multPreview) return [];
@@ -2165,7 +2212,23 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             }`}>
             <Table2 className="w-3.5 h-3.5" /> Libretto
           </button>
+          <button onClick={() => setView("3d")}
+            title="Cubo spazio-tempo: mappa in pianta, tempo in verticale — le coincidenze si vedono su tutta la rete insieme"
+            className={`px-2.5 py-1.5 inline-flex items-center gap-1.5 transition-colors ${
+              view === "3d" ? "bg-amber-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}>
+            <Boxes className="w-3.5 h-3.5" /> 3D
+          </button>
         </div>
+        {view === "3d" && (
+          <label className="inline-flex items-center gap-1 text-[11px] text-slate-400 ml-2">
+            coincidenza ≤
+            <select value={coincSoglia} onChange={e => setCoincSoglia(Number(e.target.value))}
+              className="bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-300">
+              {[3, 5, 6, 8, 10, 15].map(m => <option key={m} value={m}>{m}′</option>)}
+            </select>
+          </label>
+        )}
       </div>
 
 
@@ -2250,7 +2313,25 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             </p>
           </div>
         )}
-        <div ref={containerRef} className={`flex-1 relative overflow-hidden select-none ${view === "libretto" ? "hidden" : ""}`}>
+        {view === "3d" && cube && (
+          <SpaceTimeCube
+            threads={cube.threads}
+            nodes={cube.nodes}
+            coincidences={cube.coincidences}
+            toY={cube.proj.toY}
+            tMin={cube.proj.tMin}
+            tMax={cube.proj.tMax}
+            planSize={cube.proj.planSize}
+            selectedTripId={selectedTripId}
+            onSelectTrip={id => { setSelectedTripId(id); setSelectedNode(null); }}
+          />
+        )}
+        {view === "3d" && !cube && (
+          <div className="flex-1 flex items-center justify-center text-sm text-slate-500">
+            Accendi almeno un percorso con corse per vedere il cubo spazio-tempo.
+          </div>
+        )}
+        <div ref={containerRef} className={`flex-1 relative overflow-hidden select-none ${view !== "grafico" ? "hidden" : ""}`}>
           {!variantId && (
             <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
               Seleziona linea e variante di riferimento per disegnare l'orario grafico.
