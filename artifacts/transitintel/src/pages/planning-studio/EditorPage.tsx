@@ -271,6 +271,24 @@ function waypointRangeForStopRemoval(wpts: PsWaypoint[], wIdx: number): [number,
   return [lo, hi];
 }
 
+/** Il TRATTO fermata→fermata che contiene il waypoint-leg legIdx (tra i
+ * waypoint legIdx e legIdx+1): [testa, coda] estesi sopra i via liberi fino
+ * alle due fermate estremo (o alle estremità del percorso). È l'unità su cui
+ * lavora lo strumento «Tratto manuale»: l'operatore ragiona per tratti tra
+ * fermate, non per segmenti tra via. */
+function stopLegRange(wpts: PsWaypoint[], legIdx: number): [number, number] {
+  let lo = legIdx, hi = legIdx + 1;
+  while (lo > 0 && !wpts[lo].stopId) lo--;
+  while (hi < wpts.length - 1 && !wpts[hi].stopId) hi++;
+  return [lo, hi];
+}
+
+/** Toglie il flag di tratto manuale da un waypoint (immutabile). */
+function stripLegMode(w: PsWaypoint): PsWaypoint {
+  const { legMode: _drop, ...rest } = w;
+  return rest;
+}
+
 function stopPosForWaypointIdx(wpts: PsWaypoint[], stopsList: PsVariantStop[], wIdx: number): number {
   if (!wpts[wIdx]?.stopId) return -1;
   let w = 0;
@@ -530,8 +548,11 @@ export default function PlanningStudioEditorPage() {
     "stops" | "waypoints" | "geometry" | "distanceM" | "durationS" | "legDistances" | "violations">;
   const [editorHistory, setEditorHistory] = useState<EditorSnapshot[]>([]);
   // ── Drag della linea del percorso (stile Google Maps): via-point in inserimento ──
-  const dragViaRef = useRef<{ insertIdx: number } | null>(null);
+  const dragViaRef = useRef<{ insertIdx: number; downPt: [number, number] } | null>(null);
   const [dragViaPos, setDragViaPos] = useState<[number, number] | null>(null);
+  // Strumento «Tratto manuale»: clic su un tratto del percorso per dichiararlo
+  // a mano libera (tratteggiato, niente snap) o riportarlo automatico.
+  const [legTool, setLegTool] = useState(false);
   const suppressClickRef = useRef(false);
   const [lineHover, setLineHover] = useState(false);
   const [snapBusy, setSnapBusy] = useState(false);
@@ -1337,6 +1358,7 @@ export default function PlanningStudioEditorPage() {
         dirty: false,
       });
       setTool("editVariant");
+      setLegTool(false);
       setInsertAfterIdx(null);
       setEditorHistory([]);
       setVariantSavedAt(null);
@@ -1353,6 +1375,7 @@ export default function PlanningStudioEditorPage() {
   function exitEditor() {
     if (editor?.dirty && !confirm("Hai modifiche non salvate. Uscire comunque?")) return;
     setEditor(null);
+    setLegTool(false);
     setInsertAfterIdx(null);
     setEditorHistory([]);
     setTool("select");
@@ -1436,9 +1459,10 @@ export default function PlanningStudioEditorPage() {
     setSnapBusy(true);
     try {
       const points: [number, number][] = wpts.map(w => [w.lng, w.lat]);
-      // Segmento i (tra waypoint i e i+1) manuale se uno dei due estremi è manuale.
+      // Segmento i (tra waypoint i e i+1) manuale se uno dei due estremi è
+      // manuale, o se il TRATTO è dichiarato a mano libera (legMode di testa).
       const modes = wpts.slice(0, -1).map((w, i) =>
-        (mode === "manual" || w.mode === "manual" || wpts[i + 1].mode === "manual") ? "manual" as const : "driving" as const);
+        (mode === "manual" || w.mode === "manual" || wpts[i + 1].mode === "manual" || w.legMode === "manual") ? "manual" as const : "driving" as const);
       const curb = curbOverride ?? editorRef.current?.curb ?? false;
       const r = await routeSnap(points, mode, {
         modes,
@@ -1702,9 +1726,15 @@ export default function PlanningStudioEditorPage() {
     // ricuce SOLO attorno al punto rimosso: alle estremità si pota il tratto.
     const stopPos = stopPosForWaypointIdx(cur.waypoints, cur.stops, idx);
     // Fermata → cade con i via dei suoi due tratti (stessa regola dell'elenco);
-    // via libero → cade solo lui e si ricuce tra i due vicini.
+    // via libero → cade solo lui e si ricuce tra i due vicini. Se cade una
+    // FERMATA, il tratto che rinasce parte AUTOMATICO: il flag «tratto manuale»
+    // della testa muore col tratto che governava (togliere un via libero,
+    // invece, lascia il tratto manuale com'è).
     const [wLo, wHi] = stopPos >= 0 ? waypointRangeForStopRemoval(cur.waypoints, idx) : [idx, idx];
-    const wpts = cur.waypoints.filter((_, i) => i < wLo || i > wHi);
+    const base = stopPos >= 0 && wLo - 1 >= 0 && cur.waypoints[wLo - 1].legMode
+      ? cur.waypoints.map((w, i) => (i === wLo - 1 ? stripLegMode(w) : w))
+      : cur.waypoints;
+    const wpts = base.filter((_, i) => i < wLo || i > wHi);
     const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i < wLo || i > wHi);
     const list = stopPos >= 0
       ? cur.stops.filter((_, i) => i !== stopPos).map((s, i) => ({ ...s, seq: i + 1 }))
@@ -1825,7 +1855,12 @@ export default function PlanningStudioEditorPage() {
     // pota il suo tratto, via compresi, e non tocca nient'altro.
     const wIdx = waypointIndexForStopPos(cur.waypoints, cur.stops, idx);
     const [wLo, wHi] = wIdx >= 0 ? waypointRangeForStopRemoval(cur.waypoints, wIdx) : [0, -1];
-    const wpts = cur.waypoints.filter((_, i) => i < wLo || i > wHi);
+    // Il tratto che rinasce al posto dei due morti parte AUTOMATICO: il flag
+    // «tratto manuale» della testa muore col tratto che governava.
+    const base = wLo - 1 >= 0 && cur.waypoints[wLo - 1].legMode
+      ? cur.waypoints.map((w, i) => (i === wLo - 1 ? stripLegMode(w) : w))
+      : cur.waypoints;
+    const wpts = base.filter((_, i) => i < wLo || i > wHi);
     const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => i < wLo || i > wHi);
     const list = cur.stops.filter((_, i) => i !== idx).map((s, i) => ({ ...s, seq: i + 1 }));
     setInsertAfterIdx(null);
@@ -1840,13 +1875,17 @@ export default function PlanningStudioEditorPage() {
     // Per ogni fermata tolta cade anche l'intervallo dei suoi via (i tratti
     // che muoiono): stessa regola della rimozione singola, a unione di insiemi.
     const wDrop = new Set<number>();
+    const clearHead = new Set<number>(); // teste dei tratti che rinascono → flag manuale azzerato
     for (const i of idxs) {
       const wIdx = waypointIndexForStopPos(cur.waypoints, cur.stops, i);
       if (wIdx < 0) continue;
       const [lo, hi] = waypointRangeForStopRemoval(cur.waypoints, wIdx);
       for (let k = lo; k <= hi; k++) wDrop.add(k);
+      if (lo - 1 >= 0) clearHead.add(lo - 1);
     }
-    const wpts = cur.waypoints.filter((_, i) => !wDrop.has(i));
+    const base = cur.waypoints.map((w, i) =>
+      clearHead.has(i) && !wDrop.has(i) && w.legMode ? stripLegMode(w) : w);
+    const wpts = base.filter((_, i) => !wDrop.has(i));
     const oldIndexOf = cur.waypoints.map((_, i) => i).filter(i => !wDrop.has(i));
     const drop = new Set(idxs);
     const list = cur.stops.filter((_, i) => !drop.has(i)).map((s, i) => ({ ...s, seq: i + 1 }));
@@ -2017,6 +2056,10 @@ export default function PlanningStudioEditorPage() {
     cur: VariantEditorState,
     newWpts: PsWaypoint[],
     oldIndexOf: number[],
+    // Tratti (indici NUOVI) da ricostruire ANCHE se i loro estremi sono
+    // sopravvissuti identici: serve al toggle «Tratto manuale», che cambia il
+    // modo di un tratto senza toccare nessun waypoint.
+    dirtyLegs?: Set<number>,
   ): Promise<null | Pick<VariantEditorState, "geometry" | "distanceM" | "durationS" | "legDistances" | "violations">> {
     const coords = (cur.geometry?.coordinates ?? null) as [number, number][] | null;
     if (!coords || coords.length < 2 || cur.waypoints.length < 2 || newWpts.length < 2) return null;
@@ -2030,7 +2073,7 @@ export default function PlanningStudioEditorPage() {
     let i = 0;
     while (i < newWpts.length - 1) {
       const u = oldIndexOf[i], v = oldIndexOf[i + 1];
-      if (u >= 0 && v === u + 1) {
+      if (u >= 0 && v === u + 1 && !dirtyLegs?.has(i)) {
         // tratta SOPRAVVISSUTA: fetta esatta del tracciato esistente
         const slice = coords.slice(proj[u], proj[v] + 1);
         chunks.push(slice);
@@ -2042,12 +2085,21 @@ export default function PlanningStudioEditorPage() {
       let j = i + 1;
       while (j < newWpts.length - 1) {
         const a = oldIndexOf[j], b = oldIndexOf[j + 1];
-        if (a >= 0 && b === a + 1) break;
+        if (a >= 0 && b === a + 1 && !dirtyLegs?.has(j)) break;
         j++;
       }
       const runPts = newWpts.slice(i, j + 1);
       const modes = runPts.slice(0, -1).map((w, k) =>
-        (cur.shapeMode === "manual" || w.mode === "manual" || runPts[k + 1].mode === "manual") ? "manual" as const : "driving" as const);
+        (cur.shapeMode === "manual" || w.mode === "manual" || runPts[k + 1].mode === "manual" || w.legMode === "manual") ? "manual" as const : "driving" as const);
+      // Tratto a mano libera (o corsa tutta manuale): la spezzata dei suoi
+      // punti È il disegno — niente chiamata di snap, funziona anche offline.
+      if (modes.every(m => m === "manual")) {
+        const straight = runPts.map(w => [w.lng, w.lat] as [number, number]);
+        chunks.push(straight);
+        for (let k = 0; k < straight.length - 1; k++) legDists.push(lineLengthM([straight[k], straight[k + 1]]));
+        i = j;
+        continue;
+      }
       // Lo snap può fallire (OSRM giù, risposta vuota): il guasto resta
       // CONFINATO al tratto — diventa una retta tra i suoi punti — e il resto
       // del tracciato non si tocca. Prima un fallimento qui faceva ricadere
@@ -2109,7 +2161,7 @@ export default function PlanningStudioEditorPage() {
   /** Applica una modifica LOCALE (sequenza + waypoints) e ricuce il tracciato
    * con rebuildGeometryLocally; fallback al ricalcolo completo solo se non
    * c'è nulla da preservare o lo snap del tratto fallisce. */
-  async function applyLocalEdit(nextStops: PsVariantStop[], nextWpts: PsWaypoint[], oldIndexOf: number[]) {
+  async function applyLocalEdit(nextStops: PsVariantStop[], nextWpts: PsWaypoint[], oldIndexOf: number[], dirtyLegs?: Set<number>) {
     const cur = editorRef.current;
     if (!cur) return;
     const seq = ++snapSeqRef.current; // invalida gli snap in volo: vince questa modifica
@@ -2126,7 +2178,7 @@ export default function PlanningStudioEditorPage() {
     }
     setSnapBusy(true);
     try {
-      const g = await rebuildGeometryLocally(cur, nextWpts, oldIndexOf);
+      const g = await rebuildGeometryLocally(cur, nextWpts, oldIndexOf, dirtyLegs);
       if (seq !== snapSeqRef.current) return; // è già partita una modifica più recente
       if (!g) { recomputeShape(nextWpts, cur.shapeMode); return; }
       const done: VariantEditorState = { ...editorRef.current!, ...g, dirty: true };
@@ -2142,12 +2194,48 @@ export default function PlanningStudioEditorPage() {
   function insertViaLocally(insertIdx: number, via: [number, number]) {
     const cur = editorRef.current;
     if (!cur) return;
-    const newWpt: PsWaypoint = { lng: via[0], lat: via[1], mode: cur.shapeMode === "manual" ? "manual" : "snap" };
+    // Dentro un tratto a mano libera il punto nuovo EREDITA il modo del
+    // tratto: entrambe le metà restano manuali (spezzata, niente snap).
+    const legManual = cur.waypoints[insertIdx - 1]?.legMode === "manual";
+    const newWpt: PsWaypoint = {
+      lng: via[0], lat: via[1],
+      mode: cur.shapeMode === "manual" ? "manual" : "snap",
+      ...(legManual ? { legMode: "manual" as const } : {}),
+    };
     const wpts = [...cur.waypoints];
     wpts.splice(insertIdx, 0, newWpt);
     const oldIndexOf = cur.waypoints.map((_, i) => i);
     oldIndexOf.splice(insertIdx, 0, -1);
     void applyLocalEdit(cur.stops, wpts, oldIndexOf);
+  }
+
+  /** Strumento «Tratto manuale»: alterna il modo del TRATTO fermata→fermata
+   * che contiene il waypoint-leg cliccato. In entrambe le direzioni il tratto
+   * riparte PULITO tra i suoi due estremi (i via liberi interni cadono):
+   * manuale → retta da modellare trascinando la linea; automatico → ri-snap
+   * OSRM di quel solo tratto. Tutto il resto del percorso non si tocca. */
+  function toggleLegManual(legIdx: number) {
+    const cur = editorRef.current;
+    if (!cur || legIdx < 0 || legIdx >= cur.waypoints.length - 1) return;
+    const [lo, hi] = stopLegRange(cur.waypoints, legIdx);
+    const isManual = cur.waypoints[legIdx].legMode === "manual";
+    const wpts: PsWaypoint[] = [];
+    const oldIndexOf: number[] = [];
+    for (let k = 0; k < cur.waypoints.length; k++) {
+      if (k > lo && k < hi && !cur.waypoints[k].stopId) continue; // via interni al tratto
+      let w = cur.waypoints[k];
+      if (k === lo) w = isManual ? stripLegMode(w) : { ...w, legMode: "manual" as const };
+      wpts.push(w);
+      oldIndexOf.push(k);
+    }
+    const newLegIdx = oldIndexOf.indexOf(lo);
+    if (newLegIdx < 0 || newLegIdx >= wpts.length - 1) return;
+    toast.info(isManual
+      ? "Tratto riportato automatico: ri-snap su strada del solo tratto"
+      : "Tratto dichiarato MANUALE: parte come retta — trascina la linea per modellarlo", {
+      description: "Il resto del percorso non è stato toccato (Ctrl+Z per annullare).",
+    });
+    void applyLocalEdit(cur.stops, wpts, oldIndexOf, new Set([newLegIdx]));
   }
 
   /* Entra in modalità "Edita tracciato": copia di lavoro della LineString.
@@ -2329,10 +2417,35 @@ export default function PlanningStudioEditorPage() {
                   : dragViaPos ? "grabbing"
                   : (clusterDraw && clusterDraw.mode === "draw") ? "crosshair"
                   : (clusterDraw && clusterDraw.mode === "stops") ? "pointer"
+                  : (editor && legTool && lineHover) ? "pointer"
                   : (editor && lineHover) ? "grab"
                   : tool === "addStop" ? "crosshair"
                   : tool === "editVariant" ? "crosshair"
                   : "grab";
+
+  /* ─── Tratti manuali: fette della geometria corrente da rendere tratteggiate.
+   * La fetta di ogni waypoint-leg col flag si ritaglia proiettando i waypoint
+   * sui vertici della LineString (stessa proiezione della chirurgia locale). */
+  const manualLegsGeoJSON = useMemo(() => {
+    if (!editor?.geometry || editor.waypoints.length < 2) return null;
+    const coords = editor.geometry.coordinates as [number, number][];
+    if (coords.length < 2) return null;
+    const legIdxs: number[] = [];
+    for (let i = 0; i < editor.waypoints.length - 1; i++) {
+      if (editor.waypoints[i].legMode === "manual") legIdxs.push(i);
+    }
+    if (legIdxs.length === 0) return null;
+    const proj = projectWaypointsOnCoords(coords, editor.waypoints);
+    const features = legIdxs
+      .map(i => coords.slice(proj[i], proj[i + 1] + 1))
+      .filter(slice => slice.length >= 2)
+      .map(slice => ({
+        type: "Feature" as const,
+        properties: {},
+        geometry: { type: "LineString" as const, coordinates: slice },
+      }));
+    return features.length > 0 ? { type: "FeatureCollection" as const, features } : null;
+  }, [editor?.geometry, editor?.waypoints]);
 
   /* ─── Import GTFS ─── */
   const isEmpty = !loading && stops.length === 0 && routes.length === 0;
@@ -2665,6 +2778,14 @@ export default function PlanningStudioEditorPage() {
               className="ml-1 p-1 rounded hover:bg-white/20"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
+        {/* Strumento «Tratto manuale» attivo: promemoria dei gesti */}
+        {editor && legTool && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg bg-amber-400 text-slate-950 px-3 py-1.5 shadow-xl text-[11px] font-medium">
+            〰️ Tratto manuale — <strong>clicca un tratto</strong> per marcarlo/smarcarlo · <strong>trascina la linea</strong> per modellarlo
+            <button onClick={() => setLegTool(false)} title="Chiudi strumento"
+              className="ml-1 p-1 rounded hover:bg-black/10"><X className="w-3.5 h-3.5" /></button>
+          </div>
+        )}
         <Map
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
@@ -2719,7 +2840,7 @@ export default function PlanningStudioEditorPage() {
               editor.waypoints,
               [e.lngLat.lng, e.lngLat.lat],
             );
-            dragViaRef.current = { insertIdx: idx };
+            dragViaRef.current = { insertIdx: idx, downPt: [e.point.x, e.point.y] };
             setDragViaPos([e.lngLat.lng, e.lngLat.lat]);
             mapRef.current?.getMap()?.dragPan.disable();
           }}
@@ -2731,6 +2852,14 @@ export default function PlanningStudioEditorPage() {
             mapRef.current?.getMap()?.dragPan.enable();
             suppressClickRef.current = true; // il click generato al rilascio non deve fare altro
             if (!editor) return;
+            // Strumento «Tratto manuale» attivo + CLICK secco (niente drag):
+            // alterna il modo del tratto cliccato. Un drag vero, anche con lo
+            // strumento attivo, resta il gesto di disegno (inserisce il via).
+            const movedPx = Math.hypot(e.point.x - d.downPt[0], e.point.y - d.downPt[1]);
+            if (legTool && movedPx < 5) {
+              toggleLegManual(d.insertIdx - 1);
+              return;
+            }
             // Ricalcolo LOCALE: cambia solo il tratto tra i due waypoint che
             // circondano la deviazione, il resto del tracciato non si muove.
             void insertViaLocally(d.insertIdx, [e.lngLat.lng, e.lngLat.lat]);
@@ -3218,6 +3347,24 @@ export default function PlanningStudioEditorPage() {
                   "line-color": editor.routeColor,
                   "line-width": 5,
                   "line-opacity": 0.85,
+                }}
+                layout={{ "line-join": "round", "line-cap": "round" }}
+              />
+            </Source>
+          )}
+          {/* Tratti dichiarati MANUALI: tratteggio ambra sopra la linea, per
+              riconoscerli a colpo d'occhio. Non interattivo: click e drag
+              passano alla linea base sottostante. */}
+          {editor?.geometry && manualLegsGeoJSON && (
+            <Source id="editor-shape-manual" type="geojson" data={manualLegsGeoJSON}>
+              <Layer
+                id="editor-shape-manual-line"
+                type="line"
+                paint={{
+                  "line-color": "#fbbf24",
+                  "line-width": 3,
+                  "line-dasharray": [1.4, 1.6],
+                  "line-opacity": 0.95,
                 }}
                 layout={{ "line-join": "round", "line-cap": "round" }}
               />
@@ -3807,6 +3954,8 @@ export default function PlanningStudioEditorPage() {
                 onSave={saveVariant}
                 onExit={exitEditor}
                 onImportKml={() => kmlInputRef.current?.click()}
+                legTool={legTool}
+                onToggleLegTool={() => setLegTool(v => !v)}
               />
             </motion.div>
           )}
@@ -5343,6 +5492,7 @@ function VariantEditorPanel({
   onAddStop, onMoveStop, onRemoveStop, onRemoveStops, onReverse, onClear,
   insertAfterIdx, onSetInsertAfter, insertSide, onSetInsertSide,
   onFlyToStop, onToggleCurb, onRebuildShape, onUndo, canUndo, savedAt, onChangeMode, onSave, onExit, onImportKml,
+  legTool, onToggleLegTool,
 }: {
   editor: VariantEditorState;
   stopsAll: PsStop[];
@@ -5368,6 +5518,8 @@ function VariantEditorPanel({
   onChangeMode: (m: "driving" | "manual") => void;
   onSave: () => void;
   onExit: () => void;
+  legTool: boolean;
+  onToggleLegTool: () => void;
 }) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [stopPicker, setStopPicker] = useState("");
@@ -5476,6 +5628,19 @@ function VariantEditorPanel({
           deviarlo; se non basta, <strong className="text-slate-300">clic sul pallino</strong> del via per forzare
           quel solo tratto in manuale.
         </p>
+        {/* Strumento «Tratto manuale»: il tratto tra due fermate diventa a mano
+            libera (sensi vietati, corsie, varchi che OSRM rifiuta) e si modella
+            trascinando la linea — senza toccare il resto del percorso. */}
+        <button onClick={onToggleLegTool}
+          disabled={editor.stops.length < 2 || !editor.geometry}
+          title="Clic su un TRATTO del percorso per dichiararlo a mano libera (tratteggiato, mai ri-snappato: sensi vietati, corsie riservate, varchi). Parte come retta tra le due fermate: trascina la linea per modellarlo punto per punto. Ri-clic sul tratto per riportarlo automatico (ri-snap su strada di quel solo tratto). Il resto del percorso non viene MAI toccato."
+          className={`w-full mt-2 text-xs py-1.5 rounded border font-medium inline-flex items-center justify-center gap-1.5 transition disabled:opacity-40 ${
+            legTool
+              ? "border-amber-400 bg-amber-500/25 text-amber-200"
+              : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+          }`}>
+          〰️ Tratto manuale {legTool && <span className="text-[10px] font-normal">— attivo: clicca un tratto</span>}
+        </button>
         {/* Rete di sicurezza: se il disegno non corrisponde più alla sequenza
             (dati storici incoerenti), lo si ributta su strada da zero. */}
         <button onClick={() => {

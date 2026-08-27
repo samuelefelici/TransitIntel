@@ -109,6 +109,11 @@ export interface PsWaypoint {
   lat: number;
   stopId?: string | null;
   mode?: "snap" | "manual";
+  /** Modo del TRATTO che parte da questo waypoint (verso il successivo):
+   *  "manual" = disegnato a mano libera, mai ri-snappato su strada (sensi
+   *  vietati, corsie riservate, varchi che OSRM non conosce). Persiste nel
+   *  JSONB dei waypoints salvato con lo shape. */
+  legMode?: "manual";
 }
 
 export interface PsShape {
