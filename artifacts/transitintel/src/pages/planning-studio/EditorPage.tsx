@@ -587,6 +587,52 @@ export default function PlanningStudioEditorPage() {
       setMultiLoading(null);
     }
   }
+  // ── Multi-selezione PERCORSI (Cmd/Ctrl+Click nel pannello Linee): varianti
+  //    anche di LINEE DIVERSE sovrapposte sulla mappa, ognuna col colore della
+  //    sua linea — per confrontare corridoi e sovrapposizioni. Chiave = variantId.
+  const [multiVariants, setMultiVariants] = useState<Record<string, {
+    routeId: string; routeShortName: string; color: string;
+    code: string | null; name: string; direction: number;
+    feature: any; // Feature LineString del tracciato (o spezzata fermate)
+  }>>({});
+  const [multiVariantLoading, setMultiVariantLoading] = useState<string | null>(null);
+  async function toggleMultiVariant(route: PsRoute, variant: PsVariant) {
+    if (multiVariants[variant.id]) {
+      setMultiVariants(prev => { const n = { ...prev }; delete n[variant.id]; return n; });
+      return;
+    }
+    setMultiVariantLoading(variant.id);
+    try {
+      const d = await getPsVariant(projectId, variant.id);
+      const shapeCoords = d.shape?.geometry?.coordinates;
+      const line = shapeCoords && shapeCoords.length >= 2
+        ? d.shape!.geometry
+        : ((d.stops?.length ?? 0) >= 2
+          ? { type: "LineString" as const, coordinates: (d.stops || []).map(s => [Number(s.lon), Number(s.lat)] as [number, number]) }
+          : null);
+      if (!line) { toast.info(`"${variant.name}": niente tracciato né fermate da mostrare`); return; }
+      const color = (route.color || "#10b981").startsWith("#") ? (route.color || "#10b981") : `#${route.color}`;
+      setMultiVariants(prev => {
+        const next = {
+          ...prev,
+          [variant.id]: {
+            routeId: route.id, routeShortName: route.shortName || "", color,
+            code: variant.code ?? null, name: variant.name,
+            direction: variant.direction === 1 ? 1 : 0,
+            feature: { type: "Feature", properties: {}, geometry: line },
+          },
+        };
+        // Inquadra l'UNIONE dei percorsi selezionati: si vede sempre tutto il confronto
+        const all = Object.values(next).flatMap(m => m.feature.geometry.coordinates as [number, number][]);
+        if (all.length > 0) fitToCoords(all);
+        return next;
+      });
+    } catch (e: any) {
+      toast.error("Errore caricamento percorso", { description: e?.message });
+    } finally {
+      setMultiVariantLoading(null);
+    }
+  }
   // Edit tracciato: copia di lavoro della LineString (null = non in edit)
   const [shapeEdit, setShapeEdit] = useState<ShapeEditState | null>(null);
   const [shapeEditBusy, setShapeEditBusy] = useState(false);   // snap OSRM in corso
@@ -2778,6 +2824,34 @@ export default function PlanningStudioEditorPage() {
               className="ml-1 p-1 rounded hover:bg-white/20"><X className="w-3.5 h-3.5" /></button>
           </div>
         )}
+        {/* Legenda del confronto percorsi (Cmd/Ctrl+Click nel pannello Linee) */}
+        {!editor && Object.keys(multiVariants).length > 0 && (
+          <div className="absolute bottom-8 left-3 z-20 rounded-lg bg-slate-950/90 backdrop-blur border border-slate-700 shadow-xl p-2 w-[260px]">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                Confronto percorsi ({Object.keys(multiVariants).length})
+              </p>
+              <button onClick={() => setMultiVariants({})} title="Svuota il confronto"
+                className="p-0.5 rounded text-slate-500 hover:text-slate-200"><X className="w-3.5 h-3.5" /></button>
+            </div>
+            {Object.entries(multiVariants).map(([vid, m]) => (
+              <div key={vid} className="flex items-center gap-1.5 py-0.5 text-[11px] text-slate-200">
+                <span className="w-3 h-1.5 rounded-sm shrink-0" style={{ backgroundColor: m.color }} />
+                <span className="font-semibold shrink-0">{m.routeShortName}</span>
+                <span className="text-slate-500 shrink-0">{m.direction === 0 ? "→" : "←"}</span>
+                {m.code && <span className="font-mono text-emerald-300 text-[10px] shrink-0">{m.code}</span>}
+                <span className="truncate flex-1 text-slate-400">{m.name}</span>
+                <button onClick={() => setMultiVariants(prev => { const n = { ...prev }; delete n[vid]; return n; })}
+                  title="Togli dal confronto" className="p-0.5 text-slate-500 hover:text-red-400 shrink-0">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+            <p className="text-[9px] text-slate-500 mt-1 leading-snug">
+              Cmd/Ctrl+Click su un percorso nel pannello Linee per aggiungerlo o toglierlo.
+            </p>
+          </div>
+        )}
         {/* Strumento «Tratto manuale» attivo: promemoria dei gesti */}
         {editor && legTool && (
           <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg bg-amber-400 text-slate-950 px-3 py-1.5 shadow-xl text-[11px] font-medium">
@@ -2947,6 +3021,23 @@ export default function PlanningStudioEditorPage() {
                 paint={{ "line-color": m.color, "line-width": 3, "line-opacity": 0.85 }} />
             </Source>
           ))}
+          {/* Confronto PERCORSI (Cmd/Ctrl+Click sulle righe del pannello Linee):
+              varianti anche di linee diverse, colore per-feature della linea */}
+          {Object.keys(multiVariants).length > 0 && (
+            <Source id="multi-variants-src" type="geojson"
+              data={{
+                type: "FeatureCollection",
+                features: Object.entries(multiVariants).map(([vid, m]) =>
+                  ({ ...m.feature, properties: { color: m.color, vid } })),
+              } as any}>
+              <Layer id="multi-variants-casing" type="line"
+                paint={{ "line-color": "#000", "line-width": 6, "line-opacity": 0.35 }}
+                layout={{ "line-join": "round", "line-cap": "round" }} />
+              <Layer id="multi-variants-line" type="line"
+                paint={{ "line-color": ["get", "color"], "line-width": 3.5, "line-opacity": 0.9 }}
+                layout={{ "line-join": "round", "line-cap": "round" }} />
+            </Source>
+          )}
           {/* Anteprima fantasma di Argos: la sequenza proposta, tratteggiata */}
           {argosGhostGeoJSON && (
             <Source id="argos-ghost-src" type="geojson" data={argosGhostGeoJSON.fc as any}>
@@ -3850,6 +3941,9 @@ export default function PlanningStudioEditorPage() {
                     }}
                     onCreateVariant={handleCreateVariant}
                     onSelectVariant={(routeId, variantId) => openRouteView(routeId, variantId)}
+                    onMultiSelectVariant={toggleMultiVariant}
+                    multiVariantIds={new Set(Object.keys(multiVariants))}
+                    loadingMultiVariantId={multiVariantLoading}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
                     onUpdateVariantMeta={handleUpdateVariantMeta}
                     shownRouteIds={new Set(Object.keys(multiShown))}
@@ -4514,6 +4608,7 @@ function RoutesPanel({
   onToggleRoute, onCreateRoute, onUpdateRoute, onDeleteRoute,
   onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
   onUpdateVariantMeta, shownRouteIds, loadingShowRouteId, onToggleShowRoute,
+  onMultiSelectVariant, multiVariantIds, loadingMultiVariantId,
 }: {
   routes: PsRoute[];
   variantsByRoute: Record<string, PsVariant[]>;
@@ -4531,6 +4626,11 @@ function RoutesPanel({
   onToggleShowRoute: (route: PsRoute) => void;
   /** Selezione percorso: apre la vista con fermate ordinate + tracciato evidenziato */
   onSelectVariant?: (routeId: string, variantId: string) => void;
+  /** Cmd/Ctrl+Click: aggiunge/toglie il percorso dal CONFRONTO sulla mappa
+   *  (più percorsi insieme, anche di linee diverse) */
+  onMultiSelectVariant?: (route: PsRoute, variant: PsVariant) => void;
+  multiVariantIds?: Set<string>;
+  loadingMultiVariantId?: string | null;
   onEditVariant: (routeId: string, variantId: string) => void;
   onDeleteVariant: (id: string) => void;
 }) {
@@ -4732,12 +4832,21 @@ function RoutesPanel({
                     </div>
                   ) : (
                     <div key={v.id}
-                      className="group flex items-center gap-2 py-1.5 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-800/50"
-                      title="Mostra percorso e fermate sulla mappa"
-                      onClick={() => onSelectVariant?.(r.id, v.id)}>
+                      className={`group flex items-center gap-2 py-1.5 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-800/50 ${
+                        multiVariantIds?.has(v.id) ? "bg-slate-800/70" : ""}`}
+                      style={multiVariantIds?.has(v.id)
+                        ? { boxShadow: `inset 3px 0 0 ${(r.color || "#10b981").startsWith("#") ? r.color : `#${r.color}`}` }
+                        : undefined}
+                      title={"Mostra percorso e fermate sulla mappa · Cmd/Ctrl+Click: aggiungi o togli dal CONFRONTO (più percorsi insieme, anche di linee diverse)"}
+                      onClick={(e) => {
+                        // Cmd (Mac) / Ctrl (Win-Linux) + click: confronto multi-percorso
+                        if (e.metaKey || e.ctrlKey) { onMultiSelectVariant?.(r, v); return; }
+                        onSelectVariant?.(r.id, v.id);
+                      }}>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${v.direction === 0 ? "bg-blue-500/20 text-blue-300" : "bg-purple-500/20 text-purple-300"}`}>
                         {v.direction === 0 ? "→" : "←"}
                       </span>
+                      {loadingMultiVariantId === v.id && <Loader2 className="w-3 h-3 animate-spin text-indigo-300 shrink-0" />}
                       {v.code && <span className="text-[10px] px-1 py-0.5 rounded bg-emerald-500/15 text-emerald-300 font-mono shrink-0">{v.code}</span>}
                       <span className="text-xs flex-1 truncate">{v.name}</span>
                       <span className="text-[10px] text-slate-500">{v.stopCount ?? 0} ferm.</span>
