@@ -1801,6 +1801,60 @@ router.get("/planning-studio/projects/:id/variants/:variantId", async (req, res)
   });
 });
 
+/**
+ * Duplica un percorso DENTRO la stessa linea: metadati, sequenza fermate e
+ * tracciato (shape) copiati in UNA transazione; le corse NON vengono copiate.
+ * Body opzionale { name, code }. Default: name = "<nome> (copia)", code = null
+ * (codice automatico) per non creare codici ambigui nelle viste corse/orari.
+ */
+router.post("/planning-studio/projects/:id/variants/:variantId/duplicate", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const variantId = String(req.params.variantId);
+  if (!UUID_RE.test(variantId)) { badId(res, "variantId"); return; }
+  const sr = await db.execute(sql`
+    SELECT v.*,
+      (SELECT count(*)::int FROM ps_variant_stops vs WHERE vs.variant_id = v.id) AS stop_count,
+      (SELECT count(*)::int FROM ps_shapes s WHERE s.variant_id = v.id) > 0 AS has_shape
+      FROM ps_route_variants v
+     WHERE v.id = ${variantId}::uuid AND v.project_id = ${proj.id}::uuid
+     LIMIT 1
+  `);
+  const src: any = (sr as any).rows?.[0] ?? (sr as any)[0];
+  if (!src) { res.status(404).json({ error: "Variante non trovata" }); return; }
+  const b = req.body || {};
+  const name = typeof b.name === "string" && b.name.trim() ? b.name.trim() : `${src.name} (copia)`;
+  const code = typeof b.code === "string" && b.code.trim() ? b.code.trim() : null;
+  let row: any;
+  await db.transaction(async (tx) => {
+    const r = await tx.execute(sql`
+      INSERT INTO ps_route_variants
+        (project_id, route_id, name, code, direction, headsign, is_default, attributes,
+         variant_kind, valid_from, valid_to, distance_m_cached, duration_s_cached, notes)
+      SELECT project_id, route_id, ${name}, ${code}, direction, headsign, false, attributes,
+             variant_kind, valid_from, valid_to, distance_m_cached, duration_s_cached, notes
+        FROM ps_route_variants WHERE id = ${variantId}::uuid
+      RETURNING *
+    `);
+    row = (r as any).rows?.[0] ?? (r as any)[0];
+    await tx.execute(sql`
+      INSERT INTO ps_variant_stops (variant_id, seq, stop_id, pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+      SELECT ${row.id}::uuid, seq, stop_id, pickup_type, drop_off_type, timepoint, shape_dist_traveled
+        FROM ps_variant_stops WHERE variant_id = ${variantId}::uuid
+    `);
+    await tx.execute(sql`
+      INSERT INTO ps_shapes (project_id, variant_id, mode, geometry, waypoints, distance_m, duration_s)
+      SELECT project_id, ${row.id}::uuid, mode, geometry, waypoints, distance_m, duration_s
+        FROM ps_shapes WHERE variant_id = ${variantId}::uuid
+    `);
+  });
+  await logActivity(proj.id, req.user!.id, "ps.variant.duplicate", {
+    targetId: row.id, payload: { from: variantId, name: row.name },
+  });
+  // stop_count/has_shape della copia = quelli della sorgente (copiati per costruzione)
+  res.json({ variant: rowToVariant({ ...row, stop_count: src.stop_count, has_shape: src.has_shape }) });
+});
+
 router.patch("/planning-studio/projects/:id/variants/:variantId", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }

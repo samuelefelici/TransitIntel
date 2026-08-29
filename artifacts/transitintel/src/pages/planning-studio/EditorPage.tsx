@@ -27,7 +27,7 @@ import {
   PenLine, MousePointer2, Settings2, Users, Activity, ChevronRight,
   Palette, Upload, AlertTriangle, FileArchive, FolderOpen, Database,
   ChevronDown, ChevronUp, Pencil, Search, Flame, Building2, Grip, Share2, Ban, Undo2,
-  Eye, EyeOff, PanelLeft,
+  Eye, EyeOff, PanelLeft, Copy,
 } from "lucide-react";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import TripCountBadge from "@/components/planning-studio/TripCountBadge";
@@ -39,7 +39,7 @@ import {
   getPsProject, type PsProject,
   listPsStops, createPsStop, updatePsStop, deletePsStop, type PsStop,
   listPsRoutes, createPsRoute, updatePsRoute, deletePsRoute, type PsRoute,
-  listPsVariants, createPsVariant, getPsVariant, deletePsVariant, updatePsVariant,
+  listPsVariants, createPsVariant, getPsVariant, deletePsVariant, updatePsVariant, duplicatePsVariant,
   setPsVariantStops, setPsVariantShape, type PsVariant, type PsVariantStop,
   type PsWaypoint, type PsShape,
   routeSnap,
@@ -1356,6 +1356,19 @@ export default function PlanningStudioEditorPage() {
     } catch (e: any) {
       toast.error("Errore", { description: e?.message });
       return undefined;
+    }
+  }
+
+  /** Duplica un percorso dentro la stessa linea (fermate + tracciato, senza corse). */
+  async function handleDuplicateVariant(routeId: string, variant: PsVariant) {
+    try {
+      const v = await duplicatePsVariant(projectId, variant.id);
+      setRouteVariants(prev => ({ ...prev, [routeId]: [...(prev[routeId] || []), v] }));
+      toast.success("Percorso duplicato", {
+        description: `«${v.name}» — dalla lista puoi rinominarlo (matita) o modificarne il tracciato`,
+      });
+    } catch (e: any) {
+      toast.error("Errore nella duplicazione", { description: e?.message });
     }
   }
 
@@ -3946,6 +3959,7 @@ export default function PlanningStudioEditorPage() {
                     loadingMultiVariantId={multiVariantLoading}
                     onEditVariant={(routeId, variantId) => startEditingVariant(routeId, variantId)}
                     onUpdateVariantMeta={handleUpdateVariantMeta}
+                    onDuplicateVariant={handleDuplicateVariant}
                     shownRouteIds={new Set(Object.keys(multiShown))}
                     loadingShowRouteId={multiLoading}
                     onToggleShowRoute={toggleShowRoute}
@@ -4607,7 +4621,8 @@ function RoutesPanel({
   routes, variantsByRoute, openRouteId,
   onToggleRoute, onCreateRoute, onUpdateRoute, onDeleteRoute,
   onCreateVariant, onSelectVariant, onEditVariant, onDeleteVariant,
-  onUpdateVariantMeta, shownRouteIds, loadingShowRouteId, onToggleShowRoute,
+  onUpdateVariantMeta, onDuplicateVariant,
+  shownRouteIds, loadingShowRouteId, onToggleShowRoute,
   onMultiSelectVariant, multiVariantIds, loadingMultiVariantId,
 }: {
   routes: PsRoute[];
@@ -4620,6 +4635,8 @@ function RoutesPanel({
   onCreateVariant: (routeId: string, name: string, dir: number) => Promise<PsVariant | undefined>;
   /** Salva codice/nome/verso di una variante (metadati, non tracciato) */
   onUpdateVariantMeta: (routeId: string, variantId: string, patch: { code?: string | null; name?: string; direction?: number }) => Promise<boolean>;
+  /** Duplica il percorso dentro la stessa linea (fermate + tracciato, senza corse) */
+  onDuplicateVariant: (routeId: string, variant: PsVariant) => Promise<void>;
   /** Multi-visualizzazione: linee attualmente mostrate sulla mappa */
   shownRouteIds: Set<string>;
   loadingShowRouteId: string | null;
@@ -4643,6 +4660,8 @@ function RoutesPanel({
   // Modifica metadati variante (matita sulla riga): codice es. "21A", nome, verso
   const [metaForm, setMetaForm] = useState<{ routeId: string; variantId: string; code: string; name: string; direction: number } | null>(null);
   const [metaSaving, setMetaSaving] = useState(false);
+  // Duplicazione percorso in corso (id variante sorgente): evita doppi click
+  const [dupBusyId, setDupBusyId] = useState<string | null>(null);
   // Ricerca linee: il CODICE linea comanda. Rank: codice esatto → codice che
   // inizia per → codice che contiene → (fallback) nome lungo che contiene.
   const [routeSearch, setRouteSearch] = useState("");
@@ -4858,6 +4877,16 @@ function RoutesPanel({
                         title="Modifica codice (es. 21A), nome e verso del percorso"
                         className="p-0.5 rounded text-slate-500 hover:text-emerald-300 opacity-0 group-hover:opacity-100">
                         <Pencil className="w-3 h-3" />
+                      </button>
+                      <button disabled={dupBusyId === v.id}
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          setDupBusyId(v.id);
+                          try { await onDuplicateVariant(r.id, v); } finally { setDupBusyId(null); }
+                        }}
+                        title="Duplica il percorso in questa linea (fermate e tracciato, senza corse)"
+                        className={`p-0.5 rounded text-slate-500 hover:text-emerald-300 ${dupBusyId === v.id ? "" : "opacity-0 group-hover:opacity-100"}`}>
+                        {dupBusyId === v.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />}
                       </button>
                       <button onClick={(e) => { e.stopPropagation(); onEditVariant(r.id, v.id); }}
                         title="Modifica il TRACCIATO del percorso (fermate e shape sulla mappa)"
