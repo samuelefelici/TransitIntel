@@ -364,6 +364,15 @@ export async function createPsVariant(projectId: string, routeId: string, input:
 export async function getPsVariant(projectId: string, variantId: string): Promise<{ variant: PsVariant; stops: PsVariantStop[]; shape: PsShape | null }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/variants/${variantId}`);
 }
+/** Duplica un percorso DENTRO la stessa linea: metadati + fermate + tracciato,
+ *  senza corse. Default server: nome "<nome> (copia)", codice automatico. */
+export async function duplicatePsVariant(projectId: string, variantId: string, input?: { name?: string; code?: string }): Promise<PsVariant> {
+  const r = await apiFetch<{ variant: PsVariant }>(
+    `/api/planning-studio/projects/${projectId}/variants/${variantId}/duplicate`,
+    { method: "POST", body: JSON.stringify(input ?? {}) }
+  );
+  return r.variant;
+}
 /** Tutte le varianti del progetto con la sequenza fermate in UNA chiamata (per il TTD). */
 export async function listPsVariantsWithStops(projectId: string): Promise<{ variant: PsVariant; stops: PsVariantStop[] }[]> {
   const r = await apiFetch<{ variants: { variant: PsVariant; stops: PsVariantStop[] }[] }>(
