@@ -604,13 +604,38 @@ export async function getPsStopTimesBulk(
   }
   return out;
 }
+/** Riga di scrittura orari: i campi oltre ad arrivo/partenza sono opzionali —
+ *  se omessi il server li reimposta ai default (pickup 0, dropoff 0,
+ *  timepoint 1): chi riscrive una corsa esistente li passi dai dati letti. */
+export interface PsStopTimeWrite {
+  stopId: string;
+  arrivalTime: string;
+  departureTime: string;
+  pickupType?: number;
+  dropOffType?: number;
+  timepoint?: number;
+  shapeDistTraveled?: number | null;
+}
+
 export async function setPsStopTimes(
   projectId: string, tripId: string,
-  stopTimes: { stopId: string; arrivalTime: string; departureTime: string }[]
+  stopTimes: PsStopTimeWrite[]
 ): Promise<void> {
   await apiFetch<{ ok: boolean; count: number }>(
     `/api/planning-studio/projects/${projectId}/trips/${tripId}/stop-times`,
     { method: "PUT", body: JSON.stringify({ stopTimes }) }
+  );
+}
+
+/** Riscrive gli orari di PIÙ corse in una sola transazione (zona Percorrenze,
+ *  «applica tempi di tratta a tutte le corse del percorso»). Max 200 corse. */
+export async function setPsStopTimesBulk(
+  projectId: string,
+  trips: { tripId: string; stopTimes: PsStopTimeWrite[] }[],
+): Promise<{ ok: boolean; count: number; tripsUpdated: number }> {
+  return apiFetch(
+    `/api/planning-studio/projects/${projectId}/trips/stop-times-bulk`,
+    { method: "PUT", body: JSON.stringify({ trips }) },
   );
 }
 
