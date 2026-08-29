@@ -829,7 +829,12 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
   }
   const dayTypeIds: string[] = (Array.isArray(b.dayTypeIds) ? b.dayTypeIds : [])
     .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
-  const categoryIds: string[] = (Array.isArray(b.categoryIds) ? b.categoryIds : [])
+  // categoryIds ASSENTE = eredita dal template; [] ESPLICITO = nessuna categoria
+  // (corsa valida in tutte le date del suo giorno-tipo, curatela manuale).
+  // La distinzione conta: il template può appartenere al VECCHIO programma
+  // stagionale, e la sua categoria ereditata strozzerebbe il nuovo servizio.
+  const categoriesExplicit = Array.isArray(b.categoryIds);
+  const categoryIds: string[] = (categoriesExplicit ? b.categoryIds : [])
     .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
 
   // Template: corsa del progetto con almeno 2 stop_times
@@ -923,7 +928,8 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
           ON CONFLICT DO NOTHING
         `);
       }
-      // CATEGORIE: esplicite (con flag categoriesManual) o eredità dal template
+      // CATEGORIE: esplicite (con flag categoriesManual), [] esplicito = nessuna
+      // (solo flag, l'auto-sync non deve ri-derivarle), assente = eredità dal template.
       if (categoryIds.length > 0) {
         await tx.execute(sql`
           INSERT INTO ps_trip_category_validity (trip_id, category_id)
@@ -932,6 +938,12 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
            CROSS JOIN unnest(${`{${categoryIds.join(",")}}`}::uuid[]) AS c(cid)
           ON CONFLICT DO NOTHING
         `);
+        await tx.execute(sql`
+          UPDATE ps_trips
+             SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
+           WHERE id = ANY(${tripsLit}::uuid[])
+        `);
+      } else if (categoriesExplicit) {
         await tx.execute(sql`
           UPDATE ps_trips
              SET attributes = COALESCE(attributes, '{}'::jsonb) || '{"categoriesManual":true}'::jsonb
@@ -961,6 +973,77 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
   await logActivity(projId, userId, "trip.generate_headway", "trip", baseTripId,
     { count: tripIds.length, headwayMin: H, from: b.from, to: b.to, applyTraffic, templateRemoved });
   res.status(201).json({ ok: true, count: tripIds.length, tripIds, templateRemoved });
+});
+
+/* ─── CATEGORIE in blocco: sostituisce le categorie del calendario aziendale
+ * di N corse in una transazione. categoryIds VUOTO = nessuna categoria: la
+ * corsa vale in TUTTE le date del suo giorno-tipo (il caso tipico è il
+ * servizio festivo, che deve circolare ogni domenica dell'anno a prescindere
+ * dal periodo scolastico). Le corse vengono marcate categoriesManual così
+ * l'auto-sync del calendario non ri-deriva le categorie appena tolte;
+ * manual:false rimette la corsa sotto l'auto-sync. */
+router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  const projId = req.params.id;
+
+  const tripIds: string[] = (Array.isArray(req.body?.tripIds) ? req.body.tripIds : [])
+    .map((x: any) => String(x)).filter((x: string) => UUID_RE.test(x));
+  if (tripIds.length === 0 || tripIds.length > 1000) {
+    res.status(400).json({ error: "tripIds deve contenere 1–1000 id" }); return;
+  }
+  if (new Set(tripIds).size !== tripIds.length) {
+    res.status(400).json({ error: "tripIds contiene duplicati" }); return;
+  }
+  if (!Array.isArray(req.body?.categoryIds)) {
+    res.status(400).json({ error: "categoryIds obbligatorio (array, anche vuoto = nessuna categoria)" }); return;
+  }
+  const catIds: string[] = req.body.categoryIds.map((x: any) => String(x)).filter((x: string) => UUID_RE.test(x));
+  if (catIds.length !== req.body.categoryIds.length) {
+    res.status(400).json({ error: "categoryIds contiene id non validi" }); return;
+  }
+  const manual = req.body.manual !== false;
+
+  const idsLit = `{${tripIds.join(",")}}`;
+  const ownR = await db.execute<any>(sql`
+    SELECT id FROM ps_trips WHERE project_id = ${projId}::uuid AND id = ANY(${idsLit}::uuid[])`);
+  const found = new Set<string>((ownR.rows ?? []).map((r: any) => r.id));
+  const missing = tripIds.filter(t => !found.has(t));
+  if (missing.length > 0) {
+    res.status(404).json({ error: `${missing.length} corse non trovate nel progetto`, missing: missing.slice(0, 20) }); return;
+  }
+  if (catIds.length > 0) {
+    const catR = await db.execute<any>(sql`
+      SELECT id FROM ps_validity_categories WHERE id = ANY(${`{${catIds.join(",")}}`}::uuid[])`);
+    if ((catR.rows ?? []).length !== new Set(catIds).size) {
+      res.status(400).json({ error: "categoryIds contiene categorie inesistenti" }); return;
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${idsLit}::uuid[])`);
+    if (catIds.length > 0) {
+      await tx.execute(sql`
+        INSERT INTO ps_trip_category_validity (trip_id, category_id)
+        SELECT t.tid, c.cid
+          FROM unnest(${idsLit}::uuid[]) AS t(tid)
+         CROSS JOIN unnest(${`{${catIds.join(",")}}`}::uuid[]) AS c(cid)
+        ON CONFLICT DO NOTHING
+      `);
+    }
+    await tx.execute(sql`
+      UPDATE ps_trips
+         SET attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ categoriesManual: manual })}::jsonb
+       WHERE id = ANY(${idsLit}::uuid[])
+    `);
+  });
+
+  await logActivity(projId, userId, "trip.set_categories_bulk", "trip", tripIds[0],
+    { count: tripIds.length, categories: catIds.length, manual });
+  res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual });
 });
 
 /* ─── RICALCOLA PERCORRENZE (traffico su cadenza ESISTENTE) ────────────────
