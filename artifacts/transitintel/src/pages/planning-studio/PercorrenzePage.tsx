@@ -24,7 +24,7 @@ import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import CategoryChips from "@/components/planning-studio/CategoryChips";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import {
-  ArrowLeft, Loader2, Timer, Gauge, RefreshCw, Plus, CopyPlus,
+  ArrowLeft, Loader2, Timer, Gauge, RefreshCw, Plus, CopyPlus, SlidersHorizontal, X,
 } from "lucide-react";
 import {
   getPsProject,
@@ -34,7 +34,10 @@ import {
   getPsStopTimesBulk, type PsStopTime,
   generatePsTripsHeadway,
   retimePsTripsTraffic,
+  setPsStopTimesBulk,
 } from "@/lib/planning-studio-api";
+import { legProfile, applyLegProfile } from "@/lib/percorrenze-manuali";
+import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
 import { listPsDayTypes } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import {
@@ -82,7 +85,7 @@ export default function PlanningStudioPercorrenzePage() {
   });
   const [routeId, setRouteId] = useState(preset.route);
   const [variantId, setVariantId] = useState(preset.variant);
-  const [mode, setMode] = useState<"moltiplica" | "ricalcola">("moltiplica");
+  const [mode, setMode] = useState<"moltiplica" | "ricalcola" | "manuale">("moltiplica");
 
   const projectQ = useQuery({
     queryKey: ["ps", "project", projectId],
@@ -372,6 +375,129 @@ export default function PlanningStudioPercorrenzePage() {
     } finally { setRBusy(false); }
   }
 
+  /* ══════════ C · TEMPI A MANO ══════════
+   * Linea + validità → una colonna VERTICALE per percorso coi minuti di
+   * tratta (dal profilo della corsa di riferimento), modificabili; «Applica»
+   * ri-oraria TUTTE le corse del percorso nella validità scelta (partenze
+   * ferme, soste conservate). Click su una corsa → editor dei suoi transiti. */
+  const [cDayTypeId, setCDayTypeId] = useState("");
+  const [cRefByVariant, setCRefByVariant] = useState<Record<string, string>>({});
+  const [cLegEdits, setCLegEdits] = useState<Record<string, Record<number, number>>>({});
+  const [cEditTripId, setCEditTripId] = useState("");
+  const [cBusyVariant, setCBusyVariant] = useState("");
+  useEffect(() => { setCRefByVariant({}); setCLegEdits({}); setCEditTripId(""); }, [routeId, cDayTypeId]);
+
+  const cTripsQ = useQuery({
+    queryKey: ["ps", projectId, "trips", "route", routeId],
+    queryFn: () => listPsTrips(projectId, { routeId }),
+    enabled: !!projectId && !!routeId && mode === "manuale",
+  });
+  const cDayType = (dayTypesQ.data ?? []).find(d => d.id === cDayTypeId) ?? null;
+  const cTrips = useMemo(() => {
+    const all = cTripsQ.data ?? [];
+    return all.filter(t => t.isActive !== false &&
+      (!cDayType || (t.dayTypeCodes ?? []).includes(cDayType.code)));
+  }, [cTripsQ.data, cDayType]);
+
+  // orari (bulk) delle corse filtrate — mappa dedicata alla modalità C
+  const [cStMap, setCStMap] = useState<Record<string, PsStopTime[]>>({});
+  useEffect(() => { setCStMap({}); }, [routeId]);
+  useEffect(() => {
+    if (mode !== "manuale") return;
+    const missing = cTrips.filter(t => !(t.id in cStMap)).map(t => t.id).slice(0, 400);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const byTrip = await getPsStopTimesBulk(projectId, missing);
+        if (cancelled) return;
+        setCStMap(prev => {
+          const next = { ...prev };
+          for (const id of missing) next[id] = byTrip[id] ?? [];
+          return next;
+        });
+      } catch { /* riproverà al prossimo render */ }
+    })();
+    return () => { cancelled = true; };
+  }, [mode, cTrips, projectId, cStMap]);
+  const cStLoading = mode === "manuale" && cTrips.some(t => !(t.id in cStMap));
+
+  const cFirstDep = (id: string) => { const s = cStMap[id]; return s?.length ? ttToSec(s[0].departureTime) : null; };
+  const cLabel = (t: PsTrip) => {
+    const d = cFirstDep(t.id);
+    return `${d != null ? fmtHm(d) : "—"} · ${t.shortName || t.headsign || t.id.slice(0, 8)}`;
+  };
+
+  /** Colonne: una per percorso (variante) della linea, con corse filtrate,
+   * riferimento (default: giro più veloce) e profilo di tratte. */
+  const cColumns = useMemo(() => {
+    if (mode !== "manuale") return [];
+    return (variantsQ.data ?? []).map(v => {
+      const vTrips = cTrips
+        .filter(t => t.variantId === v.id)
+        .sort((a, b) => (cFirstDep(a.id) ?? Infinity) - (cFirstDep(b.id) ?? Infinity));
+      let refId = cRefByVariant[v.id] ?? "";
+      if (!refId || !vTrips.some(t => t.id === refId)) {
+        let best: { id: string; giro: number } | null = null;
+        for (const t of vTrips) {
+          const s = cStMap[t.id];
+          if (!s || s.length < 2) continue;
+          const giro = ttToSec(s[s.length - 1].arrivalTime) - ttToSec(s[0].departureTime);
+          if (giro > 0 && (!best || giro < best.giro)) best = { id: t.id, giro };
+        }
+        refId = best?.id ?? "";
+      }
+      const refSts = refId ? (cStMap[refId] ?? []) : [];
+      const prof = refSts.length >= 2 ? legProfile(refSts) : null;
+      const sameCount = vTrips.filter(t => (cStMap[t.id]?.length ?? 0) === refSts.length && refSts.length >= 2);
+      return { variant: v, trips: vTrips, refId, refSts, prof, applicable: sameCount };
+    }).filter(c => c.trips.length > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, variantsQ.data, cTrips, cStMap, cRefByVariant]);
+
+  async function cApply(col: (typeof cColumns)[number]) {
+    if (!col.prof) return;
+    const nLegs = col.refSts.length - 1;
+    const legSec = Array.from({ length: nLegs }, (_, i) => {
+      const min = cLegEdits[col.variant.id]?.[i];
+      return min != null ? Math.round(min * 60) : col.prof!.legSec[i];
+    });
+    const skipped = col.trips.length - col.applicable.length;
+    if (!confirm(
+      `Applicare i tempi di tratta a ${col.applicable.length} corse del percorso "${col.variant.name}"` +
+      `${cDayType ? ` (validità ${cDayType.name})` : ""}?\n` +
+      `Le partenze restano ferme, le soste alle fermate sono conservate.` +
+      `${skipped > 0 ? `\n${skipped} corse con pattern fermate diverso NON verranno toccate.` : ""}`,
+    )) return;
+    setCBusyVariant(col.variant.id);
+    try {
+      const payload: { tripId: string; stopTimes: any[] }[] = [];
+      for (const t of col.applicable) {
+        const r = applyLegProfile(cStMap[t.id]!, legSec);
+        if (!r.ok) continue;
+        payload.push({
+          tripId: t.id,
+          stopTimes: r.rows.map(st => ({
+            stopId: st.stopId, arrivalTime: st.arrivalTime, departureTime: st.departureTime,
+            pickupType: st.pickupType, dropOffType: st.dropOffType,
+            timepoint: st.timepoint, shapeDistTraveled: st.shapeDistTraveled ?? null,
+          })),
+        });
+      }
+      if (payload.length === 0) { toast.error("Nessuna corsa applicabile"); return; }
+      const r = await setPsStopTimesBulk(projectId, payload);
+      toast.success(`✅ Tempi di tratta applicati a ${r.tripsUpdated} corse`, {
+        description: `${col.variant.name}${skipped > 0 ? ` · ${skipped} saltate (pattern diverso)` : ""}`,
+        duration: 6000,
+      });
+      setCLegEdits(prev => ({ ...prev, [col.variant.id]: {} }));
+      setCStMap({});
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
+    } catch (e: any) {
+      toast.error("Applicazione fallita", { description: e?.message });
+    } finally { setCBusyVariant(""); }
+  }
+
   /* ══════════ Render ══════════ */
   const project = projectQ.data;
   const routes = routesQ.data ?? [];
@@ -437,15 +563,20 @@ export default function PlanningStudioPercorrenzePage() {
               className={`px-3 py-1.5 inline-flex items-center gap-1.5 transition-colors ${mode === "ricalcola" ? "bg-emerald-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
               <RefreshCw className="w-3.5 h-3.5" /> Ricalcola esistenti
             </button>
+            <button onClick={() => setMode("manuale")}
+              className={`px-3 py-1.5 inline-flex items-center gap-1.5 transition-colors ${mode === "manuale" ? "bg-indigo-600 text-white font-semibold" : "bg-slate-800 text-slate-300 hover:bg-slate-700"}`}>
+              <SlidersHorizontal className="w-3.5 h-3.5" /> Tempi a mano
+            </button>
           </div>
         </div>
 
-        {!variantId && (
+        {((mode === "manuale" && !routeId) || (mode !== "manuale" && !variantId)) && (
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-400">
-            Seleziona <strong className="text-slate-200">linea</strong> e <strong className="text-slate-200">percorso</strong> per iniziare.
+            Seleziona <strong className="text-slate-200">linea</strong>{mode !== "manuale" && <> e <strong className="text-slate-200">percorso</strong></>} per iniziare.
             <div className="mt-2 text-[11px] leading-relaxed text-slate-500">
               <strong className="text-amber-300">Moltiplica corsa base</strong>: da una corsa template generi la cadenza nella fascia scelta, con le percorrenze adattate al traffico.<br />
-              <strong className="text-emerald-300">Ricalcola esistenti</strong>: il percorso ha già la cadenza — rifai le percorrenze dai dati di traffico senza toccare le partenze.
+              <strong className="text-emerald-300">Ricalcola esistenti</strong>: il percorso ha già la cadenza — rifai le percorrenze dai dati di traffico senza toccare le partenze.<br />
+              <strong className="text-indigo-300">Tempi a mano</strong>: linea + validità → i minuti di tratta di ogni percorso in colonna, modificabili; e i transiti di ogni singola corsa, correggibili uno a uno.
             </div>
           </div>
         )}
@@ -697,6 +828,146 @@ export default function PlanningStudioPercorrenzePage() {
                 {rBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                 Ricalcola {rSelected.length} corse
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* ════════ C · TEMPI A MANO ════════ */}
+        {mode === "manuale" && routeId && (
+          <div className="rounded-lg border border-indigo-500/30 bg-slate-900/60 p-4 space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-indigo-300 flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4" /> Tempi di percorrenza a mano
+              </h3>
+              <div className="flex-1" />
+              <label className="text-[11px] uppercase tracking-wider text-slate-500">Validità</label>
+              <select value={cDayTypeId} onChange={e => setCDayTypeId(e.target.value)}
+                className="px-2 py-1.5 rounded bg-slate-900 border border-slate-700 text-xs">
+                <option value="">tutte le corse</option>
+                {(dayTypesQ.data ?? []).map(dt => <option key={dt.id} value={dt.id}>{dt.name}</option>)}
+              </select>
+              {(cTripsQ.isLoading || cStLoading) && <span className="inline-flex items-center gap-1 text-slate-500 text-[11px]"><Loader2 className="w-3 h-3 animate-spin" /> orari…</span>}
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Una colonna per percorso: i <strong className="text-slate-200">minuti di tratta</strong> vengono dal profilo della corsa di
+              riferimento e sono modificabili — «Applica» li estende a <strong className="text-slate-200">tutte le corse della validità</strong> (partenze
+              ferme, soste conservate; le differenze per fascia oraria si appiattiscono — per quelle c'è «Ricalcola esistenti»).
+              Click su una corsa per correggerne i singoli transiti (cascata a valle).
+            </p>
+            {cColumns.length === 0 && !cTripsQ.isLoading && (
+              <p className="text-[11px] text-slate-500">Nessuna corsa {cDayType ? `con validità ${cDayType.name}` : ""} su questa linea.</p>
+            )}
+            <div className="flex gap-3 items-start">
+              <div className="flex-1 min-w-0 overflow-x-auto">
+                <div className="flex gap-3 items-start pb-2">
+                  {cColumns.map(col => {
+                    const nLegs = col.prof ? col.refSts.length - 1 : 0;
+                    const edits = cLegEdits[col.variant.id] ?? {};
+                    const edited = Object.keys(edits).length > 0;
+                    const giroSec = col.prof
+                      ? Array.from({ length: nLegs }, (_, i) => edits[i] != null ? edits[i]! * 60 : col.prof!.legSec[i]).reduce((s, x) => s + x, 0)
+                        + col.prof.dwellSec.reduce((s, x) => s + Math.max(0, x), 0)
+                      : 0;
+                    return (
+                      <div key={col.variant.id} className="w-[300px] shrink-0 rounded border border-slate-800 bg-slate-950/60">
+                        <div className="px-2.5 py-2 border-b border-slate-800">
+                          <div className="text-xs font-semibold text-slate-200 truncate" title={col.variant.name}>
+                            {(col.variant as any).code && <span className="font-mono text-emerald-300 mr-1.5">{(col.variant as any).code}</span>}
+                            {col.variant.name}
+                          </div>
+                          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-500">
+                            <span>{col.trips.length} corse{cDayType ? ` · ${cDayType.name}` : ""}</span>
+                            <span>·</span>
+                            <span title="Corsa di riferimento del profilo">rif.</span>
+                            <select value={col.refId}
+                              onChange={e => setCRefByVariant(prev => ({ ...prev, [col.variant.id]: e.target.value }))}
+                              className="flex-1 min-w-0 px-1 py-0.5 rounded bg-slate-900 border border-slate-700 text-[10px]">
+                              {col.trips.map(t => <option key={t.id} value={t.id}>{cLabel(t)}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                        {!col.prof ? (
+                          <p className="p-2.5 text-[11px] text-slate-500">Orari non ancora caricati…</p>
+                        ) : (
+                          <>
+                            <table className="w-full text-[11px]">
+                              <tbody>
+                                {Array.from({ length: nLegs }, (_, i) => {
+                                  const baseMin = Math.round(col.prof!.legSec[i] / 6) / 10;
+                                  const val = edits[i] ?? baseMin;
+                                  return (
+                                    <tr key={i} className={`border-b border-slate-800/50 ${edits[i] != null ? "bg-indigo-500/10" : ""}`}>
+                                      <td className="px-2 py-1 text-slate-300">
+                                        <div className="truncate max-w-[190px]" title={`${col.refSts[i].stopName} → ${col.refSts[i + 1].stopName}`}>
+                                          <span className="text-slate-600">{i + 1}.</span> {col.refSts[i].stopName}
+                                          <span className="text-slate-600"> → </span>{col.refSts[i + 1].stopName}
+                                        </div>
+                                      </td>
+                                      <td className="px-1.5 py-1 text-right whitespace-nowrap">
+                                        <input type="number" step={0.5} min={0} value={val}
+                                          onChange={e => {
+                                            const v = Number(e.target.value);
+                                            setCLegEdits(prev => ({
+                                              ...prev,
+                                              [col.variant.id]: { ...(prev[col.variant.id] ?? {}), [i]: Number.isFinite(v) && v >= 0 ? v : baseMin },
+                                            }));
+                                          }}
+                                          className="w-14 px-1 py-0.5 rounded bg-slate-950 border border-indigo-500/40 text-indigo-200 text-center font-mono" />
+                                        <span className="text-slate-500 ml-0.5">′</span>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                            <div className="px-2.5 py-2 border-t border-slate-800 flex items-center justify-between gap-2">
+                              <span className="text-[10px] text-slate-400">
+                                giro <strong className="text-slate-200">{Math.round(giroSec / 60)}′</strong>
+                                {col.trips.length !== col.applicable.length &&
+                                  <span className="text-amber-400 ml-1" title="Corse con un numero di fermate diverso dal riferimento: non verranno toccate">
+                                    · {col.trips.length - col.applicable.length} escluse
+                                  </span>}
+                              </span>
+                              <button onClick={() => cApply(col)}
+                                disabled={cBusyVariant !== "" || cStLoading || col.applicable.length === 0}
+                                className="text-[11px] px-2.5 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 inline-flex items-center gap-1">
+                                {cBusyVariant === col.variant.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <SlidersHorizontal className="w-3 h-3" />}
+                                Applica a {col.applicable.length}{edited ? "" : " (profilo rif.)"}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                        {/* corse del percorso: click → editor transiti */}
+                        <div className="px-2.5 py-2 border-t border-slate-800/70 max-h-40 overflow-auto">
+                          <p className="text-[9px] uppercase tracking-wider text-slate-500 mb-1">Corse — click per i transiti</p>
+                          <div className="flex flex-wrap gap-1">
+                            {col.trips.map(t => (
+                              <button key={t.id} onClick={() => setCEditTripId(prev => prev === t.id ? "" : t.id)}
+                                className={`px-1.5 py-0.5 rounded font-mono text-[10px] border transition-colors ${
+                                  cEditTripId === t.id
+                                    ? "bg-indigo-600 border-indigo-400 text-white"
+                                    : "bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800"}`}>
+                                {cFirstDep(t.id) != null ? fmtHm(cFirstDep(t.id)!) : "—"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              {cEditTripId && (
+                <div className="w-[380px] shrink-0 rounded border border-indigo-500/40 bg-slate-950/80 sticky top-0">
+                  <div className="flex items-center justify-between px-3 pt-2">
+                    <p className="text-[10px] uppercase tracking-wider text-indigo-300 font-semibold">Corsa selezionata</p>
+                    <button onClick={() => setCEditTripId("")} className="p-1 rounded text-slate-500 hover:text-slate-200"
+                      title="Chiudi"><X className="w-3.5 h-3.5" /></button>
+                  </div>
+                  <TripTransitsEditor projectId={projectId} tripId={cEditTripId}
+                    onSaved={() => { setCStMap(prev => { const n = { ...prev }; delete n[cEditTripId]; return n; }); }} />
+                </div>
+              )}
             </div>
           </div>
         )}

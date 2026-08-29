@@ -39,6 +39,7 @@ import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, getPsTripsValidi
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 import CategoryChips from "@/components/planning-studio/CategoryChips";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
+import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
 import { useArgosFresh } from "@/hooks/useArgosFresh";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
@@ -2081,91 +2082,8 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
 }
 
 /* ─── Editor tabellare dei transiti alle fermate di una corsa (corse reali) ─── */
-function TripStopTimesEditor({ projectId, tripId, onSaved }: {
-  projectId: string; tripId: string; onSaved: () => void;
-}) {
-  const qc = useQueryClient();
-  const stQ = useQuery({
-    queryKey: ["ps", projectId, "trip-stop-times", tripId],
-    queryFn: () => getPsStopTimes(projectId, tripId),
-  });
-  type Row = { stopId: string; stopName: string; arr: string; dep: string };
-  const [rows, setRows] = useState<Row[]>([]);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (stQ.data) setRows(stQ.data.map(s => ({
-      stopId: s.stopId, stopName: s.stopName,
-      arr: (s.arrivalTime || "").slice(0, 5), dep: (s.departureTime || "").slice(0, 5),
-    })));
-  }, [stQ.data]);
-
-  const HHMM = /^\d{1,2}:\d{2}$/; // consente anche >24:00 per corse dopo mezzanotte
-  const dirty = useMemo(() => {
-    const orig = stQ.data ?? [];
-    if (orig.length !== rows.length) return false;
-    return rows.some((r, i) => r.arr !== (orig[i].arrivalTime || "").slice(0, 5) || r.dep !== (orig[i].departureTime || "").slice(0, 5));
-  }, [rows, stQ.data]);
-
-  async function save() {
-    for (const r of rows) {
-      if (!HHMM.test(r.arr) || !HHMM.test(r.dep)) { toast.error("Orari in formato HH:MM (anche oltre 24, es. 25:30)"); return; }
-    }
-    setBusy(true);
-    try {
-      await setPsStopTimes(projectId, tripId, rows.map(r => ({
-        stopId: r.stopId, arrivalTime: `${r.arr}:00`, departureTime: `${r.dep}:00`,
-      })));
-      toast.success("Transiti aggiornati");
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "trip-stop-times", tripId] });
-      qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
-      onSaved();
-    } catch (e: any) { toast.error("Errore nel salvataggio", { description: e?.message }); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <div className="p-4 border-b border-slate-800 space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wide">Transiti alle fermate</div>
-        <button onClick={save} disabled={busy || !dirty}
-          className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs flex items-center gap-1 disabled:opacity-40">
-          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Salva orari
-        </button>
-      </div>
-      {stQ.isLoading ? (
-        <div className="text-[11px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> caricamento…</div>
-      ) : rows.length === 0 ? (
-        <div className="text-[11px] text-slate-500">Nessun orario per questa corsa.</div>
-      ) : (
-        <div className="max-h-[40vh] overflow-auto rounded border border-slate-800">
-          <table className="w-full text-[11px]">
-            <thead className="sticky top-0 bg-slate-900 text-slate-500">
-              <tr><th className="p-1.5 text-left">Fermata</th><th className="p-1.5 w-16">Arrivo</th><th className="p-1.5 w-16">Partenza</th></tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.stopId + i} className="border-t border-slate-800/60">
-                  <td className="p-1.5 text-slate-300 truncate max-w-[160px]" title={r.stopName}>{r.stopName}</td>
-                  <td className="p-1">
-                    <input value={r.arr}
-                      onChange={e => setRows(rs => rs.map((x, j) => j === i ? { ...x, arr: e.target.value } : x))}
-                      className="w-16 px-1 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
-                  </td>
-                  <td className="p-1">
-                    <input value={r.dep}
-                      onChange={e => setRows(rs => rs.map((x, j) => j === i ? { ...x, dep: e.target.value } : x))}
-                      className="w-16 px-1 py-0.5 rounded bg-slate-800 border border-slate-700 font-mono text-center" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <p className="text-[10px] text-slate-500 leading-tight">Orari HH:MM (anche &gt;24:00 per corse dopo mezzanotte). "Salva orari" sovrascrive i transiti della corsa.</p>
-    </div>
-  );
-}
+/* L'editor dei transiti (con cascata a valle e undo) è il componente
+ * condiviso TripTransitsEditor, usato anche dalla zona Percorrenze. */
 
 /* ─── Drawer dettaglio corsa con validità + eccezioni ─── */
 function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, onToggleActive, onDelete }: {
@@ -2423,7 +2341,7 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
         {/* Transiti alle fermate (editor tabellare) — solo per le corse reali.
             I prototipi ricevono gli orari dal calcolatore di «Nuova corsa». */}
         {!trip.attributes?.prototype && (
-          <TripStopTimesEditor projectId={projectId} tripId={trip.id} onSaved={onChange} />
+          <TripTransitsEditor projectId={projectId} tripId={trip.id} onSaved={onChange} />
         )}
 
         {/* Giorni validità (L…D) + categorie + a chiamata */}

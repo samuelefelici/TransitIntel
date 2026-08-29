@@ -2403,6 +2403,60 @@ router.put("/planning-studio/projects/:id/trips/:tripId/stop-times", async (req,
   res.json({ ok: true, count: seq - 1 });
 });
 
+// PUT /trips/stop-times-bulk — riscrive gli orari di PIÙ corse in UNA
+// transazione (zona Percorrenze, «applica tempi di tratta al percorso»).
+// Tutto-o-niente: una riga invalida rifiuta l'intero lotto prima di scrivere.
+router.put("/planning-studio/projects/:id/trips/stop-times-bulk", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const trips: any[] = Array.isArray(req.body?.trips) ? req.body.trips : [];
+  if (trips.length === 0) { res.status(400).json({ error: "trips vuoto" }); return; }
+  if (trips.length > 200) { res.status(400).json({ error: `${trips.length} corse superano il limite di 200 per lotto` }); return; }
+  const tripIds = trips.map(t => String(t?.tripId ?? ""));
+  if (tripIds.some(id => !UUID_RE.test(id)) || new Set(tripIds).size !== tripIds.length) {
+    res.status(400).json({ error: "tripId mancanti, non validi o duplicati" }); return;
+  }
+  for (const t of trips) {
+    const list: any[] = Array.isArray(t.stopTimes) ? t.stopTimes : [];
+    if (list.length < 2) { res.status(400).json({ error: `Corsa ${t.tripId}: servono almeno 2 transiti` }); return; }
+    for (const st of list) {
+      if (!UUID_RE.test(String(st.stopId ?? ""))) { res.status(400).json({ error: `Corsa ${t.tripId}: stopId non valido` }); return; }
+      if (!HHMMSS_RE.test(String(st.arrivalTime ?? "")) || !HHMMSS_RE.test(String(st.departureTime ?? ""))) {
+        res.status(400).json({ error: `Corsa ${t.tripId}: arrivalTime/departureTime devono essere HH:MM:SS` }); return;
+      }
+    }
+  }
+  const owned = await db.execute(sql`
+    SELECT id FROM ps_trips WHERE project_id = ${proj.id}::uuid AND id = ANY(${tripIds}::uuid[])
+  `);
+  const ownedIds = new Set(((owned as any).rows ?? owned).map((r: any) => r.id));
+  const missing = tripIds.filter(id => !ownedIds.has(id));
+  if (missing.length > 0) {
+    res.status(404).json({ error: `${missing.length} corse non trovate in questo progetto`, missing: missing.slice(0, 10) }); return;
+  }
+  let total = 0;
+  await db.transaction(async (tx) => {
+    for (const t of trips) {
+      const tripId = String(t.tripId);
+      await tx.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${tripId}::uuid`);
+      let seq = 1;
+      for (const st of t.stopTimes as any[]) {
+        await tx.execute(sql`
+          INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time,
+                                     pickup_type, drop_off_type, timepoint, shape_dist_traveled)
+          VALUES (${tripId}::uuid, ${seq}, ${String(st.stopId)}::uuid,
+                  ${st.arrivalTime}, ${st.departureTime},
+                  ${st.pickupType ?? 0}, ${st.dropOffType ?? 0},
+                  ${st.timepoint ?? 1}, ${st.shapeDistTraveled ?? null})
+        `);
+        seq++; total++;
+      }
+    }
+  });
+  await logActivity(proj.id, req.user!.id, "ps.trips.stop-times-bulk", { payload: { trips: trips.length, stopTimes: total } });
+  res.json({ ok: true, count: total, tripsUpdated: trips.length });
+});
+
 /* ════════════════════════════════════════════════════════════
  *  ROUTE-SNAP (OSRM proxy con cache)
  * ════════════════════════════════════════════════════════════ */
