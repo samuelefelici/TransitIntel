@@ -1015,6 +1015,12 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
   // per corse la cui validità è SOLO la matrice; i valutatori legacy-first
   // altrimenti le giudicano dai flag/date del calendario del vecchio programma.
   const clearCalendar = req.body.clearCalendar === true;
+  // clearTripWindows: azzera i vincoli residui d'import che scavalcano
+  // matrice e categorie in TUTTI i valutatori per data — la finestra
+  // per-corsa (valid_from/valid_to del vecchio programma) e la maschera
+  // settimanale in attributes.weekdays. Senza, una corsa riclassificata
+  // resta comunque morta oltre la scadenza del programma importato.
+  const clearTripWindows = req.body.clearTripWindows === true;
 
   const idsLit = `{${tripIds.join(",")}}`;
   const ownR = await db.execute<any>(sql`
@@ -1032,6 +1038,8 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
     }
   }
 
+  let windowsCleared = 0;
+  let masksCleared = 0;
   await db.transaction(async (tx) => {
     await tx.execute(sql`
       DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${idsLit}::uuid[])`);
@@ -1054,11 +1062,31 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
         UPDATE ps_trips SET calendar_id = NULL WHERE id = ANY(${idsLit}::uuid[])
       `);
     }
+    if (clearTripWindows) {
+      // I contatori dicono quante corse avevano davvero il vincolo: sono la
+      // diagnosi (quante corse erano tagliate fuori da finestra/maschera).
+      const winR = await tx.execute<any>(sql`
+        UPDATE ps_trips SET valid_from = NULL, valid_to = NULL
+         WHERE id = ANY(${idsLit}::uuid[])
+           AND (valid_from IS NOT NULL OR valid_to IS NOT NULL)
+        RETURNING id
+      `);
+      windowsCleared = (winR.rows ?? []).length;
+      const maskR = await tx.execute<any>(sql`
+        UPDATE ps_trips SET attributes = attributes - 'weekdays'
+         WHERE id = ANY(${idsLit}::uuid[])
+           AND attributes ? 'weekdays'
+        RETURNING id
+      `);
+      masksCleared = (maskR.rows ?? []).length;
+    }
   });
 
   await logActivity(projId, userId, "trip.set_categories_bulk", "trip", tripIds[0],
-    { count: tripIds.length, categories: catIds.length, manual, clearCalendar });
-  res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual, clearCalendar });
+    { count: tripIds.length, categories: catIds.length, manual, clearCalendar,
+      ...(clearTripWindows ? { clearTripWindows, windowsCleared, masksCleared } : {}) });
+  res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual, clearCalendar,
+    ...(clearTripWindows ? { clearTripWindows, windowsCleared, masksCleared } : {}) });
 });
 
 /* ─── RICALCOLA PERCORRENZE (traffico su cadenza ESISTENTE) ────────────────
