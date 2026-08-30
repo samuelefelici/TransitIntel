@@ -389,12 +389,22 @@ export default function PlanningStudioTripsPage() {
   useEffect(() => { setVariantId(""); }, [routeId]);
 
   /* ─── Trips ─── */
+  // Filtro per CLASSE del calendario aziendale: "cat:<id>" = solo periodo,
+  // "cat:<id>|day:<codice>" = periodo × tipo di giorno (es. Scuole Aperte ·
+  // Domenica), "none" = senza categoria. La parte periodo filtra server-side
+  // (categoryId); la parte giorno client-side sui dayTypeCodes che la lista
+  // porta già con sé — insieme esprimono le classi del calendario.
+  const classSel = useMemo(() => {
+    if (categoryFilter === "none") return { catId: "", dayCode: "", none: true };
+    const m = categoryFilter.match(/^cat:([0-9a-f-]+)(?:\|day:(\w+))?$/);
+    return { catId: m?.[1] ?? "", dayCode: m?.[2] ?? "", none: false };
+  }, [categoryFilter]);
   const tripsQ = useQuery({
     queryKey: ["ps", projectId, "trips", routeId, variantId, categoryFilter],
     queryFn: () => listPsTrips(projectId, {
       routeId: routeId || undefined,
       variantId: variantId || undefined,
-      categoryId: categoryFilter || undefined,
+      categoryId: classSel.catId || undefined,
     }),
     enabled: !!projectId,
   });
@@ -425,8 +435,11 @@ export default function PlanningStudioTripsPage() {
 
   const filteredTrips = useMemo(() => {
     let trips = tripsQ.data ?? [];
-    // route/variant/categoria sono filtrati server-side (tripsQ); qui resta solo "solo attive".
+    // route/variant/periodo sono filtrati server-side (tripsQ); qui restano
+    // "solo attive", il tipo di giorno della classe e il caso "senza categoria".
     if (onlyActive) trips = trips.filter(t => t.isActive);
+    if (classSel.none) trips = trips.filter(t => (t.categories ?? []).length === 0);
+    if (classSel.dayCode) trips = trips.filter(t => t.dayTypeCodes?.includes(classSel.dayCode));
     // ordina per orario partenza se disponibile (firstDeparture arriva già
     // dalla lista; firstTimes resta come fallback lazy), poi shortName/headsign
     return [...trips].sort((a, b) => {
@@ -436,7 +449,7 @@ export default function PlanningStudioTripsPage() {
       if (tb) return 1;
       return (a.shortName || a.headsign || "").localeCompare(b.shortName || b.headsign || "");
     });
-  }, [tripsQ.data, onlyActive, firstTimes]);
+  }, [tripsQ.data, onlyActive, firstTimes, classSel]);
 
   /* ─── Ordinamento per colonna (clic sull'intestazione) ───
    * null = ordine naturale (partenza, poi nome): il terzo clic ci torna. */
@@ -1047,27 +1060,39 @@ export default function PlanningStudioTripsPage() {
 
         <select
           value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-          title="Filtra le corse per categoria del Calendario Aziendale (es. Scuole Aperte, Scuole Chiuse Estivo…)"
+          title="Filtra per CLASSE del Calendario Aziendale: periodo (Scuole Aperte, Estivo, Invernale…) e, volendo, tipo di giorno (Feriale/Sabato/Domenica)"
           className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[180px]"
         >
-          <option value="">Tutte le categorie (Cal. Aziendale)</option>
+          <option value="">Tutte le classi (Cal. Aziendale)</option>
           {(() => {
-            // TUTTE le categorie dell'anagrafica, niente di meno e niente di
-            // più: l'ombrello «Scuole Chiuse» resta SELEZIONABILE anche quando
-            // esistono i sotto-periodi (una corsa può averlo assegnato).
+            // Il filtro parla la lingua del CALENDARIO: classi = periodo ×
+            // tipo di giorno (Scuole Aperte · Feriale/Sabato/Domenica, i
+            // periodi di Scuole Chiuse con gli stessi tagli, Festività =
+            // giorni rossi). Il periodo filtra via categoria server-side,
+            // il giorno via bollini client-side.
             const cats = [...(categoriesQ.data ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "it"));
-            const subs = cats.filter(c => c.code?.startsWith("scuole_chiuse_"));
-            const tops = cats.filter(c => !c.code?.startsWith("scuole_chiuse_") && c.code !== "scuole_chiuse");
+            const aperte = cats.find(c => c.code === "scuole_aperte");
+            const fest = cats.find(c => c.code === "festivita");
             const chiuse = cats.find(c => c.code === "scuole_chiuse");
+            const subs = cats.filter(c => c.code?.startsWith("scuole_chiuse_"));
+            const known = new Set([aperte?.id, fest?.id, chiuse?.id, ...subs.map(c => c.id)]);
+            const others = cats.filter(c => !known.has(c.id));
+            const BANDS: Array<[string, string]> = [["feriale", "Feriale"], ["sabato", "Sabato"], ["festivo", "Domenica"]];
+            const group = (c: PsValidityCategory, label: string) => (
+              <optgroup key={c.id} label={label}>
+                <option value={`cat:${c.id}`}>{label} — tutti i giorni</option>
+                {BANDS.map(([code, l]) => <option key={code} value={`cat:${c.id}|day:${code}`}>{label} · {l}</option>)}
+              </optgroup>
+            );
             return (
               <>
-                {tops.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                {subs.length > 0
-                  ? <optgroup label={chiuse?.name || "Scuole Chiuse"}>
-                      {chiuse && <option key={chiuse.id} value={chiuse.id}>{chiuse.name} (ombrello — ogni periodo chiuso)</option>}
-                      {subs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </optgroup>
-                  : chiuse && <option key={chiuse.id} value={chiuse.id}>{chiuse.name}</option>}
+                {aperte && group(aperte, aperte.name)}
+                {fest && <option value={`cat:${fest.id}`}>{fest.name} (giorni rossi)</option>}
+                {subs.map(c => group(c, `Scuole Chiuse · ${c.name}`))}
+                {subs.length === 0 && chiuse && group(chiuse, chiuse.name)}
+                {subs.length > 0 && chiuse && <option value={`cat:${chiuse.id}`}>{chiuse.name} (ombrello — ogni periodo chiuso)</option>}
+                {others.map(c => group(c, c.name))}
+                <option value="none">Senza categoria (vale in ogni periodo)</option>
               </>
             );
           })()}
