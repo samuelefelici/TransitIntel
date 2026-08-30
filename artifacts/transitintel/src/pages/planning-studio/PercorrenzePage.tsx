@@ -38,7 +38,7 @@ import {
 } from "@/lib/planning-studio-api";
 import { legProfile, applyLegProfile } from "@/lib/percorrenze-manuali";
 import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
-import { listPsDayTypes } from "@/lib/planning-studio-validity-api";
+import { listPsDayTypes, getPsTripValidity } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import {
   type TrafficGroup, TRAFFIC_GROUP_LABEL, defaultCoeffForHour,
@@ -185,6 +185,18 @@ export default function PlanningStudioPercorrenzePage() {
     if (fer) setMDayTypeIds(new Set([fer.id]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dayTypesQ.data]);
+  // Al cambio della corsa base, precompila le categorie del calendario
+  // aziendale con quelle DEL TEMPLATE: la scelta resta dell'operatore (può
+  // toglierle o cambiarle), ma parte informata — nessuna eredità cieca.
+  useEffect(() => {
+    if (!mTemplateId) { setMCategoryIds(new Set()); return; }
+    let alive = true;
+    getPsTripValidity(projectId, mTemplateId)
+      .then(v => { if (alive) setMCategoryIds(new Set(v.categoryIds ?? [])); })
+      .catch(() => { /* lettura best-effort: senza risposta si parte da vuoto */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mTemplateId]);
 
   const mPreviewCount = useMemo(() => {
     const H = Math.round(Number(mEvery));
@@ -614,6 +626,10 @@ export default function PlanningStudioPercorrenzePage() {
             <div>
               <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (calendario aziendale) — anche più di una</label>
               <CategoryChips categories={categoriesQ.data ?? []} selected={mCategoryIds} onChange={setMCategoryIds} />
+              <p className="text-[10px] text-slate-500 mt-1">
+                Precompilate con le categorie della corsa base — decidi tu quali tenere.
+                <strong className="text-slate-400"> Nessuna spunta = la corsa vale in TUTTI i periodi del calendario.</strong>
+              </p>
             </div>
             <div>
               <label className="block text-[11px] uppercase tracking-wider text-slate-500 mb-1">Validità (tipi giorno)</label>
