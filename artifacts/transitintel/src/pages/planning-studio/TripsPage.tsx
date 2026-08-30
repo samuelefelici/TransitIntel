@@ -374,9 +374,13 @@ export default function PlanningStudioTripsPage() {
   /* ─── Filtri ─── */
   const [routeId, setRouteId] = useState<string>("");
   const [variantId, setVariantId] = useState<string>("");
-  // Filtro per categoria del Calendario Aziendale (validità), non più per
-  // calendario GTFS: coerente con il resto del flusso di validità.
-  const [categoryFilter, setCategoryFilter] = useState<string>("");
+  // Filtro per CLASSE del Calendario Aziendale, a CASCATA: macrocategoria
+  // (Scuole Aperte / Scuole Chiuse / Festività / Senza categoria) → periodo
+  // (solo per Scuole Chiuse: Epifania, Estivo…) → tipo di giorno. Tre select
+  // corti al posto di un albero piatto eterno.
+  const [macroFilter, setMacroFilter] = useState<string>("");   // ''|aperte|chiuse|fest|none
+  const [periodFilter, setPeriodFilter] = useState<string>(""); // id periodo chiuso | 'umbrella' | ''
+  const [dayFilter, setDayFilter] = useState<string>("");       // ''|feriale|sabato|festivo
   const [onlyActive, setOnlyActive] = useState(false);
 
   // varianti dipendenti dalla route selezionata
@@ -388,19 +392,36 @@ export default function PlanningStudioTripsPage() {
   // reset variant quando cambia route
   useEffect(() => { setVariantId(""); }, [routeId]);
 
+  // Validità del CALENDARIO AZIENDALE (categorie globali: Scuole Aperte/Chiuse,
+  // Festività…): servono al filtro a cascata qui sotto e alle azioni bulk.
+  const categoriesQ = useQuery({
+    queryKey: ["ps-validity-categories"],
+    queryFn: () => listPsValidityCategories(),
+    enabled: true,
+    staleTime: 60_000,
+  });
+
   /* ─── Trips ─── */
-  // Filtro per CLASSE del calendario aziendale: "cat:<id>" = solo periodo,
-  // "cat:<id>|day:<codice>" = periodo × tipo di giorno (es. Scuole Aperte ·
-  // Domenica), "none" = senza categoria. La parte periodo filtra server-side
-  // (categoryId); la parte giorno client-side sui dayTypeCodes che la lista
-  // porta già con sé — insieme esprimono le classi del calendario.
+  // La cascata si traduce così: il periodo filtra server-side (categoryId);
+  // «Scuole Chiuse · tutti i periodi» e «Senza categoria» client-side sulle
+  // categorie embedded; il tipo di giorno client-side sui dayTypeCodes.
   const classSel = useMemo(() => {
-    if (categoryFilter === "none") return { catId: "", dayCode: "", none: true };
-    const m = categoryFilter.match(/^cat:([0-9a-f-]+)(?:\|day:(\w+))?$/);
-    return { catId: m?.[1] ?? "", dayCode: m?.[2] ?? "", none: false };
-  }, [categoryFilter]);
+    const cats = categoriesQ.data ?? [];
+    const idOf = (code: string) => cats.find(c => c.code === code)?.id ?? "";
+    let catId = ""; let chiuseAny = false; let none = false;
+    if (macroFilter === "aperte") catId = idOf("scuole_aperte");
+    else if (macroFilter === "fest") catId = idOf("festivita");
+    else if (macroFilter === "none") none = true;
+    else if (macroFilter === "chiuse") {
+      if (periodFilter === "umbrella") catId = idOf("scuole_chiuse");
+      else if (periodFilter) catId = periodFilter;
+      else chiuseAny = true;
+    }
+    // i giorni rossi sono comunque festivo: il taglio per giorno lì non ha senso
+    return { catId, dayCode: macroFilter === "fest" ? "" : dayFilter, none, chiuseAny };
+  }, [macroFilter, periodFilter, dayFilter, categoriesQ.data]);
   const tripsQ = useQuery({
-    queryKey: ["ps", projectId, "trips", routeId, variantId, categoryFilter],
+    queryKey: ["ps", projectId, "trips", routeId, variantId, macroFilter, periodFilter],
     queryFn: () => listPsTrips(projectId, {
       routeId: routeId || undefined,
       variantId: variantId || undefined,
@@ -439,6 +460,7 @@ export default function PlanningStudioTripsPage() {
     // "solo attive", il tipo di giorno della classe e il caso "senza categoria".
     if (onlyActive) trips = trips.filter(t => t.isActive);
     if (classSel.none) trips = trips.filter(t => (t.categories ?? []).length === 0);
+    if (classSel.chiuseAny) trips = trips.filter(t => (t.categories ?? []).some(c => c.code?.startsWith("scuole_chiuse")));
     if (classSel.dayCode) trips = trips.filter(t => t.dayTypeCodes?.includes(classSel.dayCode));
     // ordina per orario partenza se disponibile (firstDeparture arriva già
     // dalla lista; firstTimes resta come fallback lazy), poi shortName/headsign
@@ -504,7 +526,7 @@ export default function PlanningStudioTripsPage() {
     setSelected(new Set());
     selAnchorRef.current = null;
     selBaseRef.current = new Set();
-  }, [routeId, variantId, categoryFilter, onlyActive]);
+  }, [routeId, variantId, macroFilter, periodFilter, dayFilter, onlyActive]);
   // Cambiando ordinamento gli indici di riga cambiano significato: l'ancora
   // vecchia produrrebbe un blocco a caso, quindi si riparte dalla prossima spunta.
   useEffect(() => { selAnchorRef.current = null; selBaseRef.current = new Set(selected);
@@ -575,13 +597,6 @@ export default function PlanningStudioTripsPage() {
     queryKey: ["ps", projectId, "day-types"],
     queryFn: () => listPsDayTypes(projectId),
     enabled: !!projectId, // servono anche alle azioni bulk (proroga giorni)
-  });
-  // Validità del CALENDARIO AZIENDALE (categorie globali: Scuole Aperte/Chiuse, Festività…)
-  const categoriesQ = useQuery({
-    queryKey: ["ps-validity-categories"],
-    queryFn: () => listPsValidityCategories(),
-    enabled: true, // servono anche alle azioni bulk (proroga categorie)
-    staleTime: 60_000,
   });
   const [newCategoryIds, setNewCategoryIds] = useState<Set<string>>(new Set());
   // preseleziona "feriale" alla prima apertura
@@ -1058,45 +1073,46 @@ export default function PlanningStudioTripsPage() {
           ))}
         </select>
 
+        {/* Filtro a CASCATA per classe del Calendario Aziendale:
+            macrocategoria → periodo (solo Scuole Chiuse) → tipo di giorno. */}
         <select
-          value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}
-          title="Filtra per CLASSE del Calendario Aziendale: periodo (Scuole Aperte, Estivo, Invernale…) e, volendo, tipo di giorno (Feriale/Sabato/Domenica)"
-          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700 min-w-[180px]"
+          value={macroFilter}
+          onChange={e => { setMacroFilter(e.target.value); setPeriodFilter(""); }}
+          title="Macrocategoria del Calendario Aziendale"
+          className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700"
         >
           <option value="">Tutte le classi (Cal. Aziendale)</option>
-          {(() => {
-            // Il filtro parla la lingua del CALENDARIO: classi = periodo ×
-            // tipo di giorno (Scuole Aperte · Feriale/Sabato/Domenica, i
-            // periodi di Scuole Chiuse con gli stessi tagli, Festività =
-            // giorni rossi). Il periodo filtra via categoria server-side,
-            // il giorno via bollini client-side.
-            const cats = [...(categoriesQ.data ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "it"));
-            const aperte = cats.find(c => c.code === "scuole_aperte");
-            const fest = cats.find(c => c.code === "festivita");
-            const chiuse = cats.find(c => c.code === "scuole_chiuse");
-            const subs = cats.filter(c => c.code?.startsWith("scuole_chiuse_"));
-            const known = new Set([aperte?.id, fest?.id, chiuse?.id, ...subs.map(c => c.id)]);
-            const others = cats.filter(c => !known.has(c.id));
-            const BANDS: Array<[string, string]> = [["feriale", "Feriale"], ["sabato", "Sabato"], ["festivo", "Domenica"]];
-            const group = (c: PsValidityCategory, label: string) => (
-              <optgroup key={c.id} label={label}>
-                <option value={`cat:${c.id}`}>{label} — tutti i giorni</option>
-                {BANDS.map(([code, l]) => <option key={code} value={`cat:${c.id}|day:${code}`}>{label} · {l}</option>)}
-              </optgroup>
-            );
-            return (
-              <>
-                {aperte && group(aperte, aperte.name)}
-                {fest && <option value={`cat:${fest.id}`}>{fest.name} (giorni rossi)</option>}
-                {subs.map(c => group(c, `Scuole Chiuse · ${c.name}`))}
-                {subs.length === 0 && chiuse && group(chiuse, chiuse.name)}
-                {subs.length > 0 && chiuse && <option value={`cat:${chiuse.id}`}>{chiuse.name} (ombrello — ogni periodo chiuso)</option>}
-                {others.map(c => group(c, c.name))}
-                <option value="none">Senza categoria (vale in ogni periodo)</option>
-              </>
-            );
-          })()}
+          <option value="aperte">Scuole Aperte</option>
+          <option value="chiuse">Scuole Chiuse</option>
+          <option value="fest">Festività (giorni rossi)</option>
+          <option value="none">Senza categoria (vale in ogni periodo)</option>
         </select>
+        {macroFilter === "chiuse" && (
+          <select
+            value={periodFilter} onChange={e => setPeriodFilter(e.target.value)}
+            title="Periodo di scuole chiuse"
+            className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700"
+          >
+            <option value="">Tutti i periodi</option>
+            {[...(categoriesQ.data ?? [])]
+              .filter(c => c.code?.startsWith("scuole_chiuse_"))
+              .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "it"))
+              .map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value="umbrella">Ombrello (corse valide in ogni periodo chiuso)</option>
+          </select>
+        )}
+        {macroFilter !== "fest" && (
+          <select
+            value={dayFilter} onChange={e => setDayFilter(e.target.value)}
+            title="Tipo di giorno (bollini di validità)"
+            className="px-2 py-1.5 rounded bg-slate-800 border border-slate-700"
+          >
+            <option value="">Tutti i giorni</option>
+            <option value="feriale">Feriale</option>
+            <option value="sabato">Sabato</option>
+            <option value="festivo">Domenica e festivi</option>
+          </select>
+        )}
 
         <label className="flex items-center gap-1.5 text-slate-400">
           <input type="checkbox" checked={onlyActive} onChange={e => setOnlyActive(e.target.checked)}
