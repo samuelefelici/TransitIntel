@@ -882,6 +882,12 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
 
   const isPrototype = String(tpl.attributes?.prototype ?? "") === "true" || tpl.attributes?.prototype === true;
   const removeTemplate = b.removeTemplate === true && isPrototype;
+  // Modalità "validità dichiarata pura" (categoryIds [] esplicito): la corsa
+  // vive di sola matrice, quindi NIENTE calendario legacy ereditato — nei
+  // valutatori legacy-first (es. tripsOnDate) il calendario del template, coi
+  // flag settimanali a zero e le date del vecchio programma, la ucciderebbe.
+  const pureDeclared = categoriesExplicit && categoryIds.length === 0;
+  const inheritedCalendarId = pureDeclared ? null : tpl.calendar_id;
 
   const tripIds: string[] = [];
   let templateRemoved = false;
@@ -892,7 +898,7 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
         const ins = await tx.execute<any>(sql`
           INSERT INTO ps_trips (project_id, route_id, variant_id, calendar_id,
                                 headsign, direction, service_label, attributes)
-          VALUES (${projId}::uuid, ${tpl.route_id}::uuid, ${tpl.variant_id}::uuid, ${tpl.calendar_id},
+          VALUES (${projId}::uuid, ${tpl.route_id}::uuid, ${tpl.variant_id}::uuid, ${inheritedCalendarId},
                   ${tpl.headsign}, ${tpl.direction ?? 0}, ${tpl.service_label}, '{}'::jsonb)
           RETURNING id
         `);
@@ -1005,6 +1011,10 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
     res.status(400).json({ error: "categoryIds contiene id non validi" }); return;
   }
   const manual = req.body.manual !== false;
+  // clearCalendar: stacca anche il calendario legacy (calendar_id = NULL) —
+  // per corse la cui validità è SOLO la matrice; i valutatori legacy-first
+  // altrimenti le giudicano dai flag/date del calendario del vecchio programma.
+  const clearCalendar = req.body.clearCalendar === true;
 
   const idsLit = `{${tripIds.join(",")}}`;
   const ownR = await db.execute<any>(sql`
@@ -1039,11 +1049,16 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
          SET attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ categoriesManual: manual })}::jsonb
        WHERE id = ANY(${idsLit}::uuid[])
     `);
+    if (clearCalendar) {
+      await tx.execute(sql`
+        UPDATE ps_trips SET calendar_id = NULL WHERE id = ANY(${idsLit}::uuid[])
+      `);
+    }
   });
 
   await logActivity(projId, userId, "trip.set_categories_bulk", "trip", tripIds[0],
-    { count: tripIds.length, categories: catIds.length, manual });
-  res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual });
+    { count: tripIds.length, categories: catIds.length, manual, clearCalendar });
+  res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual, clearCalendar });
 });
 
 /* ─── RICALCOLA PERCORRENZE (traffico su cadenza ESISTENTE) ────────────────
