@@ -105,17 +105,6 @@ function fmtTime(t?: string | null) {
 function isChiuseSub(code?: string | null): boolean {
   return !!code && code.startsWith("scuole_chiuse_");
 }
-/** Sigla compatta + colore per un periodo di scuole chiuse, mostrata dentro la
- *  card "Scuole Chiuse": Estivo = E (arancione), Invernale = I (blu),
- *  Inverno Natale = In, Inverno Pasqua = Ip. */
-function chiuseBadge(name: string, color?: string | null): { txt: string; color: string } {
-  const n = (name || "").toLowerCase();
-  const isEstivo = color === "#f59e0b" || /estiv/.test(n);
-  if (isEstivo) return { txt: "E", color: "#f59e0b" };
-  if (/natal/.test(n)) return { txt: "In", color: "#38bdf8" };
-  if (/pasq/.test(n)) return { txt: "Ip", color: "#38bdf8" };
-  return { txt: "I", color: "#38bdf8" };
-}
 function fmtDate(d?: string | null) {
   if (!d) return "—";
   const [y, m, day] = d.split("-");
@@ -1063,7 +1052,10 @@ export default function PlanningStudioTripsPage() {
         >
           <option value="">Tutte le categorie (Cal. Aziendale)</option>
           {(() => {
-            const cats = categoriesQ.data ?? [];
+            // TUTTE le categorie dell'anagrafica, niente di meno e niente di
+            // più: l'ombrello «Scuole Chiuse» resta SELEZIONABILE anche quando
+            // esistono i sotto-periodi (una corsa può averlo assegnato).
+            const cats = [...(categoriesQ.data ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "it"));
             const subs = cats.filter(c => c.code?.startsWith("scuole_chiuse_"));
             const tops = cats.filter(c => !c.code?.startsWith("scuole_chiuse_") && c.code !== "scuole_chiuse");
             const chiuse = cats.find(c => c.code === "scuole_chiuse");
@@ -1072,6 +1064,7 @@ export default function PlanningStudioTripsPage() {
                 {tops.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                 {subs.length > 0
                   ? <optgroup label={chiuse?.name || "Scuole Chiuse"}>
+                      {chiuse && <option key={chiuse.id} value={chiuse.id}>{chiuse.name} (ombrello — ogni periodo chiuso)</option>}
                       {subs.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </optgroup>
                   : chiuse && <option key={chiuse.id} value={chiuse.id}>{chiuse.name}</option>}
@@ -1365,37 +1358,23 @@ export default function PlanningStudioTripsPage() {
                     </td>
                     <td className="p-2">
                       {tripCats.length === 0
-                        ? <span className="text-[10px] text-slate-600" title="Nessuna categoria: la corsa vale in ogni periodo del calendario aziendale">tutte</span>
+                        ? <span className="px-1.5 py-0.5 rounded text-[9px] border border-slate-700 text-slate-500 whitespace-nowrap"
+                            title="Nessuna categoria: la corsa vale in ogni periodo del calendario aziendale">tutti i periodi</span>
                         : (() => {
-                            const cats = tripCats.map(cid => catById.get(cid)).filter(Boolean) as PsValidityCategory[];
-                            const chiuse = cats.filter(c => isChiuseSub(c.code));
-                            const others = cats.filter(c => !isChiuseSub(c.code) && c.code !== "scuole_chiuse");
+                            // UN badge per OGNI categoria della corsa, coi colori
+                            // dell'anagrafica del calendario aziendale (ombrello
+                            // «Scuole Chiuse» compreso: prima veniva nascosto).
+                            const cats = (tripCats.map(cid => catById.get(cid)).filter(Boolean) as PsValidityCategory[])
+                              .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "it"));
                             return (
                               <div className="flex flex-wrap items-center gap-1 max-w-[190px]">
-                                {others.map(c => (
+                                {cats.map(c => (
                                   <span key={c.id} title={c.name}
                                     className="px-1.5 py-0.5 rounded text-[9px] font-medium border whitespace-nowrap"
                                     style={{ borderColor: c.color || "#3b82f6", background: `${c.color || "#3b82f6"}22` }}>
                                     {c.name.length > 14 ? c.name.slice(0, 13) + "…" : c.name}
                                   </span>
                                 ))}
-                                {chiuse.length > 0 && (
-                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium border whitespace-nowrap"
-                                    style={{ borderColor: "#f59e0b", background: "#f59e0b18" }}
-                                    title={"Scuole Chiuse — periodi: " + chiuse.map(c => c.name).join(", ")}>
-                                    <span className="text-slate-200">Scuole Chiuse</span>
-                                    {chiuse.map(c => {
-                                      const b = chiuseBadge(c.name, c.color);
-                                      return (
-                                        <span key={c.id} title={c.name}
-                                          className="inline-flex items-center justify-center rounded px-1 font-bold leading-none"
-                                          style={{ background: b.color, color: "#0b1220", minWidth: 13, height: 13 }}>
-                                          {b.txt}
-                                        </span>
-                                      );
-                                    })}
-                                  </span>
-                                )}
                               </div>
                             );
                           })()}
