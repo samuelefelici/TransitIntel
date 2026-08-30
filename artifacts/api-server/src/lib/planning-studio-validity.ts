@@ -1417,7 +1417,14 @@ export async function syncValidityCategoriesFromProfile(
   `);
   const tripExRows: any[] = (exR as any).rows ?? [];
 
-  /* ── Range date: dai calendari + eccezioni (clamp 750 giorni) ── */
+  const profile = await loadCalendarProfile(projectId);
+
+  /* ── Range date: calendari + eccezioni + ANNO CORRENTE e periodi del
+   * profilo (clamp 750 giorni). La finestra non può dipendere SOLO dai
+   * calendari legacy: muoiono col programma importato (es. tutto scade a
+   * settembre) e i periodi del profilo fuori finestra — Natale in testa —
+   * non verrebbero MAI classificati: niente categoria in anagrafica,
+   * niente date, filtro e badge monchi. ── */
   let from: string | null = null;
   let to: string | null = null;
   const consider = (d: string | null) => {
@@ -1428,6 +1435,11 @@ export async function syncValidityCategoriesFromProfile(
   for (const c of cals) { consider(c.start_date); consider(c.end_date); }
   for (const cd of cdates) consider(cd.date);
   for (const e of tripExRows) consider(e.date);
+  {
+    const yNow = new Date().getUTCFullYear();
+    consider(`${yNow}-01-01`); consider(`${yNow}-12-31`);
+    for (const p of profile.closedPeriods ?? []) { consider(p.from); consider(p.to); }
+  }
   if (!from || !to) {
     const y = new Date().getUTCFullYear();
     from = `${y}-01-01`; to = `${y}-12-31`;
@@ -1450,7 +1462,6 @@ export async function syncValidityCategoriesFromProfile(
   const slugify = (s: string) =>
     s.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
       .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40) || "periodo";
-  const profile = await loadCalendarProfile(projectId);
   const holidaysByYear = new Map<number, Set<string>>();
   const classByDate = new Map<string, string>(); // iso → codice categoria
   const periodCats = new Map<string, { name: string; color: string }>(); // code → meta
@@ -1460,18 +1471,34 @@ export async function syncValidityCategoriesFromProfile(
     const y = Number(iso.slice(0, 4));
     if (!holidaysByYear.has(y)) holidaysByYear.set(y, classifierHolidays(y));
     const dc = classifyDate(iso, profile, holidaysByYear.get(y));
-    let code: string;
-    if (dc.level1 === "scuole_aperte") code = "scuole_aperte";
-    else if (dc.level1 === "festivo") code = "festivita";
-    else {
+    const closedPeriodCode = (kindHint: "estivo" | "invernale"): string => {
       const per = (profile.closedPeriods ?? []).find((p) => iso >= p.from && iso <= p.to);
       const label = per?.label?.trim();
-      const kind = dc.level2 === "estivo" ? "estivo" : "invernale";
+      const kind = per?.kind ?? kindHint;
       const name = label || (kind === "estivo" ? "Scuole Chiuse Estivo" : "Scuole Chiuse Invernale");
-      code = `scuole_chiuse_${slugify(name)}`;
-      if (!periodCats.has(code)) {
-        periodCats.set(code, { name, color: kind === "estivo" ? "#f59e0b" : "#38bdf8" });
+      const pcode = `scuole_chiuse_${slugify(name)}`;
+      if (!periodCats.has(pcode)) {
+        periodCats.set(pcode, { name, color: kind === "estivo" ? "#f59e0b" : "#38bdf8" });
       }
+      return pcode;
+    };
+    let code: string;
+    if (dc.level1 === "scuole_aperte") code = "scuole_aperte";
+    else if (dc.level1 === "festivo") {
+      // La categoria della data rispecchia la CLASSE del calendario aziendale:
+      // «Festività» = SOLO i giorni rossi; una domenica ordinaria appartiene
+      // al suo PERIODO (scuole aperte / estivo / invernale). Prima OGNI giorno
+      // festivo finiva in "festivita": filtro e badge raccontavano un'altra
+      // storia rispetto al calendario, e un servizio «domeniche scolastiche +
+      // rossi» non era esprimibile per categorie.
+      if (dc.level2 === "rosso") code = "festivita";
+      else if (dc.level2 === "domenica_chiuse") {
+        const sp = profile.summerPeriod;
+        const inSummer = !!sp && iso >= sp.from && iso <= sp.to;
+        code = closedPeriodCode(inSummer ? "estivo" : "invernale");
+      } else code = "scuole_aperte";
+    } else {
+      code = closedPeriodCode(dc.level2 === "estivo" ? "estivo" : "invernale");
     }
     classByDate.set(iso, code);
   }
