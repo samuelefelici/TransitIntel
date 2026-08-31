@@ -2534,12 +2534,38 @@ function compactAgentResult(payload: any): any {
           supplementi: v.crew.summary.totalSupplementi ?? null,
           costEur: v.crew.summary.totalDailyCost ?? null,
           bdsViolations: v.crew.summary.validation?.totalViolations ?? 0,
-          // Vincolo RIGIDO autovetture: uso simultaneo massimo vs cap — la
-          // chat deve poter verificare il vincolo senza aprire lo scenario.
+          dutiesWithViolations: v.crew.summary.validation?.dutiesWithViolations ?? 0,
+          // DIAGNOSI: violazioni aggregate per messaggio (top 10) — senza
+          // questa la chat vede "33 violazioni" ma non QUALI regole saltano,
+          // e non può scegliere la leva giusta per il giro successivo.
+          violationsBreakdown: (() => {
+            const det = v.crew.summary.validation?.details;
+            if (!det || typeof det !== "object") return null;
+            const counts = new Map<string, number>();
+            for (const msgs of Object.values(det as Record<string, string[]>)) {
+              if (!Array.isArray(msgs)) continue;
+              for (const m of msgs) {
+                const key = String(m).slice(0, 120);
+                counts.set(key, (counts.get(key) ?? 0) + 1);
+              }
+            }
+            return Array.from(counts.entries())
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10)
+              .map(([msg, n]) => ({ msg, n }));
+          })(),
+          // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
+          // dice se le violazioni sono un problema di blocchi troppo lunghi.
+          blocks: v.crew.metrics ? {
+            vehicleBlocks: v.crew.metrics.vehicleBlocks ?? null,
+            classifications: v.crew.metrics.classifications ?? null,
+          } : null,
+          // Vincolo RIGIDO autovetture (i campi vivono nel SUMMARY del CSP).
           companyCars: {
-            cap: v.crew.metrics?.companyCarsCap ?? v.crew.summary.companyCars ?? null,
-            maxSimultaneous: v.crew.metrics?.companyCarsMaxSimultaneous ?? null,
-            violated: !!v.crew.metrics?.companyCarsHardViolation,
+            cap: v.crew.summary.companyCarsCap ?? null,
+            maxSimultaneous: v.crew.summary.companyCarsMaxSimultaneous ?? null,
+            used: v.crew.summary.companyCarsUsed ?? null,
+            violated: !!v.crew.summary.companyCarsHardViolation,
           },
         } : null,
         // Sonda di spostamento: le proposte accettate sono PICCOLE (poche corse)
