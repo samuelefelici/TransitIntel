@@ -1608,6 +1608,19 @@ router.patch("/planning-studio/projects/:id/routes/:routeId", async (req, res): 
   // Il vincolo (sagome/domanda) nasce qui; l'ASSEGNAZIONE resta al solver
   // dello scheduling, che usa la preferita come default per requiredVehicle.
   // null = rimuovi la dichiarazione. Merge sugli attributes, mai replace.
+  // flexMin: tolleranza di spostamento DELLA LINEA (default per le sue corse)
+  // per il cervello Pianificazione<->TM<->TG. Minuti 0..30; 0/null = linea
+  // inchiodata (chiave rimossa). L'override per corsa vive in
+  // ps_trips.attributes.flexMin (via attributesMerge).
+  if (b.flexMin !== undefined) {
+    const v = b.flexMin == null ? 0 : Math.round(Number(b.flexMin));
+    if (!Number.isFinite(v) || v < 0 || v > 30) {
+      res.status(400).json({ error: "flexMin deve essere un intero tra 0 e 30 (0 = inchiodata)" }); return;
+    }
+    sets.push(v === 0
+      ? sql`attributes = COALESCE(attributes, '{}'::jsonb) - 'flexMin'`
+      : sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ flexMin: v })}::jsonb`);
+  }
   if (b.vehicleTypes !== undefined) {
     const emptyAmmesse = b.vehicleTypes !== null
       && Array.isArray(b.vehicleTypes.ammesse) && b.vehicleTypes.ammesse.length === 0;

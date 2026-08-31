@@ -244,6 +244,10 @@ interface TripBlock {
   forced: boolean;
   /** Corsa A CHIAMATA (DRT): identificabile lungo tutta la pipeline TM/TG */
   onDemand: boolean;
+  /** Tolleranza di spostamento ±minuti DICHIARATA IN PIANIFICAZIONE (cervello
+   * Pianificazione↔TM↔TG): l'ottimizzatore integrato può proporre traslazioni
+   * entro questa finestra. 0/assente = corsa inchiodata. */
+  flexMin?: number;
 }
 
 interface ShiftTripEntry {
@@ -1522,6 +1526,9 @@ function buildPyTrips(tripBlocks: TripBlock[]) {
     category: t.category,
     forced: t.forced,
     onDemand: t.onDemand,
+    // finestra di flessibilità dichiarata in Planning: la sonda di spostamento
+    // del VCSP (cervello P↔TM↔TG) la userà per proporre traslazioni ±flexMin
+    flexMin: t.flexMin ?? 0,
   }));
 }
 
@@ -1899,6 +1906,30 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     }).from(gtfsStops).where(eq(gtfsStops.feedId!, feedId));
     const stopCoords = new Map(stopRows.map(s => [s.stopId, { lat: s.lat, lon: s.lon, name: s.name || s.stopId }]));
 
+    // 4c. Flessibilità DICHIARATA IN PIANIFICAZIONE (cervello P↔TM↔TG):
+    // flexMin per linea (default) e per corsa (override) dal progetto PS.
+    // Nel feed materializzato route_id/trip_id GTFS = uuid PS, quindi il
+    // lookup è diretto. Corsa senza dichiarazione = inchiodata (0).
+    const flexByRoute = new Map<string, number>();
+    const flexByTrip = new Map<string, number>();
+    const psProjForFlex = typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)
+      ? body.psProjectId : null;
+    if (psProjForFlex) {
+      try {
+        const fr = await db.execute<any>(sql`
+          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_routes
+           WHERE project_id = ${psProjForFlex}::uuid AND attributes ? 'flexMin'`);
+        for (const r of fr.rows ?? []) if (Number(r.flex) > 0) flexByRoute.set(String(r.id), Math.min(30, Number(r.flex)));
+        const ft = await db.execute<any>(sql`
+          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_trips
+           WHERE project_id = ${psProjForFlex}::uuid AND attributes ? 'flexMin'`);
+        for (const r of ft.rows ?? []) flexByTrip.set(String(r.id), Math.max(0, Math.min(30, Number(r.flex) || 0)));
+        if (flexByRoute.size || flexByTrip.size) {
+          req.log.info(`CP-SAT VSP: flessibilità dichiarata su ${flexByRoute.size} linee e ${flexByTrip.size} corse (progetto PS)`);
+        }
+      } catch { /* progetto PS senza flex: tutte le corse inchiodate */ }
+    }
+
     // 5. Build trip blocks
     const tripBlocks: TripBlock[] = [];
     for (const t of trips) {
@@ -1944,6 +1975,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         category: getServiceCategory(routeName),
         forced: routeForcedMap[t.routeId] ?? false,
         onDemand: !!t.onDemand,
+        flexMin: flexByTrip.get(t.tripId) ?? flexByRoute.get(t.routeId) ?? 0,
       });
     }
 
