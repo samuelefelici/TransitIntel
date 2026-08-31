@@ -14,8 +14,9 @@ import { db } from "@workspace/db";
 import {
   gtfsTrips, gtfsStopTimes, gtfsRoutes,
   gtfsCalendar, gtfsCalendarDates, gtfsStops,
-  serviceProgramScenarios, depots,
+  serviceProgramScenarios, driverShiftScenarios, depots,
 } from "@workspace/db/schema";
+import { randomUUID } from "node:crypto";
 import { eq, sql, and, desc } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../lib/deadhead-matrix";
@@ -2417,6 +2418,462 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
 router.post("/service-program/cpsat", (req, res) => handleVehicleOptimize(req, res, "cpsat"));
 // VCSP: ottimizzazione integrata turni macchina + turni guida (iterativo con feedback)
 router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, res, "vcsp"));
+
+/* ═══════════════════════════════════════════════════════════════
+ *  AGENT-OPTIMIZE — lancio ASINCRONO per Argos (MCP/chat)
+ *
+ *  L'operatore lancia il giro dalla chat; l'agente ha la libertà di girare
+ *  le manopole (round, sonde, intensità, crewTimeLimit, flex dichiarato) e
+ *  iterare finché il costo totale non scende. Un giro VCSP dura minuti:
+ *  qui il POST avvia un job in background e risponde subito con un jobId,
+ *  la GET riporta progresso e un risultato COMPATTO (leggibile via MCP).
+ *
+ *  Il giro riusa ESATTAMENTE handleVehicleOptimize (stessa pipeline della
+ *  fucina) tramite req/res sintetici: zero divergenze di comportamento.
+ *  Le vetture, se non passate, arrivano dalle tipologie DICHIARATE IN
+ *  PLANNING (attributes.vehicleTypes.preferita); i depositi, se non
+ *  passati, sono quelli del progetto. A fine giro lo scenario (TM e, in
+ *  VCSP, anche TG) viene salvato: l'operatore lo apre da Cerbero.
+ * ═══════════════════════════════════════════════════════════════ */
+
+type AgentOptimizeJob = {
+  id: string;
+  userId: string;
+  psProjectId: string;
+  mode: "cpsat" | "vcsp";
+  status: "running" | "done" | "error";
+  createdAt: number;
+  finishedAt?: number;
+  progress: { phase: string; pct: number; msg: string };
+  params: Record<string, any>;
+  error?: string;
+  result?: any;               // risposta COMPLETA (in memoria, per il salvataggio)
+  scenarioId?: string | null;
+  dssId?: string | null;
+  scenarioName?: string;
+};
+
+const agentJobs = new Map<string, AgentOptimizeJob>();
+const AGENT_JOB_TTL_MS = 6 * 60 * 60 * 1000;
+const AGENT_JOBS_MAX = 30;
+
+function pruneAgentJobs(): void {
+  const now = Date.now();
+  for (const [id, j] of agentJobs) {
+    if (j.status !== "running" && now - (j.finishedAt ?? j.createdAt) > AGENT_JOB_TTL_MS) agentJobs.delete(id);
+  }
+  if (agentJobs.size > AGENT_JOBS_MAX) {
+    const done = Array.from(agentJobs.values())
+      .filter(j => j.status !== "running")
+      .sort((a, b) => (a.finishedAt ?? a.createdAt) - (b.finishedAt ?? b.createdAt));
+    for (const j of done.slice(0, agentJobs.size - AGENT_JOBS_MAX)) agentJobs.delete(j.id);
+  }
+}
+
+/** Logger che intercetta le righe PROGRESS|fase|pct|msg del solver (già
+ * inoltrate su stderr→logger da spawnPythonJson) e aggiorna il job. In VCSP
+ * ascoltiamo solo la fase "VCSP" (il VSP interno va 0→100 a ogni round). */
+function agentJobLogger(job: AgentOptimizeJob, base: any) {
+  const wantPhase = job.mode === "vcsp" ? "VCSP" : "VSP";
+  const capture = (args: any[]) => {
+    for (const a of args) {
+      if (typeof a !== "string") continue;
+      // un chunk stderr può portare PIÙ righe PROGRESS: vale l'ultima
+      for (const line of a.split("\n")) {
+        const m = line.match(/PROGRESS\|([^|]+)\|([\d.]+)\|([^|\n]*)/);
+        if (m && m[1] === wantPhase) {
+          job.progress = { phase: m[1], pct: Math.round(Number(m[2])), msg: m[3].trim() };
+        }
+      }
+    }
+  };
+  return {
+    info: (...a: any[]) => { capture(a); try { base.info(...a); } catch { /* logger morto: il job continua */ } },
+    warn: (...a: any[]) => { try { base.warn(...a); } catch { /* idem */ } },
+    error: (...a: any[]) => { try { base.error(...a); } catch { /* idem */ } },
+  };
+}
+
+/** Vista COMPATTA del risultato per la chat (l'MCP tronca a ~40k):
+ * KPI, round, sonda e advisories — mai i turni completi (si aprono in app). */
+function compactAgentResult(payload: any): any {
+  const v = payload?.vcsp;
+  const s = payload?.summary ?? {};
+  const m = payload?.solverMetrics ?? {};
+  return {
+    solver: payload?.solver ?? null,
+    summary: {
+      totalVehicles: s.totalVehicles ?? null,
+      totalTrips: s.totalTrips ?? null,
+      totalServiceHours: s.totalServiceHours ?? null,
+      totalDeadheadKm: s.totalDeadheadKm ?? null,
+      efficiency: s.efficiency ?? null,
+      byType: s.byType ?? null,
+      byDepot: s.byDepot ?? null,
+    },
+    vehicleCostEur: m.costEur ?? null,
+    solveTimeSec: m.solveTimeSec ?? null,
+    fleetInfeasibility: m.fleetInfeasibility ?? null,
+    advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
+      .filter((a: any) => a.severity === "critical" || a.severity === "warning")
+      .slice(0, 5)
+      .map((a: any) => ({ severity: a.severity, title: a.title, description: a.description })),
+    ...(v ? {
+      vcsp: {
+        bestRound: v.bestRound ?? null,
+        roundsExecuted: v.roundsExecuted ?? null,
+        elapsedSec: v.elapsedSec ?? null,
+        rounds: (Array.isArray(v.rounds) ? v.rounds : []).map((r: any) => ({
+          round: r.round, probe: !!r.probe, vehicles: r.vehicles,
+          duties: r.duties, supplementi: r.supplementi, bdsViolations: r.bdsViolations,
+          vehicleCostEur: r.vehicleCostEur, crewCostEur: r.crewCostEur, totalCostEur: r.totalCostEur,
+        })),
+        crew: v.crew?.summary ? {
+          duties: v.crew.summary.totalShifts ?? null,
+          supplementi: v.crew.summary.totalSupplementi ?? null,
+          costEur: v.crew.summary.totalDailyCost ?? null,
+          bdsViolations: v.crew.summary.validation?.totalViolations ?? 0,
+        } : null,
+        // Sonda di spostamento: le proposte accettate sono PICCOLE (poche corse)
+        // e sono esattamente ciò che l'agente deve raccontare all'operatore.
+        probe: v.probe ? {
+          flexTrips: v.probe.flexTrips ?? 0,
+          candidates: v.probe.candidates ?? 0,
+          probesRun: v.probe.probesRun ?? 0,
+          accepted: v.probe.accepted ?? [],
+          rejectedCount: Array.isArray(v.probe.rejected) ? v.probe.rejected.length : 0,
+          timeShifts: v.probe.timeShifts ?? {},
+        } : null,
+      },
+    } : {}),
+  };
+}
+
+// filobus esiste in Planning ma il solver non lo modella: viaggia da 12m.
+const AGENT_VEHICLE_FALLBACK: Record<string, VehicleType> = { filobus: "12m" };
+
+router.post("/service-program/agent-optimize", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+    const b = (req.body ?? {}) as Record<string, any>;
+
+    const psProjectId = String(b.psProjectId ?? "");
+    if (!/^[0-9a-f-]{36}$/i.test(psProjectId)) {
+      res.status(400).json({ error: "psProjectId (uuid del progetto Planning Studio) obbligatorio" }); return;
+    }
+    const rawDate = String(b.date ?? "");
+    if (!/^\d{4}-?\d{2}-?\d{2}$/.test(rawDate)) {
+      res.status(400).json({ error: "date obbligatoria (YYYY-MM-DD)" }); return;
+    }
+    const mode: "cpsat" | "vcsp" = b.mode === "cpsat" ? "cpsat" : "vcsp";
+
+    // Un solo giro alla volta per progetto: i solve sono pesanti.
+    for (const j of agentJobs.values()) {
+      if (j.status === "running" && j.psProjectId === psProjectId) {
+        res.status(409).json({ error: "Un giro è già in corso su questo progetto: attendi o interroga lo stato", jobId: j.id });
+        return;
+      }
+    }
+
+    // Feed = materializzazione del progetto PS (l'UDP lavora su quello).
+    const fr = await db.execute<any>(sql`
+      SELECT materialized_feed_id, name FROM ps_projects WHERE id = ${psProjectId}::uuid`);
+    const feedId: string | null = fr.rows?.[0]?.materialized_feed_id ?? null;
+    const psName: string = fr.rows?.[0]?.name ?? "Progetto";
+    if (!fr.rows?.length) { res.status(404).json({ error: "Progetto Planning Studio non trovato" }); return; }
+    if (!feedId) {
+      res.status(400).json({ error: "Progetto non materializzato: genera l'UDP (materializza il feed) prima di ottimizzare" });
+      return;
+    }
+
+    // Progetto scheduling collegato (depositi scoped + aggancio scenario).
+    let schedProjectId: string | null =
+      typeof b.projectId === "string" && /^[0-9a-f-]{36}$/i.test(b.projectId) ? b.projectId : null;
+    if (!schedProjectId) {
+      try {
+        const pr = await db.execute<any>(sql`
+          SELECT id FROM scheduling_projects
+           WHERE planning_studio_project_id = ${psProjectId}::uuid
+           ORDER BY created_at DESC LIMIT 1`);
+        schedProjectId = pr.rows?.[0]?.id ?? null;
+      } catch { /* installazione senza scheduling_projects */ }
+    }
+
+    // Vetture: esplicite dal body, altrimenti dalle tipologie DICHIARATE in Planning.
+    const validTypes = new Set(Object.keys(VEHICLE_SIZE));
+    let routes: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
+    let vehicleSource: "esplicite" | "planning" | "planning+default" = "esplicite";
+    if (Array.isArray(b.routes) && b.routes.length > 0) {
+      routes = b.routes;
+    } else {
+      const feedRoutes = await db.select({
+        routeId: gtfsRoutes.routeId,
+        shortName: gtfsRoutes.routeShortName,
+        longName: gtfsRoutes.routeLongName,
+      }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+      const wanted = Array.isArray(b.routeIds) && b.routeIds.length > 0
+        ? new Set(b.routeIds.map(String)) : null;
+      const psVehicle = new Map<string, string>();
+      try {
+        const psR = await db.execute<any>(sql`
+          SELECT r.id, r.attributes->'vehicleTypes' AS vt
+            FROM ps_routes r
+            JOIN ps_projects p ON p.id = r.project_id
+           WHERE p.materialized_feed_id = ${feedId}::uuid
+             AND r.attributes ? 'vehicleTypes'`);
+        for (const row of psR.rows ?? []) {
+          const vt = row.vt;
+          if (vt && Array.isArray(vt.ammesse) && vt.ammesse.length > 0) {
+            psVehicle.set(String(row.id), String(vt.preferita ?? vt.ammesse[0]));
+          }
+        }
+      } catch { /* feed non materializzato da PS */ }
+      const defaultVt = typeof b.defaultVehicleType === "string" && validTypes.has(b.defaultVehicleType)
+        ? (b.defaultVehicleType as VehicleType) : null;
+      const missing: string[] = [];
+      routes = [];
+      for (const r of feedRoutes) {
+        if (wanted && !wanted.has(r.routeId)) continue;
+        const declared = psVehicle.get(r.routeId);
+        const mapped = declared && (validTypes.has(declared) ? declared : AGENT_VEHICLE_FALLBACK[declared]);
+        if (mapped) {
+          routes.push({ routeId: r.routeId, vehicleType: mapped as VehicleType, forced: false });
+        } else if (defaultVt) {
+          routes.push({ routeId: r.routeId, vehicleType: defaultVt, forced: false });
+        } else {
+          missing.push(r.shortName || r.longName || r.routeId);
+        }
+      }
+      if (missing.length > 0) {
+        res.status(400).json({
+          error: "Linee senza tipologia di vettura dichiarata in Planning",
+          detail: `Dichiara la tipologia (Ispettore → linea → Tipologia di vettura, o ti_set_route_vehicle) `
+            + `oppure passa defaultVehicleType. Linee scoperte: ${missing.slice(0, 30).join(", ")}`
+            + (missing.length > 30 ? ` e altre ${missing.length - 30}` : ""),
+          missingRoutes: missing.slice(0, 60),
+        });
+        return;
+      }
+      if (routes.length === 0) { res.status(400).json({ error: "Nessuna linea nel feed del progetto (routeIds troppo stretti?)" }); return; }
+      vehicleSource = defaultVt ? "planning+default" : "planning";
+    }
+
+    // Depositi: selezione esplicita, altrimenti tutti quelli del progetto (cap liberi).
+    let depotsSel: any[] | null = Array.isArray(b.depots) && b.depots.length > 0 ? b.depots : null;
+    if (!depotsSel) {
+      const pts = await loadDepotPoints(schedProjectId);
+      const ids = Array.isArray(b.depotIds) && b.depotIds.length > 0 ? new Set(b.depotIds.map(String)) : null;
+      depotsSel = pts.filter(p => !ids || ids.has(p.id)).map(p => ({ id: p.id }));
+    }
+
+    const intensity = ["fast", "normal", "deep", "extreme"].includes(b.intensity) ? b.intensity : "normal";
+    const timeLimit = Number.isFinite(Number(b.timeLimit)) && Number(b.timeLimit) > 0
+      ? Math.min(1800, Number(b.timeLimit))
+      : ({ fast: 60, normal: 180, deep: 420, extreme: 900 } as Record<string, number>)[intensity];
+    const serviceType = b.serviceType === "extraurbano" || b.serviceType === "misto" ? b.serviceType : "urbano";
+
+    const runBody: Record<string, any> = {
+      date: rawDate, feedId, psProjectId, serviceType, routes,
+      timeLimit, solverIntensity: intensity,
+      ...(depotsSel && depotsSel.length > 0 ? { depots: depotsSel } : {}),
+      ...(schedProjectId ? { projectId: schedProjectId } : {}),
+      ...(Array.isArray(b.excludedTripIds) && b.excludedTripIds.length > 0 ? { excludedTripIds: b.excludedTripIds } : {}),
+      ...(b.tripVehicleOverrides && typeof b.tripVehicleOverrides === "object" ? { tripVehicleOverrides: b.tripVehicleOverrides } : {}),
+      ...(b.vehicleCosts && typeof b.vehicleCosts === "object" ? { vehicleCosts: b.vehicleCosts } : {}),
+      ...(b.vspAdvanced && typeof b.vspAdvanced === "object" ? { vspAdvanced: b.vspAdvanced } : {}),
+      ...(b.robustness ? { robustness: b.robustness } : {}),
+      ...(b.vspNormativa && typeof b.vspNormativa === "object" ? { vspNormativa: b.vspNormativa } : {}),
+    };
+    if (mode === "vcsp") {
+      runBody.vcsp = {
+        rounds: b.rounds ?? 3,
+        crewTimeLimit: b.crewTimeLimit ?? 90,
+        probes: b.probes ?? 4,
+        ...(b.probeVspTime ? { probeVspTime: b.probeVspTime } : {}),
+      };
+      if (b.crewConfig && typeof b.crewConfig === "object") runBody.crewConfig = b.crewConfig;
+    }
+
+    const job: AgentOptimizeJob = {
+      id: randomUUID(),
+      userId, psProjectId, mode,
+      status: "running",
+      createdAt: Date.now(),
+      progress: { phase: mode === "vcsp" ? "VCSP" : "VSP", pct: 0, msg: "Avvio…" },
+      params: {
+        date: rawDate, mode, intensity, timeLimit, serviceType,
+        routes: routes.length, vehicleSource, depots: depotsSel?.length ?? 0,
+        ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit } : {}),
+      },
+    };
+    agentJobs.set(job.id, job);
+    pruneAgentJobs();
+
+    // Req/res sintetici: la pipeline del giro è la STESSA della fucina.
+    const jobLog = agentJobLogger(job, req.log);
+    const fakeReq = { body: runBody, user: req.user, log: jobLog, query: {}, params: {} };
+    const runPromise = new Promise<{ code: number; payload: any }>((resolve) => {
+      const fakeRes: any = {
+        _code: 200,
+        status(c: number) { this._code = c; return this; },
+        json(p: any) { resolve({ code: this._code, payload: p }); },
+      };
+      handleVehicleOptimize(fakeReq, fakeRes, mode)
+        .catch((err: any) => resolve({ code: 500, payload: { error: err?.message || "errore interno" } }));
+    });
+
+    const saveScenario = b.saveScenario !== false;
+    const scenarioNameReq = typeof b.scenarioName === "string" && b.scenarioName.trim()
+      ? b.scenarioName.trim().slice(0, 120) : null;
+
+    void runPromise.then(async ({ code, payload }) => {
+      try {
+        if (code !== 200 || payload?.error || payload?.status === "NO_INPUT") {
+          job.status = "error";
+          job.error = payload?.error
+            || (payload?.status === "NO_INPUT"
+              ? "Nessuna corsa attiva per la data/linee scelte: controlla la data di esercizio"
+              : `Errore HTTP ${code}`);
+          return;
+        }
+        job.result = payload;
+        job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
+        if (saveScenario) {
+          const name = scenarioNameReq
+            ?? `Argos · ${psName} · ${rawDate}${mode === "vcsp" ? " · VCSP" : ""}`;
+          job.scenarioName = name;
+          // Scenario TURNI MACCHINA (il top-level è già il best round / sonda).
+          const savedResult = payload.vcsp?.bestRound != null
+            ? { ...payload, vcspSelectedRound: payload.vcsp.bestRound }
+            : payload;
+          const [row] = await db.insert(serviceProgramScenarios).values({
+            name,
+            date: rawDate.replace(/-/g, ""),
+            feedId: feedId || undefined,
+            input: {
+              date: rawDate, serviceType, routes,
+              source: "argos-agent", mode,
+              ...(runBody.vcsp ? { vcsp: runBody.vcsp } : {}),
+            } as any,
+            result: savedResult as any,
+          }).returning({ id: serviceProgramScenarios.id });
+          job.scenarioId = row.id;
+          try {
+            await db.execute(sql`UPDATE service_program_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
+          } catch { /* colonna assente su DB legacy */ }
+          if (schedProjectId) {
+            try {
+              await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${schedProjectId}::uuid WHERE id = ${row.id}::uuid`);
+            } catch { /* colonna assente */ }
+          }
+          if (depotsSel && depotsSel.length > 0) {
+            const clean = depotsSel
+              .filter((d: any) => d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id))
+              .map((d: any) => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
+            if (clean.length > 0) {
+              try {
+                await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
+                await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
+              } catch { /* non-fatale */ }
+            }
+          }
+          // VCSP: anche i TURNI GUIDA del best round come DSS collegato,
+          // così entrambe le aree di lavoro sono pronte (parità con la fucina).
+          const v = payload.vcsp;
+          if (mode === "vcsp" && Array.isArray(v?.crew?.driverShifts) && v.crew.driverShifts.length > 0) {
+            try {
+              const [dss] = await db.insert(driverShiftScenarios).values({
+                serviceProgramScenarioId: row.id,
+                name: `${name} · Turni guida (VCSP round ${v.bestRound ?? "?"})`,
+                result: {
+                  solver: "vcsp_crew",
+                  driverShifts: v.crew.driverShifts,
+                  summary: v.crew.summary ?? null,
+                  handovers: v.crew.handovers ?? [],
+                  clusters: v.crew.clusters ?? [],
+                  metrics: v.crew.metrics ?? null,
+                } as any,
+                config: { source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null } as any,
+              }).returning({ id: driverShiftScenarios.id });
+              job.dssId = dss.id;
+              try {
+                await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${dss.id}::uuid`);
+              } catch { /* colonna assente */ }
+            } catch (e: any) {
+              jobLog.warn(`agent-optimize: salvataggio turni guida fallito (non-fatale): ${e?.message}`);
+            }
+          }
+        }
+        job.status = "done";
+      } catch (e: any) {
+        job.status = "error";
+        job.error = `Giro completato ma salvataggio fallito: ${e?.message}`;
+      } finally {
+        job.finishedAt = Date.now();
+      }
+    });
+
+    res.json({
+      jobId: job.id,
+      status: "running",
+      mode,
+      date: rawDate,
+      project: psName,
+      routes: routes.length,
+      vehicleSource,
+      depots: depotsSel?.length ?? 0,
+      ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes } : {}),
+      hint: "Interroga GET /service-program/agent-optimize/{jobId} per progresso e risultato (attendi ~60-90s tra un controllo e l'altro)",
+    });
+  } catch (err: any) {
+    req.log.error(err, "Error in agent-optimize");
+    res.status(500).json({ error: err.message || "Errore avvio giro" });
+  }
+});
+
+/** Stato/risultato di un giro lanciato dall'agente. */
+router.get("/service-program/agent-optimize/:jobId", (req, res) => {
+  const job = agentJobs.get(String(req.params.jobId));
+  if (!job) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+  if (req.user?.id !== job.userId && req.user?.role !== "admin") {
+    res.status(403).json({ error: "Job di un altro utente" }); return;
+  }
+  res.json({
+    jobId: job.id,
+    status: job.status,
+    mode: job.mode,
+    progress: job.progress,
+    elapsedSec: Math.round(((job.finishedAt ?? Date.now()) - job.createdAt) / 1000),
+    params: job.params,
+    ...(job.error ? { error: job.error } : {}),
+    ...(job.status === "done" ? {
+      scenarioId: job.scenarioId ?? null,
+      dssId: job.dssId ?? null,
+      scenarioName: job.scenarioName ?? null,
+      result: compactAgentResult(job.result),
+    } : {}),
+  });
+});
+
+/** Elenco giri dell'utente (recupero jobId persi). */
+router.get("/service-program/agent-optimize", (req, res) => {
+  const userId = req.user?.id;
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  const isAdmin = req.user?.role === "admin";
+  const jobs = Array.from(agentJobs.values())
+    .filter(j => isAdmin || j.userId === userId)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 20)
+    .map(j => ({
+      jobId: j.id, status: j.status, mode: j.mode,
+      psProjectId: j.psProjectId, params: j.params,
+      createdAt: new Date(j.createdAt).toISOString(),
+      scenarioId: j.scenarioId ?? null,
+      ...(j.error ? { error: j.error } : {}),
+    }));
+  res.json({ jobs });
+});
 
 /* ═══════════════════════════════════════════════════════════════
  *  SCENARIO SAVE / LOAD / LIST / DELETE
