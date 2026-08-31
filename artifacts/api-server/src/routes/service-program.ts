@@ -2533,6 +2533,13 @@ function compactAgentResult(payload: any): any {
           supplementi: v.crew.summary.totalSupplementi ?? null,
           costEur: v.crew.summary.totalDailyCost ?? null,
           bdsViolations: v.crew.summary.validation?.totalViolations ?? 0,
+          // Vincolo RIGIDO autovetture: uso simultaneo massimo vs cap — la
+          // chat deve poter verificare il vincolo senza aprire lo scenario.
+          companyCars: {
+            cap: v.crew.metrics?.companyCarsCap ?? v.crew.summary.companyCars ?? null,
+            maxSimultaneous: v.crew.metrics?.companyCarsMaxSimultaneous ?? null,
+            violated: !!v.crew.metrics?.companyCarsHardViolation,
+          },
         } : null,
         // Sonda di spostamento: le proposte accettate sono PICCOLE (poche corse)
         // e sono esattamente ciò che l'agente deve raccontare all'operatore.
@@ -2692,7 +2699,18 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         probes: b.probes ?? 4,
         ...(b.probeVspTime ? { probeVspTime: b.probeVspTime } : {}),
       };
-      if (b.crewConfig && typeof b.crewConfig === "object") runBody.crewConfig = b.crewConfig;
+      // Vincolo RIGIDO autovetture aziendali impostabile dall'agente: senza
+      // companyCars nel body il giro ricade sull'impostazione DB (come la UI).
+      const companyCars = Number.isFinite(Number(b.companyCars)) && Number(b.companyCars) >= 0
+        ? Math.min(50, Math.round(Number(b.companyCars))) : null;
+      if ((b.crewConfig && typeof b.crewConfig === "object") || companyCars != null) {
+        const cc = (b.crewConfig && typeof b.crewConfig === "object") ? b.crewConfig : {};
+        runBody.crewConfig = {
+          ...cc,
+          bds: { ...(cc.bds ?? {}), serviceType: cc.bds?.serviceType ?? serviceType },
+          ...(companyCars != null ? { companyCars } : {}),
+        };
+      }
     }
 
     const job: AgentOptimizeJob = {
