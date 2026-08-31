@@ -141,8 +141,11 @@ function isAllowedPair(a: ArcNode, b: ArcNode): boolean {
 }
 
 /** Cluster di cambio in linea come nodi: posizione = baricentro delle fermate
- * del cluster (i cluster senza fermate georeferenziate vengono saltati). */
-async function loadClusters(clusterIds: string[] | null): Promise<ArcNode[]> {
+ * del cluster. I cluster sono GLOBALI nel DB ma appartengono a una rete:
+ * con feedId si tengono SOLO i cluster con almeno una fermata presente nel
+ * feed (e il baricentro si calcola sulle sole fermate di quel feed) — così
+ * i cluster di altre reti non compaiono nel progetto. */
+async function loadClusters(clusterIds: string[] | null, feedId: string | null): Promise<ArcNode[]> {
   let rows = await db.select().from(stopClusters);
   if (clusterIds && clusterIds.length > 0) {
     rows = rows.filter(c => clusterIds.includes(c.id));
@@ -150,9 +153,23 @@ async function loadClusters(clusterIds: string[] | null): Promise<ArcNode[]> {
   if (!rows.length) return [];
   const stops = await db.select().from(stopClusterStops)
     .where(inArray(stopClusterStops.clusterId, rows.map(c => c.id)));
+
+  let inFeed: (stopId: string) => boolean = () => true;
+  if (feedId) {
+    const ids = [...new Set(stops.map(s => s.gtfsStopId).filter(Boolean))] as string[];
+    const present = new Set<string>();
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const found = await db.select({ stopId: gtfsStops.stopId }).from(gtfsStops)
+        .where(and(eq(gtfsStops.feedId, feedId), inArray(gtfsStops.stopId, ids.slice(i, i + CHUNK))));
+      for (const f of found) present.add(f.stopId);
+    }
+    inFeed = (stopId) => present.has(stopId);
+  }
+
   const out: ArcNode[] = [];
   for (const c of rows) {
-    const mine = stops.filter(s => s.clusterId === c.id && s.stopLat != null && s.stopLon != null);
+    const mine = stops.filter(s => s.clusterId === c.id && s.stopLat != null && s.stopLon != null
+      && (feedId ? (s.gtfsStopId != null && inFeed(s.gtfsStopId)) : true));
     if (!mine.length) continue;
     const lat = mine.reduce((s, x) => s + Number(x.stopLat), 0) / mine.length;
     const lon = mine.reduce((s, x) => s + Number(x.stopLon), 0) / mine.length;
@@ -261,7 +278,7 @@ router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
   if (!terminals.length) { res.status(400).json({ error: "Nessun capolinea trovato per le linee scelte" }); return; }
 
   const clusterNodes: ArcNode[] = includeClusters === true
-    ? await loadClusters(Array.isArray(clusterIds) && clusterIds.length ? clusterIds : null)
+    ? await loadClusters(Array.isArray(clusterIds) && clusterIds.length ? clusterIds : null, feedId)
     : [];
 
   // Coppie: deposito↔capolinea; capolinea↔capolinea entro maxKm;
@@ -343,7 +360,7 @@ router.get("/deadhead-arcs/nodes", asyncHandler(async (req, res) => {
     .filter(d => d.lat != null && d.lon != null)
     .map(d => ({ key: `depot:${d.id}`, type: "depot", name: d.name, lat: d.lat!, lon: d.lon! }));
   const terminals = feedId ? await loadTerminals(feedId, routeIds) : [];
-  const clusters = await loadClusters(null);
+  const clusters = await loadClusters(null, feedId);
   res.json({ depots: depotNodes, terminals, clusters });
 }));
 
