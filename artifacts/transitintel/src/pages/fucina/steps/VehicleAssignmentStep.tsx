@@ -151,10 +151,11 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
     if (fromUdp && routes.length > 0) {
       const inScope = new Set(routes.map((r) => r.routeId));
       setSelectedRoutes((prev) => {
-        if (prev.size === 0) return new Map(routes.map((r) => [r.routeId, "12m" as VehicleType]));
+        const fromPlanning = () => new Map(routes.map((r) => [r.routeId, (r.planningVehicle?.preferita ?? "12m") as VehicleType]));
+        if (prev.size === 0) return fromPlanning();
         const kept = new Map([...prev].filter(([id]) => inScope.has(id)));
         if (kept.size === prev.size) return prev;
-        return kept.size > 0 ? kept : new Map(routes.map((r) => [r.routeId, "12m" as VehicleType]));
+        return kept.size > 0 ? kept : fromPlanning();
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,8 +183,20 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
   const suburbanCount = useMemo(() => allRoutes.filter(r => r.category === "extraurbano").length, [allRoutes]);
 
   /* ── Route handlers ── */
+  /* Default per linea: la tipologia PREFERITA dichiarata in Planning Studio
+   * (attributes.vehicleTypes della linea PS), altrimenti il 12m storico.
+   * L'operatore resta libero di cambiarla nel run. */
+  const planningVtById = useMemo(() => {
+    const m = new Map<string, { ammesse: VehicleType[]; preferita: VehicleType }>();
+    for (const r of allRoutes) if (r.planningVehicle) m.set(r.routeId, r.planningVehicle);
+    return m;
+  }, [allRoutes]);
+  const defaultVtFor = useCallback(
+    (routeId: string): VehicleType => planningVtById.get(routeId)?.preferita ?? "12m",
+    [planningVtById]);
+
   const toggleRoute = (routeId: string) => {
-    setSelectedRoutes(prev => { const n = new Map(prev); if (n.has(routeId)) n.delete(routeId); else n.set(routeId, "12m"); return n; });
+    setSelectedRoutes(prev => { const n = new Map(prev); if (n.has(routeId)) n.delete(routeId); else n.set(routeId, defaultVtFor(routeId)); return n; });
     setForcedRoutes(prev => { const n = new Set(prev); n.delete(routeId); return n; });
   };
   const setRouteVehicle = (routeId: string, vt: VehicleType) => {
@@ -194,7 +207,7 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
   const toggleForced = (routeId: string) => {
     setForcedRoutes(prev => { const n = new Set(prev); if (n.has(routeId)) n.delete(routeId); else n.add(routeId); return n; });
   };
-  const selectAllVisible = () => { const n = new Map(selectedRoutes); for (const r of filteredRoutes) if (!n.has(r.routeId)) n.set(r.routeId, "12m"); setSelectedRoutes(n); };
+  const selectAllVisible = () => { const n = new Map(selectedRoutes); for (const r of filteredRoutes) if (!n.has(r.routeId)) n.set(r.routeId, r.planningVehicle?.preferita ?? "12m"); setSelectedRoutes(n); };
   const deselectAllVisible = () => {
     const ids = new Set(filteredRoutes.map(r => r.routeId));
     setSelectedRoutes(prev => { const n = new Map(prev); for (const id of ids) n.delete(id); return n; });
@@ -408,7 +421,9 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                 <div className="max-h-[380px] overflow-y-auto space-y-0.5 pr-1">
                   {filteredRoutes.map(route => {
                     const isSelected = selectedRoutes.has(route.routeId);
-                    const vt = selectedRoutes.get(route.routeId) || "12m";
+                    const vt = selectedRoutes.get(route.routeId) || defaultVtFor(route.routeId);
+                    const pv = route.planningVehicle;
+                    const fuoriSagoma = !!pv && !pv.ammesse.includes(vt);
                     const isForced = forcedRoutes.has(route.routeId);
                     const isExpanded = expandedRouteTrips.has(route.routeId);
                     const trips = routeTrips.get(route.routeId) || [];
@@ -428,6 +443,17 @@ export default function VehicleAssignmentStep({ gtfsSelection, initial, allowedR
                             {route.category === "urbano" ? "URB" : "EXT"}
                           </span>
                           <span className="text-xs text-muted-foreground truncate flex-1">{route.longName || ""}</span>
+                          {pv && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 shrink-0"
+                              title={`Dichiarato in Planning Studio — ammesse: ${pv.ammesse.join(", ")} · preferita: ${pv.preferita}`}>
+                              P: {pv.preferita}
+                            </span>
+                          )}
+                          {isSelected && fuoriSagoma && (
+                            <span className="text-[10px] text-amber-400 shrink-0" title={`Tipologia fuori dalle ammesse in Planning (${pv!.ammesse.join(", ")})`}>
+                              <AlertTriangle className="w-3.5 h-3.5" />
+                            </span>
+                          )}
                           <span className="text-[10px] text-muted-foreground shrink-0">{route.tripsCount} corse</span>
                           {isSelected && (
                             <>

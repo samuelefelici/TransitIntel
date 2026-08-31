@@ -1603,6 +1603,31 @@ router.patch("/planning-studio/projects/:id/routes/:routeId", async (req, res): 
   if (b.agencyId !== undefined) sets.push(sql`agency_id = ${b.agencyId}`);
   if (b.sortOrder !== undefined) sets.push(sql`sort_order = ${Number(b.sortOrder)}`);
   if (b.attributes !== undefined) sets.push(sql`attributes = ${JSON.stringify(b.attributes)}::jsonb`);
+  // vehicleTypes: dichiarazione di PIANIFICAZIONE delle tipologie di vettura
+  // della linea — {ammesse: [...], preferita} in attributes.vehicleTypes.
+  // Il vincolo (sagome/domanda) nasce qui; l'ASSEGNAZIONE resta al solver
+  // dello scheduling, che usa la preferita come default per requiredVehicle.
+  // null = rimuovi la dichiarazione. Merge sugli attributes, mai replace.
+  if (b.vehicleTypes !== undefined) {
+    const emptyAmmesse = b.vehicleTypes !== null
+      && Array.isArray(b.vehicleTypes.ammesse) && b.vehicleTypes.ammesse.length === 0;
+    if (b.vehicleTypes === null || emptyAmmesse) {
+      // null oppure ammesse:[] espliciti = rimuovi la dichiarazione
+      sets.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) - 'vehicleTypes'`);
+    } else {
+      const VALID = ["autosnodato", "12m", "10m", "pollicino"];
+      const ammesse: string[] = Array.isArray(b.vehicleTypes.ammesse)
+        ? [...new Set<string>(b.vehicleTypes.ammesse.map((x: any) => String(x)))] : [];
+      if (ammesse.length === 0 || ammesse.some(t => !VALID.includes(t))) {
+        res.status(400).json({ error: `vehicleTypes.ammesse deve contenere tipologie tra: ${VALID.join(", ")}` }); return;
+      }
+      const preferita = b.vehicleTypes.preferita != null ? String(b.vehicleTypes.preferita) : ammesse[0];
+      if (!ammesse.includes(preferita)) {
+        res.status(400).json({ error: "vehicleTypes.preferita deve essere una delle ammesse" }); return;
+      }
+      sets.push(sql`attributes = COALESCE(attributes, '{}'::jsonb) || ${JSON.stringify({ vehicleTypes: { ammesse, preferita } })}::jsonb`);
+    }
+  }
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }
   sets.push(sql`updated_at = now()`);
   const assignments = sql.join(sets, sql`, `);
