@@ -32,6 +32,7 @@ import {
   requireVehicleScenarioRead,
   requireVehicleScenarioWrite,
 } from "../lib/scenario-access";
+import { startSyncJob } from "../lib/planning-studio-materialize";
 
 const router: IRouter = Router();
 
@@ -2600,20 +2601,84 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       typeof b.feedId === "string" && /^[0-9a-f-]{36}$/i.test(b.feedId) ? b.feedId : null;
     let feedSource: "esplicito" | "udp" | "esercizio" | null = feedId ? "esplicito" : null;
     if (!feedId) {
+      // Via maestra: l'UDP (ps_validity_units). Parità con l'app: se l'unità
+      // non è mai stata mandata allo scheduling, il progetto si crea QUI e il
+      // feed scopato si materializza ON-DEMAND (startSyncJob, stessa via del
+      // pulsante "Sincronizza con PS"); se il feed esiste ma è più vecchio
+      // dell'ultima modifica in Planning, si ri-materializza. Mai più giri su
+      // feed stantii agganciati alla cieca.
       try {
-        const pr = await db.execute<any>(sql`
-          SELECT sp.id, sp.feed_id FROM scheduling_projects sp
-           WHERE sp.planning_studio_project_id = ${psProjectId}::uuid
-             AND sp.feed_id IS NOT NULL
-             AND EXISTS (SELECT 1 FROM gtfs_feeds f WHERE f.id = sp.feed_id)
-             ${schedProjectId ? sql`AND sp.id = ${schedProjectId}::uuid` : sql``}
-           ORDER BY sp.created_at DESC LIMIT 1`);
-        if (pr.rows?.[0]?.feed_id) {
-          feedId = pr.rows[0].feed_id;
-          schedProjectId = pr.rows[0].id;
-          feedSource = "udp";
+        const units = await db.execute<any>(sql`
+          SELECT id, name, trip_count FROM ps_validity_units
+           WHERE project_id = ${psProjectId}::uuid
+           ORDER BY updated_at DESC`);
+        const unitRows: any[] = units.rows ?? [];
+        const wantedUnit = typeof b.validityUnitId === "string" && /^[0-9a-f-]{36}$/i.test(b.validityUnitId)
+          ? b.validityUnitId : null;
+        const unit = wantedUnit
+          ? unitRows.find((u: any) => u.id === wantedUnit)
+          : (unitRows.length === 1 ? unitRows[0] : null);
+        if (!unit && unitRows.length > 1) {
+          res.status(400).json({
+            error: "Più UDP nel progetto: indica validityUnitId",
+            units: unitRows.map((u: any) => ({ id: u.id, name: u.name, tripCount: u.trip_count })),
+          });
+          return;
         }
-      } catch { /* installazione senza scheduling_projects */ }
+        if (unit) {
+          let sp: any = (await db.execute<any>(sql`
+            SELECT id, feed_id FROM scheduling_projects
+             WHERE validity_unit_id = ${unit.id}::uuid
+             ORDER BY created_at DESC LIMIT 1`)).rows?.[0] ?? null;
+          if (!sp) {
+            const ins = await db.execute<any>(sql`
+              INSERT INTO scheduling_projects (owner_user_id, name, planning_studio_project_id, validity_unit_id)
+              VALUES (${userId}::uuid, ${String(unit.name || psName).slice(0, 120)},
+                      ${psProjectId}::uuid, ${unit.id}::uuid)
+              RETURNING id, feed_id`);
+            sp = ins.rows?.[0] ?? null;
+            req.log.info(`agent-optimize: creato progetto scheduling per l'UDP "${unit.name}" (${sp?.id})`);
+          }
+          if (sp) {
+            schedProjectId = sp.id;
+            let fresh = false;
+            if (sp.feed_id) {
+              try {
+                const st = await db.execute<any>(sql`
+                  SELECT (SELECT uploaded_at FROM gtfs_feeds WHERE id = ${sp.feed_id}::uuid) AS synced,
+                         GREATEST(
+                           COALESCE((SELECT max(updated_at) FROM ps_trips     WHERE project_id = ${psProjectId}::uuid), 'epoch'),
+                           COALESCE((SELECT max(updated_at) FROM ps_calendars WHERE project_id = ${psProjectId}::uuid), 'epoch')
+                         ) AS changed`);
+                const s = st.rows?.[0] ?? {};
+                fresh = !!s.synced && new Date(s.synced).getTime() >= new Date(s.changed).getTime();
+              } catch { fresh = true; /* senza confronto: fidati del feed esistente */ }
+            }
+            if (fresh) {
+              feedId = sp.feed_id;
+              feedSource = "udp";
+            } else {
+              const syncJob = startSyncJob(String(sp.id), psProjectId, userId, req.log);
+              const t0 = Date.now();
+              while (syncJob.status === "running" && Date.now() - t0 < 20_000) {
+                await new Promise(r => setTimeout(r, 500));
+              }
+              if (syncJob.status === "done" && syncJob.result) {
+                feedId = syncJob.result.feedId;
+                feedSource = "udp";
+              } else if (syncJob.status === "error") {
+                res.status(502).json({ error: `Materializzazione dell'UDP fallita: ${syncJob.error}` });
+                return;
+              } else {
+                res.status(409).json({ error: "Materializzazione dell'UDP in corso: rilancia tra ~1 minuto" });
+                return;
+              }
+            }
+          }
+        }
+      } catch (e: any) {
+        req.log.warn({ err: e?.message }, "agent-optimize: risoluzione UDP fallita, provo il feed d'esercizio");
+      }
     }
     if (!feedId && fr.rows?.[0]?.materialized_feed_id) {
       feedId = fr.rows[0].materialized_feed_id;
