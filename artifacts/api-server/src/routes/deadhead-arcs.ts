@@ -20,7 +20,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { depots, gtfsTrips, gtfsStopTimes, gtfsStops, stopClusters, stopClusterStops } from "@workspace/db/schema";
+import { gtfsTrips, gtfsStopTimes, gtfsStops, stopClusters, stopClusterStops } from "@workspace/db/schema";
 import { eq, inArray, and } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -240,16 +240,30 @@ function rowToArc(r: any) {
   };
 }
 
-/* ── GET lista archi ── */
+/* ── GET lista archi ──
+ * Con psProjectId: SOLO gli archi di quel progetto (default) — i globali
+ * dell'archivio storico inquinavano la vista coi depositi di altre reti;
+ * includeGlobal=1 li riaggiunge esplicitamente. Senza psProjectId: tutti. */
 router.get("/deadhead-arcs", asyncHandler(async (req, res) => {
   await ensureTable();
   const psProjectId = String(req.query.psProjectId ?? "");
+  const includeGlobal = String(req.query.includeGlobal ?? "") === "1";
   const rows = UUID_RE.test(psProjectId)
-    // globali + archi di QUEL progetto
-    ? await db.execute<any>(sql`SELECT * FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjectId}::uuid ORDER BY from_type DESC, from_name, to_name`)
+    ? (includeGlobal
+      ? await db.execute<any>(sql`SELECT * FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjectId}::uuid ORDER BY from_type DESC, from_name, to_name`)
+      : await db.execute<any>(sql`SELECT * FROM deadhead_arcs WHERE ps_project_id = ${psProjectId}::uuid ORDER BY from_type DESC, from_name, to_name`))
     : await db.execute<any>(sql`SELECT * FROM deadhead_arcs ORDER BY from_type DESC, from_name, to_name`);
   res.json({ arcs: (rows.rows ?? []).map(rowToArc) });
 }));
+
+/** Depositi dello scope: globali (ps_project_id NULL) + del progetto indicato.
+ * La colonna è additiva fuori dallo schema drizzle → lettura raw. */
+async function loadScopedDepots(psProjectId: string | null): Promise<{ id: string; name: string; lat: number | null; lon: number | null }[]> {
+  const rows = await db.execute<any>(sql`SELECT id, name, lat, lon, ps_project_id FROM depots`);
+  return (rows.rows ?? [])
+    .filter((d: any) => d.ps_project_id == null || (psProjectId != null && d.ps_project_id === psProjectId))
+    .map((d: any) => ({ id: d.id, name: d.name, lat: d.lat != null ? Number(d.lat) : null, lon: d.lon != null ? Number(d.lon) : null }));
+}
 
 /* ── POST genera archi — SOLO coppie ammesse (vedi regola in testa al file) ──
  * Body: { depotIds?: string[] (vuoto = tutti), routeIds?: string[] (vuoto =
@@ -258,14 +272,15 @@ router.get("/deadhead-arcs", asyncHandler(async (req, res) => {
  * clusterIds?: string[] (vuoto = tutti, se includeClusters), replace?: boolean } */
 router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
   await ensureTable();
-  const { depotIds, routeIds, terminalPairsMaxKm, includeClusters, clusterIds, replace } = (req.body ?? {}) as any;
+  const { depotIds, routeIds, terminalPairsMaxKm, includeClusters, clusterIds, replace, replaceScope } = (req.body ?? {}) as any;
   const psProjectId: string | null = UUID_RE.test(String((req.body as any)?.psProjectId ?? ""))
     ? String((req.body as any).psProjectId) : null;
 
   const feedId = await getLatestFeedId(req);
   if (!feedId) { res.status(400).json({ error: "Nessun feed GTFS disponibile" }); return; }
 
-  let depotRows = await db.select().from(depots);
+  // Depositi dello scope (mai quelli di ALTRI progetti), poi la selezione utente
+  let depotRows = await loadScopedDepots(psProjectId);
   if (Array.isArray(depotIds) && depotIds.length > 0) {
     depotRows = depotRows.filter(d => depotIds.includes(d.id));
   }
@@ -303,6 +318,20 @@ router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
   // Rete di sicurezza: la regola delle coppie vale qualunque sia la sorgente
   const allowed = pairs.filter(p => isAllowedPair(p.a, p.b));
 
+  // replaceScope: la generazione SOSTITUISCE l'archivio dello scope invece di
+  // accumularsi — via gli archi generati (anche di selezioni precedenti: è
+  // così che spariscono i depositi non più scelti), CONSERVANDO i curati a
+  // mano (tempi/km personalizzati o percorso disegnato/reindirizzato).
+  let removed = 0;
+  if (replaceScope === true) {
+    const del = await db.execute<any>(sql`
+      DELETE FROM deadhead_arcs
+       WHERE ps_project_id IS NOT DISTINCT FROM ${psProjectId}::uuid
+         AND custom_min IS NULL AND custom_km IS NULL AND source <> 'manual'
+      RETURNING id`);
+    removed = (del.rows ?? []).length;
+  }
+
   // Salta gli archi già presenti NELLO STESSO SCOPE (a meno di replace)
   const existing = await db.execute<any>(sql`SELECT from_key, to_key FROM deadhead_arcs WHERE ps_project_id IS NOT DISTINCT FROM ${psProjectId}::uuid`);
   const have = new Set((existing.rows ?? []).map((r: any) => `${r.from_key}|${r.to_key}`));
@@ -338,6 +367,7 @@ router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
 
   res.json({
     created,
+    removed,
     skippedExisting: allowed.length - todo.length - (truncated ? 0 : 0),
     estimated,
     truncated,
@@ -354,8 +384,10 @@ router.get("/deadhead-arcs/nodes", asyncHandler(async (req, res) => {
   const feedId = await getLatestFeedId(req);
   const routeIdsRaw = String(req.query.routeIds ?? "").trim();
   const routeIds = routeIdsRaw ? routeIdsRaw.split(",").map(s => s.trim()).filter(Boolean) : null;
+  const psQ = String(req.query.psProjectId ?? "");
+  const psProjectId = UUID_RE.test(psQ) ? psQ : null;
 
-  const depotRows = await db.select().from(depots);
+  const depotRows = await loadScopedDepots(psProjectId);
   const depotNodes: ArcNode[] = depotRows
     .filter(d => d.lat != null && d.lon != null)
     .map(d => ({ key: `depot:${d.id}`, type: "depot", name: d.name, lat: d.lat!, lon: d.lon! }));
