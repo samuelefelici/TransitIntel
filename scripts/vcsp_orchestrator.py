@@ -38,6 +38,7 @@ from collections import defaultdict
 import vehicle_scheduler_cpsat as vsp_engine
 import crew_scheduler_v4 as csp_engine
 from optimizer_common import load_input, write_output, log, report_progress
+from vcsp_probe import run_probe_phase
 
 # ── Parametri del feedback (costi-ombra) ────────────────────────────────
 EXCESS_WEIGHT = 0.5          # quota dell'extra-costo guida trasferita in penalità
@@ -158,12 +159,18 @@ def main() -> None:
 
     rounds = max(1, min(MAX_ROUNDS, int(vcsp_cfg.get("rounds") or 3)))
     crew_tl = max(20, min(600, int(vcsp_cfg.get("crewTimeLimit") or 90)))
+    # Sonda di spostamento (cervello passo 2): quante prove di re-solve dopo la
+    # convergenza (0 = disattivata) e budget VSP per ciascuna prova.
+    probes_raw = vcsp_cfg.get("probes")
+    probes = max(0, min(10, int(probes_raw))) if probes_raw is not None else 4
+    probe_vsp_time = max(20, min(300, int(vcsp_cfg.get("probeVspTime") or 60)))
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
         f"trips={len(vsp_payload.get('trips') or [])}, "
         f"reliefTrips={len(trip_cluster_stops)}")
 
     arc_penalties: dict[str, float] = {}
+    penalties_by_round: dict[int, dict[str, float]] = {}   # penalità USATE nel round r
     rounds_kpi: list[dict] = []
     feedback_diag: list[dict] = []
     round_results: list[dict] = []               # per-round: shifts TM + crew (scelta operatore)
@@ -173,6 +180,7 @@ def main() -> None:
         base_pct = int((r - 1) / rounds * 100)
         report_progress("VCSP", base_pct + 2, f"Round {r}/{rounds}: turni macchina (VSP)…")
         vsp_in = dict(vsp_payload)
+        penalties_by_round[r] = dict(arc_penalties)
         if arc_penalties:
             vsp_in["arcPenalties"] = arc_penalties
         vsp_out = vsp_engine.run(vsp_in)
@@ -239,6 +247,49 @@ def main() -> None:
         return
 
     best_vsp, best_crew, best_r = best
+
+    # ── SONDA DI SPOSTAMENTO (cervello passo 2) ──
+    # A convergenza raggiunta: cerca spostamenti di singole corse entro la
+    # flessibilità ±flexMin dichiarata in Planning che fondono blocchi veicolo,
+    # verificandoli con re-solve VSP(+CSP). Il confronto usa le STESSE penalità
+    # d'arco del best round, così i costi sono commensurabili.
+    probe_section: dict | None = None
+    if probes > 0:
+        report_progress("VCSP", 92, f"Sonda di spostamento: fino a {probes} prove…")
+        best_kpi = _round_kpi(best_r, best_vsp, best_crew)
+        probe_res = run_probe_phase(
+            vsp_payload, best_vsp, best_crew, best_kpi,
+            vsp_run=vsp_engine.run, csp_run=csp_engine.run,
+            crew_config=crew_config, crew_time_limit=crew_tl,
+            kpi_fn=lambda v, c: _round_kpi(0, v, c),
+            arc_penalties=penalties_by_round.get(best_r) or None,
+            trip_cluster_stops=trip_cluster_stops or None,
+            max_probes=probes, probe_vsp_time=probe_vsp_time,
+            progress=lambda msg: report_progress("VCSP", 94, msg),
+        )
+        probe_section = probe_res["probe"]
+        if probe_section.get("accepted"):
+            # Lo scenario sonda diventa un round aggiuntivo selezionabile e
+            # salvabile come gli altri; è per costruzione il nuovo best.
+            best_vsp, best_crew = probe_res["vsp"], probe_res["crew"]
+            best_r = len(rounds_kpi) + 1
+            kpi = dict(probe_res["kpi"])
+            kpi["round"] = best_r
+            kpi["probe"] = True
+            rounds_kpi.append(kpi)
+            round_results.append({
+                "round": best_r,
+                "probe": True,
+                "vehicleShifts": best_vsp.get("vehicleShifts", []),
+                "crew": {
+                    "summary": best_crew.get("summary"),
+                    "metrics": best_crew.get("metrics"),
+                    "driverShifts": best_crew.get("driverShifts"),
+                    "handovers": best_crew.get("handovers"),
+                    "clusters": best_crew.get("clusters"),
+                },
+            })
+
     elapsed = time.time() - t0
     log(f"=== VCSP DONE in {elapsed:.0f}s — best round {best_r}/{len(rounds_kpi)}: "
         f"€{rounds_kpi[best_r - 1]['totalCostEur']} totale ===")
@@ -264,6 +315,11 @@ def main() -> None:
         # scelta di scenario, non solo un resoconto.
         "roundResults": round_results,
     }
+    if probe_section is not None:
+        # Sonda: proposte di spostamento (timeShifts) + diagnostica. Gli orari
+        # dello scenario sonda ASSUMONO questi spostamenti: l'operatore li
+        # applica in Planning dalla fucina con un click.
+        output["vcsp"]["probe"] = probe_section
     write_output(output)
 
 

@@ -2263,6 +2263,12 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         vcsp: {
           rounds: Math.max(1, Math.min(10, Number(vcspBody.rounds) || 3)),
           crewTimeLimit: Number(vcspBody.crewTimeLimit) || 90,
+          // Sonda di spostamento (cervello P↔TM↔TG): re-solve a caldo con le
+          // corse spostate entro il flexMin dichiarato in Planning. 0 = off.
+          probes: vcspBody.probes != null
+            ? Math.max(0, Math.min(10, Number(vcspBody.probes) || 0))
+            : 4,
+          probeVspTime: Math.max(20, Math.min(300, Number(vcspBody.probeVspTime) || 60)),
         },
         tripClusterStops,
       });

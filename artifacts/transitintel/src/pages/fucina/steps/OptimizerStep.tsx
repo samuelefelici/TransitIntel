@@ -261,6 +261,10 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [solverIntensity, setSolverIntensity] = useState<"fast" | "normal" | "deep" | "extreme">("normal");
   // VCSP: numero massimo di round VSP→CSP (feedback costi-ombra)
   const [vcspRounds, setVcspRounds] = useState(3);
+  // VCSP: sonda di spostamento (cervello P↔TM↔TG) — dopo la convergenza prova
+  // a spostare singole corse entro il flexMin dichiarato in Planning per
+  // fondere blocchi veicolo; le proposte accettate escono come timeShifts.
+  const [vcspProbe, setVcspProbe] = useState(true);
   // Ultimo algoritmo VSP scelto (per tornare da VCSP → VSP senza perdere la scelta)
   const [prevVspAlgo, setPrevVspAlgo] = useState<"cpsat" | "greedy">("cpsat");
   useEffect(() => { if (solverMode !== "vcsp") setPrevVspAlgo(solverMode); }, [solverMode]);
@@ -427,6 +431,35 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [savedDssId, setSavedDssId] = useState<string | null>(null);
   // VCSP: round scelto DALL'OPERATORE come scenario (null = best automatico)
   const [selectedRound, setSelectedRound] = useState<number | null>(null);
+  // Sonda: esito dell'applicazione in Planning degli spostamenti proposti.
+  // "done" disabilita il pulsante: un secondo click sposterebbe le corse due volte.
+  const [probeApply, setProbeApply] = useState<{ state: "idle" | "busy" | "done" | "error"; msg?: string }>({ state: "idle" });
+
+  const applyProbeShifts = useCallback(async (shifts: Record<string, number>) => {
+    if (!psProjectId) return;
+    setProbeApply({ state: "busy" });
+    let ok = 0; const fails: string[] = [];
+    for (const [tripId, delta] of Object.entries(shifts)) {
+      const d = Math.trunc(Number(delta));
+      if (!d) continue;
+      try {
+        const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${psProjectId}/trips/${tripId}/shift`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deltaMinutes: d }),
+        });
+        if (resp.ok) ok++;
+        else { const j = await resp.json().catch(() => ({} as any)); fails.push(`${tripId.slice(0, 8)}…: ${j.error ?? resp.status}`); }
+      } catch (e: any) { fails.push(`${tripId.slice(0, 8)}…: ${e?.message ?? "errore di rete"}`); }
+    }
+    if (fails.length === 0) {
+      setProbeApply({ state: "done", msg: `${ok} corse spostate in Planning Studio` });
+      toast.success("Spostamenti applicati in Planning", { description: `${ok} corse aggiornate: gli orari del piano ora coincidono con lo scenario sonda.` });
+    } else {
+      setProbeApply({ state: "error", msg: `${ok} applicati · ${fails.length} falliti — ${fails.join(" · ")}` });
+      toast.error("Applicazione parziale", { description: fails.slice(0, 3).join(" · ") });
+    }
+  }, [psProjectId]);
 
   // VCSP: secondi dedicati al CSP (turni guida) in ogni round
   const [crewTimeLimit, setCrewTimeLimit] = useState(90);
@@ -495,7 +528,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         name, scope: "company", domain: algoDomain, serviceType,
         config: {
           solverMode, solverIntensity, serviceType, robustness, normativa, vspConfig,
-          ...(pipelineMode === "vcsp" ? { vcspRounds, crewTimeLimit, crewConfig } : {}),
+          ...(pipelineMode === "vcsp" ? { vcspRounds, crewTimeLimit, crewConfig, vcspProbe } : {}),
         },
       });
       setAlgoPresets((prev) => [...prev, created]);
@@ -506,7 +539,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setAlgoSaving(false);
     }
-  }, [algoName, algoDomain, serviceType, solverMode, solverIntensity, robustness, normativa, vspConfig, pipelineMode, vcspRounds, crewTimeLimit, crewConfig]);
+  }, [algoName, algoDomain, serviceType, solverMode, solverIntensity, robustness, normativa, vspConfig, pipelineMode, vcspRounds, crewTimeLimit, crewConfig, vcspProbe]);
 
   const applyAlgoPreset = useCallback((p: RuleProfile) => {
     const c = p.config ?? {};
@@ -514,6 +547,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     if (c.solverIntensity) setSolverIntensity(c.solverIntensity);
     if (c.robustness === "off" || c.robustness === "media" || c.robustness === "alta") setRobustness(c.robustness);
     if (typeof c.vcspRounds === "number") setVcspRounds(c.vcspRounds);
+    if (typeof c.vcspProbe === "boolean") setVcspProbe(c.vcspProbe);
     if (typeof c.crewTimeLimit === "number") setCrewTimeLimit(c.crewTimeLimit);
     if (c.crewConfig && typeof c.crewConfig === "object") { setCrewConfig(c.crewConfig); setCrewCfgTouched(true); }
     if (c.normativa && typeof c.normativa === "object") setNormativa(c.normativa);
@@ -549,6 +583,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     setResult(null);
     setSavedScenarioId(null);
     setSolverMetrics(null);
+    setProbeApply({ state: "idle" });
     try {
       const base = getApiBase();
       const endpoint = solverMode === "vcsp"
@@ -593,8 +628,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                                : 180;
         bodyPayload.solverIntensity = solverIntensity;
         if (solverMode === "vcsp") {
-          // VCSP: budget per round — il VSP usa timeLimit/round, il CSP ha il suo
-          bodyPayload.vcsp = { rounds: vcspRounds, crewTimeLimit };
+          // VCSP: budget per round — il VSP usa timeLimit/round, il CSP ha il suo.
+          // probes = sonda di spostamento (0 = disattivata dall'operatore).
+          bodyPayload.vcsp = { rounds: vcspRounds, crewTimeLimit, probes: vcspProbe ? 4 : 0 };
           // Parità col CSP standalone: TUTTI i parametri turni guida
           // (BDS, costi, scalini, vincoli…) viaggiano nel giro integrato.
           bodyPayload.crewConfig = { ...crewConfig, bds: { ...(crewConfig as any).bds, serviceType } };
@@ -647,7 +683,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setRunning(false);
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, crewTimeLimit, crewConfig, projectId, robustness, normativa]);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, vcspProbe, crewTimeLimit, crewConfig, projectId, robustness, normativa]);
 
   /** Result con i TURNI MACCHINA del round scelto (VCSP): tutto ciò che esce
    *  da questo step — salvataggio E area di lavoro — usa QUESTO, così lo
@@ -1420,6 +1456,20 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <span className="text-[10px] text-muted-foreground/70">si ferma prima se non migliora</span>
                   </div>
                   <div className="flex items-center gap-3 pt-1 flex-wrap">
+                    <span className="text-[11px] text-muted-foreground">🧠 Sonda di spostamento:
+                      <HelpTip testo={"Il cervello Pianificazione↔Turni: a convergenza raggiunta prova a SPOSTARE singole corse (solo entro la flessibilità ±N′ dichiarata in Planning, Ispettore → linea → Flessibilità oraria) per fondere due blocchi veicolo. Ogni ipotesi viene riverificata con un re-solve completo mezzi+guida e tenuta solo se il costo TOTALE scende. Gli spostamenti escono come PROPOSTE da applicare in Planning con un click — non viene toccato nulla da solo."} className="ml-1" />
+                    </span>
+                    {([[true, "Attiva"], [false, "Off"]] as const).map(([val, label]) => (
+                      <button key={label} onClick={() => setVcspProbe(val)}
+                        className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition-all ${vcspProbe === val ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-300" : "border-border/30 text-muted-foreground hover:text-foreground"}`}>
+                        {label}
+                      </button>
+                    ))}
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {vcspProbe ? "corse ±N′ (flex di Planning) per togliere vetture — proposte, mai automatiche" : "nessuna prova di spostamento"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 pt-1 flex-wrap">
                     <span className="text-[11px] text-muted-foreground">🛡️ Robustezza ai ritardi:
                       <HelpTip testo={"Aggiunge un margine tra una corsa e la successiva calcolato dai ritardi REALI della tua rete (30 giorni di traffico TomTom, ora per ora). Media = margine prudente, Alta = margine largo. Costa qualche veicolo/turno in più ma il piano regge i ritardi veri."} className="ml-1" />
                     </span>
@@ -1557,7 +1607,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     {solverMetrics?.totalSolveTimeSec && ` · ${solverMetrics.totalSolveTimeSec}s`}
                   </p>
                 </div>
-                <button onClick={() => { setResult(null); setError(null); setSolverMetrics(null); setSavedScenarioId(null); setSavedDssId(null); setSelectedRound(null); }}
+                <button onClick={() => { setResult(null); setError(null); setSolverMetrics(null); setSavedScenarioId(null); setSavedDssId(null); setSelectedRound(null); setProbeApply({ state: "idle" }); }}
                   className="flex items-center gap-1.5 text-[11px] text-amber-300 px-3 py-1.5 rounded-lg border border-amber-500/30 bg-amber-500/8 hover:bg-amber-500/15 transition-all">
                   <RefreshCw className="w-3.5 h-3.5" /> Ri-ottimizza
                 </button>
@@ -1607,7 +1657,9 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                               className={`border-b border-border/15 cursor-pointer transition-colors hover:bg-cyan-500/10 ${
                                 r.round === activeRound ? "bg-cyan-500/20 ring-1 ring-cyan-400/50" : ""
                               } ${r.round === bestR ? "font-semibold text-cyan-200" : "text-foreground/85"}`}>
-                              <td className="py-1.5 pr-2">#{r.round}{r.round === bestR && " ★"}{r.round === activeRound && " ✓"}</td>
+                              <td className="py-1.5 pr-2" title={r.probe ? "Scenario della sonda di spostamento: assume le corse spostate proposte qui sotto" : undefined}>
+                                #{r.round}{r.probe && " 🧠"}{r.round === bestR && " ★"}{r.round === activeRound && " ✓"}
+                              </td>
                               <td className="text-right px-2">{r.vehicles}</td>
                               <td className="text-right px-2">€{(r.vehicleCostEur ?? 0).toLocaleString("it-IT")}</td>
                               <td className="text-right px-2">{r.duties}</td>
@@ -1659,6 +1711,71 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         Feedback costi-ombra: {v.feedback.map((f: any) => `round ${f.afterRound}: ${f.blocksPenalized} blocchi → ${f.arcsPenalized} archi penalizzati`).join(" · ")}
                       </p>
                     )}
+
+                    {/* ── SONDA DI SPOSTAMENTO: proposte del cervello P↔TM↔TG ── */}
+                    {v.probe && (() => {
+                      const p = v.probe;
+                      const accepted: any[] = p.accepted ?? [];
+                      const timeShifts: Record<string, number> = p.timeShifts ?? {};
+                      const nShifts = Object.values(timeShifts).filter((d) => d).length;
+                      if (accepted.length === 0) {
+                        return (
+                          <p className="text-[10px] text-muted-foreground/70">
+                            🧠 Sonda di spostamento: {p.flexTrips === 0
+                              ? "nessuna corsa con flessibilità dichiarata — imposta ±N′ sulle linee tolleranti in Planning (Ispettore → linea → Flessibilità oraria) e la sonda potrà lavorare"
+                              : `${p.probesRun ?? 0} prove su ${p.candidates ?? 0} candidati: nessuno spostamento riduce il costo totale mezzi+guida`}.
+                          </p>
+                        );
+                      }
+                      return (
+                        <div className="pt-2 border-t border-cyan-500/20 space-y-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs font-bold text-cyan-300">🧠 Spostamenti proposti dal cervello</span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
+                              {nShifts} cors{nShifts === 1 ? "a" : "e"} · {accepted.length} fusion{accepted.length === 1 ? "e" : "i"}
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {accepted.map((a: any, i: number) => (
+                              <div key={i} className="text-[11px] bg-background/40 border border-cyan-500/20 rounded-lg px-3 py-2 space-y-0.5">
+                                {(a.shifts ?? []).map((s: any, k: number) => (
+                                  <p key={k} className="text-foreground/90">
+                                    Linea <b className="text-cyan-300">{s.routeName}</b>
+                                    {s.variantCode ? <span className="text-muted-foreground"> ({s.variantCode})</span> : null}
+                                    {" "}· corsa delle <span className="font-mono">{s.from}</span> → <span className="font-mono font-bold text-cyan-200">{s.to}</span>
+                                    {" "}<b className={s.deltaMin > 0 ? "text-amber-300" : "text-sky-300"}>({s.deltaMin > 0 ? "+" : ""}{s.deltaMin}′)</b>
+                                  </p>
+                                ))}
+                                <p className="text-[10px] text-muted-foreground">
+                                  fonde i blocchi {a.mergedBlocks?.join(" + ")} → <b className="text-emerald-300">
+                                  {a.before?.vehicles != null && a.after?.vehicles != null && a.before.vehicles !== a.after.vehicles
+                                    ? `−${a.before.vehicles - a.after.vehicles} vettur${a.before.vehicles - a.after.vehicles === 1 ? "a" : "e"}, `
+                                    : ""}
+                                  −€{Math.round((a.before?.totalCostEur ?? 0) - (a.after?.totalCostEur ?? 0)).toLocaleString("it-IT")}/giorno</b>
+                                  {a.before?.duties != null && a.after?.duties != null && a.before.duties !== a.after.duties
+                                    ? ` · turni guida ${a.before.duties}→${a.after.duties}` : ""}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={() => applyProbeShifts(timeShifts)}
+                              disabled={!psProjectId || probeApply.state === "busy" || probeApply.state === "done"}
+                              title={!psProjectId ? "Serve il progetto Planning Studio collegato (l'UDP deve nascere da un progetto PS)" : undefined}
+                              className="px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-all bg-cyan-500/15 border-cyan-500/50 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed">
+                              {probeApply.state === "busy" ? "Applico…" : probeApply.state === "done" ? "✓ Applicati in Planning" : `Applica in Planning (${nShifts} spostament${nShifts === 1 ? "o" : "i"})`}
+                            </button>
+                            <span className="text-[10px] text-muted-foreground">
+                              lo scenario 🧠 assume QUESTI orari: applicali per renderli reali in Planning (un click solo — il doppio click è bloccato)
+                            </span>
+                          </div>
+                          {probeApply.msg && (
+                            <p className={`text-[10px] font-semibold ${probeApply.state === "error" ? "text-rose-300" : "text-emerald-300"}`}>{probeApply.msg}</p>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* ── TURNI MACCHINA del round selezionato: gantt read-only ── */}
                     {tmShifts.length > 0 && (() => {
