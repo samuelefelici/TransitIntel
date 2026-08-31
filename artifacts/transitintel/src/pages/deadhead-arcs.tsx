@@ -140,12 +140,24 @@ export default function DeadheadArcsPage() {
       const list = (Array.isArray(d) ? d : d?.data ?? d?.projects ?? []).map((x: any) => ({ id: x.id, name: x.name ?? x.id }));
       setPsList(list);
     }).catch(() => { /* Planner Studio assente: selettore nascosto */ });
-    fetch(`${base}/api/clusters`).then(r => (r.ok ? r.json() : null)).then((d: any) => {
-      const list = (d?.data ?? []).filter((c: any) => (c.stops ?? []).length > 0)
-        .map((c: any) => ({ id: c.id, name: c.name }));
-      setClustersList(list);
-    }).catch(() => { /* cluster assenti: sezione nascosta */ });
   }, [base]);
+
+  /* nodi ammessi (depositi, capolinea, cluster) DELLA RETE SCELTA: alimenta
+   * sia i candidati del disegno sia la lista cluster della generazione —
+   * i cluster di altre reti (fermate fuori dal feed) non compaiono */
+  useEffect(() => {
+    if (!genFeedId) return;
+    setDrawLoadingNodes(true);
+    fetch(`${base}/api/deadhead-arcs/nodes?feedId=${encodeURIComponent(genFeedId)}`)
+      .then(r => (r.ok ? r.json() : Promise.reject()))
+      .then((d: any) => {
+        setDrawNodes([...(d.depots ?? []), ...(d.terminals ?? []), ...(d.clusters ?? [])]);
+        setClustersList((d.clusters ?? []).map((n: any) => ({ id: String(n.key).replace(/^cluster:/, ""), name: n.name })));
+        setGenClusterIds(new Set());
+      })
+      .catch(() => { /* nodi non disponibili: disegno e sezione cluster restano vuoti */ })
+      .finally(() => setDrawLoadingNodes(false));
+  }, [base, genFeedId]);
 
   /* linee del feed scelto (per il filtro linee della generazione) */
   useEffect(() => {
@@ -217,15 +229,12 @@ export default function DeadheadArcsPage() {
   const enterDraw = useCallback(() => {
     setDrawMode(true); setDrawFrom(null); setDrawTo(null); setDrawVia([]);
     setSelectedId(null); setEditingPath(false);
-    if (drawNodes.length === 0) {
-      setDrawLoadingNodes(true);
-      fetch(`${base}/api/deadhead-arcs/nodes${genFeedId ? `?feedId=${encodeURIComponent(genFeedId)}` : ""}`)
-        .then(r => (r.ok ? r.json() : Promise.reject()))
-        .then((d: any) => setDrawNodes([...(d.depots ?? []), ...(d.terminals ?? []), ...(d.clusters ?? [])]))
-        .catch(() => toast.error("Impossibile caricare i nodi ammessi (depositi, capolinea, cluster)"))
-        .finally(() => setDrawLoadingNodes(false));
+    // I nodi ammessi arrivano dall'effetto legato alla rete (genFeedId):
+    // qui basta avvisare se la rete non ne ha prodotti.
+    if (!drawLoadingNodes && drawNodes.length === 0) {
+      toast.error("Nessun nodo per questa rete", { description: "Scegli la rete (feed) nel dialog di generazione: depositi, capolinea e cluster arrivano da lì" });
     }
-  }, [base, drawNodes.length, genFeedId]);
+  }, [drawLoadingNodes, drawNodes.length]);
 
   const exitDraw = useCallback(() => {
     setDrawMode(false); setDrawFrom(null); setDrawTo(null); setDrawVia([]);
