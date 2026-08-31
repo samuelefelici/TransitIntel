@@ -195,6 +195,25 @@ export async function materializePsToFeed(
     maxEnd = `${next.getFullYear()}${String(next.getMonth() + 1).padStart(2, "0")}${String(next.getDate()).padStart(2, "0")}`;
   }
 
+  /* ── VALIDITÀ EFFETTIVA: la finestra NON si clampa ai ps_calendars ──
+   * Le corse "a sola matrice" (calendario legacy staccato) valgono in TUTTE
+   * le date del loro giorno-tipo: legare la finestra all'intervallo dei
+   * calendari stagionali le faceva morire alla scadenza del programma
+   * importato (es. calendari fino al 13/09 → un festivo annuale spariva dal
+   * 20/09 in poi, mentre matrice/UDP/stampe lo davano attivo). Con la
+   * validità effettiva la finestra copre almeno oggi → oggi+1 anno; il cap
+   * ~2 anni del compute (più sotto) resta la protezione sul volume. */
+  const useEffectiveValidity = await projectHasTripValidity(psProjectId);
+  if (useEffectiveValidity) {
+    const today = new Date();
+    const todayYmd = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+    const next = new Date();
+    next.setFullYear(next.getFullYear() + 1);
+    const horizonYmd = `${next.getFullYear()}${String(next.getMonth() + 1).padStart(2, "0")}${String(next.getDate()).padStart(2, "0")}`;
+    if (minStart > todayYmd) minStart = todayYmd;
+    if (maxEnd < horizonYmd) maxEnd = horizonYmd;
+  }
+
   /* ── 3. Crea gtfs_feeds row (con counter aggregati) ─────────── */
   const label = `PS · ${project.name}`;
   const filename = `ps-${psProjectId.slice(0, 8)}.synthetic`;
@@ -228,8 +247,8 @@ export async function materializePsToFeed(
    * giorni di servizio del feed coincidono con matrice/UDP/stampe.
    * Vincolo "no-mix" dei consumatori del feed (buildServiceDayMap ecc.):
    * o TUTTO settimanale (legacy, ramo else più sotto) o TUTTO calendar_dates
-   * con gtfs_calendar a zero righe — mai un misto. La scelta è per-feed. */
-  const useEffectiveValidity = await projectHasTripValidity(psProjectId);
+   * con gtfs_calendar a zero righe — mai un misto. La scelta è per-feed.
+   * (useEffectiveValidity è calcolato sopra, dove allarga la finestra date.) */
   let effectiveTripSvc: Map<string, string> | null = null;
   if (useEffectiveValidity) {
     const isoFrom = ymdToIso(minStart);
