@@ -72,6 +72,9 @@ export default function DeadheadArcsPage() {
   const [routesList, setRoutesList] = useState<{ routeId: string; shortName: string }[]>([]);
   const [genRouteIds, setGenRouteIds] = useState<Set<string>>(new Set());
   const [genTTKm, setGenTTKm] = useState<number>(0);
+  /* sostituisci l'archivio dello scope: via gli archi generati in passato
+   * (conserva i curati a mano) — è quello che fa sparire i depositi non scelti */
+  const [genReplaceScope, setGenReplaceScope] = useState(true);
   /* Rete su cui generare: SELETTORE ESPLICITO del feed (in Planner Studio il
    * "feed più recente" del tenant può essere un'altra rete → generazione vuota). */
   const [feedsList, setFeedsList] = useState<{ id: string; label: string }[]>([]);
@@ -111,21 +114,30 @@ export default function DeadheadArcsPage() {
 
   const selected = useMemo(() => arcs.find(a => a.id === selectedId) ?? null, [arcs, selectedId]);
 
+  /* In uno scope di progetto la vista mostra SOLO gli archi del progetto:
+   * i globali dell'archivio storico (tutti i depositi, tutte le reti) si
+   * riaggiungono con l'interruttore. */
+  const [showGlobal, setShowGlobal] = useState(false);
   const refresh = useCallback(() => {
     setLoading(true);
-    fetch(`${base}/api/deadhead-arcs${psScope ? `?psProjectId=${psScope}` : ""}`)
+    const qs = psScope ? `?psProjectId=${psScope}${showGlobal ? "&includeGlobal=1" : ""}` : "";
+    fetch(`${base}/api/deadhead-arcs${qs}`)
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => setArcs(d.arcs ?? []))
       .catch(() => toast.error("Impossibile caricare gli archi"))
       .finally(() => setLoading(false));
-  }, [base, psScope]);
+  }, [base, psScope, showGlobal]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  /* depositi dello scope (globali + del progetto): niente depositi di altri progetti */
   useEffect(() => {
-    fetch(`${base}/api/depots`).then(r => r.json()).then((d: any) => {
+    fetch(`${base}/api/depots${psScope ? `?psProjectId=${psScope}` : ""}`).then(r => r.json()).then((d: any) => {
       const list = Array.isArray(d) ? d : d?.data ?? [];
       setDepotsList(list.map((x: any) => ({ id: x.id, name: x.name })));
+      setGenDepotIds(new Set());
     }).catch(() => { /* opzionale */ });
+  }, [base, psScope]);
+  useEffect(() => {
     fetch(`${base}/api/gtfs/feeds`).then(r => r.json()).then((d: any) => {
       const list = (Array.isArray(d) ? d : d?.data ?? []).map((f: any) => ({
         id: f.id, label: f.agencyName || f.filename || f.id,
@@ -148,7 +160,7 @@ export default function DeadheadArcsPage() {
   useEffect(() => {
     if (!genFeedId) return;
     setDrawLoadingNodes(true);
-    fetch(`${base}/api/deadhead-arcs/nodes?feedId=${encodeURIComponent(genFeedId)}`)
+    fetch(`${base}/api/deadhead-arcs/nodes?feedId=${encodeURIComponent(genFeedId)}${psScope ? `&psProjectId=${psScope}` : ""}`)
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then((d: any) => {
         setDrawNodes([...(d.depots ?? []), ...(d.terminals ?? []), ...(d.clusters ?? [])]);
@@ -157,7 +169,7 @@ export default function DeadheadArcsPage() {
       })
       .catch(() => { /* nodi non disponibili: disegno e sezione cluster restano vuoti */ })
       .finally(() => setDrawLoadingNodes(false));
-  }, [base, genFeedId]);
+  }, [base, genFeedId, psScope]);
 
   /* linee del feed scelto (per il filtro linee della generazione) */
   useEffect(() => {
@@ -206,6 +218,7 @@ export default function DeadheadArcsPage() {
         terminalPairsMaxKm: genTTKm || 0,
         includeClusters: genIncludeClusters,
         clusterIds: [...genClusterIds],
+        replaceScope: genReplaceScope,
         psProjectId: psScope || undefined,
       }),
     })
@@ -215,6 +228,7 @@ export default function DeadheadArcsPage() {
         toast.success(`${d.created} archi generati`, {
           description: `${d.depots} depositi × ${d.terminals} capolinea` +
             (d.clusters ? ` + ${d.clusters} cluster` : "") +
+            (d.removed ? ` · ${d.removed} archi precedenti sostituiti` : "") +
             (d.estimated ? ` · ${d.estimated} stimati (OSRM non raggiungibile)` : "") +
             (d.truncated ? " · troncato al limite per run: rilancia per continuare" : ""),
         });
@@ -223,7 +237,7 @@ export default function DeadheadArcsPage() {
       })
       .catch(() => toast.error("Errore nella generazione"))
       .finally(() => setGenerating(false));
-  }, [base, genDepotIds, genRouteIds, genTTKm, genIncludeClusters, genClusterIds, genFeedId, psScope, refresh]);
+  }, [base, genDepotIds, genRouteIds, genTTKm, genIncludeClusters, genClusterIds, genReplaceScope, genFeedId, psScope, refresh]);
 
   /* ── disegno manuale ── */
   const enterDraw = useCallback(() => {
@@ -667,6 +681,14 @@ export default function DeadheadArcsPage() {
                   {psList.map(pp => <option key={pp.id} value={pp.id}>{pp.name}</option>)}
                 </select>
               )}
+              {psScope && (
+                <label className="flex items-center gap-1 text-[10px] text-muted-foreground cursor-pointer shrink-0"
+                  title="La vista di progetto mostra solo gli archi del progetto: spunta per vedere anche l'archivio globale (tutte le reti)">
+                  <input type="checkbox" checked={showGlobal} onChange={e => { setShowGlobal(e.target.checked); setSelectedId(null); }}
+                    className="accent-amber-500" />
+                  anche globali
+                </label>
+              )}
               <input value={filter} onChange={e => setFilter(e.target.value)} placeholder={`Cerca tra ${arcs.length} archi…`}
                 className="w-full bg-background/60 border border-border/40 rounded-lg pl-7 pr-2 py-1.5 text-xs focus:outline-none focus:border-amber-500/50" />
             </div>
@@ -780,6 +802,15 @@ export default function DeadheadArcsPage() {
                 className="w-14 bg-background/60 border border-border/40 rounded px-1.5 py-1 text-[11px]" />
               <span className="text-[10px] text-muted-foreground">km (0 = no)</span>
             </div>
+            <label className="flex items-start gap-1.5 text-[10px] text-muted-foreground cursor-pointer">
+              <input type="checkbox" checked={genReplaceScope}
+                onChange={e => setGenReplaceScope(e.target.checked)} className="accent-amber-500 mt-0.5" />
+              <span>
+                <b>Sostituisci gli archi generati{psScope ? " di questo progetto" : ""}</b>: via quelli delle
+                generazioni precedenti (anche di depositi/linee non più selezionati). I fuorilinea curati a
+                mano — tempi/km personalizzati o percorsi disegnati — vengono SEMPRE conservati.
+              </span>
+            </label>
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={() => setGenOpen(false)} disabled={generating}
                 className="text-xs px-3 py-1.5 rounded-lg border border-border/40 text-muted-foreground hover:text-foreground">Annulla</button>
