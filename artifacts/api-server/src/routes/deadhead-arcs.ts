@@ -33,6 +33,8 @@ const MAX_ARCS_PER_RUN = 600;          // tetto per una singola generazione
 const OSRM_CONCURRENCY = 5;
 const FALLBACK_SPEED_KMH = 22;         // per la stima haversine se OSRM non risponde
 const FALLBACK_CIRCUITY = 1.35;
+const MAX_VIA_OSRM = 12;               // punti di passaggio per il ricalcolo OSRM
+const MAX_VIA_LIBERO = 30;             // punti del tratto LIBERO (la spezzata E' il percorso)
 
 /* ── Tabella additiva (pattern roster.ts: lazy bootstrap idempotente) ── */
 let bootstrapped = false;
@@ -120,6 +122,24 @@ async function routeOrEstimate(points: [number, number][]): Promise<{ geometry: 
     km,
     min: Math.round((km / FALLBACK_SPEED_KMH) * 60 * 10) / 10,
     source: "stima",
+  };
+}
+
+/** Tratto LIBERO: la spezzata disegnata E' il percorso — niente OSRM, per
+ * forzare il passaggio dove il router non vuole andare (ZTL, aree interne,
+ * viabilità che non conosce). Km = lunghezza della spezzata; tempo stimato
+ * alla velocità di fallback, da rifinire con l'override se serve. */
+function freehandPath(points: [number, number][]): { geometry: any; km: number; min: number; source: string } {
+  let km = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    km += haversineKm(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1]);
+  }
+  km = Math.round(km * 10) / 10;
+  return {
+    geometry: { type: "LineString", coordinates: points.map(([lat, lon]) => [lon, lat]) },
+    km,
+    min: Math.round((km / FALLBACK_SPEED_KMH) * 60 * 10) / 10,
+    source: "manual",
   };
 }
 
@@ -416,10 +436,11 @@ router.post("/deadhead-arcs", asyncHandler(async (req, res) => {
   if (!from || !to) { res.status(400).json({ error: "from/to non validi: servono key, type (depot|terminus|cluster), lat, lon" }); return; }
   if (!isAllowedPair(from, to)) { res.status(400).json({ error: PAIR_RULE_MSG }); return; }
   const psProjectId: string | null = UUID_RE.test(String(raw.psProjectId ?? "")) ? String(raw.psProjectId) : null;
+  const freehand = raw.freehand === true;
   const via: [number, number][] = Array.isArray(raw.viaPoints)
     ? raw.viaPoints
         .filter((p: any) => Array.isArray(p) && Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1])))
-        .slice(0, 8)
+        .slice(0, freehand ? MAX_VIA_LIBERO : MAX_VIA_OSRM)
         .map((p: any) => [Number(p[0]), Number(p[1])] as [number, number])
     : [];
 
@@ -432,7 +453,9 @@ router.post("/deadhead-arcs", asyncHandler(async (req, res) => {
     return;
   }
 
-  const r = await routeOrEstimate([[from.lat, from.lon], ...via, [to.lat, to.lon]]);
+  const r = freehand
+    ? freehandPath([[from.lat, from.lon], ...via, [to.lat, to.lon]])
+    : await routeOrEstimate([[from.lat, from.lon], ...via, [to.lat, to.lon]]);
   const ins = await db.execute<any>(sql`
     INSERT INTO deadhead_arcs (from_key, from_type, from_name, from_lat, from_lon,
                                to_key, to_type, to_name, to_lat, to_lon,
@@ -470,14 +493,18 @@ router.patch("/deadhead-arcs/:id", asyncHandler(async (req, res) => {
 }));
 
 /* ── POST reroute: ricalcola il percorso passando dai via points ──
- * Body: { viaPoints: [[lat,lon], ...] } — vuoto = reset al percorso diretto. */
+ * Body: { viaPoints: [[lat,lon], ...], freehand?: boolean } — viaPoints
+ * vuoto = reset al percorso diretto; freehand=true = tratto LIBERO (la
+ * spezzata disegnata E' il percorso, senza OSRM: forza il passaggio dove
+ * il router non vuole andare). */
 router.post("/deadhead-arcs/:id/reroute", asyncHandler(async (req, res) => {
   await ensureTable();
   const raw = (req.body ?? {}) as any;
+  const freehand = raw.freehand === true;
   const via: [number, number][] = Array.isArray(raw.viaPoints)
     ? raw.viaPoints
         .filter((p: any) => Array.isArray(p) && Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1])))
-        .slice(0, 8)
+        .slice(0, freehand ? MAX_VIA_LIBERO : MAX_VIA_OSRM)
         .map((p: any) => [Number(p[0]), Number(p[1])] as [number, number])
     : [];
   const rows = await db.execute<any>(sql`SELECT * FROM deadhead_arcs WHERE id = ${req.params.id as string}::uuid`);
@@ -489,8 +516,8 @@ router.post("/deadhead-arcs/:id/reroute", asyncHandler(async (req, res) => {
     ...via,
     [Number(arc.to_lat), Number(arc.to_lon)],
   ];
-  const r = await routeOrEstimate(points);
-  const source = via.length ? "manual" : r.source;
+  const r = freehand ? freehandPath(points) : await routeOrEstimate(points);
+  const source = freehand || via.length ? "manual" : r.source;
   const upd = await db.execute<any>(sql`
     UPDATE deadhead_arcs
        SET geometry = ${JSON.stringify(r.geometry)}::jsonb,
