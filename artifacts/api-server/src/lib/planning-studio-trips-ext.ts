@@ -34,6 +34,13 @@ function sanitizeAttrMerge(input: any): Record<string, any> | null {
   // lo step successivo in attesa di essere moltiplicato a cadenza.
   if ("prototypeReady" in input) out.prototypeReady = !!input.prototypeReady;
   if ("onDemand" in input) out.onDemand = !!input.onDemand;
+  // flexMin: tolleranza di spostamento della corsa per il cervello
+  // Pianificazione<->TM<->TG — minuti (0..30) che l'ottimizzatore integrato
+  // può usare per proporre traslazioni. 0 = corsa inchiodata (default).
+  if ("flexMin" in input) {
+    const v = Math.round(Number(input.flexMin));
+    out.flexMin = Number.isFinite(v) ? Math.max(0, Math.min(30, v)) : 0;
+  }
   if ("weekdays" in input && Array.isArray(input.weekdays) && input.weekdays.length === 7) {
     out.weekdays = input.weekdays.map((x: any) => x !== false);
   }

@@ -503,6 +503,12 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
           current={(r.attributes as any)?.vehicleTypes ?? null} />
       </Section>
 
+      {/* Flessibilità oraria: quanto l'ottimizzatore integrato può spostare le corse */}
+      <Section title="Flessibilità oraria" icon={<Activity className="w-3.5 h-3.5" />}>
+        <FlexEditor projectId={projectId} routeId={routeId}
+          current={Number((r.attributes as any)?.flexMin) || 0} />
+      </Section>
+
       {/* Validità */}
       <Section title="Validità" icon={<CalendarIcon className="w-3.5 h-3.5" />}>
         <div className="text-xs text-slate-300">
@@ -985,6 +991,53 @@ function VehicleTypesEditor({ projectId, routeId, current }: {
         {current
           ? "La preferita (★) è il default del run di scheduling; le ammesse sono il vincolo di sagoma."
           : "Nessuna dichiarazione: lo scheduling userà il default (12 m)."}
+      </p>
+    </div>
+  );
+}
+
+/* ─── Editor flessibilità oraria (cervello Pianificazione↔TM↔TG) ───
+ * ±N minuti che l'ottimizzatore integrato può usare per proporre traslazioni
+ * delle corse di questa linea quando fondono turni macchina o sanano turni
+ * guida. 0 = inchiodata: giusto per dorsali cadenzate e corse con coincidenze
+ * curate. L'override per singola corsa si dà via agente (attributes.flexMin). */
+function FlexEditor({ projectId, routeId, current }: {
+  projectId: string; routeId: string; current: number;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const save = async (v: number) => {
+    setSaving(true);
+    try {
+      await updatePsRoute(projectId, routeId, { flexMin: v } as any);
+      toast.success(v > 0 ? `Flessibilità ±${v}′ dichiarata` : "Linea inchiodata (flessibilità rimossa)", {
+        description: v > 0 ? "l'ottimizzatore integrato potrà proporre spostamenti entro questa finestra" : undefined,
+      });
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "route-detail", routeId] });
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "routes"] });
+    } catch (e: any) {
+      toast.error("Errore nel salvataggio", { description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {[0, 5, 10, 15, 20, 30].map(v => (
+          <button key={v} disabled={saving} onClick={() => save(v)}
+            className={`px-2 py-0.5 rounded-full border text-[11px] disabled:opacity-50 ${
+              current === v
+                ? v === 0 ? "border-slate-500 bg-slate-600/30 text-slate-200" : "border-emerald-500/60 bg-emerald-500/10 text-emerald-300"
+                : "border-slate-700 text-slate-500 hover:text-slate-300"}`}>
+            {v === 0 ? "Inchiodata" : `±${v}′`}
+          </button>
+        ))}
+      </div>
+      <p className="text-[10px] text-slate-500">
+        {current > 0
+          ? `L'ottimizzatore integrato (TM+TG) può proporre spostamenti fino a ±${current}′ sulle corse di questa linea.`
+          : "Corse inchiodate: nessuno spostamento proposto dall'ottimizzatore. Consiglio: lascia a 0 le dorsali cadenzate e le corse con coincidenze."}
       </p>
     </div>
   );
