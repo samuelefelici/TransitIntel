@@ -2653,6 +2653,27 @@ router.post("/service-program/agent-optimize", async (req, res) => {
                 const s = st.rows?.[0] ?? {};
                 fresh = !!s.synced && new Date(s.synced).getTime() >= new Date(s.changed).getTime();
               } catch { fresh = true; /* senza confronto: fidati del feed esistente */ }
+              // Un feed "fresco" per timestamp ma i cui calendari NON coprono
+              // la data richiesta è comunque da rifare: coprirebbe il caso del
+              // feed materializzato con la finestra date vecchia (clampata ai
+              // calendari stagionali) — meglio una ri-materializzazione in più
+              // che un giro morto con "nessuna corsa attiva".
+              if (fresh) {
+                try {
+                  const dYmd = rawDate.replace(/-/g, "");
+                  const cov = await db.execute<any>(sql`
+                    SELECT EXISTS(SELECT 1 FROM gtfs_calendar_dates
+                                   WHERE feed_id = ${sp.feed_id}::uuid AND date = ${dYmd}
+                                     AND COALESCE(exception_type, 1) = 1)
+                        OR EXISTS(SELECT 1 FROM gtfs_calendar
+                                   WHERE feed_id = ${sp.feed_id}::uuid
+                                     AND start_date <= ${dYmd} AND end_date >= ${dYmd}) AS covered`);
+                  if (!cov.rows?.[0]?.covered) {
+                    fresh = false;
+                    req.log.info(`agent-optimize: feed UDP fresco ma senza servizio il ${dYmd} → ri-materializzo`);
+                  }
+                } catch { /* verifica impossibile: tieni il feed */ }
+              }
             }
             if (fresh) {
               feedId = sp.feed_id;
