@@ -26,6 +26,17 @@ import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
 interface ArcNode { key: string; type: string; name: string; lat: number; lon: number }
+
+/* Regola delle coppie ammesse — speculare al backend (deadhead-arcs.ts):
+ * deposito↔capolinea · capolinea↔capolinea · cluster↔capolinea · cluster↔deposito */
+const ALLOWED_PAIRS = new Set([
+  "depot|terminus", "terminus|depot", "terminus|terminus",
+  "cluster|terminus", "terminus|cluster", "cluster|depot", "depot|cluster",
+]);
+const PAIR_RULE =
+  "I fuorilinea si creano solo tra deposito↔capolinea, capolinea↔capolinea, cluster↔capolinea e cluster↔deposito";
+
+const NODE_LABEL: Record<string, string> = { depot: "Deposito", terminus: "Capolinea", cluster: "Cluster" };
 interface Arc {
   id: string;
   from: ArcNode;
@@ -75,6 +86,21 @@ export default function DeadheadArcsPage() {
   const [psScopeSel, setPsScopeSel] = useState<string>("");
   const psScope = projectId || psScopeSel;
 
+  /* cluster (cambio in linea) per la generazione */
+  const [clustersList, setClustersList] = useState<{ id: string; name: string }[]>([]);
+  const [genIncludeClusters, setGenIncludeClusters] = useState(false);
+  const [genClusterIds, setGenClusterIds] = useState<Set<string>>(new Set());
+
+  /* disegno manuale di un fuorilinea: scegli i due estremi tra i nodi
+   * ammessi, poi (facoltativo) clicca i punti di passaggio sulla mappa */
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawNodes, setDrawNodes] = useState<ArcNode[]>([]);
+  const [drawLoadingNodes, setDrawLoadingNodes] = useState(false);
+  const [drawFrom, setDrawFrom] = useState<ArcNode | null>(null);
+  const [drawTo, setDrawTo] = useState<ArcNode | null>(null);
+  const [drawVia, setDrawVia] = useState<[number, number][]>([]);
+  const [drawSaving, setDrawSaving] = useState(false);
+
   /* editor arco selezionato */
   const [editMin, setEditMin] = useState<string>("");
   const [editKm, setEditKm] = useState<string>("");
@@ -114,6 +140,11 @@ export default function DeadheadArcsPage() {
       const list = (Array.isArray(d) ? d : d?.data ?? d?.projects ?? []).map((x: any) => ({ id: x.id, name: x.name ?? x.id }));
       setPsList(list);
     }).catch(() => { /* Planner Studio assente: selettore nascosto */ });
+    fetch(`${base}/api/clusters`).then(r => (r.ok ? r.json() : null)).then((d: any) => {
+      const list = (d?.data ?? []).filter((c: any) => (c.stops ?? []).length > 0)
+        .map((c: any) => ({ id: c.id, name: c.name }));
+      setClustersList(list);
+    }).catch(() => { /* cluster assenti: sezione nascosta */ });
   }, [base]);
 
   /* linee del feed scelto (per il filtro linee della generazione) */
@@ -161,6 +192,8 @@ export default function DeadheadArcsPage() {
         depotIds: [...genDepotIds],
         routeIds: [...genRouteIds],
         terminalPairsMaxKm: genTTKm || 0,
+        includeClusters: genIncludeClusters,
+        clusterIds: [...genClusterIds],
         psProjectId: psScope || undefined,
       }),
     })
@@ -169,6 +202,7 @@ export default function DeadheadArcsPage() {
         if (d.error) { toast.error(d.error); return; }
         toast.success(`${d.created} archi generati`, {
           description: `${d.depots} depositi × ${d.terminals} capolinea` +
+            (d.clusters ? ` + ${d.clusters} cluster` : "") +
             (d.estimated ? ` · ${d.estimated} stimati (OSRM non raggiungibile)` : "") +
             (d.truncated ? " · troncato al limite per run: rilancia per continuare" : ""),
         });
@@ -177,7 +211,63 @@ export default function DeadheadArcsPage() {
       })
       .catch(() => toast.error("Errore nella generazione"))
       .finally(() => setGenerating(false));
-  }, [base, genDepotIds, genRouteIds, genTTKm, psScope, refresh]);
+  }, [base, genDepotIds, genRouteIds, genTTKm, genIncludeClusters, genClusterIds, genFeedId, psScope, refresh]);
+
+  /* ── disegno manuale ── */
+  const enterDraw = useCallback(() => {
+    setDrawMode(true); setDrawFrom(null); setDrawTo(null); setDrawVia([]);
+    setSelectedId(null); setEditingPath(false);
+    if (drawNodes.length === 0) {
+      setDrawLoadingNodes(true);
+      fetch(`${base}/api/deadhead-arcs/nodes${genFeedId ? `?feedId=${encodeURIComponent(genFeedId)}` : ""}`)
+        .then(r => (r.ok ? r.json() : Promise.reject()))
+        .then((d: any) => setDrawNodes([...(d.depots ?? []), ...(d.terminals ?? []), ...(d.clusters ?? [])]))
+        .catch(() => toast.error("Impossibile caricare i nodi ammessi (depositi, capolinea, cluster)"))
+        .finally(() => setDrawLoadingNodes(false));
+    }
+  }, [base, drawNodes.length, genFeedId]);
+
+  const exitDraw = useCallback(() => {
+    setDrawMode(false); setDrawFrom(null); setDrawTo(null); setDrawVia([]);
+  }, []);
+
+  const pickDrawNode = useCallback((n: ArcNode) => {
+    if (!drawFrom) { setDrawFrom(n); return; }
+    if (!drawTo) {
+      if (n.key === drawFrom.key) { toast.error("Scegli un nodo diverso dalla partenza"); return; }
+      if (!ALLOWED_PAIRS.has(`${drawFrom.type}|${n.type}`)) {
+        toast.error("Coppia non ammessa", { description: PAIR_RULE });
+        return;
+      }
+      setDrawTo(n);
+    }
+  }, [drawFrom, drawTo]);
+
+  const saveDrawn = useCallback(() => {
+    if (!drawFrom || !drawTo) return;
+    setDrawSaving(true);
+    fetch(`${base}/api/deadhead-arcs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from: drawFrom, to: drawTo, viaPoints: drawVia,
+        psProjectId: psScope || undefined,
+      }),
+    })
+      .then(async r => {
+        const d = await r.json();
+        if (!r.ok) { toast.error(d?.error ?? "Errore nella creazione"); return; }
+        toast.success("Fuorilinea creato", {
+          description: `${drawFrom.name} → ${drawTo.name} · ${d.roadKm} km · ${d.travelMin} min` +
+            (drawVia.length ? ` · ${drawVia.length} punti disegnati` : ""),
+        });
+        exitDraw();
+        refresh();
+        setSelectedId(d.id);
+      })
+      .catch(() => toast.error("Errore nella creazione"))
+      .finally(() => setDrawSaving(false));
+  }, [base, drawFrom, drawTo, drawVia, psScope, refresh, exitDraw]);
 
   const saveCustom = useCallback(() => {
     if (!selected) return;
@@ -224,11 +314,31 @@ export default function DeadheadArcsPage() {
       .catch(() => toast.error("Errore nell'eliminazione"));
   }, [base, selectedId]);
 
-  /* click mappa in modalità modifica percorso → aggiungi via point */
+  /* click mappa: in modifica percorso → via point sull'arco selezionato;
+   * in disegno (dopo aver scelto i due estremi) → punto del nuovo percorso */
   const onMapClick = useCallback((e: MapMouseEvent) => {
+    if (drawMode) {
+      if (drawFrom && drawTo) {
+        setDrawVia(cur => (cur.length >= 8 ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
+      }
+      return;
+    }
     if (!editingPath) return;
     setViaDraft(cur => (cur.length >= 8 ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
-  }, [editingPath]);
+  }, [editingPath, drawMode, drawFrom, drawTo]);
+
+  /* anteprima del fuorilinea in disegno: spezzata tratteggiata estremi+via
+   * (il percorso vero su strada arriva al salvataggio, via OSRM) */
+  const drawPreview = useMemo(() => {
+    if (!drawMode || !drawFrom || !drawTo) return null;
+    const pts: [number, number][] = [[drawFrom.lon, drawFrom.lat],
+      ...drawVia.map(([lat, lon]) => [lon, lat] as [number, number]),
+      [drawTo.lon, drawTo.lat]];
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: pts } }],
+    };
+  }, [drawMode, drawFrom, drawTo, drawVia]);
 
   /* geojson: tutti gli archi (grigi) + selezionato (evidenziato) */
   /* Point-in-polygon (ray casting) su Polygon/MultiPolygon GeoJSON */
@@ -307,12 +417,17 @@ export default function DeadheadArcsPage() {
           <div>
             <h2 className="text-sm font-bold text-foreground">Archi Fuorilinea</h2>
             <p className="text-[10px] text-muted-foreground">
-              Percorsi a vuoto deposito↔capolinea su strada reale — modificabili in percorso e tempi
+              Solo deposito↔capolinea, capolinea↔capolinea, cluster↔capolinea e cluster↔deposito — modificabili in percorso e tempi
               {projectId ? ` · ${arcs.length} archi in questo progetto` : ""}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={drawMode ? exitDraw : enterDraw}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
+              drawMode ? "bg-cyan-600 text-white border-cyan-500" : "border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"}`}>
+            <Pencil className="w-3.5 h-3.5" /> {drawMode ? "Esci dal disegno" : "Disegna fuorilinea"}
+          </button>
           <button onClick={() => setGenOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500 text-black hover:bg-amber-400 transition-all">
             <Wand2 className="w-3.5 h-3.5" /> Genera archi
@@ -340,7 +455,7 @@ export default function DeadheadArcsPage() {
               style={{ width: "100%", height: "100%" }}
               mapStyle="mapbox://styles/mapbox/dark-v11"
               onClick={onMapClick}
-              cursor={editingPath ? "crosshair" : "grab"}
+              cursor={editingPath || (drawMode && drawFrom && drawTo) ? "crosshair" : "grab"}
             >
               <NavigationControl position="top-right" />
               {/* tutti gli archi */}
@@ -357,22 +472,63 @@ export default function DeadheadArcsPage() {
                     paint={{ "line-color": "#f59e0b", "line-width": 2.5, "line-opacity": 0.95 }} />
                 </Source>
               )}
-              {/* nodi */}
-              {nodes.map(n => (
+              {/* nodi degli archi esistenti (nascosti in disegno: sotto ci sono i candidati) */}
+              {!drawMode && nodes.map(n => (
                 <Marker key={n.key} longitude={n.lon} latitude={n.lat} anchor="center">
-                  <div title={`${n.type === "depot" ? "Deposito" : "Capolinea"}: ${n.name}`}
+                  <div title={`${NODE_LABEL[n.type] ?? n.type}: ${n.name}`}
                     className={`rounded-full border flex items-center justify-center ${
-                      n.type === "depot" ? "w-6 h-6 bg-orange-500/90 border-white" : "w-3.5 h-3.5 bg-sky-400/80 border-sky-100/60"}`}>
+                      n.type === "depot" ? "w-6 h-6 bg-orange-500/90 border-white"
+                      : n.type === "cluster" ? "w-5 h-5 bg-violet-500/90 border-white"
+                      : "w-3.5 h-3.5 bg-sky-400/80 border-sky-100/60"}`}>
                     {n.type === "depot" && <Building2 className="w-3 h-3 text-white" />}
+                    {n.type === "cluster" && <span className="text-[8px] font-black text-white">C</span>}
                   </div>
                 </Marker>
               ))}
               {/* via points dell'arco in modifica */}
-              {selected && viaDraft.map(([lat, lon], i) => (
+              {!drawMode && selected && viaDraft.map(([lat, lon], i) => (
                 <Marker key={`via_${i}`} longitude={lon} latitude={lat} anchor="center">
                   <button title="Rimuovi punto di passaggio"
                     onClick={e => { e.stopPropagation(); setViaDraft(cur => cur.filter((_, xi) => xi !== i)); }}
                     className="w-5 h-5 rounded-full bg-fuchsia-500 border-2 border-white text-white text-[9px] font-bold flex items-center justify-center">
+                    {i + 1}
+                  </button>
+                </Marker>
+              ))}
+              {/* DISEGNO: anteprima tratteggiata + nodi candidati cliccabili + punti disegnati */}
+              {drawPreview && (
+                <Source id="draw-preview" type="geojson" data={drawPreview as any}>
+                  <Layer id="draw-preview-line" type="line"
+                    paint={{ "line-color": "#22d3ee", "line-width": 2.5, "line-opacity": 0.9, "line-dasharray": [2, 1.5] }} />
+                </Source>
+              )}
+              {drawMode && drawNodes.map(n => {
+                const isFrom = drawFrom?.key === n.key;
+                const isTo = drawTo?.key === n.key;
+                const pickable = !drawTo && !isFrom;
+                const invalid = !!drawFrom && !drawTo && !isFrom && !ALLOWED_PAIRS.has(`${drawFrom.type}|${n.type}`);
+                return (
+                  <Marker key={`cand_${n.key}`} longitude={n.lon} latitude={n.lat} anchor="center">
+                    <button
+                      title={`${NODE_LABEL[n.type] ?? n.type}: ${n.name}${invalid ? " — coppia non ammessa" : ""}`}
+                      onClick={e => { e.stopPropagation(); if (pickable && !invalid) pickDrawNode(n); else if (invalid) toast.error("Coppia non ammessa", { description: PAIR_RULE }); }}
+                      className={`rounded-full border-2 flex items-center justify-center transition-transform ${
+                        isFrom || isTo ? "w-7 h-7 border-cyan-300 ring-2 ring-cyan-300/60" : "w-5 h-5 border-white"} ${
+                        invalid ? "opacity-25 cursor-not-allowed" : "hover:scale-125"} ${
+                        n.type === "depot" ? "bg-orange-500/90" : n.type === "cluster" ? "bg-violet-500/90" : "bg-sky-400/90"}`}>
+                      {isFrom && <span className="text-[9px] font-black text-white">A</span>}
+                      {isTo && <span className="text-[9px] font-black text-white">B</span>}
+                      {!isFrom && !isTo && n.type === "depot" && <Building2 className="w-2.5 h-2.5 text-white" />}
+                      {!isFrom && !isTo && n.type === "cluster" && <span className="text-[7px] font-black text-white">C</span>}
+                    </button>
+                  </Marker>
+                );
+              })}
+              {drawMode && drawVia.map(([lat, lon], i) => (
+                <Marker key={`dvia_${i}`} longitude={lon} latitude={lat} anchor="center">
+                  <button title="Rimuovi punto"
+                    onClick={e => { e.stopPropagation(); setDrawVia(cur => cur.filter((_, xi) => xi !== i)); }}
+                    className="w-5 h-5 rounded-full bg-cyan-500 border-2 border-white text-white text-[9px] font-bold flex items-center justify-center">
                     {i + 1}
                   </button>
                 </Marker>
@@ -384,7 +540,29 @@ export default function DeadheadArcsPage() {
               <p className="text-xs">Token Mapbox non configurato</p>
             </div>
           )}
-          {editingPath && (
+          {drawMode && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-cyan-600/95 text-white text-[11px] font-semibold px-3 py-1.5 rounded-full shadow-lg">
+              {drawLoadingNodes ? (
+                <><Loader2 className="w-3 h-3 animate-spin" /> Carico depositi, capolinea e cluster…</>
+              ) : !drawFrom ? (
+                <>✏️ Nuovo fuorilinea — 1/3: clicca il nodo di PARTENZA (deposito, capolinea o cluster)</>
+              ) : !drawTo ? (
+                <>2/3: clicca il nodo di ARRIVO — da {NODE_LABEL[drawFrom.type]?.toLowerCase()} puoi andare solo sulle coppie ammesse</>
+              ) : (
+                <>
+                  3/3: {drawFrom.name} → {drawTo.name} · clicca la mappa per disegnare il percorso ({drawVia.length}/8)
+                  <button onClick={saveDrawn} disabled={drawSaving}
+                    className="ml-1 flex items-center gap-1 bg-white text-cyan-700 font-bold px-2 py-0.5 rounded-full hover:bg-cyan-50 disabled:opacity-50">
+                    {drawSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Salva
+                  </button>
+                </>
+              )}
+              <button onClick={exitDraw} className="ml-1 opacity-80 hover:opacity-100" title="Esci dal disegno">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {!drawMode && editingPath && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-fuchsia-500/90 text-white text-[11px] font-semibold px-3 py-1.5 rounded-full shadow-lg">
               ✏️ Modifica percorso: clicca sulla mappa per aggiungere punti di passaggio ({viaDraft.length}/8)
             </div>
@@ -504,7 +682,7 @@ export default function DeadheadArcsPage() {
                 className={`w-full text-left rounded-lg border px-2.5 py-1.5 transition-colors ${
                   a.id === selectedId ? "border-amber-500/60 bg-amber-500/10" : "border-border/25 bg-background/40 hover:border-amber-500/30"}`}>
                 <p className="text-[11px] font-medium truncate">
-                  {a.from.type === "depot" ? "🏠 " : ""}{a.from.name} <span className="text-muted-foreground">→</span> {a.to.type === "depot" ? "🏠 " : ""}{a.to.name}
+                  {a.from.type === "depot" ? "🏠 " : a.from.type === "cluster" ? "🔗 " : ""}{a.from.name} <span className="text-muted-foreground">→</span> {a.to.type === "depot" ? "🏠 " : a.to.type === "cluster" ? "🔗 " : ""}{a.to.name}
                 </p>
                 <p className="text-[10px] text-muted-foreground">
                   {fmt(a.customKm ?? a.roadKm)} km · {fmt(a.customMin ?? a.travelMin)} min
@@ -524,7 +702,8 @@ export default function DeadheadArcsPage() {
           <div className="bg-card border border-border/50 rounded-2xl max-w-md w-full p-4 space-y-3" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-bold flex items-center gap-2"><Wand2 className="w-4 h-4 text-amber-400" /> Genera archi fuorilinea</h3>
             <p className="text-[11px] text-muted-foreground">
-              Crea gli archi <b>deposito → capolinea</b> (e ritorno) con il percorso reale su strada.
+              Crea SOLO le coppie ammesse: <b>deposito↔capolinea</b>, <b>capolinea↔capolinea</b> (entro la
+              soglia km), <b>cluster↔capolinea</b> e <b>cluster↔deposito</b>, col percorso reale su strada.
               Gli archi già esistenti non vengono toccati.
             </p>
             <div>
@@ -551,6 +730,27 @@ export default function DeadheadArcsPage() {
                 ))}
               </div>
             </div>
+            {clustersList.length > 0 && (
+              <div>
+                <label className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground mb-1 cursor-pointer">
+                  <input type="checkbox" checked={genIncludeClusters}
+                    onChange={e => setGenIncludeClusters(e.target.checked)} className="accent-violet-500" />
+                  Includi i cluster (cambio in linea): cluster↔capolinea e cluster↔deposito
+                </label>
+                {genIncludeClusters && (
+                  <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                    {clustersList.map(c => (
+                      <button key={c.id}
+                        onClick={() => setGenClusterIds(cur => { const n = new Set(cur); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; })}
+                        className={`text-[10px] px-2 py-0.5 rounded-full border ${genClusterIds.has(c.id) ? "border-violet-500/60 text-violet-300 bg-violet-500/10" : "border-border/30 text-muted-foreground"}`}>
+                        {c.name}
+                      </button>
+                    ))}
+                    <span className="text-[9px] text-muted-foreground self-center">(vuoto = tutti)</span>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               {psScope && (
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 shrink-0"
