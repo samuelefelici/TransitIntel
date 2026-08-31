@@ -103,6 +103,11 @@ export default function DeadheadArcsPage() {
   const [drawTo, setDrawTo] = useState<ArcNode | null>(null);
   const [drawVia, setDrawVia] = useState<[number, number][]>([]);
   const [drawSaving, setDrawSaving] = useState(false);
+  /* tratto LIBERO: la spezzata disegnata E' il percorso (niente OSRM) —
+   * per forzare il passaggio dove il router non vuole andare */
+  const [drawFree, setDrawFree] = useState(false);
+  const [pathFree, setPathFree] = useState(false);
+  const MAX_VIA_OSRM = 12, MAX_VIA_LIBERO = 30;
 
   /* editor arco selezionato */
   const [editMin, setEditMin] = useState<string>("");
@@ -190,6 +195,7 @@ export default function DeadheadArcsPage() {
     setEditKm(selected?.customKm != null ? String(selected.customKm) : "");
     setEditNote(selected?.note ?? "");
     setEditingPath(false);
+    setPathFree(false);
     setViaDraft((selected?.viaPoints as [number, number][]) ?? []);
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -251,7 +257,7 @@ export default function DeadheadArcsPage() {
   }, [drawLoadingNodes, drawNodes.length]);
 
   const exitDraw = useCallback(() => {
-    setDrawMode(false); setDrawFrom(null); setDrawTo(null); setDrawVia([]);
+    setDrawMode(false); setDrawFrom(null); setDrawTo(null); setDrawVia([]); setDrawFree(false);
   }, []);
 
   const pickDrawNode = useCallback((n: ArcNode) => {
@@ -273,14 +279,14 @@ export default function DeadheadArcsPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        from: drawFrom, to: drawTo, viaPoints: drawVia,
+        from: drawFrom, to: drawTo, viaPoints: drawVia, freehand: drawFree,
         psProjectId: psScope || undefined,
       }),
     })
       .then(async r => {
         const d = await r.json();
         if (!r.ok) { toast.error(d?.error ?? "Errore nella creazione"); return; }
-        toast.success("Fuorilinea creato", {
+        toast.success(drawFree ? "Fuorilinea creato (tratto libero)" : "Fuorilinea creato", {
           description: `${drawFrom.name} → ${drawTo.name} · ${d.roadKm} km · ${d.travelMin} min` +
             (drawVia.length ? ` · ${drawVia.length} punti disegnati` : ""),
         });
@@ -290,7 +296,7 @@ export default function DeadheadArcsPage() {
       })
       .catch(() => toast.error("Errore nella creazione"))
       .finally(() => setDrawSaving(false));
-  }, [base, drawFrom, drawTo, drawVia, psScope, refresh, exitDraw]);
+  }, [base, drawFrom, drawTo, drawVia, drawFree, psScope, refresh, exitDraw]);
 
   const saveCustom = useCallback(() => {
     if (!selected) return;
@@ -317,19 +323,20 @@ export default function DeadheadArcsPage() {
     fetch(`${base}/api/deadhead-arcs/${selected.id}/reroute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ viaPoints: via }),
+      body: JSON.stringify({ viaPoints: via, freehand: pathFree }),
     })
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then((upd: Arc) => {
         setArcs(cur => cur.map(a => (a.id === upd.id ? upd : a)));
         setViaDraft((upd.viaPoints as [number, number][]) ?? []);
         setEditingPath(false);
-        toast.success(via.length ? "Percorso ricalcolato con i punti di passaggio" : "Percorso riportato al diretto",
-          { description: `${upd.roadKm} km · ${upd.travelMin} min` });
+        toast.success(pathFree ? "Tratto libero applicato: il percorso segue i tuoi punti"
+          : via.length ? "Percorso ricalcolato con i punti di passaggio" : "Percorso riportato al diretto",
+          { description: `${upd.roadKm} km · ${upd.travelMin} min` + (pathFree ? " (stimati sulla spezzata: rifinisci con l'override se serve)" : "") });
       })
       .catch(() => toast.error("Errore nel ricalcolo del percorso"))
       .finally(() => setRerouting(false));
-  }, [base, selected]);
+  }, [base, selected, pathFree]);
 
   const deleteArc = useCallback((id: string) => {
     fetch(`${base}/api/deadhead-arcs/${id}`, { method: "DELETE" })
@@ -342,13 +349,15 @@ export default function DeadheadArcsPage() {
   const onMapClick = useCallback((e: MapMouseEvent) => {
     if (drawMode) {
       if (drawFrom && drawTo) {
-        setDrawVia(cur => (cur.length >= 8 ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
+        const cap = drawFree ? MAX_VIA_LIBERO : MAX_VIA_OSRM;
+        setDrawVia(cur => (cur.length >= cap ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
       }
       return;
     }
     if (!editingPath) return;
-    setViaDraft(cur => (cur.length >= 8 ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
-  }, [editingPath, drawMode, drawFrom, drawTo]);
+    const cap = pathFree ? MAX_VIA_LIBERO : MAX_VIA_OSRM;
+    setViaDraft(cur => (cur.length >= cap ? cur : [...cur, [e.lngLat.lat, e.lngLat.lng]]));
+  }, [editingPath, drawMode, drawFrom, drawTo, drawFree, pathFree]);
 
   /* anteprima del fuorilinea in disegno: spezzata tratteggiata estremi+via
    * (il percorso vero su strada arriva al salvataggio, via OSRM) */
@@ -362,6 +371,18 @@ export default function DeadheadArcsPage() {
       features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: pts } }],
     };
   }, [drawMode, drawFrom, drawTo, drawVia]);
+
+  /* anteprima del TRATTO LIBERO in modifica: la spezzata E' il percorso finale */
+  const editFreePreview = useMemo(() => {
+    if (!editingPath || !pathFree || !selected) return null;
+    const pts: [number, number][] = [[selected.from.lon, selected.from.lat],
+      ...viaDraft.map(([lat, lon]) => [lon, lat] as [number, number]),
+      [selected.to.lon, selected.to.lat]];
+    return {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: pts } }],
+    };
+  }, [editingPath, pathFree, selected, viaDraft]);
 
   /* geojson: tutti gli archi (grigi) + selezionato (evidenziato) */
   /* Point-in-polygon (ray casting) su Polygon/MultiPolygon GeoJSON */
@@ -525,6 +546,12 @@ export default function DeadheadArcsPage() {
                     paint={{ "line-color": "#22d3ee", "line-width": 2.5, "line-opacity": 0.9, "line-dasharray": [2, 1.5] }} />
                 </Source>
               )}
+              {editFreePreview && (
+                <Source id="edit-free-preview" type="geojson" data={editFreePreview as any}>
+                  <Layer id="edit-free-preview-line" type="line"
+                    paint={{ "line-color": "#d946ef", "line-width": 2.5, "line-opacity": 0.9, "line-dasharray": [2, 1.5] }} />
+                </Source>
+              )}
               {drawMode && drawNodes.map(n => {
                 const isFrom = drawFrom?.key === n.key;
                 const isTo = drawTo?.key === n.key;
@@ -573,7 +600,15 @@ export default function DeadheadArcsPage() {
                 <>2/3: clicca il nodo di ARRIVO — da {NODE_LABEL[drawFrom.type]?.toLowerCase()} puoi andare solo sulle coppie ammesse</>
               ) : (
                 <>
-                  3/3: {drawFrom.name} → {drawTo.name} · clicca la mappa per disegnare il percorso ({drawVia.length}/8)
+                  3/3: {drawFrom.name} → {drawTo.name} · disegna ({drawVia.length}/{drawFree ? MAX_VIA_LIBERO : MAX_VIA_OSRM})
+                  <span className="flex items-center rounded-full overflow-hidden border border-white/50 ml-1">
+                    <button onClick={() => setDrawFree(false)}
+                      title="I punti sono tappe: OSRM instrada su strada passando da lì"
+                      className={`px-2 py-0.5 ${!drawFree ? "bg-white text-cyan-700" : "text-white/85"}`}>Su strada</button>
+                    <button onClick={() => setDrawFree(true)}
+                      title="La spezzata che disegni E' il percorso: forza il passaggio dove OSRM non vuole andare"
+                      className={`px-2 py-0.5 ${drawFree ? "bg-white text-cyan-700" : "text-white/85"}`}>Libero</button>
+                  </span>
                   <button onClick={saveDrawn} disabled={drawSaving}
                     className="ml-1 flex items-center gap-1 bg-white text-cyan-700 font-bold px-2 py-0.5 rounded-full hover:bg-cyan-50 disabled:opacity-50">
                     {drawSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />} Salva
@@ -587,7 +622,9 @@ export default function DeadheadArcsPage() {
           )}
           {!drawMode && editingPath && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 bg-fuchsia-500/90 text-white text-[11px] font-semibold px-3 py-1.5 rounded-full shadow-lg">
-              ✏️ Modifica percorso: clicca sulla mappa per aggiungere punti di passaggio ({viaDraft.length}/8)
+              ✏️ {pathFree
+                ? `Tratto libero: la spezzata che clicchi E' il percorso (${viaDraft.length}/${MAX_VIA_LIBERO})`
+                : `Modifica percorso: clicca le tappe, OSRM ricalcola su strada (${viaDraft.length}/${MAX_VIA_OSRM})`}
             </div>
           )}
         </div>
@@ -639,11 +676,20 @@ export default function DeadheadArcsPage() {
                   </button>
                 ) : (
                   <>
+                    <span className="flex items-center rounded overflow-hidden border border-fuchsia-500/40 text-[10px] font-semibold">
+                      <button onClick={() => setPathFree(false)}
+                        title="I punti sono tappe: OSRM ricalcola il percorso su strada passando da lì"
+                        className={`px-2 py-1 ${!pathFree ? "bg-fuchsia-500 text-white" : "text-fuchsia-300"}`}>Su strada</button>
+                      <button onClick={() => setPathFree(true)}
+                        title="La spezzata che disegni E' il percorso: forza il passaggio dove OSRM non vuole andare"
+                        className={`px-2 py-1 ${pathFree ? "bg-fuchsia-500 text-white" : "text-fuchsia-300"}`}>Libero</button>
+                    </span>
                     <button onClick={() => reroute(viaDraft)} disabled={rerouting}
                       className="flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded bg-fuchsia-500 text-white hover:bg-fuchsia-400 disabled:opacity-50">
-                      {rerouting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RouteIcon className="w-3 h-3" />} Ricalcola con {viaDraft.length} punti
+                      {rerouting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RouteIcon className="w-3 h-3" />}
+                      {pathFree ? `Applica tratto libero (${viaDraft.length} punti)` : `Ricalcola con ${viaDraft.length} punti`}
                     </button>
-                    <button onClick={() => { setEditingPath(false); setViaDraft((selected.viaPoints as [number, number][]) ?? []); }}
+                    <button onClick={() => { setEditingPath(false); setPathFree(false); setViaDraft((selected.viaPoints as [number, number][]) ?? []); }}
                       className="text-[10px] px-2 py-1 rounded border border-border/40 text-muted-foreground hover:text-foreground">Annulla</button>
                   </>
                 )}
