@@ -2583,20 +2583,51 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       }
     }
 
-    // Feed = materializzazione del progetto PS (l'UDP lavora su quello).
+    // Feed del giro. I feed materializzati vivono su DUE canali:
+    //  - UDP: scheduling_projects.feed_id (feed SCOPED sull'unità)  ← il caso tipico
+    //  - esercizio: ps_projects.materialized_feed_id (feed globale del progetto)
+    // Risoluzione: feedId esplicito → UDP collegata (projectId esplicito o la più
+    // recente col feed ancora esistente) → feed d'esercizio. Prima si guardava
+    // SOLO l'esercizio: un progetto con la sola UDP falliva con un 400 fuorviante.
     const fr = await db.execute<any>(sql`
       SELECT materialized_feed_id, name FROM ps_projects WHERE id = ${psProjectId}::uuid`);
-    const feedId: string | null = fr.rows?.[0]?.materialized_feed_id ?? null;
-    const psName: string = fr.rows?.[0]?.name ?? "Progetto";
     if (!fr.rows?.length) { res.status(404).json({ error: "Progetto Planning Studio non trovato" }); return; }
+    const psName: string = fr.rows?.[0]?.name ?? "Progetto";
+
+    let schedProjectId: string | null =
+      typeof b.projectId === "string" && /^[0-9a-f-]{36}$/i.test(b.projectId) ? b.projectId : null;
+    let feedId: string | null =
+      typeof b.feedId === "string" && /^[0-9a-f-]{36}$/i.test(b.feedId) ? b.feedId : null;
+    let feedSource: "esplicito" | "udp" | "esercizio" | null = feedId ? "esplicito" : null;
     if (!feedId) {
-      res.status(400).json({ error: "Progetto non materializzato: genera l'UDP (materializza il feed) prima di ottimizzare" });
+      try {
+        const pr = await db.execute<any>(sql`
+          SELECT sp.id, sp.feed_id FROM scheduling_projects sp
+           WHERE sp.planning_studio_project_id = ${psProjectId}::uuid
+             AND sp.feed_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM gtfs_feeds f WHERE f.id = sp.feed_id)
+             ${schedProjectId ? sql`AND sp.id = ${schedProjectId}::uuid` : sql``}
+           ORDER BY sp.created_at DESC LIMIT 1`);
+        if (pr.rows?.[0]?.feed_id) {
+          feedId = pr.rows[0].feed_id;
+          schedProjectId = pr.rows[0].id;
+          feedSource = "udp";
+        }
+      } catch { /* installazione senza scheduling_projects */ }
+    }
+    if (!feedId && fr.rows?.[0]?.materialized_feed_id) {
+      feedId = fr.rows[0].materialized_feed_id;
+      feedSource = "esercizio";
+    }
+    if (!feedId) {
+      res.status(400).json({
+        error: "Nessun feed materializzato per questo progetto: crea un'UDP (o materializza il feed d'esercizio) prima di ottimizzare",
+      });
       return;
     }
 
-    // Progetto scheduling collegato (depositi scoped + aggancio scenario).
-    let schedProjectId: string | null =
-      typeof b.projectId === "string" && /^[0-9a-f-]{36}$/i.test(b.projectId) ? b.projectId : null;
+    // Progetto scheduling collegato (depositi scoped + aggancio scenario), se
+    // non già determinato dalla risoluzione del feed UDP.
     if (!schedProjectId) {
       try {
         const pr = await db.execute<any>(sql`
@@ -2623,11 +2654,13 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         ? new Set(b.routeIds.map(String)) : null;
       const psVehicle = new Map<string, string>();
       try {
+        // Lookup diretto per progetto (route_id GTFS = uuid ps_routes): vale
+        // anche per i feed UDP scoped, dove il join su materialized_feed_id
+        // non matcherebbe e le dichiarazioni sparirebbero.
         const psR = await db.execute<any>(sql`
           SELECT r.id, r.attributes->'vehicleTypes' AS vt
             FROM ps_routes r
-            JOIN ps_projects p ON p.id = r.project_id
-           WHERE p.materialized_feed_id = ${feedId}::uuid
+           WHERE r.project_id = ${psProjectId}::uuid
              AND r.attributes ? 'vehicleTypes'`);
         for (const row of psR.rows ?? []) {
           const vt = row.vt;
@@ -2721,7 +2754,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       progress: { phase: mode === "vcsp" ? "VCSP" : "VSP", pct: 0, msg: "Avvio…" },
       params: {
         date: rawDate, mode, intensity, timeLimit, serviceType,
-        routes: routes.length, vehicleSource, depots: depotsSel?.length ?? 0,
+        routes: routes.length, vehicleSource, feedSource, depots: depotsSel?.length ?? 0,
         ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit } : {}),
       },
     };
@@ -2840,6 +2873,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       project: psName,
       routes: routes.length,
       vehicleSource,
+      feedSource,
       depots: depotsSel?.length ?? 0,
       ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes } : {}),
       hint: "Interroga GET /service-program/agent-optimize/{jobId} per progresso e risultato (attendi ~60-90s tra un controllo e l'altro)",
