@@ -982,6 +982,26 @@ router.get("/service-program/routes", async (req, res) => {
     }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId))
       .orderBy(gtfsRoutes.routeShortName);
 
+    /* Tipologie di vettura DICHIARATE IN PIANIFICAZIONE: se il feed è la
+     * materializzazione di un progetto Planning Studio, il route_id GTFS è
+     * l'uuid della linea PS — attributes.vehicleTypes fluisce qui e diventa
+     * il default del run (l'operatore può sempre cambiarlo). */
+    const psVehicle = new Map<string, { ammesse: string[]; preferita: string }>();
+    try {
+      const psR = await db.execute<any>(sql`
+        SELECT r.id, r.attributes->'vehicleTypes' AS vt
+          FROM ps_routes r
+          JOIN ps_projects p ON p.id = r.project_id
+         WHERE p.materialized_feed_id = ${feedId}::uuid
+           AND r.attributes ? 'vehicleTypes'`);
+      for (const row of psR.rows ?? []) {
+        const vt = row.vt;
+        if (vt && Array.isArray(vt.ammesse) && vt.ammesse.length > 0) {
+          psVehicle.set(String(row.id), { ammesse: vt.ammesse, preferita: vt.preferita ?? vt.ammesse[0] });
+        }
+      }
+    } catch { /* feed non materializzato da PS: nessuna dichiarazione */ }
+
     res.json({
       feedId,
       routes: rows.map(r => {
@@ -994,6 +1014,7 @@ router.get("/service-program/routes", async (req, res) => {
           tripsCount: r.tripsCount ?? 0,
           color: r.color ? `#${r.color}` : null,
           category: getServiceCategory(name),
+          planningVehicle: psVehicle.get(r.routeId) ?? null,
         };
       }),
       vehicleTypes: Object.entries(VEHICLE_LABELS).map(([id, label]) => ({

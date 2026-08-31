@@ -12,6 +12,10 @@ export interface RouteItem {
   tripsCount: number;
   color: string | null;
   category: ServiceCategory;
+  /** Tipologie di vettura DICHIARATE IN PIANIFICAZIONE (Planning Studio):
+   * la preferita è il default del run, le ammesse il vincolo di sagoma.
+   * null/assente = nessuna dichiarazione (default storico 12m). */
+  planningVehicle?: { ammesse: VehicleType[]; preferita: VehicleType } | null;
 }
 
 export interface TripInfo {

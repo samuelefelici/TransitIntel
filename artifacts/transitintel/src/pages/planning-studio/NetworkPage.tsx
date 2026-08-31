@@ -26,6 +26,7 @@ import {
   getPsVariantDetail, type PsVariantDetail,
   getPsStopDetail, type PsStopDetail,
   updatePsVariant,
+  updatePsRoute,
 } from "@/lib/planning-studio-api";
 
 type Tab = "routes" | "stops";
@@ -496,6 +497,12 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
         {d.agency.timezone && <div className="text-[10px] text-slate-500">Fuso: {d.agency.timezone}</div>}
       </Section>
 
+      {/* Tipologia di vettura: dichiarazione di pianificazione */}
+      <Section title="Tipologia di vettura" icon={<Bus className="w-3.5 h-3.5" />}>
+        <VehicleTypesEditor projectId={projectId} routeId={routeId}
+          current={(r.attributes as any)?.vehicleTypes ?? null} />
+      </Section>
+
       {/* Validità */}
       <Section title="Validità" icon={<CalendarIcon className="w-3.5 h-3.5" />}>
         <div className="text-xs text-slate-300">
@@ -904,6 +911,81 @@ function RouteMiniPanel({ projectId, routeId, onJump }: {
         className="w-full px-3 py-1.5 rounded bg-violet-600 hover:bg-violet-500 text-white text-xs">
         Apri linea
       </button>
+    </div>
+  );
+}
+
+/* ─── Editor tipologie di vettura (dichiarazione di PIANIFICAZIONE) ───
+ * Le tipologie AMMESSE sono il vincolo di sagoma/domanda della linea; la
+ * PREFERITA (stella) è il default che lo scheduling userà per il run.
+ * L'assegnazione vera resta al solver. */
+const VEHICLE_TYPE_OPTS: { id: string; label: string }[] = [
+  { id: "pollicino", label: "Pollicino" },
+  { id: "10m", label: "10 m" },
+  { id: "12m", label: "12 m" },
+  { id: "autosnodato", label: "Autosnodato" },
+];
+function VehicleTypesEditor({ projectId, routeId, current }: {
+  projectId: string; routeId: string;
+  current: { ammesse: string[]; preferita: string } | null;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+
+  const save = async (vt: { ammesse: string[]; preferita: string } | null) => {
+    setSaving(true);
+    try {
+      await updatePsRoute(projectId, routeId, { vehicleTypes: vt } as any);
+      toast.success(vt ? "Tipologie di vettura aggiornate" : "Dichiarazione rimossa", {
+        description: vt ? `ammesse: ${vt.ammesse.join(", ")} · preferita: ${vt.preferita}` : "la linea torna al default dello scheduling (12m)",
+      });
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "route-detail", routeId] });
+      queryClient.invalidateQueries({ queryKey: ["ps", projectId, "routes"] });
+    } catch (e: any) {
+      toast.error("Errore nel salvataggio", { description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggle = (id: string) => {
+    const ammesse = current?.ammesse ?? [];
+    const next = ammesse.includes(id) ? ammesse.filter(x => x !== id) : [...ammesse, id];
+    if (next.length === 0) { save(null); return; }
+    const preferita = current?.preferita && next.includes(current.preferita) ? current.preferita : next[0];
+    save({ ammesse: next, preferita });
+  };
+  const prefer = (id: string) => {
+    if (!current || !current.ammesse.includes(id)) return;
+    save({ ammesse: current.ammesse, preferita: id });
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {VEHICLE_TYPE_OPTS.map(o => {
+          const on = current?.ammesse.includes(o.id) ?? false;
+          const pref = current?.preferita === o.id;
+          return (
+            <span key={o.id} className={`flex items-center rounded-full border text-[11px] overflow-hidden ${
+              on ? "border-sky-500/60 bg-sky-500/10 text-sky-300" : "border-slate-700 text-slate-500"}`}>
+              <button disabled={saving} onClick={() => toggle(o.id)}
+                title={on ? "Togli dalle ammesse" : "Aggiungi alle ammesse"}
+                className="px-2 py-0.5 hover:text-sky-200 disabled:opacity-50">{o.label}</button>
+              {on && (
+                <button disabled={saving} onClick={() => prefer(o.id)}
+                  title={pref ? "Preferita (default per lo scheduling)" : "Rendi preferita"}
+                  className={`pr-1.5 disabled:opacity-50 ${pref ? "text-amber-300" : "text-slate-600 hover:text-amber-300"}`}>★</button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-slate-500">
+        {current
+          ? "La preferita (★) è il default del run di scheduling; le ammesse sono il vincolo di sagoma."
+          : "Nessuna dichiarazione: lo scheduling userà il default (12 m)."}
+      </p>
     </div>
   );
 }
