@@ -1968,10 +1968,15 @@ def validate_duty_bds(
     result.sosta_capolinea_ok = sosta_ok
     result.violations.extend(sosta_viol)
 
-    # Intervallo pasto
+    # Intervallo pasto: severità configurabile per azienda. "avviso" (default)
+    # NON invalida il turno — la pausa mancante è un avvertimento, non una
+    # violazione; "vincolo" la tratta come le altre regole dure.
     pasto_ok, pasto_viol = check_intervallo_pasto(duty, bds.pasto)
-    result.intervallo_pasto_ok = pasto_ok
-    result.violations.extend(pasto_viol)
+    if getattr(bds.pasto, "severita", "avviso") == "vincolo":
+        result.intervallo_pasto_ok = pasto_ok
+        result.violations.extend(pasto_viol)
+    else:
+        result.warnings.extend(pasto_viol)
 
     # Stacco minimo
     stacco_ok, stacco_viol = check_stacco_minimo(duty, bds.stacco)
@@ -1993,7 +1998,9 @@ def validate_all_bds(
 ) -> dict:
     """Valida tutti i turni con BDS. Ritorna stats + lista violazioni."""
     total_violations = 0
+    total_warnings = 0
     duty_violations: dict[str, list[str]] = {}
+    duty_warnings: dict[str, list[str]] = {}
     bds_results: dict[str, dict] = {}
 
     for d in duties:
@@ -2003,11 +2010,18 @@ def validate_all_bds(
         if not v.valid:
             duty_violations[d.driver_id] = v.violations
             total_violations += len(v.violations)
+        if v.warnings:
+            duty_warnings[d.driver_id] = v.warnings
+            total_warnings += len(v.warnings)
 
     return {
         "totalViolations": total_violations,
         "dutiesWithViolations": len(duty_violations),
         "details": duty_violations,
+        # Avvertimenti (severità "avviso", es. pause pasto): fuori dal
+        # conteggio violazioni, ma visibili per chi li vuole monitorare.
+        "totalWarnings": total_warnings,
+        "warningDetails": duty_warnings,
         "bdsResults": bds_results,
     }
 
