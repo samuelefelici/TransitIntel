@@ -131,21 +131,39 @@ def extract_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, floa
     return penalties, diag
 
 
+# Costi-ombra della SELEZIONE fra round (e fra soluzioni della sonda).
+# Il solo totalCostEur sceglieva male: nella prova reale un round con 2 turni
+# in meno e 6 violazioni in meno è stato scartato per €1,76 di costo in più —
+# e l'early-stop lo ha pure letto come "nessun miglioramento". Ogni turno vale
+# un costo nascosto (reperibilità, HR, ferie — come SCORE_PER_DUTY nel CSP) e
+# ogni violazione BDS un costo di sistemazione manuale. Override da
+# vcsp.dutyShadowEur / vcsp.violationShadowEur.
+DUTY_SHADOW_EUR = 200.0
+VIOLATION_SHADOW_EUR = 100.0
+
+
 def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     vm = vsp_out.get("metrics", {}) or {}
     cs = crew_out.get("summary", {}) or {}
     vehicle_cost = float(vm.get("costEur") or 0)
     crew_cost = float(cs.get("totalDailyCost") or 0)
     validation = cs.get("validation", {}) or {}
+    duties = cs.get("totalShifts", 0)
+    violations = validation.get("totalViolations", 0)
+    total = vehicle_cost + crew_cost
     return {
         "round": r,
         "vehicles": vm.get("vehicles", 0),
         "vehicleCostEur": round(vehicle_cost, 2),
-        "duties": cs.get("totalShifts", 0),
+        "duties": duties,
         "supplementi": cs.get("totalSupplementi", 0),
         "crewCostEur": round(crew_cost, 2),
-        "bdsViolations": validation.get("totalViolations", 0),
-        "totalCostEur": round(vehicle_cost + crew_cost, 2),
+        "bdsViolations": violations,
+        "totalCostEur": round(total, 2),
+        "selectionScoreEur": round(
+            total
+            + float(duties or 0) * DUTY_SHADOW_EUR
+            + float(violations or 0) * VIOLATION_SHADOW_EUR, 2),
     }
 
 
@@ -164,6 +182,17 @@ def main() -> None:
     probes_raw = vcsp_cfg.get("probes")
     probes = max(0, min(10, int(probes_raw))) if probes_raw is not None else 4
     probe_vsp_time = max(20, min(300, int(vcsp_cfg.get("probeVspTime") or 60)))
+
+    # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
+    global DUTY_SHADOW_EUR, VIOLATION_SHADOW_EUR
+    try:
+        DUTY_SHADOW_EUR = max(0.0, float(vcsp_cfg.get("dutyShadowEur", DUTY_SHADOW_EUR)))
+    except (ValueError, TypeError):
+        pass
+    try:
+        VIOLATION_SHADOW_EUR = max(0.0, float(vcsp_cfg.get("violationShadowEur", VIOLATION_SHADOW_EUR)))
+    except (ValueError, TypeError):
+        pass
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
         f"trips={len(vsp_payload.get('trips') or [])}, "
@@ -206,7 +235,8 @@ def main() -> None:
         rounds_kpi.append(kpi)
         log(f"[VCSP] round {r}: {kpi['vehicles']} veicoli (€{kpi['vehicleCostEur']}) + "
             f"{kpi['duties']} turni guida (€{kpi['crewCostEur']}, "
-            f"{kpi['bdsViolations']} violazioni) = €{kpi['totalCostEur']}")
+            f"{kpi['bdsViolations']} violazioni) = €{kpi['totalCostEur']} "
+            f"· score €{kpi['selectionScoreEur']}")
         report_progress("VCSP", base_pct + int(100 / rounds * 0.9),
                         f"Round {r}/{rounds}: €{kpi['totalCostEur']} totale "
                         f"({kpi['vehicles']} mezzi + {kpi['duties']} turni)")
@@ -227,12 +257,15 @@ def main() -> None:
             },
         })
 
-        if best is None or kpi["totalCostEur"] < _round_kpi(best[2], best[0], best[1])["totalCostEur"]:
+        # Selezione e early-stop sul PUNTEGGIO (costo + ombre turni/violazioni),
+        # non sul costo secco: un round con meno turni e meno violazioni deve
+        # vincere anche se costa qualche euro in più.
+        if best is None or kpi["selectionScoreEur"] < _round_kpi(best[2], best[0], best[1])["selectionScoreEur"]:
             best = (vsp_out, crew_out, r)
 
         if r < rounds:
             # early-stop: nessun miglioramento rispetto al round precedente
-            if len(rounds_kpi) >= 2 and rounds_kpi[-1]["totalCostEur"] >= rounds_kpi[-2]["totalCostEur"] - 0.01:
+            if len(rounds_kpi) >= 2 and rounds_kpi[-1]["selectionScoreEur"] >= rounds_kpi[-2]["selectionScoreEur"] - 0.01:
                 log(f"[VCSP] round {r}: nessun miglioramento, early-stop")
                 break
             arc_penalties, diag = extract_arc_penalties(vsp_out, crew_out)
