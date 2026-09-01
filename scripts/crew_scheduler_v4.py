@@ -51,7 +51,7 @@ from optimizer_common import (
     # Dataclass esistenti
     VShiftTrip, VehicleShift, CambioInfo, ClusterStop,
     VehicleBlock, CutCandidate, Segment, DriverDutyV3,
-    Cluster, DEFAULT_CLUSTERS,
+    Cluster, DEFAULT_CLUSTERS, DEFAULT_OPERATOR_CONFIG,
     # BDS dataclass
     PrePostRules, CEE561Config, RD131Config, IntervalloPastoConfig,
     StaccoMinimo, GestoreRiprese, CoperturaSosteConfig,
@@ -181,6 +181,51 @@ IDLE_PENALTY_MAX_MIN = 60          # cap sopra il quale non aumenta piu'
 # Permette al portfolio di preferire scenari con MENO turni anche se costo +1-2%.
 # Letto da config.bds.optimizer.scorePerDuty.
 SCORE_PER_DUTY = 100.0
+
+# Fattori derivati dai pesi operatore (config.weights: gli stessi 6 slider
+# 0-10 del pannello TG e di crewConfig.weights). 1.0 al peso di default →
+# comportamento storico invariato finché l'operatore non tocca gli slider.
+# Applicati AL PUNTO D'USO (mai mutando le altre globali) e ricalcolati da
+# zero a ogni run(): nessun compounding fra i round del VCSP.
+WEIGHT_FACTORS = {
+    "duty": 1.0,       # minDrivers     → costo virtuale per turno + score portfolio
+    "balance": 1.0,    # workBalance    → deviazione dal target di lavoro
+    "suppl": 1.0,      # minSupplementi → costo dei supplementi
+    "spezz": 1.0,      # preferIntero   → moltiplicatore degli spezzati
+    "transfer": 1.0,   # minCambi       → costo trasferimenti/auto aziendali
+    "quality": 1.0,    # qualityTarget  → penalità idle (turni compatti)
+}
+
+_WEIGHT_FACTOR_MAP = [
+    ("minDrivers", "duty"),
+    ("workBalance", "balance"),
+    ("minSupplementi", "suppl"),
+    ("preferIntero", "spezz"),
+    ("minCambi", "transfer"),
+    ("qualityTarget", "quality"),
+]
+
+
+def apply_operator_weights(cfg: dict) -> None:
+    """Traduce config.weights in fattori sui costi del v4.
+
+    Prima di questo hook i pesi erano letti SOLO dal vecchio motore cpsat:
+    nel v4 gli slider del pannello operatore (e crewWeights via agente)
+    erano una manopola morta. Il fattore è peso/default, clampato a
+    [0.15, 3.0]: un peso a 0 indebolisce una spinta senza azzerare un costo
+    reale (es. supplementi gratis)."""
+    weights = (cfg or {}).get("weights") or {}
+    neutrals = DEFAULT_OPERATOR_CONFIG["weights"]
+    for ui_key, f_key in _WEIGHT_FACTOR_MAP:
+        neutral = float(neutrals[ui_key])
+        try:
+            w = max(0.0, min(10.0, float(weights.get(ui_key, neutral))))
+        except (ValueError, TypeError):
+            w = neutral
+        WEIGHT_FACTORS[f_key] = max(0.15, min(3.0, w / neutral))
+    if weights:
+        log("[V4] Pesi operatore → fattori: " + ", ".join(
+            f"{k}={v:.2f}" for k, v in sorted(WEIGHT_FACTORS.items())))
 
 
 def apply_optimizer_overrides(cfg: dict) -> None:
@@ -2238,11 +2283,14 @@ def _build_cpsat_model(
     import random
 
     strat = SCENARIO_STRATEGIES.get(strategy, SCENARIO_STRATEGIES["balanced"])
+    # Pesi operatore: i fattori (1.0 ai default) modulano le spinte di OGNI
+    # strategia del portfolio — la direzione la sceglie la strategia,
+    # l'intensità la decide l'operatore.
     mul_cost = strat["mul_cost"]
-    mul_balance = strat["mul_balance"]
-    mul_suppl = strat["mul_suppl"]
-    mul_spezz = strat["mul_spezz"]
-    mul_transfer = strat["mul_transfer"]
+    mul_balance = strat["mul_balance"] * WEIGHT_FACTORS["balance"]
+    mul_suppl = strat["mul_suppl"] * WEIGHT_FACTORS["suppl"]
+    mul_spezz = strat["mul_spezz"] * WEIGHT_FACTORS["spezz"]
+    mul_transfer = strat["mul_transfer"] * WEIGHT_FACTORS["transfer"]
 
     model = cp_model.CpModel()
     n_seg = len(segments)
@@ -2532,7 +2580,7 @@ def _build_cpsat_model(
             if WEIGHT_IDLE_PENALTY > 0:
                 idle_min_raw = max(0, nastro_s - work_with_overhead)
                 idle_min_capped = min(idle_min_raw, IDLE_PENALTY_MAX_MIN)
-                cost_cents += WEIGHT_IDLE_PENALTY * idle_min_capped * COST_SCALE
+                cost_cents += int(WEIGHT_IDLE_PENALTY * WEIGHT_FACTORS["quality"]) * idle_min_capped * COST_SCALE
 
         # Perturbazione per esplorare soluzioni diverse
         if scenario_noise > 0:
@@ -2583,7 +2631,7 @@ def _build_cpsat_model(
     # spinge il solver a preferire pair (1 turno copre 2 segmenti) rispetto
     # a 2 single, anche quando l'aritmetica oraria sarebbe quasi pari.
     if WEIGHT_DUTY_COUNT > 0:
-        obj_terms.append(WEIGHT_DUTY_COUNT * COST_SCALE * total_duties)
+        obj_terms.append(int(WEIGHT_DUTY_COUNT * WEIGHT_FACTORS["duty"]) * COST_SCALE * total_duties)
 
     # Penalità SOFT per superamento dei limiti percentuali (flessibili)
     for ex in pct_excess:
@@ -2725,7 +2773,7 @@ def _score_solution(
     # un turno-tipo (≈ ore target × tariffa oraria), con SCORE_PER_DUTY come
     # pavimento/override.
     per_duty_weight = max(SCORE_PER_DUTY, rates.hourly_rate * (rates.target_work_min / 60.0))
-    score += n_total * per_duty_weight
+    score += n_total * per_duty_weight * WEIGHT_FACTORS["duty"]
 
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
     suppl_pct = n_suppl / max(n_total, 1)
@@ -2844,6 +2892,15 @@ def optimize_multi_scenario(
         intensity_map = {"fast": 1, "normal": 2, "deep": 3, "extreme": 4}
         intensity = intensity_map.get(intensity, 2)
     n_scenarios = {1: MIN_SCENARIOS, 2: DEFAULT_SCENARIOS, 3: MAX_SCENARIOS, 4: MAX_SCENARIOS + 12}.get(intensity, DEFAULT_SCENARIOS)
+    # Parità col vecchio motore: maxRounds (1-10, default 5) scala il numero
+    # di scenari del portfolio — "più round" nel v4 significa più esplorazione.
+    _mr = config.get("maxRounds")
+    try:
+        _mr = int(_mr) if _mr is not None else None
+    except (ValueError, TypeError):
+        _mr = None
+    if _mr and _mr > 0 and _mr != 5:
+        n_scenarios = max(1, round(n_scenarios * min(10, _mr) / 5.0))
     # Override esplicito del numero scenari da config.bds.scenari.count (0/assente = auto da intensità)
     _scen_count = ((config.get("bds", {}) or {}).get("scenari", {}) or {}).get("count")
     if _scen_count:
@@ -3726,6 +3783,10 @@ def serialize_output(
             "weightIdlePenalty": WEIGHT_IDLE_PENALTY,
             "idlePenaltyMaxMin": IDLE_PENALTY_MAX_MIN,
             "scorePerDuty": SCORE_PER_DUTY,
+            # Verificabilità: i fattori applicati dai pesi operatore (1.0 =
+            # slider al default). Se restano tutti 1.0, i pesi non sono
+            # arrivati fino a qui.
+            "weightFactors": {k: round(v, 3) for k, v in WEIGHT_FACTORS.items()},
         },
         "carPool": {
             "totalTrips": len(car_movements),
@@ -3775,6 +3836,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     apply_shift_rules_override(config)
     # Override iperparametri ottimizzatore (saturazione, vetture, pesi)
     apply_optimizer_overrides(config)
+    # Pesi operatore (slider pannello TG / crewConfig.weights) → fattori v4
+    apply_operator_weights(config)
     # Override avanzati Fase 2 (soglie/scoring tagli, cap %, multi-scenario)
     apply_fase2_overrides(config)
     # Vincoli GLOBALI di soluzione (BDSI cap. 14)
