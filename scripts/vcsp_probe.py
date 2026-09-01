@@ -295,7 +295,11 @@ def run_probe_phase(
         crew_out = csp_run({"vehicleShifts": shifts_out, "config": crew_config},
                            crew_time_limit)
         kpi = kpi_fn(vsp_out, crew_out)
-        if kpi["totalCostEur"] < result["kpi"]["totalCostEur"] - COST_EPS:
+        # Stesso metro della selezione fra round: punteggio (costo + ombre
+        # turni/violazioni), col costo secco come ripiego per kpi_fn legacy.
+        _score_new = kpi.get("selectionScoreEur", kpi["totalCostEur"])
+        _score_old = result["kpi"].get("selectionScoreEur", result["kpi"]["totalCostEur"])
+        if _score_new < _score_old - COST_EPS:
             gain = result["kpi"]["totalCostEur"] - kpi["totalCostEur"]
             log(f"[PROBE]   ACCETTATO: €{result['kpi']['totalCostEur']} → "
                 f"€{kpi['totalCostEur']} (−€{gain:.2f}), "

@@ -2546,6 +2546,9 @@ function compactAgentResult(payload: any): any {
           round: r.round, probe: !!r.probe, vehicles: r.vehicles,
           duties: r.duties, supplementi: r.supplementi, bdsViolations: r.bdsViolations,
           vehicleCostEur: r.vehicleCostEur, crewCostEur: r.crewCostEur, totalCostEur: r.totalCostEur,
+          // Punteggio usato per scegliere il best round (costo + ombre
+          // turni/violazioni): senza, "bestRound" sembra arbitrario dalla chat.
+          selectionScoreEur: r.selectionScoreEur ?? null,
         })),
         crew: v.crew?.summary ? {
           duties: v.crew.summary.totalShifts ?? null,
