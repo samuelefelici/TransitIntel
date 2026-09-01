@@ -2495,6 +2495,24 @@ function agentJobLogger(job: AgentOptimizeJob, base: any) {
   };
 }
 
+/** Aggrega i messaggi per-turno ({driverId: [msg…]}) in un top-10 per tipo. */
+function aggregateDutyMessages(det: any): { msg: string; n: number }[] | null {
+  if (!det || typeof det !== "object") return null;
+  const counts = new Map<string, number>();
+  for (const msgs of Object.values(det as Record<string, string[]>)) {
+    if (!Array.isArray(msgs)) continue;
+    for (const m of msgs) {
+      const key = String(m).slice(0, 120);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return [];
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([msg, n]) => ({ msg, n }));
+}
+
 /** Vista COMPATTA del risultato per la chat (l'MCP tronca a ~40k):
  * KPI, round, sonda e advisories — mai i turni completi (si aprono in app). */
 function compactAgentResult(payload: any): any {
@@ -2538,22 +2556,11 @@ function compactAgentResult(payload: any): any {
           // DIAGNOSI: violazioni aggregate per messaggio (top 10) — senza
           // questa la chat vede "33 violazioni" ma non QUALI regole saltano,
           // e non può scegliere la leva giusta per il giro successivo.
-          violationsBreakdown: (() => {
-            const det = v.crew.summary.validation?.details;
-            if (!det || typeof det !== "object") return null;
-            const counts = new Map<string, number>();
-            for (const msgs of Object.values(det as Record<string, string[]>)) {
-              if (!Array.isArray(msgs)) continue;
-              for (const m of msgs) {
-                const key = String(m).slice(0, 120);
-                counts.set(key, (counts.get(key) ?? 0) + 1);
-              }
-            }
-            return Array.from(counts.entries())
-              .sort((a, b) => b[1] - a[1])
-              .slice(0, 10)
-              .map(([msg, n]) => ({ msg, n }));
-          })(),
+          violationsBreakdown: aggregateDutyMessages(v.crew.summary.validation?.details),
+          // Avvisi non bloccanti (es. pause pasto con severità "avviso"):
+          // il turno resta valido ma l'operatore deve vederli.
+          bdsWarnings: v.crew.summary.validation?.totalWarnings ?? 0,
+          warningsBreakdown: aggregateDutyMessages(v.crew.summary.validation?.warningDetails),
           // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
           // dice se le violazioni sono un problema di blocchi troppo lunghi.
           blocks: v.crew.metrics ? {

@@ -370,8 +370,14 @@ CEE561Config = RD131Config
 
 @dataclass
 class IntervalloPastoConfig:
-    """Vincolo intervallo pasto ispirato a BDS ACIntervalloPasto."""
+    """Vincolo intervallo pasto ispirato a BDS ACIntervalloPasto.
+
+    severita: "avviso" (default) = la pausa pasto mancante NON invalida il
+    turno e non conta nelle violazioni — compare come avvertimento separato.
+    "vincolo" = regola dura come le altre (per le aziende che la impongono).
+    """
     attivo: bool = True
+    severita: str = "avviso"             # "avviso" | "vincolo"
     # Fascia pranzo
     pranzo_controllo_inizio: int = 720   # 12:00
     pranzo_controllo_fine: int = 840     # 14:00
@@ -392,6 +398,7 @@ class IntervalloPastoConfig:
         r = cls()
         _MAP = {
             "attivo": ("attivo", bool),
+            "severita": ("severita", str),
             "pranzoControlloInizio": ("pranzo_controllo_inizio", int),
             "pranzoControlloFine": ("pranzo_controllo_fine", int),
             "pranzoSostaInizio": ("pranzo_sosta_inizio", int),
@@ -411,6 +418,7 @@ class IntervalloPastoConfig:
     def to_dict(self) -> dict:
         return {
             "attivo": self.attivo,
+            "severita": self.severita,
             "pranzoControlloInizio": self.pranzo_controllo_inizio,
             "pranzoControlloFine": self.pranzo_controllo_fine,
             "pranzoSostaInizio": self.pranzo_sosta_inizio,
@@ -615,6 +623,9 @@ class BDSValidation:
     nastro_ok: bool = True
     riprese_ok: bool = True
     violations: list[str] = field(default_factory=list)
+    # Avvertimenti: regole con severità "avviso" (es. pausa pasto) — non
+    # invalidano il turno e non contano come violazioni.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def cee561_ok(self) -> bool:
@@ -641,6 +652,7 @@ class BDSValidation:
             "nastro": self.nastro_ok,
             "riprese": self.riprese_ok,
             "violations": self.violations,
+            "warnings": self.warnings,
         }
 
 
