@@ -1747,9 +1747,21 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
         if nastro <= rules["spezzato"]["maxNastro"] and work <= max_lavoro_spez:
             return "spezzato"
 
-    # 5. Fallback: intero con tolleranza se singolo segmento
+    # 5. Fallback con la STESSA tolleranza dei check nastro/lavoro (+15'
+    #    intero, +5' semiunico/spezzato): senza, un semiunico di 556-560'
+    #    passava i controlli ma il classificatore lo marcava "invalido" —
+    #    violazioni fantasma in ogni giro reale.
     if n_segs == 1 and nastro <= rules["intero"]["maxNastro"] + 15:
         return "intero"
+    if (n_segs >= 2
+            and rules["semiunico"]["intMin"] <= interruzione <= rules["semiunico"]["intMax"]
+            and nastro <= rules["semiunico"]["maxNastro"] + 5
+            and work <= max_lavoro_semi + 5):
+        return "semiunico"
+    if (n_segs >= 2 and interruzione >= rules["spezzato"]["intMin"]
+            and nastro <= rules["spezzato"]["maxNastro"] + 5
+            and work <= max_lavoro_spez + 5):
+        return "spezzato"
 
     # 6. Invalido
     return "invalido"
