@@ -2577,6 +2577,23 @@ function compactAgentResult(payload: any): any {
           segmentation: v.crew.metrics?.optimizerParams?.segmentation ?? v.crew.metrics?.segmentation ?? null,
           // Fattori applicati dai pesi operatore (1.0 = slider al default)
           weightFactors: v.crew.metrics?.weightFactors ?? null,
+          // Elenco compatto dei turni: serve al passo "pianificazione" (quali
+          // interi restano corti, dove spostare le corse). Un turno = tipo,
+          // nastro/lavoro e i suoi pezzi (bus, orari, nodi, linee).
+          dutyList: (Array.isArray(v.crew.driverShifts) ? v.crew.driverShifts : []).slice(0, 80).map((d: any) => ({
+            id: d.driverId, type: d.type, nastroMin: d.nastroMin, workMin: d.workMin,
+            interruptionMin: d.interruptionMin ?? 0,
+            pieces: (Array.isArray(d.riprese) ? d.riprese : []).map((r: any) => {
+              const trips = Array.isArray(r.trips) ? r.trips.filter((t: any) => t && t.tripId) : [];
+              const lines = Array.from(new Set(trips.map((t: any) => t.routeName).filter(Boolean)));
+              return {
+                veh: Array.isArray(r.vehicleIds) && r.vehicleIds.length ? r.vehicleIds[0] : (trips[0]?.vehicleId ?? null),
+                start: r.startTime, end: r.endTime,
+                from: trips[0]?.firstStopName ?? null, to: r.lastStop ?? null,
+                lines, trips: trips.length,
+              };
+            }),
+          })),
           // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
           // dice se le violazioni sono un problema di blocchi troppo lunghi.
           blocks: v.crew.metrics ? {
