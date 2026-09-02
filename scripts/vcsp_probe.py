@@ -156,6 +156,89 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
     return candidates[:max_candidates]
 
 
+CREW_TARGET_GAP_MIN = 45   # stacco a cui mirare fra i due pezzi (→ intero composto)
+
+
+def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
+                               max_candidates: int = 40) -> list[dict]:
+    """Candidati GUIDATI DAI TURNI: per ogni bi-ripresa (semiunico/spezzato)
+    prova a portare lo stacco fra i due pezzi sotto l'interruzione minima,
+    così che il CSP possa farne un intero composto (o riaccoppiare meglio).
+
+    Lo spostamento è di LINEA (tutte le corse delle linee servite dal pezzo),
+    non di singolo bus: sulle linee a più vetture un bus solo spostato
+    romperebbe la cadenza. Entro la flessibilità dichiarata in Planning
+    (flexMin, minimo fra le corse coinvolte); 0 = niente candidato.
+      kind "crew-early": anticipa le linee del SECONDO pezzo di δ
+      kind "crew-late":  posticipa le linee del PRIMO pezzo di δ
+    """
+    route_trips: dict[str, list[dict]] = {}
+    for t in trips_by_id.values():
+        rid = t.get("routeId")
+        if rid:
+            route_trips.setdefault(rid, []).append(t)
+
+    def _routes_of(piece: dict) -> set[str]:
+        out: set[str] = set()
+        for t in piece.get("trips") or []:
+            r = trips_by_id.get(t.get("tripId"))
+            if r and r.get("routeId"):
+                out.add(r["routeId"])
+        return out
+
+    def _shift_for(routes: set[str], delta: int) -> dict[str, int] | None:
+        shifts: dict[str, int] = {}
+        for rid in routes:
+            for r in route_trips.get(rid, []):
+                shifts[r["tripId"]] = delta
+        return shifts or None
+
+    def _flex_cap(routes: set[str]) -> int:
+        vals = [_flex_of(r) for rid in routes for r in route_trips.get(rid, [])]
+        return min(vals) if vals else 0
+
+    cands: list[dict] = []
+    seen: set[frozenset] = set()
+    for d in crew_out.get("driverShifts") or []:
+        if d.get("type") not in ("semiunico", "spezzato"):
+            continue
+        pieces = d.get("riprese") or []
+        if len(pieces) != 2:
+            continue
+        p1, p2 = pieces
+        try:
+            gap = int(p2["startMin"]) - int(p1["endMin"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        need = gap - CREW_TARGET_GAP_MIN
+        if need <= 0:
+            continue
+        for kind, piece, sign in (("crew-early", p2, -1), ("crew-late", p1, +1)):
+            routes = _routes_of(piece)
+            if not routes:
+                continue
+            delta = min(need, _flex_cap(routes), MAX_FLEX_MIN)
+            if delta <= 0:
+                continue
+            shifts = _shift_for(routes, sign * delta)
+            if not shifts:
+                continue
+            key = frozenset(shifts.items())
+            if key in seen:
+                continue
+            seen.add(key)
+            v1 = (p1.get("vehicleIds") or ["?"])[0]
+            v2 = (p2.get("vehicleIds") or ["?"])[0]
+            cands.append({
+                "shifts": shifts, "deltaNeeded": delta, "blockA": v1, "blockB": v2,
+                "kind": kind, "duty": d.get("driverId"), "gapMin": gap,
+                "routes": sorted(routes),
+            })
+    # prima gli spostamenti piccoli che chiudono di più lo stacco
+    cands.sort(key=lambda c: (c["deltaNeeded"], -(c["gapMin"] - c["deltaNeeded"])))
+    return cands[:max_candidates]
+
+
 def _apply_shifts(trips: list[dict], shifts: dict[str, int]) -> list[dict]:
     """Nuova lista corse con gli orari traslati (copia, l'input resta intatto)."""
     out = []
@@ -237,8 +320,10 @@ def run_probe_phase(
 
     while probes_run < max_probes:
         trips_by_id = {t.get("tripId"): t for t in cur_trips}
-        cands = [c for c in find_probe_candidates(result["vsp"], trips_by_id)
-                 if frozenset(c["shifts"].items()) not in tried]
+        cands = ([c for c in find_crew_probe_candidates(result["crew"], trips_by_id)
+                  if frozenset(c["shifts"].items()) not in tried]
+                 + [c for c in find_probe_candidates(result["vsp"], trips_by_id)
+                    if frozenset(c["shifts"].items()) not in tried])
         if probes_run == 0:
             section["candidates"] = len(cands)
         if not cands:
@@ -247,9 +332,16 @@ def run_probe_phase(
         tried.add(frozenset(cand["shifts"].items()))
         probes_run += 1
         section["probesRun"] = probes_run
-        shifts_txt = ", ".join(f"{tid[:8]}…{d:+d}′" for tid, d in cand["shifts"].items())
-        log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
-            f"({shifts_txt}) per fondere {cand['blockA']}+{cand['blockB']}")
+        if len(cand["shifts"]) <= 4:
+            shifts_txt = ", ".join(f"{tid[:8]}…{d:+d}′" for tid, d in cand["shifts"].items())
+        else:
+            shifts_txt = f"{len(cand['shifts'])} corse {next(iter(cand['shifts'].values())):+d}′"
+        if cand["kind"].startswith("crew"):
+            log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
+                f"({shifts_txt}) per il turno {cand.get('duty')} (stacco {cand.get('gapMin')}′)")
+        else:
+            log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
+                f"({shifts_txt}) per fondere {cand['blockA']}+{cand['blockB']}")
         if progress:
             progress(f"Sonda {probes_run}/{max_probes}: corsa {cand['kind']} "
                      f"±{cand['deltaNeeded']}′ → re-solve…")
@@ -276,8 +368,10 @@ def run_probe_phase(
         vehicles_old = best_vm.get("vehicles", 0)
         cost_new = float(vm.get("costEur") or 0)
         cost_old = float(best_vm.get("costEur") or 0)
+        _crew_cand = cand["kind"].startswith("crew")
         if (not shifts_out or vehicles_new > vehicles_old
-                or (vehicles_new == vehicles_old and cost_new >= cost_old - COST_EPS)):
+                or (not _crew_cand and vehicles_new == vehicles_old
+                    and cost_new >= cost_old - COST_EPS)):
             rejected_entry["reason"] = "vsp"   # i mezzi non migliorano: niente CSP
             section["rejected"].append(rejected_entry)
             log(f"[PROBE]   scartato (VSP: {vehicles_new} vs {vehicles_old} mezzi, "
