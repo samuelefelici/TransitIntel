@@ -170,6 +170,14 @@ MAX_COMPANY_CARS = COMPANY_CARS    # default 5
 # Letto da config.bds.optimizer.weightDutyCount.
 WEIGHT_DUTY_COUNT = 20000          # = ~200 € extra "virtuali" per ogni turno
 
+# Saturazione SOFT: un single sotto MIN_WORK_PER_DUTY (che avrebbe un pair
+# possibile) costa questa penalità virtuale invece di essere VIETATO. Il
+# divieto rendeva il modello infeasible appena i pezzi erano corti (copertura
+# perfetta a coppie inesistente) e tutto finiva nel greedy: 24 turni invece
+# di 17 sull'istanza di prova. Letto da config.bds.optimizer.saturationPenalty
+# (0 = nessuna penalità).
+SATURATION_PENALTY = 10000
+
 # FIX-CSP-1: Penalita per minuto di idle (nastro - lavoro) sui single non
 # supplemento. CAPPATA a IDLE_PENALTY_MAX_MIN minuti per evitare doppia
 # penalita' con work_imbalance_per_min che gia' copre la deviazione dal target.
@@ -242,7 +250,7 @@ def apply_optimizer_overrides(cfg: dict) -> None:
     """
     global MIN_WORK_PER_DUTY, MAX_COMPANY_CARS
     global WEIGHT_DUTY_COUNT, WEIGHT_IDLE_PENALTY, IDLE_PENALTY_MAX_MIN
-    global SCORE_PER_DUTY
+    global SCORE_PER_DUTY, SATURATION_PENALTY
 
     bds = cfg.get("bds", {}) if cfg else {}
     opt = bds.get("optimizer") or {}
@@ -271,6 +279,7 @@ def apply_optimizer_overrides(cfg: dict) -> None:
     WEIGHT_IDLE_PENALTY  = _set_int("weightIdlePenalty", WEIGHT_IDLE_PENALTY)
     IDLE_PENALTY_MAX_MIN = _set_int("idlePenaltyMaxMin", IDLE_PENALTY_MAX_MIN)
     SCORE_PER_DUTY       = _set_float("scorePerDuty",    SCORE_PER_DUTY)
+    SATURATION_PENALTY   = max(0, _set_int("saturationPenalty", SATURATION_PENALTY))
 
     log(f"[V4] Optimizer overrides: minWork={MIN_WORK_PER_DUTY}min, "
         f"maxCompanyCars={MAX_COMPANY_CARS}, "
@@ -297,6 +306,7 @@ def apply_fase2_overrides(cfg: dict) -> None:
     global CUT_NASTRO_PENALTY_PER_MIN, CUT_SAME_ROUTE_PENALTY
     global PCT_OVER_PENALTY
     global SCENARIO_TIME_FRACTION, POLISH_TIME_FRACTION
+    global PAIR_AWARE_CUTS, PAIR_PIECE_TARGET_MIN, PAIR_MAX_PIECES
 
     bds = cfg.get("bds", {}) if cfg else {}
 
@@ -312,6 +322,10 @@ def apply_fase2_overrides(cfg: dict) -> None:
     DRIVING_BASSO_THRESHOLD = _num(cuts, "drivingBassoThreshold", DRIVING_BASSO_THRESHOLD, int)
     MIN_CUT_GAP             = _num(cuts, "minCutGap", MIN_CUT_GAP, int)
     COLLASSA_MIN_GAP        = _num(cuts, "collassaMinGap", COLLASSA_MIN_GAP, int)
+    if "pairAware" in cuts:
+        PAIR_AWARE_CUTS = cuts["pairAware"] in (True, 1, "1", "true", "True", "on")
+    PAIR_PIECE_TARGET_MIN   = max(0, _num(cuts, "pairPieceTargetMin", PAIR_PIECE_TARGET_MIN, int))
+    PAIR_MAX_PIECES         = max(2, min(8, _num(cuts, "pairMaxPieces", PAIR_MAX_PIECES, int)))
 
     cs = bds.get("cutScoring") or {}
     CUT_SCORE_GAP_BASE          = _num(cs, "gapBase", CUT_SCORE_GAP_BASE, float)
@@ -771,6 +785,16 @@ CUT_NASTRO_PENALTY_PER_MIN = 0.05
 CUT_SAME_ROUTE_PENALTY = 15.0
 CUT_NO_CLUSTER_PENALTY = 8.0
 CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 15min
+
+# PAIR-AWARE: segmentazione alternativa in GARA con quella storica. I blocchi
+# lunghi vengono tagliati in pezzi abbastanza corti da potersi ACCOPPIARE in
+# semiunici/spezzati: due pezzi da 4h30 non stanno in un nastro da 9h15/10h30,
+# quindi ogni pezzo diventava un turno intero e i turni guida esplodevano
+# (prova reale: 19 vetture → 47 turni, 4,9h di lavoro medio).
+PAIR_AWARE_CUTS = True             # config.bds.cuts.pairAware
+PAIR_PIECE_TARGET_MIN = 0          # config.bds.cuts.pairPieceTargetMin (0 = dalle SHIFT_RULES)
+PAIR_MAX_PIECES = 5                # config.bds.cuts.pairMaxPieces
+PAIR_PIECE_MIN_LEN = 150           # sotto è un supplemento: non aiuta a ridurre i turni
 
 # Penalità (cost-cents) per punto-percentuale-corsa oltre i cap soft dei tipi
 # turno (semiunico/spezzato). Override-abile da config.bds.optimizer.pctOverPenalty.
@@ -1708,6 +1732,125 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
     return all_segments
 
 
+def _pair_piece_max(rules: dict) -> int:
+    """Lunghezza massima (min) di un pezzo perché DUE pezzi possano formare un
+    semiunico o uno spezzato: dalle regole (nastro/lavoro max, interruzione
+    minima) al netto di pre-turno e trasferimenti, come in _feasible_pair."""
+    if PAIR_PIECE_TARGET_MIN > 0:
+        return PAIR_PIECE_TARGET_MIN
+    ovh = pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2
+    bounds = []
+    for kind, default_work in (("semiunico", 480), ("spezzato", 450)):
+        r = rules.get(kind, SHIFT_RULES[kind])
+        by_nastro = (int(r["maxNastro"]) - ovh - int(r["intMin"])) // 2
+        by_work = (int(r.get("maxLavoro", default_work)) - ovh) // 2
+        bounds.append(min(by_nastro, by_work))
+    return max(60, min(bounds))
+
+
+def build_pair_aware_segments(
+    blocks: list[VehicleBlock], clusters: list[Cluster], rules: dict,
+    full_candidates: dict[str, list[CutCandidate]] | None = None,
+    cut_only_at_clusters: bool = True,
+) -> tuple[list[Segment], dict[str, list[Segment]]] | None:
+    """Segmentazione PAIR-AWARE: ogni blocco viene tagliato nel numero di pezzi
+    necessario perché ciascun pezzo stia sotto _pair_piece_max. Scelta dei
+    tagli con una DP sui candidati inter-corsa (già filtrati sui cluster):
+    massimizza la somma dei punteggi di taglio, penalizza i pezzi troppo
+    lunghi per accoppiarsi e quelli da supplemento.
+
+    full_candidates: tagli PRIMA di collassa_cambi (che è tarato per 1-2 tagli
+    e su un blocco lungo lascia solo pochi punti, spesso tutti nella stessa
+    metà della giornata); qui il filtro sui cluster viene riapplicato.
+
+    Ritorna (segmenti, mappa veicolo→segmenti) oppure None se nessun blocco
+    cambia rispetto alla segmentazione storica (allora la gara non serve).
+    """
+    piece_max = _pair_piece_max(rules)
+    seg_all: list[Segment] = []
+    seg_map: dict[str, list[Segment]] = {}
+    changed = False
+
+    def _pen(length: int) -> float:
+        p = 0.0
+        if length > piece_max:
+            p += (length - piece_max) * 0.5
+        if length < PAIR_PIECE_MIN_LEN:
+            p += (PAIR_PIECE_MIN_LEN - length) * 0.3
+        return p
+
+    for b in blocks:
+        legacy = list(b.segments)
+        trips = b.trips
+        need = -(-b.nastro_min // piece_max) if b.nastro_min > 0 else 1
+        need = max(1, min(need, PAIR_MAX_PIECES))
+        pool = (full_candidates or {}).get(b.vehicle_id, b.cut_candidates)
+        cands = sorted((c for c in pool
+                        if c.cut_type == "inter" and (c.allows_cambio or not cut_only_at_clusters)),
+                       key=lambda c: c.index)
+        if need <= 1 or need <= len(legacy) or len(cands) < need - 1:
+            seg_map[b.vehicle_id] = legacy
+            seg_all.extend(legacy)
+            continue
+
+        def _piece_len(i_from: int | None, j_to: int | None) -> int:
+            start = trips[0].departure_min if i_from is None else trips[cands[i_from].index + 1].departure_min
+            end = trips[-1].arrival_min if j_to is None else trips[cands[j_to].index].arrival_min
+            return end - start
+
+        k_cuts = need - 1
+        n = len(cands)
+        NEG = float("-inf")
+        best = [[NEG] * n for _ in range(k_cuts + 1)]
+        back = [[-1] * n for _ in range(k_cuts + 1)]
+        for j in range(n):
+            best[1][j] = cands[j].score - _pen(_piece_len(None, j))
+        for k in range(2, k_cuts + 1):
+            for j in range(n):
+                for i in range(j):
+                    if best[k - 1][i] == NEG or cands[j].index <= cands[i].index:
+                        continue
+                    v = best[k - 1][i] + cands[j].score - _pen(_piece_len(i, j))
+                    if v > best[k][j]:
+                        best[k][j], back[k][j] = v, i
+        bj, bv = -1, NEG
+        for j in range(n):
+            if best[k_cuts][j] == NEG:
+                continue
+            v = best[k_cuts][j] - _pen(_piece_len(j, None))
+            if v > bv:
+                bv, bj = v, j
+        if bj < 0:
+            seg_map[b.vehicle_id] = legacy
+            seg_all.extend(legacy)
+            continue
+        chosen: list[CutCandidate] = []
+        k, j = k_cuts, bj
+        while k >= 1 and j >= 0:
+            chosen.append(cands[j])
+            j = back[k][j]
+            k -= 1
+        chosen.sort(key=lambda c: c.index)
+
+        segs: list[Segment] = []
+        prev = 0
+        for ci, c in enumerate(chosen):
+            segs.append(_make_segment(b.vehicle_id, b.vehicle_type, trips[prev:c.index + 1],
+                                      "first" if ci == 0 else "middle", c.index, clusters))
+            prev = c.index + 1
+        segs.append(_make_segment(b.vehicle_id, b.vehicle_type, trips[prev:], "second",
+                                  chosen[-1].index, clusters))
+        seg_map[b.vehicle_id] = segs
+        seg_all.extend(segs)
+        changed = True
+        log(f"  [PAIR-AWARE] {b.vehicle_id}: {len(legacy)} → {len(segs)} pezzi "
+            f"({', '.join(fmt_dur(s.end_min - s.start_min) for s in segs)}), target ≤{piece_max}')")
+
+    if not changed:
+        return None
+    return seg_all, seg_map
+
+
 # ═══════════════════════════════════════════════════════════════
 #  CLASSIFICAZIONE POST-HOC BDS
 # ═══════════════════════════════════════════════════════════════
@@ -2234,6 +2377,31 @@ def compute_duty_cost_v4(
 #  FASE 4: OTTIMIZZAZIONE GLOBALE CP-SAT
 # ═══════════════════════════════════════════════════════════════
 
+def _car_deliver_window(s: Segment, clusters: list[Cluster]) -> tuple[int, int] | None:
+    """Viaggio auto deposito→nodo PRIMA del segmento (stessa regola di
+    compute_car_pool, Fase 6): serve solo se il capolinea è in un cluster."""
+    t = depot_transfer_min(s.first_stop, clusters)
+    if t > 0 and s.first_cluster:
+        return (s.start_min - t, s.start_min)
+    return None
+
+
+def _car_pickup_window(s: Segment, clusters: list[Cluster]) -> tuple[int, int] | None:
+    """Viaggio auto nodo→deposito DOPO il segmento (come compute_car_pool)."""
+    t = depot_transfer_min(s.last_stop, clusters)
+    if t > 0 and s.last_cluster:
+        return (s.end_min, s.end_min + t)
+    return None
+
+
+def _interval_peak(ivs: list[tuple[int, int]]) -> int:
+    """Massimo numero di intervalli [a, b) sovrapposti in un istante."""
+    if not ivs:
+        return 0
+    pts = sorted({p for iv in ivs for p in iv})
+    return max(sum(1 for a, b in ivs if a <= t < b) for t in pts)
+
+
 def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
     """Verifica se due segmenti possono formare un turno biripresa (semiunico/spezzato).
 
@@ -2338,14 +2506,17 @@ def _build_cpsat_model(
         pairs_by_seg[key[0]].append(key)
         pairs_by_seg[key[1]].append(key)
 
-    # -- HARD: saturazione (min lavoro per turno intero) --
-    # Se un segmento da solo (single) genererebbe un turno "intero" sotto la
-    # soglia minima di lavoro, lo VIETIAMO purche' esista almeno un pair che
-    # lo possa coprire (altrimenti rendiamo il modello infeasible).
+    # -- SOFT: saturazione (min lavoro per turno intero) --
+    # Un segmento che da solo (single) darebbe un turno "intero" sotto la
+    # soglia minima di lavoro, se esiste almeno un pair che lo può coprire,
+    # paga SATURATION_PENALTY nell'obiettivo. Era un divieto HARD: con pezzi
+    # corti (segmentazione pair-aware) pretendeva una copertura perfetta a
+    # coppie, spesso inesistente → tutti gli scenari INFEASIBLE → greedy.
     # I supplementi (nastro <= SUPPLEMENTO_NASTRO_MAX) sono esentati per
     # definizione: hanno regole di durata proprie.
     n_forbidden_single = 0
-    if MIN_WORK_PER_DUTY > 0:
+    short_single_vars: list[Any] = []
+    if MIN_WORK_PER_DUTY > 0 and SATURATION_PENALTY > 0:
         for s in segments:
             _t = depot_transfer_min(s.first_stop, clusters)
             _tb = depot_transfer_min(s.last_stop, clusters)
@@ -2359,41 +2530,28 @@ def _build_cpsat_model(
             if work_w >= MIN_WORK_PER_DUTY:
                 continue
             if pairs_by_seg.get(s.idx):
-                model.add(single[s.idx] == 0)
+                short_single_vars.append(single[s.idx])
                 n_forbidden_single += 1
     if n_forbidden_single > 0:
-        log(f"[V4][CPSAT] Saturazione: vietati {n_forbidden_single} single sotto {MIN_WORK_PER_DUTY}min lavoro")
+        log(f"[V4][CPSAT] Saturazione: {n_forbidden_single} single sotto {MIN_WORK_PER_DUTY}min "
+            f"lavoro penalizzati ({SATURATION_PENALTY} cad.)")
 
-    # -- HARD: cap vetture aziendali simultanee per trasferimenti a vuoto --
-    # Ogni pair (semiunico/spezzato) richiede UNA vettura aziendale per spostare
-    # il driver da fine s1 a inizio s2. Modelliamo come cumulative su intervalli
-    # opzionali con capacita' MAX_COMPANY_CARS.
-    if MAX_COMPANY_CARS > 0 and pair_vars:
-        car_intervals = []
-        for key, pv in pair_vars.items():
-            s1_idx, s2_idx = key
-            s1, s2 = seg_by_idx[s1_idx], seg_by_idx[s2_idx]
-            if s1.start_min > s2.start_min:
-                s1, s2 = s2, s1
-            car_start = s1.end_min
-            car_end = s2.start_min
-            duration = car_end - car_start
-            if duration <= 0:
-                continue
-            iv = model.new_optional_fixed_size_interval_var(
-                start=car_start,
-                size=duration,
-                is_present=pv,
-                name=f"car_iv_{key[0]}_{key[1]}",
-            )
-            car_intervals.append(iv)
-        if car_intervals:
-            model.add_cumulative(
-                car_intervals,
-                [1] * len(car_intervals),
-                MAX_COMPANY_CARS,
-            )
-            log(f"[V4][CPSAT] Cap HARD vetture aziendali = {MAX_COMPANY_CARS} su {len(car_intervals)} pair")
+    # -- Vetture aziendali: NESSUN vincolo sui pair (era il tappo sui turni) --
+    # Il vecchio modello bloccava un'auto per l'INTERA interruzione di ogni
+    # pair (75'-3h+): con cap 5 restavano ~5 coppie in pausa in tutta la
+    # giornata. Ma nella semantica reale (compute_car_pool, Fase 6) un'auto
+    # serve per il tragitto deposito↔nodo ai BORDI di ogni segmento, che
+    # esiste comunque (intero o pair): un pair su veicoli diversi non aggiunge
+    # viaggi rispetto ai due singoli, uno sullo stesso veicolo ne toglie due.
+    # Il picco del pool dipende quindi dai TAGLI, non dagli accoppiamenti:
+    # qui lo misuriamo per diagnostica; il cap HARD resta verificato dal
+    # post-check sul pool reale (companyCarsHardViolation nel summary).
+    if MAX_COMPANY_CARS > 0:
+        _fixed_windows = [w for s in segments
+                          for w in (_car_deliver_window(s, clusters), _car_pickup_window(s, clusters)) if w]
+        log(f"[V4][CPSAT] Vetture aziendali: cap {MAX_COMPANY_CARS}, viaggi ai bordi dei "
+            f"segmenti {len(_fixed_windows)} (picco in transito {_interval_peak(_fixed_windows)}); "
+            f"nessun vincolo sui pair — il cap è verificato sul pool reale a valle")
 
     # -- Vincoli: copertura esatta --
     for s in segments:
@@ -2644,6 +2802,10 @@ def _build_cpsat_model(
     # a 2 single, anche quando l'aritmetica oraria sarebbe quasi pari.
     if WEIGHT_DUTY_COUNT > 0:
         obj_terms.append(int(WEIGHT_DUTY_COUNT * WEIGHT_FACTORS["duty"]) * COST_SCALE * total_duties)
+
+    # Saturazione SOFT: single corti scoraggiati, mai vietati
+    for v in short_single_vars:
+        obj_terms.append(SATURATION_PENALTY * COST_SCALE * v)
 
     # Penalità SOFT per superamento dei limiti percentuali (flessibili)
     for ex in pct_excess:
@@ -3328,18 +3490,16 @@ def greedy_fallback(
     used: set[int] = set()
     duty_idx = 0
 
-    # Cap HARD vetture aziendali: il CP-SAT lo impone con add_cumulative, ma il
-    # greedy accoppiava senza vincolo → poteva sforare un limite "inviolabile".
-    # Qui lo rendiamo hard anche nel fallback: ogni pair occupa una vettura
-    # durante la finestra di interruzione [s1.end, s2.start]; rifiutiamo il pair
-    # se il picco di vetture simultanee supererebbe il cap (i due segmenti
-    # restano singoli, sempre feasibile).
-    car_intervals: list[tuple[int, int]] = []
-
-    def _car_peak_if_added(new: tuple[int, int]) -> int:
-        allint = car_intervals + [new]
-        pts = sorted({p for iv in allint for p in iv})
-        return max((sum(1 for x, y in allint if x <= t < y) for t in pts), default=0)
+    # Vetture aziendali, semantica reale (viaggi deposito↔nodo ai bordi dei
+    # segmenti, come compute_car_pool): un pair su veicoli diversi NON aggiunge
+    # viaggi rispetto ai due singoli, e un pair sullo stesso veicolo ne toglie
+    # due — gli accoppiamenti non possono peggiorare il picco. Il picco dipende
+    # solo dai tagli: lo misuriamo qui e lo lasciamo al post-check HARD.
+    if MAX_COMPANY_CARS > 0:
+        _fixed = [w for s in segments
+                  for w in (_car_deliver_window(s, clusters), _car_pickup_window(s, clusters)) if w]
+        log(f"[V4][GREEDY] Vetture aziendali: picco viaggi ai bordi = "
+            f"{_interval_peak(_fixed)} (cap {MAX_COMPANY_CARS})")
 
     sorted_segs = sorted(segments, key=lambda s: s.start_min)
 
@@ -3371,13 +3531,6 @@ def greedy_fallback(
             s1, s2 = sm, best_pair
             if s1.start_min > s2.start_min:
                 s1, s2 = s2, s1
-
-            # Cap HARD vetture aziendali: se questo pair sforerebbe il picco,
-            # NON accoppiare (i due segmenti diventano singoli al Pass 2).
-            car_iv = (s1.end_min, s2.start_min)
-            if MAX_COMPANY_CARS > 0 and _car_peak_if_added(car_iv) > MAX_COMPANY_CARS:
-                continue
-            car_intervals.append(car_iv)
 
             interruption = s2.start_min - s1.end_min
             transfer = depot_transfer_min(s1.first_stop, clusters)
@@ -3834,6 +3987,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     # Residenza di servizio per veicolo (dal turno macchina) → ereditata dai turni guida
     global RESIDENZA_BY_VEHICLE
+    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS
     RESIDENZA_BY_VEHICLE = {}
     for _sh in vehicle_shifts_raw:
         _vid = _sh.get("vehicleId")
@@ -3886,6 +4040,9 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         analyze_vehicle_block(b, clusters, bds)
     classify_blocks(blocks, clusters)
 
+    # Snapshot dei tagli PRIMA del collasso: serve alla segmentazione pair-aware
+    full_cut_candidates = {b.vehicle_id: list(b.cut_candidates) for b in blocks}
+
     # Collassa tagli troppo vicini (BDS)
     collassa_cambi(blocks, COLLASSA_MIN_GAP)  # global (override-abile) anziché il default-arg catturato all'import
 
@@ -3904,7 +4061,43 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     report_progress("segments", 25, f"{len(segments)} segmenti")
 
     # ── Fase 4: Ottimizzazione multi-scenario CP-SAT (RD 131/1938) ──
-    duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
+    # PAIR-AWARE in gara: la segmentazione storica (2 tagli sui LUNGO) e quella
+    # a pezzi accoppiabili corrono entrambe con metà budget; vince il punteggio
+    # di _score_solution (costo + costo nascosto per turno).
+    pair_variant = None
+    if PAIR_AWARE_CUTS:
+        pair_variant = build_pair_aware_segments(
+            blocks, clusters, config.get("shiftRules", SHIFT_RULES),
+            full_candidates=full_cut_candidates,
+            cut_only_at_clusters=bool(config.get("cutOnlyAtClusters", True)),
+        )
+    if pair_variant is None:
+        duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
+    else:
+        pair_segments, pair_map = pair_variant
+        legacy_map = {b.vehicle_id: list(b.segments) for b in blocks}
+        rates_cmp = CostRates.from_config(config)
+        half_tl = max(20, int(time_limit_sec / 2))
+        log(f"[V4][PAIR-AWARE] gara: storica {len(segments)} segmenti vs pair-aware "
+            f"{len(pair_segments)} segmenti, {half_tl}s ciascuna")
+        duties_a = optimize_multi_scenario(blocks, segments, config, half_tl, clusters, bds)
+        score_a = _score_solution(duties_a, rates_cmp, bds, clusters)
+        snap_a = (list(LAST_SCENARIO_RESULTS), dict(LAST_OPTIMIZATION_ANALYSIS))
+        for b in blocks:
+            b.segments = pair_map.get(b.vehicle_id, b.segments)
+        duties_b = optimize_multi_scenario(blocks, pair_segments, config, half_tl, clusters, bds)
+        score_b = _score_solution(duties_b, rates_cmp, bds, clusters)
+        log(f"[V4][PAIR-AWARE] storica: {len(duties_a)} turni (score {score_a:.0f}) · "
+            f"pair-aware: {len(duties_b)} turni (score {score_b:.0f})")
+        if score_b < score_a:
+            duties, segments = duties_b, pair_segments
+            log("[V4][PAIR-AWARE] vince la segmentazione pair-aware")
+        else:
+            duties = duties_a
+            for b in blocks:
+                b.segments = legacy_map[b.vehicle_id]
+            LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS = snap_a
+            log("[V4][PAIR-AWARE] vince la segmentazione storica")
 
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
