@@ -230,7 +230,13 @@ def apply_operator_weights(cfg: dict) -> None:
             w = max(0.0, min(10.0, float(weights.get(ui_key, neutral))))
         except (ValueError, TypeError):
             w = neutral
-        WEIGHT_FACTORS[f_key] = max(0.15, min(3.0, w / neutral))
+        ratio = w / neutral
+        if f_key == "spezz":
+            # preferIntero: le strategie del portfolio SCONTANO gli spezzati
+            # (fino a ×0,5); un fattore lineare (max 1,43) non basta a farli
+            # perdere. Quadratico: 10 → ×2,04, 3 → ×0,18.
+            ratio = ratio * ratio
+        WEIGHT_FACTORS[f_key] = max(0.15, min(3.0, ratio))
     if weights:
         log("[V4] Pesi operatore → fattori: " + ", ".join(
             f"{k}={v:.2f}" for k, v in sorted(WEIGHT_FACTORS.items())))
@@ -1048,15 +1054,22 @@ def single_nastro_work(s: "Segment", bds: "BDSConfig", clusters: list) -> tuple[
     return nastro, work
 
 
-def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: list) -> tuple[int, int]:
-    """(nastro, work) di un turno bi-ripresa (semiunico/spezzato). FONTE UNICA
-    condivisa fra obiettivo CP-SAT ed estrazione (vedi single_nastro_work)."""
+def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: list,
+                     ptype: str | None = None) -> tuple[int, int]:
+    """(nastro, work) di un turno su due pezzi. FONTE UNICA condivisa fra
+    obiettivo CP-SAT ed estrazione (vedi single_nastro_work).
+
+    ptype "intero" = INTERO COMPOSTO: cambio vettura in linea senza
+    interruzione — lo stacco breve è attesa retribuita, quindi lavoro = nastro
+    (niente pre-ripresa, niente sosta inoperosa)."""
     if s1.start_min > s2.start_min:
         s1, s2 = s2, s1
     t = depot_transfer_min(s1.first_stop, clusters)
     tb = depot_transfer_min(s2.last_stop, clusters)
     pt = pre_turno_for(t)
     nastro = s2.end_min - s1.start_min + pt + t + tb
+    if ptype == "intero":
+        return nastro, nastro
     work = s1.work_min + s2.work_min + pt + tb + bds.pre_post.pre_ripresa
     # Sosta inoperosa: se l'interruzione avviene a un nodo di sosta, una quota
     # del tempo è retribuita (conta nell'orario di lavoro → cap maxLavoro + costo).
@@ -1891,6 +1904,12 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
     if n_segs == 1 and nastro <= rules["intero"]["maxNastro"] and work <= max_lavoro_intero:
         return "intero"
 
+    # 2b. Intero COMPOSTO: 2 pezzi con stacco sotto l'interruzione minima
+    #     (cambio vettura in linea): nastro e lavoro entro i limiti dell'intero
+    if n_segs >= 2 and interruzione < rules["semiunico"]["intMin"]:
+        if nastro <= rules["intero"]["maxNastro"] and work <= max_lavoro_intero:
+            return "intero"
+
     # 3. Semiunico: 2 segmenti, interruzione 75-179 min, nastro ≤ 555, lavoro ≤ 480
     max_lavoro_semi = rules["semiunico"].get("maxLavoro", 480)
     if n_segs >= 2 and interruzione >= rules["semiunico"]["intMin"] and interruzione <= rules["semiunico"]["intMax"]:
@@ -1908,6 +1927,10 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
     #    passava i controlli ma il classificatore lo marcava "invalido" —
     #    violazioni fantasma in ogni giro reale.
     if n_segs == 1 and nastro <= rules["intero"]["maxNastro"] + 15:
+        return "intero"
+    if (n_segs >= 2 and interruzione < rules["semiunico"]["intMin"]
+            and nastro <= rules["intero"]["maxNastro"] + 15
+            and work <= max_lavoro_intero + 15):
         return "intero"
     if (n_segs >= 2
             and rules["semiunico"]["intMin"] <= interruzione <= rules["semiunico"]["intMax"]
@@ -1978,6 +2001,10 @@ def check_sosta_capolinea(duty: DriverDutyV3, rules: dict = SHIFT_RULES) -> tupl
             gap = seg.trips[i + 1].departure_min - seg.trips[i].arrival_min
             if gap >= sosta_min:
                 return True, []
+    # Intero composto: lo stacco al cambio vettura è una sosta al nodo
+    for si in range(len(duty.segments) - 1):
+        if duty.segments[si + 1].start_min - duty.segments[si].end_min >= sosta_min:
+            return True, []
 
     return False, [f"intero senza sosta ≥ {sosta_min}min al capolinea"]
 
@@ -2270,8 +2297,11 @@ def compute_work_bds(
     # Trasferimenti
     wc.transfer_min = duty.transfer_min + duty.transfer_back_min
 
+    # Intero composto: lo stacco al cambio vettura è attesa retribuita
+    if len(duty.segments) >= 2 and duty.duty_type == "intero":
+        wc.idle_at_terminal_min += max(0, duty.interruption_min)
     # Soste fra riprese (per semiunico/spezzato)
-    if len(duty.segments) >= 2 and duty.interruption_min > 0:
+    elif len(duty.segments) >= 2 and duty.interruption_min > 0:
         boundary_stop = duty.segments[0].last_stop
         _r1_end = duty.segments[0].end_min
         _r2_start = duty.segments[1].start_min
@@ -2440,6 +2470,28 @@ def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
     # RD 131/1938: verifica lavoro max oltre a nastro max
     sr_semi = rules.get("semiunico", SHIFT_RULES["semiunico"])
     sr_spez = rules.get("spezzato", SHIFT_RULES["spezzato"])
+    sr_int = rules.get("intero", SHIFT_RULES["intero"])
+
+    # INTERO COMPOSTO: due pezzi con stacco sotto l'interruzione minima del
+    # semiunico = cambio vettura in linea SENZA interruzione. È un intero
+    # (nastro = lavoro ≤ 7h15): la forma da preferire nel festivo. Il cambio
+    # è a piedi se i pezzi si passano allo stesso nodo (o è lo stesso bus),
+    # altrimenti serve tempo per il trasferimento (stacco ≥ 30').
+    if interruption < sr_semi["intMin"]:
+        same_vehicle = s1.vehicle_id == s2.vehicle_id
+        same_node = bool(s1.last_cluster) and s1.last_cluster == s2.first_cluster
+        if same_vehicle or same_node or interruption >= 30:
+            # RD 131: l'intero vuole almeno una sosta ≥ sostaMinCapolinea —
+            # dentro un pezzo o allo stacco del cambio vettura.
+            sosta_min = int(sr_int.get("sostaMinCapolinea", 15))
+            has_rest = interruption >= sosta_min or any(
+                seg.trips[i + 1].departure_min - seg.trips[i].arrival_min >= sosta_min
+                for seg in (s1, s2) for i in range(len(seg.trips) - 1))
+            if (has_rest and nastro <= sr_int["maxNastro"]
+                    and nastro <= sr_int.get("maxLavoro", 435)
+                    and nastro >= 180):
+                return "intero"
+        return None
 
     # Semiunico: interruzione 1h15-2h59, nastro <= 9h15, lavoro <= 8h
     if (sr_semi["intMin"] <= interruption <= sr_semi["intMax"]
@@ -2778,12 +2830,21 @@ def _build_cpsat_model(
         ptype = pair_types[key]
 
         # FONTE UNICA: stesso work dell'estrazione (cluster reali + pre_turno_for)
-        _nastro_pair, combined_work = pair_nastro_work(s1, s2, bds, clusters)
+        _nastro_pair, combined_work = pair_nastro_work(s1, s2, bds, clusters, ptype)
         hours = combined_work / 60.0
         dev = abs(combined_work - TARGET_WORK_MID)
 
-        # Moltiplicatore specifico per tipo pair (spezzato vs semiunico)
-        pair_type_mul = mul_spezz if ptype == "spezzato" else 1.0
+        # Moltiplicatore per tipo: la strategia rincara gli spezzati (mul_spezz,
+        # che include già il peso operatore); preferIntero (WEIGHT_FACTORS
+        # "spezz") rincara OGNI bi-ripresa, semiunico compreso. L'intero
+        # composto (cambio vettura senza interruzione) è un intero: nessun
+        # rincaro, e nessuna auto per il cambio a piedi.
+        if ptype == "intero":
+            pair_type_mul = 1.0 / WEIGHT_FACTORS["spezz"]
+        elif ptype == "spezzato":
+            pair_type_mul = mul_spezz
+        else:
+            pair_type_mul = WEIGHT_FACTORS["spezz"]
 
         cost_cents = int((hours * rates.hourly_rate * mul_cost
                          + dev * rates.work_imbalance_per_min * mul_balance
@@ -2887,7 +2948,7 @@ def _extract_duties_from_solution(
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
             # FONTE UNICA: identico all'obiettivo CP-SAT (pair_nastro_work)
-            nastro, work = pair_nastro_work(s1, s2, bds, clusters)
+            nastro, work = pair_nastro_work(s1, s2, bds, clusters, ptype)
 
             duties.append(DriverDutyV3(
                 idx=duty_idx,
@@ -2961,6 +3022,13 @@ def _score_solution(
     # pavimento/override.
     per_duty_weight = max(SCORE_PER_DUTY, rates.hourly_rate * (rates.target_work_min / 60.0))
     score += n_total * per_duty_weight * WEIGHT_FACTORS["duty"]
+
+    # preferIntero anche nella SELEZIONE fra scenari: ogni bi-ripresa
+    # (semiunico/spezzato) pesa mezzo turno-tipo × (fattore − 1). Con il
+    # fattore a 1 (slider al default) il termine è zero; sotto 1 (l'operatore
+    # preferisce le bi-riprese) diventa un bonus.
+    n_biriprese = sum(1 for d in duties if d.duty_type in ("semiunico", "spezzato"))
+    score += n_biriprese * per_duty_weight * 0.5 * (WEIGHT_FACTORS["spezz"] - 1.0)
 
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
     suppl_pct = n_suppl / max(n_total, 1)
@@ -3120,7 +3188,10 @@ def optimize_multi_scenario(
             if pair_type:
                 feasible_pairs.append((s1.idx, s2.idx, pair_type))
 
-    log(f"CP-SAT: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili")
+    _ptypes: dict[str, int] = {}
+    for _, _, _pt in feasible_pairs:
+        _ptypes[_pt] = _ptypes.get(_pt, 0) + 1
+    log(f"CP-SAT: {n_seg} segmenti, {len(feasible_pairs)} coppie fattibili {_ptypes}")
 
     # -- Scenari: portfolio di strategie diverse --
     best_duties: list[DriverDutyV3] | None = None
@@ -3550,7 +3621,7 @@ def greedy_fallback(
             transfer_back = depot_transfer_min(s2.last_stop, clusters)
             pt = pre_turno_for(transfer)
             # FONTE UNICA: stesso nastro/work di modello ed estrazione
-            nastro, work = pair_nastro_work(s1, s2, bds, clusters)
+            nastro, work = pair_nastro_work(s1, s2, bds, clusters, best_type)
 
             d = DriverDutyV3(
                 idx=duty_idx,
@@ -3923,6 +3994,11 @@ def serialize_output(
             "segments": len(segments),
             "totalDuties": n_total,
             "elapsedSec": round(elapsed_sec, 1),
+            # Duplicati QUI (oltre che alla radice dell'output) perché
+            # l'orchestratore VCSP inoltra solo summary/metrics: senza,
+            # dalla chat la gara e i pesi applicati restavano invisibili.
+            "segmentation": SEGMENTATION_RESULT,
+            "weightFactors": {k: round(v, 3) for k, v in WEIGHT_FACTORS.items()},
             "classifications": {
                 "CORTO": sum(1 for b in blocks if b.classification == "CORTO"),
                 "CORTO_BASSO": sum(1 for b in blocks if b.classification == "CORTO_BASSO"),
