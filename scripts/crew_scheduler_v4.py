@@ -773,6 +773,8 @@ SCENARIO_STRATEGIES = {
 # (letti da main() per serializzare nell'output)
 LAST_SCENARIO_RESULTS: list[dict] = []
 LAST_OPTIMIZATION_ANALYSIS: dict = {}
+# Esito della gara fra segmentazioni (storica vs pair-aware a più bersagli)
+SEGMENTATION_RESULT: dict | None = None
 
 # ----------------------------------------------------------------
 # Scoring tagli
@@ -1732,7 +1734,7 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
     return all_segments
 
 
-def _pair_piece_max(rules: dict) -> int:
+def _pair_piece_max(rules: dict, kinds: tuple[str, ...] = ("semiunico", "spezzato")) -> int:
     """Lunghezza massima (min) di un pezzo perché DUE pezzi possano formare un
     semiunico o uno spezzato: dalle regole (nastro/lavoro max, interruzione
     minima) al netto di pre-turno e trasferimenti, come in _feasible_pair."""
@@ -1740,7 +1742,8 @@ def _pair_piece_max(rules: dict) -> int:
         return PAIR_PIECE_TARGET_MIN
     ovh = pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2
     bounds = []
-    for kind, default_work in (("semiunico", 480), ("spezzato", 450)):
+    for kind in kinds:
+        default_work = 480 if kind == "semiunico" else 450
         r = rules.get(kind, SHIFT_RULES[kind])
         by_nastro = (int(r["maxNastro"]) - ovh - int(r["intMin"])) // 2
         by_work = (int(r.get("maxLavoro", default_work)) - ovh) // 2
@@ -1752,6 +1755,7 @@ def build_pair_aware_segments(
     blocks: list[VehicleBlock], clusters: list[Cluster], rules: dict,
     full_candidates: dict[str, list[CutCandidate]] | None = None,
     cut_only_at_clusters: bool = True,
+    piece_max: int | None = None,
 ) -> tuple[list[Segment], dict[str, list[Segment]]] | None:
     """Segmentazione PAIR-AWARE: ogni blocco viene tagliato nel numero di pezzi
     necessario perché ciascun pezzo stia sotto _pair_piece_max. Scelta dei
@@ -1766,7 +1770,7 @@ def build_pair_aware_segments(
     Ritorna (segmenti, mappa veicolo→segmenti) oppure None se nessun blocco
     cambia rispetto alla segmentazione storica (allora la gara non serve).
     """
-    piece_max = _pair_piece_max(rules)
+    piece_max = int(piece_max) if piece_max else _pair_piece_max(rules)
     seg_all: list[Segment] = []
     seg_map: dict[str, list[Segment]] = {}
     changed = False
@@ -3953,6 +3957,8 @@ def serialize_output(
             # arrivati fino a qui.
             "weightFactors": {k: round(v, 3) for k, v in WEIGHT_FACTORS.items()},
         },
+        # Gara fra segmentazioni: quale ha vinto e con quanti turni/score
+        "segmentation": SEGMENTATION_RESULT,
         "carPool": {
             "totalTrips": len(car_movements),
             "deliveries": sum(1 for t in car_movements if t.trip_type == "deliver"),
@@ -3987,7 +3993,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     # Residenza di servizio per veicolo (dal turno macchina) → ereditata dai turni guida
     global RESIDENZA_BY_VEHICLE
-    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS
+    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS, SEGMENTATION_RESULT
+    SEGMENTATION_RESULT = None
     RESIDENZA_BY_VEHICLE = {}
     for _sh in vehicle_shifts_raw:
         _vid = _sh.get("vehicleId")
@@ -4064,40 +4071,59 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     # PAIR-AWARE in gara: la segmentazione storica (2 tagli sui LUNGO) e quella
     # a pezzi accoppiabili corrono entrambe con metà budget; vince il punteggio
     # di _score_solution (costo + costo nascosto per turno).
-    pair_variant = None
+    variants: list[tuple[str, list[Segment], dict[str, list[Segment]]]] = []
     if PAIR_AWARE_CUTS:
-        pair_variant = build_pair_aware_segments(
-            blocks, clusters, config.get("shiftRules", SHIFT_RULES),
-            full_candidates=full_cut_candidates,
-            cut_only_at_clusters=bool(config.get("cutOnlyAtClusters", True)),
-        )
-    if pair_variant is None:
+        _rules = config.get("shiftRules", SHIFT_RULES)
+        # Bersagli: pezzi accoppiabili in ENTRAMBI i tipi (semiunico e spezzato)
+        # e pezzi più lunghi accoppiabili solo in semiunico (lavoro fino a 8h):
+        # il portfolio decide quale rende di più su questa rete.
+        targets: list[int] = []
+        for t in (_pair_piece_max(_rules), _pair_piece_max(_rules, ("semiunico",))):
+            if t not in targets:
+                targets.append(t)
+        seen_shapes: set[tuple] = set()
+        for t in targets:
+            pv = build_pair_aware_segments(
+                blocks, clusters, _rules,
+                full_candidates=full_cut_candidates,
+                cut_only_at_clusters=bool(config.get("cutOnlyAtClusters", True)),
+                piece_max=t,
+            )
+            if pv is None:
+                continue
+            shape = tuple((s.vehicle_id, s.start_min, s.end_min) for s in pv[0])
+            if shape in seen_shapes:
+                continue
+            seen_shapes.add(shape)
+            variants.append((f"pair-aware ≤{t}'", pv[0], pv[1]))
+    if not variants:
         duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
     else:
-        pair_segments, pair_map = pair_variant
         legacy_map = {b.vehicle_id: list(b.segments) for b in blocks}
         rates_cmp = CostRates.from_config(config)
-        half_tl = max(20, int(time_limit_sec / 2))
-        log(f"[V4][PAIR-AWARE] gara: storica {len(segments)} segmenti vs pair-aware "
-            f"{len(pair_segments)} segmenti, {half_tl}s ciascuna")
-        duties_a = optimize_multi_scenario(blocks, segments, config, half_tl, clusters, bds)
-        score_a = _score_solution(duties_a, rates_cmp, bds, clusters)
-        snap_a = (list(LAST_SCENARIO_RESULTS), dict(LAST_OPTIMIZATION_ANALYSIS))
-        for b in blocks:
-            b.segments = pair_map.get(b.vehicle_id, b.segments)
-        duties_b = optimize_multi_scenario(blocks, pair_segments, config, half_tl, clusters, bds)
-        score_b = _score_solution(duties_b, rates_cmp, bds, clusters)
-        log(f"[V4][PAIR-AWARE] storica: {len(duties_a)} turni (score {score_a:.0f}) · "
-            f"pair-aware: {len(duties_b)} turni (score {score_b:.0f})")
-        if score_b < score_a:
-            duties, segments = duties_b, pair_segments
-            log("[V4][PAIR-AWARE] vince la segmentazione pair-aware")
-        else:
-            duties = duties_a
+        share_tl = max(20, int(time_limit_sec / (1 + len(variants))))
+        log(f"[V4][PAIR-AWARE] gara: storica ({len(segments)} seg.) vs "
+            + ", ".join(f"{lab} ({len(sg)} seg.)" for lab, sg, _ in variants)
+            + f" — {share_tl}s ciascuna")
+        results: list[dict] = []
+        best_pick = None   # (score, label, duties, segments, seg_map, snapshot)
+        for label, segs, seg_map in [("storica", segments, legacy_map)] + variants:
             for b in blocks:
-                b.segments = legacy_map[b.vehicle_id]
-            LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS = snap_a
-            log("[V4][PAIR-AWARE] vince la segmentazione storica")
+                b.segments = seg_map.get(b.vehicle_id, b.segments)
+            d_var = optimize_multi_scenario(blocks, segs, config, share_tl, clusters, bds)
+            sc = _score_solution(d_var, rates_cmp, bds, clusters)
+            snap = (list(LAST_SCENARIO_RESULTS), dict(LAST_OPTIMIZATION_ANALYSIS))
+            results.append({"label": label, "segments": len(segs), "duties": len(d_var),
+                            "score": round(sc, 1)})
+            log(f"[V4][PAIR-AWARE] {label}: {len(segs)} segmenti → {len(d_var)} turni (score {sc:.0f})")
+            if best_pick is None or sc < best_pick[0]:
+                best_pick = (sc, label, d_var, segs, seg_map, snap)
+        _, win_label, duties, segments, win_map, win_snap = best_pick
+        for b in blocks:
+            b.segments = win_map.get(b.vehicle_id, b.segments)
+        LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS = win_snap
+        SEGMENTATION_RESULT = {"winner": win_label, "variants": results}
+        log(f"[V4][PAIR-AWARE] vince: {win_label}")
 
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
