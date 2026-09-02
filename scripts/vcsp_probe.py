@@ -26,7 +26,7 @@ import time
 
 from optimizer_common import MIN_LAYOVER, MAX_DEADHEAD_KM, estimate_deadhead, min_to_time, log
 from vehicle_scheduler_cpsat import trips_vehicle_compatible
-from optimizer_common import trip_from_dict
+from optimizer_common import trip_from_dict, SHIFT_RULES
 
 MAX_FLEX_MIN = 30          # tetto assoluto della flessibilità per corsa
 COST_EPS = 0.01            # miglioramento minimo per accettare (EUR)
@@ -157,21 +157,61 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
 
 
 CREW_TARGET_GAP_MIN = 45   # stacco a cui mirare fra i due pezzi (→ intero composto)
+# Disturbo all'orario pubblicato: ogni corsa·minuto spostato costa questo in
+# fase di accettazione (vcsp.shiftPenaltyEur). Senza, la sonda accettava di
+# muovere 86 corse di 10′ per togliere una violazione da 1′ (Giro K, Ancona).
+SHIFT_PENALTY_EUR_PER_TRIP_MIN = 1.0
+CREW_SHIFT_SCOPES = ("trip", "line")
+
+
+def crew_rules_from_config(crew_config: dict | None) -> tuple[int, int]:
+    """(nastro massimo dell'intero, interruzione minima del semiunico) dalle
+    regole di struttura in vigore: config.bds.shiftRules dell'operatore sopra
+    i default di SHIFT_RULES. Servono a scartare i candidati che NON possono
+    produrre un intero (stacco chiudibile ma nastro troppo lungo, o viceversa)."""
+    base_int = dict(SHIFT_RULES.get("intero", {}))
+    base_semi = dict(SHIFT_RULES.get("semiunico", {}))
+    ov = ((crew_config or {}).get("bds") or {}).get("shiftRules") or {}
+    base_int.update(ov.get("intero") or {})
+    base_semi.update(ov.get("semiunico") or {})
+    try:
+        return int(base_int.get("maxNastro", 435)), int(base_semi.get("intMin", 75))
+    except (TypeError, ValueError):
+        return 435, 75
+
+
+def _clamp(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
 
 
 def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
-                               max_candidates: int = 40) -> list[dict]:
+                               max_candidates: int = 40, *,
+                               scope: str = "trip",
+                               intero_max_nastro: int = 435,
+                               semi_int_min: int = 75) -> list[dict]:
     """Candidati GUIDATI DAI TURNI: per ogni bi-ripresa (semiunico/spezzato)
     prova a portare lo stacco fra i due pezzi sotto l'interruzione minima,
     così che il CSP possa farne un intero composto (o riaccoppiare meglio).
 
-    Lo spostamento è di LINEA (tutte le corse delle linee servite dal pezzo),
-    non di singolo bus: sulle linee a più vetture un bus solo spostato
-    romperebbe la cadenza. Entro la flessibilità dichiarata in Planning
-    (flexMin, minimo fra le corse coinvolte); 0 = niente candidato.
-      kind "crew-early": anticipa le linee del SECONDO pezzo di δ
-      kind "crew-late":  posticipa le linee del PRIMO pezzo di δ
+    Un candidato esiste solo se lo spostamento PUÒ produrre un intero:
+      δ ≥ stacco − (intMin − 1)     → lo stacco scende sotto l'interruzione minima
+      δ ≥ nastro − maxNastro intero  → il nastro rientra nel massimo dell'intero
+    e δ resta entro la flessibilità dichiarata in Planning (flexMin, tetto
+    MAX_FLEX_MIN). Se la finestra è vuota il turno NON genera sonde (erano
+    re-solve buttati: 5 minuti l'uno).
+
+    scope "trip" (default): sposta SOLO la corsa al confine dello stacco —
+      l'ultima del primo pezzo (crew-late), la prima del secondo (crew-early),
+      o entrambe dividendo δ (crew-both) quando una sola non basta. È il
+      ritocco locale che farebbe un pianificatore a mano: la cadenza ha un
+      solo intervallo irregolare e le coincidenze del resto della giornata
+      restano intatte.
+    scope "line": tutte le corse delle linee servite dal pezzo, per tutta la
+      giornata (cadenza intatta, ma le coincidenze con le altre linee si
+      spostano ovunque). Va chiesto esplicitamente (vcsp.crewShiftScope).
     """
+    if scope not in CREW_SHIFT_SCOPES:
+        scope = "trip"
     route_trips: dict[str, list[dict]] = {}
     for t in trips_by_id.values():
         rid = t.get("routeId")
@@ -197,8 +237,21 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
         vals = [_flex_of(r) for rid in routes for r in route_trips.get(rid, [])]
         return min(vals) if vals else 0
 
+    def _edge_trip(piece: dict, last: bool) -> dict | None:
+        """Corsa al confine del pezzo (ultima o prima), letta dal payload."""
+        best = None
+        for t in piece.get("trips") or []:
+            r = trips_by_id.get(t.get("tripId"))
+            if not r:
+                continue
+            dep = int(r.get("departureMin") or 0)
+            if best is None or (dep > best[0] if last else dep < best[0]):
+                best = (dep, r)
+        return best[1] if best else None
+
     cands: list[dict] = []
     seen: set[frozenset] = set()
+    skipped_unreachable = 0
     for d in crew_out.get("driverShifts") or []:
         if d.get("type") not in ("semiunico", "spezzato"):
             continue
@@ -208,34 +261,71 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
         p1, p2 = pieces
         try:
             gap = int(p2["startMin"]) - int(p1["endMin"])
+            nastro = int(d.get("nastroMin") or (int(p2["endMin"]) - int(p1["startMin"])))
         except (KeyError, TypeError, ValueError):
             continue
         need = gap - CREW_TARGET_GAP_MIN
         if need <= 0:
             continue
-        for kind, piece, sign in (("crew-early", p2, -1), ("crew-late", p1, +1)):
-            routes = _routes_of(piece)
-            if not routes:
-                continue
-            delta = min(need, _flex_cap(routes), MAX_FLEX_MIN)
-            if delta <= 0:
-                continue
-            shifts = _shift_for(routes, sign * delta)
-            if not shifts:
-                continue
+        delta_lo = max(1, gap - (semi_int_min - 1), nastro - intero_max_nastro)
+        if delta_lo > MAX_FLEX_MIN:
+            skipped_unreachable += 1
+            continue
+        v1 = (p1.get("vehicleIds") or ["?"])[0]
+        v2 = (p2.get("vehicleIds") or ["?"])[0]
+        options: list[tuple[str, dict[str, int], list[str]]] = []
+        if scope == "line":
+            for kind, piece, sign in (("crew-early", p2, -1), ("crew-late", p1, +1)):
+                routes = _routes_of(piece)
+                if not routes:
+                    continue
+                cap = min(_flex_cap(routes), MAX_FLEX_MIN)
+                if cap < delta_lo:
+                    continue
+                shifts = _shift_for(routes, sign * _clamp(need, delta_lo, cap))
+                if shifts:
+                    options.append((kind, shifts, sorted(routes)))
+        else:
+            t1 = _edge_trip(p1, last=True)
+            t2 = _edge_trip(p2, last=False)
+            f1 = _flex_of(t1) if t1 else 0
+            f2 = _flex_of(t2) if t2 else 0
+            routes = sorted({r for r in ((t1 or {}).get("routeId"), (t2 or {}).get("routeId")) if r})
+            if t1 and f1 >= delta_lo:
+                options.append(("crew-late", {t1["tripId"]: +_clamp(need, delta_lo, f1)}, routes))
+            if t2 and f2 >= delta_lo:
+                options.append(("crew-early", {t2["tripId"]: -_clamp(need, delta_lo, f2)}, routes))
+            if t1 and t2 and f1 > 0 and f2 > 0 and f1 + f2 >= delta_lo \
+                    and t1["tripId"] != t2["tripId"]:
+                dtot = _clamp(need, delta_lo, f1 + f2)
+                d1 = min(f1, (dtot + 1) // 2)
+                d2 = dtot - d1
+                if d2 > f2:
+                    d2, d1 = f2, dtot - f2
+                if d1 > 0 and d2 > 0:
+                    options.append(("crew-both", {t1["tripId"]: +d1, t2["tripId"]: -d2}, routes))
+            if not options:
+                skipped_unreachable += 1
+        for kind, shifts, routes in options:
             key = frozenset(shifts.items())
             if key in seen:
                 continue
             seen.add(key)
-            v1 = (p1.get("vehicleIds") or ["?"])[0]
-            v2 = (p2.get("vehicleIds") or ["?"])[0]
             cands.append({
-                "shifts": shifts, "deltaNeeded": delta, "blockA": v1, "blockB": v2,
+                "shifts": shifts,
+                "deltaNeeded": sum(abs(v) for v in shifts.values()) if scope != "line"
+                else abs(next(iter(shifts.values()))),
+                "blockA": v1, "blockB": v2,
                 "kind": kind, "duty": d.get("driverId"), "gapMin": gap,
-                "routes": sorted(routes),
+                "nastroMin": nastro, "routes": routes, "scope": scope,
             })
-    # prima gli spostamenti piccoli che chiudono di più lo stacco
-    cands.sort(key=lambda c: (c["deltaNeeded"], -(c["gapMin"] - c["deltaNeeded"])))
+    if skipped_unreachable:
+        log(f"[PROBE] {skipped_unreachable} bi-riprese senza candidato: l'intero "
+            f"non è raggiungibile entro la flessibilità (nastro>{intero_max_nastro}′ "
+            f"o stacco troppo ampio)")
+    # prima i ritocchi piccoli (poche corse·minuto) che chiudono di più lo stacco
+    cands.sort(key=lambda c: (sum(abs(v) for v in c["shifts"].values()),
+                              c["deltaNeeded"], -(c["gapMin"] - c["deltaNeeded"])))
     return cands[:max_candidates]
 
 
@@ -287,17 +377,33 @@ def run_probe_phase(
     max_probes: int = 4,
     probe_vsp_time: int = 60,
     progress=None,
+    shift_penalty_eur: float = SHIFT_PENALTY_EUR_PER_TRIP_MIN,
+    crew_scope: str = "trip",
 ) -> dict:
     """Fase sonda: prova gli spostamenti candidati, tiene solo chi abbassa il
-    costo totale. Ritorna {vsp, crew, kpi, probe}: se nessun candidato passa,
-    vsp/crew/kpi sono gli input invariati e probe documenta i tentativi.
+    PUNTEGGIO (costo + ombre turni/violazioni + disturbo all'orario). Ritorna
+    {vsp, crew, kpi, probe}: se nessun candidato passa, vsp/crew/kpi sono gli
+    input invariati e probe documenta i tentativi.
+
+    shift_penalty_eur: € per corsa·minuto spostato, sommato al punteggio del
+    candidato (cumulato sugli spostamenti già accettati). È ciò che impedisce
+    di muovere mezza rete per un guadagno da pochi euro.
+    crew_scope: "trip" (ritocco alla corsa di confine) o "line" (linea intera)
+    per i candidati guidati dai turni.
     """
     t0 = time.time()
     trips = list(vsp_payload.get("trips") or [])
     flex_trips = sum(1 for t in trips if _flex_of(t) > 0)
+    shift_penalty_eur = max(0.0, float(shift_penalty_eur or 0.0))
+    if crew_scope not in CREW_SHIFT_SCOPES:
+        crew_scope = "trip"
+    intero_max_nastro, semi_int_min = crew_rules_from_config(crew_config)
     section: dict = {
         "enabled": True, "flexTrips": flex_trips, "candidates": 0,
         "probesRun": 0, "accepted": [], "rejected": [], "timeShifts": {},
+        "timeShiftDetails": [], "shiftedTrips": 0, "shiftedTripMin": 0,
+        "disruptionEur": 0.0, "shiftPenaltyEurPerTripMin": shift_penalty_eur,
+        "crewScope": crew_scope,
     }
     result = {"vsp": best_vsp, "crew": best_crew, "kpi": best_kpi, "probe": section}
     if flex_trips == 0:
@@ -316,11 +422,26 @@ def run_probe_phase(
     tried: set[frozenset] = set()
     probes_run = 0
     cur_trips = trips
+    orig_by_id = {t.get("tripId"): t for t in trips}
     accepted_total: dict[str, int] = {}
+
+    def _disruption(total: dict[str, int]) -> float:
+        return round(shift_penalty_eur * sum(abs(v) for v in total.values()), 2)
+
+    def _merged(total: dict[str, int], shifts: dict[str, int]) -> dict[str, int]:
+        out = dict(total)
+        for tid, d in shifts.items():
+            out[tid] = out.get(tid, 0) + d
+        return {k: v for k, v in out.items() if v}
+
+    # Punteggio del best SENZA disturbo (il disturbo si somma a parte, cumulato)
+    cur_base_score = float(best_kpi.get("selectionScoreEur", best_kpi["totalCostEur"]))
 
     while probes_run < max_probes:
         trips_by_id = {t.get("tripId"): t for t in cur_trips}
-        cands = ([c for c in find_crew_probe_candidates(result["crew"], trips_by_id)
+        cands = ([c for c in find_crew_probe_candidates(
+                      result["crew"], trips_by_id, scope=crew_scope,
+                      intero_max_nastro=intero_max_nastro, semi_int_min=semi_int_min)
                   if frozenset(c["shifts"].items()) not in tried]
                  + [c for c in find_probe_candidates(result["vsp"], trips_by_id)
                     if frozenset(c["shifts"].items()) not in tried])
@@ -338,7 +459,8 @@ def run_probe_phase(
             shifts_txt = f"{len(cand['shifts'])} corse {next(iter(cand['shifts'].values())):+d}′"
         if cand["kind"].startswith("crew"):
             log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
-                f"({shifts_txt}) per il turno {cand.get('duty')} (stacco {cand.get('gapMin')}′)")
+                f"({shifts_txt}) per il turno {cand.get('duty')} (stacco {cand.get('gapMin')}′, "
+                f"nastro {cand.get('nastroMin')}′, linee {','.join(cand.get('routes') or [])})")
         else:
             log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
                 f"({shifts_txt}) per fondere {cand['blockA']}+{cand['blockB']}")
@@ -390,36 +512,65 @@ def run_probe_phase(
                            crew_time_limit)
         kpi = kpi_fn(vsp_out, crew_out)
         # Stesso metro della selezione fra round: punteggio (costo + ombre
-        # turni/violazioni), col costo secco come ripiego per kpi_fn legacy.
-        _score_new = kpi.get("selectionScoreEur", kpi["totalCostEur"])
-        _score_old = result["kpi"].get("selectionScoreEur", result["kpi"]["totalCostEur"])
+        # turni/violazioni), col costo secco come ripiego per kpi_fn legacy,
+        # PIÙ il disturbo all'orario (corse·minuto spostate, cumulato).
+        new_total = _merged(accepted_total, cand["shifts"])
+        _base_new = float(kpi.get("selectionScoreEur", kpi["totalCostEur"]))
+        _dis_old = _disruption(accepted_total)
+        _dis_new = _disruption(new_total)
+        _score_new = _base_new + _dis_new
+        _score_old = cur_base_score + _dis_old
         if _score_new < _score_old - COST_EPS:
             gain = result["kpi"]["totalCostEur"] - kpi["totalCostEur"]
             log(f"[PROBE]   ACCETTATO: €{result['kpi']['totalCostEur']} → "
                 f"€{kpi['totalCostEur']} (−€{gain:.2f}), "
-                f"{vehicles_old}→{vehicles_new} mezzi")
+                f"{vehicles_old}→{vehicles_new} mezzi, "
+                f"{result['kpi'].get('duties', 0)}→{kpi.get('duties', 0)} turni, "
+                f"punteggio {_score_old:.2f} → {_score_new:.2f} "
+                f"(disturbo €{_dis_old:.0f} → €{_dis_new:.0f})")
             section["accepted"].append({
                 "kind": cand["kind"], "deltaNeeded": cand["deltaNeeded"],
+                "duty": cand.get("duty"), "gapMin": cand.get("gapMin"),
                 "shifts": _shift_details(cand["shifts"], trips_by_id),
                 "mergedBlocks": [cand["blockA"], cand["blockB"]],
                 "before": {"vehicles": vehicles_old,
                            "duties": result["kpi"].get("duties", 0),
-                           "totalCostEur": result["kpi"]["totalCostEur"]},
+                           "bdsViolations": result["kpi"].get("bdsViolations", 0),
+                           "totalCostEur": result["kpi"]["totalCostEur"],
+                           "scoreEur": round(_score_old, 2)},
                 "after": {"vehicles": vehicles_new,
                           "duties": kpi.get("duties", 0),
-                          "totalCostEur": kpi["totalCostEur"]},
+                          "bdsViolations": kpi.get("bdsViolations", 0),
+                          "totalCostEur": kpi["totalCostEur"],
+                          "scoreEur": round(_score_new, 2)},
+                "disruptionEur": _dis_new,
             })
-            for tid, d in cand["shifts"].items():
-                accepted_total[tid] = accepted_total.get(tid, 0) + d
+            accepted_total = new_total
+            cur_base_score = _base_new
+            kpi = dict(kpi)
+            kpi["shiftedTrips"] = len(new_total)
+            kpi["shiftedTripMin"] = sum(abs(v) for v in new_total.values())
+            kpi["shiftPenaltyEur"] = _dis_new
+            kpi["selectionScoreEur"] = round(_score_new, 2)
             cur_trips = probe_trips
             result = {"vsp": vsp_out, "crew": crew_out, "kpi": kpi, "probe": section}
         else:
-            rejected_entry["reason"] = "crew"  # −mezzi ma la guida costa di più
+            rejected_entry["reason"] = "crew"  # la guida (o il disturbo) mangia il risparmio
+            rejected_entry["scoreBefore"] = round(_score_old, 2)
+            rejected_entry["scoreAfter"] = round(_score_new, 2)
+            rejected_entry["disruptionEur"] = _dis_new
             section["rejected"].append(rejected_entry)
-            log(f"[PROBE]   scartato (totale €{kpi['totalCostEur']} ≥ "
-                f"€{result['kpi']['totalCostEur']}: la guida mangia il risparmio)")
+            log(f"[PROBE]   scartato (punteggio {_score_new:.2f} ≥ {_score_old:.2f}: "
+                f"costo €{kpi['totalCostEur']} vs €{result['kpi']['totalCostEur']}, "
+                f"disturbo €{_dis_new:.0f})")
 
     section["timeShifts"] = accepted_total
+    # Dettaglio leggibile (linea, variante, da→a) sugli orari ORIGINALI: è
+    # ciò che l'agente racconta all'operatore e ciò che si applica al piano.
+    section["timeShiftDetails"] = _shift_details(accepted_total, orig_by_id)
+    section["shiftedTrips"] = len(accepted_total)
+    section["shiftedTripMin"] = sum(abs(v) for v in accepted_total.values())
+    section["disruptionEur"] = _disruption(accepted_total)
     section["elapsedSec"] = round(time.time() - t0, 1)
     log(f"[PROBE] fine: {probes_run} sonde, {len(section['accepted'])} accettate, "
         f"{len(section['rejected'])} scartate in {section['elapsedSec']}s")

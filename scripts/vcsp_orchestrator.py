@@ -182,6 +182,16 @@ def main() -> None:
     probes_raw = vcsp_cfg.get("probes")
     probes = max(0, min(10, int(probes_raw))) if probes_raw is not None else 4
     probe_vsp_time = max(20, min(300, int(vcsp_cfg.get("probeVspTime") or 60)))
+    # Disturbo all'orario (€ per corsa·minuto spostato) e portata dei candidati
+    # guidati dai turni: "trip" = ritocco alla corsa di confine (default),
+    # "line" = linea intera. Vedi vcsp_probe.run_probe_phase.
+    try:
+        shift_penalty_eur = max(0.0, float(vcsp_cfg.get("shiftPenaltyEur", 1.0)))
+    except (TypeError, ValueError):
+        shift_penalty_eur = 1.0
+    crew_shift_scope = str(vcsp_cfg.get("crewShiftScope") or "trip").strip().lower()
+    if crew_shift_scope not in ("trip", "line"):
+        crew_shift_scope = "trip"
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
     global DUTY_SHADOW_EUR, VIOLATION_SHADOW_EUR
@@ -195,6 +205,7 @@ def main() -> None:
         pass
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
+        f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min), "
         f"trips={len(vsp_payload.get('trips') or [])}, "
         f"reliefTrips={len(trip_cluster_stops)}")
 
@@ -299,6 +310,7 @@ def main() -> None:
             trip_cluster_stops=trip_cluster_stops or None,
             max_probes=probes, probe_vsp_time=probe_vsp_time,
             progress=lambda msg: report_progress("VCSP", 94, msg),
+            shift_penalty_eur=shift_penalty_eur, crew_scope=crew_shift_scope,
         )
         probe_section = probe_res["probe"]
         if probe_section.get("accepted"):

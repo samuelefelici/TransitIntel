@@ -2271,6 +2271,12 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             ? Math.max(0, Math.min(10, Number(vcspBody.probes) || 0))
             : 4,
           probeVspTime: Math.max(20, Math.min(300, Number(vcspBody.probeVspTime) || 60)),
+          // Disturbo all'orario (€/corsa·minuto) e portata dei candidati guidati
+          // dai turni: passano al Python così come arrivano dall'agente/UI.
+          ...(Number.isFinite(Number(vcspBody.shiftPenaltyEur)) && vcspBody.shiftPenaltyEur != null
+            ? { shiftPenaltyEur: Math.max(0, Number(vcspBody.shiftPenaltyEur)) } : {}),
+          ...(vcspBody.crewShiftScope === "line" || vcspBody.crewShiftScope === "trip"
+            ? { crewShiftScope: vcspBody.crewShiftScope } : {}),
         },
         tripClusterStops,
       });
@@ -2515,6 +2521,27 @@ function aggregateDutyMessages(det: any): { msg: string; n: number }[] | null {
 
 /** Vista COMPATTA del risultato per la chat (l'MCP tronca a ~40k):
  * KPI, round, sonda e advisories — mai i turni completi (si aprono in app). */
+/** Riepilogo per linea di una lista di spostamenti della sonda (niente corse ripetute). */
+function summarizeShifts(shifts: any[]): { shiftedTrips: number; shiftsByRoute: any[] } {
+  const byKey = new Map<string, { routeName: string; variantCode: string | null; deltaMin: number; trips: number; first: string; last: string }>();
+  for (const sft of shifts) {
+    const routeName = String(sft?.routeName ?? "?");
+    const variantCode = sft?.variantCode ?? null;
+    const deltaMin = Number(sft?.deltaMin ?? 0);
+    const key = `${routeName}|${variantCode ?? ""}|${deltaMin}`;
+    const cur = byKey.get(key);
+    const from = String(sft?.from ?? "");
+    if (cur) {
+      cur.trips += 1;
+      if (from && from < cur.first) cur.first = from;
+      if (from && from > cur.last) cur.last = from;
+    } else {
+      byKey.set(key, { routeName, variantCode, deltaMin, trips: 1, first: from, last: from });
+    }
+  }
+  return { shiftedTrips: shifts.length, shiftsByRoute: Array.from(byKey.values()) };
+}
+
 function compactAgentResult(payload: any): any {
   const v = payload?.vcsp;
   const s = payload?.summary ?? {};
@@ -2549,6 +2576,7 @@ function compactAgentResult(payload: any): any {
           // Punteggio usato per scegliere il best round (costo + ombre
           // turni/violazioni): senza, "bestRound" sembra arbitrario dalla chat.
           selectionScoreEur: r.selectionScoreEur ?? null,
+          ...(r.probe ? { shiftedTrips: r.shiftedTrips ?? 0, shiftPenaltyEur: r.shiftPenaltyEur ?? 0 } : {}),
         })),
         crew: v.crew?.summary ? {
           duties: v.crew.summary.totalShifts ?? null,
@@ -2608,15 +2636,35 @@ function compactAgentResult(payload: any): any {
             violated: !!v.crew.summary.companyCarsHardViolation,
           },
         } : null,
-        // Sonda di spostamento: le proposte accettate sono PICCOLE (poche corse)
-        // e sono esattamente ciò che l'agente deve raccontare all'operatore.
+        // Sonda di spostamento: ciò che l'agente racconta all'operatore. Il
+        // dettaglio per corsa sta UNA volta sola in timeShifts (cumulato sugli
+        // orari originali); le proposte accettate portano il riepilogo per
+        // linea — con le corse ripetute per proposta il compatto superava il
+        // tetto del canale MCP (40k) e arrivava troncato.
         probe: v.probe ? {
           flexTrips: v.probe.flexTrips ?? 0,
           candidates: v.probe.candidates ?? 0,
           probesRun: v.probe.probesRun ?? 0,
-          accepted: v.probe.accepted ?? [],
+          crewScope: v.probe.crewScope ?? null,
+          shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
+          accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
+            const { shifts, ...rest } = a ?? {};
+            return { ...rest, ...summarizeShifts(Array.isArray(shifts) ? shifts : []) };
+          }),
           rejectedCount: Array.isArray(v.probe.rejected) ? v.probe.rejected.length : 0,
-          timeShifts: v.probe.timeShifts ?? {},
+          rejected: (Array.isArray(v.probe.rejected) ? v.probe.rejected : []).slice(0, 12).map((a: any) => {
+            const { shifts, ...rest } = a ?? {};
+            return { ...rest, ...summarizeShifts(Array.isArray(shifts) ? shifts : []) };
+          }),
+          shiftedTrips: v.probe.shiftedTrips ?? Object.keys(v.probe.timeShifts ?? {}).length,
+          shiftedTripMin: v.probe.shiftedTripMin ?? null,
+          disruptionEur: v.probe.disruptionEur ?? null,
+          timeShifts: Array.isArray(v.probe.timeShiftDetails)
+            ? v.probe.timeShiftDetails.map((d: any) => ({
+                tripId: d.tripId, routeName: d.routeName, variantCode: d.variantCode ?? null,
+                deltaMin: d.deltaMin, from: d.from, to: d.to,
+              }))
+            : Object.entries(v.probe.timeShifts ?? {}).map(([tripId, deltaMin]) => ({ tripId, deltaMin })),
         } : null,
       },
     } : {}),
@@ -2883,6 +2931,12 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         crewTimeLimit: b.crewTimeLimit ?? 90,
         probes: b.probes ?? 4,
         ...(b.probeVspTime ? { probeVspTime: b.probeVspTime } : {}),
+        // Sonda: disturbo all'orario (€/corsa·minuto) e portata dei candidati
+        // guidati dai turni ("trip" corsa di confine | "line" linea intera).
+        ...(Number.isFinite(Number(b.shiftPenaltyEur)) && Number(b.shiftPenaltyEur) >= 0
+          ? { shiftPenaltyEur: Number(b.shiftPenaltyEur) } : {}),
+        ...(b.crewShiftScope === "line" || b.crewShiftScope === "trip"
+          ? { crewShiftScope: b.crewShiftScope } : {}),
       };
       // Vincolo RIGIDO autovetture aziendali impostabile dall'agente: senza
       // companyCars nel body il giro ricade sull'impostazione DB (come la UI).
