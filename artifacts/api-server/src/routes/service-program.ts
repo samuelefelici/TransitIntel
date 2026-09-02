@@ -2646,6 +2646,9 @@ function compactAgentResult(payload: any): any {
           candidates: v.probe.candidates ?? 0,
           probesRun: v.probe.probesRun ?? 0,
           crewScope: v.probe.crewScope ?? null,
+          // Perché la sonda guidata dai turni non propone nulla: bi-riprese
+          // esaminate, quante non possono diventare interi e il δ che servirebbe.
+          crewStats: v.probe.crewStats ?? null,
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
           accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
             const { shifts, ...rest } = a ?? {};

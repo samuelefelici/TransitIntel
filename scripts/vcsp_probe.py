@@ -162,6 +162,9 @@ CREW_TARGET_GAP_MIN = 45   # stacco a cui mirare fra i due pezzi (→ intero com
 # muovere 86 corse di 10′ per togliere una violazione da 1′ (Giro K, Ancona).
 SHIFT_PENALTY_EUR_PER_TRIP_MIN = 1.0
 CREW_SHIFT_SCOPES = ("trip", "line")
+# Diagnostica dell'ultima scansione dei turni (perché la sonda non propone
+# nulla): bi-riprese esaminate, senza candidato e il δ minimo che servirebbe.
+LAST_CREW_STATS: dict = {}
 
 
 def crew_rules_from_config(crew_config: dict | None) -> tuple[int, int]:
@@ -252,6 +255,8 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
     cands: list[dict] = []
     seen: set[frozenset] = set()
     skipped_unreachable = 0
+    unreachable: list[dict] = []
+    n_biriprese = 0
     for d in crew_out.get("driverShifts") or []:
         if d.get("type") not in ("semiunico", "spezzato"):
             continue
@@ -264,12 +269,17 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
             nastro = int(d.get("nastroMin") or (int(p2["endMin"]) - int(p1["startMin"])))
         except (KeyError, TypeError, ValueError):
             continue
+        n_biriprese += 1
         need = gap - CREW_TARGET_GAP_MIN
         if need <= 0:
             continue
         delta_lo = max(1, gap - (semi_int_min - 1), nastro - intero_max_nastro)
         if delta_lo > MAX_FLEX_MIN:
             skipped_unreachable += 1
+            unreachable.append({"duty": d.get("driverId"), "type": d.get("type"),
+                                "gapMin": gap, "nastroMin": nastro, "deltaMin": delta_lo,
+                                "why": "nastro" if nastro - intero_max_nastro >= gap - (semi_int_min - 1)
+                                else "stacco"})
             continue
         v1 = (p1.get("vehicleIds") or ["?"])[0]
         v2 = (p2.get("vehicleIds") or ["?"])[0]
@@ -306,6 +316,9 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
                     options.append(("crew-both", {t1["tripId"]: +d1, t2["tripId"]: -d2}, routes))
             if not options:
                 skipped_unreachable += 1
+                unreachable.append({"duty": d.get("driverId"), "type": d.get("type"),
+                                    "gapMin": gap, "nastroMin": nastro, "deltaMin": delta_lo,
+                                    "why": "flex"})
         for kind, shifts, routes in options:
             key = frozenset(shifts.items())
             if key in seen:
@@ -320,9 +333,16 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
                 "nastroMin": nastro, "routes": routes, "scope": scope,
             })
     if skipped_unreachable:
-        log(f"[PROBE] {skipped_unreachable} bi-riprese senza candidato: l'intero "
-            f"non è raggiungibile entro la flessibilità (nastro>{intero_max_nastro}′ "
-            f"o stacco troppo ampio)")
+        log(f"[PROBE] {skipped_unreachable}/{n_biriprese} bi-riprese senza candidato: l'intero "
+            f"non è raggiungibile entro la flessibilità (nastro>{intero_max_nastro}′, "
+            f"stacco troppo ampio o corse di confine inchiodate)")
+    LAST_CREW_STATS.clear()
+    LAST_CREW_STATS.update({
+        "biRiprese": n_biriprese, "unreachable": skipped_unreachable,
+        "candidates": len(cands), "scope": scope,
+        "interoMaxNastro": intero_max_nastro, "semiIntMin": semi_int_min,
+        "unreachableDetails": unreachable[:12],
+    })
     # prima i ritocchi piccoli (poche corse·minuto) che chiudono di più lo stacco
     cands.sort(key=lambda c: (sum(abs(v) for v in c["shifts"].values()),
                               c["deltaNeeded"], -(c["gapMin"] - c["deltaNeeded"])))
@@ -447,6 +467,7 @@ def run_probe_phase(
                     if frozenset(c["shifts"].items()) not in tried])
         if probes_run == 0:
             section["candidates"] = len(cands)
+            section["crewStats"] = dict(LAST_CREW_STATS)
         if not cands:
             break
         cand = cands[0]
