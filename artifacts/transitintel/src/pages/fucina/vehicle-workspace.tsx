@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-import { Printer, FolderOpen } from "lucide-react";
+import { Printer, FolderOpen, FileText } from "lucide-react";
 import InteractiveGantt, {
   type GanttBar, type GanttRow, type GanttChange, type GanttSuggestion,
 } from "@/components/InteractiveGantt";
@@ -573,6 +573,24 @@ export default function VehicleWorkspace({
   const [modifications, setModifications] = useState<TripReassignment[]>([]);
   const [scenarioName, setScenarioName] = useState(initialName ?? "");
   const [savedId, setSavedId] = useState<number | string | null>(initialSavedId ?? null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const generateProcessReport = useCallback(async () => {
+    if (!savedId) return;
+    setReportBusy(true);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/service-program/scenarios/${savedId}/report`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+      toast.success("Relazione generata", { description: `${data.summary?.duties ?? "?"} turni guida · ${data.summary?.vehicles ?? "?"} vetture` });
+      window.open(data.path, "_blank");
+    } catch (e: any) {
+      toast.error("Relazione non generata", { description: e?.message });
+    } finally {
+      setReportBusy(false);
+    }
+  }, [savedId]);
   // Modifiche non ancora salvate: sostituisce il vecchio "azzera savedId a ogni
   // edit" (che faceva sparire il tasto Sovrascrivi). savedId resta stabile →
   // il tasto Salva resta raggiungibile; dirty indica solo se c'è da salvare.
@@ -2306,6 +2324,19 @@ export default function VehicleWorkspace({
             >
               <Printer className="w-3.5 h-3.5 mr-1" />
               Stampa
+            </Button>
+
+            {/* Relazione di processo: dossier + documento completo per gli stakeholder */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void generateProcessReport()}
+              disabled={!savedId || reportBusy}
+              className="border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 h-8 text-[11px]"
+              title={savedId ? "Genera la relazione completa (pianificazione → turni macchina → turni guida → costi)" : "Salva prima lo scenario"}
+            >
+              <FileText className="w-3.5 h-3.5 mr-1" />
+              {reportBusy ? "Relazione…" : "Relazione"}
             </Button>
 
             {scenarioName && (

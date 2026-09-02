@@ -3022,6 +3022,25 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           try {
             await db.execute(sql`UPDATE service_program_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
           } catch { /* colonna assente su DB legacy */ }
+          // Dossier di processo: la CONFIGURAZIONE usata (manopole guida, tariffe,
+          // parametri VCSP/VSP, tetto auto) resta con lo scenario, così la
+          // relazione può dichiarare con quali valori è stato calcolato.
+          try {
+            const provenance = {
+              source: "argos-agent", mode, savedAt: new Date().toISOString(),
+              crewConfig: runBody.crewConfig ?? null,
+              vcsp: runBody.vcsp ?? null,
+              vehicleCosts: runBody.vehicleCosts ?? null,
+              vspAdvanced: runBody.vspAdvanced ?? null,
+              intensity: runBody.intensity ?? null, robustness: runBody.robustness ?? null,
+              serviceType, defaultVehicleType: b.defaultVehicleType ?? null,
+              companyCars: runBody.crewConfig?.companyCars ?? null,
+            };
+            await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
+            await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify(provenance)}::jsonb WHERE id = ${row.id}::uuid`);
+          } catch (e: any) {
+            jobLog.warn(`agent-optimize: salvataggio configurazione (dossier) fallito (non-fatale): ${e?.message}`);
+          }
           if (schedProjectId) {
             try {
               await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${schedProjectId}::uuid WHERE id = ${row.id}::uuid`);
@@ -3054,7 +3073,8 @@ router.post("/service-program/agent-optimize", async (req, res) => {
                   clusters: v.crew.clusters ?? [],
                   metrics: v.crew.metrics ?? null,
                 } as any,
-                config: { source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null } as any,
+                config: { source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null,
+                          crewConfig: runBody.crewConfig ?? null } as any,
               }).returning({ id: driverShiftScenarios.id });
               job.dssId = dss.id;
               try {
@@ -3144,12 +3164,14 @@ router.get("/service-program/agent-optimize", (req, res) => {
 /** POST /api/service-program/scenarios — save a scenario */
 router.post("/service-program/scenarios", async (req, res) => {
   try {
-    const { name, date, input, result: scenarioResult, projectId, depotId, depots: depotsSel } = req.body as {
+    const { name, date, input, result: scenarioResult, projectId, depotId, depots: depotsSel, config: configReq } = req.body as {
       name?: string; date?: string;
       input?: unknown; result?: unknown;
       projectId?: string; depotId?: string;
       /** Multi-deposito: selezione completa [{id, maxVehicles}] (jsonb additivo) */
       depots?: { id: string; maxVehicles?: number | null }[];
+      /** Dossier di processo: configurazione usata (manopole, tariffe, parametri) */
+      config?: Record<string, unknown>;
     };
     if (!name || !date || !input || !scenarioResult) {
       res.status(400).json({ error: "Parametri obbligatori: name, date, input, result" });
@@ -3201,6 +3223,15 @@ router.post("/service-program/scenarios", async (req, res) => {
         await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${projectId}::uuid WHERE id = ${row.id}::uuid`);
       } catch (e: any) {
         req.log.warn({ err: e?.message }, "attach project_id failed (non-fatal)");
+      }
+    }
+    // Dossier di processo: la configurazione con cui è stato calcolato lo scenario
+    if (configReq && typeof configReq === "object") {
+      try {
+        await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
+        await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify({ ...configReq, source: (configReq as any).source ?? "fucina", savedAt: new Date().toISOString() })}::jsonb WHERE id = ${row.id}::uuid`);
+      } catch (e: any) {
+        req.log.warn({ err: e?.message }, "attach config failed (non-fatal)");
       }
     }
     res.json({ id: row.id, createdAt: row.createdAt });

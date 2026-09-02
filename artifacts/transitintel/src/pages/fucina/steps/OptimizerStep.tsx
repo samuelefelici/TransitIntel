@@ -729,7 +729,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
             clusters: crew.clusters ?? [],
             metrics: crew.metrics ?? null,
           },
-          config: { source: "vcsp", bestRound: v.bestRound ?? null, selectedRound: selR },
+          config: { source: "vcsp", bestRound: v.bestRound ?? null, selectedRound: selR, crewConfig },
         }),
       });
       if (!dssResp.ok) return false;
@@ -739,7 +739,28 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } catch {
       return false;
     }
-  }, [result, selectedRound]);
+  }, [result, selectedRound, crewConfig]);
+
+  // ── Relazione di processo: dossier + documento completo per gli stakeholder ──
+  const [reportBusy, setReportBusy] = useState(false);
+  const generateReport = useCallback(async () => {
+    if (!savedScenarioId) return;
+    setReportBusy(true);
+    try {
+      const resp = await fetch(`${getApiBase()}/api/service-program/scenarios/${savedScenarioId}/report`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dssId: savedDssId ?? undefined }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+      toast.success("Relazione generata", { description: `${data.summary?.duties ?? "?"} turni guida · ${data.summary?.vehicles ?? "?"} vetture` });
+      window.open(data.path, "_blank");
+    } catch (e: any) {
+      toast.error("Relazione non generata", { description: e?.message });
+    } finally {
+      setReportBusy(false);
+    }
+  }, [savedScenarioId, savedDssId]);
 
   const retryCrewSave = useCallback(async () => {
     if (!savedScenarioId) return;
@@ -777,6 +798,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           projectId: projectId ?? undefined, depotId: depotId ?? undefined,
           // Multi-deposito: persisti l'intera selezione (id + cap vetture)
           ...(depots && depots.length > 0 ? { depots } : {}),
+          // Dossier di processo: la configurazione con cui è stato calcolato
+          // (manopole guida, tariffe, parametri VSP/VCSP) resta con lo scenario.
+          config: {
+            source: "fucina", pipelineMode, serviceType, solverMode, solverIntensity, robustness, normativa,
+            crewConfig: pipelineMode === "vcsp" ? crewConfig : null,
+            vcsp: pipelineMode === "vcsp" ? { rounds: vcspRounds, crewTimeLimit, probes: vcspProbe ? 4 : 0 } : null,
+            vehicleCosts: (vspConfig as any)?.vehicleCosts ?? null,
+            vspAdvanced: (vspConfig as any)?.vspAdvanced ?? null,
+            vspNormativa: (vspConfig as any)?.vspNormativa ?? null,
+          },
         }),
       });
       if (!resp.ok) throw new Error("Errore nel salvataggio");
@@ -808,7 +839,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       setSaving(false);
     }
-  }, [result, scenarioName, assignment, projectId, depotId, depots, serviceType, saveCrewShifts, resultWithSelectedRound]);
+  }, [result, scenarioName, assignment, projectId, depotId, depots, serviceType, saveCrewShifts, resultWithSelectedRound,
+      pipelineMode, solverMode, solverIntensity, robustness, normativa, crewConfig, vcspRounds, crewTimeLimit, vcspProbe, vspConfig]);
 
   /* ── Charts ── */
   const hourlyChartData = useMemo(() => {
@@ -1934,6 +1966,11 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         className="text-[11px] px-2.5 py-1 rounded-lg border border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15 transition-all">
                         Apri Workspace Turni Guida
                       </a>
+                      <button onClick={() => void generateReport()} disabled={reportBusy}
+                        title="Dossier di processo + relazione completa (tecnica, matematica, grafici, costi) da consegnare"
+                        className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all disabled:opacity-40">
+                        {reportBusy && <Loader2 className="w-3 h-3 animate-spin" />} Genera relazione
+                      </button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 text-xs text-amber-400 flex-wrap">
