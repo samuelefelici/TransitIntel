@@ -2569,11 +2569,14 @@ function compactAgentResult(payload: any): any {
           // pavimento (ore-vettura ÷ lavoro massimo legale).
           avgWorkMin: v.crew.summary.avgWorkMin ?? null,
           avgNastroMin: v.crew.summary.avgNastroMin ?? null,
+          byType: v.crew.summary.byType ?? null,
           semiunicoPct: v.crew.summary.semiunicoPct ?? null,
           spezzatoPct: v.crew.summary.spezzatoPct ?? null,
           totalCambi: v.crew.summary.totalCambi ?? null,
           // Gara fra segmentazioni (storica vs pair-aware): chi ha vinto e perché
           segmentation: v.crew.metrics?.optimizerParams?.segmentation ?? v.crew.metrics?.segmentation ?? null,
+          // Fattori applicati dai pesi operatore (1.0 = slider al default)
+          weightFactors: v.crew.metrics?.weightFactors ?? null,
           // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
           // dice se le violazioni sono un problema di blocchi troppo lunghi.
           blocks: v.crew.metrics ? {
