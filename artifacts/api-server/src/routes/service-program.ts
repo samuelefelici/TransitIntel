@@ -2573,7 +2573,7 @@ function compactAgentResult(payload: any): any {
           spezzatoPct: v.crew.summary.spezzatoPct ?? null,
           totalCambi: v.crew.summary.totalCambi ?? null,
           // Gara fra segmentazioni (storica vs pair-aware): chi ha vinto e perché
-          segmentation: v.crew.metrics?.segmentation ?? null,
+          segmentation: v.crew.metrics?.optimizerParams?.segmentation ?? v.crew.metrics?.segmentation ?? null,
           // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
           // dice se le violazioni sono un problema di blocchi troppo lunghi.
           blocks: v.crew.metrics ? {
