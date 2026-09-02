@@ -2564,6 +2564,16 @@ function compactAgentResult(payload: any): any {
           // il turno resta valido ma l'operatore deve vederli.
           bdsWarnings: v.crew.summary.validation?.totalWarnings ?? 0,
           warningsBreakdown: aggregateDutyMessages(v.crew.summary.validation?.warningDetails),
+          // Forma dei turni: quanto lavora un turno medio e quante coppie si
+          // formano — senza, dalla chat non si capisce se si è vicini al
+          // pavimento (ore-vettura ÷ lavoro massimo legale).
+          avgWorkMin: v.crew.summary.avgWorkMin ?? null,
+          avgNastroMin: v.crew.summary.avgNastroMin ?? null,
+          semiunicoPct: v.crew.summary.semiunicoPct ?? null,
+          spezzatoPct: v.crew.summary.spezzatoPct ?? null,
+          totalCambi: v.crew.summary.totalCambi ?? null,
+          // Gara fra segmentazioni (storica vs pair-aware): chi ha vinto e perché
+          segmentation: v.crew.metrics?.segmentation ?? null,
           // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
           // dice se le violazioni sono un problema di blocchi troppo lunghi.
           blocks: v.crew.metrics ? {
