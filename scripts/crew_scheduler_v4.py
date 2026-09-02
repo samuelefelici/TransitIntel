@@ -306,7 +306,7 @@ def apply_fase2_overrides(cfg: dict) -> None:
     global CUT_NASTRO_PENALTY_PER_MIN, CUT_SAME_ROUTE_PENALTY
     global PCT_OVER_PENALTY
     global SCENARIO_TIME_FRACTION, POLISH_TIME_FRACTION
-    global PAIR_AWARE_CUTS, PAIR_PIECE_TARGET_MIN, PAIR_MAX_PIECES
+    global PAIR_AWARE_CUTS, PAIR_PIECE_TARGET_MIN, PAIR_MAX_PIECES, PAIR_EXTRA_TARGETS
 
     bds = cfg.get("bds", {}) if cfg else {}
 
@@ -326,6 +326,9 @@ def apply_fase2_overrides(cfg: dict) -> None:
         PAIR_AWARE_CUTS = cuts["pairAware"] in (True, 1, "1", "true", "True", "on")
     PAIR_PIECE_TARGET_MIN   = max(0, _num(cuts, "pairPieceTargetMin", PAIR_PIECE_TARGET_MIN, int))
     PAIR_MAX_PIECES         = max(2, min(8, _num(cuts, "pairMaxPieces", PAIR_MAX_PIECES, int)))
+    if isinstance(cuts.get("pairExtraTargets"), list):
+        PAIR_EXTRA_TARGETS = tuple(int(x) for x in cuts["pairExtraTargets"]
+                                   if str(x).lstrip("-").isdigit() and 120 <= int(x) <= 400)
 
     cs = bds.get("cutScoring") or {}
     CUT_SCORE_GAP_BASE          = _num(cs, "gapBase", CUT_SCORE_GAP_BASE, float)
@@ -797,6 +800,12 @@ PAIR_AWARE_CUTS = True             # config.bds.cuts.pairAware
 PAIR_PIECE_TARGET_MIN = 0          # config.bds.cuts.pairPieceTargetMin (0 = dalle SHIFT_RULES)
 PAIR_MAX_PIECES = 5                # config.bds.cuts.pairMaxPieces
 PAIR_PIECE_MIN_LEN = 150           # sotto è un supplemento: non aiuta a ridurre i turni
+# Bersagli EXTRA (config.bds.cuts.pairExtraTargets): pezzi più lunghi del
+# limite "due pezzi uguali si accoppiano" — da soli non si accoppiano, ma un
+# pezzo da 4h si accoppia con uno da 3h in semiunico (lavoro ≤ 8h). Blocchi
+# da ≤12h45 diventano 3 pezzi invece di 4: meno pezzi, turni più pieni. La
+# gara decide se rende.
+PAIR_EXTRA_TARGETS: tuple[int, ...] = (240, 255)
 
 # Penalità (cost-cents) per punto-percentuale-corsa oltre i cap soft dei tipi
 # turno (semiunico/spezzato). Override-abile da config.bds.optimizer.pctOverPenalty.
@@ -4078,7 +4087,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         # e pezzi più lunghi accoppiabili solo in semiunico (lavoro fino a 8h):
         # il portfolio decide quale rende di più su questa rete.
         targets: list[int] = []
-        for t in (_pair_piece_max(_rules), _pair_piece_max(_rules, ("semiunico",))):
+        for t in (_pair_piece_max(_rules), _pair_piece_max(_rules, ("semiunico",)), *PAIR_EXTRA_TARGETS):
             if t not in targets:
                 targets.append(t)
         seen_shapes: set[tuple] = set()
