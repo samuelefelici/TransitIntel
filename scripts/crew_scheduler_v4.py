@@ -1285,11 +1285,18 @@ def block_leg_between(block: "VehicleBlock", prev: VShiftTrip, nxt: VShiftTrip) 
     return None
 
 
-def block_trip_index(block: "VehicleBlock", trip: VShiftTrip) -> int:
-    """Indice della corsa (intera) nel blocco; -1 se la corsa è una metà di
-    taglio intra (stessa id ma orari diversi) o non appartiene al blocco."""
+def block_trip_index(block: "VehicleBlock", trip: VShiftTrip, edge: str = "both") -> int:
+    """Indice della corsa nel blocco. edge="start": basta che coincida la
+    PARTENZA (corsa intera o metà sinistra di un taglio intra-corsa: il pezzo
+    inizia dove inizia la corsa del blocco); edge="end": basta che coincida
+    l'ARRIVO (corsa intera o metà destra: il pezzo finisce dove finisce la
+    corsa del blocco); "both": corsa intera. -1 se non c'è."""
     for i, bt in enumerate(block.trips):
-        if bt.trip_id == trip.trip_id and bt.departure_min == trip.departure_min and bt.arrival_min == trip.arrival_min:
+        if bt.trip_id != trip.trip_id:
+            continue
+        ok_start = bt.departure_min == trip.departure_min
+        ok_end = bt.arrival_min == trip.arrival_min
+        if (edge == "start" and ok_start) or (edge == "end" and ok_end) or (edge == "both" and ok_start and ok_end):
             return i
     return -1
 
@@ -1621,7 +1628,7 @@ def _make_segment(
             # due corse il bus rientra in deposito, il pezzo inizia lì con
             # l'uscita (niente auto). Le metà di un taglio intra-corsa
             # (block_trip_index = -1) partono dalla fermata intermedia.
-            k = block_trip_index(block, trips[0])
+            k = block_trip_index(block, trips[0], edge="start")
             if k > 0:
                 prev = block.trips[k - 1]
                 leg = block_leg_between(block, prev, trips[0])
@@ -1640,7 +1647,7 @@ def _make_segment(
             end += pullin
             driving += pullin
         else:
-            k = block_trip_index(block, trips[-1])
+            k = block_trip_index(block, trips[-1], edge="end")
             if 0 <= k < len(block.trips) - 1:
                 leg = block_leg_between(block, trips[-1], block.trips[k + 1])
                 if leg is not None and leg.type == "depot":
@@ -2601,13 +2608,14 @@ def _car_events_single(s: Segment, clusters: list[Cluster]) -> list[tuple[int, i
     return ev
 
 
-def _car_events_pair(s1: Segment, s2: Segment, clusters: list[Cluster]) -> list[tuple[int, int]]:
-    """Eventi auto di una coppia: stesso bus = il conducente resta col mezzo
-    nello stacco (solo i bordi esterni); bus diversi = torna in deposito e
-    riparte (i quattro bordi), come in compute_car_pool."""
+def _car_events_pair(s1: Segment, s2: Segment, clusters: list[Cluster],
+                     segs_by_vehicle: dict[str, list] | None = None) -> list[tuple[int, int]]:
+    """Eventi auto di una coppia: stesso bus e pezzi CONSECUTIVI = il
+    conducente resta col mezzo nello stacco (solo i bordi esterni); altrimenti
+    torna in deposito e riparte (i quattro bordi), come in compute_car_pool."""
     if s1.start_min > s2.start_min:
         s1, s2 = s2, s1
-    if s1.vehicle_id == s2.vehicle_id:
+    if same_bus_consecutive(s1, s2, segs_by_vehicle):
         ev: list[tuple[int, int]] = []
         t = seg_transfer_out(s1, clusters)
         if t > 0 and s1.first_cluster:
@@ -2802,12 +2810,15 @@ def _build_cpsat_model(
     car_cap_terms: list[Any] = []
     if MAX_COMPANY_CARS > 0:
         cand_events: list[tuple[Any, list[tuple[int, int]]]] = []
+        _segs_by_veh: dict[str, list] = {}
+        for s in segments:
+            _segs_by_veh.setdefault(s.vehicle_id, []).append(s)
         for s in segments:
             ev = _car_events_single(s, clusters)
             if ev:
                 cand_events.append((single[s.idx], ev))
         for key, pv in pair_vars.items():
-            ev = _car_events_pair(seg_by_idx[key[0]], seg_by_idx[key[1]], clusters)
+            ev = _car_events_pair(seg_by_idx[key[0]], seg_by_idx[key[1]], clusters, _segs_by_veh)
             if ev:
                 cand_events.append((pv, ev))
         times = sorted({t for _, ev in cand_events for t, _ in ev})
@@ -3911,6 +3922,7 @@ from crew_scheduler_v3 import (
     CarTrip,
     compute_car_pool,
     car_pool_by_driver,
+    same_bus_consecutive,
     _max_simultaneous_cars_out,
     _cars_out_demand_peak,
     LAST_CAR_POOL_STATS,

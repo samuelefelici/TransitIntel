@@ -45,7 +45,7 @@ from optimizer_common import (
     VEHICLE_SIZE, VEHICLE_TYPES, MAX_DOWNSIZE_LEVELS,
     MAX_DEADHEAD_KM, MIN_LAYOVER, DEADHEAD_BUFFER,
     AVG_SERVICE_SPEED, DEADHEAD_SPEED,
-    haversine_km, estimate_deadhead, is_peak_hour, can_vehicle_serve,
+    haversine_km, estimate_deadhead, is_peak_hour, can_vehicle_serve, DH_FORBIDDEN_KM,
     min_to_time, fmt_dur,
     load_input, write_output, log, report_progress,
     set_deadhead_matrix, set_deadhead_min_matrix,
@@ -383,11 +383,37 @@ _LAST_ROBUST_DROPPED = 0
 _NORMATIVA_DROPPED = {"lineChange": 0, "internalDeadhead": 0}
 
 
+# Archi instradati VIA DEPOSITO perché il riposizionamento diretto è vietato
+# dall'archivio «Archi fuorilinea» (contatore per log e sommario).
+_VIA_DEPOT_ARCS = {"count": 0, "forbiddenDirect": 0}
+
+
+def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float, int] | None:
+    """Riposizionamento capolinea→deposito→capolinea quando la coppia diretta è
+    vietata: (km, minuti) del deposito più comodo, o None se nessun deposito ha
+    entrambe le tratte ammesse."""
+    best: tuple[float, int] | None = None
+    for d in depots or []:
+        try:
+            lat, lon = float(d["lat"]), float(d["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        k1, m1 = estimate_deadhead(ti.last_stop_lat, ti.last_stop_lon, lat, lon, ti.category)
+        k2, m2 = estimate_deadhead(lat, lon, tj.first_stop_lat, tj.first_stop_lon, tj.category)
+        if k1 >= DH_FORBIDDEN_KM or k2 >= DH_FORBIDDEN_KM:
+            continue
+        cand = (round(k1 + k2, 1), int(m1 + m2))
+        if best is None or cand[0] < best[0]:
+            best = cand
+    return best
+
+
 def build_compatible_arcs_fast(
     trips: list[Trip],
     rates: VehicleCostRates,
     user_clusters: dict[str, int] | None = None,
     delay_buffers: dict[int, int] | None = None,
+    depots: list[dict] | None = None,
 ) -> list[Arc]:
     """O(n x k) arc building with bisect temporal windowing.
 
@@ -476,7 +502,18 @@ def build_compatible_arcs_fast(
                     ti.last_stop_lat, ti.last_stop_lon,
                     tj.first_stop_lat, tj.first_stop_lon, ti.category)
 
-            if dh_km > MAX_DEADHEAD_KM:
+            via_depot = False
+            if dh_km >= DH_FORBIDDEN_KM:
+                # Riposizionamento diretto VIETATO dall'archivio fuorilinea: il
+                # bus può comunque rientrare in deposito e riuscire, se il
+                # tempo basta (tratte deposito↔capolinea ammesse).
+                _VIA_DEPOT_ARCS["forbiddenDirect"] += 1
+                alt = _via_depot_leg(ti, tj, depots)
+                if alt is None:
+                    continue
+                dh_km, dh_min = alt
+                via_depot = True
+            if dh_km > MAX_DEADHEAD_KM and not via_depot:
                 continue
             # NORMATIVA: VIETA_CAMBI_LINEA / VIETA_VAV_INTERNI (filtri hard)
             if rates.forbid_line_changes and ti.route_id != tj.route_id:
@@ -501,8 +538,11 @@ def build_compatible_arcs_fast(
 
             gap = tj.departure_min - ti.arrival_min
             # FIX-VSP-1: depot_return è ora SOLO un flag informativo; il filtro
-            # gap > max_idle_at_terminal NON scarta più l'arco.
-            depot_return = gap > rates.max_idle_at_terminal
+            # gap > max_idle_at_terminal NON scarta più l'arco. Un arco via
+            # deposito lo è per costruzione.
+            depot_return = gap > rates.max_idle_at_terminal or via_depot
+            if via_depot:
+                _VIA_DEPOT_ARCS["count"] += 1
             arcs.append(Arc(i=i, j=j, dh_km=round(dh_km, 1), dh_min=dh_min,
                             gap_min=gap, depot_return=depot_return))
             # FIX-TIGHT: log diagnostico per archi tight (gap<MIN_LAYOVER) sullo
@@ -2285,6 +2325,9 @@ def chains_to_shifts(
                         last_stop_name=t.first_stop_name,
                     ))
                     vs.depot_returns += 1
+                    # i km del rientro/uscita contano nel vuoto del turno
+                    vs.total_deadhead_min += arc.dh_min
+                    vs.total_deadhead_km += arc.dh_km
                 elif arc and arc.dh_km > 0.5:
                     dh_start = prev_t.arrival_min + MIN_LAYOVER
                     dh_end = min(dh_start + arc.dh_min, t.departure_min)
@@ -3100,8 +3143,14 @@ def run(data: dict) -> dict:
 
     # Build arcs
     report_progress("VSP", 10, "Building compatibility arcs...")
+    _VIA_DEPOT_ARCS["count"] = 0
+    _VIA_DEPOT_ARCS["forbiddenDirect"] = 0
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None,
-                                      delay_buffers=delay_buffers or None)
+                                      delay_buffers=delay_buffers or None,
+                                      depots=depots_data or None)
+    if _VIA_DEPOT_ARCS["forbiddenDirect"]:
+        log(f"  [VSP-DH-ARCHIVE] {_VIA_DEPOT_ARCS['forbiddenDirect']} coppie con riposizionamento diretto vietato, "
+            f"{_VIA_DEPOT_ARCS['count']} instradate via deposito")
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
 
     # ── VCSP: penalità d'arco dal feedback CSP (costi-ombra) ──
@@ -3348,6 +3397,7 @@ def run(data: dict) -> dict:
         "costSpreadPct": vsp_analysis.get("costSpreadPct", 0),
         "deadheadMatrixPairs": dh_pairs,
         "deadheadArchive": dh_archive,
+        "viaDepotArcs": dict(_VIA_DEPOT_ARCS),
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
         "depotAssignment": depot_assignment,
