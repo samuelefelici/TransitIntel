@@ -363,11 +363,16 @@ def run_turni_unici(raw: dict) -> dict:
             "interruptionMin": duty.interruption_min,
             "bdsValidation": v.to_dict(),
             "riprese": [{
-                "startTime": min_to_time(used[0].departure_min),
-                "endTime": min_to_time(used[-1].arrival_min),
-                "startMin": used[0].departure_min,
-                "endMin": used[-1].arrival_min,
+                # confini di NASTRO (pre-turno + trasferimento … rientro), come
+                # il CSP v4 e il greedy: la UI li disegna così
+                "startTime": min_to_time(max(0, used[0].departure_min - duty.pre_turno_min - duty.transfer_min)),
+                "endTime": min_to_time(used[-1].arrival_min + duty.transfer_back_min),
+                "startMin": used[0].departure_min - duty.pre_turno_min - duty.transfer_min,
+                "endMin": used[-1].arrival_min + duty.transfer_back_min,
+                "serviceStartMin": used[0].departure_min,
+                "serviceEndMin": used[-1].arrival_min,
                 "preTurnoMin": duty.pre_turno_min,
+                "preTurnoKind": ("bus" if duty.transfer_min == 0 else "auto") if duty.pre_turno_min > 0 else "none",
                 "transferMin": duty.transfer_min,
                 "transferType": "depot_to_start" if duty.transfer_min > 0 else "none",
                 "transferBackMin": duty.transfer_back_min,

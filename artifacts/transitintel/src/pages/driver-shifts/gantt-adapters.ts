@@ -87,7 +87,7 @@ export function driverShiftsToBars(shifts: DriverShiftData[]): GanttBar[] {
           id: `${baseId}_pt`, rowId: shift.driverId,
           startMin: rip.startMin, endMin: rip.startMin + rip.preTurnoMin,
           label: "PT", color: typeColor, style: "dashed",
-          tooltip: [`Pre-turno ${rip.preTurnoMin}min`],
+          tooltip: [`Pre-turno ${rip.preTurnoMin}min · ${rip.preTurnoKind === "bus" || (rip.preTurnoKind == null && !(rip.transferMin > 0)) ? "presa bus in deposito (controlli)" : "auto aziendale"}`],
           locked: true,
           meta: { type: "preTurno", driverId: shift.driverId, ripreseIdx: ri },
         });
@@ -166,7 +166,7 @@ export function driverShiftsToTripBars(shifts: DriverShiftData[]): GanttBar[] { 
           id: `${baseId}_pt`, rowId: shift.driverId,
           startMin: rip.startMin, endMin: rip.startMin + rip.preTurnoMin,
           label: "PT", color: typeColor, style: "dashed",
-          tooltip: [`Pre-turno ${rip.preTurnoMin}min`],
+          tooltip: [`Pre-turno ${rip.preTurnoMin}min · ${rip.preTurnoKind === "bus" || (rip.preTurnoKind == null && !(rip.transferMin > 0)) ? "presa bus in deposito (controlli)" : "auto aziendale"}`],
           locked: true,
           meta: { type: "preTurno", driverId: shift.driverId, ripreseIdx: ri },
         });

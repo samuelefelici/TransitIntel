@@ -950,6 +950,11 @@ _DH_KM_MATRIX: dict[str, float] = {}
 # km/velocita'+buffer.
 _DH_MIN_MATRIX: dict[str, float] = {}
 
+# Coppia VIETATA dall'archivio «Archi fuorilinea» (assente fra gli archi del
+# progetto): il backend la manda con questo km, sopra MAX_DEADHEAD_KM, così
+# nessun arco capolinea↔capolinea la usa.
+DH_FORBIDDEN_KM = 9999.0
+
 
 def dh_key(lat: float, lon: float) -> str:
     return f"{lat:.5f},{lon:.5f}"
@@ -1395,6 +1400,10 @@ class VehicleBlock:
     segments: list[Segment] = field(default_factory=list)
     pullout_min: int = 0          # uscita deposito→prima corsa (dal turno macchina)
     pullin_min: int = 0           # rientro ultima corsa→deposito (dal turno macchina)
+    # Tratte NON di servizio del turno macchina (type "deadhead" | "depot"),
+    # in ordine di tempo: servono a sapere cosa fa il bus fra due corse
+    # (fuorilinea, rientro in deposito) e a stamparlo nel turno guida.
+    legs: list[VShiftTrip] = field(default_factory=list)
 
 
 @dataclass

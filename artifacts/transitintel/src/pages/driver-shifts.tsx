@@ -30,7 +30,7 @@ import type {
 import {
   SearchChipsBar, matchShiftQuery, RiassuntiTable, CoveragePanel, buildCoverage,
   SwapDialog, applyPieceToShift, VerifyBadge, effectiveVerifyState,
-  VincoliGlobaliEditor, VincoliReport, mkRipresaFromTrips, type SwapProposal,
+  VincoliGlobaliEditor, VincoliReport, mkRipresaFromTrips, normalizeDriverShiftsResult, type SwapProposal,
 } from "./driver-shifts/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./driver-shifts/bds5-costs";
@@ -269,7 +269,7 @@ function DriverShiftsPageInner() {
     fetch(`${getApiBase()}/api/driver-shifts/${scenarioId}/scenarios/${dssIdFromUrl}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((row) => {
-        const stored = row?.result;
+        const stored = row?.result ? normalizeDriverShiftsResult(row.result) : row?.result;
         if (stored) {
           setResult(stored);
           baselineSummaryRef.current = stored?.summary ? { ...stored.summary } : null;
@@ -336,7 +336,7 @@ function DriverShiftsPageInner() {
   // When CP-SAT completes, merge result into page state
   useEffect(() => {
     if (cpsat.state === "completed" && cpsat.result) {
-      setResult(cpsat.result as any);
+      setResult(normalizeDriverShiftsResult(cpsat.result as any));
       baselineSummaryRef.current = (cpsat.result as any)?.summary
         ? { ...(cpsat.result as any).summary }
         : null;
@@ -361,7 +361,7 @@ function DriverShiftsPageInner() {
     fetch(endpoint)
       .then(r => { if (!r.ok) throw new Error(`Errore ${r.status}`); return r.json(); })
       .then(data => {
-        setResult(data);
+        setResult(normalizeDriverShiftsResult(data));
         baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
         baselineBarsRef.current = data?.driverShifts
           ? new Map(driverShiftsToTripBars(data.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))

@@ -159,7 +159,7 @@ export function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
                       {/* Pre-turno */}
                       <div className="absolute top-0.5 h-5 rounded-l-sm text-[7px] text-white/60 flex items-center justify-center"
                         style={{ left: `${left}%`, width: `${preTurnoWidth}%`, backgroundColor: typeColor, opacity: 0.35 }}
-                        title={`Pre-turno ${rip.preTurnoMin}min`}
+                        title={`Pre-turno ${rip.preTurnoMin}min · ${rip.preTurnoKind === "bus" || (rip.preTurnoKind == null && !(rip.transferMin > 0)) ? "presa bus in deposito (controlli)" : "auto aziendale"}`}
                       >{preTurnoWidth > 1.5 ? "PT" : ""}</div>
 
                       {/* Transfer */}

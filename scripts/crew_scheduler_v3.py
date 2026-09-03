@@ -1397,98 +1397,155 @@ def compute_car_pool(
                 elif t_from_last > 0:
                     log(f"⚠️  Car pool: {d.driver_id} seg{si+1} ultima fermata '{seg.last_stop}' NON è in un cluster — no pickup")
 
-    # ── Assegnazione auto per cluster (simulazione cronologica) ──
-    # Ordiniamo TUTTI gli eventi per tempo.
-    # Per deliver: l'auto esce dal deposito a depart_min e arriva al cluster a arrive_min
-    # Per pickup: l'auto esce dal cluster a depart_min e rientra al deposito a arrive_min
-    #
-    # Usiamo due tipi di evento per timing corretto:
-    #   deliver_depart  → auto lascia deposito
-    #   deliver_arrive  → auto arriva al cluster (diventa disponibile)
-    #   pickup_depart   → auto lascia cluster (deve essere disponibile!)
-    #   pickup_arrive   → auto rientra al deposito
-    # Simulazione cronologica su coda di priorità: un ritiro che non trova
-    # un'auto al nodo può ASPETTARE un'auto già in viaggio verso quel nodo
-    # (entro CAR_PICKUP_WAIT_MAX minuti: è il caso tipico del cambio in linea,
-    # dove il conducente che smonta parte pochi minuti prima che arrivi
-    # l'auto di chi monta). Il ritiro slitta all'arrivo dell'auto.
-    import heapq
-    EVENT_ORDER = {"deliver_arrive": 0, "pickup_arrive": 1, "deliver_depart": 2, "pickup_depart": 3}
-    heap: list[tuple[int, int, int, str, CarTrip]] = []
-    _seq = 0
-    for t in trips:
-        if t.trip_type == "deliver":
-            heapq.heappush(heap, (t.depart_min, EVENT_ORDER["deliver_depart"], _seq, "deliver_depart", t)); _seq += 1
-            heapq.heappush(heap, (t.arrive_min, EVENT_ORDER["deliver_arrive"], _seq, "deliver_arrive", t)); _seq += 1
-        else:
-            heapq.heappush(heap, (t.depart_min, EVENT_ORDER["pickup_depart"], _seq, "pickup_depart", t)); _seq += 1
-
-    car_ids_at_depot: list[int] = list(range(1, COMPANY_CARS + 1))
-    car_ids_at_cluster: dict[str, list[int]] = {}
-    en_route: dict[str, list[tuple[int, int, int]]] = {}   # cluster → [(arrive_min, car_id, id(deliver))]
-    handed_over: set[int] = set()                          # id(deliver) la cui auto è già promessa a un ritiro
-    car_assignment: dict[int, int] = {}  # id(trip) → car_id
-    conflicts: list[CarTrip] = []
-
-    while heap:
-        _, _, _, event_type, trip = heapq.heappop(heap)
-        cid = trip.cluster_id or "unknown"
-
-        if event_type == "deliver_depart":
-            if car_ids_at_depot:
-                car_id = car_ids_at_depot.pop(0)
-                car_assignment[id(trip)] = car_id
-                trip.car_id = car_id
-                en_route.setdefault(cid, []).append((trip.arrive_min, car_id, id(trip)))
-            else:
-                trip.car_id = None
-                conflicts.append(trip)
-
-        elif event_type == "deliver_arrive":
-            car_id = car_assignment.get(id(trip))
-            en_route[cid] = [e for e in en_route.get(cid, []) if e[2] != id(trip)]
-            if car_id is not None and id(trip) not in handed_over:
-                car_ids_at_cluster.setdefault(cid, []).append(car_id)
-
-        elif event_type == "pickup_depart":
-            if car_ids_at_cluster.get(cid):
-                car_id = car_ids_at_cluster[cid].pop(0)
-                car_assignment[id(trip)] = car_id
-                trip.car_id = car_id
-                heapq.heappush(heap, (trip.arrive_min, EVENT_ORDER["pickup_arrive"], _seq, "pickup_arrive", trip)); _seq += 1
-            else:
-                coming = sorted(e for e in en_route.get(cid, []) if e[2] not in handed_over
-                                and trip.depart_min <= e[0] <= trip.depart_min + CAR_PICKUP_WAIT_MAX)
-                if coming:
-                    arrive, car_id, dl_id = coming[0]
-                    handed_over.add(dl_id)
-                    wait = arrive - trip.depart_min
-                    trip.wait_min = wait
-                    trip.depart_min = arrive
-                    trip.arrive_min += wait
-                    car_assignment[id(trip)] = car_id
-                    trip.car_id = car_id
-                    heapq.heappush(heap, (trip.arrive_min, EVENT_ORDER["pickup_arrive"], _seq, "pickup_arrive", trip)); _seq += 1
-                else:
-                    trip.car_id = None
-                    conflicts.append(trip)
-
-        elif event_type == "pickup_arrive":
-            car_id = car_assignment.get(id(trip))
-            if car_id is not None:
-                car_ids_at_depot.append(car_id)
-
+    # ── Assegnazione auto (simulazione cronologica) ──
+    # Prima SENZA tetto, per misurare la domanda di auto e i ritiri che nessuna
+    # auto può servire (nessuno porta un'auto a quel nodo: dipende dal piano,
+    # non dal tetto); poi col tetto vero, che decide le assegnazioni finali.
+    orig = [(t.depart_min, t.arrive_min) for t in trips]
+    demand = _simulate_car_pool(trips, None, orig)
+    capped = _simulate_car_pool(trips, COMPANY_CARS, orig)
+    LAST_CAR_POOL_STATS.clear()
+    LAST_CAR_POOL_STATS.update({
+        "demandPeak": demand["peak"],
+        "unpaired": len(demand["unpaired"]),
+        "capConflicts": len(capped["conflicts"]),
+        "assignedPeak": capped["peak"],
+    })
+    conflicts = list(capped["conflicts"]) + [t for t in capped["unpaired"] if t not in capped["conflicts"]]
     if conflicts:
-        log(f"⚠️  Car pool: {len(conflicts)} trasferimenti senza auto disponibile!")
-        for c in conflicts:
+        log(f"⚠️  Car pool: {len(conflicts)} trasferimenti senza auto disponibile "
+            f"({len(capped['unpaired'])} senza auto al nodo, {len(capped['conflicts'])} per il tetto {COMPANY_CARS})!")
+        for c in conflicts[:40]:
             log(f"    {c.driver_id} {c.trip_type} alle {min_to_time(c.depart_min)} ({c.cluster_name})")
 
     assigned = [t for t in trips if t.car_id is not None]
     log(f"🚗 Car pool: {len(assigned)}/{len(trips)} viaggi assegnati, "
-        f"{len(conflicts)} conflitti, "
-        f"max {_max_simultaneous_cars_out(trips)} auto fuori deposito")
+        f"{len(conflicts)} conflitti, domanda max {demand['peak']} auto, "
+        f"max {capped['peak']} auto fuori deposito (tetto {COMPANY_CARS})")
 
     return trips
+
+
+# Esito dell'ultima simulazione del pool (letto dal summary del CSP v4):
+# demandPeak = auto richieste simultaneamente senza tetto; unpaired = ritiri
+# che nessuna consegna raggiunge; capConflicts = viaggi rimasti senza auto per
+# il tetto; assignedPeak = auto fuori deposito col tetto.
+LAST_CAR_POOL_STATS: dict[str, int] = {}
+
+
+def _simulate_car_pool(trips: list[CarTrip], n_cars: int | None,
+                       orig: list[tuple[int, int]]) -> dict:
+    """Simulazione cronologica su coda di priorità. n_cars None = auto illimitate
+    (misura la DOMANDA). Riporta i viaggi allo stato iniziale (orig), assegna
+    car_id/wait_min e ritorna {"conflicts", "unpaired", "peak"}.
+
+    Regole:
+    - CONSEGNA: un'auto esce dal deposito (se ce n'è una) e arriva al nodo.
+    - RITIRO: usa un'auto ferma al nodo; altrimenti ASPETTA (≤ CAR_PICKUP_WAIT_MAX)
+      l'auto di una consegna diretta allo stesso nodo, anche se non è ancora
+      partita dal deposito (cambio in linea: chi smonta aspetta chi monta).
+      Una consegna «promessa» a un ritiro non lascia l'auto al nodo.
+    - Un ritiro senza alcuna auto raggiungibile è «senza auto al nodo»
+      (unpaired): non dipende dal tetto ma dal piano.
+    """
+    import heapq
+    for t, (d0, a0) in zip(trips, orig):
+        t.depart_min, t.arrive_min = d0, a0
+        t.car_id = None
+        t.wait_min = 0
+    ORDER = {"deliver_arrive": 0, "pickup_arrive": 1, "deliver_depart": 2, "pickup_depart": 3, "pickup_wait": 4}
+    heap: list = []
+    seq = 0
+
+    def push(tm: int, kind: str, payload) -> None:
+        nonlocal seq
+        heapq.heappush(heap, (tm, ORDER[kind], seq, kind, payload))
+        seq += 1
+
+    delivers_by_cid: dict[str, list[CarTrip]] = {}
+    for t in trips:
+        cid = t.cluster_id or "unknown"
+        if t.trip_type == "deliver":
+            push(t.depart_min, "deliver_depart", t)
+            push(t.arrive_min, "deliver_arrive", t)
+            delivers_by_cid.setdefault(cid, []).append(t)
+        else:
+            push(t.depart_min, "pickup_depart", t)
+    for lst in delivers_by_cid.values():
+        lst.sort(key=lambda x: x.arrive_min)
+
+    unlimited = n_cars is None
+    depot: list[int] = list(range(1, (n_cars or 0) + 1))
+    next_id = (n_cars or 0) + 1
+    at_node: dict[str, list[int]] = {}
+    promised: dict[int, CarTrip] = {}     # id(consegna) → ritiro che ne aspetta l'auto
+    car_of: dict[int, int] = {}           # id(viaggio) → auto
+    out = 0
+    peak = 0
+    conflicts: list[CarTrip] = []
+    unpaired: list[CarTrip] = []
+
+    while heap:
+        _, _, _, kind, payload = heapq.heappop(heap)
+        if kind == "deliver_depart":
+            trip = payload
+            if depot:
+                car = depot.pop(0)
+            elif unlimited:
+                car = next_id
+                next_id += 1
+            else:
+                car = None
+            if car is None:
+                conflicts.append(trip)
+            else:
+                car_of[id(trip)] = car
+                trip.car_id = car
+                out += 1
+                peak = max(peak, out)
+        elif kind == "deliver_arrive":
+            trip = payload
+            car = car_of.get(id(trip))
+            if car is not None and id(trip) not in promised:
+                at_node.setdefault(trip.cluster_id or "unknown", []).append(car)
+        elif kind == "pickup_depart":
+            trip = payload
+            cid = trip.cluster_id or "unknown"
+            if at_node.get(cid):
+                car = at_node[cid].pop(0)
+                car_of[id(trip)] = car
+                trip.car_id = car
+                push(trip.arrive_min, "pickup_arrive", trip)
+                continue
+            cand = [d for d in delivers_by_cid.get(cid, [])
+                    if id(d) not in promised
+                    and trip.depart_min <= d.arrive_min <= trip.depart_min + CAR_PICKUP_WAIT_MAX]
+            if cand:
+                d = cand[0]
+                promised[id(d)] = trip
+                push(d.arrive_min, "pickup_wait", (trip, d))
+            else:
+                unpaired.append(trip)
+        elif kind == "pickup_wait":
+            pk, d = payload
+            car = car_of.get(id(d))
+            if car is None:
+                conflicts.append(pk)      # la consegna promessa è rimasta senza auto (tetto)
+                continue
+            wait = d.arrive_min - pk.depart_min
+            pk.wait_min = wait
+            pk.depart_min = d.arrive_min
+            pk.arrive_min += wait
+            car_of[id(pk)] = car
+            pk.car_id = car
+            push(pk.arrive_min, "pickup_arrive", pk)
+        elif kind == "pickup_arrive":
+            trip = payload
+            car = car_of.get(id(trip))
+            if car is not None:
+                depot.append(car)
+                out -= 1
+    return {"conflicts": conflicts, "unpaired": unpaired, "peak": peak}
 
 
 def car_pool_by_driver(trips: list[CarTrip]) -> dict[str, dict[str, CarTrip | list[CarTrip] | None]]:
@@ -1512,11 +1569,14 @@ def car_pool_by_driver(trips: list[CarTrip]) -> dict[str, dict[str, CarTrip | li
 
 
 def _cars_out_demand_peak(trips: list[CarTrip]) -> int:
-    """Picco di auto RICHIESTE fuori deposito, contando tutti i viaggi (anche
-    quelli rimasti senza auto). È il numero da confrontare col tetto: quello
-    assegnato non può superarlo per costruzione."""
+    """Picco di auto RICHIESTE fuori deposito: la simulazione senza tetto
+    (LAST_CAR_POOL_STATS, aggiornata da compute_car_pool). È il numero da
+    confrontare col tetto: quello assegnato non può superarlo per costruzione.
+    Senza simulazione (liste costruite a mano) ricade sul conteggio degli eventi."""
     if not trips:
         return 0
+    if LAST_CAR_POOL_STATS.get("demandPeak") is not None and any(t.car_id is not None for t in trips):
+        return int(LAST_CAR_POOL_STATS["demandPeak"])
     events: list[tuple[int, int]] = []
     for t in trips:
         if t.trip_type == "deliver":
@@ -1648,12 +1708,22 @@ def _segment_to_ripresa(seg: Segment, is_first: bool, is_last: bool, duty: "Driv
             "vehicleType": seg.vehicle_type,
         })
 
+    # Confini di NASTRO della ripresa (pre-turno + trasferimento … rientro):
+    # è ciò che la UI e il greedy TS assumono. Gli orari di servizio stanno in
+    # serviceStartMin/serviceEndMin.
+    nastro_start = seg.start_min - pre_turno - transfer
+    nastro_end = seg.end_min + transfer_back
     return {
-        "startTime": min_to_time(seg.start_min),
-        "endTime": min_to_time(seg.end_min),
-        "startMin": seg.start_min,
-        "endMin": seg.end_min,
+        "startTime": min_to_time(max(0, nastro_start)),
+        "endTime": min_to_time(nastro_end),
+        "startMin": nastro_start,
+        "endMin": nastro_end,
+        "serviceStartMin": seg.start_min,
+        "serviceEndMin": seg.end_min,
+        "serviceStartTime": min_to_time(seg.start_min),
+        "serviceEndTime": min_to_time(seg.end_min),
         "preTurnoMin": pre_turno,
+        "preTurnoKind": ("bus" if transfer == 0 else "auto") if pre_turno > 0 else "none",
         "transferMin": transfer,
         "transferType": transfer_type,
         "transferToStop": transfer_to_stop,

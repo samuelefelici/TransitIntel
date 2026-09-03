@@ -541,7 +541,9 @@ def render_crew(d: dict) -> str:
     rows = []
     for x in sorted(ds, key=lambda x: (DUTY_TYPE_ORDER.index(x.get("type")) if x.get("type") in DUTY_TYPE_ORDER else 9, x.get("driverId") or "")):
         pieces = x.get("riprese") or []
-        desc = " | ".join(f'{(pc.get("vehicleIds") or ["?"])[0]} {hm(pc.get("startMin"))}–{hm(pc.get("endMin"))} '
+        # orari di SERVIZIO del pezzo (presa in carico → rilascio del bus); i
+        # confini di nastro comprendono pre-turno e trasferimenti in auto
+        desc = " | ".join(f'{(pc.get("vehicleIds") or ["?"])[0]} {hm(pc.get("serviceStartMin", pc.get("startMin")))}–{hm(pc.get("serviceEndMin", pc.get("endMin")))} '
                           f'{",".join(dict.fromkeys(t.get("routeName") or "" for t in (pc.get("trips") or [])))}' for pc in pieces)
         viol = len((x.get("bdsValidation") or {}).get("violations") or [])
         rows.append((x.get("driverId"), x.get("type"), hm(x.get("nastroMin")), hm(x.get("workMin")),
@@ -700,9 +702,28 @@ def render_appendix(d: dict) -> str:
             out.append(f'<h4>{esc(x.get("driverId"))} · {esc(x.get("type"))} · nastro {hm(x.get("nastroMin"))} · lavoro {hm(x.get("workMin"))}</h4>')
             rows = []
             for i, pc in enumerate(x.get("riprese") or [], 1):
-                for t in pc.get("trips") or []:
-                    rows.append((i, (pc.get("vehicleIds") or ["?"])[0], t.get("routeName") or "–", hm(t.get("departureMin")), hm(t.get("arrivalMin")), t.get("firstStopName") or "–", t.get("lastStopName") or "–"))
-            out.append(table(["Pezzo", "Vettura", "Linea", "Partenza", "Arrivo", "Da", "A"], rows, numeric_from=99))
+                veh = (pc.get("vehicleIds") or ["?"])[0]
+                svc_start = pc.get("serviceStartMin", pc.get("startMin"))
+                svc_end = pc.get("serviceEndMin", pc.get("endMin"))
+                pt, tr, tb = int(pc.get("preTurnoMin") or 0), int(pc.get("transferMin") or 0), int(pc.get("transferBackMin") or 0)
+                # pre-turno e trasferimento in auto PRIMA della presa in carico del bus
+                if pt and svc_start is not None:
+                    kind = "presa bus in deposito (controlli)" if pc.get("preTurnoKind") == "bus" or tr == 0 else "auto aziendale"
+                    rows.append((i, veh, f"Pre-turno · {kind}", hm(svc_start - tr - pt), hm(svc_start - tr), "Deposito", "–"))
+                if tr and svc_start is not None:
+                    rows.append((i, veh, "Trasferimento auto", hm(svc_start - tr), hm(svc_start), "Deposito", pc.get("transferToStop") or "–"))
+                # corse e fuorilinea in ordine di tempo
+                events = [("trip", t) for t in (pc.get("trips") or [])] + [("dh", d) for d in (pc.get("deadheads") or [])]
+                events.sort(key=lambda e: int(e[1].get("departureMin") or 0))
+                for kind, e in events:
+                    if kind == "trip":
+                        rows.append((i, veh, e.get("routeName") or "–", hm(e.get("departureMin")), hm(e.get("arrivalMin")), e.get("firstStopName") or "–", e.get("lastStopName") or "–"))
+                    else:
+                        km = f' · {e.get("km")} km' if e.get("km") is not None else ""
+                        rows.append((i, veh, f'{e.get("label") or "Fuorilinea"}{km}', hm(e.get("departureMin")), hm(e.get("arrivalMin")), e.get("fromStop") or "–", e.get("toStop") or "–"))
+                if tb and svc_end is not None:
+                    rows.append((i, veh, "Rientro auto", hm(svc_end), hm(svc_end + tb), pc.get("lastStop") or "–", "Deposito"))
+            out.append(table(["Pezzo", "Vettura", "Linea / attività", "Partenza", "Arrivo", "Da", "A"], rows, numeric_from=99))
             for h in x.get("vehicleHandoverLabels") or []:
                 out.append(para(f'<span class="small">{esc(h)}</span>'))
     return "".join(out)

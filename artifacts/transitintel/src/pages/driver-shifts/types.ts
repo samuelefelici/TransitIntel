@@ -49,12 +49,34 @@ export interface CarPoolInfo {
   description: string;
 }
 
+/** Tratta NON di servizio guidata dal conducente dentro la ripresa
+ *  (uscita/rientro deposito, riposizionamento fra capolinea). */
+export interface RipresaDeadhead {
+  kind: "pullout" | "pullin" | "reposition" | "depot_in" | "depot_out";
+  fromStop: string;
+  toStop: string;
+  departureMin: number;
+  arrivalMin: number;
+  departureTime: string;
+  arrivalTime: string;
+  km?: number | null;
+  minutes: number;
+  label: string;
+}
+
 export interface Ripresa {
+  /** Confini di NASTRO della ripresa: pre-turno + trasferimento … rientro. */
   startTime: string;
   endTime: string;
   startMin: number;
   endMin: number;
+  /** Orari di SERVIZIO: presa in carico del bus → rilascio (se il motore li emette). */
+  serviceStartMin?: number;
+  serviceEndMin?: number;
   preTurnoMin: number;
+  /** "bus" = prende il bus in deposito (12′ di controlli), "auto" = raggiunge il nodo in auto (5′). */
+  preTurnoKind?: "bus" | "auto" | "none";
+  deadheads?: RipresaDeadhead[];
   transferMin: number;
   transferType: string;
   transferToStop?: string;
@@ -185,6 +207,8 @@ export interface DriverShiftSummary {
   companyCarsMovements?: number;
   /** Viaggi rimasti senza auto disponibile */
   companyCarsConflicts?: number;
+  /** ritiri che nessuna consegna raggiunge (nessuno porta un'auto a quel nodo) */
+  companyCarsUnpaired?: number;
   /** Picco di auto richieste fuori deposito contemporaneamente */
   companyCarsMaxSimultaneous?: number;
   companyCarsCap?: number;
