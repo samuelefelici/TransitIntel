@@ -59,7 +59,7 @@ const fmtDur = (m: number) => {
 /* ── Costruzione righe per ogni ripresa ──────────────────── */
 
 interface SyntheticRow {
-  kind: "preTurno" | "transfer" | "transferBack" | "cambio" | "interruption";
+  kind: "preTurno" | "transfer" | "transferBack" | "cambio" | "interruption" | "deadhead";
   startMin: number;
   endMin: number;
   label: string;
@@ -70,38 +70,73 @@ type RipresaRow =
   | { kind: "trip"; trip: RipresaTrip }
   | SyntheticRow;
 
+/** Inizio/fine del SERVIZIO della ripresa (presa in carico → rilascio del bus).
+ *  Il motore li emette (serviceStartMin/serviceEndMin); per gli scenari salvati
+ *  prima si ricavano dalle corse, e mai si lascia che pre-turno e trasferimento
+ *  finiscano SOPRA la prima corsa (era l'«orario accavallato» della stampa). */
+export function ripresaServiceBounds(rip: Ripresa): { start: number; end: number } {
+  const dh = rip.deadheads ?? [];
+  const firstTrip = rip.trips.length ? Math.min(...rip.trips.map(t => t.departureMin)) : null;
+  const lastTrip = rip.trips.length ? Math.max(...rip.trips.map(t => t.arrivalMin)) : null;
+  const firstDh = dh.length ? Math.min(...dh.map(d => d.departureMin)) : null;
+  const lastDh = dh.length ? Math.max(...dh.map(d => d.arrivalMin)) : null;
+  const firstAny = [firstTrip, firstDh].filter((v): v is number => v != null);
+  const lastAny = [lastTrip, lastDh].filter((v): v is number => v != null);
+  let start = typeof rip.serviceStartMin === "number" ? rip.serviceStartMin : rip.startMin + (rip.preTurnoMin || 0) + (rip.transferMin || 0);
+  let end = typeof rip.serviceEndMin === "number" ? rip.serviceEndMin : rip.endMin - (rip.transferBackMin || 0);
+  if (firstAny.length) start = Math.min(start, ...firstAny);
+  if (lastAny.length) end = Math.max(end, ...lastAny);
+  return { start, end };
+}
+
+const PRE_TURNO_LABEL: Record<string, string> = {
+  bus: "Pre-turno · presa bus in deposito (controlli)",
+  auto: "Pre-turno · auto aziendale",
+};
+
 function buildRipresaRows(rip: Ripresa): RipresaRow[] {
   const rows: RipresaRow[] = [];
+  const { start: svcStart, end: svcEnd } = ripresaServiceBounds(rip);
   if (rip.preTurnoMin > 0) {
+    // pre-turno e trasferimento stanno PRIMA della presa in carico del bus
+    const ptStart = svcStart - (rip.transferMin || 0) - rip.preTurnoMin;
     rows.push({
       kind: "preTurno",
-      startMin: rip.startMin,
-      endMin: rip.startMin + rip.preTurnoMin,
-      label: "Pre-turno",
+      startMin: ptStart,
+      endMin: ptStart + rip.preTurnoMin,
+      label: PRE_TURNO_LABEL[rip.preTurnoKind ?? ((rip.transferMin || 0) > 0 ? "auto" : "bus")] ?? "Pre-turno",
       detail: `${rip.preTurnoMin}′`,
     });
   }
   if (rip.transferMin > 0) {
-    const tStart = rip.startMin + rip.preTurnoMin;
+    const tStart = svcStart - rip.transferMin;
     rows.push({
       kind: "transfer",
       startMin: tStart,
-      endMin: tStart + rip.transferMin,
-      label: `Trasf. ↝ ${rip.transferToStop || rip.transferToCluster || "capolinea"}`,
-      detail: `${rip.transferMin}′ (${rip.transferType})`,
+      endMin: svcStart,
+      label: `Trasf. auto ↝ ${rip.transferToStop || rip.transferToCluster || "capolinea"}`,
+      detail: `${rip.transferMin}′ · deposito → nodo`,
+    });
+  }
+  for (const d of rip.deadheads ?? []) {
+    rows.push({
+      kind: "deadhead",
+      startMin: d.departureMin,
+      endMin: d.arrivalMin,
+      label: `${d.label || "Fuorilinea"} · ${d.fromStop} → ${d.toStop}`,
+      detail: `${d.minutes}′${d.km != null ? ` · ${d.km} km` : ""}`,
     });
   }
   for (const t of rip.trips) {
     rows.push({ kind: "trip", trip: t });
   }
   if ((rip.transferBackMin || 0) > 0) {
-    const tbStart = rip.endMin - rip.transferBackMin;
     rows.push({
       kind: "transferBack",
-      startMin: tbStart,
-      endMin: rip.endMin,
-      label: `Rientro ↜ ${rip.lastStop || "deposito"}`,
-      detail: `${rip.transferBackMin}′ (${rip.transferBackType})`,
+      startMin: svcEnd,
+      endMin: svcEnd + rip.transferBackMin,
+      label: `Rientro auto ↜ ${rip.lastStop || "deposito"}`,
+      detail: `${rip.transferBackMin}′ · nodo → deposito`,
     });
   }
   return rows.sort((a, b) => {
@@ -129,6 +164,7 @@ function ripresaRowHtml(row: RipresaRow): string {
     : row.kind === "transfer" ? "↝"
     : row.kind === "transferBack" ? "↜"
     : row.kind === "interruption" ? "☕"
+    : row.kind === "deadhead" ? "🚌"
     : "↹";
   return `<tr class="synthetic ${cls}">
     <td class="line">${icon}</td>
@@ -544,6 +580,7 @@ export function exportDriverShiftsToPrint(result: DriverShiftsResult, opts: Driv
     table.trips tr.synthetic.transferBack td { background: #f0fdf4; color: #166534; }
     table.trips tr.synthetic.transfer td { background: #eff6ff; color: #1e40af; }
     table.trips tr.synthetic.interruption td { background: #f3f4f6; color: #4b5563; }
+    table.trips tr.synthetic.deadhead td { background: #fdf2f8; color: #9d174d; font-style: normal; }
 
     .cambi {
       margin-top: 3px;

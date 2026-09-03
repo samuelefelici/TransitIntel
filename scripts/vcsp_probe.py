@@ -240,6 +240,19 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
         vals = [_flex_of(r) for rid in routes for r in route_trips.get(rid, [])]
         return min(vals) if vals else 0
 
+    def _piece_edge_min(piece: dict, last: bool) -> int:
+        """Orario di servizio al confine del pezzo: serviceStart/EndMin se il
+        motore li emette, altrimenti prima partenza / ultimo arrivo delle corse,
+        altrimenti i confini di nastro."""
+        key = "serviceEndMin" if last else "serviceStartMin"
+        if piece.get(key) is not None:
+            return int(piece[key])
+        vals = [int(t.get("arrivalMin" if last else "departureMin") or 0)
+                for t in (piece.get("trips") or []) if t.get("arrivalMin" if last else "departureMin") is not None]
+        if vals:
+            return max(vals) if last else min(vals)
+        return int(piece["endMin" if last else "startMin"])
+
     def _edge_trip(piece: dict, last: bool) -> dict | None:
         """Corsa al confine del pezzo (ultima o prima), letta dal payload."""
         best = None
@@ -265,7 +278,10 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
             continue
         p1, p2 = pieces
         try:
-            gap = int(p2["startMin"]) - int(p1["endMin"])
+            # stacco fra i pezzi sugli orari di SERVIZIO (rilascio del bus →
+            # presa in carico del bus), non sui confini di nastro che includono
+            # pre-turno e trasferimenti in auto
+            gap = _piece_edge_min(p2, last=False) - _piece_edge_min(p1, last=True)
             nastro = int(d.get("nastroMin") or (int(p2["endMin"]) - int(p1["startMin"])))
         except (KeyError, TypeError, ValueError):
             continue

@@ -57,7 +57,7 @@ import {
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
 import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
-import { mkRipresaFromTrips } from "@/pages/driver-shifts/bdsi-tools";
+import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/driver-shifts/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/driver-shifts/constants";
 import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
@@ -92,7 +92,7 @@ export default function DriverWorkspace({
     return m?.[1] ?? null;
   }, [currentLocation]);
 
-  const [result, setResult] = useState<DriverShiftsResult | null>(initialResult ?? null);
+  const [result, setResult] = useState<DriverShiftsResult | null>(initialResult ? normalizeDriverShiftsResult(initialResult) : null);
   const [solverMode, setSolverMode] = useState<"greedy" | "cpsat">("cpsat");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -346,8 +346,9 @@ export default function DriverWorkspace({
     fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios/${dssId}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((row: any) => {
-        const res = row?.result as DriverShiftsResult | undefined;
-        if (!res || !Array.isArray(res.driverShifts)) throw new Error("Scenario turni guida senza risultato");
+        const raw = row?.result as DriverShiftsResult | undefined;
+        if (!raw || !Array.isArray(raw.driverShifts)) throw new Error("Scenario turni guida senza risultato");
+        const res = normalizeDriverShiftsResult(raw);
         setResult(res);
         // ripristina le corse scoperte salvate col DSS nel pool dell'Area di lavoro
         const savedPool = (res as any)?.unassignedTrips as RipresaTrip[] | undefined;
@@ -368,7 +369,7 @@ export default function DriverWorkspace({
   // Ricezione risultati CP-SAT
   useEffect(() => {
     if (cpsat.state === "completed" && cpsat.result) {
-      setResult(cpsat.result as any);
+      setResult(normalizeDriverShiftsResult(cpsat.result as any));
       baselineSummaryRef.current = (cpsat.result as any)?.summary
         ? { ...(cpsat.result as any).summary }
         : null;
@@ -402,7 +403,7 @@ export default function DriverWorkspace({
     fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then(data => {
-        setResult(data);
+        setResult(normalizeDriverShiftsResult(data));
         baselineSummaryRef.current = data?.summary ? { ...data.summary } : null;
         baselineBarsRef.current = data?.driverShifts
           ? new Map(driverShiftsToTripBars(data.driverShifts).map((b: GanttBar) => [b.id, { rowId: b.rowId, startMin: b.startMin, endMin: b.endMin }]))
@@ -824,6 +825,8 @@ export default function DriverWorkspace({
           })),
         } : s),
       } : cur);
+      // i confini di nastro seguono pre-turno/trasferimenti appena aggiunti
+      setResult(cur => cur ? normalizeDriverShiftsResult(cur) : cur);
       // feedback stile Bdsi: la tipologia rilevata compare appena la normativa risponde
       if (rr.type) toast.success(`Tipologia rilevata: ${TYPE_LABELS[rr.type as DriverShiftType] ?? rr.type}`, {
         description: `${newId}${residenza ? ` · deposito ${residenza.name}` : ""}`,
@@ -1713,6 +1716,9 @@ export default function DriverWorkspace({
                 const cap = liveSummary.companyCarsCap ?? result.companyCars ?? optimizerCfg?.maxCompanyCars ?? null;
                 const peak = liveSummary.companyCarsMaxSimultaneous ?? liveSummary.companyCarsUsed;
                 const conflicts = liveSummary.companyCarsConflicts ?? 0;
+                // ritiri che nessuna consegna raggiunge: colpa del piano (nessuno porta
+                // un'auto a quel nodo), non del tetto
+                const unpaired = liveSummary.companyCarsUnpaired ?? 0;
                 const movements = liveSummary.companyCarsMovements;
                 const over = cap != null && peak > cap;
                 return (
@@ -1721,7 +1727,7 @@ export default function DriverWorkspace({
                     label="Auto aziendali (picco)"
                     value={`${peak}/${cap ?? "?"}`}
                     sub={movements != null
-                      ? `${movements} viaggi per i cambi${conflicts > 0 ? ` · ${conflicts} senza auto` : ""}`
+                      ? `${movements} viaggi per i cambi${conflicts > 0 ? ` · ${conflicts} senza auto${unpaired > 0 ? ` (${unpaired} senza auto al nodo)` : ""}` : ""}`
                       : "auto fuori deposito nello stesso istante"}
                     color={over || conflicts > 0 ? "#dc2626" : (cap != null && peak >= cap ? "#f59e0b" : undefined)}
                     delta={summaryDelta && { value: summaryDelta.carsΔ, unit: "", lowerIsBetter: true }}

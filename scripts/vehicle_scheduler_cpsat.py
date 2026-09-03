@@ -3051,6 +3051,14 @@ def run(data: dict) -> dict:
     dh_min_pairs = set_deadhead_min_matrix(data.get("deadheadMin"))
     if dh_min_pairs:
         log(f"  [VSP-DH-MATRIX] {dh_min_pairs} coppie con TEMPO curato a mano (override)")
+    # Archivio «Archi fuorilinea» del progetto: le coppie capolinea↔capolinea
+    # assenti arrivano vietate (km sopra il massimo), le tratte deposito fuori
+    # archivio restano stimate ma vengono contate.
+    dh_archive = data.get("deadheadArchive") if isinstance(data.get("deadheadArchive"), dict) else None
+    if dh_archive:
+        log(f"  [VSP-DH-ARCHIVE] archivio {dh_archive.get('scope')}: {dh_archive.get('arcs')} archi, "
+            f"{dh_archive.get('ttAllowed')} coppie capolinea ammesse, {dh_archive.get('ttForbidden')} vietate, "
+            f"{dh_archive.get('depotLegsOutsideArchive')} tratte deposito fuori archivio")
 
     # Depositi selezionati (multi-deposito): domiciliazione + cap per deposito
     depots_data = [d for d in (data.get("depots") or [])
@@ -3339,6 +3347,7 @@ def run(data: dict) -> dict:
         "bestStrategy": vsp_analysis.get("bestStrategyLabel", "balanced"),
         "costSpreadPct": vsp_analysis.get("costSpreadPct", 0),
         "deadheadMatrixPairs": dh_pairs,
+        "deadheadArchive": dh_archive,
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
         "depotAssignment": depot_assignment,

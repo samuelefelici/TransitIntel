@@ -43,7 +43,7 @@ from ortools.sat.python import cp_model
 
 from optimizer_common import (
     # Costanti
-    SHIFT_RULES, PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN,
+    SHIFT_RULES, PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN, MAX_IDLE_AT_TERMINAL,
     DEPOT_TRANSFER_CENTRAL, DEPOT_TRANSFER_OUTER,
     MAX_CONTINUOUS_DRIVING, MIN_BREAK_AFTER_DRIVING,
     TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID,
@@ -654,6 +654,19 @@ def split_blocks_at_soste(blocks: list["VehicleBlock"], clusters: list) -> tuple
             continue
         for gi, g in enumerate(groups):
             driving = sum(t.arrival_min - t.departure_min for t in g)
+            # Bordi: la prima parte eredita l'uscita dal deposito, l'ultima il
+            # rientro; a un rientro in deposito a metà blocco entrambe le parti
+            # hanno il loro bordo (il bus ci va davvero).
+            p_out = b.pullout_min if gi == 0 else 0
+            p_in = b.pullin_min if gi == len(groups) - 1 else 0
+            if gi > 0:
+                lg = block_leg_between(b, groups[gi - 1][-1], g[0])
+                if lg is not None and lg.type == "depot":
+                    p_out = max(0, g[0].departure_min - lg.arrival_min)
+            if gi < len(groups) - 1:
+                lg = block_leg_between(b, g[-1], groups[gi + 1][0])
+                if lg is not None and lg.type == "depot":
+                    p_in = max(0, lg.departure_min - g[-1].arrival_min)
             out.append(VehicleBlock(
                 vehicle_id=b.vehicle_id,
                 vehicle_type=b.vehicle_type,
@@ -665,6 +678,9 @@ def split_blocks_at_soste(blocks: list["VehicleBlock"], clusters: list) -> tuple
                 driving_min=driving,
                 work_min=g[-1].arrival_min - g[0].departure_min,
                 classification=b.classification,
+                pullout_min=p_out,
+                pullin_min=p_in,
+                legs=list(b.legs),
             ))
     if splits:
         log(f"[V4][BDS5] soste spezzanti ≥{BDS5_SOSTE_SPEZZANTI_MIN}': "
@@ -1172,11 +1188,30 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
         # conducente del bus li GUIDANO (niente auto aziendale ai bordi).
         pullout_min = 0
         pullin_min = 0
+        legs: list[VShiftTrip] = []
         for t in raw_trips:
             if t.get("type") == "deadhead" and t.get("depotLeg") == "out":
                 pullout_min = max(pullout_min, int(t.get("deadheadMin") or 0))
             elif t.get("type") == "deadhead" and t.get("depotLeg") == "in":
                 pullin_min = max(pullin_min, int(t.get("deadheadMin") or 0))
+            if t.get("type") in ("deadhead", "depot"):
+                _dm = int(t.get("departureMin") if t.get("departureMin") is not None else _hhmm_to_min(t.get("departureTime", "")))
+                _am = int(t.get("arrivalMin") if t.get("arrivalMin") is not None else _hhmm_to_min(t.get("arrivalTime", "")))
+                legs.append(VShiftTrip(
+                    type=str(t.get("type")),
+                    trip_id="", route_id="",
+                    route_name=str(t.get("routeName") or ""),
+                    headsign=None,
+                    departure_time=str(t.get("departureTime") or min_to_time(_dm)),
+                    arrival_time=str(t.get("arrivalTime") or min_to_time(_am)),
+                    departure_min=_dm, arrival_min=_am,
+                    first_stop_name=str(t.get("firstStopName") or ""),
+                    last_stop_name=str(t.get("lastStopName") or ""),
+                    deadhead_km=float(t.get("deadheadKm") or 0),
+                    deadhead_min=int(t.get("deadheadMin") or max(0, _am - _dm)),
+                    depot_leg=t.get("depotLeg") or None,
+                ))
+        legs.sort(key=lambda x: (x.departure_min, x.arrival_min))
         for t in raw_trips:
             if t.get("type") != "trip":
                 continue
@@ -1234,10 +1269,29 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
             classification="",
             pullout_min=pullout_min,
             pullin_min=pullin_min,
+            legs=legs,
         ))
 
     blocks.sort(key=lambda b: b.start_min)
     return blocks
+
+
+def block_leg_between(block: "VehicleBlock", prev: VShiftTrip, nxt: VShiftTrip) -> VShiftTrip | None:
+    """La tratta non di servizio del blocco fra due corse consecutive (fuorilinea
+    o rientro in deposito), se il turno macchina ne prevede una."""
+    for leg in getattr(block, "legs", None) or []:
+        if leg.departure_min >= prev.arrival_min and leg.arrival_min <= nxt.departure_min:
+            return leg
+    return None
+
+
+def block_trip_index(block: "VehicleBlock", trip: VShiftTrip) -> int:
+    """Indice della corsa (intera) nel blocco; -1 se la corsa è una metà di
+    taglio intra (stessa id ma orari diversi) o non appartiene al blocco."""
+    for i, bt in enumerate(block.trips):
+        if bt.trip_id == trip.trip_id and bt.departure_min == trip.departure_min and bt.arrival_min == trip.arrival_min:
+            return i
+    return -1
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1279,7 +1333,12 @@ def analyze_vehicle_block(
         left_driving = cum_driving[i + 1]
         right_driving = total_driving - left_driving
         left_work = trips[i].arrival_min - trips[0].departure_min
-        right_work = trips[-1].arrival_min - trips[i + 1].departure_min
+        _leg = block_leg_between(block, trips[i], trips[i + 1])
+        if (_leg is None or _leg.type != "depot") and gap <= MAX_IDLE_AT_TERMINAL:
+            # cambio in linea: il montante copre sosta/fuorilinea dal taglio
+            right_work = trips[-1].arrival_min - cut_time
+        else:
+            right_work = trips[-1].arrival_min - trips[i + 1].departure_min
 
         # BDS5 lung_pezzi: il taglio non deve creare pezzi sotto la lunghezza minima
         if min_pezzo > 0 and (left_work < min_pezzo or right_work < min_pezzo):
@@ -1294,7 +1353,7 @@ def analyze_vehicle_block(
 
         # Bonus gap
         if gap >= 5:
-            score += CUT_SCORE_GAP_BASE + (gap - 5) * CUT_SCORE_GAP_BONUS_PER_MIN
+            score += CUT_SCORE_GAP_BASE + (min(gap, 20) - 5) * CUT_SCORE_GAP_BONUS_PER_MIN
 
         # Cluster bonus/penalità
         if cid:
@@ -1553,10 +1612,42 @@ def _make_segment(
             pullout = int(block.pullout_min or 0)
             start -= pullout
             driving += pullout
+        else:
+            # CAMBIO IN LINEA: il montante prende il bus all'ARRIVO della corsa
+            # precedente, al suo capolinea, e copre sosta ed eventuale
+            # fuorilinea fino alla prima corsa del pezzo. Così il bus non resta
+            # mai senza conducente e consegna/ritiro dell'auto aziendale si
+            # accoppiano nello stesso nodo e nello stesso minuto. Se fra le
+            # due corse il bus rientra in deposito, il pezzo inizia lì con
+            # l'uscita (niente auto). Le metà di un taglio intra-corsa
+            # (block_trip_index = -1) partono dalla fermata intermedia.
+            k = block_trip_index(block, trips[0])
+            if k > 0:
+                prev = block.trips[k - 1]
+                leg = block_leg_between(block, prev, trips[0])
+                if leg is not None and leg.type == "depot":
+                    starts_at_depot = True
+                    pullout = max(0, trips[0].departure_min - leg.arrival_min)
+                    start = trips[0].departure_min - pullout
+                    driving += pullout
+                elif trips[0].departure_min - prev.arrival_min <= MAX_IDLE_AT_TERMINAL:
+                    start = prev.arrival_min
+                    first_stop = prev.last_stop_name or first_stop
+                    if leg is not None and leg.type == "deadhead":
+                        driving += max(0, leg.arrival_min - leg.departure_min)
         if ends_at_depot:
             pullin = int(block.pullin_min or 0)
             end += pullin
             driving += pullin
+        else:
+            k = block_trip_index(block, trips[-1])
+            if 0 <= k < len(block.trips) - 1:
+                leg = block_leg_between(block, trips[-1], block.trips[k + 1])
+                if leg is not None and leg.type == "depot":
+                    ends_at_depot = True
+                    pullin = max(0, leg.departure_min - trips[-1].arrival_min)
+                    end = trips[-1].arrival_min + pullin
+                    driving += pullin
     return Segment(
         idx=_next_seg_idx(),
         vehicle_id=vehicle_id,
@@ -3822,6 +3913,7 @@ from crew_scheduler_v3 import (
     car_pool_by_driver,
     _max_simultaneous_cars_out,
     _cars_out_demand_peak,
+    LAST_CAR_POOL_STATS,
 )
 
 
@@ -3829,14 +3921,54 @@ from crew_scheduler_v3 import (
 #  SERIALIZZAZIONE OUTPUT
 # ═══════════════════════════════════════════════════════════════
 
+def _ripresa_deadheads(seg: Segment, legs: list | None) -> list[dict]:
+    """Righe «Fuorilinea» del pezzo: uscita/rientro deposito, riposizionamenti
+    e rientri in deposito a metà pezzo che il conducente GUIDA (tratte del
+    turno macchina comprese fra inizio e fine del pezzo)."""
+    out: list[dict] = []
+    for leg in (legs or []):
+        if leg.departure_min < seg.start_min or leg.arrival_min > seg.end_min:
+            continue
+        if leg.type == "depot":
+            prev = max((t for t in seg.trips if t.arrival_min <= leg.departure_min), key=lambda t: t.arrival_min, default=None)
+            nxt = min((t for t in seg.trips if t.departure_min >= leg.arrival_min), key=lambda t: t.departure_min, default=None)
+            if prev is not None:
+                out.append({"kind": "depot_in", "fromStop": prev.last_stop_name or "?", "toStop": "Deposito",
+                            "departureMin": prev.arrival_min, "arrivalMin": leg.departure_min,
+                            "departureTime": min_to_time(prev.arrival_min), "arrivalTime": min_to_time(leg.departure_min),
+                            "km": None, "minutes": max(0, leg.departure_min - prev.arrival_min), "label": "Fuorilinea · rientro deposito"})
+            if nxt is not None:
+                out.append({"kind": "depot_out", "fromStop": "Deposito", "toStop": nxt.first_stop_name or "?",
+                            "departureMin": leg.arrival_min, "arrivalMin": nxt.departure_min,
+                            "departureTime": min_to_time(leg.arrival_min), "arrivalTime": min_to_time(nxt.departure_min),
+                            "km": None, "minutes": max(0, nxt.departure_min - leg.arrival_min), "label": "Fuorilinea · uscita deposito"})
+            continue
+        kind = "pullout" if leg.depot_leg == "out" else ("pullin" if leg.depot_leg == "in" else "reposition")
+        label = {"pullout": "Fuorilinea · uscita deposito", "pullin": "Fuorilinea · rientro deposito"}.get(kind, "Fuorilinea")
+        out.append({"kind": kind, "fromStop": leg.first_stop_name or "?", "toStop": leg.last_stop_name or "?",
+                    "departureMin": leg.departure_min, "arrivalMin": leg.arrival_min,
+                    "departureTime": min_to_time(leg.departure_min), "arrivalTime": min_to_time(leg.arrival_min),
+                    "km": round(float(leg.deadhead_km or 0), 1) if leg.deadhead_km else None,
+                    "minutes": max(0, leg.arrival_min - leg.departure_min), "label": label})
+    out.sort(key=lambda r: (r["departureMin"], r["arrivalMin"]))
+    return out
+
+
 def _segment_to_ripresa(
     seg: Segment,
     is_first: bool,
     is_last: bool,
     duty: DriverDutyV3,
     clusters: list[Cluster] | None = None,
+    legs: list | None = None,
 ) -> dict:
-    """Converte un Segment nella struttura Ripresa per il frontend."""
+    """Converte un Segment nella struttura Ripresa per il frontend.
+
+    startMin/endMin sono i confini di NASTRO della ripresa (pre-turno e
+    trasferimento in auto prima delle corse, rientro in auto dopo): è ciò che
+    la UI (Gantt, stampa) e il greedy TS hanno sempre assunto. Gli orari di
+    servizio (prima presa in carico del bus → ultimo rilascio) stanno in
+    serviceStartMin/serviceEndMin."""
     n_segs = len(duty.segments)
     diff_vehicles = n_segs >= 2 and duty.segments[0].vehicle_id != duty.segments[-1].vehicle_id
 
@@ -3879,12 +4011,20 @@ def _segment_to_ripresa(
             "vehicleType": seg.vehicle_type,
         })
 
+    nastro_start = seg.start_min - pre_turno - transfer
+    nastro_end = seg.end_min + transfer_back
     return {
-        "startTime": min_to_time(seg.start_min),
-        "endTime": min_to_time(seg.end_min),
-        "startMin": seg.start_min,
-        "endMin": seg.end_min,
+        "startTime": min_to_time(max(0, nastro_start)),
+        "endTime": min_to_time(nastro_end),
+        "startMin": nastro_start,
+        "endMin": nastro_end,
+        "serviceStartMin": seg.start_min,
+        "serviceEndMin": seg.end_min,
+        "serviceStartTime": min_to_time(seg.start_min),
+        "serviceEndTime": min_to_time(seg.end_min),
         "preTurnoMin": pre_turno,
+        # "bus" = prende il bus in deposito (controlli), "auto" = raggiunge il nodo in auto
+        "preTurnoKind": ("bus" if transfer == 0 else "auto") if pre_turno > 0 else "none",
         "transferMin": transfer,
         "transferType": transfer_type,
         "transferToStop": transfer_to_stop,
@@ -3894,6 +4034,7 @@ def _segment_to_ripresa(
         "lastStop": seg.last_stop or "?",
         "lastCluster": seg.last_cluster or None,
         "workMin": seg.work_min,
+        "deadheads": _ripresa_deadheads(seg, legs),
         "startsAtDepot": bool(getattr(seg, "starts_at_depot", False)),
         "endsAtDepot": bool(getattr(seg, "ends_at_depot", False)),
         "pulloutMin": int(getattr(seg, "pullout_min", 0) or 0),
@@ -3963,6 +4104,13 @@ def serialize_output(
     # ── Serializza driver shifts ──
     cluster_names = {c.id: c.name for c in clusters}
     driver_shifts = []
+    # Tratte non di servizio per bus (uscite/rientri/fuorilinea): righe
+    # «Fuorilinea» dentro le riprese. Le parti di un blocco spezzato
+    # condividono la stessa lista.
+    legs_by_vid: dict[str, list] = {}
+    for b in blocks:
+        if getattr(b, "legs", None):
+            legs_by_vid.setdefault(b.vehicle_id, b.legs)
 
     for d in duties:
         riprese = []
@@ -3971,7 +4119,8 @@ def serialize_output(
         all_pickups: list = my_car.get("all_pickups", [])
 
         for si, seg in enumerate(d.segments):
-            rip = _segment_to_ripresa(seg, si == 0, si == len(d.segments) - 1, d, clusters)
+            rip = _segment_to_ripresa(seg, si == 0, si == len(d.segments) - 1, d, clusters,
+                                      legs_by_vid.get(seg.vehicle_id))
 
             # Viaggi auto agganciati al pezzo per ORARIO (non per indice): un
             # pezzo che esce dal deposito col bus non ha consegna, e la consegna
@@ -4119,6 +4268,8 @@ def serialize_output(
             "companyCarsUsed": len({t.car_id for t in car_movements if t.car_id is not None}),
             "companyCarsMovements": len(car_movements),
             "companyCarsConflicts": sum(1 for t in car_movements if t.car_id is None),
+            # ritiri che nessuna consegna raggiunge (nessuno porta un'auto a quel nodo)
+            "companyCarsUnpaired": int(LAST_CAR_POOL_STATS.get("unpaired", 0) or 0),
             "companyCarsMaxSimultaneous": _cars_out_demand_peak(car_movements),
             "companyCarsAssignedPeak": _max_simultaneous_cars_out(car_movements),
             "companyCarsCap": MAX_COMPANY_CARS,
@@ -4157,6 +4308,7 @@ def serialize_output(
             "carPool": {
                 "totalTrips": len(car_movements),
                 "conflicts": sum(1 for t in car_movements if t.car_id is None),
+                "unpaired": int(LAST_CAR_POOL_STATS.get("unpaired", 0) or 0),
                 "maxSimultaneous": _cars_out_demand_peak(car_movements),
                 "assignedPeak": _max_simultaneous_cars_out(car_movements),
                 "cap": MAX_COMPANY_CARS,

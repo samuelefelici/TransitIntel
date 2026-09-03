@@ -10,7 +10,7 @@
 import React, { useMemo, useState } from "react";
 import { Search, X, Shield, Repeat, Loader2, Wand2, Bus } from "lucide-react";
 import type { DriverShiftData, DriverShiftType, RipresaTrip, Ripresa, VincoloGlobale } from "./types";
-import { TYPE_LABELS, TYPE_COLORS } from "./constants";
+import { TYPE_LABELS, TYPE_COLORS, formatDuration } from "./constants";
 
 /* ───────────────────────────────────────────────────────────────
  *  STATO DI VERIFICA (§10.1)
@@ -414,6 +414,56 @@ export function CoveragePanel({ coverage, onFocusDriver, onSwapPiece, onTurnoUni
  *  APPLY: inserisce un pezzo in un turno guida (per swap/insert e
  *  per aggiungere i turni unici). Client-side, poi si ri-verifica.
  * ─────────────────────────────────────────────────────────────── */
+
+/** Normalizza le riprese di un risultato: startMin/endMin sono i confini di
+ *  NASTRO (pre-turno + trasferimento … rientro). Gli scenari salvati prima
+ *  della correzione avevano startMin = partenza della prima corsa: pre-turno e
+ *  trasferimento finivano SOPRA le corse (orari accavallati in Gantt e stampa).
+ *  Idempotente: un risultato già coerente resta identico. */
+export function normalizeDriverShiftsResult<T extends { driverShifts?: DriverShiftData[] }>(result: T): T {
+  if (!result || !Array.isArray(result.driverShifts)) return result;
+  let touched = false;
+  const shifts = result.driverShifts.map(s => {
+    let changed = false;
+    const riprese = (s.riprese ?? []).map(r => {
+      const trips = r.trips ?? [];
+      const firstTrip = trips.length ? Math.min(...trips.map(t => t.departureMin)) : null;
+      const lastTrip = trips.length ? Math.max(...trips.map(t => t.arrivalMin)) : null;
+      const svcStart = typeof r.serviceStartMin === "number" ? r.serviceStartMin : firstTrip;
+      const svcEnd = typeof r.serviceEndMin === "number" ? r.serviceEndMin : lastTrip;
+      if (svcStart == null || svcEnd == null) return r;
+      const wantStart = svcStart - (r.preTurnoMin || 0) - (r.transferMin || 0);
+      const wantEnd = svcEnd + (r.transferBackMin || 0);
+      if (r.startMin === wantStart && r.endMin === wantEnd) return r;
+      // solo se i confini attuali NON contengono pre-turno/trasferimento (vecchio significato)
+      const overlapsStart = r.startMin + (r.preTurnoMin || 0) + (r.transferMin || 0) > svcStart;
+      const overlapsEnd = r.endMin - (r.transferBackMin || 0) < svcEnd;
+      if (!overlapsStart && !overlapsEnd) return r;
+      changed = true;
+      return {
+        ...r,
+        startMin: overlapsStart ? wantStart : r.startMin,
+        endMin: overlapsEnd ? wantEnd : r.endMin,
+        startTime: overlapsStart ? fmtH(Math.max(0, wantStart)) : r.startTime,
+        endTime: overlapsEnd ? fmtH(wantEnd) : r.endTime,
+        serviceStartMin: svcStart,
+        serviceEndMin: svcEnd,
+      };
+    });
+    if (!changed) return s;
+    touched = true;
+    const aS = Math.min(...riprese.map(r => r.startMin));
+    const aE = Math.max(...riprese.map(r => r.endMin));
+    return {
+      ...s,
+      riprese,
+      nastroStartMin: aS, nastroEndMin: aE,
+      nastroStart: fmtH(Math.max(0, aS)), nastroEnd: fmtH(aE),
+      nastroMin: aE - aS, nastro: formatDuration(aE - aS),
+    };
+  });
+  return touched ? { ...result, driverShifts: shifts } : result;
+}
 
 export function mkRipresaFromTrips(trips: RipresaTrip[], vehicleId: string, vehicleType: string): Ripresa {
   const sorted = [...trips].sort((a, b) => a.departureMin - b.departureMin);
