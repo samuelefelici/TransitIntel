@@ -63,6 +63,7 @@ const FucinaPage = lazyWithRetry(() => import("@/pages/fucina"));
 const SchedulingProjectDashboardPage = lazyWithRetry(() => import("@/pages/scheduling/ProjectDashboardPage"));
 const VehicleScenariosPage = lazyWithRetry(() => import("@/pages/scheduling/VehicleScenariosPage"));
 const DriverScenariosPage = lazyWithRetry(() => import("@/pages/scheduling/DriverScenariosPage"));
+const ProcessReportPage = lazyWithRetry(() => import("@/pages/fucina/ProcessReportPage"));
 // ClusterPage rimosso: i cluster ora vivono in Planner Studio
 // (/planning-studio/:id/clusters). Le rotte /cluster e /cluster-management
 // sono mantenute solo come Redirect per non rompere link esterni.
@@ -283,6 +284,9 @@ function Router() {
             </Route>
             <Route path="/fucina/esercizio">
               <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
+            </Route>
+            <Route path="/fucina/relazioni/:reportId">
+              <Gated perm="scheduling"><ProcessReportPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/pipeline">
               <Gated perm="scheduling"><FucinaPage /></Gated>

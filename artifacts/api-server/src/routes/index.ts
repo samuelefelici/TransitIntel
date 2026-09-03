@@ -20,6 +20,7 @@ import intermodalRouter from "./intermodal";
 import optimizerRouteRouter from "./optimizer-route";
 import optimizerScheduleRouter from "./optimizer-schedule";
 import serviceProgramRouter from "./service-program";
+import processReportRouter from "./process-report";
 import driverShiftsRouter from "./driver-shifts";
 import optimizerRuleProfilesRouter from "./optimizer-rule-profiles";
 import clustersRouter from "./clusters";
@@ -109,6 +110,7 @@ router.use(argosWatchRouter);
 router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);
+router.use(processReportRouter); // relazione di processo (dossier + documento)
 router.use(driverShiftsRouter);
 router.use(optimizerRuleProfilesRouter); // profili-regole riusabili ottimizzatore turni guida
 router.use(clustersRouter);
