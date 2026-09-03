@@ -277,7 +277,10 @@ def render_summary(d: dict) -> str:
              ("Violazioni BDS", fmt_n(st["violations"]), f'{st["warnings"]} avvisi'),
              ("Costo giornaliero", fmt_eur(total), f'vetture {fmt_eur(vcost)} · guida {fmt_eur(ccost)}')]
     if car_peak is not None:
-        tiles.append(("Auto aziendali (picco)", f'{car_peak}{f" / {cars}" if cars is not None else ""}', "cambi in linea"))
+        _mov = cs.get("companyCarsMovements")
+        _conf = cs.get("companyCarsConflicts") or 0
+        tiles.append(("Auto aziendali (picco)", f'{car_peak}{f" / {cars}" if cars is not None else ""}',
+                      (f"{_mov} viaggi per i cambi" if _mov is not None else "cambi in linea") + (f" · {_conf} senza auto" if _conf else "")))
     out = [section("sintesi", "1. Sintesi per la direzione", first=True), rc.kpi_row(tiles)]
     avg_work = sum(st["work"]) / len(st["work"]) if st["work"] else 0
     avg_nastro = sum(st["nastro"]) / len(st["nastro"]) if st["nastro"] else 0
@@ -506,7 +509,9 @@ def render_crew(d: dict) -> str:
              ("Cambi in linea", fmt_n(st["cambi"]), "passaggi di vettura fra conducenti"),
              ("Violazioni", fmt_n(st["violations"]), f'{st["warnings"]} avvisi')]
     if cs.get("companyCarsMaxSimultaneous") is not None:
-        tiles.append(("Auto aziendali (picco)", fmt_n(cs.get("companyCarsMaxSimultaneous")), f'tetto {p.get("companyCars")}' if p.get("companyCars") is not None else ""))
+        _conf = cs.get("companyCarsConflicts") or 0
+        tiles.append(("Auto aziendali (picco)", fmt_n(cs.get("companyCarsMaxSimultaneous")),
+                      (f'tetto {p.get("companyCars")}' if p.get("companyCars") is not None else "") + (f" · {_conf} viaggi senza auto" if _conf else "")))
     out.append(rc.kpi_row(tiles))
     out.append("<h3>6.1 Struttura</h3>")
     ncat = [DUTY_TYPE_LABEL[k] for k in DUTY_TYPE_ORDER if st["byType"].get(k)]

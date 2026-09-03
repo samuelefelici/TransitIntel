@@ -1264,6 +1264,10 @@ class CarTrip:
     arrive_min: int         # minuto arrivo
     transfer_min: int       # durata tratta
     car_id: int | None = None  # auto assegnata (1-5), None se conflitto
+    wait_min: int = 0          # attesa al nodo per un'auto in arrivo (ritiri)
+
+
+CAR_PICKUP_WAIT_MAX = 15   # minuti che chi smonta può aspettare l'auto di chi monta
 
 
 def compute_car_pool(
@@ -1359,8 +1363,9 @@ def compute_car_pool(
             for si, seg in enumerate(d.segments):
                 seg_first_cluster = seg.first_cluster
                 seg_last_cluster = seg.last_cluster
-                t_to_first = depot_transfer_min(seg.first_stop, clusters)
-                t_from_last = depot_transfer_min(seg.last_stop, clusters)
+                # Bordi in deposito: il conducente esce/rientra col bus, niente auto
+                t_to_first = 0 if getattr(seg, "starts_at_depot", False) else depot_transfer_min(seg.first_stop, clusters)
+                t_from_last = 0 if getattr(seg, "ends_at_depot", False) else depot_transfer_min(seg.last_stop, clusters)
 
                 # DELIVER: deposito → primo cluster di questo segmento
                 if t_to_first > 0 and seg_first_cluster:
@@ -1402,55 +1407,73 @@ def compute_car_pool(
     #   deliver_arrive  → auto arriva al cluster (diventa disponibile)
     #   pickup_depart   → auto lascia cluster (deve essere disponibile!)
     #   pickup_arrive   → auto rientra al deposito
-    all_events: list[tuple[int, str, CarTrip]] = []
+    # Simulazione cronologica su coda di priorità: un ritiro che non trova
+    # un'auto al nodo può ASPETTARE un'auto già in viaggio verso quel nodo
+    # (entro CAR_PICKUP_WAIT_MAX minuti: è il caso tipico del cambio in linea,
+    # dove il conducente che smonta parte pochi minuti prima che arrivi
+    # l'auto di chi monta). Il ritiro slitta all'arrivo dell'auto.
+    import heapq
+    EVENT_ORDER = {"deliver_arrive": 0, "pickup_arrive": 1, "deliver_depart": 2, "pickup_depart": 3}
+    heap: list[tuple[int, int, int, str, CarTrip]] = []
+    _seq = 0
     for t in trips:
         if t.trip_type == "deliver":
-            all_events.append((t.depart_min, "deliver_depart", t))
-            all_events.append((t.arrive_min, "deliver_arrive", t))
+            heapq.heappush(heap, (t.depart_min, EVENT_ORDER["deliver_depart"], _seq, "deliver_depart", t)); _seq += 1
+            heapq.heappush(heap, (t.arrive_min, EVENT_ORDER["deliver_arrive"], _seq, "deliver_arrive", t)); _seq += 1
         else:
-            all_events.append((t.depart_min, "pickup_depart", t))
-            all_events.append((t.arrive_min, "pickup_arrive", t))
-
-    # Ordina per tempo; a parità: arrivi prima di partenze (così auto appena arrivate sono disponibili)
-    EVENT_ORDER = {"deliver_arrive": 0, "pickup_arrive": 1, "deliver_depart": 2, "pickup_depart": 3}
-    all_events.sort(key=lambda e: (e[0], EVENT_ORDER.get(e[1], 9)))
+            heapq.heappush(heap, (t.depart_min, EVENT_ORDER["pickup_depart"], _seq, "pickup_depart", t)); _seq += 1
 
     car_ids_at_depot: list[int] = list(range(1, COMPANY_CARS + 1))
     car_ids_at_cluster: dict[str, list[int]] = {}
+    en_route: dict[str, list[tuple[int, int, int]]] = {}   # cluster → [(arrive_min, car_id, id(deliver))]
+    handed_over: set[int] = set()                          # id(deliver) la cui auto è già promessa a un ritiro
     car_assignment: dict[int, int] = {}  # id(trip) → car_id
     conflicts: list[CarTrip] = []
 
-    for _, event_type, trip in all_events:
+    while heap:
+        _, _, _, event_type, trip = heapq.heappop(heap)
         cid = trip.cluster_id or "unknown"
 
         if event_type == "deliver_depart":
-            # Auto esce dal deposito
             if car_ids_at_depot:
                 car_id = car_ids_at_depot.pop(0)
                 car_assignment[id(trip)] = car_id
                 trip.car_id = car_id
+                en_route.setdefault(cid, []).append((trip.arrive_min, car_id, id(trip)))
             else:
                 trip.car_id = None
                 conflicts.append(trip)
 
         elif event_type == "deliver_arrive":
-            # Auto arriva al cluster — la parcheggiamo lì
             car_id = car_assignment.get(id(trip))
-            if car_id is not None:
+            en_route[cid] = [e for e in en_route.get(cid, []) if e[2] != id(trip)]
+            if car_id is not None and id(trip) not in handed_over:
                 car_ids_at_cluster.setdefault(cid, []).append(car_id)
 
         elif event_type == "pickup_depart":
-            # Autista prende un'auto dal cluster
             if car_ids_at_cluster.get(cid):
                 car_id = car_ids_at_cluster[cid].pop(0)
                 car_assignment[id(trip)] = car_id
                 trip.car_id = car_id
+                heapq.heappush(heap, (trip.arrive_min, EVENT_ORDER["pickup_arrive"], _seq, "pickup_arrive", trip)); _seq += 1
             else:
-                trip.car_id = None
-                conflicts.append(trip)
+                coming = sorted(e for e in en_route.get(cid, []) if e[2] not in handed_over
+                                and trip.depart_min <= e[0] <= trip.depart_min + CAR_PICKUP_WAIT_MAX)
+                if coming:
+                    arrive, car_id, dl_id = coming[0]
+                    handed_over.add(dl_id)
+                    wait = arrive - trip.depart_min
+                    trip.wait_min = wait
+                    trip.depart_min = arrive
+                    trip.arrive_min += wait
+                    car_assignment[id(trip)] = car_id
+                    trip.car_id = car_id
+                    heapq.heappush(heap, (trip.arrive_min, EVENT_ORDER["pickup_arrive"], _seq, "pickup_arrive", trip)); _seq += 1
+                else:
+                    trip.car_id = None
+                    conflicts.append(trip)
 
         elif event_type == "pickup_arrive":
-            # Auto rientra al deposito
             car_id = car_assignment.get(id(trip))
             if car_id is not None:
                 car_ids_at_depot.append(car_id)
@@ -1486,6 +1509,27 @@ def car_pool_by_driver(trips: list[CarTrip]) -> dict[str, dict[str, CarTrip | li
             result[t.driver_id]["all_pickups"].append(t)
             result[t.driver_id]["pickup"] = t  # ultimo pickup (sovrascrive)
     return result
+
+
+def _cars_out_demand_peak(trips: list[CarTrip]) -> int:
+    """Picco di auto RICHIESTE fuori deposito, contando tutti i viaggi (anche
+    quelli rimasti senza auto). È il numero da confrontare col tetto: quello
+    assegnato non può superarlo per costruzione."""
+    if not trips:
+        return 0
+    events: list[tuple[int, int]] = []
+    for t in trips:
+        if t.trip_type == "deliver":
+            events.append((t.depart_min, +1))
+        else:
+            events.append((t.arrive_min, -1))
+    events.sort(key=lambda e: (e[0], e[1]))
+    current = 0
+    peak = 0
+    for _, delta in events:
+        current += delta
+        peak = max(peak, current)
+    return peak
 
 
 def _max_simultaneous_cars_out(trips: list[CarTrip]) -> int:

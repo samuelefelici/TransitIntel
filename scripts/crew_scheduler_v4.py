@@ -1040,14 +1040,40 @@ def pre_turno_for(transfer_min: int) -> int:
     return PRE_TURNO_AUTO_MIN if transfer_min > 0 else PRE_TURNO_MIN
 
 
+def seg_transfer_out(s: "Segment", clusters: list) -> int:
+    """Trasferimento in auto deposito→nodo PRIMA del pezzo: zero se il pezzo
+    inizia con l'uscita del bus dal deposito (il conducente prende il bus lì)."""
+    if getattr(s, "starts_at_depot", False):
+        return 0
+    return depot_transfer_min(s.first_stop, clusters)
+
+
+def seg_transfer_back(s: "Segment", clusters: list) -> int:
+    """Trasferimento in auto nodo→deposito DOPO il pezzo: zero se il pezzo
+    finisce col rientro del bus in deposito."""
+    if getattr(s, "ends_at_depot", False):
+        return 0
+    return depot_transfer_min(s.last_stop, clusters)
+
+
+def _block_edge_transfers(b: "VehicleBlock", first_stop: str, last_stop: str,
+                          at_start: bool, at_end: bool, clusters: list) -> tuple[int, int, int]:
+    """(trasferimento andata, ritorno, minuti di uscita+rientro guidati) per un
+    pezzo ipotetico che copre l'inizio (at_start) e/o la fine (at_end) del blocco."""
+    t_out = 0 if at_start else depot_transfer_min(first_stop, clusters)
+    t_back = 0 if at_end else depot_transfer_min(last_stop, clusters)
+    extra = (b.pullout_min if at_start else 0) + (b.pullin_min if at_end else 0)
+    return t_out, t_back, extra
+
+
 def single_nastro_work(s: "Segment", bds: "BDSConfig", clusters: list) -> tuple[int, int]:
     """(nastro, work) di un turno mono-segmento. FONTE UNICA usata sia
     nell'obiettivo CP-SAT sia nell'estrazione: prima divergevano (il modello
     usava pre_turno_deposito=12 e trasferimenti fissi, l'estrazione pre_turno_for
     e i cluster reali), così il solver ottimizzava un nastro/work diverso da
     quello poi classificato/validato con RD 131/1938."""
-    t = depot_transfer_min(s.first_stop, clusters)
-    tb = depot_transfer_min(s.last_stop, clusters)
+    t = seg_transfer_out(s, clusters)
+    tb = seg_transfer_back(s, clusters)
     pt = pre_turno_for(t)
     nastro = s.work_min + pt + t + tb
     work = s.work_min + pt + tb
@@ -1064,8 +1090,8 @@ def pair_nastro_work(s1: "Segment", s2: "Segment", bds: "BDSConfig", clusters: l
     (niente pre-ripresa, niente sosta inoperosa)."""
     if s1.start_min > s2.start_min:
         s1, s2 = s2, s1
-    t = depot_transfer_min(s1.first_stop, clusters)
-    tb = depot_transfer_min(s2.last_stop, clusters)
+    t = seg_transfer_out(s1, clusters)
+    tb = seg_transfer_back(s2, clusters)
     pt = pre_turno_for(t)
     nastro = s2.end_min - s1.start_min + pt + t + tb
     if ptype == "intero":
@@ -1097,11 +1123,11 @@ def compute_pre_post_total(
     last_seg = duty.segments[-1]
 
     # Pre-turno: deposito se ha trasferimento, cambio altrimenti
-    is_depot_start = duty.transfer_min > 0
+    is_depot_start = duty.transfer_min > 0 or getattr(first_seg, "starts_at_depot", False)
     total += pre_turno_bds(is_depot_start, pp)
 
     # Post-turno
-    is_depot_end = duty.transfer_back_min > 0
+    is_depot_end = duty.transfer_back_min > 0 or getattr(last_seg, "ends_at_depot", False)
     total += post_turno_bds(is_depot_end, pp)
 
     # Se biripresa (2+ segmenti), aggiungi pre/post ripresa
@@ -1142,6 +1168,15 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
 
         raw_trips = vs_dict.get("trips", [])
         trips: list[VShiftTrip] = []
+        # Uscita/rientro deposito del turno macchina: il primo e l'ultimo
+        # conducente del bus li GUIDANO (niente auto aziendale ai bordi).
+        pullout_min = 0
+        pullin_min = 0
+        for t in raw_trips:
+            if t.get("type") == "deadhead" and t.get("depotLeg") == "out":
+                pullout_min = max(pullout_min, int(t.get("deadheadMin") or 0))
+            elif t.get("type") == "deadhead" and t.get("depotLeg") == "in":
+                pullin_min = max(pullin_min, int(t.get("deadheadMin") or 0))
         for t in raw_trips:
             if t.get("type") != "trip":
                 continue
@@ -1197,6 +1232,8 @@ def parse_vehicle_blocks(vehicle_shifts: list[dict], clusters: list[Cluster]) ->
             driving_min=driving,
             work_min=end - start,
             classification="",
+            pullout_min=pullout_min,
+            pullin_min=pullin_min,
         ))
 
     blocks.sort(key=lambda b: b.start_min)
@@ -1461,9 +1498,9 @@ def classify_blocks(blocks: list[VehicleBlock], clusters: list[Cluster]) -> None
     for b in blocks:
         first_stop = b.trips[0].first_stop_name if b.trips else ""
         last_stop = b.trips[-1].last_stop_name if b.trips else ""
-        transfer = depot_transfer_min(first_stop, clusters)
-        transfer_back = depot_transfer_min(last_stop, clusters)
-        nastro = b.nastro_min + pre_turno_for(transfer) + transfer + transfer_back
+        # I bordi del blocco sono in deposito (uscita/rientro guidati, niente auto)
+        transfer, transfer_back, extra = _block_edge_transfers(b, first_stop, last_stop, True, True, clusters)
+        nastro = b.nastro_min + extra + pre_turno_for(transfer) + transfer + transfer_back
 
         if nastro <= NASTRO_INTERO_MAX:
             if b.driving_min < DRIVING_BASSO_THRESHOLD:
@@ -1495,12 +1532,31 @@ def _make_segment(
     half: str,
     cut_index: int | None,
     clusters: list[Cluster],
+    block: VehicleBlock | None = None,
 ) -> Segment:
     start = trips[0].departure_min
     end = trips[-1].arrival_min
     driving = sum(t.arrival_min - t.departure_min for t in trips)
     first_stop = trips[0].first_stop_name
     last_stop = trips[-1].last_stop_name
+    # Bordi in deposito: il pezzo che contiene la PRIMA corsa del blocco inizia
+    # con l'uscita del bus dal deposito (il conducente lo prende lì e guida
+    # l'uscita); quello con l'ULTIMA finisce col rientro. Niente auto
+    # aziendale a quei bordi, e uscita/rientro sono minuti di guida.
+    starts_at_depot = ends_at_depot = False
+    pullout = pullin = 0
+    if block is not None and block.trips:
+        b0, bl = block.trips[0], block.trips[-1]
+        starts_at_depot = trips[0].trip_id == b0.trip_id and trips[0].departure_min == b0.departure_min
+        ends_at_depot = trips[-1].trip_id == bl.trip_id and trips[-1].arrival_min == bl.arrival_min
+        if starts_at_depot:
+            pullout = int(block.pullout_min or 0)
+            start -= pullout
+            driving += pullout
+        if ends_at_depot:
+            pullin = int(block.pullin_min or 0)
+            end += pullin
+            driving += pullin
     return Segment(
         idx=_next_seg_idx(),
         vehicle_id=vehicle_id,
@@ -1516,6 +1572,10 @@ def _make_segment(
         last_cluster=match_cluster(last_stop, clusters),
         half=half,
         cut_index=cut_index,
+        starts_at_depot=starts_at_depot,
+        ends_at_depot=ends_at_depot,
+        pullout_min=pullout,
+        pullin_min=pullin,
     )
 
 
@@ -1607,12 +1667,10 @@ def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate |
             right_first = b.trips[c.index + 1].first_stop_name if c.index + 1 < len(b.trips) else ""
         right_last = b.trips[-1].last_stop_name
 
-        lt_out = depot_transfer_min(left_first, clusters)
-        lt_back = depot_transfer_min(left_last, clusters)
-        rt_out = depot_transfer_min(right_first, clusters)
-        rt_back = depot_transfer_min(right_last, clusters)
-        left_nastro = c.left_work_min + pre_turno_for(lt_out) + lt_out + lt_back
-        right_nastro = c.right_work_min + pre_turno_for(rt_out) + rt_out + rt_back
+        lt_out, lt_back, l_extra = _block_edge_transfers(b, left_first, left_last, True, False, clusters)
+        rt_out, rt_back, r_extra = _block_edge_transfers(b, right_first, right_last, False, True, clusters)
+        left_nastro = c.left_work_min + l_extra + pre_turno_for(lt_out) + lt_out + lt_back
+        right_nastro = c.right_work_min + r_extra + pre_turno_for(rt_out) + rt_out + rt_back
 
         if left_nastro <= max_nastro and right_nastro <= max_nastro:
             valid_cuts.append(c)
@@ -1630,11 +1688,11 @@ def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate |
                 ll = b.trips[c.index].last_stop_name
                 rf = b.trips[c.index + 1].first_stop_name if c.index + 1 < len(b.trips) else ""
             rl = b.trips[-1].last_stop_name
-            lo, lb = depot_transfer_min(lf, clusters), depot_transfer_min(ll, clusters)
-            ro, rb = depot_transfer_min(rf, clusters), depot_transfer_min(rl, clusters)
+            lo, lb, le = _block_edge_transfers(b, lf, ll, True, False, clusters)
+            ro, rb, re_ = _block_edge_transfers(b, rf, rl, False, True, clusters)
             return max(
-                c.left_work_min + pre_turno_for(lo) + lo + lb,
-                c.right_work_min + pre_turno_for(ro) + ro + rb,
+                c.left_work_min + le + pre_turno_for(lo) + lo + lb,
+                c.right_work_min + re_ + pre_turno_for(ro) + ro + rb,
             )
         return min(b.cut_candidates, key=worst_nastro)
 
@@ -1649,7 +1707,7 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
 
     for b in blocks:
         if b.classification in ("CORTO", "CORTO_BASSO"):
-            seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters)
+            seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters, block=b)
             b.segments = [seg]
             all_segments.append(seg)
 
@@ -1657,12 +1715,12 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
             best = _select_best_cut(b, clusters)
             if best:
                 left_trips, right_trips = _split_trips_for_cut(b, best)
-                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips, "first", best.index, clusters)
-                seg2 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips, "second", best.index, clusters)
+                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips, "first", best.index, clusters, block=b)
+                seg2 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips, "second", best.index, clusters, block=b)
                 b.segments = [seg1, seg2]
                 all_segments.extend([seg1, seg2])
             else:
-                seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters)
+                seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters, block=b)
                 b.segments = [seg]
                 all_segments.append(seg)
 
@@ -1697,12 +1755,12 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     rf = b.trips[c2_raw.index + 1].first_stop_name if c2_raw.index + 1 < len(b.trips) else ""
                     rl = b.trips[-1].last_stop_name
 
-                    lt, lb = depot_transfer_min(lf, clusters), depot_transfer_min(ll, clusters)
-                    mt, mb = depot_transfer_min(mf, clusters), depot_transfer_min(ml, clusters)
-                    rt, rb = depot_transfer_min(rf, clusters), depot_transfer_min(rl, clusters)
-                    ln = c1_raw.left_work_min + pre_turno_for(lt) + lt + lb
+                    lt, lb, le = _block_edge_transfers(b, lf, ll, True, False, clusters)
+                    mt, mb, _ = _block_edge_transfers(b, mf, ml, False, False, clusters)
+                    rt, rb, re_ = _block_edge_transfers(b, rf, rl, False, True, clusters)
+                    ln = c1_raw.left_work_min + le + pre_turno_for(lt) + lt + lb
                     mn = mid_work + pre_turno_for(mt) + mt + mb
-                    rn = c2_raw.right_work_min + pre_turno_for(rt) + rt + rb
+                    rn = c2_raw.right_work_min + re_ + pre_turno_for(rt) + rt + rb
                     worst = max(ln, mn, rn)
                     score = c1_raw.score + c2_raw.score - max(0, worst - max_nastro) * 2
 
@@ -1727,12 +1785,12 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     if not mid_trips:
                         mid_trips = rest_after_c1
 
-                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips_c1, "first", c1.index, clusters)
+                seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips_c1, "first", c1.index, clusters, block=b)
                 segs = [seg1]
                 if mid_trips:
-                    seg2 = _make_segment(b.vehicle_id, b.vehicle_type, mid_trips, "middle", c1.index, clusters)
+                    seg2 = _make_segment(b.vehicle_id, b.vehicle_type, mid_trips, "middle", c1.index, clusters, block=b)
                     segs.append(seg2)
-                seg3 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips_c2, "second", c2.index, clusters)
+                seg3 = _make_segment(b.vehicle_id, b.vehicle_type, right_trips_c2, "second", c2.index, clusters, block=b)
                 segs.append(seg3)
                 b.segments = segs
                 all_segments.extend(segs)
@@ -1740,16 +1798,16 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                 best = _select_best_cut(b, clusters)
                 if best:
                     l, r = _split_trips_for_cut(b, best)
-                    seg1 = _make_segment(b.vehicle_id, b.vehicle_type, l, "first", best.index, clusters)
-                    seg2 = _make_segment(b.vehicle_id, b.vehicle_type, r, "second", best.index, clusters)
+                    seg1 = _make_segment(b.vehicle_id, b.vehicle_type, l, "first", best.index, clusters, block=b)
+                    seg2 = _make_segment(b.vehicle_id, b.vehicle_type, r, "second", best.index, clusters, block=b)
                     b.segments = [seg1, seg2]
                     all_segments.extend([seg1, seg2])
                 else:
-                    seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters)
+                    seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters, block=b)
                     b.segments = [seg]
                     all_segments.append(seg)
             else:
-                seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters)
+                seg = _make_segment(b.vehicle_id, b.vehicle_type, b.trips, "full", None, clusters, block=b)
                 b.segments = [seg]
                 all_segments.append(seg)
 
@@ -1862,10 +1920,10 @@ def build_pair_aware_segments(
         prev = 0
         for ci, c in enumerate(chosen):
             segs.append(_make_segment(b.vehicle_id, b.vehicle_type, trips[prev:c.index + 1],
-                                      "first" if ci == 0 else "middle", c.index, clusters))
+                                      "first" if ci == 0 else "middle", c.index, clusters, block=b))
             prev = c.index + 1
         segs.append(_make_segment(b.vehicle_id, b.vehicle_type, trips[prev:], "second",
-                                  chosen[-1].index, clusters))
+                                  chosen[-1].index, clusters, block=b))
         seg_map[b.vehicle_id] = segs
         seg_all.extend(segs)
         changed = True
@@ -2423,7 +2481,7 @@ def compute_duty_cost_v4(
 def _car_deliver_window(s: Segment, clusters: list[Cluster]) -> tuple[int, int] | None:
     """Viaggio auto deposito→nodo PRIMA del segmento (stessa regola di
     compute_car_pool, Fase 6): serve solo se il capolinea è in un cluster."""
-    t = depot_transfer_min(s.first_stop, clusters)
+    t = seg_transfer_out(s, clusters)
     if t > 0 and s.first_cluster:
         return (s.start_min - t, s.start_min)
     return None
@@ -2431,10 +2489,50 @@ def _car_deliver_window(s: Segment, clusters: list[Cluster]) -> tuple[int, int] 
 
 def _car_pickup_window(s: Segment, clusters: list[Cluster]) -> tuple[int, int] | None:
     """Viaggio auto nodo→deposito DOPO il segmento (come compute_car_pool)."""
-    t = depot_transfer_min(s.last_stop, clusters)
+    t = seg_transfer_back(s, clusters)
     if t > 0 and s.last_cluster:
         return (s.end_min, s.end_min + t)
     return None
+
+
+def _car_events_single(s: Segment, clusters: list[Cluster]) -> list[tuple[int, int]]:
+    """Eventi sul pool auto di un pezzo preso da solo: (+1) un'auto ESCE dal
+    deposito per portare il conducente al nodo, (-1) un'auto RIENTRA quando il
+    conducente torna dal nodo. Niente eventi ai bordi in deposito (il bus
+    esce/rientra col conducente) né dove il capolinea non è un nodo."""
+    ev: list[tuple[int, int]] = []
+    t = seg_transfer_out(s, clusters)
+    if t > 0 and s.first_cluster:
+        ev.append((s.start_min - t, +1))
+    tb = seg_transfer_back(s, clusters)
+    if tb > 0 and s.last_cluster:
+        ev.append((s.end_min + tb, -1))
+    return ev
+
+
+def _car_events_pair(s1: Segment, s2: Segment, clusters: list[Cluster]) -> list[tuple[int, int]]:
+    """Eventi auto di una coppia: stesso bus = il conducente resta col mezzo
+    nello stacco (solo i bordi esterni); bus diversi = torna in deposito e
+    riparte (i quattro bordi), come in compute_car_pool."""
+    if s1.start_min > s2.start_min:
+        s1, s2 = s2, s1
+    if s1.vehicle_id == s2.vehicle_id:
+        ev: list[tuple[int, int]] = []
+        t = seg_transfer_out(s1, clusters)
+        if t > 0 and s1.first_cluster:
+            ev.append((s1.start_min - t, +1))
+        tb = seg_transfer_back(s2, clusters)
+        if tb > 0 and s2.last_cluster:
+            ev.append((s2.end_min + tb, -1))
+        return ev
+    return _car_events_single(s1, clusters) + _car_events_single(s2, clusters)
+
+
+# Penalità per ogni auto oltre il tetto in un istante: il vincolo è "inviolabile
+# salvo impossibilità" (con una segmentazione che impone più cambi simultanei
+# del tetto, un vincolo rigido renderebbe il modello infeasible senza dirlo).
+CAR_CAP_PENALTY_EUR = 3000
+_LAST_CAR_CAP_EXCESS_VARS: list = []
 
 
 def _interval_peak(ivs: list[tuple[int, int]]) -> int:
@@ -2549,8 +2647,8 @@ def _build_cpsat_model(
     # Segmenti troppo lunghi per intero
     too_long_for_single: set[int] = set()
     for s in segments:
-        _t = depot_transfer_min(s.first_stop, clusters)
-        _tb = depot_transfer_min(s.last_stop, clusters)
+        _t = seg_transfer_out(s, clusters)
+        _tb = seg_transfer_back(s, clusters)
         nastro_s = s.work_min + pre_turno_for(_t) + _t + _tb
         is_suppl = nastro_s <= SUPPLEMENTO_NASTRO_MAX
         intero_max = rules.get("intero", SHIFT_RULES["intero"]).get("maxNastro", 435)
@@ -2583,8 +2681,8 @@ def _build_cpsat_model(
     short_single_vars: list[Any] = []
     if MIN_WORK_PER_DUTY > 0 and SATURATION_PENALTY > 0:
         for s in segments:
-            _t = depot_transfer_min(s.first_stop, clusters)
-            _tb = depot_transfer_min(s.last_stop, clusters)
+            _t = seg_transfer_out(s, clusters)
+            _tb = seg_transfer_back(s, clusters)
             _pt = pre_turno_for(_t)
             nastro_s = s.work_min + _pt + _t + _tb
             if nastro_s <= SUPPLEMENTO_NASTRO_MAX:
@@ -2601,22 +2699,46 @@ def _build_cpsat_model(
         log(f"[V4][CPSAT] Saturazione: {n_forbidden_single} single sotto {MIN_WORK_PER_DUTY}min "
             f"lavoro penalizzati ({SATURATION_PENALTY} cad.)")
 
-    # -- Vetture aziendali: NESSUN vincolo sui pair (era il tappo sui turni) --
-    # Il vecchio modello bloccava un'auto per l'INTERA interruzione di ogni
-    # pair (75'-3h+): con cap 5 restavano ~5 coppie in pausa in tutta la
-    # giornata. Ma nella semantica reale (compute_car_pool, Fase 6) un'auto
-    # serve per il tragitto deposito↔nodo ai BORDI di ogni segmento, che
-    # esiste comunque (intero o pair): un pair su veicoli diversi non aggiunge
-    # viaggi rispetto ai due singoli, uno sullo stesso veicolo ne toglie due.
-    # Il picco del pool dipende quindi dai TAGLI, non dagli accoppiamenti:
-    # qui lo misuriamo per diagnostica; il cap HARD resta verificato dal
-    # post-check sul pool reale (companyCarsHardViolation nel summary).
+    # -- Vetture aziendali: tetto sulle auto FUORI DEPOSITO in ogni istante --
+    # Ogni candidato (pezzo singolo o coppia) genera eventi sul pool: +1 quando
+    # un'auto esce dal deposito per portare il conducente al nodo di cambio,
+    # -1 quando rientra. I bordi in deposito (uscita/rientro del bus) non
+    # generano nulla. Per ogni istante di evento: Σ auto fuori ≤ tetto, con
+    # eccedenza penalizzata (CAR_CAP_PENALTY_EUR per auto) invece di un
+    # vincolo rigido che renderebbe il modello infeasible in silenzio.
+    global _LAST_CAR_CAP_EXCESS_VARS
+    _LAST_CAR_CAP_EXCESS_VARS = []
+    car_cap_terms: list[Any] = []
     if MAX_COMPANY_CARS > 0:
+        cand_events: list[tuple[Any, list[tuple[int, int]]]] = []
+        for s in segments:
+            ev = _car_events_single(s, clusters)
+            if ev:
+                cand_events.append((single[s.idx], ev))
+        for key, pv in pair_vars.items():
+            ev = _car_events_pair(seg_by_idx[key[0]], seg_by_idx[key[1]], clusters)
+            if ev:
+                cand_events.append((pv, ev))
+        times = sorted({t for _, ev in cand_events for t, _ in ev})
+        n_constr = 0
+        for tau in times:
+            terms = []
+            for var, ev in cand_events:
+                coef = sum(d for t, d in ev if t <= tau)
+                if coef:
+                    terms.append(coef * var)
+            if not terms:
+                continue
+            exc = model.new_int_var(0, max(1, n_seg), f"car_exc_{tau}")
+            model.add(sum(terms) <= MAX_COMPANY_CARS + exc)
+            car_cap_terms.append(CAR_CAP_PENALTY_EUR * COST_SCALE * exc)
+            _LAST_CAR_CAP_EXCESS_VARS.append(exc)
+            n_constr += 1
         _fixed_windows = [w for s in segments
                           for w in (_car_deliver_window(s, clusters), _car_pickup_window(s, clusters)) if w]
-        log(f"[V4][CPSAT] Vetture aziendali: cap {MAX_COMPANY_CARS}, viaggi ai bordi dei "
-            f"segmenti {len(_fixed_windows)} (picco in transito {_interval_peak(_fixed_windows)}); "
-            f"nessun vincolo sui pair — il cap è verificato sul pool reale a valle")
+        log(f"[V4][CPSAT] Vetture aziendali: tetto {MAX_COMPANY_CARS} auto fuori deposito, "
+            f"{n_constr} istanti vincolati, {len(cand_events)} candidati con viaggi auto "
+            f"(picco in transito se tutti singoli: {_interval_peak(_fixed_windows)})")
 
     # -- Vincoli: copertura esatta --
     for s in segments:
@@ -2631,8 +2753,8 @@ def _build_cpsat_model(
     for s_idx in too_long_for_single:
         has_pair = any(s_idx in key for key in pair_vars)
         seg = seg_by_idx[s_idx]
-        _t = depot_transfer_min(seg.first_stop, clusters)
-        _tb = depot_transfer_min(seg.last_stop, clusters)
+        _t = seg_transfer_out(seg, clusters)
+        _tb = seg_transfer_back(seg, clusters)
         nastro_s = seg.work_min + pre_turno_for(_t) + _t + _tb
         excess = nastro_s - SHIFT_RULES["intero"]["maxNastro"]
         if has_pair:
@@ -2647,8 +2769,8 @@ def _build_cpsat_model(
     n_spezzato = []
 
     for s in segments:
-        _t_out = depot_transfer_min(s.first_stop, clusters)
-        _t_back = depot_transfer_min(s.last_stop, clusters)
+        _t_out = seg_transfer_out(s, clusters)
+        _t_back = seg_transfer_back(s, clusters)
         nastro_single = s.work_min + pre_turno_for(_t_out) + _t_out + _t_back
         if nastro_single <= SUPPLEMENTO_NASTRO_MAX:
             n_supplemento.append(single[s.idx])
@@ -2888,6 +3010,9 @@ def _build_cpsat_model(
     # Vincoli globali di soluzione (BDSI): slack quasi-hard
     obj_terms.extend(vincoli_slack_terms)
 
+    # Tetto auto aziendali: eccedenza (quasi-hard)
+    obj_terms.extend(car_cap_terms)
+
     model.minimize(sum(obj_terms))
 
     return model, single, pair_vars, pair_types
@@ -2909,8 +3034,8 @@ def _extract_duties_from_solution(
 
     for s in segments:
         if solver.value(single[s.idx]):
-            transfer = depot_transfer_min(s.first_stop, clusters)
-            transfer_back = depot_transfer_min(s.last_stop, clusters)
+            transfer = seg_transfer_out(s, clusters)
+            transfer_back = seg_transfer_back(s, clusters)
             pt = pre_turno_for(transfer)
             # FONTE UNICA: identico all'obiettivo CP-SAT
             nastro_s, work_s = single_nastro_work(s, bds, clusters)
@@ -2944,8 +3069,8 @@ def _extract_duties_from_solution(
                 s1, s2 = s2, s1
 
             interruption = s2.start_min - s1.end_min
-            transfer = depot_transfer_min(s1.first_stop, clusters)
-            transfer_back = depot_transfer_min(s2.last_stop, clusters)
+            transfer = seg_transfer_out(s1, clusters)
+            transfer_back = seg_transfer_back(s2, clusters)
             pt = pre_turno_for(transfer)
             # FONTE UNICA: identico all'obiettivo CP-SAT (pair_nastro_work)
             nastro, work = pair_nastro_work(s1, s2, bds, clusters, ptype)
@@ -3265,6 +3390,11 @@ def optimize_multi_scenario(
                 pass
 
         status = solver.solve(model)
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) and _LAST_CAR_CAP_EXCESS_VARS:
+            _exc = sum(solver.value(v) for v in _LAST_CAR_CAP_EXCESS_VARS)
+            if _exc > 0:
+                log(f"[V4][CPSAT] ⚠️ tetto auto aziendali superato nel modello: eccedenza "
+                    f"cumulata {_exc} auto·istanti (nessuna soluzione entro il tetto con questa segmentazione)")
         sc_elapsed = time.time() - sc_start
 
         status_name = {
@@ -3617,8 +3747,8 @@ def greedy_fallback(
                 s1, s2 = s2, s1
 
             interruption = s2.start_min - s1.end_min
-            transfer = depot_transfer_min(s1.first_stop, clusters)
-            transfer_back = depot_transfer_min(s2.last_stop, clusters)
+            transfer = seg_transfer_out(s1, clusters)
+            transfer_back = seg_transfer_back(s2, clusters)
             pt = pre_turno_for(transfer)
             # FONTE UNICA: stesso nastro/work di modello ed estrazione
             nastro, work = pair_nastro_work(s1, s2, bds, clusters, best_type)
@@ -3649,8 +3779,8 @@ def greedy_fallback(
     for s in sorted_segs:
         if s.idx in used:
             continue
-        transfer = depot_transfer_min(s.first_stop, clusters)
-        transfer_back = depot_transfer_min(s.last_stop, clusters)
+        transfer = seg_transfer_out(s, clusters)
+        transfer_back = seg_transfer_back(s, clusters)
         pt = pre_turno_for(transfer)
         # FONTE UNICA: stesso nastro/work di modello ed estrazione
         nastro_s, work_s = single_nastro_work(s, bds, clusters)
@@ -3691,6 +3821,7 @@ from crew_scheduler_v3 import (
     compute_car_pool,
     car_pool_by_driver,
     _max_simultaneous_cars_out,
+    _cars_out_demand_peak,
 )
 
 
@@ -3710,8 +3841,8 @@ def _segment_to_ripresa(
     diff_vehicles = n_segs >= 2 and duty.segments[0].vehicle_id != duty.segments[-1].vehicle_id
 
     if diff_vehicles:
-        _transfer_out = depot_transfer_min(seg.first_stop, clusters)
-        _transfer_back = depot_transfer_min(seg.last_stop, clusters)
+        _transfer_out = seg_transfer_out(seg, clusters)
+        _transfer_back = seg_transfer_back(seg, clusters)
         pre_turno = pre_turno_for(_transfer_out)
         transfer = _transfer_out
         transfer_back = _transfer_back
@@ -3720,8 +3851,10 @@ def _segment_to_ripresa(
         transfer = duty.transfer_min if is_first else 0
         transfer_back = duty.transfer_back_min if is_last else 0
 
-    transfer_type = "depot_to_start" if transfer > 0 else "none"
-    transfer_back_type = "end_to_depot" if transfer_back > 0 else "none"
+    transfer_type = ("depot_to_start" if transfer > 0
+                     else ("bus_from_depot" if getattr(seg, "starts_at_depot", False) else "none"))
+    transfer_back_type = ("end_to_depot" if transfer_back > 0
+                          else ("bus_to_depot" if getattr(seg, "ends_at_depot", False) else "none"))
     transfer_to_stop = seg.first_stop or "?"
     transfer_to_cluster = seg.first_cluster or None
     vehicle_ids = list(dict.fromkeys([seg.vehicle_id]))
@@ -3761,6 +3894,10 @@ def _segment_to_ripresa(
         "lastStop": seg.last_stop or "?",
         "lastCluster": seg.last_cluster or None,
         "workMin": seg.work_min,
+        "startsAtDepot": bool(getattr(seg, "starts_at_depot", False)),
+        "endsAtDepot": bool(getattr(seg, "ends_at_depot", False)),
+        "pulloutMin": int(getattr(seg, "pullout_min", 0) or 0),
+        "pullinMin": int(getattr(seg, "pullin_min", 0) or 0),
         "vehicleIds": vehicle_ids,
         "vehicleType": seg.vehicle_type,
         "cambi": [],
@@ -3836,7 +3973,10 @@ def serialize_output(
         for si, seg in enumerate(d.segments):
             rip = _segment_to_ripresa(seg, si == 0, si == len(d.segments) - 1, d, clusters)
 
-            deliver = all_delivers[si] if si < len(all_delivers) else None
+            # Viaggi auto agganciati al pezzo per ORARIO (non per indice): un
+            # pezzo che esce dal deposito col bus non ha consegna, e la consegna
+            # del pezzo successivo non deve finirgli addosso.
+            deliver = next((t for t in all_delivers if t.arrive_min == seg.start_min), None)
             if deliver:
                 car_label = f"Auto {deliver.car_id}" if deliver.car_id else "⚠️ Nessuna auto"
                 rip["carPoolOut"] = {
@@ -3850,16 +3990,20 @@ def serialize_output(
             else:
                 rip["carPoolOut"] = None
 
-            pickup = all_pickups[si] if si < len(all_pickups) else None
+            pickup = next((t for t in all_pickups
+                           if t.depart_min - int(getattr(t, "wait_min", 0) or 0) == seg.end_min), None)
             if pickup:
                 car_label = f"Auto {pickup.car_id}" if pickup.car_id else "⚠️ Nessuna auto"
+                _wait = int(getattr(pickup, "wait_min", 0) or 0)
                 rip["carPoolReturn"] = {
                     "carId": pickup.car_id,
                     "departMin": pickup.depart_min,
                     "departTime": min_to_time(pickup.depart_min),
                     "arriveMin": pickup.arrive_min,
                     "arriveTime": min_to_time(pickup.arrive_min),
-                    "description": f"Prendi {car_label} da {pickup.cluster_name} al deposito",
+                    "waitMin": _wait,
+                    "description": (f"Prendi {car_label} da {pickup.cluster_name} al deposito"
+                                    + (f" (attendi {_wait}′ l'auto in arrivo)" if _wait else "")),
                 }
             else:
                 rip["carPoolReturn"] = None
@@ -3967,12 +4111,21 @@ def serialize_output(
             "totalCambi": len(handovers),
             "totalInterCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'inter'),
             "totalIntraCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'intra'),
-            "companyCarsUsed": len({seg.vehicle_id for d in duties for seg in d.segments}),
-            "companyCarsMaxSimultaneous": _max_simultaneous_cars_out(car_movements),
+            # Auto aziendali per i cambi in linea. "Used" era il numero di BUS
+            # distinti toccati dai turni (19/5 in card): ora è il numero di
+            # auto distinte impiegate; il picco conta TUTTI i viaggi richiesti
+            # (anche quelli rimasti senza auto), altrimenti non poteva mai
+            # superare il tetto per costruzione.
+            "companyCarsUsed": len({t.car_id for t in car_movements if t.car_id is not None}),
+            "companyCarsMovements": len(car_movements),
+            "companyCarsConflicts": sum(1 for t in car_movements if t.car_id is None),
+            "companyCarsMaxSimultaneous": _cars_out_demand_peak(car_movements),
+            "companyCarsAssignedPeak": _max_simultaneous_cars_out(car_movements),
             "companyCarsCap": MAX_COMPANY_CARS,
             "companyCarsHardViolation": (
                 MAX_COMPANY_CARS > 0
-                and _max_simultaneous_cars_out(car_movements) > MAX_COMPANY_CARS
+                and (_cars_out_demand_peak(car_movements) > MAX_COMPANY_CARS
+                     or any(t.car_id is None for t in car_movements))
             ),
             "totalDailyCost": round(total_cost, 2),
             "costBreakdown": {
@@ -3999,6 +4152,22 @@ def serialize_output(
             # dalla chat la gara e i pesi applicati restavano invisibili.
             "segmentation": SEGMENTATION_RESULT,
             "weightFactors": {k: round(v, 3) for k, v in WEIGHT_FACTORS.items()},
+            # Pool auto aziendali (viaggi, conflitti, picco richiesto, tetto,
+            # elenco dei viaggi): il compatto della chat lo legge da qui.
+            "carPool": {
+                "totalTrips": len(car_movements),
+                "conflicts": sum(1 for t in car_movements if t.car_id is None),
+                "maxSimultaneous": _cars_out_demand_peak(car_movements),
+                "assignedPeak": _max_simultaneous_cars_out(car_movements),
+                "cap": MAX_COMPANY_CARS,
+                "waits": sum(1 for t in car_movements if getattr(t, "wait_min", 0)),
+                "movements": [
+                    {"duty": t.driver_id, "type": t.trip_type, "cluster": t.cluster_name,
+                     "departTime": min_to_time(t.depart_min), "arriveTime": min_to_time(t.arrive_min),
+                     "carId": t.car_id, "waitMin": int(getattr(t, "wait_min", 0) or 0)}
+                    for t in sorted(car_movements, key=lambda x: x.depart_min)[:120]
+                ],
+            },
             "classifications": {
                 "CORTO": sum(1 for b in blocks if b.classification == "CORTO"),
                 "CORTO_BASSO": sum(1 for b in blocks if b.classification == "CORTO_BASSO"),
@@ -4049,7 +4218,16 @@ def serialize_output(
             "deliveries": sum(1 for t in car_movements if t.trip_type == "deliver"),
             "pickups": sum(1 for t in car_movements if t.trip_type == "pickup"),
             "conflicts": sum(1 for t in car_movements if t.car_id is None),
-            "maxSimultaneous": _max_simultaneous_cars_out(car_movements),
+            "maxSimultaneous": _cars_out_demand_peak(car_movements),
+            "assignedPeak": _max_simultaneous_cars_out(car_movements),
+            "cap": MAX_COMPANY_CARS,
+            "movements": [
+                {"duty": t.driver_id, "type": t.trip_type, "cluster": t.cluster_name,
+                 "departMin": t.depart_min, "arriveMin": t.arrive_min,
+                 "departTime": min_to_time(t.depart_min), "arriveTime": min_to_time(t.arrive_min),
+                 "carId": t.car_id, "waitMin": int(getattr(t, "wait_min", 0) or 0)}
+                for t in sorted(car_movements, key=lambda x: x.depart_min)
+            ],
         },
         "rates": rates.to_dict(),
     }
@@ -4225,19 +4403,24 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     handovers = compute_handovers(duties, clusters)
     log(f"Fase 6: {len(handovers)} cambi bus identificati")
 
+    # Il pool reale usa il tetto dell'operatore (non la costante di modulo):
+    # con tetto 2 l'allocatore deve fermarsi a 2 auto e dichiarare i conflitti.
+    if MAX_COMPANY_CARS > 0:
+        import crew_scheduler_v3 as _v3
+        _v3.COMPANY_CARS = MAX_COMPANY_CARS
     car_movements = compute_car_pool(duties, clusters)
     n_conflicts = sum(1 for m in car_movements if m.car_id is None)
-    max_sim = _max_simultaneous_cars_out(car_movements)
+    max_sim = _cars_out_demand_peak(car_movements)
     log(f"Fase 6: {len(car_movements)} viaggi auto, {n_conflicts} conflitti, max {max_sim} auto fuori deposito")
     report_progress("carpool", 90, f"{len(car_movements)} viaggi auto")
 
     # ── Validazione HARD post-solve: cap vetture aziendali ──
     # Anche se il CP-SAT applica add_cumulative, il post-processing dei pair
     # potrebbe (in casi limite) eccedere; lo segnaliamo esplicitamente.
-    if MAX_COMPANY_CARS > 0 and max_sim > MAX_COMPANY_CARS:
+    if MAX_COMPANY_CARS > 0 and (max_sim > MAX_COMPANY_CARS or n_conflicts > 0):
         log(
-            f"[V4][HARD-VIOLATION] Vetture aziendali in uso simultaneo "
-            f"max={max_sim} > cap={MAX_COMPANY_CARS}. "
+            f"[V4][HARD-VIOLATION] Vetture aziendali: picco richiesto {max_sim} > cap={MAX_COMPANY_CARS} "
+            f"oppure {n_conflicts} trasferimenti senza auto. "
             f"La soluzione viola il vincolo HARD richiesto dall'utente."
         )
     else:

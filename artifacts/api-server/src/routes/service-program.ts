@@ -2632,8 +2632,13 @@ function compactAgentResult(payload: any): any {
           companyCars: {
             cap: v.crew.summary.companyCarsCap ?? null,
             maxSimultaneous: v.crew.summary.companyCarsMaxSimultaneous ?? null,
+            // "used" = auto distinte impiegate (NON i bus toccati dai turni)
             used: v.crew.summary.companyCarsUsed ?? null,
+            movements: v.crew.summary.companyCarsMovements ?? null,
+            conflicts: v.crew.summary.companyCarsConflicts ?? null,
             violated: !!v.crew.summary.companyCarsHardViolation,
+            // Viaggi auto uno per uno (consegna/ritiro, nodo, orari, auto, attesa)
+            trips: Array.isArray(v.crew.metrics?.carPool?.movements) ? v.crew.metrics.carPool.movements.slice(0, 120) : undefined,
           },
         } : null,
         // Sonda di spostamento: ciò che l'agente racconta all'operatore. Il

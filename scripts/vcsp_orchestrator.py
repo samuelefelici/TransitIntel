@@ -150,6 +150,13 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     validation = cs.get("validation", {}) or {}
     duties = cs.get("totalShifts", 0)
     violations = validation.get("totalViolations", 0)
+    # Tetto auto aziendali (inviolabile): ogni trasferimento senza auto o
+    # l'eccedenza del picco contano come violazioni nella selezione.
+    car_conflicts = int(cs.get("companyCarsConflicts") or 0)
+    car_cap = int(cs.get("companyCarsCap") or 0)
+    car_peak = int(cs.get("companyCarsMaxSimultaneous") or 0)
+    car_violations = car_conflicts + (max(0, car_peak - car_cap) if car_cap > 0 else 0)
+    violations = int(violations or 0) + car_violations
     total = vehicle_cost + crew_cost
     return {
         "round": r,
@@ -159,6 +166,8 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
         "supplementi": cs.get("totalSupplementi", 0),
         "crewCostEur": round(crew_cost, 2),
         "bdsViolations": violations,
+        "companyCarsConflicts": car_conflicts,
+        "companyCarsPeak": car_peak,
         "totalCostEur": round(total, 2),
         "selectionScoreEur": round(
             total

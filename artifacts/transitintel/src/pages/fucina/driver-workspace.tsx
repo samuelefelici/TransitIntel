@@ -1709,16 +1709,25 @@ export default function DriverWorkspace({
                   delta={summaryDelta && { value: summaryDelta.cambiΔ, unit: "", lowerIsBetter: true }}
                 />
               ) : null}
-              {liveSummary?.companyCarsUsed != null && (
-                <SummaryCard
-                  icon={<Car className="w-4 h-4" />}
-                  label="Auto Aziendali"
-                  value={`${liveSummary.companyCarsUsed}/${result.companyCars ?? optimizerCfg?.maxCompanyCars ?? "?"}`}
-                  sub="cap HARD attivo"
-                  color={result.companyCars && liveSummary.companyCarsUsed >= result.companyCars ? "#f59e0b" : undefined}
-                  delta={summaryDelta && { value: summaryDelta.carsΔ, unit: "", lowerIsBetter: true }}
-                />
-              )}
+              {(liveSummary?.companyCarsMaxSimultaneous != null || liveSummary?.companyCarsUsed != null) && (() => {
+                const cap = liveSummary.companyCarsCap ?? result.companyCars ?? optimizerCfg?.maxCompanyCars ?? null;
+                const peak = liveSummary.companyCarsMaxSimultaneous ?? liveSummary.companyCarsUsed;
+                const conflicts = liveSummary.companyCarsConflicts ?? 0;
+                const movements = liveSummary.companyCarsMovements;
+                const over = cap != null && peak > cap;
+                return (
+                  <SummaryCard
+                    icon={<Car className="w-4 h-4" />}
+                    label="Auto aziendali (picco)"
+                    value={`${peak}/${cap ?? "?"}`}
+                    sub={movements != null
+                      ? `${movements} viaggi per i cambi${conflicts > 0 ? ` · ${conflicts} senza auto` : ""}`
+                      : "auto fuori deposito nello stesso istante"}
+                    color={over || conflicts > 0 ? "#dc2626" : (cap != null && peak >= cap ? "#f59e0b" : undefined)}
+                    delta={summaryDelta && { value: summaryDelta.carsΔ, unit: "", lowerIsBetter: true }}
+                  />
+                );
+              })()}
               {liveSummary?.totalDailyCost != null && liveSummary.totalDailyCost > 0 && (
                 <SummaryCard
                   icon={<DollarSign className="w-4 h-4" />}
