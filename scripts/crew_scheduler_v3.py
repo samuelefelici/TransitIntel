@@ -1270,6 +1270,24 @@ class CarTrip:
 CAR_PICKUP_WAIT_MAX = 15   # minuti che chi smonta può aspettare l'auto di chi monta
 
 
+def same_bus_consecutive(s1, s2, segs_by_vehicle: dict[str, list] | None) -> bool:
+    """Vero se s1 e s2 sono sullo stesso bus e nessun altro pezzo di quel bus
+    sta fra la fine del primo e l'inizio del secondo (il conducente resta col
+    mezzo nello stacco). Senza mappa dei pezzi si assume consecutivi."""
+    if s1.vehicle_id != s2.vehicle_id:
+        return False
+    if s1.start_min > s2.start_min:
+        s1, s2 = s2, s1
+    if not segs_by_vehicle:
+        return True
+    for o in segs_by_vehicle.get(s1.vehicle_id, []):
+        if o is s1 or o is s2:
+            continue
+        if o.start_min >= s1.end_min and o.end_min <= s2.start_min:
+            return False
+    return True
+
+
 def compute_car_pool(
     duties: list[DriverDutyV3],
     clusters: list[Cluster],
@@ -1307,6 +1325,13 @@ def compute_car_pool(
     cluster_names = {c.id: c.name for c in clusters}
 
     trips: list[CarTrip] = []
+    # Pezzi per bus: «resta col mezzo nello stacco» vale solo se fra i due
+    # pezzi dello stesso bus non c'è nessun altro conducente; altrimenti chi
+    # sta in mezzo monta e smonta con l'auto e il nostro torna in deposito.
+    segs_by_vehicle: dict[str, list] = {}
+    for d in duties:
+        for s in d.segments:
+            segs_by_vehicle.setdefault(s.vehicle_id, []).append(s)
 
     for d in duties:
         if not d.segments:
@@ -1315,6 +1340,7 @@ def compute_car_pool(
         n_segs = len(d.segments)
         same_vehicle = n_segs == 1 or (
             n_segs == 2 and d.segments[0].vehicle_id == d.segments[1].vehicle_id
+            and same_bus_consecutive(d.segments[0], d.segments[1], segs_by_vehicle)
         )
 
         if same_vehicle:
