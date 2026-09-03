@@ -44,6 +44,11 @@ async function ensureTable(): Promise<void> {
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_process_reports_scenario ON process_reports(scenario_id, created_at DESC)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_process_reports_project ON process_reports(project_id, created_at DESC)`);
+  // Colonne additive lette dal dossier: su un DB dove nessuno scenario è stato
+  // ancora salvato col nuovo codice non esistono e la SELECT fallirebbe.
+  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
+  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
+  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS project_id uuid`);
   tableReady = true;
 }
 
@@ -121,6 +126,7 @@ interface DossierExtra {
 
 /** Costruisce il dossier di processo per uno scenario vetture (+ DSS). */
 export async function buildProcessDossier(scenarioId: string, dssIdReq: string | null, extra: DossierExtra): Promise<any> {
+  await ensureTable();
   const scR = await db.execute(sql`
     SELECT id, name, date, feed_id, input, result, created_at, project_id, depots, config
       FROM service_program_scenarios WHERE id = ${scenarioId}::uuid
