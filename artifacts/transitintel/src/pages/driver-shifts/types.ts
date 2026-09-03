@@ -179,7 +179,16 @@ export interface DriverShiftSummary {
   totalCambi: number;
   totalInterCambi?: number;
   totalIntraCambi?: number;
+  /** Auto aziendali DISTINTE impiegate per i cambi in linea (non i bus) */
   companyCarsUsed: number;
+  /** Viaggi auto (consegne + ritiri) richiesti dai turni */
+  companyCarsMovements?: number;
+  /** Viaggi rimasti senza auto disponibile */
+  companyCarsConflicts?: number;
+  /** Picco di auto richieste fuori deposito contemporaneamente */
+  companyCarsMaxSimultaneous?: number;
+  companyCarsCap?: number;
+  companyCarsHardViolation?: boolean;
   /* v2 cost fields */
   totalDailyCost?: number;
   costBreakdown?: Record<string, number>;

@@ -54,6 +54,12 @@ async function ensureTable(): Promise<void> {
 
 function rows(r: any): any[] { return (r as any)?.rows ?? (Array.isArray(r) ? r : []); }
 
+/** Array di uuid come parametro Postgres: il template `sql` espande un array JS
+ *  in una tupla ($1, $2, …) e "(…)::uuid[]" non è SQL valido. */
+function uuidArray(ids: string[]) {
+  return sql`ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[]`;
+}
+
 function runReportBuilder(dossier: unknown, logger: { info: (...a: any[]) => void }): Promise<{ html: string; summary: any }> {
   const scriptPath = path.resolve(SCRIPTS_DIR, "report_builder.py");
   return new Promise((resolve, reject) => {
@@ -206,7 +212,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   if (psId) {
     const rr = rows(await db.execute(sql`
       SELECT id, short_name, long_name, attributes FROM ps_routes
-       WHERE project_id = ${psId}::uuid ${routeIds.length > 0 ? sql`AND id = ANY(${routeIds}::uuid[])` : sql``}
+       WHERE project_id = ${psId}::uuid ${routeIds.length > 0 ? sql`AND id = ANY(${uuidArray(routeIds)})` : sql``}
        ORDER BY sort_order, short_name
     `));
     psRoutes = rr;
@@ -216,7 +222,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       const ids = [...routeSet];
       const vr = rows(await db.execute(sql`
         SELECT v.id, v.route_id, v.name, v.direction, v.is_default FROM ps_route_variants v
-         WHERE v.project_id = ${psId}::uuid AND v.route_id = ANY(${ids}::uuid[])
+         WHERE v.project_id = ${psId}::uuid AND v.route_id = ANY(${uuidArray(ids)})
          ORDER BY v.route_id, v.direction ASC, v.is_default DESC, v.created_at ASC
       `));
       // una variante per direzione per linea (la predefinita), per un disegno leggibile
@@ -225,11 +231,11 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       for (const v of vr) { const k = `${v.route_id}|${v.direction}`; if (!seen.has(k)) { seen.add(k); chosen.push(v); } }
       const vids = chosen.map((v: any) => v.id);
       const shapes = new Map<string, any>();
-      for (const s of rows(await db.execute(sql`SELECT variant_id, geometry FROM ps_shapes WHERE variant_id = ANY(${vids}::uuid[])`))) shapes.set(s.variant_id, s.geometry);
+      for (const s of rows(await db.execute(sql`SELECT variant_id, geometry FROM ps_shapes WHERE variant_id = ANY(${uuidArray(vids)})`))) shapes.set(s.variant_id, s.geometry);
       const vstops = rows(await db.execute(sql`
         SELECT vs.variant_id, vs.seq, s.id AS stop_id, s.name, s.lat, s.lon FROM ps_variant_stops vs
           JOIN ps_stops s ON s.id = vs.stop_id
-         WHERE vs.variant_id = ANY(${vids}::uuid[]) ORDER BY vs.variant_id, vs.seq
+         WHERE vs.variant_id = ANY(${uuidArray(vids)}) ORDER BY vs.variant_id, vs.seq
       `));
       const byV = new Map<string, any[]>();
       for (const s of vstops) { let a = byV.get(s.variant_id); if (!a) { a = []; byV.set(s.variant_id, a); } a.push(s); }

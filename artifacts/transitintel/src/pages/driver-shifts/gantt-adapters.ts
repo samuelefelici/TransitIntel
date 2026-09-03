@@ -882,7 +882,14 @@ export function recomputeSummary(
     totalCambi,
     totalInterCambi: totalInter || undefined,
     totalIntraCambi: totalIntra || undefined,
-    companyCarsUsed: vehicleIds.size,
+    // Le auto aziendali NON sono i bus toccati: senza il pool del backend si
+    // conservano i valori del solver (il what-if non li ricalcola).
+    companyCarsUsed: baseline.companyCarsUsed,
+    companyCarsMovements: baseline.companyCarsMovements,
+    companyCarsConflicts: baseline.companyCarsConflicts,
+    companyCarsMaxSimultaneous: baseline.companyCarsMaxSimultaneous,
+    companyCarsCap: baseline.companyCarsCap,
+    companyCarsHardViolation: baseline.companyCarsHardViolation,
     totalDailyCost: scaledCost || baseline.totalDailyCost,
   };
 }
@@ -912,6 +919,6 @@ export function diffSummary(
     semiPctΔ: Math.round(((current.semiunicoPct ?? 0) - (baseline.semiunicoPct ?? 0)) * 10) / 10,
     spezPctΔ: Math.round(((current.spezzatoPct ?? 0) - (baseline.spezzatoPct ?? 0)) * 10) / 10,
     cambiΔ: (current.totalCambi ?? 0) - (baseline.totalCambi ?? 0),
-    carsΔ: (current.companyCarsUsed ?? 0) - (baseline.companyCarsUsed ?? 0),
+    carsΔ: (current.companyCarsMaxSimultaneous ?? current.companyCarsUsed ?? 0) - (baseline.companyCarsMaxSimultaneous ?? baseline.companyCarsUsed ?? 0),
   };
 }

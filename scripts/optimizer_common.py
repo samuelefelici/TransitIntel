@@ -1369,6 +1369,13 @@ class Segment:
     last_cluster: str | None
     half: str                     # "full" | "first" | "second" | "middle"
     cut_index: int | None         # indice del CutCandidate usato per produrre questo segmento
+    # Bordi in deposito: il pezzo inizia con l'USCITA del bus dal deposito
+    # (il conducente prende il bus lì, niente auto aziendale) e/o finisce col
+    # RIENTRO (riporta il bus, niente auto). L'uscita/rientro sono guida.
+    starts_at_depot: bool = False
+    ends_at_depot: bool = False
+    pullout_min: int = 0          # minuti di uscita deposito→capolinea inclusi nel pezzo
+    pullin_min: int = 0           # minuti di rientro capolinea→deposito inclusi nel pezzo
 
 
 @dataclass
@@ -1386,6 +1393,8 @@ class VehicleBlock:
     classification: str           # "CORTO" | "CORTO_BASSO" | "MEDIO" | "LUNGO"
     cut_candidates: list[CutCandidate] = field(default_factory=list)
     segments: list[Segment] = field(default_factory=list)
+    pullout_min: int = 0          # uscita deposito→prima corsa (dal turno macchina)
+    pullin_min: int = 0           # rientro ultima corsa→deposito (dal turno macchina)
 
 
 @dataclass

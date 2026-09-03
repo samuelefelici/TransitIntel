@@ -548,9 +548,9 @@ function buildReportHTML(args: {
         <div class="sub">in fermata intermedia</div>
       </div>
       <div class="kpi">
-        <div class="label">Auto aziendali</div>
-        <div class="val">${summary.companyCarsUsed}/${r.companyCars}</div>
-        <div class="sub">trasf. deposito ↔ cluster</div>
+        <div class="label">Auto aziendali (picco)</div>
+        <div class="val">${summary.companyCarsMaxSimultaneous ?? summary.companyCarsUsed}/${r.companyCars}</div>
+        <div class="sub">${summary.companyCarsMovements != null ? `${summary.companyCarsMovements} viaggi deposito ↔ nodo${(summary.companyCarsConflicts ?? 0) > 0 ? ` · ${summary.companyCarsConflicts} senza auto` : ""}` : "trasf. deposito ↔ cluster"}</div>
       </div>
       <div class="kpi">
         <div class="label">Cluster di cambio</div>
@@ -706,7 +706,8 @@ function buildReportHTML(args: {
             <tr><td><strong>Lavoro minimo</strong></td><td class="num">${fmtHHmm(minWork)}</td></tr>
             <tr><td><strong>Lavoro massimo</strong></td><td class="num">${fmtHHmm(maxWork)}</td></tr>
             <tr><td><strong>Spread</strong></td><td class="num">${fmtHHmm(maxWork - minWork)}</td></tr>
-            <tr><td><strong>Auto aziendali usate</strong></td><td class="num">${summary.companyCarsUsed}/${r.companyCars}</td></tr>
+            <tr><td><strong>Auto aziendali (picco fuori deposito)</strong></td><td class="num">${summary.companyCarsMaxSimultaneous ?? summary.companyCarsUsed}/${r.companyCars}</td></tr>
+            <tr><td><strong>Viaggi auto per i cambi</strong></td><td class="num">${summary.companyCarsMovements ?? "–"}${(summary.companyCarsConflicts ?? 0) > 0 ? ` (${summary.companyCarsConflicts} senza auto)` : ""}</td></tr>
             <tr><td><strong>Cambi in linea totali</strong></td><td class="num">${summary.totalCambi}</td></tr>
             ${r.unassignedBlocks > 0 ?
               `<tr><td><strong style="color:#dc2626">Blocchi non assegnati</strong></td>
