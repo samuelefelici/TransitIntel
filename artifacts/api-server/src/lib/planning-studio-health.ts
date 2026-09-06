@@ -19,6 +19,7 @@ import type { Request } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { computeRoundTripAudit } from "./planning-studio-round-trips";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -268,6 +269,38 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
     count: emptyRoutes.rows.length,
     samples: emptyRoutes.rows.slice(0, 5).map((r: any) => r.short_name),
   });
+
+  // ── WARNING: corse a giro — sulle linee radiali il ritorno deve partire
+  //    dal capolinea periferico subito dopo l'arrivo dell'andata (stesso bus):
+  //    ritorni mancanti, partiti prima dell'arrivo o con margine insufficiente
+  //    producono fuorilinea inutili nello scheduling. Per giorno-tipo.
+  try {
+    const dts = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE project_id = ${pid} ORDER BY sort_order NULLS LAST, code LIMIT 6`);
+    let count = 0;
+    const samples: string[] = [];
+    for (const d of (dts.rows ?? []) as any[]) {
+      const a = await computeRoundTripAudit(projectId, { dayTypeId: d.id });
+      const n = a.totals.missingReturn + a.totals.tooTight + a.totals.orphanReturn;
+      count += n;
+      if (n && samples.length < 5) {
+        for (const l of a.lines) {
+          for (const i of l.issues) {
+            if (i.kind !== "missingReturn" && i.kind !== "tooTight" && i.kind !== "orphanReturn") continue;
+            if (samples.length >= 5) break;
+            samples.push(`${d.code} · linea ${l.shortName} ${i.departTime} ${i.fromStop} → ${i.toStop}: ${i.note}`);
+          }
+          if (samples.length >= 5) break;
+        }
+      }
+    }
+    checks.push({
+      key: "round_trip_gaps",
+      level: "warning",
+      label: "Corse a giro: andate senza ritorno dal capolinea periferico, ritorni partiti prima dell'arrivo o con margine insufficiente (producono fuorilinea inutili)",
+      count,
+      samples,
+    });
+  } catch { /* progetto senza giorni-tipo o tabelle: verifica saltata */ }
 
   return checks;
 }
