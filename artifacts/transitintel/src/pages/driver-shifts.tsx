@@ -665,6 +665,8 @@ function DriverShiftsPageInner() {
               };
             }),
           } : c2);
+          // i confini di nastro delle riprese seguono pre-turno/trasferimenti appena applicati
+          setResult(c3 => c3 ? normalizeDriverShiftsResult(c3) : c3);
         })
         .catch(() => { /* verifica fallita → resta "da verificare" */ });
     }, 700);
@@ -681,9 +683,13 @@ function DriverShiftsPageInner() {
         const unpacked = wwUnpacked.has(sh.driverId);
         const acts: WorkShiftView["activities"] = [];
         sh.riprese.forEach((r, ri) => {
+          // startMin/endMin sono confini di NASTRO: pre-turno e trasferimento
+          // stanno fra startMin e l'inizio del servizio, il rientro dopo la fine
+          const svcS = typeof r.serviceStartMin === "number" ? r.serviceStartMin : r.startMin + (r.preTurnoMin || 0) + (r.transferMin || 0);
+          const svcE = typeof r.serviceEndMin === "number" ? r.serviceEndMin : r.endMin - (r.transferBackMin || 0);
           if (!unpacked && (r.preTurnoMin > 0 || r.transferMin > 0)) {
             acts.push({ id: `${sh.driverId}-pre-${ri}`, isTrip: false, kindLabel: r.transferMin > 0 ? "Fuorilinea" : "Pre-turno", kindColor: "#f59e0b",
-              timeLabel: `${wwFmtH(r.startMin - r.transferMin - r.preTurnoMin)}→${wwFmtH(r.startMin)}`,
+              timeLabel: `${wwFmtH(r.startMin)}→${wwFmtH(svcS)}`,
               desc: r.transferMin > 0 ? `trasferimento ${r.transferMin}' + pre-turno ${r.preTurnoMin}'` : `pre-turno ${r.preTurnoMin}'` });
           }
           for (const t of r.trips) {
@@ -693,7 +699,7 @@ function DriverShiftsPageInner() {
           }
           if (!unpacked && r.transferBackMin > 0) {
             acts.push({ id: `${sh.driverId}-back-${ri}`, isTrip: false, kindLabel: "Fuorilinea", kindColor: "#f59e0b",
-              timeLabel: `${wwFmtH(r.endMin)}→${wwFmtH(r.endMin + r.transferBackMin)}`, desc: `rientro ${r.transferBackMin}'` });
+              timeLabel: `${wwFmtH(svcE)}→${wwFmtH(r.endMin)}`, desc: `rientro ${r.transferBackMin}'` });
           }
           if (!unpacked && (r.carPoolOut || r.carPoolReturn)) {
             acts.push({ id: `${sh.driverId}-car-${ri}`, isTrip: false, kindLabel: "Auto/Taxi", kindColor: "#fb7185",
@@ -836,8 +842,10 @@ function DriverShiftsPageInner() {
           .map(r => ({ ...r, trips: r.trips.filter(t => !sel.has(String(t.tripId))) }))
           .filter(r => r.trips.length > 0)
           .map(r => {
+            // confini di servizio dalle corse rimaste; nastro = servizio + pre-turno/trasferimenti
             const st = r.trips[0].departureMin, en = r.trips[r.trips.length - 1].arrivalMin;
-            return { ...r, startMin: st, endMin: en, startTime: wwFmtH(st), endTime: wwFmtH(en) };
+            const ns = st - (r.preTurnoMin || 0) - (r.transferMin || 0), ne = en + (r.transferBackMin || 0);
+            return { ...r, serviceStartMin: st, serviceEndMin: en, deadheads: undefined, startMin: ns, endMin: ne, startTime: wwFmtH(Math.max(0, ns)), endTime: wwFmtH(ne) };
           });
         if (rp.length === 0) return null;
         const aS = Math.min(...rp.map(r => r.startMin)), aE = Math.max(...rp.map(r => r.endMin));
@@ -2591,7 +2599,7 @@ function DriverShiftsPageInner() {
 
                             // 4. Rientro a vuoto — guidi auto aziendale al deposito
                             const transferBack = rip.transferBackMin || 0;
-                            if (transferBack > 0 || rip.endMin > cursor + 2) {
+                            if (transferBack > 0) {
                               const lastTrip = rip.trips[rip.trips.length - 1];
                               const returnFrom = rip.lastStop || lastTrip?.lastStopName || "capolinea";
                               const returnDur = transferBack > 0 ? transferBack : rip.endMin - cursor;

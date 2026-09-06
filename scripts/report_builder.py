@@ -139,6 +139,24 @@ def vehicle_gantt_rows(vehicle_shifts: list[dict]) -> list[dict]:
     return rows
 
 
+def piece_service_bounds(p: dict) -> tuple[int, int]:
+    """(inizio, fine) di SERVIZIO di un pezzo: serviceStart/EndMin del motore,
+    altrimenti prima partenza / ultimo arrivo delle corse, altrimenti i confini
+    di nastro (unica cosa che il greedy emette)."""
+    trips = p.get("trips") or []
+    s = p.get("serviceStartMin")
+    e = p.get("serviceEndMin")
+    if s is None:
+        s = min((int(t.get("departureMin") or 0) for t in trips if t.get("departureMin") is not None), default=None)
+    if e is None:
+        e = max((int(t.get("arrivalMin") or 0) for t in trips if t.get("arrivalMin") is not None), default=None)
+    if s is None:
+        s = int(p.get("startMin") or 0) + int(p.get("preTurnoMin") or 0) + int(p.get("transferMin") or 0)
+    if e is None:
+        e = int(p.get("endMin") or 0) - int(p.get("transferBackMin") or 0)
+    return int(s), int(e)
+
+
 def duty_gantt_rows(driver_shifts: list[dict]) -> list[dict]:
     rows = []
     for d in driver_shifts:
@@ -163,7 +181,8 @@ def duty_gantt_rows(driver_shifts: list[dict]) -> list[dict]:
                 segs.append({"start": int(c.get("departMin") or 0), "end": int(c.get("arriveMin") or 0), "kind": "car", "text": c.get("description") or "auto aziendale"})
             if i + 1 < len(pieces):
                 nxt = pieces[i + 1]
-                s, e = int(p.get("endMin") or 0), int(nxt.get("startMin") or 0)
+                # stacco di SERVIZIO (come interruptionMin del motore), non di nastro
+                s, e = piece_service_bounds(p)[1], piece_service_bounds(nxt)[0]
                 if e > s:
                     segs.append({"start": s, "end": e, "kind": "break", "text": f"interruzione {hm(s)}→{hm(e)} ({e - s}′)"})
         segs = [s for s in segs if s["end"] > s["start"]]
@@ -543,7 +562,7 @@ def render_crew(d: dict) -> str:
         pieces = x.get("riprese") or []
         # orari di SERVIZIO del pezzo (presa in carico → rilascio del bus); i
         # confini di nastro comprendono pre-turno e trasferimenti in auto
-        desc = " | ".join(f'{(pc.get("vehicleIds") or ["?"])[0]} {hm(pc.get("serviceStartMin", pc.get("startMin")))}–{hm(pc.get("serviceEndMin", pc.get("endMin")))} '
+        desc = " | ".join(f'{(pc.get("vehicleIds") or ["?"])[0]} {hm(piece_service_bounds(pc)[0])}–{hm(piece_service_bounds(pc)[1])} '
                           f'{",".join(dict.fromkeys(t.get("routeName") or "" for t in (pc.get("trips") or [])))}' for pc in pieces)
         viol = len((x.get("bdsValidation") or {}).get("violations") or [])
         rows.append((x.get("driverId"), x.get("type"), hm(x.get("nastroMin")), hm(x.get("workMin")),
@@ -703,8 +722,7 @@ def render_appendix(d: dict) -> str:
             rows = []
             for i, pc in enumerate(x.get("riprese") or [], 1):
                 veh = (pc.get("vehicleIds") or ["?"])[0]
-                svc_start = pc.get("serviceStartMin", pc.get("startMin"))
-                svc_end = pc.get("serviceEndMin", pc.get("endMin"))
+                svc_start, svc_end = piece_service_bounds(pc)
                 pt, tr, tb = int(pc.get("preTurnoMin") or 0), int(pc.get("transferMin") or 0), int(pc.get("transferBackMin") or 0)
                 # pre-turno e trasferimento in auto PRIMA della presa in carico del bus
                 if pt and svc_start is not None:

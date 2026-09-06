@@ -456,6 +456,8 @@ def build_compatible_arcs_fast(
         log(f"  [VSP-USER-CLUSTER] applicati {len(user_clusters)} mapping "
             f"stop→cluster da Planning Studio "
             f"(override del geografico per {n_overridden} stop)")
+    _LAST_CLUSTER_OF.clear()
+    _LAST_CLUSTER_OF.update(cluster_of)
 
     arcs: list[Arc] = []
     same_cluster_count = 0
@@ -1528,6 +1530,25 @@ def chain_cost_detailed(
     return cost
 
 
+# Cluster dei capolinea usati dall'ultimo build_compatible_arcs_fast: le
+# verifiche di normativa devono vedere gli stessi «stessi punti» degli archi.
+_LAST_CLUSTER_OF: dict[str, int] = {}
+
+
+def internal_deadhead_km(a: Trip, b: Trip) -> float:
+    """Km di vuoto fra due corse consecutive con lo stesso criterio degli archi:
+    stesso stop, stesse coordinate (~100 m) o stesso cluster = 0."""
+    if a.last_stop_id == b.first_stop_id:
+        return 0.0
+    if abs(a.last_stop_lat - b.first_stop_lat) < 0.001 and abs(a.last_stop_lon - b.first_stop_lon) < 0.001:
+        return 0.0
+    co = _LAST_CLUSTER_OF
+    if co and a.last_stop_id in co and b.first_stop_id in co and co[a.last_stop_id] == co[b.first_stop_id]:
+        return 0.0
+    km, _ = estimate_deadhead(a.last_stop_lat, a.last_stop_lon, b.first_stop_lat, b.first_stop_lon, a.category)
+    return km
+
+
 def chain_normativa_cost(chain: list[int], trips: list[Trip], rates: VehicleCostRates) -> float:
     """Costi/penalità della normativa VSP (MAIOR-style) a livello di blocco.
 
@@ -1563,9 +1584,7 @@ def chain_normativa_cost(chain: list[int], trips: list[Trip], rates: VehicleCost
         # fondere catene senza passare dagli archi filtrati).
         for k in range(len(chain) - 1):
             a, b = trips[chain[k]], trips[chain[k + 1]]
-            dh, _ = estimate_deadhead(a.last_stop_lat, a.last_stop_lon,
-                                      b.first_stop_lat, b.first_stop_lon, a.category)
-            if dh > rates.min_deadhead_km:
+            if internal_deadhead_km(a, b) > rates.min_deadhead_km:
                 cost += 10_000.0
     return cost
 
@@ -2420,9 +2439,7 @@ def enforce_normativa_split(
             over_dh = False
             if rates.forbid_internal_deadheads and not (over_pieces or over_changes):
                 a, b = trips[cur[-1]], trips[idx]
-                dh, _ = estimate_deadhead(a.last_stop_lat, a.last_stop_lon,
-                                          b.first_stop_lat, b.first_stop_lon, a.category)
-                over_dh = dh > rates.min_deadhead_km
+                over_dh = internal_deadhead_km(a, b) > rates.min_deadhead_km
             if over_pieces or over_changes or over_dh:
                 out.append(cur)
                 cur = [idx]

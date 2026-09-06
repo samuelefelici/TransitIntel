@@ -2133,14 +2133,18 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectIdA}::uuid`);
             psProjForArchive = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
           }
-          let archiveRows = psProjForArchive
-            ? (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon FROM deadhead_arcs WHERE ps_project_id = ${psProjForArchive}::uuid`)).rows ?? []
-            : [];
-          let archiveScope = "progetto";
-          if (archiveRows.length === 0) {
-            archiveRows = (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon FROM deadhead_arcs WHERE ps_project_id IS NULL`)).rows ?? [];
-            archiveScope = "globale";
+          // Percorso agente (agent-optimize): il progetto PS arriva come psProjectId
+          // anche senza progetto scheduling collegato
+          if (!psProjForArchive && typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)) {
+            psProjForArchive = body.psProjectId;
           }
+          // Archi GLOBALI come base + archi del PROGETTO che li sommano (e vincono
+          // sull'omologo globale), come per gli override manuali più sotto.
+          const archiveRows: any[] = psProjForArchive
+            ? (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjForArchive}::uuid ORDER BY (ps_project_id IS NOT NULL)`)).rows ?? []
+            : (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id FROM deadhead_arcs WHERE ps_project_id IS NULL`)).rows ?? [];
+          const nProjectArcs = archiveRows.filter(a => a.ps_project_id).length;
+          const archiveScope = nProjectArcs > 0 ? (archiveRows.length > nProjectArcs ? "globale+progetto" : "progetto") : "globale";
           if (archiveRows.length > 0) {
             // nodi di QUESTO giro: capolinea per stop id e coordinate, depositi per id
             const termCoordByStop = new Map<string, string>();
@@ -2155,34 +2159,56 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             const depotCoordById = new Map<string, string>();
             const depotCoordKeys = new Set<string>();
             for (const d of depotPoints) { const k = dhKey(d.lat, d.lon); depotCoordById.set(String(d.id), k); depotCoordKeys.add(k); }
-            const nodeKey = (key: string, type: string, lat: number, lon: number): string | null => {
+            // Un nodo dell'archivio → una o più chiavi coordinate di QUESTO giro:
+            // deposito per id, capolinea per stop id (poi coordinate), cluster
+            // espanso in tutte le sue fermate membre presenti nel giro.
+            const clusterStops = new Map<string, string[]>();
+            for (const c of psClustersForPy) clusterStops.set(String(c.id), c.stopIds.map(String));
+            const nodeKeys = (key: string, type: string, lat: number, lon: number): string[] => {
               if (type === "depot") {
                 const id = String(key).replace(/^depot:/, "");
-                return depotCoordById.get(id) ?? (depotCoordKeys.has(dhKey(lat, lon)) ? dhKey(lat, lon) : null);
+                const k = depotCoordById.get(id) ?? (depotCoordKeys.has(dhKey(lat, lon)) ? dhKey(lat, lon) : null);
+                return k ? [k] : [];
+              }
+              if (type === "cluster" || String(key).startsWith("cluster:")) {
+                const id = String(key).replace(/^cluster:/, "");
+                const members = clusterStops.get(id) ?? [];
+                const ks = members.map(sid => termCoordByStop.get(sid)).filter((k): k is string => !!k);
+                return Array.from(new Set(ks));
               }
               if (String(key).startsWith("stop:")) {
                 const k = termCoordByStop.get(String(key).slice(5));
-                if (k) return k;
+                if (k) return [k];
               }
               const ck = dhKey(lat, lon);
-              return termCoordKeys.has(ck) ? ck : null;
+              return termCoordKeys.has(ck) ? [ck] : [];
             };
             const allowed = new Set<string>();
+            let resolvedArcs = 0, unresolvedArcs = 0;
             for (const a of archiveRows) {
-              const ka = nodeKey(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
-              const kb = nodeKey(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
-              if (ka && kb) allowed.add(`${ka}|${kb}`);
+              const kas = nodeKeys(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
+              const kbs = nodeKeys(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
+              if (!kas.length || !kbs.length) { unresolvedArcs++; continue; }
+              resolvedArcs++;
+              for (const ka of kas) for (const kb of kbs) if (ka !== kb) allowed.add(`${ka}|${kb}`);
             }
-            let ttAllowed = 0, ttForbidden = 0, depotOutside = 0;
-            for (const key of Object.keys(ttM.matrix)) {
-              if (allowed.has(key)) ttAllowed++;
-              else { deadheadKm[key] = 9999; ttForbidden++; }
+            if (resolvedArcs === 0) {
+              // Archivio di un'altra rete/feed: nessun arco tocca i nodi di questo
+              // giro → nessuna restrizione (matrice completa), ma lo diciamo.
+              deadheadArchive = { scope: `${archiveScope} (non applicato: nessun arco sui nodi del giro)`, arcs: archiveRows.length, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0 };
+              req.log.warn(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi) non tocca i nodi di questo giro: matrice completa, nessuna restrizione`);
+            } else {
+              let ttAllowed = 0, ttForbidden = 0, depotOutside = 0;
+              for (const key of Object.keys(ttM.matrix)) {
+                if (allowed.has(key)) ttAllowed++;
+                else { deadheadKm[key] = 9999; ttForbidden++; }
+              }
+              for (const key of [...Object.keys(outM.matrix), ...Object.keys(inM.matrix)]) {
+                if (!allowed.has(key)) depotOutside++;
+              }
+              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside };
+              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio`);
             }
-            for (const key of [...Object.keys(outM.matrix), ...Object.keys(inM.matrix)]) {
-              if (!allowed.has(key)) depotOutside++;
-            }
-            deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside };
-            req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate, ${depotOutside} tratte deposito fuori archivio`);
           } else {
             req.log.info("CP-SAT VSP: archivio fuorilinea vuoto, matrice completa (nessuna restrizione)");
           }
@@ -2202,6 +2228,9 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           if (/^[0-9a-f-]{36}$/i.test(schedProjectId)) {
             const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectId}::uuid`);
             psProj = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
+          }
+          if (!psProj && typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)) {
+            psProj = body.psProjectId;
           }
           const arcs = await db.execute<any>(sql`
             SELECT from_lat, from_lon, to_lat, to_lon, road_km, travel_min,
@@ -2228,6 +2257,9 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       } catch (err: any) {
         req.log.warn({ err: err?.message }, "matrice fuorilinea non disponibile, il solver stima Haversine");
       }
+    } else {
+      deadheadArchive = { scope: "non applicato: nessun deposito selezionato (matrice fuorilinea non costruita)", arcs: 0, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0 };
+      req.log.warn("CP-SAT VSP: nessun deposito selezionato: matrice fuorilinea non costruita, archivio «Archi fuorilinea» NON applicato (il solver stima Haversine)");
     }
 
     // 5d. DELAY-ROBUST (Fase 2): profilo ritardi orario dai dati di traffico

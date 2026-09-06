@@ -1132,12 +1132,14 @@ export default function DriverWorkspace({
       const riprese = s.riprese.map((r, i) => {
         if (i !== ri) return r;
         if (meta.type === "carpool") { label = "taxi / auto aziendale"; return { ...r, ...(meta.cpIndex === 1 ? { carPoolReturn: null } : { carPoolOut: null }) }; }
-        if (meta.type === "transfer") { label = "fuori linea (andata)"; return { ...r, transferMin: 0 }; }
-        if (meta.type === "transferBack") { label = "fuori linea (rientro)"; return { ...r, transferBackMin: 0 }; }
-        if (meta.type === "preTurno") { label = "pre-turno"; return { ...r, preTurnoMin: 0 }; }
+        // startMin/endMin sono confini di NASTRO: togliendo i minuti si stringono
+        if (meta.type === "transfer") { label = "fuori linea (andata)"; const ns = r.startMin + (r.transferMin || 0); return { ...r, transferMin: 0, startMin: ns, startTime: minToTime(Math.max(0, ns)) }; }
+        if (meta.type === "transferBack") { label = "fuori linea (rientro)"; const ne = r.endMin - (r.transferBackMin || 0); return { ...r, transferBackMin: 0, endMin: ne, endTime: minToTime(ne) }; }
+        if (meta.type === "preTurno") { label = "pre-turno"; const ns = r.startMin + (r.preTurnoMin || 0); return { ...r, preTurnoMin: 0, startMin: ns, startTime: minToTime(Math.max(0, ns)) }; }
         return r;
       });
-      return { ...s, riprese };
+      const aS = Math.min(...riprese.map(r => r.startMin)), aE = Math.max(...riprese.map(r => r.endMin));
+      return { ...s, riprese, nastroStartMin: aS, nastroEndMin: aE, nastroStart: minToTime(Math.max(0, aS)), nastroEnd: minToTime(aE), nastroMin: aE - aS, nastro: formatDuration(aE - aS) };
     });
     if (!label) return;
     const newResult: DriverShiftsResult = { ...result, driverShifts: newShifts, summary: recomputeSummary(newShifts, result.summary) };

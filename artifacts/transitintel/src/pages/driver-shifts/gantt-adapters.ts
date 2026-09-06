@@ -442,6 +442,10 @@ function recomputeRipresa(shift: DriverShiftData, ri: number) {
   const maxArr = Math.max(...rip.trips.map(t => t.arrivalMin));
   const newStart = minDep - rip.preTurnoMin - rip.transferMin;
   const newEnd = maxArr + (rip.transferBackMin || 0);
+  // i confini di servizio del motore non valgono più: seguono le corse rimaste
+  rip.serviceStartMin = minDep;
+  rip.serviceEndMin = maxArr;
+  if (rip.deadheads) rip.deadheads = rip.deadheads.filter(d => d.departureMin >= minDep && d.arrivalMin <= maxArr);
   rip.startMin = newStart;
   rip.endMin = newEnd;
   rip.startTime = minToTimeStr(newStart).slice(0, 5);
@@ -470,7 +474,10 @@ function recomputeShiftAggregates(shift: DriverShiftData) {
   shift.work = `${Math.floor(shift.workMin / 60)}h${String(shift.workMin % 60).padStart(2, "0")}`;
   // interruzione = gap tra riprese se 2
   if (valid.length === 2) {
-    shift.interruptionMin = valid[1].startMin - valid[0].endMin;
+    // stacco di SERVIZIO (rilascio del bus → presa in carico), come interruption_min del motore
+    const svcEnd0 = valid[0].serviceEndMin ?? (valid[0].endMin - (valid[0].transferBackMin || 0));
+    const svcStart1 = valid[1].serviceStartMin ?? (valid[1].startMin + valid[1].preTurnoMin + valid[1].transferMin);
+    shift.interruptionMin = Math.max(0, svcStart1 - svcEnd0);
     shift.interruption = `${Math.floor(shift.interruptionMin / 60)}h${String(shift.interruptionMin % 60).padStart(2, "0")}`;
   } else {
     shift.interruptionMin = 0;

@@ -1160,6 +1160,10 @@ def compute_handovers(
             # Verifica che siano conducenti diversi
             if duty_out.driver_id == duty_in.driver_id:
                 continue
+            # Cambio bus IN DEPOSITO (rientro a metà blocco): il primo riporta il
+            # bus, il secondo lo prende lì. Non è un cambio in linea, niente auto.
+            if getattr(seg_out, "ends_at_depot", False) and getattr(seg_in, "starts_at_depot", False):
+                continue
             
             # Il punto di cambio è alla fine del segmento uscente / inizio entrante
             at_stop = seg_out.last_stop or seg_in.first_stop or "?"
@@ -1268,6 +1272,22 @@ class CarTrip:
 
 
 CAR_PICKUP_WAIT_MAX = 15   # minuti che chi smonta può aspettare l'auto di chi monta
+
+
+WALK_CHANGE_MAX_GAP = 75   # minuti: sotto, un cambio bus allo stesso nodo è a piedi (intero composto)
+
+
+def walk_change(s1, s2) -> bool:
+    """Vero se il conducente passa da s1 a s2 A PIEDI: bus diversi, stesso
+    nodo (cluster) e stacco breve. Niente auto aziendale ai due bordi interni:
+    stessa condizione «same_node» della fattibilità delle coppie (v4)."""
+    if s1.start_min > s2.start_min:
+        s1, s2 = s2, s1
+    if s1.vehicle_id == s2.vehicle_id:
+        return False
+    if not s1.last_cluster or s1.last_cluster != s2.first_cluster:
+        return False
+    return 0 <= s2.start_min - s1.end_min < WALK_CHANGE_MAX_GAP
 
 
 def same_bus_consecutive(s1, s2, segs_by_vehicle: dict[str, list] | None) -> bool:
@@ -1389,9 +1409,12 @@ def compute_car_pool(
             for si, seg in enumerate(d.segments):
                 seg_first_cluster = seg.first_cluster
                 seg_last_cluster = seg.last_cluster
-                # Bordi in deposito: il conducente esce/rientra col bus, niente auto
-                t_to_first = 0 if getattr(seg, "starts_at_depot", False) else depot_transfer_min(seg.first_stop, clusters)
-                t_from_last = 0 if getattr(seg, "ends_at_depot", False) else depot_transfer_min(seg.last_stop, clusters)
+                # Bordi in deposito: il conducente esce/rientra col bus, niente auto.
+                # Cambio a piedi allo stesso nodo fra due bus: niente auto ai bordi interni.
+                walk_in = si > 0 and walk_change(d.segments[si - 1], seg)
+                walk_out = si < n_segs - 1 and walk_change(seg, d.segments[si + 1])
+                t_to_first = 0 if (getattr(seg, "starts_at_depot", False) or walk_in) else depot_transfer_min(seg.first_stop, clusters)
+                t_from_last = 0 if (getattr(seg, "ends_at_depot", False) or walk_out) else depot_transfer_min(seg.last_stop, clusters)
 
                 # DELIVER: deposito → primo cluster di questo segmento
                 if t_to_first > 0 and seg_first_cluster:
@@ -1545,7 +1568,9 @@ def _simulate_car_pool(trips: list[CarTrip], n_cars: int | None,
                 continue
             cand = [d for d in delivers_by_cid.get(cid, [])
                     if id(d) not in promised
-                    and trip.depart_min <= d.arrive_min <= trip.depart_min + CAR_PICKUP_WAIT_MAX]
+                    and trip.depart_min <= d.arrive_min <= trip.depart_min + CAR_PICKUP_WAIT_MAX
+                    # una consegna già partita SENZA auto non porterà nulla
+                    and not (d.depart_min <= trip.depart_min and id(d) not in car_of)]
             if cand:
                 d = cand[0]
                 promised[id(d)] = trip
@@ -1556,7 +1581,18 @@ def _simulate_car_pool(trips: list[CarTrip], n_cars: int | None,
             pk, d = payload
             car = car_of.get(id(d))
             if car is None:
-                conflicts.append(pk)      # la consegna promessa è rimasta senza auto (tetto)
+                # la consegna promessa è rimasta senza auto (tetto): riprova con
+                # la consegna successiva nella finestra, altrimenti conflitto
+                cid = pk.cluster_id or "unknown"
+                nxt = [d2 for d2 in delivers_by_cid.get(cid, [])
+                       if id(d2) not in promised and d2.arrive_min > d.arrive_min
+                       and d2.arrive_min <= pk.depart_min + CAR_PICKUP_WAIT_MAX
+                       and not (d2.depart_min <= d.arrive_min and id(d2) not in car_of)]
+                if nxt:
+                    promised[id(nxt[0])] = pk
+                    push(nxt[0].arrive_min, "pickup_wait", (pk, nxt[0]))
+                else:
+                    conflicts.append(pk)
                 continue
             wait = d.arrive_min - pk.depart_min
             pk.wait_min = wait
