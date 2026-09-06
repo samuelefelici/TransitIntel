@@ -36,6 +36,9 @@ from optimizer_common import DriverDutyV3, VShiftTrip, min_to_time, parse_cluste
 from crew_scheduler_v4 import (
     BDSConfig,
     _make_segment,
+    seg_transfer_out,
+    seg_transfer_back,
+    match_cluster,
     apply_fase2_overrides,
     apply_optimizer_overrides,
     apply_shift_rules_override,
@@ -101,7 +104,30 @@ def _segments_from_riprese(riprese: list[dict], clusters) -> list:
         vehicle_id = str((rip.get("vehicleIds") or [None])[0]
                          or (rip.get("trips") or [{}])[0].get("vehicleId", "") or "")
         vehicle_type = str(rip.get("vehicleType", "") or "12m")
-        segments.append(_make_segment(vehicle_id, vehicle_type, trips, "full", None, clusters))
+        seg = _make_segment(vehicle_id, vehicle_type, trips, "full", None, clusters)
+        # Confini e bordi del MOTORE, se presenti: il pezzo del montante parte
+        # dall'arrivo della corsa precedente (sosta/fuorilinea coperti), i bordi
+        # in deposito non hanno auto, i fuorilinea guidati contano come guida.
+        ss, se = rip.get("serviceStartMin"), rip.get("serviceEndMin")
+        dh_min = sum(int(d.get("minutes") or 0) for d in (rip.get("deadheads") or []))
+        if isinstance(ss, (int, float)) and int(ss) < seg.start_min:
+            lead = int(seg.start_min - int(ss))
+            seg.start_min = int(ss)
+            if not rip.get("startsAtDepot"):
+                seg.first_stop = str(rip.get("transferToStop") or seg.first_stop)
+                seg.first_cluster = match_cluster(seg.first_stop, clusters)
+                seg.lead_idle_min = max(0, lead - dh_min)
+        if isinstance(se, (int, float)) and int(se) > seg.end_min:
+            seg.end_min = int(se)
+        if rip.get("startsAtDepot"):
+            seg.starts_at_depot = True
+            seg.pullout_min = int(rip.get("pulloutMin") or 0)
+        if rip.get("endsAtDepot"):
+            seg.ends_at_depot = True
+            seg.pullin_min = int(rip.get("pullinMin") or 0)
+        seg.work_min = seg.end_min - seg.start_min
+        seg.driving_min += dh_min
+        segments.append(seg)
     segments.sort(key=lambda s: s.start_min)
     return segments
 
@@ -112,8 +138,8 @@ def duty_from_segments(driver_id: str, segments: list, bds, clusters) -> DriverD
         return None
     if len(segments) == 1:
         s = segments[0]
-        transfer = depot_transfer_min(s.first_stop, clusters)
-        transfer_back = depot_transfer_min(s.last_stop, clusters)
+        transfer = seg_transfer_out(s, clusters)
+        transfer_back = seg_transfer_back(s, clusters)
         pt = pre_turno_for(transfer)
         nastro, work = single_nastro_work(s, bds, clusters)
         interruption = 0
@@ -124,8 +150,8 @@ def duty_from_segments(driver_id: str, segments: list, bds, clusters) -> DriverD
         # >2 riprese non è previsto dalla normativa: usa primo+ultimo per i
         # calcoli, la classificazione segnalerà comunque l'invalidità.
         s1, s2 = segments[0], segments[-1]
-        transfer = depot_transfer_min(s1.first_stop, clusters)
-        transfer_back = depot_transfer_min(s2.last_stop, clusters)
+        transfer = seg_transfer_out(s1, clusters)
+        transfer_back = seg_transfer_back(s2, clusters)
         pt = pre_turno_for(transfer)
         nastro, work = pair_nastro_work(s1, s2, bds, clusters)
         # lavoro dei segmenti intermedi (caso anomalo >2 riprese)
@@ -147,9 +173,9 @@ def duty_from_segments(driver_id: str, segments: list, bds, clusters) -> DriverD
         work_min=work,
         driving_min=driving,
         interruption_min=interruption,
-        pre_turno_min=pre_turno_for(depot_transfer_min(segments[0].first_stop, clusters)),
-        transfer_min=depot_transfer_min(segments[0].first_stop, clusters),
-        transfer_back_min=depot_transfer_min(segments[-1].last_stop, clusters),
+        pre_turno_min=pt,
+        transfer_min=transfer,
+        transfer_back_min=transfer_back,
     )
     d.duty_type = classify_duty(d, bds, clusters)
     return d

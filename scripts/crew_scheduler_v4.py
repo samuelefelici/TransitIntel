@@ -1285,6 +1285,23 @@ def block_leg_between(block: "VehicleBlock", prev: VShiftTrip, nxt: VShiftTrip) 
     return None
 
 
+def piece_start_min(block: "VehicleBlock", cut_index: int) -> int:
+    """Inizio del pezzo che segue un taglio inter fra trips[cut_index] e
+    trips[cut_index+1]: la stessa regola di _make_segment (montante all'arrivo
+    della corsa precedente se la sosta è ≤ MAX_IDLE_AT_TERMINAL e il bus non
+    va in deposito; altrimenti uscita dal deposito / partenza della corsa)."""
+    trips = block.trips
+    if cut_index < 0 or cut_index + 1 >= len(trips):
+        return trips[-1].departure_min if trips else 0
+    prev, nxt = trips[cut_index], trips[cut_index + 1]
+    leg = block_leg_between(block, prev, nxt)
+    if leg is not None and leg.type == "depot":
+        return nxt.departure_min - max(0, nxt.departure_min - leg.arrival_min)
+    if nxt.departure_min - prev.arrival_min <= MAX_IDLE_AT_TERMINAL:
+        return prev.arrival_min
+    return nxt.departure_min
+
+
 def block_trip_index(block: "VehicleBlock", trip: VShiftTrip, edge: str = "both") -> int:
     """Indice della corsa nel blocco. edge="start": basta che coincida la
     PARTENZA (corsa intera o metà sinistra di un taglio intra-corsa: il pezzo
@@ -1611,6 +1628,7 @@ def _make_segment(
     # aziendale a quei bordi, e uscita/rientro sono minuti di guida.
     starts_at_depot = ends_at_depot = False
     pullout = pullin = 0
+    lead_idle = 0
     if block is not None and block.trips:
         b0, bl = block.trips[0], block.trips[-1]
         starts_at_depot = trips[0].trip_id == b0.trip_id and trips[0].departure_min == b0.departure_min
@@ -1640,8 +1658,11 @@ def _make_segment(
                 elif trips[0].departure_min - prev.arrival_min <= MAX_IDLE_AT_TERMINAL:
                     start = prev.arrival_min
                     first_stop = prev.last_stop_name or first_stop
+                    _dh = 0
                     if leg is not None and leg.type == "deadhead":
-                        driving += max(0, leg.arrival_min - leg.departure_min)
+                        _dh = max(0, leg.arrival_min - leg.departure_min)
+                        driving += _dh
+                    lead_idle = max(0, trips[0].departure_min - start - _dh)
         if ends_at_depot:
             pullin = int(block.pullin_min or 0)
             end += pullin
@@ -1674,6 +1695,7 @@ def _make_segment(
         ends_at_depot=ends_at_depot,
         pullout_min=pullout,
         pullin_min=pullin,
+        lead_idle_min=lead_idle,
     )
 
 
@@ -1834,7 +1856,7 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     if c1_raw.index > c2_raw.index:
                         c1_raw, c2_raw = c2_raw, c1_raw
 
-                    mid_start = b.trips[c1_raw.index + 1].departure_min
+                    mid_start = piece_start_min(b, c1_raw.index)
                     mid_end = b.trips[c2_raw.index].arrival_min
                     mid_work = max(0, mid_end - mid_start)
 
@@ -1879,7 +1901,11 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     mid_trips = b.trips[c1.index + 1:c2.index + 1]
                 else:
                     # Per intra, usiamo il blocco tra la fine del left e l'inizio del right
-                    mid_trips = rest_after_c1[:max(0, len(rest_after_c1) - len(right_trips_c2))]
+                    # c2 intra: right_trips_c2 = [metà destra] + corse dopo; il
+                    # mezzo prende le corse fra i due tagli PIÙ la metà sinistra
+                    # della corsa spezzata (altrimenti resta senza conducente)
+                    left_c2, _right_c2 = _split_trips_for_cut(b, c2)
+                    mid_trips = left_c2[len(left_trips_c1):]
                     if not mid_trips:
                         mid_trips = rest_after_c1
 
@@ -1976,7 +2002,7 @@ def build_pair_aware_segments(
             continue
 
         def _piece_len(i_from: int | None, j_to: int | None) -> int:
-            start = trips[0].departure_min if i_from is None else trips[cands[i_from].index + 1].departure_min
+            start = trips[0].departure_min if i_from is None else piece_start_min(b, cands[i_from].index)
             end = trips[-1].arrival_min if j_to is None else trips[cands[j_to].index].arrival_min
             return end - start
 
@@ -2153,6 +2179,9 @@ def check_sosta_capolinea(duty: DriverDutyV3, rules: dict = SHIFT_RULES) -> tupl
     sosta_min = rules.get("intero", SHIFT_RULES["intero"]).get("sostaMinCapolinea", 15)
 
     for seg in duty.segments:
+        # sosta coperta all'inizio del pezzo (montante all'arrivo)
+        if int(getattr(seg, "lead_idle_min", 0) or 0) >= sosta_min:
+            return True, []
         for i in range(len(seg.trips) - 1):
             gap = seg.trips[i + 1].departure_min - seg.trips[i].arrival_min
             if gap >= sosta_min:
@@ -2441,6 +2470,7 @@ def compute_work_bds(
     # Attese al capolinea tra corse
     idle = 0
     for seg in duty.segments:
+        idle += int(getattr(seg, "lead_idle_min", 0) or 0)   # sosta coperta prima della prima corsa
         for i in range(len(seg.trips) - 1):
             gap = seg.trips[i + 1].departure_min - seg.trips[i].arrival_min
             if gap > 0:
@@ -2615,7 +2645,7 @@ def _car_events_pair(s1: Segment, s2: Segment, clusters: list[Cluster],
     torna in deposito e riparte (i quattro bordi), come in compute_car_pool."""
     if s1.start_min > s2.start_min:
         s1, s2 = s2, s1
-    if same_bus_consecutive(s1, s2, segs_by_vehicle):
+    if same_bus_consecutive(s1, s2, segs_by_vehicle) or walk_change(s1, s2):
         ev: list[tuple[int, int]] = []
         t = seg_transfer_out(s1, clusters)
         if t > 0 and s1.first_cluster:
@@ -2683,7 +2713,8 @@ def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
             sosta_min = int(sr_int.get("sostaMinCapolinea", 15))
             has_rest = interruption >= sosta_min or any(
                 seg.trips[i + 1].departure_min - seg.trips[i].arrival_min >= sosta_min
-                for seg in (s1, s2) for i in range(len(seg.trips) - 1))
+                for seg in (s1, s2) for i in range(len(seg.trips) - 1)) or any(
+                int(getattr(seg, "lead_idle_min", 0) or 0) >= sosta_min for seg in (s1, s2))
             if (has_rest and nastro <= sr_int["maxNastro"]
                     and nastro <= sr_int.get("maxLavoro", 435)
                     and nastro >= 180):
@@ -3923,6 +3954,7 @@ from crew_scheduler_v3 import (
     compute_car_pool,
     car_pool_by_driver,
     same_bus_consecutive,
+    walk_change,
     _max_simultaneous_cars_out,
     _cars_out_demand_peak,
     LAST_CAR_POOL_STATS,
@@ -3939,11 +3971,18 @@ def _ripresa_deadheads(seg: Segment, legs: list | None) -> list[dict]:
     turno macchina comprese fra inizio e fine del pezzo)."""
     out: list[dict] = []
     for leg in (legs or []):
-        if leg.departure_min < seg.start_min or leg.arrival_min > seg.end_min:
-            continue
         if leg.type == "depot":
+            # rientro/uscita: basta la SOVRAPPOSIZIONE col pezzo (il pezzo che
+            # finisce col rientro copre solo l'arrivo in deposito, quello che
+            # riparte solo l'uscita)
+            if leg.departure_min > seg.end_min or leg.arrival_min < seg.start_min:
+                continue
             prev = max((t for t in seg.trips if t.arrival_min <= leg.departure_min), key=lambda t: t.arrival_min, default=None)
             nxt = min((t for t in seg.trips if t.departure_min >= leg.arrival_min), key=lambda t: t.departure_min, default=None)
+            if prev is not None and not (seg.start_min <= prev.arrival_min <= leg.departure_min <= seg.end_min):
+                prev = None
+            if nxt is not None and not (seg.start_min <= leg.arrival_min <= nxt.departure_min <= seg.end_min):
+                nxt = None
             if prev is not None:
                 out.append({"kind": "depot_in", "fromStop": prev.last_stop_name or "?", "toStop": "Deposito",
                             "departureMin": prev.arrival_min, "arrivalMin": leg.departure_min,
@@ -3954,6 +3993,8 @@ def _ripresa_deadheads(seg: Segment, legs: list | None) -> list[dict]:
                             "departureMin": leg.arrival_min, "arrivalMin": nxt.departure_min,
                             "departureTime": min_to_time(leg.arrival_min), "arrivalTime": min_to_time(nxt.departure_min),
                             "km": None, "minutes": max(0, nxt.departure_min - leg.arrival_min), "label": "Fuorilinea · uscita deposito"})
+            continue
+        if leg.departure_min < seg.start_min or leg.arrival_min > seg.end_min:
             continue
         kind = "pullout" if leg.depot_leg == "out" else ("pullin" if leg.depot_leg == "in" else "reposition")
         label = {"pullout": "Fuorilinea · uscita deposito", "pullin": "Fuorilinea · rientro deposito"}.get(kind, "Fuorilinea")
@@ -3985,9 +4026,12 @@ def _segment_to_ripresa(
     diff_vehicles = n_segs >= 2 and duty.segments[0].vehicle_id != duty.segments[-1].vehicle_id
 
     if diff_vehicles:
-        _transfer_out = seg_transfer_out(seg, clusters)
-        _transfer_back = seg_transfer_back(seg, clusters)
-        pre_turno = pre_turno_for(_transfer_out)
+        _si = next((i for i, x in enumerate(duty.segments) if x is seg), 0)
+        _walk_in = _si > 0 and walk_change(duty.segments[_si - 1], seg)
+        _walk_out = _si < n_segs - 1 and walk_change(seg, duty.segments[_si + 1])
+        _transfer_out = 0 if _walk_in else seg_transfer_out(seg, clusters)
+        _transfer_back = 0 if _walk_out else seg_transfer_back(seg, clusters)
+        pre_turno = 0 if _walk_in else pre_turno_for(_transfer_out)
         transfer = _transfer_out
         transfer_back = _transfer_back
     else:
@@ -4288,7 +4332,7 @@ def serialize_output(
             "companyCarsHardViolation": (
                 MAX_COMPANY_CARS > 0
                 and (_cars_out_demand_peak(car_movements) > MAX_COMPANY_CARS
-                     or any(t.car_id is None for t in car_movements))
+                     or int(LAST_CAR_POOL_STATS.get("capConflicts", 0) or 0) > 0)
             ),
             "totalDailyCost": round(total_cost, 2),
             "costBreakdown": {
@@ -4581,7 +4625,11 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     # ── Validazione HARD post-solve: cap vetture aziendali ──
     # Anche se il CP-SAT applica add_cumulative, il post-processing dei pair
     # potrebbe (in casi limite) eccedere; lo segnaliamo esplicitamente.
-    if MAX_COMPANY_CARS > 0 and (max_sim > MAX_COMPANY_CARS or n_conflicts > 0):
+    n_unpaired = int(LAST_CAR_POOL_STATS.get("unpaired", 0) or 0)
+    n_cap = int(LAST_CAR_POOL_STATS.get("capConflicts", 0) or 0)
+    if n_unpaired:
+        log(f"[V4][CAR-POOL] {n_unpaired} ritiri senza auto al nodo: nessuna consegna raggiunge quel nodo (dipende dal piano, non dal tetto)")
+    if MAX_COMPANY_CARS > 0 and (max_sim > MAX_COMPANY_CARS or n_cap > 0):
         log(
             f"[V4][HARD-VIOLATION] Vetture aziendali: picco richiesto {max_sim} > cap={MAX_COMPANY_CARS} "
             f"oppure {n_conflicts} trasferimenti senza auto. "

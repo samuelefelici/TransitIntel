@@ -471,6 +471,7 @@ export function mkRipresaFromTrips(trips: RipresaTrip[], vehicleId: string, vehi
   const end = sorted[sorted.length - 1].arrivalMin;
   return {
     startTime: fmtH(start), endTime: fmtH(end), startMin: start, endMin: end,
+    serviceStartMin: start, serviceEndMin: end,
     preTurnoMin: 0, transferMin: 0, transferType: "none",
     transferBackMin: 0, transferBackType: "none",
     workMin: end - start, vehicleIds: [vehicleId], vehicleType,
@@ -510,9 +511,16 @@ export function applyPieceToShift(
     if (host) {
       host.trips = [...host.trips, ...sorted.map(t => ({ ...t, vehicleId, vehicleType }))]
         .sort((a, b) => a.departureMin - b.departureMin);
-      host.startMin = Math.min(host.startMin, pStart);
-      host.endMin = Math.max(host.endMin, pEnd);
-      host.startTime = fmtH(host.startMin);
+      // startMin/endMin sono confini di NASTRO: il servizio si allarga alle corse
+      // del pezzo e il nastro segue con gli scarti di pre-turno/trasferimenti
+      const hs = Math.min(host.serviceStartMin ?? Math.min(...host.trips.map(t => t.departureMin)), pStart);
+      const he = Math.max(host.serviceEndMin ?? Math.max(...host.trips.map(t => t.arrivalMin)), pEnd);
+      host.serviceStartMin = hs;
+      host.serviceEndMin = he;
+      host.deadheads = (host.deadheads ?? []).filter(d => d.departureMin >= hs && d.arrivalMin <= he);
+      host.startMin = Math.min(host.startMin, hs - (host.preTurnoMin || 0) - (host.transferMin || 0));
+      host.endMin = Math.max(host.endMin, he + (host.transferBackMin || 0));
+      host.startTime = fmtH(Math.max(0, host.startMin));
       host.endTime = fmtH(host.endMin);
       if (!host.vehicleIds.includes(vehicleId)) host.vehicleIds = [...host.vehicleIds, vehicleId];
     } else {

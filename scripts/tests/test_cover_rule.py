@@ -163,6 +163,7 @@ def test_probe_gap_uses_service_times():
                                           intero_max_nastro=435, semi_int_min=75)
     st = vcsp_probe.LAST_CREW_STATS
     assert st["biRiprese"] == 1
-    # stacco di SERVIZIO 90' (700-610), non 60' sui confini di nastro
-    det = (st.get("unreachableDetails") or [{}])[0]
-    assert det.get("gapMin") in (None, 90)
+    # stacco di SERVIZIO 90' (700-610), non 60' sui confini di nastro: il turno
+    # è irraggiungibile per nastro (500 > 435), quindi finisce nei dettagli
+    assert st["unreachableDetails"] and st["unreachableDetails"][0]["gapMin"] == 90
+    assert st["unreachableDetails"][0]["nastroMin"] == 500

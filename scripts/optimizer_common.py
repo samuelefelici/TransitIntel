@@ -1379,6 +1379,10 @@ class Segment:
     # RIENTRO (riporta il bus, niente auto). L'uscita/rientro sono guida.
     starts_at_depot: bool = False
     ends_at_depot: bool = False
+    # Sosta al capolinea COPERTA all'inizio del pezzo (regola del montante: il
+    # pezzo parte dall'arrivo della corsa precedente): è una sosta a tutti gli
+    # effetti (riposo RD 131, attesa retribuita), ma sta PRIMA di trips[0].
+    lead_idle_min: int = 0
     pullout_min: int = 0          # minuti di uscita deposito→capolinea inclusi nel pezzo
     pullin_min: int = 0           # minuti di rientro capolinea→deposito inclusi nel pezzo
 

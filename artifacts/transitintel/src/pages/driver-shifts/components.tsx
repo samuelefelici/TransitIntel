@@ -173,7 +173,7 @@ export function DriverGantt({ shifts }: { shifts: DriverShiftData[] }) {
                       {/* Service trips */}
                       <div className="absolute top-0.5 h-5 text-[8px] text-white flex items-center justify-center overflow-hidden whitespace-nowrap"
                         style={{ left: `${tripsLeft}%`, width: `${Math.max(0.2, tripsWidth)}%`, backgroundColor: typeColor, opacity: 0.85 }}
-                        title={`${rip.trips.length} corse · ${minToTime(rip.startMin)}→${minToTime(rip.endMin)} · Veicolo: ${rip.vehicleIds.join(", ")}${rip.cambi?.length ? ` · ${rip.cambi.length} cambi in linea` : ""}`}
+                        title={`${rip.trips.length} corse · ${minToTime(rip.serviceStartMin ?? rip.startMin + rip.preTurnoMin + rip.transferMin)}→${minToTime(rip.serviceEndMin ?? rip.endMin - (rip.transferBackMin || 0))} · Veicolo: ${rip.vehicleIds.join(", ")}${rip.cambi?.length ? ` · ${rip.cambi.length} cambi in linea` : ""}`}
                       >{tripsWidth > 3 ? `${rip.trips.length} corse` : ""}</div>
 
                       {/* Transfer back */}
