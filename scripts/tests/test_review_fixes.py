@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import crew_scheduler_v4 as v4  # noqa: E402
 import crew_tools  # noqa: E402
-from crew_scheduler_v3 import compute_car_pool, compute_handovers, walk_change, LAST_CAR_POOL_STATS, CarTrip, _simulate_car_pool  # noqa: E402
+from crew_scheduler_v3 import inline_handovers, compute_car_pool, compute_handovers, walk_change, LAST_CAR_POOL_STATS, CarTrip, _simulate_car_pool  # noqa: E402
 from optimizer_common import SHIFT_RULES  # noqa: E402
 from test_cover_rule import _trip, CLUSTERS, _block_with_deadhead_and_depot  # noqa: E402
 
@@ -41,7 +41,8 @@ def test_covered_layover_counts_as_rest():
     b = v4.parse_vehicle_blocks([{"vehicleId": "U3", "vehicleType": "12m", "category": "urbano", "trips": trips}], CLUSTERS)[0]
     s1 = v4._make_segment("U3", "12m", b.trips[:2], "first", 1, CLUSTERS, block=b)
     s2 = v4._make_segment("U3", "12m", b.trips[2:], "second", 1, CLUSTERS, block=b)
-    assert s2.start_min == 485 and s2.lead_idle_min == 20
+    # il montante prende il bus 15′ dopo l'arrivo (vettura incustodita ≤ 15′) e copre i 5′ restanti
+    assert s2.start_min == 500 and s2.lead_idle_min == 5
     assert v4._feasible_pair(s1, s2, SHIFT_RULES) == "intero"
     d = Duty("A", [s1, s2])
     ok, viol = v4.check_sosta_capolinea(d, SHIFT_RULES)
@@ -62,7 +63,8 @@ def test_depot_change_is_not_a_line_handover_and_rows_at_borders():
     right = v4._make_segment("U1", "12m", b.trips[2:3], "second", 1, CLUSTERS, block=b)
     last = v4._make_segment("U1", "12m", b.trips[3:], "second", 2, CLUSTERS, block=b)
     hs = compute_handovers([Duty("A", [right]), Duty("B", [last])], CLUSTERS)
-    assert hs == []
+    # tracciato come passaggio in deposito, ma NON è un cambio in linea
+    assert [h.kind for h in hs] == ["depot"] and inline_handovers(hs) == []
     kinds_r = [d["kind"] for d in v4._ripresa_deadheads(right, b.legs)]
     kinds_l = [d["kind"] for d in v4._ripresa_deadheads(last, b.legs)]
     assert "depot_in" in kinds_r and "depot_out" not in kinds_r

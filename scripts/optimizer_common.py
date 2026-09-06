@@ -26,6 +26,10 @@ MAX_DOWNSIZE_LEVELS = 1
 # Deadhead / idle
 MAX_DEADHEAD_KM = 30
 MAX_IDLE_AT_TERMINAL = 60      # min — oltre questo, rientro deposito
+# Cambio in linea: il bus può restare fermo SENZA conducente al nodo di cambio
+# al massimo per questi minuti (regola aziendale). Il montante lo prende entro
+# questo tempo dall'arrivo dello smontante, o alla partenza se è prima.
+UNATTENDED_BUS_MAX = 15
 MIN_LAYOVER = 3                # min — sosta minima allo stesso capolinea
 DEADHEAD_BUFFER = 5            # min — aggiunto a ogni deadhead stimato
 DEADHEAD_SPEED = {"urbano": 20, "extraurbano": 40}   # km/h

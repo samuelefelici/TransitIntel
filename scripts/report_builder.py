@@ -500,6 +500,20 @@ def render_vehicles(d: dict) -> str:
                         width=940, row_h=14))
     dh_rows, agg = deadhead_table(vs)
     out.append("<h3>5.2 Fuorilinea e movimenti a vuoto</h3>")
+    arch = vm.get("deadheadArchive") if isinstance(vm.get("deadheadArchive"), dict) else None
+    if arch:
+        via = vm.get("viaDepotArcs") if isinstance(vm.get("viaDepotArcs"), dict) else {}
+        txt = (f'I fuorilinea ammessi e i loro tempi vengono dall\'archivio «Archi fuorilinea» ({esc(str(arch.get("scope") or ""))}, {fmt_n(arch.get("arcs"))} archi): '
+               f'{fmt_n(arch.get("ttAllowed"))} coppie capolinea ammesse, {fmt_n(arch.get("ttForbidden"))} vietate'
+               + (f' ({fmt_n(via.get("count"))} riposizionamenti instradati via deposito)' if via and via.get("count") else "")
+               + f'; tempi di percorrenza presi dall\'archivio su {fmt_n(arch.get("timesApplied", 0))} coppie'
+               + (f', di cui {fmt_n(arch.get("customTimes"))} archi con tempo curato a mano dall\'operatore' if arch.get("customTimes") else "")
+               + '.')
+        missing = arch.get("depotLegsMissing") or []
+        if arch.get("depotLegsOutsideArchive"):
+            txt += (f' {fmt_n(arch.get("depotLegsOutsideArchive"))} tratte deposito↔capolinea non hanno un arco in archivio e sono stimate '
+                    f'(km stradali ÷ velocità media + 5′)' + (f': {esc("; ".join(str(m) for m in missing[:8]))}' if missing else "") + ".")
+        out.append(para(txt))
     if dh_rows:
         out.append(para(f'{len(dh_rows)} movimenti a vuoto per {fmt_n(sum(r[6] for r in dh_rows), 1)} km: ' +
                         ", ".join(f'{esc(k)} {fmt_n(v, 1)} km' for k, v in agg.most_common()) + "."))
@@ -509,6 +523,21 @@ def render_vehicles(d: dict) -> str:
     else:
         out.append(para("Nessun fuorilinea fra corse: le vetture rientrano solo a fine servizio."))
     return "".join(out)
+
+
+def _handover_modes_text(hm_: dict | None) -> str:
+    """Come si fanno i cambi in linea (auto aziendale / a piedi) e quanto resta
+    ferma una vettura senza conducente."""
+    if not isinstance(hm_, dict) or not hm_:
+        return "passaggi di vettura fra conducenti"
+    parts = []
+    if hm_.get("incomingWalk") or hm_.get("outgoingWalk"):
+        parts.append(f'{fmt_n(hm_.get("incomingWalk", 0))} montate e {fmt_n(hm_.get("outgoingWalk", 0))} smontate a piedi')
+    if hm_.get("incomingCar") or hm_.get("outgoingCar"):
+        parts.append(f'{fmt_n(hm_.get("incomingCar", 0))} montate e {fmt_n(hm_.get("outgoingCar", 0))} smontate con auto aziendale')
+    if hm_.get("withUnattended"):
+        parts.append(f'vettura ferma senza conducente in {fmt_n(hm_.get("withUnattended"))} cambi, al massimo {fmt_n(hm_.get("unattendedMaxMin"))}′ (limite {fmt_n(hm_.get("unattendedLimitMin", 15))}′)')
+    return " · ".join(parts) if parts else "passaggi di vettura fra conducenti"
 
 
 def render_crew(d: dict) -> str:
@@ -525,7 +554,7 @@ def render_crew(d: dict) -> str:
     tiles = [("Turni", fmt_n(len(ds)), " · ".join(f'{st["byType"].get(k, 0)} {DUTY_TYPE_LABEL[k].lower()}' for k in DUTY_TYPE_ORDER if st["byType"].get(k))),
              ("Lavoro medio", hm(sum(st["work"]) / len(st["work"])), f'min {hm(min(st["work"]))} · max {hm(max(st["work"]))}'),
              ("Nastro medio", hm(sum(st["nastro"]) / len(st["nastro"])), f'min {hm(min(st["nastro"]))} · max {hm(max(st["nastro"]))}'),
-             ("Cambi in linea", fmt_n(st["cambi"]), "passaggi di vettura fra conducenti"),
+             ("Cambi in linea", fmt_n(st["cambi"]), _handover_modes_text(cs.get("handoverModes"))),
              ("Violazioni", fmt_n(st["violations"]), f'{st["warnings"]} avvisi')]
     if cs.get("companyCarsMaxSimultaneous") is not None:
         _conf = cs.get("companyCarsConflicts") or 0
@@ -720,10 +749,38 @@ def render_appendix(d: dict) -> str:
         for x in ds:
             out.append(f'<h4>{esc(x.get("driverId"))} · {esc(x.get("type"))} · nastro {hm(x.get("nastroMin"))} · lavoro {hm(x.get("workMin"))}</h4>')
             rows = []
+            used_h: set[int] = set()
+            all_h = list(x.get("handovers") or [])
             for i, pc in enumerate(x.get("riprese") or [], 1):
                 veh = (pc.get("vehicleIds") or ["?"])[0]
                 svc_start, svc_end = piece_service_bounds(pc)
                 pt, tr, tb = int(pc.get("preTurnoMin") or 0), int(pc.get("transferMin") or 0), int(pc.get("transferBackMin") or 0)
+                # cambi di vettura di questo pezzo: chi monta all'inizio (prende), chi
+                # smonta alla fine (lascia), passaggi a metà pezzo
+                h_in, h_out, h_mid = [], [], []
+                for hi, h in enumerate(all_h):
+                    if hi in used_h:
+                        continue
+                    vids = pc.get("vehicleIds") or []
+                    if vids and h.get("vehicleId") not in vids:
+                        continue
+                    taken = int(h.get("takenMin") if h.get("takenMin") is not None else h.get("atMin") or 0)
+                    at = int(h.get("atMin") or 0)
+                    if h.get("role") == "incoming" and abs(taken - svc_start) <= 1:
+                        h_in.append(h); used_h.add(hi)
+                    elif h.get("role") == "outgoing" and abs(at - svc_end) <= 1:
+                        h_out.append(h); used_h.add(hi)
+                    elif svc_start < at < svc_end:
+                        h_mid.append(h); used_h.add(hi)
+                def _hrow(h):
+                    taken = int(h.get("takenMin") if h.get("takenMin") is not None else h.get("atMin") or 0)
+                    t = int(h.get("atMin") or 0) if h.get("role") == "outgoing" else taken
+                    txt = f'<span class="cambio">{esc(str(h.get("description") or ""))}</span>'
+                    if h.get("detail"):
+                        txt += f' <span class="small">({esc(str(h.get("detail")))})</span>'
+                    return (i, h.get("vehicleId") or veh, txt, hm(t), hm(t), h.get("clusterName") or h.get("atStop") or "–", "–")
+                for h in h_in:
+                    rows.append(_hrow(h))
                 # pre-turno e trasferimento in auto PRIMA della presa in carico del bus
                 if pt and svc_start is not None:
                     kind = "presa bus in deposito (controlli)" if pc.get("preTurnoKind") == "bus" or tr == 0 else "auto aziendale"
@@ -739,6 +796,10 @@ def render_appendix(d: dict) -> str:
                     else:
                         km = f' · {e.get("km")} km' if e.get("km") is not None else ""
                         rows.append((i, veh, f'{e.get("label") or "Fuorilinea"}{km}', hm(e.get("departureMin")), hm(e.get("arrivalMin")), e.get("fromStop") or "–", e.get("toStop") or "–"))
+                for h in h_mid:
+                    rows.append(_hrow(h))
+                for h in h_out:
+                    rows.append(_hrow(h))
                 if tb and svc_end is not None:
                     rows.append((i, veh, "Rientro auto", hm(svc_end), hm(svc_end + tb), pc.get("lastStop") or "–", "Deposito"))
             out.append(table(["Pezzo", "Vettura", "Linea / attività", "Partenza", "Arrivo", "Da", "A"], rows, numeric_from=99))

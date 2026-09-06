@@ -3110,7 +3110,8 @@ def run(data: dict) -> dict:
         log(f"  [VSP-DH-MATRIX] {dh_pairs} coppie fuorilinea stradali ricevute")
     dh_min_pairs = set_deadhead_min_matrix(data.get("deadheadMin"))
     if dh_min_pairs:
-        log(f"  [VSP-DH-MATRIX] {dh_min_pairs} coppie con TEMPO curato a mano (override)")
+        log(f"  [VSP-DH-MATRIX] {dh_min_pairs} coppie con TEMPO dall'archivio fuorilinea (custom_min o travel_min: "
+            f"usato così com'è, senza stima km/velocità né buffer)")
     # Archivio «Archi fuorilinea» del progetto: le coppie capolinea↔capolinea
     # assenti arrivano vietate (km sopra il massimo), le tratte deposito fuori
     # archivio restano stimate ma vengono contate.
@@ -3118,7 +3119,11 @@ def run(data: dict) -> dict:
     if dh_archive:
         log(f"  [VSP-DH-ARCHIVE] archivio {dh_archive.get('scope')}: {dh_archive.get('arcs')} archi, "
             f"{dh_archive.get('ttAllowed')} coppie capolinea ammesse, {dh_archive.get('ttForbidden')} vietate, "
-            f"{dh_archive.get('depotLegsOutsideArchive')} tratte deposito fuori archivio")
+            f"{dh_archive.get('depotLegsOutsideArchive')} tratte deposito fuori archivio (stimate), "
+            f"tempi dell'archivio su {dh_archive.get('timesApplied', 0)} coppie "
+            f"({dh_archive.get('customTimes', 0)} archi con tempo curato a mano)")
+        for miss in (dh_archive.get("depotLegsMissing") or [])[:20]:
+            log(f"  [VSP-DH-ARCHIVE] tratta deposito SENZA arco (stimata): {miss}")
 
     # Depositi selezionati (multi-deposito): domiciliazione + cap per deposito
     depots_data = [d for d in (data.get("depots") or [])

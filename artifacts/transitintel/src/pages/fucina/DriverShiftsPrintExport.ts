@@ -29,6 +29,7 @@
 import type {
   DriverShiftsResult,
   DriverShiftData,
+  HandoverInfo,
   Ripresa,
   RipresaTrip,
 } from "@/pages/driver-shifts/types";
@@ -59,7 +60,7 @@ const fmtDur = (m: number) => {
 /* ── Costruzione righe per ogni ripresa ──────────────────── */
 
 interface SyntheticRow {
-  kind: "preTurno" | "transfer" | "transferBack" | "cambio" | "interruption" | "deadhead";
+  kind: "preTurno" | "transfer" | "transferBack" | "cambio" | "interruption" | "deadhead" | "handover";
   startMin: number;
   endMin: number;
   label: string;
@@ -94,9 +95,41 @@ const PRE_TURNO_LABEL: Record<string, string> = {
   auto: "Pre-turno · auto aziendale",
 };
 
-function buildRipresaRows(rip: Ripresa): RipresaRow[] {
+/** I cambi di vettura che riguardano QUESTA ripresa: chi monta all'inizio
+ *  (prende la vettura), chi smonta alla fine (la lascia), più eventuali
+ *  passaggi a metà ripresa. Match per vettura e orario; ogni cambio finisce
+ *  in una sola ripresa. */
+function handoversOfRipresa(rip: Ripresa, handovers: HandoverInfo[], used: Set<HandoverInfo>): HandoverInfo[] {
+  const { start: svcStart, end: svcEnd } = ripresaServiceBounds(rip);
+  const vehicles = new Set(rip.vehicleIds ?? []);
+  const out: HandoverInfo[] = [];
+  for (const h of handovers) {
+    if (used.has(h)) continue;
+    const taken = typeof h.takenMin === "number" ? h.takenMin : h.atMin;
+    const sameBus = vehicles.size === 0 || vehicles.has(h.vehicleId);
+    const atStart = h.role === "incoming" && Math.abs(taken - svcStart) <= 1;
+    const atEnd = h.role === "outgoing" && Math.abs(h.atMin - svcEnd) <= 1;
+    const inside = h.atMin >= svcStart && h.atMin <= svcEnd;
+    if (sameBus && (atStart || atEnd || inside)) { out.push(h); used.add(h); }
+  }
+  return out;
+}
+
+function handoverRowLabel(h: HandoverInfo): { start: number; end: number; label: string; detail?: string } {
+  const taken = typeof h.takenMin === "number" ? h.takenMin : h.atMin;
+  // chi smonta: la riga sta al momento in cui lascia la vettura; chi monta:
+  // al momento in cui la prende
+  const t = h.role === "outgoing" ? h.atMin : taken;
+  return { start: t, end: t, label: h.description, detail: h.detail };
+}
+
+function buildRipresaRows(rip: Ripresa, handovers: HandoverInfo[] = []): RipresaRow[] {
   const rows: RipresaRow[] = [];
   const { start: svcStart, end: svcEnd } = ripresaServiceBounds(rip);
+  for (const h of handovers) {
+    const r = handoverRowLabel(h);
+    rows.push({ kind: "handover", startMin: r.start, endMin: r.end, label: r.label, detail: r.detail });
+  }
   if (rip.preTurnoMin > 0) {
     // pre-turno e trasferimento stanno PRIMA della presa in carico del bus
     const ptStart = svcStart - (rip.transferMin || 0) - rip.preTurnoMin;
@@ -139,10 +172,11 @@ function buildRipresaRows(rip: Ripresa): RipresaRow[] {
       detail: `${rip.transferBackMin}′ · nodo → deposito`,
     });
   }
+  const order = (r: RipresaRow) => r.kind === "trip" ? 1 : r.kind === "handover" ? (/\blascia\b/i.test(r.label) ? 2 : 0) : 1;
   return rows.sort((a, b) => {
     const aS = a.kind === "trip" ? a.trip.departureMin : a.startMin;
     const bS = b.kind === "trip" ? b.trip.departureMin : b.startMin;
-    return aS - bS;
+    return (aS - bS) || (order(a) - order(b));
   });
 }
 
@@ -165,6 +199,7 @@ function ripresaRowHtml(row: RipresaRow): string {
     : row.kind === "transferBack" ? "↜"
     : row.kind === "interruption" ? "☕"
     : row.kind === "deadhead" ? "🚌"
+    : row.kind === "handover" ? "🔁"
     : "↹";
   return `<tr class="synthetic ${cls}">
     <td class="line">${icon}</td>
@@ -182,8 +217,10 @@ function shiftColumnHtml(shift: DriverShiftData): string {
   const allVehicles = Array.from(new Set(shift.riprese.flatMap(r => r.vehicleIds ?? []))).join(", ");
   const allClusters = Array.from(new Set(shift.riprese.map(r => r.transferToCluster).filter(Boolean))).join(", ");
 
+  const usedHandovers = new Set<HandoverInfo>();
   const ripreseHtml = shift.riprese.map((rip, idx) => {
-    const rows = buildRipresaRows(rip).map(ripresaRowHtml).join("\n");
+    const myHandovers = handoversOfRipresa(rip, shift.handovers ?? [], usedHandovers);
+    const rows = buildRipresaRows(rip, myHandovers).map(ripresaRowHtml).join("\n");
     return `
       <div class="ripresa">
         <div class="ripresa-head">
@@ -581,6 +618,7 @@ export function exportDriverShiftsToPrint(result: DriverShiftsResult, opts: Driv
     table.trips tr.synthetic.transfer td { background: #eff6ff; color: #1e40af; }
     table.trips tr.synthetic.interruption td { background: #f3f4f6; color: #4b5563; }
     table.trips tr.synthetic.deadhead td { background: #fdf2f8; color: #9d174d; font-style: normal; }
+    table.trips tr.synthetic.handover td { background: #fef3c7; color: #92400e; font-style: normal; font-weight: 600; }
 
     .cambi {
       margin-top: 3px;
