@@ -1850,6 +1850,18 @@ def _split_trip_at_stop(trip: VShiftTrip, cs: ClusterStop) -> tuple[VShiftTrip, 
     return trip_a, trip_b
 
 
+def _cut_cluster_stop(trip: VShiftTrip, cut: CutCandidate) -> ClusterStop | None:
+    """La fermata intermedia di un taglio intra-corsa dentro la corsa (per
+    stop_id e stop_sequence, poi solo per stop_id); None se non c'è."""
+    for cs in trip.cluster_stops:
+        if cs.stop_id == cut.stop_id and cs.stop_sequence == cut.stop_sequence:
+            return cs
+    for cs in trip.cluster_stops:
+        if cs.stop_id == cut.stop_id:
+            return cs
+    return None
+
+
 def _split_trips_for_cut(block: VehicleBlock, cut: CutCandidate) -> tuple[list[VShiftTrip], list[VShiftTrip]]:
     """Genera left_trips e right_trips per un taglio, gestendo sia inter che intra."""
     trips = block.trips
@@ -1859,18 +1871,7 @@ def _split_trips_for_cut(block: VehicleBlock, cut: CutCandidate) -> tuple[list[V
     else:
         # Taglio INTRA: spezza trips[index] al stop_sequence
         trip = trips[cut.index]
-        # Trova il ClusterStop corrispondente
-        cs_match = None
-        for cs in trip.cluster_stops:
-            if cs.stop_id == cut.stop_id and cs.stop_sequence == cut.stop_sequence:
-                cs_match = cs
-                break
-        if cs_match is None:
-            # Fallback: cerca per stop_id
-            for cs in trip.cluster_stops:
-                if cs.stop_id == cut.stop_id:
-                    cs_match = cs
-                    break
+        cs_match = _cut_cluster_stop(trip, cut)
         if cs_match is None:
             # Non trovato — fallback a inter
             log(f"  WARN: intra cut stop_id={cut.stop_id} not found in trip {trip.trip_id}, fallback inter")
@@ -1880,6 +1881,71 @@ def _split_trips_for_cut(block: VehicleBlock, cut: CutCandidate) -> tuple[list[V
         left_trips = list(trips[:cut.index]) + [trip_a]
         right_trips = [trip_b] + list(trips[cut.index + 1:])
         return left_trips, right_trips
+
+
+def _cut_order_key(c: CutCandidate) -> tuple[int, int, int]:
+    """Ordine temporale di due tagli sullo stesso blocco: per indice; a pari
+    indice l'intra (dentro la corsa) viene prima dell'inter (dopo la corsa)."""
+    return (c.index, 0 if c.cut_type == "intra" else 1, c.time_min)
+
+
+def _split_trips_for_two_cuts(block: VehicleBlock, c1: CutCandidate, c2: CutCandidate,
+                              ) -> tuple[list[VShiftTrip], list[VShiftTrip], list[VShiftTrip]]:
+    """I tre pezzi di un blocco con DUE tagli (inter o intra, anche sulla stessa
+    corsa): ogni corsa — o ciascuna metà di una corsa spezzata — finisce in
+    esattamente un pezzo. Prima di questo helper la seconda metà della corsa
+    spezzata dal primo taglio intra non entrava in nessun pezzo: la guidava
+    nessuno, il pezzo di mezzo partiva dalla corsa successiva (montante 15′
+    dopo l'arrivo al capolinea sbagliato, bus incustodito oltre il limite) e
+    consegna/ritiro dell'auto aziendale finivano in nodi diversi."""
+    trips = list(block.trips)
+    c1, c2 = sorted((c1, c2), key=_cut_order_key)
+    i, j = c1.index, c2.index
+
+    def halves(idx: int, cut: CutCandidate, trip: VShiftTrip | None = None):
+        # la fermata si cerca sulla corsa ORIGINALE (le metà non portano le
+        # fermate-cluster); si spezza la corsa o la sua metà destra
+        src = trips[idx]
+        cs = _cut_cluster_stop(src, cut) if cut.cut_type == "intra" else None
+        if cs is None:
+            return None
+        t = trip if trip is not None else src
+        if trip is not None and not (t.departure_min < cs.arrival_min < t.arrival_min):
+            return None
+        return _split_trip_at_stop(t, cs)
+
+    h1 = halves(i, c1)
+    if i == j:
+        if h1 is None:
+            # inter+inter sullo stesso indice (o intra non risolvibile): un solo taglio
+            left, right = _split_trips_for_cut(block, c2)
+            return left, [], right
+        a1, b1 = h1
+        left = trips[:i] + [a1]
+        if c2.cut_type == "intra":
+            h2 = halves(i, c2, b1)   # la seconda fermata sta nella metà destra
+            if h2 is not None:
+                a2, b2 = h2
+                return left, [a2], [b2] + trips[i + 1:]
+        # intra + inter sulla stessa corsa: il mezzo è la metà destra
+        return left, [b1], trips[i + 1:]
+
+    if h1 is not None:
+        a1, b1 = h1
+        left = trips[:i] + [a1]
+        mid = [b1] + trips[i + 1:j]
+    else:
+        left = trips[:i + 1]
+        mid = trips[i + 1:j]
+    h2 = halves(j, c2)
+    if h2 is not None:
+        a2, b2 = h2
+        mid = mid + [a2]
+        right = [b2] + trips[j + 1:]
+    else:
+        mid = mid + [trips[j]]
+        right = trips[j + 1:]
+    return left, mid, right
 
 
 def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate | None:
@@ -1973,8 +2039,15 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     if c1_raw.index > c2_raw.index:
                         c1_raw, c2_raw = c2_raw, c1_raw
 
-                    mid_start = piece_start_min(b, c1_raw.index)
-                    mid_end = b.trips[c2_raw.index].arrival_min
+                    if _cut_order_key(c1_raw) > _cut_order_key(c2_raw):
+                        c1_raw, c2_raw = c2_raw, c1_raw
+                    if c1_raw.cut_type == "inter" and c2_raw.cut_type == "inter" \
+                            and c1_raw.index == c2_raw.index:
+                        continue   # stesso taglio due volte
+                    # Il mezzo va dal primo taglio (fermata intermedia se intra,
+                    # altrimenti presa in carico dopo la corsa) al secondo.
+                    mid_start = c1_raw.time_min if c1_raw.cut_type == "intra" else piece_start_min(b, c1_raw.index)
+                    mid_end = c2_raw.time_min if c2_raw.cut_type == "intra" else b.trips[c2_raw.index].arrival_min
                     mid_work = max(0, mid_end - mid_start)
 
                     for seg_first, seg_last, w in [
@@ -2007,24 +2080,10 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
 
             if best_pair_cuts:
                 c1, c2 = best_pair_cuts
-                # Prima split per c1
-                left_trips_c1, rest_after_c1 = _split_trips_for_cut(b, c1)
-                # Per c2 dobbiamo lavorare su rest_after_c1, ma c2.index è relativo al blocco originale.
-                # Approccio semplice: ricostruiamo la split per c2 dal blocco originale.
-                _, right_trips_c2 = _split_trips_for_cut(b, c2)
-                # Mid trips: tutto ciò che c'è tra c1 e c2
-                # Per semplicità, se entrambi sono inter, usiamo i trip originali
-                if c1.cut_type == "inter" and c2.cut_type == "inter":
-                    mid_trips = b.trips[c1.index + 1:c2.index + 1]
-                else:
-                    # Per intra, usiamo il blocco tra la fine del left e l'inizio del right
-                    # c2 intra: right_trips_c2 = [metà destra] + corse dopo; il
-                    # mezzo prende le corse fra i due tagli PIÙ la metà sinistra
-                    # della corsa spezzata (altrimenti resta senza conducente)
-                    left_c2, _right_c2 = _split_trips_for_cut(b, c2)
-                    mid_trips = left_c2[len(left_trips_c1):]
-                    if not mid_trips:
-                        mid_trips = rest_after_c1
+                # Tre pezzi da due tagli: nessuna corsa (o metà corsa) resta fuori
+                left_trips_c1, mid_trips, right_trips_c2 = _split_trips_for_two_cuts(b, c1, c2)
+                if not right_trips_c2:
+                    right_trips_c2, mid_trips = mid_trips, []
 
                 seg1 = _make_segment(b.vehicle_id, b.vehicle_type, left_trips_c1, "first", c1.index, clusters, block=b)
                 segs = [seg1]
