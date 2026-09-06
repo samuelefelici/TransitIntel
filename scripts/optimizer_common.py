@@ -791,6 +791,16 @@ class Arc:
     # Penalità VCSP (EUR): costo-ombra dal CSP sui pairing che generano blocchi
     # difficili da tagliare in turni guida legali. 0 = nessun feedback.
     penalty_eur: float = 0.0
+    # Rientro in deposito a metà turno (riposizionamento vietato o sosta troppo
+    # lunga): le DUE tratte reali capolinea→deposito e deposito→capolinea, con i
+    # loro tempi e km (dall'archivio fuorilinea); dh_km/dh_min ne sono la somma.
+    # Prima il rientro era mostrato come metà del tempo del diretto per parte.
+    via_depot: bool = False
+    leg_in_min: int = 0
+    leg_out_min: int = 0
+    leg_in_km: float = 0.0
+    leg_out_km: float = 0.0
+    depot_id: str = ""
 
 
 @dataclass

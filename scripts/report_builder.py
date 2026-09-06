@@ -513,7 +513,23 @@ def render_vehicles(d: dict) -> str:
         if arch.get("depotLegsOutsideArchive"):
             txt += (f' {fmt_n(arch.get("depotLegsOutsideArchive"))} tratte deposito↔capolinea non hanno un arco in archivio e sono stimate '
                     f'(km stradali ÷ velocità media + 5′)' + (f': {esc("; ".join(str(m) for m in missing[:8]))}' if missing else "") + ".")
+        if arch.get("mirroredPairs"):
+            txt += f' I fuorilinea valgono lo stesso tempo in andata e ritorno: {fmt_n(arch.get("mirroredPairs"))} versi senza arco proprio prendono tempo e km dal verso opposto.'
         out.append(para(txt))
+    props = vm.get("serviceReturnProposals") if isinstance(vm.get("serviceReturnProposals"), list) else []
+    if props:
+        out.append("<h4>Rientri a vuoto che potrebbero diventare corse di linea</h4>")
+        out.append(para("Le corse in linea sono pagate dal contratto di servizio, i chilometri a vuoto no: dopo queste corse la vettura rientra a vuoto "
+                        "mentre la linea ha una corsa nella direzione opposta che parte dallo stesso capolinea. Sono proposte da valutare in Planning Studio "
+                        "(la corsa va creata dall'operatore), con i km a vuoto risparmiati e i km di servizio aggiunti."))
+        rows = []
+        for x in props[:25]:
+            rows.append((x.get("vehicleId") or "–", f'{x.get("routeName") or ""} {x.get("variantCode") or ""}'.strip(),
+                         f'{x.get("fromStop") or "–"} → {x.get("toStop") or "–"}',
+                         x.get("departTime") or hm(x.get("departMin")), x.get("arriveTime") or hm(x.get("arriveMin")),
+                         x.get("cadenceDepartTime") or "–", fmt_n(x.get("serviceKm"), 1), fmt_n(x.get("deadheadKmSaved"), 1),
+                         "fine turno" if x.get("kind") == "final" else "a metà turno"))
+        out.append(table(["Vettura", "Linea", "Corsa proposta", "Partenza", "Arrivo", "Per cadenza", "km in linea", "km a vuoto in meno", "Dove"], rows, numeric_from=6))
     if dh_rows:
         out.append(para(f'{len(dh_rows)} movimenti a vuoto per {fmt_n(sum(r[6] for r in dh_rows), 1)} km: ' +
                         ", ".join(f'{esc(k)} {fmt_n(v, 1)} km' for k, v in agg.most_common()) + "."))
@@ -523,6 +539,26 @@ def render_vehicles(d: dict) -> str:
     else:
         out.append(para("Nessun fuorilinea fra corse: le vetture rientrano solo a fine servizio."))
     return "".join(out)
+
+
+def _pct_caps_value(pc: dict | None) -> str:
+    if not isinstance(pc, dict) or not pc.get("byType"):
+        return "–"
+    return "rispettati" if all(v.get("ok", True) for v in pc["byType"].values()) else "sforati"
+
+
+def _pct_caps_text(pc: dict | None) -> str:
+    """Tetti percentuali dei tipi di turno: tetto, massimo ammesso con la
+    tolleranza di frazione di turno, conteggio; se il solver ha dovuto
+    ripiegare sui tetti flessibili lo si dice."""
+    if not isinstance(pc, dict) or not pc.get("byType"):
+        return "nessun tetto percentuale configurato"
+    parts = []
+    for k, v in pc["byType"].items():
+        parts.append(f'{k} {fmt_n(v.get("count"))}/{fmt_n(v.get("total"))} ({v.get("pct")}%) su tetto {v.get("maxPct")}% = max {fmt_n(v.get("allowed"))}'
+                     + ("" if v.get("ok", True) else " · SFORATO"))
+    tail = f' · tolleranza {pc.get("toleranceShifts", 0.9)} turno' + (" · tetti rigidi non soddisfacibili: ripiego sui tetti flessibili" if pc.get("relaxed") else "")
+    return " · ".join(parts) + tail
 
 
 def _handover_modes_text(hm_: dict | None) -> str:
@@ -555,6 +591,7 @@ def render_crew(d: dict) -> str:
              ("Lavoro medio", hm(sum(st["work"]) / len(st["work"])), f'min {hm(min(st["work"]))} · max {hm(max(st["work"]))}'),
              ("Nastro medio", hm(sum(st["nastro"]) / len(st["nastro"])), f'min {hm(min(st["nastro"]))} · max {hm(max(st["nastro"]))}'),
              ("Cambi in linea", fmt_n(st["cambi"]), _handover_modes_text(cs.get("handoverModes"))),
+             ("Tetti per tipo", _pct_caps_value(cs.get("pctCaps")), _pct_caps_text(cs.get("pctCaps"))),
              ("Violazioni", fmt_n(st["violations"]), f'{st["warnings"]} avvisi')]
     if cs.get("companyCarsMaxSimultaneous") is not None:
         _conf = cs.get("companyCarsConflicts") or 0

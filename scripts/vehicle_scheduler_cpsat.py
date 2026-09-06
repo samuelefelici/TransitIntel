@@ -388,11 +388,13 @@ _NORMATIVA_DROPPED = {"lineChange": 0, "internalDeadhead": 0}
 _VIA_DEPOT_ARCS = {"count": 0, "forbiddenDirect": 0}
 
 
-def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float, int] | None:
-    """Riposizionamento capolinea→deposito→capolinea quando la coppia diretta è
-    vietata: (km, minuti) del deposito più comodo, o None se nessun deposito ha
-    entrambe le tratte ammesse."""
-    best: tuple[float, int] | None = None
+def _via_depot_legs(ti: Trip, tj: Trip, depots: list[dict] | None) -> dict | None:
+    """Rientro in deposito fra due corse (riposizionamento diretto vietato, o
+    sosta troppo lunga): le DUE tratte reali capolinea→deposito e
+    deposito→capolinea del deposito più comodo, con tempi e km presi
+    dall'archivio fuorilinea (o stimati se la tratta non c'è). None se nessun
+    deposito ha entrambe le tratte ammesse."""
+    best: dict | None = None
     for d in depots or []:
         try:
             lat, lon = float(d["lat"]), float(d["lon"])
@@ -402,10 +404,154 @@ def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float
         k2, m2 = estimate_deadhead(lat, lon, tj.first_stop_lat, tj.first_stop_lon, tj.category)
         if k1 >= DH_FORBIDDEN_KM or k2 >= DH_FORBIDDEN_KM:
             continue
-        cand = (round(k1 + k2, 1), int(m1 + m2))
-        if best is None or cand[0] < best[0]:
+        cand = {"km": round(k1 + k2, 1), "min": int(m1 + m2), "kmIn": round(k1, 1), "minIn": int(m1),
+                "kmOut": round(k2, 1), "minOut": int(m2), "depotId": str(d.get("id") or "")}
+        if best is None or cand["km"] < best["km"]:
             best = cand
     return best
+
+
+def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float, int] | None:
+    """(km, minuti) complessivi del rientro via deposito (vedi _via_depot_legs)."""
+    legs = _via_depot_legs(ti, tj, depots)
+    return (legs["km"], legs["min"]) if legs else None
+
+
+def service_return_proposals(shifts: list[VehicleShift], trips: list[Trip], rates: VehicleCostRates,
+                             depots: list[dict] | None, max_items: int = 40) -> list[dict]:
+    """Rientri a vuoto che potrebbero diventare CORSE DI LINEA.
+
+    Le corse in linea sono pagate dal contratto di servizio, i km a vuoto no:
+    quando un bus, dopo una corsa della linea L al capolinea A, rientra in
+    deposito a vuoto (a metà turno o a fine turno) mentre L ha una corsa nella
+    direzione opposta che parte da A, conviene fargli fare quella corsa di
+    ritorno (A→B, percorrenza tipica della linea) e rientrare da B. Qui si
+    elencano questi casi con orario proposto, km a vuoto risparmiati e km di
+    servizio aggiunti; la corsa va poi creata in Planning Studio (è una
+    proposta, non una scrittura)."""
+    import statistics
+    by_id: dict[str, Trip] = {t.trip_id: t for t in trips}
+    # pattern di ritorno: (linea, capolinea di partenza) → corse che partono da lì
+    by_route_from: dict[tuple[str, str], list[Trip]] = {}
+    for t in trips:
+        by_route_from.setdefault((t.route_id, t.first_stop_id), []).append(t)
+
+    def _dh(a_lat, a_lon, b_lat, b_lon, cat) -> tuple[float, int] | None:
+        km, mn = estimate_deadhead(a_lat, a_lon, b_lat, b_lon, cat)
+        return None if km >= DH_FORBIDDEN_KM else (km, mn)
+
+    def _depot(did: str | None) -> dict | None:
+        for d in depots or []:
+            if did and str(d.get("id") or "") == str(did):
+                return d
+        return (depots or [None])[0]
+
+    out: list[dict] = []
+    for s in shifts:
+        entries = s.trips
+        for k, e in enumerate(entries):
+            is_mid = e.type == "depot"
+            is_final = e.type == "deadhead" and getattr(e, "depot_leg", None) == "in"
+            if not (is_mid or is_final):
+                continue
+            prev = next((x for x in reversed(entries[:k]) if x.type == "trip"), None)
+            if prev is None or prev.trip_id not in by_id:
+                continue
+            pt = by_id[prev.trip_id]
+            # corse della stessa linea che partono dal capolinea di arrivo, in direzione opposta
+            pool = [x for x in by_route_from.get((pt.route_id, pt.last_stop_id), [])
+                    if x.direction_id != pt.direction_id]
+            if not pool:
+                continue
+            run_min = int(round(statistics.median(max(1, x.arrival_min - x.departure_min) for x in pool)))
+            dest_ids = [x.last_stop_id for x in pool]
+            dest_id = max(set(dest_ids), key=dest_ids.count)
+            ref = next(x for x in pool if x.last_stop_id == dest_id)
+            variants = [x.variant_code for x in pool if x.variant_code]
+            variant = max(set(variants), key=variants.count) if variants else ""
+            svc_km = round(statistics.median(_estimate_trip_km(x, rates) for x in pool), 1)
+            depart = pt.arrival_min + MIN_LAYOVER
+            arrive = depart + run_min
+            # cadenza esistente della direzione di ritorno (es. tutte al minuto :46)
+            mins = sorted({x.departure_min % 60 for x in pool})
+            cadence = None
+            if len(mins) == 1:
+                m = mins[0]
+                cadence = depart if depart % 60 == m else depart + ((m - depart % 60) % 60)
+            # una corsa di ritorno già esiste entro ±10′: il piano la prevede, il VSP non l'ha concatenata
+            if any(abs(x.departure_min - depart) <= 10 for x in pool):
+                continue
+            cat = pt.category
+            deadline = None
+            kind = "final" if is_final else "midBlock"
+            nxt = next((x for x in entries[k + 1:] if x.type == "trip"), None) if is_mid else None
+            saved_km = 0.0
+            saved_min = 0
+            note = ""
+            if is_mid:
+                if nxt is None or nxt.trip_id not in by_id:
+                    continue
+                nt = by_id[nxt.trip_id]
+                deadline = nt.departure_min
+                # oggi: A→deposito→C (km delle due tratte); domani: A→B in linea, poi B→C (o B→deposito→C)
+                today = float(getattr(e, "deadhead_km", 0) or 0), int(getattr(e, "deadhead_min", 0) or 0)
+                direct = _dh(ref.last_stop_lat, ref.last_stop_lon, nt.first_stop_lat, nt.first_stop_lon, cat)
+                feasible = False
+                if direct and arrive + max(direct[1], MIN_LAYOVER) <= deadline:
+                    feasible = True
+                    saved_km = round(today[0] - direct[0], 1)
+                    saved_min = today[1] - direct[1]
+                    note = f"poi vuoto {ref.last_stop_name} → {nt.first_stop_name} ({direct[1]}′)"
+                else:
+                    d = _depot(getattr(e, "depot_id", None) or s.residenza_depot_id)
+                    if d is not None:
+                        l1 = _dh(ref.last_stop_lat, ref.last_stop_lon, float(d["lat"]), float(d["lon"]), cat)
+                        l2 = _dh(float(d["lat"]), float(d["lon"]), nt.first_stop_lat, nt.first_stop_lon, cat)
+                        if l1 and l2 and arrive + l1[1] + l2[1] <= deadline:
+                            feasible = True
+                            saved_km = round(today[0] - l1[0] - l2[0], 1)
+                            saved_min = today[1] - l1[1] - l2[1]
+                            note = f"poi rientro in deposito da {ref.last_stop_name} ({l1[1]}′) e nuova uscita ({l2[1]}′)"
+                if not feasible:
+                    continue
+            else:
+                d = _depot(s.residenza_depot_id)
+                if d is None:
+                    continue
+                l_new = _dh(ref.last_stop_lat, ref.last_stop_lon, float(d["lat"]), float(d["lon"]), cat)
+                if l_new is None:
+                    continue
+                saved_km = round(float(getattr(e, "deadhead_km", 0) or 0) - l_new[0], 1)
+                saved_min = int(getattr(e, "deadhead_min", 0) or 0) - l_new[1]
+                note = f"poi rientro in deposito da {ref.last_stop_name} ({l_new[1]}′)"
+            out.append({
+                "vehicleId": s.vehicle_id,
+                "kind": kind,
+                "afterTripId": pt.trip_id,
+                "routeId": pt.route_id,
+                "routeName": prev.route_name or pt.route_name,
+                "variantCode": variant or None,
+                "fromStopId": pt.last_stop_id, "fromStop": pt.last_stop_name,
+                "toStopId": dest_id, "toStop": ref.last_stop_name,
+                "departMin": depart, "departTime": min_to_time(depart),
+                "arriveMin": arrive, "arriveTime": min_to_time(arrive),
+                "cadenceDepartTime": min_to_time(cadence) if (cadence is not None and cadence != depart
+                                                              and (deadline is None or cadence + run_min <= deadline - MIN_LAYOVER)) else None,
+                "runMin": run_min,
+                "serviceKm": svc_km,
+                "deadheadKmSaved": saved_km,
+                "deadheadMinSaved": saved_min,
+                "nextTripId": nxt.trip_id if nxt is not None else None,
+                "note": note,
+                "description": (f"Vettura {s.vehicle_id}: dopo la corsa {prev.route_name or pt.route_name} delle "
+                                f"{min_to_time(pt.departure_min)} ({pt.first_stop_name} → {pt.last_stop_name}) rientra a vuoto; "
+                                f"potrebbe fare la corsa {prev.route_name or pt.route_name}{(' ' + variant) if variant else ''} "
+                                f"{pt.last_stop_name} → {ref.last_stop_name} alle {min_to_time(depart)}"
+                                + (f" (o alle {min_to_time(cadence)} per la cadenza)" if cadence is not None and cadence != depart else "")
+                                + f": +{svc_km} km in linea, −{saved_km} km a vuoto; {note}."),
+            })
+    out.sort(key=lambda x: (-float(x["deadheadKmSaved"]), x["departMin"]))
+    return out[:max_items]
 
 
 def build_compatible_arcs_fast(
@@ -505,16 +651,26 @@ def build_compatible_arcs_fast(
                     tj.first_stop_lat, tj.first_stop_lon, ti.category)
 
             via_depot = False
+            legs: dict | None = None
             if dh_km >= DH_FORBIDDEN_KM:
                 # Riposizionamento diretto VIETATO dall'archivio fuorilinea: il
                 # bus può comunque rientrare in deposito e riuscire, se il
                 # tempo basta (tratte deposito↔capolinea ammesse).
                 _VIA_DEPOT_ARCS["forbiddenDirect"] += 1
-                alt = _via_depot_leg(ti, tj, depots)
-                if alt is None:
+                legs = _via_depot_legs(ti, tj, depots)
+                if legs is None:
                     continue
-                dh_km, dh_min = alt
+                dh_km, dh_min = legs["km"], legs["min"]
                 via_depot = True
+            elif tj.departure_min - ti.arrival_min > rates.max_idle_at_terminal and depots:
+                # Sosta troppo lunga al capolinea: il bus rientra in deposito e
+                # riesce. Km e minuti sono quelli delle DUE tratte reali (prima
+                # si contava il diretto e lo si mostrava diviso a metà).
+                legs = _via_depot_legs(ti, tj, depots)
+                if legs is not None and legs["min"] <= tj.departure_min - ti.arrival_min:
+                    dh_km, dh_min = legs["km"], legs["min"]
+                else:
+                    legs = None
             if dh_km > MAX_DEADHEAD_KM and not via_depot:
                 continue
             # NORMATIVA: VIETA_CAMBI_LINEA / VIETA_VAV_INTERNI (filtri hard)
@@ -546,7 +702,13 @@ def build_compatible_arcs_fast(
             if via_depot:
                 _VIA_DEPOT_ARCS["count"] += 1
             arcs.append(Arc(i=i, j=j, dh_km=round(dh_km, 1), dh_min=dh_min,
-                            gap_min=gap, depot_return=depot_return))
+                            gap_min=gap, depot_return=depot_return,
+                            via_depot=via_depot,
+                            leg_in_min=int(legs["minIn"]) if legs else 0,
+                            leg_out_min=int(legs["minOut"]) if legs else 0,
+                            leg_in_km=float(legs["kmIn"]) if legs else 0.0,
+                            leg_out_km=float(legs["kmOut"]) if legs else 0.0,
+                            depot_id=str(legs["depotId"]) if legs else ""))
             # FIX-TIGHT: log diagnostico per archi tight (gap<MIN_LAYOVER) sullo
             # stesso capolinea — sono ESATTAMENTE quelli che prima venivano persi.
             if (same_id or same_cluster) and gap < MIN_LAYOVER:
@@ -2331,14 +2493,22 @@ def chains_to_shifts(
                 prev_t = trips[prev_idx]
 
                 if arc and arc.depot_return:
-                    depot_dep = prev_t.arrival_min + max(1, arc.dh_min // 2)
-                    depot_arr = t.departure_min - max(1, arc.dh_min // 2)
+                    # Rientro e nuova uscita con i tempi delle due tratte reali
+                    # (archivio fuorilinea); se l'arco non le porta, metà del
+                    # tempo complessivo per parte (dati legacy).
+                    leg_in = int(getattr(arc, "leg_in_min", 0) or 0)
+                    leg_out = int(getattr(arc, "leg_out_min", 0) or 0)
+                    if leg_in <= 0 and leg_out <= 0:
+                        leg_in = leg_out = max(1, arc.dh_min // 2)
+                    depot_dep = prev_t.arrival_min + max(1, leg_in)
+                    depot_arr = t.departure_min - max(1, leg_out)
                     vs.trips.append(VShiftTrip(
                         type="depot", trip_id="", route_id="",
                         route_name="Rientro deposito", headsign=None,
                         departure_time=min_to_time(depot_dep),
                         arrival_time=min_to_time(depot_arr),
                         departure_min=depot_dep, arrival_min=depot_arr,
+                        deadhead_km=arc.dh_km, deadhead_min=arc.dh_min,
                         # UX: da dove a dove (rientro e nuova uscita dallo stesso deposito)
                         first_stop_name=prev_t.last_stop_name,
                         last_stop_name=t.first_stop_name,
@@ -3394,6 +3564,18 @@ def run(data: dict) -> dict:
         f"({vsp_analysis.get('costSpreadPct', 0):.1f}%)")
     log(f"  Total time: {elapsed_total:.1f}s / {time_limit}s budget")
 
+    # Corse di rientro in linea al posto dei rientri a vuoto (proposte)
+    try:
+        svc_return = service_return_proposals(shifts, trips, rates, depots_data)
+    except Exception as _e:  # mai far cadere il giro per una proposta
+        log(f"  [VSP-SERVICE-RETURN] analisi non riuscita: {_e}")
+        svc_return = []
+    if svc_return:
+        log(f"  [VSP-SERVICE-RETURN] {len(svc_return)} rientri a vuoto che potrebbero diventare corse di linea "
+            f"(km a vuoto risparmiabili {round(sum(float(x['deadheadKmSaved']) for x in svc_return), 1)})")
+        for x in svc_return[:8]:
+            log(f"    {x['description']}")
+
     # Metrics
     total_dh_km = sum(s.total_deadhead_km for s in shifts)
     total_dh_min = sum(s.total_deadhead_min for s in shifts)
@@ -3420,6 +3602,7 @@ def run(data: dict) -> dict:
         "deadheadMatrixPairs": dh_pairs,
         "deadheadArchive": dh_archive,
         "viaDepotArcs": dict(_VIA_DEPOT_ARCS),
+        "serviceReturnProposals": svc_return,
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
         "depotAssignment": depot_assignment,
