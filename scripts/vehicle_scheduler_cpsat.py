@@ -417,6 +417,94 @@ def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float
     return (legs["km"], legs["min"]) if legs else None
 
 
+# REGOLA DEL GIRO (linee radiali): per ogni corsa che arriva a un capolinea
+# PERIFERICO, l'indice della corsa di ritorno "naturale" (stessa linea,
+# direzione opposta, in partenza dallo stesso capolinea o cluster entro
+# turnaround_max_gap). Saltarla, o chiudere lì il turno macchina, costa
+# per_missed_turnaround. Fermate/cluster del centro (nodi di interscambio):
+# lì l'interlinea è normale e la regola non si applica.
+_TURNAROUND_NEXT: dict[int, int] = {}
+_CENTER_STOP_IDS: set[str] = set()
+_TURNAROUND_STATS: dict = {"natural": 0, "peripheralArrivals": 0}
+
+
+def set_center_stops(stop_ids) -> None:
+    _CENTER_STOP_IDS.clear()
+    _CENTER_STOP_IDS.update(str(x) for x in (stop_ids or []) if x)
+
+
+def is_center_stop(stop_id: str) -> bool:
+    if stop_id in _CENTER_STOP_IDS:
+        return True
+    co = _LAST_CLUSTER_OF
+    if co and stop_id in co:
+        cid = co[stop_id]
+        return any(co.get(c) == cid for c in _CENTER_STOP_IDS)
+    return False
+
+
+def compute_natural_turnarounds(trips: list[Trip], arcs_lookup: dict[tuple[int, int], Arc],
+                                max_gap: int) -> dict[int, int]:
+    """Per ogni corsa i che arriva a un capolinea periferico: la prima corsa j
+    della stessa linea, direzione opposta, in partenza da quel capolinea (stesso
+    stop o stesso cluster) entro max_gap, se l'arco (i, j) esiste."""
+    out: dict[int, int] = {}
+    _TURNAROUND_STATS["natural"] = 0
+    _TURNAROUND_STATS["peripheralArrivals"] = 0
+    co = _LAST_CLUSTER_OF
+    by_route: dict[str, list[Trip]] = {}
+    for t in trips:
+        by_route.setdefault(t.route_id, []).append(t)
+    for i, ti in enumerate(trips):
+        if is_center_stop(ti.last_stop_id):
+            continue
+        _TURNAROUND_STATS["peripheralArrivals"] += 1
+        best: Trip | None = None
+        for tj in by_route.get(ti.route_id, []):
+            if tj.idx == ti.idx or tj.direction_id == ti.direction_id:
+                continue
+            gap = tj.departure_min - ti.arrival_min
+            if gap < 0 or gap > max_gap:
+                continue
+            same_place = (tj.first_stop_id == ti.last_stop_id
+                          or (co and ti.last_stop_id in co and tj.first_stop_id in co and co[ti.last_stop_id] == co[tj.first_stop_id])
+                          or (abs(tj.first_stop_lat - ti.last_stop_lat) < 0.001 and abs(tj.first_stop_lon - ti.last_stop_lon) < 0.001))
+            if not same_place or (i, tj.idx) not in arcs_lookup:
+                continue
+            if best is None or tj.departure_min < best.departure_min:
+                best = tj
+        if best is not None:
+            out[i] = best.idx
+    _TURNAROUND_STATS["natural"] = len(out)
+    return out
+
+
+def turnaround_report(chains: list[list[int]], trips: list[Trip], max_items: int = 15) -> dict:
+    """Quanti giri naturali sono stati fatti e quanti saltati (arco diverso o
+    fine turno macchina sul capolinea periferico) nelle catene finali."""
+    chained = 0
+    missed: list[dict] = []
+    for chain in chains:
+        for k, i in enumerate(chain):
+            j = _TURNAROUND_NEXT.get(i)
+            if j is None:
+                continue
+            nxt = chain[k + 1] if k + 1 < len(chain) else None
+            if nxt == j:
+                chained += 1
+                continue
+            ti, tj = trips[i], trips[j]
+            missed.append({
+                "afterTripId": ti.trip_id, "routeName": ti.route_name, "atStop": ti.last_stop_name,
+                "arriveTime": min_to_time(ti.arrival_min), "returnTripId": tj.trip_id,
+                "returnDepartTime": min_to_time(tj.departure_min),
+                "insteadOf": ("fine turno macchina" if nxt is None else
+                              f"{trips[nxt].route_name} {min_to_time(trips[nxt].departure_min)} da {trips[nxt].first_stop_name}"),
+            })
+    return {"natural": len(_TURNAROUND_NEXT), "peripheralArrivals": _TURNAROUND_STATS.get("peripheralArrivals", 0),
+            "chained": chained, "missed": len(missed), "missedList": missed[:max_items]}
+
+
 def service_return_proposals(shifts: list[VehicleShift], trips: list[Trip], rates: VehicleCostRates,
                              depots: list[dict] | None, max_items: int = 40) -> list[dict]:
     """Rientri a vuoto che potrebbero diventare CORSE DI LINEA.
@@ -829,6 +917,11 @@ def precompute_arc_costs(
         if rates.cost_per_line_change > 0 and ti.route_id != tj.route_id:
             cost_euro += rates.cost_per_line_change
 
+        # REGOLA DEL GIRO: dal capolinea periferico si riparte con la corsa di
+        # ritorno della stessa linea; ogni altro arco costa il giro saltato
+        if rates.per_missed_turnaround > 0 and _TURNAROUND_NEXT.get(a.i) not in (None, a.j):
+            cost_euro += rates.per_missed_turnaround
+
         # NB: niente max(0, …). Il bonus monolinea (sottrattivo) deve poter
         # rendere un arco "same-route" più economico di uno neutro: troncare a 0
         # azzererebbe il segnale di preferenza. CP-SAT gestisce coefficienti
@@ -1065,6 +1158,12 @@ def solve_vsp_cost_based(
         cost_unit = arc_costs.get((a.i, a.j), 0)
         if cost_unit > 0:
             obj_terms.append(seq[(a.i, a.j)] * cost_unit)
+    # REGOLA DEL GIRO: chiudere il turno macchina su un capolinea periferico
+    # che ha la corsa di ritorno in partenza costa come saltare il giro
+    if rates.per_missed_turnaround > 0 and _TURNAROUND_NEXT:
+        end_cost = int(round(rates.per_missed_turnaround * COST_SCALE))
+        for i in _TURNAROUND_NEXT:
+            obj_terms.append(last[i] * end_cost)
 
     model.minimize(sum(obj_terms))
 
@@ -1721,11 +1820,20 @@ def chain_normativa_cost(chain: list[int], trips: list[Trip], rates: VehicleCost
       lontano dalle violazioni; il post-pass di split garantisce comunque il
       rispetto hard.
     """
+    turn_cost = 0.0
+    if rates.per_missed_turnaround > 0 and _TURNAROUND_NEXT:
+        for k, i in enumerate(chain):
+            j = _TURNAROUND_NEXT.get(i)
+            if j is None:
+                continue
+            nxt = chain[k + 1] if k + 1 < len(chain) else None
+            if nxt != j:
+                turn_cost += rates.per_missed_turnaround
     if (rates.cost_per_line_change <= 0 and rates.tripper_cost <= 0
             and rates.max_line_changes < 0 and rates.max_pieces_per_block <= 0
             and not rates.forbid_line_changes and not rates.forbid_internal_deadheads):
-        return 0.0
-    cost = 0.0
+        return turn_cost
+    cost = turn_cost
     line_changes = sum(1 for k in range(len(chain) - 1)
                        if trips[chain[k]].route_id != trips[chain[k + 1]].route_id)
     if rates.cost_per_line_change > 0:
@@ -3345,6 +3453,24 @@ def run(data: dict) -> dict:
             f"{_VIA_DEPOT_ARCS['count']} instradate via deposito")
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
 
+    # ── REGOLA DEL GIRO: capolinea del centro = nodi di interscambio PS ──
+    center_stops: list[str] = []
+    if isinstance(ps_clusters_raw, list):
+        kinds_present = any(isinstance(g, dict) and g.get("kind") for g in ps_clusters_raw)
+        for grp in ps_clusters_raw:
+            if not isinstance(grp, dict):
+                continue
+            if kinds_present and str(grp.get("kind") or "") != "interchange":
+                continue
+            center_stops.extend(str(x) for x in (grp.get("stopIds") or []) if x)
+    set_center_stops(center_stops)
+    _TURNAROUND_NEXT.clear()
+    _TURNAROUND_NEXT.update(compute_natural_turnarounds(trips, arcs_lookup, int(rates.turnaround_max_gap)))
+    if _TURNAROUND_NEXT:
+        log(f"  [VSP-GIRO] {len(_TURNAROUND_NEXT)} corse con ritorno naturale dal capolinea periferico "
+            f"(su {_TURNAROUND_STATS['peripheralArrivals']} arrivi periferici, {len(center_stops)} fermate del centro): "
+            f"saltarlo costa {rates.per_missed_turnaround:.0f} EUR")
+
     # ── VCSP: penalità d'arco dal feedback CSP (costi-ombra) ──
     # Formato input: data.arcPenalties = { "tripIdA|tripIdB": eur }. Applicate
     # come costo aggiuntivo sull'arco: il solver evita di ri-formare i pairing
@@ -3564,6 +3690,14 @@ def run(data: dict) -> dict:
         f"({vsp_analysis.get('costSpreadPct', 0):.1f}%)")
     log(f"  Total time: {elapsed_total:.1f}s / {time_limit}s budget")
 
+    # Regola del giro: quanti ritorni naturali fatti/saltati nelle catene finali
+    turnarounds = turnaround_report(improved_chains, trips)
+    if turnarounds.get("missed"):
+        log(f"  [VSP-GIRO] {turnarounds['chained']} giri fatti, {turnarounds['missed']} saltati:")
+        for m_ in turnarounds["missedList"][:8]:
+            log(f"    {m_['routeName']} arriva a {m_['atStop']} alle {m_['arriveTime']}: ritorno {m_['returnDepartTime']} "
+                f"non fatto, invece {m_['insteadOf']}")
+
     # Corse di rientro in linea al posto dei rientri a vuoto (proposte)
     try:
         svc_return = service_return_proposals(shifts, trips, rates, depots_data)
@@ -3603,6 +3737,7 @@ def run(data: dict) -> dict:
         "deadheadArchive": dh_archive,
         "viaDepotArcs": dict(_VIA_DEPOT_ARCS),
         "serviceReturnProposals": svc_return,
+        "turnarounds": turnarounds,
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
         "depotAssignment": depot_assignment,

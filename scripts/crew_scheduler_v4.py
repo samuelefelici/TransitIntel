@@ -353,7 +353,10 @@ def apply_fase2_overrides(cfg: dict) -> None:
     if "pctCapHard" in opt:
         PCT_CAP_HARD = opt["pctCapHard"] in (True, 1, "1", "true", "True", "on")
     PCT_CAP_TOLERANCE_SHIFTS = max(0.0, min(0.99, _num(opt, "pctCapToleranceShifts", PCT_CAP_TOLERANCE_SHIFTS, float)))
-    LAST_PCT_CAP.update({"hard": PCT_CAP_HARD, "toleranceShifts": PCT_CAP_TOLERANCE_SHIFTS, "relaxed": False})
+    LAST_PCT_CAP.update({"hard": PCT_CAP_HARD, "toleranceShifts": PCT_CAP_TOLERANCE_SHIFTS, "relaxed": False, "carCapRelaxed": False})
+    global CAR_CAP_HARD
+    if "carCapHard" in opt:
+        CAR_CAP_HARD = opt["carCapHard"] in (True, 1, "1", "true", "True", "on")
 
     scen = bds.get("scenari") or {}
     SCENARIO_TIME_FRACTION = _num(scen, "timeFraction", SCENARIO_TIME_FRACTION, float)
@@ -818,6 +821,7 @@ CUT_NASTRO_PENALTY_PER_MIN = 0.05
 CUT_SAME_ROUTE_PENALTY = 15.0
 CUT_NO_CLUSTER_PENALTY = 8.0
 CUT_SCORE_CAPOLINEA_BONUS = 5.0   # bonus per tagli al capolinea con sosta ≥ 15min
+CUT_DEPOT_BONUS = 10.0            # taglio al passaggio in deposito: niente auto, vettura mai incustodita
 
 # PAIR-AWARE: segmentazione alternativa in GARA con quella storica. I blocchi
 # lunghi vengono tagliati in pezzi abbastanza corti da potersi ACCOPPIARE in
@@ -1453,6 +1457,10 @@ def analyze_vehicle_block(
             score += CUT_SCORE_CLUSTER_BONUS
         else:
             score -= CUT_NO_CLUSTER_PENALTY
+        # Passaggio in deposito fra le due corse: il taglio ideale (chi smonta
+        # rientra col bus, chi monta esce col bus: niente auto, mai incustodita)
+        if _leg is not None and _leg.type == "depot":
+            score += CUT_DEPOT_BONUS + CUT_NO_CLUSTER_PENALTY
 
         # ── BDS Copertura Soste ──
         # Un gap coperto dalla copertura soste NON è un buon taglio (la sosta
@@ -2115,26 +2123,48 @@ def build_pair_aware_segments(
             end = trips[-1].arrival_min if j_to is None else trips[cands[j_to].index].arrival_min
             return end - start
 
+        # Guida del pezzo (fuorilinea compresi) dai cumulati dei candidati:
+        # un pezzo sopra il tetto di guida per ripresa è fortemente penalizzato
+        total_drive = (cands[0].left_driving_min + cands[0].right_driving_min) if cands else 0
+
+        def _piece_drive(i_from: int | None, j_to: int | None) -> int:
+            lo = 0 if i_from is None else cands[i_from].left_driving_min
+            hi = total_drive if j_to is None else cands[j_to].left_driving_min
+            return max(0, hi - lo)
+
+        def _pen_drive(i_from: int | None, j_to: int | None) -> float:
+            if MAX_GUIDA_RIPRESA <= 0:
+                return 0.0
+            d = _piece_drive(i_from, j_to)
+            return (d - MAX_GUIDA_RIPRESA) * 3.0 if d > MAX_GUIDA_RIPRESA else 0.0
+
+        if MAX_GUIDA_RIPRESA > 0 and total_drive > MAX_GUIDA_RIPRESA:
+            need = max(need, min(PAIR_MAX_PIECES, -(-total_drive // MAX_GUIDA_RIPRESA)))
+            if len(cands) < need - 1:
+                seg_map[b.vehicle_id] = legacy
+                seg_all.extend(legacy)
+                continue
+
         k_cuts = need - 1
         n = len(cands)
         NEG = float("-inf")
         best = [[NEG] * n for _ in range(k_cuts + 1)]
         back = [[-1] * n for _ in range(k_cuts + 1)]
         for j in range(n):
-            best[1][j] = cands[j].score - _pen(_piece_len(None, j))
+            best[1][j] = cands[j].score - _pen(_piece_len(None, j)) - _pen_drive(None, j)
         for k in range(2, k_cuts + 1):
             for j in range(n):
                 for i in range(j):
                     if best[k - 1][i] == NEG or cands[j].index <= cands[i].index:
                         continue
-                    v = best[k - 1][i] + cands[j].score - _pen(_piece_len(i, j))
+                    v = best[k - 1][i] + cands[j].score - _pen(_piece_len(i, j)) - _pen_drive(i, j)
                     if v > best[k][j]:
                         best[k][j], back[k][j] = v, i
         bj, bv = -1, NEG
         for j in range(n):
             if best[k_cuts][j] == NEG:
                 continue
-            v = best[k_cuts][j] - _pen(_piece_len(j, None))
+            v = best[k_cuts][j] - _pen(_piece_len(j, None)) - _pen_drive(j, None)
             if v > bv:
                 bv, bj = v, j
         if bj < 0:
@@ -2808,6 +2838,10 @@ def _car_events_pair(s1: Segment, s2: Segment, clusters: list[Cluster],
 # del tetto, un vincolo rigido renderebbe il modello infeasible senza dirlo).
 CAR_CAP_PENALTY_EUR = 3000
 _LAST_CAR_CAP_EXCESS_VARS: list = []
+# Tetto auto aziendali RIGIDO nel modello (vincolo inviolabile dell'operatore):
+# eccedenza vietata; se nessuno scenario è fattibile si ripiega nell'ordine
+# tetti percentuali (tolleranza) → tetto auto (penalità), dichiarandolo.
+CAR_CAP_HARD = True
 
 
 def _interval_peak(ivs: list[tuple[int, int]]) -> int:
@@ -2895,6 +2929,7 @@ def _build_cpsat_model(
     scenario_noise: float = 0.0,
     strategy: str = "balanced",
     hard_pct_caps: bool | None = None,
+    hard_car_cap: bool | None = None,
 ) -> tuple[cp_model.CpModel, dict, dict, dict]:
     """Costruisce un modello CP-SAT. Parametri:
     - scenario_noise: perturba i costi per esplorare soluzioni alternative
@@ -2904,6 +2939,8 @@ def _build_cpsat_model(
     """
     if hard_pct_caps is None:
         hard_pct_caps = PCT_CAP_HARD
+    if hard_car_cap is None:
+        hard_car_cap = CAR_CAP_HARD
     # tolleranza in centesimi di turno: 100·count ≤ pct·N + tol100
     tol100 = int(round(PCT_CAP_TOLERANCE_SHIFTS * 100))
     import random
@@ -3017,6 +3054,8 @@ def _build_cpsat_model(
                 continue
             exc = model.new_int_var(0, max(1, n_seg), f"car_exc_{tau}")
             model.add(sum(terms) <= MAX_COMPANY_CARS + exc)
+            if hard_car_cap:
+                model.add(exc == 0)   # vincolo inviolabile
             car_cap_terms.append(CAR_CAP_PENALTY_EUR * COST_SCALE * exc)
             _LAST_CAR_CAP_EXCESS_VARS.append(exc)
             n_constr += 1
@@ -3547,6 +3586,7 @@ def optimize_multi_scenario(
     clusters: list[Cluster],
     bds: BDSConfig,
     relax_pct_caps: bool = False,
+    relax_car_cap: bool = False,
 ) -> list[DriverDutyV3]:
     """Ottimizzazione multi-scenario: genera N scenari CP-SAT con parametri diversi,
     poi sceglie il migliore.
@@ -3670,6 +3710,7 @@ def optimize_multi_scenario(
             scenario_noise=params["noise"],
             strategy=params["strategy"],
             hard_pct_caps=PCT_CAP_HARD and not relax_pct_caps,
+            hard_car_cap=CAR_CAP_HARD and not relax_car_cap,
         )
 
         solver = cp_model.CpSolver()
@@ -3971,7 +4012,15 @@ def optimize_multi_scenario(
         LAST_PCT_CAP["relaxed"] = True
         log("[V4][PCT-CAP] nessuno scenario fattibile coi tetti percentuali RIGIDI: "
             "ripiego sui tetti flessibili (penalità), sforamento dichiarato")
-        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds, relax_pct_caps=True)
+        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds,
+                                       relax_pct_caps=True, relax_car_cap=relax_car_cap)
+    if best_duties is None and CAR_CAP_HARD and MAX_COMPANY_CARS > 0 and not relax_car_cap:
+        # Neanche coi tetti percentuali flessibili: l'ultimo ripiego è il tetto
+        # auto a penalità (sforamento dichiarato: companyCarsCapRelaxed).
+        LAST_PCT_CAP["carCapRelaxed"] = True
+        log("[V4][CAR-CAP] nessuno scenario fattibile col tetto auto RIGIDO: ripiego a penalità, sforamento dichiarato")
+        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds,
+                                       relax_pct_caps=True, relax_car_cap=True)
 
     if best_duties is None:
         log("Tutti gli scenari falliti -- fallback a greedy")
@@ -4463,6 +4512,8 @@ def serialize_output(
             # "relaxed" = nessuno scenario fattibile coi tetti rigidi
             "pctCaps": validation.get("pctCaps") if isinstance(validation, dict) else None,
             "pctCapRelaxed": bool(LAST_PCT_CAP.get("relaxed", False)),
+            "companyCarsCapHard": bool(CAR_CAP_HARD),
+            "companyCarsCapRelaxed": bool(LAST_PCT_CAP.get("carCapRelaxed", False)),
             "totalCambi": len(inline_handovers(handovers)),
             "totalInterCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'inter'),
             "totalIntraCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'intra'),
@@ -4478,6 +4529,14 @@ def serialize_output(
                 "unattendedMaxMin": max([int(h.unattended_min or 0) for h in inline_handovers(handovers)] or [0]),
                 "unattendedLimitMin": UNATTENDED_BUS_MAX,
                 "withUnattended": sum(1 for h in inline_handovers(handovers) if int(h.unattended_min or 0) > 0),
+                # chi sfora il limite (non dovrebbe succedere: diagnostica)
+                "overLimit": [
+                    {"vehicleId": h.vehicle_id, "atStop": h.at_stop, "atTime": min_to_time(h.at_min),
+                     "takenTime": min_to_time(h.incoming_seg_start), "unattendedMin": int(h.unattended_min or 0),
+                     "outgoing": h.outgoing_driver, "incoming": h.incoming_driver, "cutType": getattr(h, "cut_type", "inter")}
+                    for h in sorted(inline_handovers(handovers), key=lambda x: -int(x.unattended_min or 0))
+                    if int(h.unattended_min or 0) > UNATTENDED_BUS_MAX
+                ][:10],
             },
             # Auto aziendali per i cambi in linea. "Used" era il numero di BUS
             # distinti toccati dai turni (19/5 in card): ora è il numero di
