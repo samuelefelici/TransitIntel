@@ -4,9 +4,11 @@
  *  Sezione dedicata: genera gli archi con percorso REALE su strada
  *  (OSRM /route con geometria), li mostra su mappa e permette di
  *  modificarne percorso (via points) e tempi, o di DISEGNARNE uno a mano.
- *  Gli override (custom_min/custom_km e i percorsi reindirizzati
- *  source='manual') sono CONSUMATI dallo scheduling: service-program li
- *  applica alla matrice fuorilinea prima di lanciare il solver VSP/VCSP.
+ *  TUTTI gli archi sono CONSUMATI dallo scheduling: service-program usa per
+ *  ogni arco risolto sui nodi del giro il tempo custom_min (curato a mano)
+ *  altrimenti travel_min, e i km custom_km altrimenti road_km, al posto della
+ *  stima km/velocità + buffer; le coppie capolinea↔capolinea assenti sono
+ *  vietate, le tratte deposito senza arco restano stimate e vengono elencate.
  *
  *  REGOLA DELLE COPPIE: un fuorilinea esiste SOLO tra
  *    deposito ↔ capolinea · capolinea ↔ capolinea ·

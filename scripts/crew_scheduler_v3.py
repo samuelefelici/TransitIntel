@@ -1123,6 +1123,31 @@ class Handover:
     cut_type: str = "inter"   # "inter" (tra corse) | "intra" (dentro corsa)
     trip_id: str = ""         # trip_id della corsa spezzata (solo intra)
     route_name: str = ""      # nome linea (solo intra)
+    # Dove avviene: "inline" (al nodo di cambio) | "depot" (il bus rientra e
+    # riesce dal deposito con un altro conducente: nessun cambio in linea).
+    kind: str = "inline"
+    # Come arriva chi monta / come se ne va chi smonta: "car" (auto aziendale),
+    # "walk" (a piedi da/verso un altro bus allo stesso nodo), "depot".
+    incoming_mode: str = "car"
+    outgoing_mode: str = "car"
+    incoming_prev_vehicle: str = ""   # bus lasciato da chi monta (cambio a piedi)
+    outgoing_next_vehicle: str = ""   # bus preso da chi smonta (cambio a piedi)
+    unattended_min: int = 0           # minuti in cui il bus resta fermo senza conducente
+
+
+def _walk_partner(duty, seg, before: bool):
+    """Il pezzo dello stesso turno che precede (before) o segue seg SE il
+    passaggio fra i due è a piedi (bus diversi, stesso nodo, stacco breve)."""
+    segs = list(getattr(duty, "segments", None) or [])
+    try:
+        i = next(k for k, x in enumerate(segs) if x is seg)
+    except StopIteration:
+        return None
+    other = segs[i - 1] if (before and i > 0) else (segs[i + 1] if (not before and i + 1 < len(segs)) else None)
+    if other is None:
+        return None
+    ok = walk_change(other, seg) if before else walk_change(seg, other)
+    return other if ok else None
 
 
 def compute_handovers(
@@ -1161,19 +1186,26 @@ def compute_handovers(
             if duty_out.driver_id == duty_in.driver_id:
                 continue
             # Cambio bus IN DEPOSITO (rientro a metà blocco): il primo riporta il
-            # bus, il secondo lo prende lì. Non è un cambio in linea, niente auto.
-            if getattr(seg_out, "ends_at_depot", False) and getattr(seg_in, "starts_at_depot", False):
-                continue
+            # bus, il secondo lo prende lì. Non è un cambio in linea (niente auto,
+            # non conta fra i cambi) ma va tracciato nei due turni.
+            in_depot = bool(getattr(seg_out, "ends_at_depot", False) and getattr(seg_in, "starts_at_depot", False))
             
             # Il punto di cambio è alla fine del segmento uscente / inizio entrante
-            at_stop = seg_out.last_stop or seg_in.first_stop or "?"
-            cluster_id = seg_out.last_cluster or seg_in.first_cluster
+            at_stop = "Deposito" if in_depot else (seg_out.last_stop or seg_in.first_stop or "?")
+            cluster_id = None if in_depot else (seg_out.last_cluster or seg_in.first_cluster)
             
-            if not cluster_id:
+            if not cluster_id and not in_depot:
                 log(f"❌ Handover bus {vid} a '{at_stop}' ({min_to_time(seg_out.end_min)}) "
                     f"NON è in un cluster definito — SKIP! "
                     f"({duty_out.driver_id} → {duty_in.driver_id})")
                 continue  # non creare handover fuori cluster
+
+            # Come arriva chi monta e come se ne va chi smonta
+            in_prev = None if in_depot else _walk_partner(duty_in, seg_in, before=True)
+            out_next = None if in_depot else _walk_partner(duty_out, seg_out, before=False)
+            incoming_mode = "depot" if in_depot else ("walk" if in_prev is not None else "car")
+            outgoing_mode = "depot" if in_depot else ("walk" if out_next is not None else "car")
+            unattended = 0 if in_depot else max(0, int(seg_in.start_min) - int(seg_out.end_min))
             
             # Determina cut_type: se l'ultima corsa del seg_out e la prima del seg_in
             # hanno lo stesso trip_id → la corsa è stata spezzata (intra)
@@ -1200,10 +1232,97 @@ def compute_handovers(
                 cut_type=h_cut_type,
                 trip_id=h_trip_id,
                 route_name=h_route_name,
+                kind="depot" if in_depot else "inline",
+                incoming_mode=incoming_mode,
+                outgoing_mode=outgoing_mode,
+                incoming_prev_vehicle=str(getattr(in_prev, "vehicle_id", "") or "") if in_prev is not None else "",
+                outgoing_next_vehicle=str(getattr(out_next, "vehicle_id", "") or "") if out_next is not None else "",
+                unattended_min=unattended,
             ))
     
     handovers.sort(key=lambda h: h.at_min)
     return handovers
+
+
+def inline_handovers(handovers: list[Handover]) -> list[Handover]:
+    """Solo i cambi in linea (quelli in deposito si tracciano ma non contano)."""
+    return [h for h in handovers if getattr(h, "kind", "inline") != "depot"]
+
+
+def handover_texts(h: Handover, driver_id: str, cluster_names: dict[str, str]) -> tuple[str, str, str]:
+    """(descrizione, dettaglio, etichetta breve) del cambio visto dal turno
+    driver_id, nel formato del foglio turno: «In [Nodo] lascia/prende la
+    vettura [bus] al/dal turno [codice]»."""
+    is_out = (h.outgoing_driver == driver_id)
+    node = cluster_names.get(h.cluster or "", "") or h.at_stop or "?"
+    if getattr(h, "kind", "inline") == "depot":
+        node = "deposito"
+    other = h.incoming_driver if is_out else h.outgoing_driver
+    when_left = min_to_time(h.at_min)
+    when_taken = min_to_time(h.incoming_seg_start)
+    unattended = int(getattr(h, "unattended_min", 0) or 0)
+    if is_out:
+        desc = f"In {node} lascia la vettura {h.vehicle_id} al turno {other}"
+        mode = getattr(h, "outgoing_mode", "car")
+        parts = []
+        if h.kind == "depot":
+            parts.append(f"la riprende il turno {other} alle {when_taken}")
+        elif unattended > 0:
+            parts.append(f"vettura ferma senza conducente {unattended}′ ({when_left}→{when_taken})")
+        else:
+            parts.append(f"la prende subito alle {when_taken}")
+        if mode == "walk":
+            parts.append(f"prosegue a piedi sulla vettura {h.outgoing_next_vehicle}".rstrip())
+        elif mode == "car":
+            parts.append("rientra in deposito con auto aziendale")
+        label = f"{when_left} · {desc}"
+    else:
+        desc = f"In {node} prende la vettura {h.vehicle_id} dal turno {other}"
+        mode = getattr(h, "incoming_mode", "car")
+        parts = []
+        if h.kind == "depot":
+            parts.append(f"rientrata in deposito alle {when_left}")
+        elif unattended > 0:
+            parts.append(f"lasciata alle {when_left}, ferma senza conducente {unattended}′")
+        else:
+            parts.append(f"lasciata alle {when_left}")
+        if mode == "walk":
+            parts.append(f"arriva a piedi dalla vettura {h.incoming_prev_vehicle}".rstrip())
+        elif mode == "car":
+            parts.append("arriva con auto aziendale")
+        label = f"{when_taken} · {desc}"
+    if getattr(h, "cut_type", "inter") == "intra" and getattr(h, "route_name", ""):
+        parts.append(f"cambio a metà corsa della linea {h.route_name}")
+    return desc, " · ".join(p for p in parts if p), label
+
+
+def handover_view(h: Handover, driver_id: str, cluster_names: dict[str, str]) -> dict:
+    """Il cambio serializzato per il turno driver_id (stampa, Finestra di
+    lavoro, dettaglio turno, relazione)."""
+    is_out = (h.outgoing_driver == driver_id)
+    desc, detail, label = handover_texts(h, driver_id, cluster_names)
+    return {
+        "vehicleId": h.vehicle_id,
+        "atMin": h.at_min,
+        "atTime": min_to_time(h.at_min),
+        "takenMin": h.incoming_seg_start,
+        "takenTime": min_to_time(h.incoming_seg_start),
+        "unattendedMin": int(getattr(h, "unattended_min", 0) or 0),
+        "atStop": h.at_stop,
+        "cluster": h.cluster,
+        "clusterName": cluster_names.get(h.cluster or "", h.at_stop or "?") if h.kind != "depot" else "Deposito",
+        "role": "outgoing" if is_out else "incoming",
+        "otherDriver": h.incoming_driver if is_out else h.outgoing_driver,
+        "kind": getattr(h, "kind", "inline"),
+        "mode": getattr(h, "outgoing_mode", "car") if is_out else getattr(h, "incoming_mode", "car"),
+        "otherVehicle": (h.outgoing_next_vehicle if is_out else h.incoming_prev_vehicle) or None,
+        "cutType": getattr(h, "cut_type", "inter"),
+        "tripId": getattr(h, "trip_id", ""),
+        "routeName": getattr(h, "route_name", ""),
+        "description": desc,
+        "detail": detail,
+        "label": label,
+    }
 
 
 def serialize_handovers(handovers: list[Handover], clusters: list[Cluster]) -> list[dict]:
@@ -1220,14 +1339,29 @@ def serialize_handovers(handovers: list[Handover], clusters: list[Cluster]) -> l
             "incomingDriver": h.incoming_driver,
             "carDriverTo": h.car_driver_to,
             "carDriverFrom": h.car_driver_from,
-            "description": (
-                f"Bus {h.vehicle_id}: "
-                f"{h.incoming_driver} viene portato al capolinea con auto aziendale, prende il bus. "
-                f"{h.outgoing_driver} viene riportato al deposito con auto aziendale."
-            ),
+            "takenMin": h.incoming_seg_start,
+            "takenTime": min_to_time(h.incoming_seg_start),
+            "unattendedMin": int(getattr(h, "unattended_min", 0) or 0),
+            "kind": getattr(h, "kind", "inline"),
+            "incomingMode": getattr(h, "incoming_mode", "car"),
+            "outgoingMode": getattr(h, "outgoing_mode", "car"),
+            "description": _handover_summary_text(h, cluster_names),
         }
         for h in handovers
     ]
+
+
+def _handover_summary_text(h: Handover, cluster_names: dict[str, str]) -> str:
+    node = cluster_names.get(h.cluster or "", "") or h.at_stop or "?"
+    if getattr(h, "kind", "inline") == "depot":
+        return (f"Vettura {h.vehicle_id}: il turno {h.outgoing_driver} la riporta in deposito alle {min_to_time(h.at_min)}, "
+                f"il turno {h.incoming_driver} la riprende in deposito alle {min_to_time(h.incoming_seg_start)}.")
+    how_in = {"car": "arriva con auto aziendale", "walk": f"arriva a piedi dalla vettura {h.incoming_prev_vehicle}"}.get(h.incoming_mode, "")
+    how_out = {"car": "rientra in deposito con auto aziendale", "walk": f"prosegue a piedi sulla vettura {h.outgoing_next_vehicle}"}.get(h.outgoing_mode, "")
+    idle = (f" La vettura resta ferma senza conducente {h.unattended_min}′ ({min_to_time(h.at_min)}→{min_to_time(h.incoming_seg_start)})."
+            if int(getattr(h, "unattended_min", 0) or 0) > 0 else "")
+    return (f"Vettura {h.vehicle_id} in {node}: il turno {h.outgoing_driver} la lascia alle {min_to_time(h.at_min)} ({how_out}); "
+            f"il turno {h.incoming_driver} la prende alle {min_to_time(h.incoming_seg_start)} ({how_in}).{idle}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1922,35 +2056,12 @@ def serialize_output(
 
         # Handover associati a questo conducente
         my_handovers = handovers_by_driver.get(d.driver_id, [])
-        handovers_out = []
-        for h in my_handovers:
-            is_outgoing = (h.outgoing_driver == d.driver_id)
-            cluster_label = cluster_names.get(h.cluster or "", h.at_stop or "?")
-            handovers_out.append({
-                "vehicleId": h.vehicle_id,
-                "atMin": h.at_min,
-                "atTime": min_to_time(h.at_min),
-                "atStop": h.at_stop,
-                "cluster": h.cluster,
-                "clusterName": cluster_label,
-                "role": "outgoing" if is_outgoing else "incoming",
-                "otherDriver": h.incoming_driver if is_outgoing else h.outgoing_driver,
-                "description": (
-                    f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver} a {cluster_label} — rientri al deposito con auto aziendale"
-                    if is_outgoing else
-                    f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver} a {cluster_label} — arrivi con auto aziendale"
-                ),
-            })
-
-        # Costruisci etichette sintetiche LASCIA/PRENDE
-        handover_labels: list[str] = []
-        for h in my_handovers:
-            is_outgoing = (h.outgoing_driver == d.driver_id)
-            cl = cluster_names.get(h.cluster or "", h.at_stop or "?")
-            if is_outgoing:
-                handover_labels.append(f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver}")
-            else:
-                handover_labels.append(f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver}")
+        # Ogni cambio scritto nel turno: «In [Nodo] lascia/prende la vettura
+        # [bus] al/dal turno [codice]» (anche i passaggi in deposito, che però
+        # non contano fra i cambi in linea).
+        handovers_out = [handover_view(h, d.driver_id, cluster_names) for h in my_handovers]
+        handover_labels: list[str] = [v["label"] for v in handovers_out]
+        n_inline_handovers = len(inline_handovers(my_handovers))
 
         driver_shifts.append({
             "driverId": d.driver_id,
@@ -1968,7 +2079,7 @@ def serialize_output(
             "transferMin": d.transfer_min,
             "transferBackMin": d.transfer_back_min,
             "preTurnoMin": d.pre_turno_min,
-            "cambiCount": len(d.cambi) + len(my_handovers),
+            "cambiCount": len(d.cambi) + n_inline_handovers,
             "riprese": riprese,
             "handovers": handovers_out,
             "vehicleHandoverLabels": handover_labels,

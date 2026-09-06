@@ -2093,7 +2093,11 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     let deadheadMin: Record<string, number> | undefined;
     // Esito della restrizione all'archivio «Archi fuorilinea» (per il log del
     // solver e la relazione): scope, archi, coppie ammesse/vietate.
-    let deadheadArchive: { scope: string; arcs: number; ttAllowed: number; ttForbidden: number; depotLegsOutsideArchive: number } | undefined;
+    let deadheadArchive: {
+      scope: string; arcs: number; ttAllowed: number; ttForbidden: number; depotLegsOutsideArchive: number;
+      // tempi/km presi dall'archivio (custom_min ?? travel_min, custom_km ?? road_km) per le coppie del giro
+      timesApplied?: number; kmApplied?: number; customTimes?: number; depotLegsMissing?: string[];
+    } | undefined;
     if (depotSel && depotPoints.length > 0) {
       depotsForPy = depotPoints.map(d => ({
         id: d.id, name: d.name, color: d.color, lat: d.lat, lon: d.lon,
@@ -2118,14 +2122,22 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         const total = outM.totalPairs + inM.totalPairs + ttM.totalPairs;
         req.log.info(`CP-SAT VSP: matrice fuorilinea ${total} coppie (${osrm} da OSRM, ${total - osrm} Haversine)`);
 
-        /* ARCHIVIO «Archi fuorilinea» = elenco dei fuorilinea AMMESSI. Lo
-         * scheduling usa SOLO quelli: una coppia capolinea↔capolinea che
-         * l'operatore non ha (o ha cancellato) è vietata; le tratte
-         * deposito↔capolinea fuori archivio restano stimate (il bus deve
-         * comunque uscire e rientrare) ma vengono contate e segnalate.
+        /* ARCHIVIO «Archi fuorilinea» = elenco dei fuorilinea AMMESSI e dei
+         * loro TEMPI e KM. Lo scheduling usa SOLO quelli: una coppia
+         * capolinea↔capolinea che l'operatore non ha (o ha cancellato) è
+         * vietata; le tratte deposito↔capolinea fuori archivio restano stimate
+         * (il bus deve comunque uscire e rientrare) ma vengono contate ed
+         * elencate. Per OGNI arco risolto sui nodi del giro (deposito per id,
+         * capolinea per stop id, cluster espanso nelle sue fermate) il tempo è
+         * custom_min (curato a mano) altrimenti travel_min, i km custom_km
+         * altrimenti road_km: i minuti che l'operatore vede in Planning Studio
+         * sono quelli che il solver usa (prima solo gli archi «curati a mano»
+         * passavano, e solo se le coordinate coincidevano al 5° decimale: le
+         * tratte deposito e i cluster restavano alla stima km/velocità + 5′).
          * Scope: archi del progetto PS collegato se ne esistono, altrimenti
          * gli archi globali; archivio vuoto = nessuna restrizione (matrice
-         * completa, come prima). */
+         * completa, come prima). Precedenza: arco di progetto > globale; arco
+         * su fermata > arco su cluster. */
         try {
           let psProjForArchive: string | null = null;
           const schedProjectIdA = String((body as any).projectId ?? "");
@@ -2139,38 +2151,47 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             psProjForArchive = body.psProjectId;
           }
           // Archi GLOBALI come base + archi del PROGETTO che li sommano (e vincono
-          // sull'omologo globale), come per gli override manuali più sotto.
+          // sull'omologo globale).
+          const ARC_COLS = sql`from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id, road_km, travel_min, custom_km, custom_min, source`;
           const archiveRows: any[] = psProjForArchive
-            ? (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjForArchive}::uuid ORDER BY (ps_project_id IS NOT NULL)`)).rows ?? []
-            : (await db.execute<any>(sql`SELECT from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id FROM deadhead_arcs WHERE ps_project_id IS NULL`)).rows ?? [];
+            ? (await db.execute<any>(sql`SELECT ${ARC_COLS} FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjForArchive}::uuid ORDER BY (ps_project_id IS NOT NULL)`)).rows ?? []
+            : (await db.execute<any>(sql`SELECT ${ARC_COLS} FROM deadhead_arcs WHERE ps_project_id IS NULL`)).rows ?? [];
           const nProjectArcs = archiveRows.filter(a => a.ps_project_id).length;
           const archiveScope = nProjectArcs > 0 ? (archiveRows.length > nProjectArcs ? "globale+progetto" : "progetto") : "globale";
           if (archiveRows.length > 0) {
             // nodi di QUESTO giro: capolinea per stop id e coordinate, depositi per id
             const termCoordByStop = new Map<string, string>();
             const termCoordKeys = new Set<string>();
+            const nameByCoord = new Map<string, string>();
             for (const t of tripBlocks) {
               const k1 = dhKey(t.firstStopLat, t.firstStopLon);
               const k2 = dhKey(t.lastStopLat, t.lastStopLon);
               termCoordKeys.add(k1); termCoordKeys.add(k2);
               if (t.firstStopId) termCoordByStop.set(String(t.firstStopId), k1);
               if (t.lastStopId) termCoordByStop.set(String(t.lastStopId), k2);
+              if (!nameByCoord.has(k1)) nameByCoord.set(k1, t.firstStopName || String(t.firstStopId));
+              if (!nameByCoord.has(k2)) nameByCoord.set(k2, t.lastStopName || String(t.lastStopId));
             }
             const depotCoordById = new Map<string, string>();
             const depotCoordKeys = new Set<string>();
-            for (const d of depotPoints) { const k = dhKey(d.lat, d.lon); depotCoordById.set(String(d.id), k); depotCoordKeys.add(k); }
+            for (const d of depotPoints) {
+              const k = dhKey(d.lat, d.lon);
+              depotCoordById.set(String(d.id), k); depotCoordKeys.add(k);
+              nameByCoord.set(k, `Deposito ${d.name}`);
+            }
             // Un nodo dell'archivio → una o più chiavi coordinate di QUESTO giro:
             // deposito per id, capolinea per stop id (poi coordinate), cluster
             // espanso in tutte le sue fermate membre presenti nel giro.
             const clusterStops = new Map<string, string[]>();
             for (const c of psClustersForPy) clusterStops.set(String(c.id), c.stopIds.map(String));
+            const isClusterNode = (key: string, type: string) => type === "cluster" || String(key).startsWith("cluster:");
             const nodeKeys = (key: string, type: string, lat: number, lon: number): string[] => {
               if (type === "depot") {
                 const id = String(key).replace(/^depot:/, "");
                 const k = depotCoordById.get(id) ?? (depotCoordKeys.has(dhKey(lat, lon)) ? dhKey(lat, lon) : null);
                 return k ? [k] : [];
               }
-              if (type === "cluster" || String(key).startsWith("cluster:")) {
+              if (isClusterNode(key, type)) {
                 const id = String(key).replace(/^cluster:/, "");
                 const members = clusterStops.get(id) ?? [];
                 const ks = members.map(sid => termCoordByStop.get(sid)).filter((k): k is string => !!k);
@@ -2184,30 +2205,62 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
               return termCoordKeys.has(ck) ? [ck] : [];
             };
             const allowed = new Set<string>();
-            let resolvedArcs = 0, unresolvedArcs = 0;
+            const archMin = new Map<string, number>();
+            const archKm = new Map<string, number>();
+            const archRank = new Map<string, number>();
+            let resolvedArcs = 0, unresolvedArcs = 0, customTimes = 0;
             for (const a of archiveRows) {
               const kas = nodeKeys(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
               const kbs = nodeKeys(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
               if (!kas.length || !kbs.length) { unresolvedArcs++; continue; }
               resolvedArcs++;
-              for (const ka of kas) for (const kb of kbs) if (ka !== kb) allowed.add(`${ka}|${kb}`);
+              const viaCluster = isClusterNode(a.from_key, a.from_type) || isClusterNode(a.to_key, a.to_type);
+              // progetto > globale; fermata > cluster
+              const rank = (a.ps_project_id ? 2 : 0) + (viaCluster ? 0 : 1);
+              const minRaw = a.custom_min ?? a.travel_min;
+              const kmRaw = a.custom_km ?? a.road_km;
+              const hasMin = minRaw != null && Number.isFinite(Number(minRaw)) && Number(minRaw) >= 0;
+              const hasKm = kmRaw != null && Number.isFinite(Number(kmRaw)) && Number(kmRaw) >= 0;
+              if (a.custom_min != null) customTimes++;
+              for (const ka of kas) for (const kb of kbs) {
+                if (ka === kb) continue;
+                const key = `${ka}|${kb}`;
+                allowed.add(key);
+                if ((archRank.get(key) ?? -1) > rank) continue;
+                archRank.set(key, rank);
+                if (hasMin) archMin.set(key, Math.round(Number(minRaw) * 10) / 10);
+                if (hasKm) archKm.set(key, Math.round(Number(kmRaw) * 100) / 100);
+              }
             }
             if (resolvedArcs === 0) {
               // Archivio di un'altra rete/feed: nessun arco tocca i nodi di questo
               // giro → nessuna restrizione (matrice completa), ma lo diciamo.
-              deadheadArchive = { scope: `${archiveScope} (non applicato: nessun arco sui nodi del giro)`, arcs: archiveRows.length, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0 };
+              deadheadArchive = { scope: `${archiveScope} (non applicato: nessun arco sui nodi del giro)`, arcs: archiveRows.length, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0, timesApplied: 0, kmApplied: 0, customTimes: 0 };
               req.log.warn(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi) non tocca i nodi di questo giro: matrice completa, nessuna restrizione`);
             } else {
-              let ttAllowed = 0, ttForbidden = 0, depotOutside = 0;
+              let ttAllowed = 0, ttForbidden = 0, depotOutside = 0, timesApplied = 0, kmApplied = 0;
+              const missing: string[] = [];
+              const describe = (key: string) => key.split("|").map(k => nameByCoord.get(k) ?? k).join(" → ");
               for (const key of Object.keys(ttM.matrix)) {
                 if (allowed.has(key)) ttAllowed++;
                 else { deadheadKm[key] = 9999; ttForbidden++; }
               }
               for (const key of [...Object.keys(outM.matrix), ...Object.keys(inM.matrix)]) {
-                if (!allowed.has(key)) depotOutside++;
+                if (!allowed.has(key)) { depotOutside++; if (missing.length < 20) missing.push(describe(key)); }
               }
-              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside };
-              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio`);
+              // Tempi e km dell'archivio su TUTTE le coppie del giro che hanno un arco
+              const minOverrides: Record<string, number> = {};
+              for (const key of Object.keys(deadheadKm)) {
+                if (deadheadKm[key] === 9999) continue;
+                const km = archKm.get(key);
+                const min = archMin.get(key);
+                if (km != null) { deadheadKm[key] = km; kmApplied++; }
+                if (min != null) { minOverrides[key] = min; timesApplied++; }
+              }
+              if (Object.keys(minOverrides).length > 0) deadheadMin = minOverrides;
+              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside, timesApplied, kmApplied, customTimes, depotLegsMissing: missing };
+              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio (stimate); tempi dell'archivio su ${timesApplied} coppie (${customTimes} archi con tempo curato a mano), km su ${kmApplied}`);
+              if (missing.length) req.log.warn(`CP-SAT VSP: tratte deposito SENZA arco in archivio (tempo stimato km/velocità + buffer): ${missing.join("; ")}${depotOutside > missing.length ? `; … e altre ${depotOutside - missing.length}` : ""}`);
             }
           } else {
             req.log.info("CP-SAT VSP: archivio fuorilinea vuoto, matrice completa (nessuna restrizione)");
@@ -2215,45 +2268,6 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         } catch (err: any) {
           req.log.warn({ err: err?.message }, "archivio fuorilinea non leggibile: matrice completa");
         }
-
-        /* Override curati a mano (sezione Archi Fuorilinea): custom_km /
-         * custom_min o percorsi reindirizzati via points (source='manual')
-         * VINCONO sul calcolo OSRM per le coppie che matchano per coordinate.
-         * Scope: archi globali sempre; archi legati a un progetto PS solo se
-         * è il progetto collegato a questo giro (i globali prima, così un
-         * arco di progetto sovrascrive l'omologo globale). */
-        try {
-          let psProj: string | null = null;
-          const schedProjectId = String((body as any).projectId ?? "");
-          if (/^[0-9a-f-]{36}$/i.test(schedProjectId)) {
-            const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectId}::uuid`);
-            psProj = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
-          }
-          if (!psProj && typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)) {
-            psProj = body.psProjectId;
-          }
-          const arcs = await db.execute<any>(sql`
-            SELECT from_lat, from_lon, to_lat, to_lon, road_km, travel_min,
-                   custom_km, custom_min, source, ps_project_id
-              FROM deadhead_arcs
-             WHERE custom_km IS NOT NULL OR custom_min IS NOT NULL OR source = 'manual'
-             ORDER BY (ps_project_id IS NOT NULL)`);
-          let applied = 0;
-          const minOverrides: Record<string, number> = {};
-          for (const a of arcs.rows ?? []) {
-            if (a.ps_project_id && a.ps_project_id !== psProj) continue;
-            const key = `${dhKey(Number(a.from_lat), Number(a.from_lon))}|${dhKey(Number(a.to_lat), Number(a.to_lon))}`;
-            if (deadheadKm[key] === undefined) continue; // coppia non usata in questo giro
-            if (deadheadKm[key] === 9999) continue;      // coppia vietata dall'archivio del progetto
-            const km = a.custom_km ?? (a.source === "manual" ? a.road_km : null);
-            const min = a.custom_min ?? (a.source === "manual" ? a.travel_min : null);
-            if (km != null && Number.isFinite(Number(km))) deadheadKm[key] = Math.round(Number(km) * 100) / 100;
-            if (min != null && Number.isFinite(Number(min))) minOverrides[key] = Math.round(Number(min) * 10) / 10;
-            if (km != null || min != null) applied++;
-          }
-          if (Object.keys(minOverrides).length > 0) deadheadMin = minOverrides;
-          if (applied > 0) req.log.info(`CP-SAT VSP: ${applied} archi fuorilinea con override manuale applicati (${Object.keys(minOverrides).length} con tempo curato)`);
-        } catch { /* tabella deadhead_arcs assente: nessun override */ }
       } catch (err: any) {
         req.log.warn({ err: err?.message }, "matrice fuorilinea non disponibile, il solver stima Haversine");
       }
@@ -2673,6 +2687,11 @@ function compactAgentResult(payload: any): any {
     vehicleCostEur: m.costEur ?? null,
     solveTimeSec: m.solveTimeSec ?? null,
     fleetInfeasibility: m.fleetInfeasibility ?? null,
+    // Da dove vengono i fuorilinea: archivio «Archi fuorilinea» (coppie
+    // ammesse/vietate, tempi e km presi dall'archivio, tratte deposito senza
+    // arco e quindi stimate) e riposizionamenti instradati via deposito.
+    deadheadArchive: m.deadheadArchive ?? null,
+    viaDepotArcs: m.viaDepotArcs ?? null,
     advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
       .filter((a: any) => a.severity === "critical" || a.severity === "warning")
       .slice(0, 5)

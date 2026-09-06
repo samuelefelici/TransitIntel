@@ -94,16 +94,32 @@ export interface Ripresa {
   carPoolReturn?: CarPoolInfo | null;
 }
 
+/** Un cambio di vettura visto da UN turno: «In [Nodo] lascia/prende la
+ *  vettura [bus] al/dal turno [codice]». atMin = quando chi smonta la lascia,
+ *  takenMin = quando chi monta la prende (la vettura resta ferma senza
+ *  conducente unattendedMin, mai oltre il limite aziendale). */
 export interface HandoverInfo {
   vehicleId: string;
   atMin: number;
   atTime: string;
+  takenMin?: number;
+  takenTime?: string;
+  unattendedMin?: number;
   atStop: string;
   cluster: string | null;
   clusterName: string;
   role: "incoming" | "outgoing";
   otherDriver: string;
+  /** "inline" = al nodo di cambio; "depot" = la vettura passa dal deposito (non è un cambio in linea) */
+  kind?: "inline" | "depot";
+  /** come arriva chi monta / come se ne va chi smonta */
+  mode?: "car" | "walk" | "depot";
+  /** cambio a piedi: l'altra vettura del conducente */
+  otherVehicle?: string | null;
   description: string;
+  detail?: string;
+  /** riga pronta per il foglio turno: «HH:MM · In [Nodo] …» */
+  label?: string;
   cutType?: "inter" | "intra";
   tripId?: string;
   routeName?: string;

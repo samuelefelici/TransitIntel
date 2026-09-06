@@ -43,7 +43,7 @@ from ortools.sat.python import cp_model
 
 from optimizer_common import (
     # Costanti
-    SHIFT_RULES, PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN, MAX_IDLE_AT_TERMINAL,
+    SHIFT_RULES, PRE_TURNO_MIN, PRE_TURNO_AUTO_MIN, MAX_IDLE_AT_TERMINAL, UNATTENDED_BUS_MAX,
     DEPOT_TRANSFER_CENTRAL, DEPOT_TRANSFER_OUTER,
     MAX_CONTINUOUS_DRIVING, MIN_BREAK_AFTER_DRIVING,
     TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID,
@@ -1285,11 +1285,20 @@ def block_leg_between(block: "VehicleBlock", prev: VShiftTrip, nxt: VShiftTrip) 
     return None
 
 
+def takeover_min(prev_arrival_min: int, drive_start_min: int) -> int:
+    """Minuto in cui il montante prende il bus a un cambio in linea: entro
+    UNATTENDED_BUS_MAX dall'arrivo dello smontante (il bus non resta
+    incustodito più a lungo), o prima se deve già ripartire (fuorilinea o
+    corsa). Mai prima dell'arrivo."""
+    return max(prev_arrival_min, min(drive_start_min, prev_arrival_min + UNATTENDED_BUS_MAX))
+
+
 def piece_start_min(block: "VehicleBlock", cut_index: int) -> int:
     """Inizio del pezzo che segue un taglio inter fra trips[cut_index] e
-    trips[cut_index+1]: la stessa regola di _make_segment (montante all'arrivo
-    della corsa precedente se la sosta è ≤ MAX_IDLE_AT_TERMINAL e il bus non
-    va in deposito; altrimenti uscita dal deposito / partenza della corsa)."""
+    trips[cut_index+1]: la stessa regola di _make_segment (montante entro
+    UNATTENDED_BUS_MAX dall'arrivo della corsa precedente se la sosta è
+    ≤ MAX_IDLE_AT_TERMINAL e il bus non va in deposito; altrimenti uscita dal
+    deposito / partenza della corsa)."""
     trips = block.trips
     if cut_index < 0 or cut_index + 1 >= len(trips):
         return trips[-1].departure_min if trips else 0
@@ -1298,7 +1307,8 @@ def piece_start_min(block: "VehicleBlock", cut_index: int) -> int:
     if leg is not None and leg.type == "depot":
         return nxt.departure_min - max(0, nxt.departure_min - leg.arrival_min)
     if nxt.departure_min - prev.arrival_min <= MAX_IDLE_AT_TERMINAL:
-        return prev.arrival_min
+        drive_start = leg.departure_min if (leg is not None and leg.type == "deadhead") else nxt.departure_min
+        return takeover_min(prev.arrival_min, drive_start)
     return nxt.departure_min
 
 
@@ -1359,8 +1369,9 @@ def analyze_vehicle_block(
         left_work = trips[i].arrival_min - trips[0].departure_min
         _leg = block_leg_between(block, trips[i], trips[i + 1])
         if (_leg is None or _leg.type != "depot") and gap <= MAX_IDLE_AT_TERMINAL:
-            # cambio in linea: il montante copre sosta/fuorilinea dal taglio
-            right_work = trips[-1].arrival_min - cut_time
+            # cambio in linea: il montante prende il bus entro UNATTENDED_BUS_MAX
+            # dal taglio e copre il resto della sosta e l'eventuale fuorilinea
+            right_work = trips[-1].arrival_min - piece_start_min(block, i)
         else:
             right_work = trips[-1].arrival_min - trips[i + 1].departure_min
 
@@ -1656,12 +1667,17 @@ def _make_segment(
                     start = trips[0].departure_min - pullout
                     driving += pullout
                 elif trips[0].departure_min - prev.arrival_min <= MAX_IDLE_AT_TERMINAL:
-                    start = prev.arrival_min
-                    first_stop = prev.last_stop_name or first_stop
+                    # Il bus può restare incustodito al nodo al massimo
+                    # UNATTENDED_BUS_MAX: il montante lo prende entro quel tempo
+                    # dall'arrivo, o prima se deve guidare il fuorilinea/ripartire.
                     _dh = 0
+                    drive_start = trips[0].departure_min
                     if leg is not None and leg.type == "deadhead":
                         _dh = max(0, leg.arrival_min - leg.departure_min)
+                        drive_start = leg.departure_min
                         driving += _dh
+                    start = takeover_min(prev.arrival_min, drive_start)
+                    first_stop = prev.last_stop_name or first_stop
                     lead_idle = max(0, trips[0].departure_min - start - _dh)
         if ends_at_depot:
             pullin = int(block.pullin_min or 0)
@@ -3950,6 +3966,8 @@ from crew_scheduler_v3 import (
     Handover,
     compute_handovers,
     serialize_handovers,
+    handover_view,
+    inline_handovers,
     CarTrip,
     compute_car_pool,
     car_pool_by_driver,
@@ -4215,42 +4233,13 @@ def serialize_output(
 
             riprese.append(rip)
 
-        # Handover
+        # Handover: ogni cambio scritto nel turno, «In [Nodo] lascia/prende la
+        # vettura [bus] al/dal turno [codice]» con modalità (auto, a piedi,
+        # deposito) e minuti di vettura incustodita.
         my_handovers = handovers_by_driver.get(d.driver_id, [])
-        handovers_out = []
-        for h in my_handovers:
-            is_outgoing = (h.outgoing_driver == d.driver_id)
-            cluster_label = cluster_names.get(h.cluster or "", h.at_stop or "?")
-            cut_type = getattr(h, 'cut_type', 'inter')
-            trip_id = getattr(h, 'trip_id', '')
-            route_name = getattr(h, 'route_name', '')
-            intra_label = f" (intra-corsa {route_name})" if cut_type == "intra" and route_name else ""
-            handovers_out.append({
-                "vehicleId": h.vehicle_id,
-                "atMin": h.at_min,
-                "atTime": min_to_time(h.at_min),
-                "atStop": h.at_stop,
-                "cluster": h.cluster,
-                "clusterName": cluster_label,
-                "role": "outgoing" if is_outgoing else "incoming",
-                "otherDriver": h.incoming_driver if is_outgoing else h.outgoing_driver,
-                "cutType": cut_type,
-                "tripId": trip_id,
-                "routeName": route_name,
-                "description": (
-                    f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver} a {cluster_label}{intra_label}"
-                    if is_outgoing else
-                    f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver} a {cluster_label}{intra_label}"
-                ),
-            })
-
-        handover_labels: list[str] = []
-        for h in my_handovers:
-            is_outgoing = (h.outgoing_driver == d.driver_id)
-            if is_outgoing:
-                handover_labels.append(f"LASCIA bus {h.vehicle_id} AL TURNO {h.incoming_driver}")
-            else:
-                handover_labels.append(f"PRENDE bus {h.vehicle_id} DAL TURNO {h.outgoing_driver}")
+        handovers_out = [handover_view(h, d.driver_id, cluster_names) for h in my_handovers]
+        handover_labels: list[str] = [v["label"] for v in handovers_out]
+        n_inline_handovers = len(inline_handovers(my_handovers))
 
         # BDS validation per duty
         bds_val = getattr(d, 'bds_validation', None)
@@ -4284,7 +4273,7 @@ def serialize_output(
             "transferMin": d.transfer_min,
             "transferBackMin": d.transfer_back_min,
             "preTurnoMin": d.pre_turno_min,
-            "cambiCount": len(d.cambi) + len(my_handovers),
+            "cambiCount": len(d.cambi) + n_inline_handovers,
             "riprese": riprese,
             "handovers": handovers_out,
             "vehicleHandoverLabels": handover_labels,
@@ -4313,9 +4302,22 @@ def serialize_output(
             "avgNastroMin": round(avg_nastro, 0),
             "semiunicoPct": semi_pct,
             "spezzatoPct": spez_pct,
-            "totalCambi": len(handovers),
-            "totalInterCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'inter'),
-            "totalIntraCambi": sum(1 for h in handovers if getattr(h, 'cut_type', 'inter') == 'intra'),
+            "totalCambi": len(inline_handovers(handovers)),
+            "totalInterCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'inter'),
+            "totalIntraCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'intra'),
+            "totalDepotChanges": sum(1 for h in handovers if getattr(h, 'kind', 'inline') == 'depot'),
+            # Come si fanno i cambi in linea: con auto aziendale, a piedi fra
+            # due bus allo stesso nodo; e quanto resta ferma una vettura senza
+            # conducente (regola aziendale: al massimo UNATTENDED_BUS_MAX).
+            "handoverModes": {
+                "incomingCar": sum(1 for h in inline_handovers(handovers) if h.incoming_mode == "car"),
+                "incomingWalk": sum(1 for h in inline_handovers(handovers) if h.incoming_mode == "walk"),
+                "outgoingCar": sum(1 for h in inline_handovers(handovers) if h.outgoing_mode == "car"),
+                "outgoingWalk": sum(1 for h in inline_handovers(handovers) if h.outgoing_mode == "walk"),
+                "unattendedMaxMin": max([int(h.unattended_min or 0) for h in inline_handovers(handovers)] or [0]),
+                "unattendedLimitMin": UNATTENDED_BUS_MAX,
+                "withUnattended": sum(1 for h in inline_handovers(handovers) if int(h.unattended_min or 0) > 0),
+            },
             # Auto aziendali per i cambi in linea. "Used" era il numero di BUS
             # distinti toccati dai turni (19/5 in card): ora è il numero di
             # auto distinte impiegate; il picco conta TUTTI i viaggi richiesti
@@ -4609,7 +4611,11 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     # ── Fase 6: Handover & Car Pool ──
     handovers = compute_handovers(duties, clusters)
-    log(f"Fase 6: {len(handovers)} cambi bus identificati")
+    log(f"Fase 6: {len(inline_handovers(handovers))} cambi bus in linea identificati "
+        f"({sum(1 for h in handovers if h.kind == 'depot')} passaggi in deposito, "
+        f"{sum(1 for h in inline_handovers(handovers) if h.incoming_mode == 'walk')} montate a piedi, "
+        f"vettura incustodita max {max([h.unattended_min for h in inline_handovers(handovers)] or [0])}′ "
+        f"su un limite di {UNATTENDED_BUS_MAX}′)")
 
     # Il pool reale usa il tetto dell'operatore (non la costante di modulo):
     # con tetto 2 l'allocatore deve fermarsi a 2 auto e dichiarare i conflitti.

@@ -25,7 +25,7 @@ import { ExportReportButton } from "@/components/SchedulingReportExport";
 
 import type {
   DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult,
-  OptimizationAnalysis, DriverShiftSummary, RipresaTrip, VincoloGlobale,
+  OptimizationAnalysis, DriverShiftSummary, RipresaTrip, VincoloGlobale, HandoverInfo,
 } from "./driver-shifts/types";
 import {
   SearchChipsBar, matchShiftQuery, RiassuntiTable, CoveragePanel, buildCoverage,
@@ -704,6 +704,23 @@ function DriverShiftsPageInner() {
           if (!unpacked && (r.carPoolOut || r.carPoolReturn)) {
             acts.push({ id: `${sh.driverId}-car-${ri}`, isTrip: false, kindLabel: "Auto/Taxi", kindColor: "#fb7185",
               timeLabel: "", desc: (r.carPoolOut?.description || r.carPoolReturn?.description || "spostamento") });
+          }
+          // Cambi di vettura di questa ripresa: «In [Nodo] lascia/prende la
+          // vettura [bus] al/dal turno [codice]» (chi monta all'inizio, chi
+          // smonta alla fine, passaggi a metà ripresa)
+          if (!unpacked) {
+            for (const h of sh.handovers ?? []) {
+              const taken = typeof h.takenMin === "number" ? h.takenMin : h.atMin;
+              const own = h.role === "outgoing" ? h.atMin : taken;
+              const sameBus = !r.vehicleIds?.length || r.vehicleIds.includes(h.vehicleId);
+              const atStart = h.role === "incoming" && Math.abs(taken - svcS) <= 1;
+              const atEnd = h.role === "outgoing" && Math.abs(h.atMin - svcE) <= 1;
+              const inside = h.atMin > svcS && h.atMin < svcE;
+              if (!sameBus || !(atStart || atEnd || inside)) continue;
+              acts.push({ id: `${sh.driverId}-ho-${ri}-${h.role}-${h.vehicleId}-${own}`, isTrip: false,
+                kindLabel: h.kind === "depot" ? "Deposito" : "Cambio", kindColor: "#f97316",
+                timeLabel: wwFmtH(own), desc: h.description + (h.detail ? ` · ${h.detail}` : "") });
+            }
           }
         });
         if (!unpacked) {
@@ -2468,7 +2485,7 @@ function DriverShiftsPageInner() {
                             <div className="flex flex-wrap gap-2 mb-2">
                               {shift.vehicleHandoverLabels.map((lbl, li) => (
                                 <div key={li} className={`flex items-center gap-1.5 text-[11px] font-semibold rounded-md px-2.5 py-1.5 border ${
-                                  lbl.startsWith("LASCIA") ? "bg-red-500/10 border-red-500/25 text-red-400" : "bg-amber-500/10 border-amber-500/25 text-amber-300"
+                                  /\blascia\b/i.test(lbl) || lbl.startsWith("LASCIA") ? "bg-red-500/10 border-red-500/25 text-red-400" : "bg-amber-500/10 border-amber-500/25 text-amber-300"
                                 }`}>
                                   <Repeat className="w-3 h-3" />
                                   {lbl}
@@ -2480,12 +2497,19 @@ function DriverShiftsPageInner() {
                             // ── Build chronological activity list for this ripresa ──
                             const activities: { type: string; startMin: number; endMin: number; label: string; detail?: string; icon: React.ReactNode; colorClass: string; bgClass: string; vehicleId?: string }[] = [];
 
-                            // Handovers for this ripresa (match by time proximity to ripresa range)
+                            // Handovers for this ripresa (match by vehicle and time: chi monta
+                            // all'inizio della ripresa, chi smonta alla fine)
+                            const ripSvcS = typeof rip.serviceStartMin === "number" ? rip.serviceStartMin : rip.startMin + (rip.preTurnoMin || 0) + (rip.transferMin || 0);
+                            const ripSvcE = typeof rip.serviceEndMin === "number" ? rip.serviceEndMin : rip.endMin - (rip.transferBackMin || 0);
                             const myHandovers = (shift.handovers ?? []).filter(h => {
-                              return h.atMin >= rip.startMin - 5 && h.atMin <= rip.endMin + 5;
+                              const sameBus = !rip.vehicleIds?.length || rip.vehicleIds.includes(h.vehicleId);
+                              const taken = typeof h.takenMin === "number" ? h.takenMin : h.atMin;
+                              const t = h.role === "outgoing" ? h.atMin : taken;
+                              return sameBus && t >= ripSvcS - 16 && t <= ripSvcE + 16;
                             });
                             const incomingH = myHandovers.find(h => h.role === "incoming");
                             const outgoingH = myHandovers.find(h => h.role === "outgoing");
+                            const handoverText = (h: HandoverInfo) => h.description + (h.detail ? ` · ${h.detail}` : "");
 
                             let cursor = rip.startMin;
 
@@ -2508,7 +2532,7 @@ function DriverShiftsPageInner() {
                               const dest = rip.transferToStop || "capolinea";
                               let transferDetail = `Guidi dal Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} a ${dest} con auto aziendale (${rip.transferMin} min)`;
                               if (incomingH) {
-                                transferDetail = `Arrivi a ${dest} con auto aziendale per prendere bus ${incomingH.vehicleId}`;
+                                transferDetail = `Arrivi a ${dest} con auto aziendale per prendere la vettura ${incomingH.vehicleId} dal turno ${incomingH.otherDriver}`;
                               }
                               // Car pool info: quale auto e orari
                               if (rip.carPoolOut) {
@@ -2528,10 +2552,11 @@ function DriverShiftsPageInner() {
                             // 2b. Incoming handover: autista arriva e prende il bus da un collega
                             if (incomingH) {
                               const isIntra = incomingH.cutType === "intra";
+                              const takenAt = typeof incomingH.takenMin === "number" ? incomingH.takenMin : incomingH.atMin;
                               activities.push({
-                                type: "handover", startMin: incomingH.atMin, endMin: incomingH.atMin,
-                                label: isIntra ? "✂️ Cambio intra-corsa (arrivo)" : "🔄 Cambio bus (arrivo)",
-                                detail: incomingH.description + (isIntra && incomingH.routeName ? ` · Linea ${incomingH.routeName}` : ""),
+                                type: "handover", startMin: takenAt, endMin: takenAt,
+                                label: incomingH.kind === "depot" ? "🏭 Prende la vettura in deposito" : isIntra ? "✂️ Cambio intra-corsa (arrivo)" : "🔄 Prende la vettura",
+                                detail: handoverText(incomingH),
                                 icon: <Repeat className="w-3.5 h-3.5" />,
                                 colorClass: isIntra ? "text-amber-400" : "text-orange-400",
                                 bgClass: isIntra ? "bg-amber-500/10 border-amber-500/20" : "bg-orange-500/10 border-orange-500/20",
@@ -2589,8 +2614,8 @@ function DriverShiftsPageInner() {
                               const isIntraOut = outgoingH.cutType === "intra";
                               activities.push({
                                 type: "handover", startMin: outgoingH.atMin, endMin: outgoingH.atMin,
-                                label: isIntraOut ? "✂️ Cambio intra-corsa (uscita)" : "🔄 Cambio bus (uscita)",
-                                detail: outgoingH.description + (isIntraOut && outgoingH.routeName ? ` · Linea ${outgoingH.routeName}` : ""),
+                                label: outgoingH.kind === "depot" ? "🏭 Lascia la vettura in deposito" : isIntraOut ? "✂️ Cambio intra-corsa (uscita)" : "🔄 Lascia la vettura",
+                                detail: handoverText(outgoingH),
                                 icon: <Repeat className="w-3.5 h-3.5" />,
                                 colorClass: isIntraOut ? "text-amber-400" : "text-orange-400",
                                 bgClass: isIntraOut ? "bg-amber-500/10 border-amber-500/20" : "bg-orange-500/10 border-orange-500/20",
@@ -2606,7 +2631,7 @@ function DriverShiftsPageInner() {
                               const returnEnd = cursor + returnDur;
                               let returnDetail = `Guidi auto aziendale da ${returnFrom} al Deposito${shift.residenzaName ? ` ${shift.residenzaName}` : ""} (${returnDur} min)`;
                               if (outgoingH) {
-                                returnDetail = `Bus ${outgoingH.vehicleId} lasciato a ${outgoingH.otherDriver} — rientri al deposito con auto aziendale`;
+                                returnDetail = `Vettura ${outgoingH.vehicleId} lasciata al turno ${outgoingH.otherDriver} — rientri al deposito con auto aziendale`;
                               }
                               // Car pool info: quale auto e orari
                               if (rip.carPoolReturn) {
