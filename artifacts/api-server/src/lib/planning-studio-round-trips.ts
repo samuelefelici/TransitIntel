@@ -112,11 +112,12 @@ function hhmm(min: number): string {
 
 async function resolveDayType(projectId: string, dayTypeId: string | null, dayTypeCode: string | null): Promise<{ id: string | null; code: string | null }> {
   if (dayTypeId && UUID_RE.test(dayTypeId)) {
-    const r = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE project_id = ${projectId}::uuid AND id = ${dayTypeId}::uuid LIMIT 1`);
+    const r = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE (project_id IS NULL OR project_id = ${projectId}::uuid) AND id = ${dayTypeId}::uuid LIMIT 1`);
     return r.rows?.[0] ? { id: r.rows[0].id, code: r.rows[0].code } : { id: null, code: null };
   }
   if (dayTypeCode) {
-    const r = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE project_id = ${projectId}::uuid AND lower(code) = ${dayTypeCode.toLowerCase()} LIMIT 1`);
+    // i giorni-tipo di sistema (feriale, festivo…) hanno project_id NULL: quelli del progetto vincono a pari codice
+    const r = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE (project_id IS NULL OR project_id = ${projectId}::uuid) AND lower(code) = ${dayTypeCode.toLowerCase()} ORDER BY project_id NULLS LAST LIMIT 1`);
     return r.rows?.[0] ? { id: r.rows[0].id, code: r.rows[0].code } : { id: null, code: null };
   }
   return { id: null, code: null };
@@ -179,6 +180,7 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
   const nameOf = (id: string) => stopInfo.get(id)?.name ?? id;
   const clusterOf = (id: string) => stopInfo.get(id)?.clusterId ?? null;
   const isCenter = (id: string) => !!stopInfo.get(id)?.center;
+  const isCenterLike = (ts: TripRow[], pick: (t: TripRow) => string) => ts.some((t) => isCenter(pick(t)));
   const samePlace = (a: string, b: string) => a === b || (!!clusterOf(a) && clusterOf(a) === clusterOf(b));
 
   const trips: TripRow[] = [];
@@ -199,6 +201,18 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
   const totals: RoundTripAudit["totals"] = { missingReturn: 0, tooTight: 0, lateReturn: 0, orphanReturn: 0, noVariantCode: 0, lines: 0, linesWithIssues: 0, trips: trips.length };
   const lines: RoundTripLine[] = [];
 
+  // Nodi con capolinea di più linee (per riconoscere il verso «verso la periferia»)
+  const placeKey = (id: string) => clusterOf(id) ?? id;
+  const linesAtPlace = new Map<string, Set<string>>();
+  for (const t of trips) {
+    for (const k of [placeKey(t.firstStop), placeKey(t.lastStop)]) {
+      const set = linesAtPlace.get(k) ?? new Set<string>();
+      set.add(t.routeId);
+      linesAtPlace.set(k, set);
+    }
+  }
+  const hubSize = (id: string) => linesAtPlace.get(placeKey(id))?.size ?? 0;
+
   for (const [routeId, rts] of byRoute) {
     const issues: RoundTripIssue[] = [];
     const dirs = new Set(rts.map((t) => t.direction));
@@ -210,6 +224,18 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
       }
     }
     if (dirs.size >= 2) {
+      // Andata = direzione 0 (dal centro verso il capolinea periferico), ritorno = direzione 1,
+      // come i codici A/R dei percorsi. Se il capolinea dell'andata è un nodo dove fanno
+      // capolinea più linee dell'origine, la convenzione è invertita: si scambiano i ruoli.
+      const d0 = rts.filter((t) => t.direction === 0);
+      const d1 = rts.filter((t) => t.direction !== 0);
+      const score = (ts: TripRow[], pick: (t: TripRow) => string) => Math.max(0, ...ts.map((t) => hubSize(pick(t))));
+      let outbound = d0, inbound = d1;
+      if (d0.length && d1.length && score(d0, (t) => t.lastStop) > score(d0, (t) => t.firstStop)
+          && isCenterLike(d0, (t) => t.lastStop) && !isCenterLike(d0, (t) => t.firstStop)) {
+        outbound = d1; inbound = d0;
+      }
+      const dirIn = inbound[0]?.direction ?? 1;
       // cadenza per direzione (minuto dell'ora comune a tutte le partenze)
       const cadenceMinute = new Map<number | null, number | null>();
       for (const d of dirs) {
@@ -222,14 +248,13 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
         const cand = fromMin % 60 === m ? fromMin : fromMin + ((m - (fromMin % 60) + 60) % 60);
         return hhmm(cand);
       };
-      for (const t of rts) {
-        if (isCenter(t.lastStop)) continue;   // al centro l'interlinea è normale
-        const returns = rts.filter((b) => b.direction !== t.direction && samePlace(b.firstStop, t.lastStop) && b.depMin >= t.arrMin)
+      for (const t of outbound) {
+        const returns = inbound.filter((b) => samePlace(b.firstStop, t.lastStop) && b.depMin >= t.arrMin)
           .sort((a, b) => a.depMin - b.depMin);
         const nxt = returns[0];
         const base = { tripId: t.tripId, variantCode: t.variantCode, direction: t.direction, departTime: hhmm(t.depMin), arriveTime: hhmm(t.arrMin),
           fromStop: t.firstStopName, toStop: t.lastStopName, terminal: t.lastStopName,
-          suggestedDepartTime: hhmm(t.arrMin + minDelta), cadenceDepartTime: alignToCadence(t.arrMin + minDelta, t.direction === 0 ? 1 : 0) };
+          suggestedDepartTime: hhmm(t.arrMin + minDelta), cadenceDepartTime: alignToCadence(t.arrMin + minDelta, dirIn) };
         if (!nxt) {
           issues.push({ ...base, kind: "missingReturn", note: `arriva a ${t.lastStopName} alle ${hhmm(t.arrMin)} e nessuna corsa di ritorno della linea parte da lì dopo: il bus rientra a vuoto. Aggiungi il ritorno alle ${hhmm(t.arrMin + minDelta)}` });
         } else if (nxt.depMin - t.arrMin < minDelta) {
@@ -241,11 +266,11 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
         }
       }
       // ritorni orfani: partono dal capolinea periferico senza un'andata arrivata prima
-      for (const b of rts) {
-        if (isCenter(b.firstStop)) continue;
-        const feeders = rts.filter((a) => a.direction !== b.direction && samePlace(a.lastStop, b.firstStop) && a.arrMin <= b.depMin && b.depMin - a.arrMin <= Math.max(maxDelta, 60));
+      // (anche il ritorno che parte PRIMA dell'arrivo dell'andata: serve un bus a vuoto)
+      for (const b of inbound) {
+        const feeders = outbound.filter((a) => samePlace(a.lastStop, b.firstStop) && a.arrMin <= b.depMin && b.depMin - a.arrMin <= Math.max(maxDelta, 60));
         if (feeders.length) continue;
-        const later = rts.filter((a) => a.direction !== b.direction && samePlace(a.lastStop, b.firstStop) && a.arrMin > b.depMin).sort((x, y) => x.arrMin - y.arrMin)[0];
+        const later = outbound.filter((a) => samePlace(a.lastStop, b.firstStop) && a.arrMin > b.depMin).sort((x, y) => x.arrMin - y.arrMin)[0];
         issues.push({ kind: "orphanReturn", tripId: b.tripId, variantCode: b.variantCode, direction: b.direction, departTime: hhmm(b.depMin), arriveTime: hhmm(b.arrMin),
           fromStop: b.firstStopName, toStop: b.lastStopName, terminal: b.firstStopName,
           suggestedDepartTime: later ? hhmm(later.arrMin + minDelta) : undefined,
