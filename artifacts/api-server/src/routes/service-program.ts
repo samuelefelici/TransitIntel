@@ -2727,6 +2727,9 @@ function compactAgentResult(payload: any): any {
     // linea sono pagate, i km a vuoto no): proposte, da creare in Planning
     // Studio solo con conferma dell'operatore.
     serviceReturnProposals: Array.isArray(m.serviceReturnProposals) ? m.serviceReturnProposals.slice(0, 20) : [],
+    // Regola del giro (linee radiali): ritorni naturali dal capolinea
+    // periferico fatti e saltati nelle catene finali
+    turnarounds: m.turnarounds ?? null,
     advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
       .filter((a: any) => a.severity === "critical" || a.severity === "warning")
       .slice(0, 5)

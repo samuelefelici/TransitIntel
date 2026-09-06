@@ -87,6 +87,14 @@ class VehicleCostRates:
     # E. Costo per rientro deposito
     per_depot_return: float = 15.0
 
+    # E2. REGOLA DEL GIRO (linee radiali): la vettura che arriva a un capolinea
+    # PERIFERICO (non nodo di interscambio) con la corsa di ritorno della stessa
+    # linea in partenza da lì entro turnaround_max_gap deve fare quella corsa.
+    # Ogni arco che la salta, e la fine del turno macchina su quel capolinea,
+    # costa per_missed_turnaround (mai un rientro a vuoto da Massignano).
+    per_missed_turnaround: float = 40.0
+    turnaround_max_gap: int = 30
+
     # F. Sbilanciamento durata turno (QUADRATICO, ispirato a MAIOR CostoLavoroQuadratico)
     target_shift_duration: int = 600    # 10h = target durata turno macchina (minuti)
     balance_quadratic_coeff: float = 0.0003
@@ -187,6 +195,8 @@ class VehicleCostRates:
             "balanceCoeff": "balance_quadratic_coeff",
             "gapCoeff": "gap_quadratic_coeff",
             "perDepotReturn": "per_depot_return",
+            "perMissedTurnaround": "per_missed_turnaround",
+            "turnaroundMaxGap": "turnaround_max_gap",
             "idlePerMin": "idle_per_min",
             "longIdlePerMin": "long_idle_per_min",
             "longIdleThreshold": "long_idle_threshold",

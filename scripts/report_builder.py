@@ -516,6 +516,17 @@ def render_vehicles(d: dict) -> str:
         if arch.get("mirroredPairs"):
             txt += f' I fuorilinea valgono lo stesso tempo in andata e ritorno: {fmt_n(arch.get("mirroredPairs"))} versi senza arco proprio prendono tempo e km dal verso opposto.'
         out.append(para(txt))
+    turn = vm.get("turnarounds") if isinstance(vm.get("turnarounds"), dict) else None
+    if turn and (turn.get("natural") or turn.get("peripheralArrivals")):
+        txt = (f'Regola del giro sulle linee radiali: {fmt_n(turn.get("natural"))} arrivi a un capolinea periferico hanno la corsa di ritorno '
+               f'della stessa linea in partenza entro pochi minuti; la vettura la fa in {fmt_n(turn.get("chained"))} casi'
+               + (f' e la salta in {fmt_n(turn.get("missed"))}' if turn.get("missed") else "") + ".")
+        ml = turn.get("missedList") or []
+        if ml:
+            txt += " Giri saltati: " + "; ".join(
+                f'{esc(str(x.get("routeName")))} a {esc(str(x.get("atStop")))} alle {esc(str(x.get("arriveTime")))} (ritorno {esc(str(x.get("returnDepartTime")))}, invece {esc(str(x.get("insteadOf")))})'
+                for x in ml[:8]) + "."
+        out.append(para(txt))
     props = vm.get("serviceReturnProposals") if isinstance(vm.get("serviceReturnProposals"), list) else []
     if props:
         out.append("<h4>Rientri a vuoto che potrebbero diventare corse di linea</h4>")
