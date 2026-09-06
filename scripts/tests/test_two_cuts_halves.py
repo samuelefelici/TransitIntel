@@ -119,3 +119,58 @@ def test_build_initial_segments_covers_every_minute_and_hands_over_at_the_stop()
     # il terzo pezzo prende il bus a Cavour all'arrivo della corsa t3 (sosta 11′ coperta)
     assert s3.start_min == 602 and s3.first_stop == "POSATORA CAPOLINEA"
     assert s1.starts_at_depot and s3.ends_at_depot
+
+
+def _long_block(n=14, run=60, layover=10):
+    """Bus lungo: n corse da `run` minuti alternate Cavour↔Posatora con sosta `layover`."""
+    trips = [{"type": "deadhead", "depotLeg": "out", "deadheadMin": 12, "deadheadKm": 4.0,
+              "departureMin": 348, "arrivalMin": 360, "firstStopName": "Deposito", "lastStopName": "PIAZZA CAVOUR"}]
+    t = 360
+    for k in range(n):
+        a, b = ("PIAZZA CAVOUR", "POSATORA CAPOLINEA") if k % 2 == 0 else ("POSATORA CAPOLINEA", "PIAZZA CAVOUR")
+        trips.append(_trip(k, t, t + run, a, b))
+        t += run + layover
+    trips.append({"type": "deadhead", "depotLeg": "in", "deadheadMin": 15, "deadheadKm": 5.0,
+                  "departureMin": t - layover, "arrivalMin": t - layover + 15,
+                  "firstStopName": trips[-1]["lastStopName"], "lastStopName": "Deposito"})
+    b = v4.parse_vehicle_blocks([{"vehicleId": "U9", "vehicleType": "12m", "category": "urbano", "trips": trips}], CLUSTERS)[0]
+    total = v4.block_total_driving(b)
+    cands = []
+    cum = b.pullout_min
+    for i, tr in enumerate(b.trips[:-1]):
+        cum += tr.arrival_min - tr.departure_min
+        cands.append(CutCandidate(index=i, gap_min=layover, time_min=tr.arrival_min, stop_name=tr.last_stop_name,
+                                  cluster_id=v4.match_cluster(tr.last_stop_name, CLUSTERS), score=50.0, allows_cambio=True,
+                                  left_driving_min=cum, left_work_min=tr.arrival_min - b.start_min + b.pullout_min,
+                                  right_driving_min=total - cum, right_work_min=b.trips[-1].arrival_min - tr.arrival_min + b.pullin_min,
+                                  transfer_cost_min=10))
+    b.classification = "LUNGO"
+    b.cut_candidates = cands
+    return b
+
+
+def test_long_block_gets_three_cuts_within_driving_cap():
+    old = v4.MAX_GUIDA_RIPRESA
+    v4.MAX_GUIDA_RIPRESA = 270
+    try:
+        b = _long_block()                       # 14 × 60′ + 12 + 15 = 867′ di guida: con 2 tagli ≥ 289′ a pezzo
+        segs = v4.build_initial_segments([b], CLUSTERS)
+        assert len(segs) == 4
+        assert all(s.driving_min <= 270 for s in segs), [s.driving_min for s in segs]
+        assert sum(len(s.trips) for s in segs) == len(b.trips)
+        assert segs[0].starts_at_depot and segs[-1].ends_at_depot
+        # i pezzi si passano il bus al capolinea, all'arrivo della corsa precedente
+        for prev, nxt in zip(segs, segs[1:]):
+            assert nxt.start_min == prev.end_min and nxt.first_stop == prev.last_stop
+    finally:
+        v4.MAX_GUIDA_RIPRESA = old
+
+
+def test_two_cuts_when_cap_is_satisfiable():
+    old = v4.MAX_GUIDA_RIPRESA
+    v4.MAX_GUIDA_RIPRESA = 330
+    try:
+        segs = v4.build_initial_segments([_long_block()], CLUSTERS)
+        assert len(segs) == 3 and all(s.driving_min <= 330 for s in segs), [s.driving_min for s in segs]
+    finally:
+        v4.MAX_GUIDA_RIPRESA = old
