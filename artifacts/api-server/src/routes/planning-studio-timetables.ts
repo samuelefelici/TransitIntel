@@ -404,7 +404,10 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       pathStops,
       cityNodes: await loadCityNodes(projectId),
       categories: categoriesInfo,
-      trips: tripList.map(({ firstTime: _f, ...t }) => t),
+      // firstTime resta nella risposta (prima serviva solo all'ordinamento e
+      // veniva tolto): senza, chi legge ripiega sugli estremi di `times`, che
+      // col master fuso delle due direzioni davano «partenza 08:01, arrivo 07:59».
+      trips: tripList.map((t) => ({ ...t, firstTime: t.firstTime === "99:99:99" ? null : t.firstTime })),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -482,7 +485,10 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId/week", async (
       category: { code: categoryCode, name: catQ.rows[0]?.name ?? categoryCode },
       repDates,
       stops: master.map((m: any) => ({ stopId: m.stopId, stopName: m.stopName })),
-      trips: tripList.map(({ firstTime: _f, ...t }) => t),
+      // firstTime resta nella risposta (prima serviva solo all'ordinamento e
+      // veniva tolto): senza, chi legge ripiega sugli estremi di `times`, che
+      // col master fuso delle due direzioni davano «partenza 08:01, arrivo 07:59».
+      trips: tripList.map((t) => ({ ...t, firstTime: t.firstTime === "99:99:99" ? null : t.firstTime })),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

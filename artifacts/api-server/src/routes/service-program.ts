@@ -2097,6 +2097,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       scope: string; arcs: number; ttAllowed: number; ttForbidden: number; depotLegsOutsideArchive: number;
       // tempi/km presi dall'archivio (custom_min ?? travel_min, custom_km ?? road_km) per le coppie del giro
       timesApplied?: number; kmApplied?: number; customTimes?: number; depotLegsMissing?: string[];
+      // coppie senza arco proprio che prendono tempo/km dal verso opposto (andata = ritorno)
+      mirroredPairs?: number;
     } | undefined;
     if (depotSel && depotPoints.length > 0) {
       depotsForPy = depotPoints.map(d => ({
@@ -2232,6 +2234,35 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
                 if (hasKm) archKm.set(key, Math.round(Number(kmRaw) * 100) / 100);
               }
             }
+            /* ANDATA = RITORNO. I fuorilinea si considerano dello stesso tempo nei
+             * due versi: se una coppia ha l'arco solo in un verso, il verso opposto
+             * eredita ammissione, tempo e km; se li ha in entrambi, il tempo è il
+             * tempo curato a mano (se solo un verso lo ha) altrimenti il maggiore
+             * dei due tempi di percorrenza, così andata e ritorno coincidono. */
+            let mirroredPairs = 0;
+            const customKeys = new Set<string>();
+            for (const a of archiveRows) {
+              if (a.custom_min == null) continue;
+              const kas = nodeKeys(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
+              const kbs = nodeKeys(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
+              for (const ka of kas) for (const kb of kbs) if (ka !== kb) customKeys.add(`${ka}|${kb}`);
+            }
+            for (const key of Array.from(allowed)) {
+              const [ka, kb] = key.split("|");
+              const rev = `${kb}|${ka}`;
+              if (!allowed.has(rev)) {
+                allowed.add(rev);
+                mirroredPairs++;
+                if (archMin.has(key)) archMin.set(rev, archMin.get(key)!);
+                if (archKm.has(key)) archKm.set(rev, archKm.get(key)!);
+                continue;
+              }
+              const mA = archMin.get(key), mB = archMin.get(rev);
+              if (mA == null || mB == null || mA === mB) continue;
+              const cA = customKeys.has(key), cB = customKeys.has(rev);
+              const t = cA && !cB ? mA : (!cA && cB ? mB : (cA && cB ? null : Math.max(mA, mB)));
+              if (t != null) { archMin.set(key, t); archMin.set(rev, t); }
+            }
             if (resolvedArcs === 0) {
               // Archivio di un'altra rete/feed: nessun arco tocca i nodi di questo
               // giro → nessuna restrizione (matrice completa), ma lo diciamo.
@@ -2258,8 +2289,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
                 if (min != null) { minOverrides[key] = min; timesApplied++; }
               }
               if (Object.keys(minOverrides).length > 0) deadheadMin = minOverrides;
-              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside, timesApplied, kmApplied, customTimes, depotLegsMissing: missing };
-              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio (stimate); tempi dell'archivio su ${timesApplied} coppie (${customTimes} archi con tempo curato a mano), km su ${kmApplied}`);
+              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside, timesApplied, kmApplied, customTimes, depotLegsMissing: missing, mirroredPairs };
+              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio (stimate); tempi dell'archivio su ${timesApplied} coppie (${customTimes} archi con tempo curato a mano, ${mirroredPairs} versi specchiati: andata = ritorno), km su ${kmApplied}`);
               if (missing.length) req.log.warn(`CP-SAT VSP: tratte deposito SENZA arco in archivio (tempo stimato km/velocità + buffer): ${missing.join("; ")}${depotOutside > missing.length ? `; … e altre ${depotOutside - missing.length}` : ""}`);
             }
           } else {
@@ -2692,6 +2723,10 @@ function compactAgentResult(payload: any): any {
     // arco e quindi stimate) e riposizionamenti instradati via deposito.
     deadheadArchive: m.deadheadArchive ?? null,
     viaDepotArcs: m.viaDepotArcs ?? null,
+    // Rientri a vuoto che potrebbero diventare corse di linea (le corse in
+    // linea sono pagate, i km a vuoto no): proposte, da creare in Planning
+    // Studio solo con conferma dell'operatore.
+    serviceReturnProposals: Array.isArray(m.serviceReturnProposals) ? m.serviceReturnProposals.slice(0, 20) : [],
     advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
       .filter((a: any) => a.severity === "critical" || a.severity === "warning")
       .slice(0, 5)
@@ -2733,6 +2768,13 @@ function compactAgentResult(payload: any): any {
           semiunicoPct: v.crew.summary.semiunicoPct ?? null,
           spezzatoPct: v.crew.summary.spezzatoPct ?? null,
           totalCambi: v.crew.summary.totalCambi ?? null,
+          // Tetti percentuali dei tipi di turno (rigidi, tolleranza di frazione
+          // di turno): tetto, massimo ammesso, conteggio, esito; "relaxed" =
+          // nessuno scenario fattibile coi tetti rigidi
+          pctCaps: v.crew.summary.pctCaps ?? null,
+          pctCapRelaxed: !!v.crew.summary.pctCapRelaxed,
+          // Come si fanno i cambi in linea e quanto resta ferma una vettura senza conducente
+          handoverModes: v.crew.summary.handoverModes ?? null,
           // Gara fra segmentazioni (storica vs pair-aware): chi ha vinto e perché
           segmentation: v.crew.metrics?.optimizerParams?.segmentation ?? v.crew.metrics?.segmentation ?? null,
           // Fattori applicati dai pesi operatore (1.0 = slider al default)

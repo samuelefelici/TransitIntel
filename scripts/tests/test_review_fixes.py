@@ -41,8 +41,8 @@ def test_covered_layover_counts_as_rest():
     b = v4.parse_vehicle_blocks([{"vehicleId": "U3", "vehicleType": "12m", "category": "urbano", "trips": trips}], CLUSTERS)[0]
     s1 = v4._make_segment("U3", "12m", b.trips[:2], "first", 1, CLUSTERS, block=b)
     s2 = v4._make_segment("U3", "12m", b.trips[2:], "second", 1, CLUSTERS, block=b)
-    # il montante prende il bus 15′ dopo l'arrivo (vettura incustodita ≤ 15′) e copre i 5′ restanti
-    assert s2.start_min == 500 and s2.lead_idle_min == 5
+    # sosta 20′ (≤ 30′): il montante prende il bus all'arrivo e la copre per intero
+    assert s2.start_min == 485 and s2.lead_idle_min == 20
     assert v4._feasible_pair(s1, s2, SHIFT_RULES) == "intero"
     d = Duty("A", [s1, s2])
     ok, viol = v4.check_sosta_capolinea(d, SHIFT_RULES)

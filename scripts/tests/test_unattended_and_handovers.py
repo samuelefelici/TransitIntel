@@ -28,12 +28,14 @@ def test_takeover_within_unattended_limit():
     seg = v4._make_segment("U1", "12m", b.trips[1:], "second", 0, CLUSTERS, block=b)
     assert seg.start_min == 465 and seg.lead_idle_min == 25 and seg.work_min == 520 - 465
     assert seg.first_stop == "Tavernelle"
-    # sosta 10′: non c'è da aspettare, il montante prende il bus alla partenza
+    # sosta 10′ (≤ 30′): il montante prende il bus all'arrivo e copre la sosta
     b2 = _block("U2", [_trip("U2", 0, 420, 450, "Piazza Cavour", "Tavernelle"),
                        _trip("U2", 1, 460, 490, "Tavernelle", "Piazza Cavour")])
-    assert v4.piece_start_min(b2, 0) == 460
+    assert v4.piece_start_min(b2, 0) == 450
     seg2 = v4._make_segment("U2", "12m", b2.trips[1:], "second", 0, CLUSTERS, block=b2)
-    assert seg2.start_min == 460 and seg2.lead_idle_min == 0
+    assert seg2.start_min == 450 and seg2.lead_idle_min == 10
+    # sosta 30′ coperta per intero, 31′ no (15′ incustodita, 16′ coperti)
+    assert v4.takeover_min(450, 480) == 450 and v4.takeover_min(450, 481) == 465
     # mai prima dell'arrivo dello smontante
     assert v4.takeover_min(450, 440) == 450
 

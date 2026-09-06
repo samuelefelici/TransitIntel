@@ -55,17 +55,16 @@ def test_block_keeps_legs_and_segments_cover_gaps():
     b = blocks[0]
     assert [lg.type for lg in b.legs] == ["deadhead", "deadhead", "depot", "deadhead"]
     assert b.pullout_min == 12 and b.pullin_min == 14
-    # taglio dopo la 2ª corsa (arrivo 08:00 a Cavour): il pezzo di destra parte
-    # al nodo del taglio quando deve guidare il fuorilinea Cavour→Posatora
-    # (08:05, entro i 15′ di vettura incustodita) e lo guida
+    # taglio dopo la 2ª corsa (arrivo 08:00 a Cavour): il fuorilinea parte 5′
+    # dopo (sosta ≤ 30′: il montante prende il bus all'arrivo) e lo guida
     left = v4._make_segment("U1", "12m", b.trips[:2], "first", 1, CLUSTERS, block=b)
     right = v4._make_segment("U1", "12m", b.trips[2:3], "second", 1, CLUSTERS, block=b)
     assert left.starts_at_depot and left.start_min == 408 and left.end_min == 480
-    assert right.start_min == 485 and right.first_stop == "Piazza Cavour" and right.first_cluster == "c_cav"
-    assert v4.piece_start_min(b, 1) == 485
+    assert right.start_min == 480 and right.first_stop == "Piazza Cavour" and right.first_cluster == "c_cav"
+    assert v4.piece_start_min(b, 1) == 480
     assert right.driving_min == 30 + 15 + 5      # corsa + fuorilinea guidato + rientro in deposito
-    assert right.work_min == 550 - 485           # copre sosta + fuorilinea + rientro
-    assert right.lead_idle_min == 515 - 485 - 15  # sosta coperta dopo il fuorilinea
+    assert right.work_min == 550 - 480           # copre sosta + fuorilinea + rientro
+    assert right.lead_idle_min == 515 - 480 - 15  # sosta coperta al netto del fuorilinea
     # rientro in deposito a metà blocco: il pezzo che finisce prima rientra col
     # bus, quello dopo esce dal deposito: niente auto ai due bordi
     assert right.ends_at_depot and right.pullin_min == 5 and right.end_min == 550

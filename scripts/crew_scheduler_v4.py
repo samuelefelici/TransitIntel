@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+import math
 import signal
 import threading
 from dataclasses import dataclass, field
@@ -348,6 +349,11 @@ def apply_fase2_overrides(cfg: dict) -> None:
 
     opt = bds.get("optimizer") or {}
     PCT_OVER_PENALTY = _num(opt, "pctOverPenalty", PCT_OVER_PENALTY, int)
+    global PCT_CAP_HARD, PCT_CAP_TOLERANCE_SHIFTS
+    if "pctCapHard" in opt:
+        PCT_CAP_HARD = opt["pctCapHard"] in (True, 1, "1", "true", "True", "on")
+    PCT_CAP_TOLERANCE_SHIFTS = max(0.0, min(0.99, _num(opt, "pctCapToleranceShifts", PCT_CAP_TOLERANCE_SHIFTS, float)))
+    LAST_PCT_CAP.update({"hard": PCT_CAP_HARD, "toleranceShifts": PCT_CAP_TOLERANCE_SHIFTS, "relaxed": False})
 
     scen = bds.get("scenari") or {}
     SCENARIO_TIME_FRACTION = _num(scen, "timeFraction", SCENARIO_TIME_FRACTION, float)
@@ -832,6 +838,27 @@ PAIR_EXTRA_TARGETS: tuple[int, ...] = (240, 255)
 # Penalità (cost-cents) per punto-percentuale-corsa oltre i cap soft dei tipi
 # turno (semiunico/spezzato). Override-abile da config.bds.optimizer.pctOverPenalty.
 PCT_OVER_PENALTY = 150
+# Tetti percentuali dei tipi di turno (maxPct di semiunico/spezzato e vincoli
+# globali percentuali) RIGIDI: la percentuale non va sforata; è ammesso lo
+# sforamento di frazione di turno fino a PCT_CAP_TOLERANCE_SHIFTS (0,9), mai
+# di un turno intero: count ≤ floor(pct·N/100 + 0,9). Se nessuno scenario è
+# fattibile coi tetti rigidi si ripiega sui tetti flessibili (penalità) e lo
+# si dichiara (pctCapRelaxed). Override: config.bds.optimizer.pctCapHard /
+# pctCapToleranceShifts.
+PCT_CAP_HARD = True
+PCT_CAP_TOLERANCE_SHIFTS = 0.9
+# Tetto di guida per ripresa (min) letto dalla BDS a inizio run: usato dalla
+# scelta dei tagli (0 = non applicato)
+MAX_GUIDA_RIPRESA = 0
+LAST_PCT_CAP: dict = {"hard": True, "toleranceShifts": 0.9, "relaxed": False}
+
+
+def pct_cap_allowed(max_pct: float | int | None, total: int) -> int | None:
+    """Numero massimo di turni di un tipo dato il tetto percentuale e il
+    totale: floor(pct·N/100 + tolleranza)."""
+    if max_pct is None:
+        return None
+    return int(math.floor(float(max_pct) * total / 100.0 + PCT_CAP_TOLERANCE_SHIFTS + 1e-9))
 
 # Vincoli GLOBALI di soluzione (BDSI cap. 14) da config.bds.vincoliGlobali:
 #   {tipo:"numerico",   tipologie:[...], min?, max?, perResidenza?: bool}
@@ -1286,10 +1313,17 @@ def block_leg_between(block: "VehicleBlock", prev: VShiftTrip, nxt: VShiftTrip) 
 
 
 def takeover_min(prev_arrival_min: int, drive_start_min: int) -> int:
-    """Minuto in cui il montante prende il bus a un cambio in linea: entro
-    UNATTENDED_BUS_MAX dall'arrivo dello smontante (il bus non resta
-    incustodito più a lungo), o prima se deve già ripartire (fuorilinea o
-    corsa). Mai prima dell'arrivo."""
+    """Minuto in cui il montante prende il bus a un cambio in linea.
+
+    Regola aziendale: il bus non resta incustodito più di UNATTENDED_BUS_MAX.
+    Sosta fino a 2×UNATTENDED_BUS_MAX: il montante la copre per intero (così
+    una sosta di 15-30′ resta una vera sosta al capolinea per chi monta, e il
+    bus non aspetta da solo per pochi minuti); oltre, prende il bus
+    UNATTENDED_BUS_MAX dopo l'arrivo dello smontante, o prima se deve già
+    ripartire (fuorilinea o corsa). Mai prima dell'arrivo."""
+    gap = drive_start_min - prev_arrival_min
+    if gap <= 2 * UNATTENDED_BUS_MAX:
+        return prev_arrival_min
     return max(prev_arrival_min, min(drive_start_min, prev_arrival_min + UNATTENDED_BUS_MAX))
 
 
@@ -1343,12 +1377,36 @@ def analyze_vehicle_block(
         return
 
     candidates: list[CutCandidate] = []
-    total_driving = block.driving_min
 
-    # Pre-calcola driving cumulativo
+    # Guida cumulata COMPRESI i fuorilinea guidati: uscita dal deposito prima
+    # della prima corsa, riposizionamenti fra corse (li guida il pezzo che
+    # contiene la corsa che segue), rientro/uscita ai passaggi in deposito,
+    # rientro finale. Così il tetto di guida per ripresa (max_guida_per_ripresa)
+    # vale sui minuti reali del pezzo, non solo sulle corse.
+    def _drive_of(i: int) -> int:
+        t = trips[i]
+        d = t.arrival_min - t.departure_min
+        if i == 0:
+            d += int(block.pullout_min or 0)
+        else:
+            leg = block_leg_between(block, trips[i - 1], t)
+            if leg is not None and leg.type == "deadhead":
+                d += max(0, leg.arrival_min - leg.departure_min)
+            elif leg is not None and leg.type == "depot":
+                d += max(0, t.departure_min - leg.arrival_min)
+        if i == len(trips) - 1:
+            d += int(block.pullin_min or 0)
+        else:
+            leg = block_leg_between(block, t, trips[i + 1])
+            if leg is not None and leg.type == "depot":
+                d += max(0, leg.departure_min - t.arrival_min)
+        return d
+
     cum_driving = [0]
-    for t in trips:
-        cum_driving.append(cum_driving[-1] + (t.arrival_min - t.departure_min))
+    for i in range(len(trips)):
+        cum_driving.append(cum_driving[-1] + _drive_of(i))
+    total_driving = cum_driving[-1]
+    max_guida = int(getattr(getattr(bds, "riprese", None), "max_guida_per_ripresa", 0) or 0)
 
     # BDS5 lung_pezzi: lunghezza minima dei pezzi generati (per categoria)
     min_pezzo = (BDS5_LUNG_PEZZI_MIN_EXTRA if block.category == "extraurbano"
@@ -1441,6 +1499,12 @@ def analyze_vehicle_block(
             score -= (left_nastro - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
         if right_nastro > max_nastro:
             score -= (right_nastro - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
+        # Tetto di guida per ripresa (4h30 poi pausa): un taglio che lascia un
+        # pezzo sopra il tetto è fortemente penalizzato
+        if max_guida > 0:
+            for _dv in (left_driving, right_driving):
+                if _dv > max_guida:
+                    score -= (_dv - max_guida) * CUT_NASTRO_PENALTY_PER_MIN * 3
 
         candidates.append(CutCandidate(
             index=i,
@@ -1511,6 +1575,10 @@ def analyze_vehicle_block(
                 score_intra -= (left_nastro_i - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
             if right_nastro_i > max_nastro:
                 score_intra -= (right_nastro_i - max_nastro) * CUT_NASTRO_PENALTY_PER_MIN
+            if max_guida > 0:
+                for _dv in (left_driving_intra, right_driving_intra):
+                    if _dv > max_guida:
+                        score_intra -= (_dv - max_guida) * CUT_NASTRO_PENALTY_PER_MIN * 3
 
             candidates.append(CutCandidate(
                 index=i,
@@ -1587,8 +1655,24 @@ def filter_cuts_by_cluster(blocks: list[VehicleBlock], config: dict) -> None:
 #  FASE 2C: CLASSIFICAZIONE BLOCCHI
 # ═══════════════════════════════════════════════════════════════
 
-def classify_blocks(blocks: list[VehicleBlock], clusters: list[Cluster]) -> None:
-    """Classifica ogni blocco in CORTO, CORTO_BASSO, MEDIO, LUNGO."""
+def block_total_driving(b: VehicleBlock) -> int:
+    """Guida dell'intero blocco compresi uscita, rientro e fuorilinea guidati."""
+    d = int(b.driving_min) + int(b.pullout_min or 0) + int(b.pullin_min or 0)
+    for leg in getattr(b, "legs", None) or []:
+        # solo i riposizionamenti FRA corse: uscita e rientro sono già pullout/pullin
+        if leg.type == "deadhead" and getattr(leg, "depot_leg", None) not in ("out", "in"):
+            d += max(0, leg.arrival_min - leg.departure_min)
+    for i in range(len(b.trips) - 1):
+        leg = block_leg_between(b, b.trips[i], b.trips[i + 1])
+        if leg is not None and leg.type == "depot":
+            d += max(0, leg.departure_min - b.trips[i].arrival_min) + max(0, b.trips[i + 1].departure_min - leg.arrival_min)
+    return d
+
+
+def classify_blocks(blocks: list[VehicleBlock], clusters: list[Cluster], max_driving: int = 0) -> None:
+    """Classifica ogni blocco in CORTO, CORTO_BASSO, MEDIO, LUNGO. Un blocco
+    che starebbe in un intero per nastro ma supera il tetto di guida per
+    ripresa (fuorilinea compresi) va comunque tagliato: MEDIO."""
     for b in blocks:
         first_stop = b.trips[0].first_stop_name if b.trips else ""
         last_stop = b.trips[-1].last_stop_name if b.trips else ""
@@ -1597,7 +1681,9 @@ def classify_blocks(blocks: list[VehicleBlock], clusters: list[Cluster]) -> None
         nastro = b.nastro_min + extra + pre_turno_for(transfer) + transfer + transfer_back
 
         if nastro <= NASTRO_INTERO_MAX:
-            if b.driving_min < DRIVING_BASSO_THRESHOLD:
+            if max_driving > 0 and block_total_driving(b) > max_driving and b.cut_candidates:
+                b.classification = "MEDIO"
+            elif b.driving_min < DRIVING_BASSO_THRESHOLD:
                 b.classification = "CORTO_BASSO"
             else:
                 b.classification = "CORTO"
@@ -1811,6 +1897,13 @@ def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate |
         if left_nastro <= max_nastro and right_nastro <= max_nastro:
             valid_cuts.append(c)
 
+    # Fra i tagli validi per nastro, prima quelli che rispettano anche il
+    # tetto di guida per ripresa (fuorilinea compresi)
+    if valid_cuts and MAX_GUIDA_RIPRESA > 0:
+        ok_driving = [c for c in valid_cuts
+                      if c.left_driving_min <= MAX_GUIDA_RIPRESA and c.right_driving_min <= MAX_GUIDA_RIPRESA]
+        if ok_driving:
+            valid_cuts = ok_driving
     if valid_cuts:
         return max(valid_cuts, key=lambda c: c.score)
 
@@ -2432,6 +2525,30 @@ def validate_duty_bds(
     return result
 
 
+def pct_caps_status(duties: list[DriverDutyV3], bds: BDSConfig) -> dict:
+    """Stato dei tetti percentuali per tipo di turno (semiunico/spezzato):
+    tetto, massimo ammesso con la tolleranza, conteggio, esito."""
+    # SHIFT_RULES è già allineato alla config (maxPct compreso)
+    total = sum(1 for d in duties if d.duty_type != "supplemento")
+    by_type: dict[str, dict] = {}
+    for kind in ("semiunico", "spezzato"):
+        r = SHIFT_RULES.get(kind, {})
+        max_pct = r.get("maxPct") if isinstance(r, dict) else None
+        if max_pct is None:
+            continue
+        count = sum(1 for d in duties if d.duty_type == kind)
+        allowed = pct_cap_allowed(max_pct, total)
+        by_type[kind] = {
+            "maxPct": max_pct, "total": total, "count": count,
+            "pct": round(count * 100.0 / total, 1) if total else 0.0,
+            "allowed": allowed, "ok": (allowed is None or count <= allowed),
+        }
+    return {"hard": bool(LAST_PCT_CAP.get("hard", PCT_CAP_HARD)),
+            "toleranceShifts": PCT_CAP_TOLERANCE_SHIFTS,
+            "relaxed": bool(LAST_PCT_CAP.get("relaxed", False)),
+            "byType": by_type}
+
+
 def validate_all_bds(
     duties: list[DriverDutyV3],
     bds: BDSConfig,
@@ -2455,10 +2572,23 @@ def validate_all_bds(
             duty_warnings[d.driver_id] = v.warnings
             total_warnings += len(v.warnings)
 
+    # Tetti percentuali dei tipi di turno (regola: mai sforati oltre la
+    # frazione di turno ammessa): violazioni GLOBALI, contate fra le violazioni.
+    global_violations: list[str] = []
+    pct_caps = pct_caps_status(duties, bds)
+    for k, v in pct_caps.get("byType", {}).items():
+        if not v.get("ok", True):
+            global_violations.append(
+                f"{k}: {v['count']} turni su {v['total']} ({v['pct']}%) oltre il tetto {v['maxPct']}% "
+                f"(massimo ammesso {v['allowed']}, tolleranza {PCT_CAP_TOLERANCE_SHIFTS} turno)")
+    total_violations += len(global_violations)
+
     return {
         "totalViolations": total_violations,
         "dutiesWithViolations": len(duty_violations),
         "details": duty_violations,
+        "globalViolations": global_violations,
+        "pctCaps": pct_caps,
         # Avvertimenti (severità "avviso", es. pause pasto): fuori dal
         # conteggio violazioni, ma visibili per chi li vuole monitorare.
         "totalWarnings": total_warnings,
@@ -2764,11 +2894,18 @@ def _build_cpsat_model(
     scenario_seed: int,
     scenario_noise: float = 0.0,
     strategy: str = "balanced",
+    hard_pct_caps: bool | None = None,
 ) -> tuple[cp_model.CpModel, dict, dict, dict]:
     """Costruisce un modello CP-SAT. Parametri:
     - scenario_noise: perturba i costi per esplorare soluzioni alternative
     - strategy: profilo di pesi (vedi SCENARIO_STRATEGIES) per obiettivi alternativi.
+    - hard_pct_caps: tetti percentuali dei tipi di turno rigidi (con tolleranza
+      di frazione di turno); None = PCT_CAP_HARD.
     """
+    if hard_pct_caps is None:
+        hard_pct_caps = PCT_CAP_HARD
+    # tolleranza in centesimi di turno: 100·count ≤ pct·N + tol100
+    tol100 = int(round(PCT_CAP_TOLERANCE_SHIFTS * 100))
     import random
 
     strat = SCENARIO_STRATEGIES.get(strategy, SCENARIO_STRATEGIES["balanced"])
@@ -2965,6 +3102,9 @@ def _build_cpsat_model(
         ex = model.new_int_var(0, 100 * n_seg, "semi_excess")
         model.add(ex >= 100 * semi_count - semi_max_pct * total_duties)
         pct_excess.append(ex)
+        if hard_pct_caps:
+            # RIGIDO: la percentuale non va sforata (tolleranza di frazione di turno)
+            model.add(100 * semi_count <= int(semi_max_pct) * total_duties + tol100)
 
     if n_spezzato:
         spez_count = model.new_int_var(0, n_seg, "spez_count")
@@ -2973,6 +3113,8 @@ def _build_cpsat_model(
         ex = model.new_int_var(0, 100 * n_seg, "spez_excess")
         model.add(ex >= 100 * spez_count - spez_max_pct * total_duties)
         pct_excess.append(ex)
+        if hard_pct_caps:
+            model.add(100 * spez_count <= int(spez_max_pct) * total_duties + tol100)
 
     # Cap soft combinato: semiunici + sosta inoperosa ≤ SOSTA_INOP_MAX_PCT_WITH_SEMI%
     if n_semi or n_sosta_inop:
@@ -3038,10 +3180,14 @@ def _build_cpsat_model(
                         over = model.new_int_var(0, 100 * n_seg, f"{sfx}_pover")
                         model.add(over >= 100 * cnt - vg["maxPct"] * tot)
                         vincoli_slack_terms.append(_pen_pct * over)
+                        if hard_pct_caps:
+                            model.add(100 * cnt <= int(vg["maxPct"]) * tot + tol100)
                     if vg.get("minPct") is not None:
                         under = model.new_int_var(0, 100 * n_seg, f"{sfx}_punder")
                         model.add(under >= vg["minPct"] * tot - 100 * cnt)
                         vincoli_slack_terms.append(_pen_pct * under)
+                        if hard_pct_caps:
+                            model.add(100 * cnt >= int(vg["minPct"]) * tot - tol100)
                 else:  # media: Σ misura·x vs soglia·count (lineare)
                     if not sel:
                         continue
@@ -3400,6 +3546,7 @@ def optimize_multi_scenario(
     time_limit_sec: int,
     clusters: list[Cluster],
     bds: BDSConfig,
+    relax_pct_caps: bool = False,
 ) -> list[DriverDutyV3]:
     """Ottimizzazione multi-scenario: genera N scenari CP-SAT con parametri diversi,
     poi sceglie il migliore.
@@ -3522,6 +3669,7 @@ def optimize_multi_scenario(
             scenario_seed=params["seed"],
             scenario_noise=params["noise"],
             strategy=params["strategy"],
+            hard_pct_caps=PCT_CAP_HARD and not relax_pct_caps,
         )
 
         solver = cp_model.CpSolver()
@@ -3815,6 +3963,15 @@ def optimize_multi_scenario(
         "nOtherStatus": n_other,
         "optimalProvenAllScenarios": (n_optimal == len(_non_polish) and len(_non_polish) > 0),
     }
+
+    if best_duties is None and PCT_CAP_HARD and not relax_pct_caps:
+        # Coi tetti percentuali rigidi nessuno scenario è fattibile: si ripiega
+        # sui tetti flessibili e lo si dichiara (pctCapRelaxed nel riepilogo,
+        # violazione globale se il tetto resta sforato).
+        LAST_PCT_CAP["relaxed"] = True
+        log("[V4][PCT-CAP] nessuno scenario fattibile coi tetti percentuali RIGIDI: "
+            "ripiego sui tetti flessibili (penalità), sforamento dichiarato")
+        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds, relax_pct_caps=True)
 
     if best_duties is None:
         log("Tutti gli scenari falliti -- fallback a greedy")
@@ -4302,6 +4459,10 @@ def serialize_output(
             "avgNastroMin": round(avg_nastro, 0),
             "semiunicoPct": semi_pct,
             "spezzatoPct": spez_pct,
+            # Tetti percentuali: rigidi con tolleranza di frazione di turno;
+            # "relaxed" = nessuno scenario fattibile coi tetti rigidi
+            "pctCaps": validation.get("pctCaps") if isinstance(validation, dict) else None,
+            "pctCapRelaxed": bool(LAST_PCT_CAP.get("relaxed", False)),
             "totalCambi": len(inline_handovers(handovers)),
             "totalInterCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'inter'),
             "totalIntraCambi": sum(1 for h in inline_handovers(handovers) if getattr(h, 'cut_type', 'inter') == 'intra'),
@@ -4509,6 +4670,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     report_progress("init", 5, f"{len(vehicle_shifts_raw)} turni macchina")
 
     # ── Fase 1: Parsing ──
+    global MAX_GUIDA_RIPRESA
+    MAX_GUIDA_RIPRESA = int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0)
     blocks = parse_vehicle_blocks(vehicle_shifts_raw, clusters)
     # BDS5 soste_spezzanti: pre-spezza i blocchi alle soste ≥ soglia (tagli obbligatori)
     blocks, _bds5_splits = split_blocks_at_soste(blocks, clusters)
@@ -4518,7 +4681,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     # ── Fase 2: Analisi con BDS ──
     for b in blocks:
         analyze_vehicle_block(b, clusters, bds)
-    classify_blocks(blocks, clusters)
+    classify_blocks(blocks, clusters, max_driving=int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0))
 
     # Snapshot dei tagli PRIMA del collasso: serve alla segmentazione pair-aware
     full_cut_candidates = {b.vehicle_id: list(b.cut_candidates) for b in blocks}
