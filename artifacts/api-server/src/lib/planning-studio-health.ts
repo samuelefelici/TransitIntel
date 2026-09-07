@@ -283,23 +283,27 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
       const prev = seen.get(k);
       if (!prev || (!prev.project_id && d.project_id)) seen.set(k, d);
     }
-    let count = 0;
-    const samples: string[] = [];
+    // Conteggio per CORSE DISTINTE (una corsa valida su più giorni-tipo conta
+    // una volta) con la ripartizione per giorno-tipo in testa agli esempi.
+    const badTrips = new Set<string>();
+    const perDay: string[] = [];
+    const examples: string[] = [];
     for (const d of Array.from(seen.values()).slice(0, 8)) {
       const a = await computeRoundTripAudit(projectId, { dayTypeId: d.id });
+      if (!a.totals.trips) continue;
       const n = a.totals.missingReturn + a.totals.tooTight + a.totals.orphanReturn;
-      count += n;
-      if (n && samples.length < 5) {
-        for (const l of a.lines) {
-          for (const i of l.issues) {
-            if (i.kind !== "missingReturn" && i.kind !== "tooTight" && i.kind !== "orphanReturn") continue;
-            if (samples.length >= 5) break;
-            samples.push(`${d.code} · linea ${l.shortName} ${i.departTime} ${i.fromStop} → ${i.toStop}: ${i.note}`);
-          }
-          if (samples.length >= 5) break;
+      if (!n) { perDay.push(`${d.code}: nessuna anomalia su ${a.totals.trips} corse`); continue; }
+      perDay.push(`${d.code}: ${n} anomalie su ${a.totals.trips} corse (${a.totals.orphanReturn} ritorni senza andata, ${a.totals.tooTight} con margine insufficiente, ${a.totals.missingReturn} andate senza ritorno; ${a.totals.linesWithIssues}/${a.totals.lines} linee)`);
+      for (const l of a.lines) {
+        for (const i of l.issues) {
+          if (i.kind !== "missingReturn" && i.kind !== "tooTight" && i.kind !== "orphanReturn") continue;
+          badTrips.add(i.tripId);
+          if (examples.length < 4) examples.push(`${d.code} · linea ${l.shortName} ${i.departTime} ${i.fromStop} → ${i.toStop}: ${i.note}`);
         }
       }
     }
+    const count = badTrips.size;
+    const samples = [...perDay.slice(0, 4), ...examples];
     checks.push({
       key: "round_trip_gaps",
       level: "warning",
