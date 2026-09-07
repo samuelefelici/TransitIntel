@@ -281,6 +281,8 @@ interface ShiftTripEntry {
   downsized?: boolean;
   /** Original required vehicle type (set when downsized) */
   originalVehicle?: VehicleType;
+  /** Tipo dichiarato dalla linea: è il tetto di sagoma della corsa */
+  requiredVehicle?: VehicleType;
   /** Corsa A CHIAMATA (su prenotazione) */
   onDemand?: boolean;
 }
@@ -800,18 +802,33 @@ function buildServiceProgram(
 
     let bestShiftIdx = -1;
     let bestScore = Infinity;
+    // Il tipo del turno è la richiesta più restrittiva fra le sue corse, non
+    // quella della prima: congelarlo sulla prima faceva rifiutare accostamenti
+    // che la regola ammette (un turno aperto su una 12m rifiutava una 10m che
+    // un solo 10m avrebbe coperto entrambe).
+    const finestra = (sh: VehicleShift) => {
+      let mn = VEHICLE_SIZE[sh.vehicleType], mx = mn;
+      for (const e of sh.trips) {
+        if (e.type !== "trip" || !e.requiredVehicle) continue;
+        const s = VEHICLE_SIZE[e.requiredVehicle];
+        if (s < mn) mn = s;
+        if (s > mx) mx = s;
+      }
+      return { mn, mx };
+    };
 
     for (let i = 0; i < shifts.length; i++) {
       const shift = shifts[i];
       const shiftSize = VEHICLE_SIZE[shift.vehicleType];
 
-      // ── Vehicle compatibility ──
+      // ── Sagoma ──
       if (trip.forced) {
-        // Forced: only exact match allowed
+        // Lucchetto: solo il tipo esatto, e deve servire tutte le altre corse
         if (shift.vehicleType !== trip.requiredVehicle) continue;
       } else {
-        // Flexible: allow downsize within limits
-        if (!canVehicleServeTrip(shiftSize, reqSize)) continue;
+        const { mn, mx } = finestra(shift);
+        if (Math.max(mx, reqSize) - Math.min(mn, reqSize) > MAX_DOWNSIZE_LEVELS) continue;
+        if (!canVehicleServeTrip(Math.min(shiftSize, reqSize), reqSize)) continue;
       }
 
       const lastTrip = [...shift.trips].reverse().find(t => t.type === "trip");
@@ -908,6 +925,9 @@ function buildServiceProgram(
         shift.totalDeadheadKm += dh.km;
       }
 
+      // La corsa più restrittiva abbassa il mezzo del turno: sopra la sua
+      // taglia la strada non regge, quindi il turno non può restare più grande.
+      if (reqSize < VEHICLE_SIZE[shift.vehicleType]) shift.vehicleType = trip.requiredVehicle;
       const isDownsized = VEHICLE_SIZE[shift.vehicleType] < reqSize;
 
       shift.trips.push({
@@ -919,12 +939,24 @@ function buildServiceProgram(
         firstStopName: trip.firstStopName, lastStopName: trip.lastStopName,
         stopCount: trip.stopCount, durationMin: trip.arrivalMin - trip.departureMin,
         directionId: trip.directionId,
+        requiredVehicle: trip.requiredVehicle,
         downsized: isDownsized || undefined,
         originalVehicle: isDownsized ? trip.requiredVehicle : undefined,
         onDemand: trip.onDemand || undefined,
         variantCode: trip.variantCode ?? undefined,
       });
-      if (isDownsized) shift.downsizedTrips++;
+      // Abbassando il mezzo cambiano i declassamenti anche delle corse già
+      // dentro: si ricontano tutte, altrimenti il turno mentirebbe sul proprio
+      // conto di corse su mezzo ridotto.
+      const vSizeNow = VEHICLE_SIZE[shift.vehicleType];
+      shift.downsizedTrips = 0;
+      for (const e of shift.trips) {
+        if (e.type !== "trip" || !e.requiredVehicle) continue;
+        const down = vSizeNow < VEHICLE_SIZE[e.requiredVehicle];
+        e.downsized = down || undefined;
+        e.originalVehicle = down ? e.requiredVehicle : undefined;
+        if (down) shift.downsizedTrips++;
+      }
       shift.endMin = trip.arrivalMin;
       shift.totalServiceMin += (trip.arrivalMin - trip.departureMin);
       shift.tripCount++;
@@ -946,6 +978,7 @@ function buildServiceProgram(
           firstStopName: trip.firstStopName, lastStopName: trip.lastStopName,
           stopCount: trip.stopCount, durationMin: trip.arrivalMin - trip.departureMin,
           directionId: trip.directionId,
+          requiredVehicle: trip.requiredVehicle,
           onDemand: trip.onDemand || undefined,
         }],
         startMin: trip.departureMin,

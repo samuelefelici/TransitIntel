@@ -411,3 +411,42 @@ class TestComportamentoDelPiano:
                 rs = VEHICLE_SIZE[t["requiredVehicle"]]
                 assert vs <= rs, f"{s['vehicleId']} ({s['vehicleType']}) su {t['requiredVehicle']}"
                 assert rs - vs <= 1, f"doppio declassamento su {t['tripId']}"
+
+
+class TestViolazioniRiportate:
+    """Le due cose che la regola VIETA devono avere un contatore proprio:
+    `downsized` conta solo i declassamenti leciti, quindi senza questi una
+    violazione passerebbe muta esattamente come prima della regola."""
+
+    def test_mezzo_piu_grande_del_dichiarato(self):
+        # Un 12m su una linea da pollicino: su quella strada non passa.
+        shifts = [mk_shift("12m", [("11", "pollicino", 8 * 60)])]
+        rep = build_sagoma_report(shifts, {}, None)
+        assert rep["fuoriSagoma"] == 1
+        assert any(s["tipo"] == "fuoriSagoma" for s in rep["superamenti"])
+
+    def test_doppio_declassamento(self):
+        # Il pollicino su una corsa della 3: 12m -> 10m -> pollicino.
+        shifts = [mk_shift("pollicino", [("3", "12m", 8 * 60)])]
+        rep = build_sagoma_report(shifts, {}, None)
+        assert rep["doppiDeclassamenti"] == 1
+        assert any(s["tipo"] == "doppioDeclassamento" for s in rep["superamenti"])
+
+    def test_piano_pulito_non_riporta_violazioni(self):
+        shifts = [mk_shift("10m", [("circolare", "10m", 8 * 60), ("3", "12m", 9 * 60)])]
+        rep = build_sagoma_report(shifts, {}, None)
+        assert rep["fuoriSagoma"] == 0 and rep["doppiDeclassamenti"] == 0
+
+    def test_tipo_assente_dalla_flotta_dichiarata_vale_zero(self):
+        # I depositi dichiarano solo i pollicini: se il piano usa un 12m,
+        # quel mezzo non risulta da nessuna parte e va detto.
+        shifts = [mk_shift("pollicino", [("11", "pollicino", 8 * 60)]),
+                  mk_shift("12m", [("3", "12m", 9 * 60)])]
+        rep = build_sagoma_report(shifts, {"flotta": {"pollicino": 3}}, None)
+        flotta = [s for s in rep["superamenti"] if s["tipo"] == "flotta"]
+        assert len(flotta) == 1 and flotta[0]["vehicleType"] == "12m"
+
+    def test_senza_flotta_dichiarata_nessun_allarme(self):
+        shifts = [mk_shift("12m", [("3", "12m", 9 * 60)])]
+        rep = build_sagoma_report(shifts, {}, None)
+        assert [s for s in rep["superamenti"] if s["tipo"] == "flotta"] == []

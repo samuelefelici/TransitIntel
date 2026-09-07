@@ -384,6 +384,11 @@ def build_sagoma_report(shifts: list[VehicleShift], sagoma_cfg: dict,
     blocchi_per_tipo: dict[str, int] = {}
     per_linea: dict[str, dict] = {}
     tot_corse = tot_decl = tot_decl_punta = 0
+    # Le due cose che la regola VIETA. Non devono mai accadere: `downsized`
+    # conta solo i declassamenti leciti, quindi senza questi contatori una
+    # violazione passerebbe muta esattamente come prima della regola.
+    fuori_sagoma: list[dict] = []
+    doppi: list[dict] = []
     for s in shifts:
         blocchi_per_tipo[s.vehicle_type] = blocchi_per_tipo.get(s.vehicle_type, 0) + 1
         for t in s.trips:
@@ -399,6 +404,16 @@ def build_sagoma_report(shifts: list[VehicleShift], sagoma_cfg: dict,
             if in_punta:
                 row["corsePunta"] += 1
             row["tipiUsati"][s.vehicle_type] = row["tipiUsati"].get(s.vehicle_type, 0) + 1
+            v_size = VEHICLE_SIZE.get(s.vehicle_type, 3)
+            r_size = VEHICLE_SIZE.get(t.required_vehicle, v_size) if t.required_vehicle else v_size
+            if v_size > r_size:
+                fuori_sagoma.append({"turno": s.vehicle_id, "mezzo": s.vehicle_type,
+                                     "corsa": t.trip_id, "linea": linea,
+                                     "richiesto": t.required_vehicle})
+            elif r_size - v_size > MAX_DOWNSIZE_LEVELS:
+                doppi.append({"turno": s.vehicle_id, "mezzo": s.vehicle_type,
+                              "corsa": t.trip_id, "linea": linea,
+                              "richiesto": t.required_vehicle})
             if t.downsized:
                 row["declassate"] += 1
                 tot_decl += 1
@@ -443,16 +458,35 @@ def build_sagoma_report(shifts: list[VehicleShift], sagoma_cfg: dict,
             disponibili[str(k)] = int(v)
         except (TypeError, ValueError):
             continue
+    # Se i depositi (o la configurazione) dichiarano una flotta, un tipo che
+    # NON compare in quella dichiarazione vale zero mezzi disponibili: e' la
+    # stessa convenzione della domiciliazione ai depositi.
+    flotta_dichiarata = bool(disponibili)
     for tipo, usati in blocchi_per_tipo.items():
-        disp = disponibili.get(tipo)
+        disp = disponibili.get(tipo, 0 if flotta_dichiarata else None)
         if disp is not None and usati > disp:
             superamenti.append({
                 "tipo": "flotta", "vehicleType": tipo, "usati": usati, "disponibili": disp,
                 "messaggio": f"servono {usati} mezzi di tipo {tipo} ma ne risultano {disp}"})
 
+    for x in fuori_sagoma[:20]:
+        superamenti.append({
+            "tipo": "fuoriSagoma", "linea": x["linea"], "corsa": x["corsa"],
+            "messaggio": f"VIOLAZIONE: corsa {x['corsa']} (linea {x['linea']}, "
+                         f"richiesto {x['richiesto']}) su un {x['mezzo']}: mezzo piu' grande "
+                         f"di quanto la strada regga"})
+    for x in doppi[:20]:
+        superamenti.append({
+            "tipo": "doppioDeclassamento", "linea": x["linea"], "corsa": x["corsa"],
+            "messaggio": f"VIOLAZIONE: corsa {x['corsa']} (linea {x['linea']}, "
+                         f"richiesto {x['richiesto']}) su un {x['mezzo']}: due gradini di "
+                         f"declassamento"})
+
     return {
         "blocchiPerTipo": blocchi_per_tipo,
         "corse": tot_corse,
+        "fuoriSagoma": len(fuori_sagoma),
+        "doppiDeclassamenti": len(doppi),
         "corseDeclassate": tot_decl,
         "corseDeclassateInPunta": tot_decl_punta,
         "pctDeclassate": round(100.0 * tot_decl / tot_corse, 1) if tot_corse else 0.0,
