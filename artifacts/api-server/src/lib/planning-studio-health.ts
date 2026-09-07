@@ -275,10 +275,17 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
   //    ritorni mancanti, partiti prima dell'arrivo o con margine insufficiente
   //    producono fuorilinea inutili nello scheduling. Per giorno-tipo.
   try {
-    const dts = await db.execute<any>(sql`SELECT id, code FROM ps_day_types WHERE project_id = ${pid} ORDER BY sort_order NULLS LAST, code LIMIT 6`);
+    // giorni-tipo di sistema (project_id NULL) + del progetto; a pari codice vince quello del progetto
+    const dts = await db.execute<any>(sql`SELECT id, code, project_id FROM ps_day_types WHERE project_id IS NULL OR project_id = ${pid} ORDER BY sort_order NULLS LAST, code`);
+    const seen = new Map<string, any>();
+    for (const d of (dts.rows ?? []) as any[]) {
+      const k = String(d.code ?? "").toLowerCase();
+      const prev = seen.get(k);
+      if (!prev || (!prev.project_id && d.project_id)) seen.set(k, d);
+    }
     let count = 0;
     const samples: string[] = [];
-    for (const d of (dts.rows ?? []) as any[]) {
+    for (const d of Array.from(seen.values()).slice(0, 8)) {
       const a = await computeRoundTripAudit(projectId, { dayTypeId: d.id });
       const n = a.totals.missingReturn + a.totals.tooTight + a.totals.orphanReturn;
       count += n;
@@ -300,7 +307,7 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
       count,
       samples,
     });
-  } catch { /* progetto senza giorni-tipo o tabelle: verifica saltata */ }
+  } catch (e) { console.warn(`[health] round_trip_gaps saltato per ${projectId}: ${(e as Error)?.message ?? e}`); }
 
   return checks;
 }

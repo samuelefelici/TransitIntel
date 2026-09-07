@@ -1889,63 +1889,104 @@ def _cut_order_key(c: CutCandidate) -> tuple[int, int, int]:
     return (c.index, 0 if c.cut_type == "intra" else 1, c.time_min)
 
 
+def _split_trips_for_cuts(block: VehicleBlock, cuts: list[CutCandidate]) -> list[list[VShiftTrip]]:
+    """I pezzi di un blocco con N tagli (inter o intra, anche più d'uno sulla
+    stessa corsa): ogni corsa — o ciascuna metà di una corsa spezzata — finisce
+    in esattamente un pezzo, in ordine temporale. Un taglio intra la cui
+    fermata non si trova ricade su un taglio inter dopo la corsa."""
+    trips = list(block.trips)
+    by_idx: dict[int, list[CutCandidate]] = {}
+    for c in sorted(cuts, key=_cut_order_key):
+        by_idx.setdefault(c.index, []).append(c)
+    pieces: list[list[VShiftTrip]] = []
+    cur: list[VShiftTrip] = []
+    for i, trip in enumerate(trips):
+        rest = trip
+        inter_after = False
+        for c in by_idx.get(i, []):
+            if c.cut_type == "intra":
+                cs = _cut_cluster_stop(trip, c)
+                if cs is None or not (rest.departure_min < cs.arrival_min < rest.arrival_min):
+                    inter_after = True
+                    continue
+                a, b_ = _split_trip_at_stop(rest, cs)
+                cur.append(a)
+                pieces.append(cur)
+                cur = []
+                rest = b_
+            else:
+                inter_after = True
+        cur.append(rest)
+        if inter_after and i < len(trips) - 1:
+            pieces.append(cur)
+            cur = []
+    if cur:
+        pieces.append(cur)
+    return [pz for pz in pieces if pz]
+
+
 def _split_trips_for_two_cuts(block: VehicleBlock, c1: CutCandidate, c2: CutCandidate,
                               ) -> tuple[list[VShiftTrip], list[VShiftTrip], list[VShiftTrip]]:
-    """I tre pezzi di un blocco con DUE tagli (inter o intra, anche sulla stessa
-    corsa): ogni corsa — o ciascuna metà di una corsa spezzata — finisce in
-    esattamente un pezzo. Prima di questo helper la seconda metà della corsa
-    spezzata dal primo taglio intra non entrava in nessun pezzo: la guidava
-    nessuno, il pezzo di mezzo partiva dalla corsa successiva (montante 15′
-    dopo l'arrivo al capolinea sbagliato, bus incustodito oltre il limite) e
-    consegna/ritiro dell'auto aziendale finivano in nodi diversi."""
-    trips = list(block.trips)
-    c1, c2 = sorted((c1, c2), key=_cut_order_key)
-    i, j = c1.index, c2.index
+    """I tre pezzi di un blocco con DUE tagli (vedi _split_trips_for_cuts).
+    Prima di questo helper la seconda metà della corsa spezzata dal primo
+    taglio intra non entrava in nessun pezzo: la guidava nessuno, il pezzo di
+    mezzo partiva dalla corsa successiva (montante 15′ dopo l'arrivo al
+    capolinea sbagliato, bus incustodito oltre il limite) e consegna/ritiro
+    dell'auto aziendale finivano in nodi diversi."""
+    parts = _split_trips_for_cuts(block, [c1, c2])
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return parts[0], [], parts[1]
+    return (parts[0] if parts else list(block.trips)), [], []
 
-    def halves(idx: int, cut: CutCandidate, trip: VShiftTrip | None = None):
-        # la fermata si cerca sulla corsa ORIGINALE (le metà non portano le
-        # fermate-cluster); si spezza la corsa o la sua metà destra
-        src = trips[idx]
-        cs = _cut_cluster_stop(src, cut) if cut.cut_type == "intra" else None
-        if cs is None:
-            return None
-        t = trip if trip is not None else src
-        if trip is not None and not (t.departure_min < cs.arrival_min < t.arrival_min):
-            return None
-        return _split_trip_at_stop(t, cs)
 
-    h1 = halves(i, c1)
-    if i == j:
-        if h1 is None:
-            # inter+inter sullo stesso indice (o intra non risolvibile): un solo taglio
-            left, right = _split_trips_for_cut(block, c2)
-            return left, [], right
-        a1, b1 = h1
-        left = trips[:i] + [a1]
-        if c2.cut_type == "intra":
-            h2 = halves(i, c2, b1)   # la seconda fermata sta nella metà destra
-            if h2 is not None:
-                a2, b2 = h2
-                return left, [a2], [b2] + trips[i + 1:]
-        # intra + inter sulla stessa corsa: il mezzo è la metà destra
-        return left, [b1], trips[i + 1:]
+def _cut_piece_drives(cuts: list[CutCandidate]) -> list[int]:
+    """Guida dei pezzi delimitati da tagli ordinati (left_driving_min è la
+    guida cumulata fino al taglio, uscita e fuorilinea compresi)."""
+    total = cuts[0].left_driving_min + cuts[0].right_driving_min
+    edges = [0] + [c.left_driving_min for c in cuts] + [total]
+    return [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]
 
-    if h1 is not None:
-        a1, b1 = h1
-        left = trips[:i] + [a1]
-        mid = [b1] + trips[i + 1:j]
-    else:
-        left = trips[:i + 1]
-        mid = trips[i + 1:j]
-    h2 = halves(j, c2)
-    if h2 is not None:
-        a2, b2 = h2
-        mid = mid + [a2]
-        right = [b2] + trips[j + 1:]
-    else:
-        mid = mid + [trips[j]]
-        right = trips[j + 1:]
-    return left, mid, right
+
+def _best_three_cuts(b: VehicleBlock, clusters: list[Cluster], max_guida: int, min_piece_work: int) -> list[CutCandidate] | None:
+    """Con due tagli un blocco molto lungo lascia pezzi oltre il tetto di guida
+    per ripresa: cerca la terna di tagli (quattro pezzi) con ogni pezzo entro
+    il tetto e il punteggio migliore. None se nessuna terna ci riesce."""
+    cands = sorted(b.cut_candidates, key=_cut_order_key)
+    best: list[CutCandidate] | None = None
+    best_score = -1e9
+    n = len(cands)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _cut_order_key(cands[i]) == _cut_order_key(cands[j]):
+                continue
+            for k in range(j + 1, n):
+                if _cut_order_key(cands[j]) == _cut_order_key(cands[k]):
+                    continue
+                trio = [cands[i], cands[j], cands[k]]
+                drives = _cut_piece_drives(trio)
+                if any(d <= 0 or d > max_guida for d in drives):
+                    continue
+                # lavoro dei pezzi interni: dal taglio (fermata intermedia o
+                # presa in carico dopo la corsa) al taglio successivo
+                ok = True
+                score = sum(c.score for c in trio)
+                for a_, b_ in ((trio[0], trio[1]), (trio[1], trio[2])):
+                    p_start = a_.time_min if a_.cut_type == "intra" else piece_start_min(b, a_.index)
+                    p_end = b_.time_min if b_.cut_type == "intra" else b.trips[b_.index].arrival_min
+                    work = p_end - p_start
+                    if work < min_piece_work:
+                        ok = False
+                        break
+                    t_out, t_back, _ = _block_edge_transfers(b, a_.stop_name, b_.stop_name, False, False, clusters)
+                    nastro = work + pre_turno_for(t_out) + t_out + t_back
+                    score -= max(0, nastro - SHIFT_RULES["intero"]["maxNastro"]) * 2
+                if not ok:
+                    continue
+                if score > best_score:
+                    best_score, best = score, trio
+    return best
 
 
 def _select_best_cut(b: VehicleBlock, clusters: list[Cluster]) -> CutCandidate | None:
@@ -2073,12 +2114,38 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     rn = c2_raw.right_work_min + re_ + pre_turno_for(rt) + rt + rb
                     worst = max(ln, mn, rn)
                     score = c1_raw.score + c2_raw.score - max(0, worst - max_nastro) * 2
+                    if MAX_GUIDA_RIPRESA > 0:
+                        # i punteggi dei tagli penalizzano solo i pezzi ai bordi: qui il mezzo
+                        mid_drive = c1_raw.right_driving_min - c2_raw.right_driving_min
+                        if mid_drive > MAX_GUIDA_RIPRESA:
+                            score -= (mid_drive - MAX_GUIDA_RIPRESA) * CUT_NASTRO_PENALTY_PER_MIN * 3
 
                     if score > best_pair_score:
                         best_pair_score = score
                         best_pair_cuts = (c1_raw, c2_raw) if c1_raw.index < c2_raw.index else (c2_raw, c1_raw)
 
-            if best_pair_cuts:
+            three_cuts: list[CutCandidate] | None = None
+            if best_pair_cuts and MAX_GUIDA_RIPRESA > 0:
+                c1, c2 = sorted(best_pair_cuts, key=_cut_order_key)
+                drives2 = _cut_piece_drives([c1, c2])
+                if max(drives2) > MAX_GUIDA_RIPRESA:
+                    _min_piece = (BDS5_LUNG_PEZZI_MIN_EXTRA if b.category == "extraurbano" else BDS5_LUNG_PEZZI_MIN) or 90
+                    three_cuts = _best_three_cuts(b, clusters, MAX_GUIDA_RIPRESA, int(_min_piece))
+                    if three_cuts is not None:
+                        log(f"[V4][TAGLI] {b.vehicle_id}: con 2 tagli guida per pezzo {drives2} > {MAX_GUIDA_RIPRESA}′ "
+                            f"→ 3 tagli, guida {_cut_piece_drives(three_cuts)}")
+                    else:
+                        log(f"[V4][TAGLI] {b.vehicle_id}: guida per pezzo {drives2} > {MAX_GUIDA_RIPRESA}′ e nessuna terna di tagli la rispetta")
+
+            if three_cuts is not None:
+                parts = _split_trips_for_cuts(b, three_cuts)
+                halves = ["first"] + ["middle"] * max(0, len(parts) - 2) + (["second"] if len(parts) > 1 else [])
+                idxs = [three_cuts[0].index] + [c.index for c in three_cuts[: max(0, len(parts) - 2)]] + [three_cuts[-1].index]
+                segs = [_make_segment(b.vehicle_id, b.vehicle_type, pz, halves[k], idxs[k], clusters, block=b)
+                        for k, pz in enumerate(parts)]
+                b.segments = segs
+                all_segments.extend(segs)
+            elif best_pair_cuts:
                 c1, c2 = best_pair_cuts
                 # Tre pezzi da due tagli: nessuna corsa (o metà corsa) resta fuori
                 left_trips_c1, mid_trips, right_trips_c2 = _split_trips_for_two_cuts(b, c1, c2)
