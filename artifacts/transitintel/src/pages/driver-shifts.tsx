@@ -61,6 +61,7 @@ import {
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "./fucina/DriverShiftsPrintExport";
+import { exportDriverShiftSheetsToPrint } from "@/pages/fucina/DriverShiftSheetExport";
 import InteractiveGantt, { type GanttBar, type GanttRow, type GanttChange } from "@/components/InteractiveGantt";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1127,12 +1128,8 @@ function DriverShiftsPageInner() {
     if (!result) return;
     setExportMenuOpen(false);
     try {
-      exportDriverShiftsToPrint(result, {
-        scenarioName: result.scenarioName,
-        columnsPerPage: 2,
-        orientation: "landscape",
-      });
-      toast.success("Stampa A4 generata", { description: "Si è aperta la finestra di stampa: da lì puoi salvare in PDF" });
+      void exportDriverShiftSheetsToPrint(result, { scenarioName: result.scenarioName });
+      toast.success("Fogli turno generati", { description: "Una pagina per turno: da lì puoi stampare o salvare in PDF" });
     } catch (e: any) {
       // prima l'errore moriva in silenzio e sembrava che il pulsante non facesse nulla
       toast.error("Errore nella generazione della stampa", { description: e?.message ?? String(e) });

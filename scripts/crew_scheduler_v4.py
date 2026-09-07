@@ -895,6 +895,42 @@ RESIDENZA_BY_VEHICLE: dict[str, dict] = {}
 # extraurbano hanno CODIFICHE DISTINTE e non collidono quando il processo misto
 # li combina (es. U001 / E001 anziché due D001).
 DUTY_CODE_PREFIX = "D"
+# Codifica aziendale dei turni guida: lettera del deposito di residenza
+# (A = Ancona) + tre cifre — 001-099 turni mattinali, 100-199 pomeridiani,
+# in ordine di inizio nastro. La lettera del tipo di servizio (U/E/M) resta
+# il ripiego quando il deposito non è noto.
+DUTY_CODE_AFTERNOON_FROM_MIN = 12 * 60
+
+
+def _duty_depot_letter(d: "DriverDutyV3") -> str:
+    """Prima lettera del deposito di residenza della vettura del primo pezzo."""
+    for seg in d.segments:
+        res = RESIDENZA_BY_VEHICLE.get(getattr(seg, "vehicle_id", "") or "")
+        name = str((res or {}).get("name") or "").strip()
+        if name:
+            for ch in name:
+                if ch.isalpha():
+                    return ch.upper()
+    return DUTY_CODE_PREFIX
+
+
+def assign_duty_codes(duties: list["DriverDutyV3"], afternoon_from_min: int = DUTY_CODE_AFTERNOON_FROM_MIN) -> None:
+    """Assegna i codici A001… per deposito: mattinali (inizio nastro prima di
+    afternoon_from_min) da 001, pomeridiani da 100, in ordine di inizio nastro.
+    Oltre 99 turni per fascia si prosegue da 200 (mattina) e 300 (pomeriggio)
+    senza collidere."""
+    groups: dict[tuple[str, bool], list] = {}
+    for d in duties:
+        key = (_duty_depot_letter(d), int(d.nastro_start) >= int(afternoon_from_min))
+        groups.setdefault(key, []).append(d)
+    for (letter, afternoon), ds in groups.items():
+        ds.sort(key=lambda d: (int(d.nastro_start), int(d.nastro_end), d.idx))
+        for n, d in enumerate(ds, start=1):
+            if afternoon:
+                num = 100 + n - 1 if n <= 100 else 300 + (n - 101)
+            else:
+                num = n if n <= 99 else 200 + (n - 100)
+            d.driver_id = f"{letter}{num:03d}"
 
 
 def duty_residenza(duty) -> dict:
@@ -4960,6 +4996,9 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         SEGMENTATION_RESULT = {"winner": win_label, "variants": results}
         log(f"[V4][PAIR-AWARE] vince: {win_label}")
 
+    # Codici aziendali (A001… mattinali, A100… pomeridiani) PRIMA di cambi e
+    # testi, che citano il codice dell'altro turno
+    assign_duty_codes(duties)
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
     log(f"Fase 4: {n_total} turni guida ({n_total - n_suppl} principali + {n_suppl} supplementi)")
