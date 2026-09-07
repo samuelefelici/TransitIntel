@@ -56,6 +56,7 @@ import {
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
+import { exportDriverShiftSheetsToPrint, stopTimesLoaderFor } from "@/pages/fucina/DriverShiftSheetExport";
 import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
 import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/driver-shifts/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
@@ -477,6 +478,19 @@ export default function DriverWorkspace({
   }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool]);
 
   /* ── Export handlers ─────────────────────────────────── */
+  /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,
+   * deposito, tipo, giorno-tipo; pre-turno, fuorilinea, corse con i passaggi
+   * alle fermate, soste, cambi; competenze e note). */
+  const handleExportSheets = useCallback(() => {
+    if (!result) return;
+    setExportMenuOpen(false);
+    void exportDriverShiftSheetsToPrint(result, {
+      scenarioName: scenarioLabel,
+      loadStopTimes: projectIdFromUrl ? stopTimesLoaderFor(getApiBase(), projectIdFromUrl) : undefined,
+    });
+    toast.success("Fogli turno generati", { description: "Una pagina per turno: da lì puoi stampare o salvare in PDF" });
+  }, [result, scenarioLabel, projectIdFromUrl]);
+
   const handleExportPrint = useCallback(() => {
     if (!result) return;
     setExportMenuOpen(false);
@@ -1073,11 +1087,11 @@ export default function DriverWorkspace({
   const wwPrintShift = useCallback((shiftId: string) => {
     const sh = result?.driverShifts.find(s => s.driverId === shiftId);
     if (!sh || !result) { toast.error("Turno non trovato"); return; }
-    exportDriverShiftsToPrint(
+    void exportDriverShiftSheetsToPrint(
       { ...result, driverShifts: [sh] },
-      { scenarioName: `Foglio turno ${shiftId}`, columnsPerPage: 1, orientation: "portrait" },
+      { scenarioName: scenarioLabel, loadStopTimes: projectIdFromUrl ? stopTimesLoaderFor(getApiBase(), projectIdFromUrl) : undefined },
     );
-  }, [result]);
+  }, [result, scenarioLabel, projectIdFromUrl]);
 
   /* Scambio DIRETTO di due corse fra due turni diversi (swap 1↔1). */
   const wwSwapTrips = useCallback((aId: string, bId: string) => {
@@ -1339,12 +1353,22 @@ export default function DriverWorkspace({
               {exportMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 z-30 bg-zinc-900 border border-blue-500/30 rounded-lg shadow-xl py-1 min-w-[200px]">
                   <button
+                    onMouseDown={handleExportSheets}
+                    className="w-full text-left px-3 py-2 text-[11px] text-blue-200 hover:bg-blue-500/15 flex items-center gap-2 transition"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <div>
+                      <div className="font-medium">Fogli turno (uno per pagina)</div>
+                      <div className="text-[10px] text-blue-300/50">formato aziendale · passaggi alle fermate</div>
+                    </div>
+                  </button>
+                  <button
                     onMouseDown={handleExportPrint}
                     className="w-full text-left px-3 py-2 text-[11px] text-blue-200 hover:bg-blue-500/15 flex items-center gap-2 transition"
                   >
                     <Printer className="w-3.5 h-3.5" />
                     <div>
-                      <div className="font-medium">Stampa A4 dettagliata</div>
+                      <div className="font-medium">Stampa compatta a colonne</div>
                       <div className="text-[10px] text-blue-300/50">turni · corse · BDS · KPI</div>
                     </div>
                   </button>
