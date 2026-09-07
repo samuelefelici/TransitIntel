@@ -46,6 +46,7 @@ from optimizer_common import (
     MAX_DEADHEAD_KM, MIN_LAYOVER, DEADHEAD_BUFFER,
     AVG_SERVICE_SPEED, DEADHEAD_SPEED,
     haversine_km, estimate_deadhead, is_peak_hour, can_vehicle_serve, DH_FORBIDDEN_KM,
+    set_peak_windows, get_peak_windows,
     min_to_time, fmt_dur,
     load_input, write_output, log, report_progress,
     set_deadhead_matrix, set_deadhead_min_matrix,
@@ -309,6 +310,158 @@ def chain_servable_by_single_vehicle(chain: list[int], trips: list[Trip]) -> boo
         ):
             return True
     return False
+
+
+def canonical_vehicle_type(size: int) -> str:
+    """Il tipo «normale» di una taglia. A parita' di taglia il filobus non e'
+    un ripiego del 12m: vuole la linea elettrificata, quindi si usa solo dove
+    e' dichiarato esplicitamente."""
+    for vt in ("autosnodato", "12m", "10m", "pollicino"):
+        if VEHICLE_SIZE.get(vt) == size:
+            return vt
+    for vt in sorted(VEHICLE_TYPES, key=lambda v: -VEHICLE_SIZE[v]):
+        if VEHICLE_SIZE[vt] == size:
+            return vt
+    return "12m"
+
+
+def enforce_sagoma_chains(chains: list[list[int]],
+                          trips: list[Trip]) -> tuple[list[list[int]], int]:
+    """Spezza le catene che nessun mezzo reale puo' coprire.
+
+    La compatibilita' fra due corse NON e' transitiva: una catena di taglie
+    [4,3,2] ha ogni coppia consecutiva a un solo gradino di distanza, ma nessun
+    veicolo copre gli estremi. Gli archi sono pairwise, quindi il CP-SAT — dove
+    le catene NASCONO — puo' produrre proprio quelle scale: qui si tagliano nel
+    punto in cui la finestra delle taglie si aprirebbe oltre il gradino
+    consentito. Tagliare non crea archi nuovi, quindi i pezzi restano fattibili.
+    """
+    out: list[list[int]] = []
+    splits = 0
+    for chain in chains:
+        cur: list[int] = []
+        cmin = cmax = None
+        cforced: str | None = None
+        for i in chain:
+            t = trips[i]
+            s = VEHICLE_SIZE.get(t.required_vehicle, 3)
+            f = t.required_vehicle if t.forced else None
+            nmin = s if cmin is None else min(cmin, s)
+            nmax = s if cmax is None else max(cmax, s)
+            nforced = cforced or f
+            bad = (f is not None and cforced is not None and f != cforced)                 or (nmax - nmin > MAX_DOWNSIZE_LEVELS)
+            if not bad and nforced:
+                fs = VEHICLE_SIZE.get(nforced, 3)
+                bad = not all(
+                    can_vehicle_serve(fs, VEHICLE_SIZE.get(trips[j].required_vehicle, 3))
+                    for j in (cur + [i]))
+            if bad and cur:
+                out.append(cur)
+                splits += 1
+                cur, cmin, cmax, cforced = [i], s, s, f
+            else:
+                cur.append(i)
+                cmin, cmax, cforced = nmin, nmax, nforced
+        if cur:
+            out.append(cur)
+    return out, splits
+
+
+def build_sagoma_report(shifts: list[VehicleShift], sagoma_cfg: dict,
+                        depots_data: list | None) -> dict:
+    """Rendiconto del rispetto della sagoma.
+
+    Che mezzo ha preso ogni blocco, quante corse girano su un mezzo piu' piccolo
+    di quello dichiarato dalla loro linea (per linea e per fascia), e se la
+    flotta per tipologia basta. Il declassamento e' ammesso di un gradino solo
+    ed e' l'ultima spiaggia: qui si misura quanto il piano ci ha fatto ricorso,
+    perche' senza misura non e' governabile.
+    """
+    max_pct = float(sagoma_cfg.get("maxDeclassatePctPerLinea", 10.0))
+    max_pct_punta = float(sagoma_cfg.get("maxDeclassatePctPuntaPerLinea", 5.0))
+    fleet_cfg = sagoma_cfg.get("flotta") or {}
+
+    blocchi_per_tipo: dict[str, int] = {}
+    per_linea: dict[str, dict] = {}
+    tot_corse = tot_decl = tot_decl_punta = 0
+    for s in shifts:
+        blocchi_per_tipo[s.vehicle_type] = blocchi_per_tipo.get(s.vehicle_type, 0) + 1
+        for t in s.trips:
+            if t.type != "trip":
+                continue
+            tot_corse += 1
+            linea = t.route_name or t.route_id
+            row = per_linea.setdefault(linea, {
+                "richiesto": t.required_vehicle or "", "corse": 0, "corsePunta": 0,
+                "declassate": 0, "declassatePunta": 0, "tipiUsati": {}})
+            row["corse"] += 1
+            in_punta = is_peak_hour(t.departure_min)
+            if in_punta:
+                row["corsePunta"] += 1
+            row["tipiUsati"][s.vehicle_type] = row["tipiUsati"].get(s.vehicle_type, 0) + 1
+            if t.downsized:
+                row["declassate"] += 1
+                tot_decl += 1
+                if in_punta:
+                    row["declassatePunta"] += 1
+                    tot_decl_punta += 1
+
+    superamenti: list[dict] = []
+    for linea, row in per_linea.items():
+        pct = 100.0 * row["declassate"] / row["corse"] if row["corse"] else 0.0
+        # La punta si misura sulle corse IN PUNTA: rapportarla al giorno intero
+        # la diluisce, e cinque corse scoperte su cinque passerebbero nel tetto.
+        pct_punta = (100.0 * row["declassatePunta"] / row["corsePunta"]
+                     if row["corsePunta"] else 0.0)
+        row["pct"] = round(pct, 1)
+        row["pctPunta"] = round(pct_punta, 1)
+        # Franchigia di una corsa: su una linea con poche corse il tetto
+        # percentuale sarebbe irrispettabile, e «una corsa non fa danno».
+        soglia = max(1, math.ceil(max_pct * row["corse"] / 100.0))
+        soglia_punta = max(1, math.ceil(max_pct_punta * row["corsePunta"] / 100.0))
+        if row["declassate"] > soglia:
+            superamenti.append({
+                "tipo": "linea", "linea": linea, "pct": round(pct, 1), "tetto": max_pct,
+                "messaggio": f"linea {linea}: {row['declassate']} corse su {row['corse']} "
+                             f"con un mezzo piu' piccolo ({pct:.0f}%, tetto {max_pct:.0f}%)"})
+        if row["declassatePunta"] > soglia_punta:
+            superamenti.append({
+                "tipo": "lineaPunta", "linea": linea, "pct": round(pct_punta, 1),
+                "tetto": max_pct_punta,
+                "messaggio": f"linea {linea}: {row['declassatePunta']} corse declassate in punta "
+                             f"su {row['corsePunta']} ({pct_punta:.0f}%, tetto {max_pct_punta:.0f}%)"})
+
+    disponibili: dict[str, int] = {}
+    for d in (depots_data or []):
+        fl = d.get("fleet") if isinstance(d, dict) else None
+        if isinstance(fl, dict):
+            for k, v in fl.items():
+                if isinstance(v, (int, float)) and v >= 0:
+                    disponibili[k] = disponibili.get(k, 0) + int(v)
+    for k, v in (fleet_cfg or {}).items():
+        try:
+            disponibili[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    for tipo, usati in blocchi_per_tipo.items():
+        disp = disponibili.get(tipo)
+        if disp is not None and usati > disp:
+            superamenti.append({
+                "tipo": "flotta", "vehicleType": tipo, "usati": usati, "disponibili": disp,
+                "messaggio": f"servono {usati} mezzi di tipo {tipo} ma ne risultano {disp}"})
+
+    return {
+        "blocchiPerTipo": blocchi_per_tipo,
+        "corse": tot_corse,
+        "corseDeclassate": tot_decl,
+        "corseDeclassateInPunta": tot_decl_punta,
+        "pctDeclassate": round(100.0 * tot_decl / tot_corse, 1) if tot_corse else 0.0,
+        "perLinea": per_linea,
+        "flottaDisponibile": disponibili or None,
+        "fascePunta": [list(w) for w in get_peak_windows()],
+        "tetti": {"pctPerLinea": max_pct, "pctPuntaPerLinea": max_pct_punta},
+        "superamenti": superamenti,
+    }
 
 
 def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
@@ -913,6 +1066,27 @@ def precompute_arc_costs(
         if a.penalty_eur:
             cost_euro += a.penalty_eur
 
+        # SAGOMA: accostare due corse di taglia diversa declassa la piu'
+        # esigente per tutta la sua durata. La penalita' viveva solo nel costo
+        # di catena, che il CP-SAT non usa: senza questo termine il modello —
+        # dove le catene NASCONO — sceglieva liberamente blocchi misti e la
+        # ricerca locale poi non li disfaceva piu'.
+        si = VEHICLE_SIZE.get(ti.required_vehicle, 3)
+        sj = VEHICLE_SIZE.get(tj.required_vehicle, 3)
+        if si != sj:
+            grande, piccolo = (ti, sj) if si > sj else (tj, si)
+            livelli = abs(si - sj)
+            tasso = (rates.downsize_peak_per_level_per_min
+                     if is_peak_hour(grande.departure_min)
+                     else rates.downsize_offpeak_per_level_per_min)
+            cost_euro += livelli * grande.duration_min * tasso
+            # piu' il vantaggio di classe restituito (vedi chain_cost_detailed):
+            # declassare non deve convenire per il solo risparmio sul mezzo
+            grande_t = canonical_vehicle_type(max(si, sj))
+            piccolo_t = canonical_vehicle_type(piccolo)
+            cost_euro += max(0.0, rates.fixed_daily.get(grande_t, 42.0)
+                             - rates.fixed_daily.get(piccolo_t, 42.0)) * 0.5
+
         # NORMATIVA: costo per cambio di linea (VINCOLO_CAMBI_LINEA)
         if rates.cost_per_line_change > 0 and ti.route_id != tj.route_id:
             cost_euro += rates.cost_per_line_change
@@ -974,7 +1148,37 @@ def greedy_warmstart(
     vehicles: list[list[int]] = []
     vehicle_last: list[int] = []
     vehicle_types: list[str] = []
+    # Finestra delle taglie richieste dal blocco: il mezzo non si sceglie sulla
+    # prima corsa (lo faceva, e con la sagoma perdeva catene fattibili — un
+    # blocco aperto su una 12m rifiutava una 10m che un solo 10m avrebbe
+    # coperto entrambe), ma sull'insieme delle corse che il blocco serve.
+    vehicle_min: list[int] = []
+    vehicle_max: list[int] = []
+    vehicle_forced: list[str | None] = []
     assigned = [False] * n
+
+    def _open_vehicle(idx: int, t: Trip) -> None:
+        s = VEHICLE_SIZE.get(t.required_vehicle, 3)
+        vehicles.append([idx])
+        vehicle_last.append(idx)
+        noto = t.required_vehicle in VEHICLE_TYPES
+        vehicle_types.append(t.required_vehicle if (t.forced and noto)
+                             else t.required_vehicle if noto
+                             else canonical_vehicle_type(s))
+        vehicle_min.append(s)
+        vehicle_max.append(s)
+        vehicle_forced.append(t.required_vehicle if t.forced else None)
+
+    def _accept(vi: int, idx: int, t: Trip) -> None:
+        s = VEHICLE_SIZE.get(t.required_vehicle, 3)
+        vehicles[vi].append(idx)
+        vehicle_last[vi] = idx
+        vehicle_min[vi] = min(vehicle_min[vi], s)
+        vehicle_max[vi] = max(vehicle_max[vi], s)
+        if t.forced and not vehicle_forced[vi]:
+            vehicle_forced[vi] = t.required_vehicle
+        vehicle_types[vi] = (vehicle_forced[vi]
+                             or canonical_vehicle_type(vehicle_min[vi]))
 
     for idx in sorted_indices:
         if assigned[idx]:
@@ -985,13 +1189,21 @@ def greedy_warmstart(
 
         for vi in range(len(vehicles)):
             vtype = vehicle_types[vi]
-            vsize = VEHICLE_SIZE[vtype]
-            if trip.forced:
-                if vtype != trip.required_vehicle:
+            vsize = VEHICLE_SIZE.get(vtype, 3)
+            forced_here = vehicle_forced[vi]
+            if trip.forced and forced_here and forced_here != trip.required_vehicle:
+                continue
+            if forced_here:
+                # blocco inchiodato: la corsa deve tollerare quel mezzo
+                if not can_vehicle_serve(VEHICLE_SIZE.get(forced_here, 3), req_size):
                     continue
-            else:
-                if not can_vehicle_serve(vsize, req_size):
+            elif trip.forced:
+                # la corsa inchioda il blocco: il mezzo deve servire anche le altre
+                fs = VEHICLE_SIZE.get(trip.required_vehicle, 3)
+                if fs > vehicle_min[vi] or (vehicle_max[vi] - fs) > MAX_DOWNSIZE_LEVELS:
                     continue
+            elif (max(vehicle_max[vi], req_size) - min(vehicle_min[vi], req_size)) > MAX_DOWNSIZE_LEVELS:
+                continue
             last_idx = vehicle_last[vi]
             arc_found = None
             for a in adj[last_idx]:
@@ -1025,8 +1237,7 @@ def greedy_warmstart(
         if candidates:
             if pref == "random" and rng is not None:
                 _, best_v = rng.choice(candidates)
-                vehicles[best_v].append(idx)
-                vehicle_last[best_v] = idx
+                _accept(best_v, idx, trip)
                 assigned[idx] = True
             else:
                 candidates.sort(key=lambda x: x[0])
@@ -1043,18 +1254,13 @@ def greedy_warmstart(
                         + new_vehicle_penalty_eur
                     )
                     if best_score > new_veh_threshold:
-                        vehicles.append([idx])
-                        vehicle_last.append(idx)
-                        vehicle_types.append(trip.required_vehicle)
+                        _open_vehicle(idx, trip)
                         assigned[idx] = True
                         continue
-                vehicles[best_v].append(idx)
-                vehicle_last[best_v] = idx
+                _accept(best_v, idx, trip)
                 assigned[idx] = True
         else:
-            vehicles.append([idx])
-            vehicle_last.append(idx)
-            vehicle_types.append(trip.required_vehicle)
+            _open_vehicle(idx, trip)
             assigned[idx] = True
     return vehicles
 
@@ -1693,33 +1899,48 @@ def iterative_vehicle_reduction(
 
 
 def assign_vehicle_type(chain: list[int], trips: list[Trip]) -> str:
-    """Find smallest vehicle type that can serve ALL trips in chain."""
-    forced_type = None
-    max_size = 0
-    for idx in chain:
-        t = trips[idx]
-        s = VEHICLE_SIZE.get(t.required_vehicle, 3)
-        if t.forced:
-            forced_type = t.required_vehicle
-        if s > max_size:
-            max_size = s
-    if forced_type:
-        return forced_type
-    for vt in sorted(VEHICLE_TYPES, key=lambda v: VEHICLE_SIZE[v]):
-        vs = VEHICLE_SIZE[vt]
-        all_ok = True
-        for idx in chain:
-            t = trips[idx]
-            rs = VEHICLE_SIZE.get(t.required_vehicle, 3)
-            if t.forced and vt != t.required_vehicle:
-                all_ok = False
-                break
-            if not can_vehicle_serve(vs, rs):
-                all_ok = False
-                break
-        if all_ok:
-            return vt
-    return "autosnodato"
+    """Il mezzo GIUSTO per la catena, non il piu' piccolo che ci sta.
+
+    Il tipo dichiarato da ogni linea e' un tetto di sagoma, quindi il veicolo del
+    blocco non puo' superare il requisito piu' PICCOLO fra le sue corse: quella
+    taglia e' il mezzo giusto del blocco, e le corse di linee piu' esigenti che
+    ci convivono risultano declassate di un gradino (mai due: lo impedisce
+    `chain_servable_by_single_vehicle`).
+
+    La versione precedente cercava «la taglia minima che serve tutte le corse» e
+    declassava quindi a tappeto anche i blocchi monolinea, che nessuno aveva
+    chiesto di declassare: un blocco di sole corse da 12m usciva su un 10m.
+    """
+    if not chain:
+        return "12m"
+    forced = {trips[i].required_vehicle for i in chain if trips[i].forced}
+    if len(forced) == 1:
+        return next(iter(forced))
+    if len(forced) > 1:
+        # Catena malformata (il guard la rifiuta e enforce_sagoma_chains la
+        # spezza): finche' esiste, si prende il lucchetto piu' RESTRITTIVO,
+        # cosi' l'esito resta dalla parte sicura della sagoma.
+        return min(forced, key=lambda t: VEHICLE_SIZE.get(t, 3))
+    target = min(VEHICLE_SIZE.get(trips[i].required_vehicle, 3) for i in chain)
+    # Fra tipi di pari taglia (12m e filobus) vince quello che le corse
+    # dichiarano davvero: il filobus vive solo sulle linee elettrificate e non
+    # deve mai comparire come ripiego automatico di un 12m.
+    dichiarati = {trips[i].required_vehicle for i in chain
+                  if VEHICLE_SIZE.get(trips[i].required_vehicle, 3) == target}
+    # Un solo tipo dichiarato a quella taglia: e' quello. Se invece nella catena
+    # convivono tipi diversi di pari taglia (12m e filobus), si prende il tipo
+    # canonico: mettere un filobus sotto una corsa di linea non elettrificata
+    # sarebbe un mezzo che li' non puo' circolare.
+    if len(dichiarati) == 1:
+        solo = next(iter(dichiarati))
+        # Solo se e' un tipo davvero modellato: `target` nasce da un
+        # VEHICLE_SIZE.get(..., 3), quindi un'etichetta sconosciuta arriverebbe
+        # fin qui e diventerebbe il vehicleType del blocco.
+        if solo in VEHICLE_TYPES and (
+                solo != "filobus"
+                or all(trips[i].required_vehicle == "filobus" for i in chain)):
+            return solo
+    return canonical_vehicle_type(target)
 
 
 def _arc_idle_min(arc: Arc) -> float:
@@ -1774,15 +1995,30 @@ def chain_cost_detailed(
 
     vsize = VEHICLE_SIZE.get(vtype, 3)
     ds_pen = 0.0
+    req_max = vsize
     for i in chain:
         t = trips[i]
         rs = VEHICLE_SIZE.get(t.required_vehicle, 3)
+        req_max = max(req_max, rs)
         if vsize < rs:
             levels = rs - vsize
             if is_peak_hour(t.departure_min):
                 ds_pen += levels * t.duration_min * rates.downsize_peak_per_level_per_min
             else:
                 ds_pen += levels * t.duration_min * rates.downsize_offpeak_per_level_per_min
+    # Un mezzo piu' piccolo costa meno: senza correzione il declassamento si
+    # ripaga da solo e il motore lo sceglie a tappeto, che e' l'opposto della
+    # regola («ultima spiaggia»). Qui si restituisce il vantaggio economico del
+    # mezzo ridotto, così declassare conviene solo quando toglie davvero un
+    # veicolo o accorcia i vuoti — mai per il solo risparmio di classe.
+    if vsize < req_max:
+        req_type = canonical_vehicle_type(req_max)
+        ds_pen += max(0.0, rates.fixed_daily.get(req_type, 42.0)
+                      - rates.fixed_daily.get(vtype, 42.0))
+        ds_pen += max(0.0, service_km * (rates.per_service_km.get(req_type, 0.95)
+                                         - rates.per_service_km.get(vtype, 0.95)))
+        ds_pen += max(0.0, deadhead_km * (rates.per_deadhead_km.get(req_type, 0.80)
+                                          - rates.per_deadhead_km.get(vtype, 0.80)))
     cost.downsize_penalty = ds_pen
     cost.vcsp_penalty = vcsp_pen
     cost.normativa_cost = chain_normativa_cost(chain, trips, rates)
@@ -1913,9 +2149,12 @@ def _try_merge(chains, idx_a, idx_b, trips, arcs_lookup, rates, use_detailed):
     arc = arcs_lookup.get((ca[-1], cb[0]))
     if not arc:
         return None
-    if not trips_vehicle_compatible(trips[ca[0]], trips[cb[0]]):
-        return None
     merged = ca + cb
+    # La compatibilita' pairwise non e' transitiva: va verificata sulla catena
+    # INTERA, altrimenti la ricerca locale ricompone blocchi che nessun mezzo
+    # reale puo' coprire (due gradini di declassamento).
+    if not chain_servable_by_single_vehicle(merged, trips):
+        return None
     old_cost = (chain_cost_accept(ca, trips, arcs_lookup, rates, use_detailed)
                 + chain_cost_accept(cb, trips, arcs_lookup, rates, use_detailed))
     new_cost = chain_cost_accept(merged, trips, arcs_lookup, rates, use_detailed)
@@ -1950,6 +2189,10 @@ def _try_relocate(chains, src_idx, pos_in_src, dst_idx, trips, arcs_lookup, rate
                 break
         if not ok:
             continue
+        # new_src perde una corsa (l'intervallo di taglie puo' solo restringersi),
+        # new_dst ne acquista una: e' quella da riverificare sull'intera catena.
+        if not chain_servable_by_single_vehicle(new_dst, trips):
+            continue
         old_cost = (chain_cost_accept(src, trips, arcs_lookup, rates, use_detailed)
                     + chain_cost_accept(dst, trips, arcs_lookup, rates, use_detailed))
         new_cost = (chain_cost_accept(new_src, trips, arcs_lookup, rates, use_detailed)
@@ -1967,6 +2210,8 @@ def _try_swap(chains, idx_a, pos_a, idx_b, pos_b, trips, arcs_lookup, rates, use
         for k in range(len(c) - 1):
             if (c[k], c[k + 1]) not in arcs_lookup:
                 return None
+        if not chain_servable_by_single_vehicle(c, trips):
+            return None
     old_cost = (chain_cost_accept(chains[idx_a], trips, arcs_lookup, rates, use_detailed)
                 + chain_cost_accept(chains[idx_b], trips, arcs_lookup, rates, use_detailed))
     new_cost = (chain_cost_accept(ca, trips, arcs_lookup, rates, use_detailed)
@@ -2008,6 +2253,8 @@ def _try_rebalance(chains, idx_long, idx_short, trips, arcs_lookup, rates, use_d
     for k in range(len(new_short) - 1):
         if (new_short[k], new_short[k + 1]) not in arcs_lookup:
             return None
+    if not chain_servable_by_single_vehicle(new_short, trips):
+        return None
     old_cost = (chain_cost_accept(cl, trips, arcs_lookup, rates, use_detailed)
                 + chain_cost_accept(cs, trips, arcs_lookup, rates, use_detailed))
     new_cost = (chain_cost_accept(new_long, trips, arcs_lookup, rates, use_detailed)
@@ -2656,6 +2903,7 @@ def chains_to_shifts(
                 direction_id=t.direction_id,
                 downsized=is_down,
                 original_vehicle=t.required_vehicle if is_down else None,
+                required_vehicle=t.required_vehicle,
                 on_demand=getattr(t, "on_demand", False),
                 variant_code=getattr(t, "variant_code", ""),
             ))
@@ -3280,6 +3528,17 @@ def run(data: dict) -> dict:
     vehicle_costs_cfg = config.get("vehicleCosts", {})
     rates = VehicleCostRates.from_config(vehicle_costs_cfg)
 
+    # Sagoma: fasce di punta (il festivo ne ha una sola, pomeridiana) e tetti
+    # di declassamento. Vanno impostate PRIMA di calcolare i costi d'arco,
+    # perche' la penalita' di declassamento le legge.
+    sagoma_cfg = config.get("sagoma", {}) or {}
+    _fasce = sagoma_cfg.get("fascePunta") or sagoma_cfg.get("peakWindows")
+    # Sempre, anche quando manca: l'orchestratore VCSP chiama run() piu' volte
+    # nello stesso processo e le fasce del giro precedente resterebbero appese.
+    set_peak_windows(_fasce)
+    if _fasce:
+        log(f"  [VSP-SAGOMA] fasce di punta: {get_peak_windows()}")
+
     # FIX-7: parametri utente avanzati
     vsp_config = VSPConfig.from_config(config)
 
@@ -3605,6 +3864,16 @@ def run(data: dict) -> dict:
     # Se la soluzione usa più veicoli della flotta disponibile, tentiamo un
     # solve vincolato (nv ≤ Σcap). Se nemmeno così è possibile, riportiamo
     # l'infeasibility con il deficit esatto (il TS la mostra come critica).
+    # Sagoma: gli archi sono pairwise e la compatibilita' non e' transitiva, quindi
+    # il CP-SAT puo' aver prodotto catene a scala (es. autosnodato→12m→10m) che
+    # nessun mezzo copre. Si tagliano PRIMA del vincolo di flotta, altrimenti il
+    # conteggio dei veicoli sarebbe quello di una soluzione non realizzabile.
+    improved_chains, sagoma_splits = enforce_sagoma_chains(improved_chains, trips)
+    if sagoma_splits:
+        log(f"  [VSP-SAGOMA] {sagoma_splits} catene spezzate: nessun mezzo unico le copriva "
+            f"(oltre {MAX_DOWNSIZE_LEVELS} gradino di declassamento) → {len(improved_chains)} veicoli")
+        validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-sagoma")
+
     fleet_cap: int | None = None
     fleet_infeasibility: dict | None = None
     if depots_data:
@@ -3640,6 +3909,13 @@ def run(data: dict) -> dict:
             seed=7777, label="fleet-cap",
         )
         if cap_chains:
+            # Il solve vincolato ricostruisce le catene da zero sugli archi
+            # pairwise: puo' quindi riproporre le scale che avevamo appena
+            # tagliato, e senza questa riapplicazione tornerebbero nel piano.
+            cap_chains, cap_splits = enforce_sagoma_chains(cap_chains, trips)
+            if cap_splits:
+                sagoma_splits += cap_splits
+                log(f"  [VSP-SAGOMA] altre {cap_splits} catene spezzate dopo il vincolo di flotta")
             improved_chains = cap_chains
             validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-fleet-cap")
             log(f"  [VSP-FLEET] OK: soluzione con {len(improved_chains)} ≤ {fleet_cap} veicoli")
@@ -3655,6 +3931,12 @@ def run(data: dict) -> dict:
             log(f"  [VSP-FLEET] INFEASIBLE: deficit {fleet_infeasibility['deficit']} veicoli")
 
     # Convert to VehicleShift objects
+    # Rete di sicurezza: qualunque fase a valle abbia rimaneggiato le catene,
+    # nel piano finale non entra un blocco che nessun mezzo puo' coprire.
+    improved_chains, tardy_splits = enforce_sagoma_chains(improved_chains, trips)
+    if tardy_splits:
+        sagoma_splits += tardy_splits
+        log(f"  [VSP-SAGOMA] altre {tardy_splits} catene spezzate in chiusura")
     shifts = chains_to_shifts(improved_chains, trips, arcs_lookup, rates, route_names)
 
     # ── MULTI-DEPOSITO: domiciliazione capacitata + fuorilinea deposito ──
@@ -3740,6 +4022,8 @@ def run(data: dict) -> dict:
         "turnarounds": turnarounds,
         "fleetCap": fleet_cap,
         "fleetInfeasibility": fleet_infeasibility,
+        "sagoma": {**build_sagoma_report(shifts, sagoma_cfg, depots_data),
+                   "catenSpezzate": sagoma_splits},
         "depotAssignment": depot_assignment,
         # DELAY-ROBUST (Fase 2)
         "robustness": {

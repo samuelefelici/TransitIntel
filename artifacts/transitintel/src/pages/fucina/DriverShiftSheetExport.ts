@@ -173,6 +173,22 @@ function buildRows(shift: DriverShiftData, depot: string, sostaMin: number, note
 
 /* ── HTML ─────────────────────────────────────────────────── */
 
+/** Etichette brevi dei tipi di mezzo: il conducente deve sapere che cosa
+ *  guida, non solo la matricola. Su un percorso da pollicino un 10 metri non
+ *  passa, e chi va in servizio non puo' scoprirlo in strada. */
+const VEHICLE_SHORT: Record<string, string> = {
+  autosnodato: "Snodato",
+  filobus: "Filobus",
+  "12m": "12 m",
+  "10m": "10 m",
+  pollicino: "Pollicino",
+};
+
+function vehicleLabel(vt?: string | null): string {
+  if (!vt) return "";
+  return VEHICLE_SHORT[vt] || vt;
+}
+
 function tripCardHtml(t: RipresaTrip, stops: StopPassage[] | undefined, marker?: string): string {
   const dur = Math.max(0, t.arrivalMin - t.departureMin);
   const mid = (stops ?? []).slice(1, -1);
@@ -183,7 +199,7 @@ function tripCardHtml(t: RipresaTrip, stops: StopPassage[] | undefined, marker?:
     : "";
   return `<div class="trip">
     <div class="trip-head">
-      <div class="badge-col"><div class="line-badge">${esc(t.routeName || "—")}</div><div class="tm">TM ${esc(t.vehicleId || "—")}</div></div>
+      <div class="badge-col"><div class="line-badge">${esc(t.routeName || "—")}</div><div class="tm">TM ${esc(t.vehicleId || "—")}${t.vehicleType ? ` · ${esc(vehicleLabel(t.vehicleType))}` : ""}</div></div>
       <div class="dep"><div class="big">${esc(t.departureTime || hhmm(t.departureMin))}</div><div class="stop">${esc(t.firstStopName || "—")}</div></div>
       <div class="arrow"><span class="dot"></span><span class="rule"></span><span class="dur">${dur}′</span><span class="rule"></span><span class="tri"></span></div>
       <div class="arr"><div class="big">${esc(t.arrivalTime || hhmm(t.arrivalMin))}</div><div class="stop">${esc(t.lastStopName || "—")}</div></div>

@@ -91,30 +91,35 @@ const MIN_LAYOVER = 3;
 const DEADHEAD_BUFFER = 5;
 
 /* ═══════════════════════════════════════════════════════════════
- *  VEHICLE DOWNSIZE RULES
- *  Un mezzo più piccolo PUÒ fare una corsa assegnata a uno più grande,
- *  ma solo entro 1 livello di differenza (mai salti estremi).
- *  Obiettivo: ridurre turni macchina, priorità massima.
- *  Nelle ore di morbida il downsize è più accettabile.
+ *  REGOLA DELLA SAGOMA
+ *  Il tipo dichiarato su una linea è il mezzo giusto e insieme il suo TETTO
+ *  fisico: sopra quella taglia la strada non regge, quindi non esiste
+ *  promozione (un 12m su una linea da pollicino non passa). Sotto si perde
+ *  capienza: si concede UN gradino solo, mai due, e il meno possibile —
+ *  è l'ultima spiaggia, non la norma. Nelle ore di morbida pesa meno.
+ *  Scala: autosnodato → 12m → 10m → pollicino.
  * ═══════════════════════════════════════════════════════════════ */
 
 /** Max livelli di downsize consentiti (1 = un gradino sotto) */
 const MAX_DOWNSIZE_LEVELS = 1;
 
-/** Ore di punta — downsize più penalizzato */
+/** Ore di punta — declassamento più penalizzato */
 function isPeakHour(departureMin: number): boolean {
-  const h = Math.floor(departureMin / 60);
+  // GTFS ammette orari oltre le 24h (corse a cavallo di mezzanotte): senza il
+  // modulo una corsa "25:30" darebbe h=25 e non sarebbe mai vista come punta.
+  const h = Math.floor(departureMin / 60) % 24;
   return (h >= 7 && h <= 9) || (h >= 17 && h <= 19);
 }
 
 /**
  * Verifica se un veicolo di dimensione `vehicleSize` può servire
  * una corsa che richiede `requiredSize`.
- * - vehicleSize >= requiredSize → sempre OK (mezzo uguale o più grande)
- * - vehicleSize < requiredSize → OK solo se diff ≤ MAX_DOWNSIZE_LEVELS
+ * - vehicleSize > requiredSize → MAI: è la sagoma, quel mezzo non ci passa
+ * - vehicleSize === requiredSize → il mezzo giusto
+ * - vehicleSize < requiredSize → declassamento, entro MAX_DOWNSIZE_LEVELS
  */
 function canVehicleServeTrip(vehicleSize: number, requiredSize: number): boolean {
-  if (vehicleSize >= requiredSize) return true;
+  if (vehicleSize > requiredSize) return false;
   return (requiredSize - vehicleSize) <= MAX_DOWNSIZE_LEVELS;
 }
 
@@ -2347,6 +2352,43 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       if (Object.keys(n).length > 0) normativaCfg = n;
     }
 
+    // 5f. SAGOMA: fasce di punta e tetti di declassamento.
+    // Il declassamento pesa in ragione della fascia, e le fasce del feriale
+    // (7-9 e 17-19) non valgono di domenica, dove la punta è il pomeriggio:
+    // senza questo default un mezzo ridotto alle 16 di domenica sarebbe
+    // pagato come fosse morbida. L'operatore può sempre sovrascrivere.
+    const sagomaCfg: Record<string, any> = {};
+    const rawSagoma = (body as any).sagoma;
+    if (rawSagoma && typeof rawSagoma === "object") {
+      const fasce = (rawSagoma as any).fascePunta ?? (rawSagoma as any).peakWindows;
+      if (Array.isArray(fasce)) sagomaCfg.fascePunta = fasce;
+      for (const k of ["maxDeclassatePctPerLinea", "maxDeclassatePctPuntaPerLinea"]) {
+        const v = Number((rawSagoma as any)[k]);
+        if (Number.isFinite(v)) sagomaCfg[k] = v;
+      }
+      if ((rawSagoma as any).flotta && typeof (rawSagoma as any).flotta === "object") {
+        sagomaCfg.flotta = (rawSagoma as any).flotta;
+      }
+    }
+    if (!sagomaCfg.fascePunta) {
+      const y = Number(dateYMD.slice(0, 4)), mo = Number(dateYMD.slice(4, 6)), d = Number(dateYMD.slice(6, 8));
+      const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+      if (dow === 0) sagomaCfg.fascePunta = [[15, 20]];
+    }
+    if (!sagomaCfg.flotta && Array.isArray(depotsForPy)) {
+      const perTipo: Record<string, number> = {};
+      for (const dep of depotsForPy as any[]) {
+        const fl = dep?.fleet;
+        if (fl && typeof fl === "object") {
+          for (const [k, v] of Object.entries(fl)) {
+            const n = Number(v);
+            if (Number.isFinite(n) && n >= 0) perTipo[k] = (perTipo[k] ?? 0) + n;
+          }
+        }
+      }
+      if (Object.keys(perTipo).length > 0) sagomaCfg.flotta = perTipo;
+    }
+
     // 6. Spawn Python solver (CP-SAT puro, oppure orchestratore VCSP)
     const vspExtraConfig = {
       vehicleCosts: body.vehicleCosts || {},
@@ -2357,6 +2399,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
       ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
       // Normativa VSP (MAIOR-style)
       ...(normativaCfg ? { normativa: normativaCfg } : {}),
+      // Sagoma: fasce di punta, tetti di declassamento, flotta per tipologia
+      ...(Object.keys(sagomaCfg).length > 0 ? { sagoma: sagomaCfg } : {}),
     };
     let cpResult: any;
     if (mode === "vcsp") {
@@ -2827,6 +2871,10 @@ function compactAgentResult(payload: any): any {
     // Regola del giro (linee radiali): ritorni naturali dal capolinea
     // periferico fatti e saltati nelle catene finali
     turnarounds: m.turnarounds ?? null,
+    // Regola della sagoma: che mezzo ha preso ogni blocco, quante corse girano
+    // su un mezzo più piccolo di quello dichiarato dalla loro linea e se la
+    // flotta per tipologia basta.
+    sagoma: m.sagoma ?? null,
     advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
       .filter((a: any) => a.severity === "critical" || a.severity === "warning")
       .slice(0, 5)

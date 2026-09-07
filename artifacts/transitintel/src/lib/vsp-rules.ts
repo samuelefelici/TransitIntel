@@ -35,8 +35,11 @@ export const DEFAULT_VSP: VspConfig = {
     targetShiftDuration: 600,
     balanceCoeff: 0.0003,
     gapCoeff: 0.0005,
-    downsizePeakPerLevelPerMin: 0.1,
-    downsizeOffpeakPerLevelPerMin: 0.01,
+    // Il declassamento è l'ultima spiaggia, non la norma: deve costare quanto
+    // basta perché il motore lo eviti, ma meno di un mezzo in più. Allineati
+    // ai default del solver (optimizer_common.VehicleCostRates).
+    downsizePeakPerLevelPerMin: 0.3,
+    downsizeOffpeakPerLevelPerMin: 0.05,
     maxIdleAtTerminal: 90,
     maxIdleForArcMin: 600,
     terminalClusterRadiusM: 250,
@@ -157,8 +160,8 @@ export const VSP_GROUPS: GroupDef[] = [
       { path: "vehicleCosts.maxIdleForArcMin", label: "Finestra max per arco", type: "int", unit: "min", min: 30, max: 1200, step: 10 },
       { path: "vehicleCosts.terminalClusterRadiusM", label: "Raggio cluster capolinea", type: "int", unit: "m", min: 0, max: 2000, step: 10 },
       { path: "vehicleCosts.minDeadheadKm", label: "Deadhead trascurabile sotto", type: "float", unit: "km", min: 0, max: 5, step: 0.1 },
-      { path: "vehicleCosts.downsizePeakPerLevelPerMin", label: "Downsize in punta", type: "float", unit: "€/min", min: 0, max: 2, step: 0.01 },
-      { path: "vehicleCosts.downsizeOffpeakPerLevelPerMin", label: "Downsize fuori punta", type: "float", unit: "€/min", min: 0, max: 2, step: 0.01 },
+      { path: "vehicleCosts.downsizePeakPerLevelPerMin", label: "Mezzo ridotto in punta", type: "float", unit: "€/min", min: 0, max: 2, step: 0.01 },
+      { path: "vehicleCosts.downsizeOffpeakPerLevelPerMin", label: "Mezzo ridotto fuori punta", type: "float", unit: "€/min", min: 0, max: 2, step: 0.01 },
     ],
   },
   {

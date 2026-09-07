@@ -973,15 +973,23 @@ export default function VehicleWorkspace({
     const rt = wwRouteInfo.get(String(t.routeId))?.vehicleType;
     return rt && rt in VEHICLE_SIZE ? (rt as VehicleType) : null;
   }, [wwRouteInfo]);
-  /** Tipologia mezzo del blocco = la più impegnativa richiesta dalle corse. */
+  /** Tipologia mezzo del blocco = la più PICCOLA richiesta dalle corse.
+   *  Il tipo dichiarato su una linea è il mezzo giusto e insieme il suo tetto
+   *  fisico: sopra quella taglia la strada non regge. Il mezzo del blocco non
+   *  può quindi superare la richiesta più restrittiva, e le linee più esigenti
+   *  che convivono nel blocco risultano declassate di un gradino. */
   const wwBlockVehicleType = useCallback((trips: ShiftTripEntry[]): VehicleType | null => {
     let best: VehicleType | null = null;
+    let soloFilobus = true;
     for (const t of trips) {
       const req = wwRequiredType(t);
       if (!req) continue;
-      if (req === "filobus") return "filobus"; // infrastruttura vincolante
-      if (!best || (VEHICLE_SIZE[req] ?? 2) > (VEHICLE_SIZE[best] ?? 2)) best = req;
+      if (req !== "filobus") soloFilobus = false;
+      if (!best || (VEHICLE_SIZE[req] ?? 2) < (VEHICLE_SIZE[best] ?? 2)) best = req;
     }
+    // Il filobus vuole la rete elettrificata: vale solo se TUTTE le corse del
+    // blocco sono di linee filoviarie, altrimenti si scende al pari taglia.
+    if (best === "filobus" && !soloFilobus) return "12m";
     return best;
   }, [wwRequiredType]);
   /** Verifica un blocco di corse contro un tipo di mezzo: violazioni (bloccanti)
@@ -1007,11 +1015,16 @@ export default function VehicleWorkspace({
         const req = wwRequiredType(t);
         if (!req || req === vehicleType) continue;
         const rSize = VEHICLE_SIZE[req] ?? 2;
-        if (req === "filobus" || vehicleType === "filobus") {
-          violations.push(`"${t.routeName}": rete filoviaria — richiede ${VEHICLE_LABELS[req]}, il turno è ${VEHICLE_LABELS[vehicleType]}`);
-        } else if (req === "pollicino" && vSize > 0) {
-          violations.push(`"${t.routeName}": percorso da ${VEHICLE_LABELS.pollicino} — ${VEHICLE_LABELS[vehicleType]} non transitabile`);
-        } else if (rSize > vSize) {
+        if (vehicleType === "filobus") {
+          violations.push(`"${t.routeName}": il filobus circola solo sulla rete filoviaria — questa linea richiede ${VEHICLE_LABELS[req]}`);
+        } else if (req === "filobus") {
+          warnings.push(`"${t.routeName}": linea filoviaria servita con ${VEHICLE_LABELS[vehicleType]}`);
+        } else if (vSize > rSize) {
+          // Sagoma: il mezzo è più grande di quanto la strada regga.
+          violations.push(`"${t.routeName}": percorso da ${VEHICLE_LABELS[req]} — ${VEHICLE_LABELS[vehicleType]} non transitabile`);
+        } else if (rSize - vSize > 1) {
+          violations.push(`"${t.routeName}": doppio declassamento — richiesto ${VEHICLE_LABELS[req]}, il turno è ${VEHICLE_LABELS[vehicleType]}`);
+        } else {
           warnings.push(`"${t.routeName}": mezzo ridotto — richiesto ${VEHICLE_LABELS[req]} su ${VEHICLE_LABELS[vehicleType]} (capienza)`);
         }
       }
@@ -1024,7 +1037,7 @@ export default function VehicleWorkspace({
   /* Rimpacchetta (TM): corse selezionate → turno NUOVO con fuorilinea
    * rigenerati e matricola automatica; i turni sorgente tengono le corse
    * non selezionate (i loro vuoti vengono rigenerati, i vuoti orfani puliti).
-   * La tipologia del mezzo la rileva dal blocco (la più impegnativa richiesta). */
+   * La tipologia del mezzo la rileva dal blocco (la più restrittiva richiesta). */
   const wwRepack = useCallback((onlyIds?: string[]) => {
     const sel = onlyIds && onlyIds.length ? new Set(onlyIds) : wwSelected;
     if (!result || sel.size === 0) return;
