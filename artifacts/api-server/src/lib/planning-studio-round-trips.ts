@@ -154,9 +154,9 @@ export async function computeRoundTripAudit(projectId: string, opts: { dayTypeId
          ${valClause}
     )
     SELECT trip_id, route_id, direction, variant_code, short_name, long_name,
-           max(CASE WHEN rn_first = 1 THEN stop_id END) AS first_stop,
+           max(CASE WHEN rn_first = 1 THEN stop_id::text END) AS first_stop,
            max(CASE WHEN rn_first = 1 THEN COALESCE(departure_time, arrival_time) END) AS dep,
-           max(CASE WHEN rn_last = 1 THEN stop_id END) AS last_stop,
+           max(CASE WHEN rn_last = 1 THEN stop_id::text END) AS last_stop,
            max(CASE WHEN rn_last = 1 THEN COALESCE(arrival_time, departure_time) END) AS arr
       FROM st
      GROUP BY trip_id, route_id, direction, variant_code, short_name, long_name

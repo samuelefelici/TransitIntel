@@ -174,3 +174,12 @@ def test_two_cuts_when_cap_is_satisfiable():
         assert len(segs) == 3 and all(s.driving_min <= 330 for s in segs), [s.driving_min for s in segs]
     finally:
         v4.MAX_GUIDA_RIPRESA = old
+
+
+def test_urban_service_has_no_driving_cap_per_piece():
+    """Nei servizi urbani il tetto di guida per ripresa non esiste: vale solo
+    se l'azienda lo imposta; nell'extraurbano resta il default CEE."""
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "urbano"}}).riprese.max_guida_per_ripresa == 0
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "urbano", "riprese": {"maxGuidaPerRipresa": 300}}}).riprese.max_guida_per_ripresa == 300
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "extraurbano"}}).riprese.max_guida_per_ripresa == 270
+    assert v4.BDSConfig.from_config({"bds": {}}).riprese.max_guida_per_ripresa == 270

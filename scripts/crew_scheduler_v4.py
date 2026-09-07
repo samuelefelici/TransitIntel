@@ -1045,12 +1045,19 @@ class BDSConfig:
     @classmethod
     def from_config(cls, cfg: dict) -> "BDSConfig":
         bds = cfg.get("bds", {})
+        riprese = GestoreRiprese.from_config(bds.get("riprese"))
+        # Il tetto di guida per ripresa (4h30, pausa CEE 561/2006) vale per
+        # l'extraurbano: nei servizi URBANI questo vincolo non esiste. Resta
+        # attivo solo se l'azienda lo imposta esplicitamente in bds.riprese.
+        _stype = str(bds.get("serviceType") or "").strip().lower()
+        if _stype == "urbano" and "maxGuidaPerRipresa" not in (bds.get("riprese") or {}):
+            riprese.max_guida_per_ripresa = 0
         return cls(
             pre_post=PrePostRules.from_config(bds.get("prePost")),
             rd131=RD131Config.from_config(bds.get("rd131") or bds.get("cee561")),
             pasto=IntervalloPastoConfig.from_config(bds.get("pasto")),
             stacco=StaccoMinimo.from_config(bds.get("stacco")),
-            riprese=GestoreRiprese.from_config(bds.get("riprese")),
+            riprese=riprese,
             copertura=CoperturaSosteConfig.from_config(bds.get("copertura")),
             collegamento=CollegamentoConfig.from_config(bds.get("collegamento")),
         )
@@ -2599,9 +2606,9 @@ def check_riprese(
                 f"ripresa {seg.vehicle_id} durata {dur}min > max {gestore.max_durata_ripresa}min"
             )
 
-    # Guida per ripresa
+    # Guida per ripresa (0 = nessun tetto: servizi urbani)
     for seg in duty.segments:
-        if seg.driving_min > gestore.max_guida_per_ripresa:
+        if gestore.max_guida_per_ripresa > 0 and seg.driving_min > gestore.max_guida_per_ripresa:
             violations.append(
                 f"guida ripresa {seg.vehicle_id} {seg.driving_min}min > max {gestore.max_guida_per_ripresa}min"
             )
@@ -3253,33 +3260,40 @@ def _build_cpsat_model(
     # Penalità per "punto-percentuale-corsa" oltre soglia: globale PCT_OVER_PENALTY
     # (override config.bds.optimizer.pctOverPenalty).
     pct_excess: list[Any] = []
+    suppl_count = model.new_int_var(0, n_seg, "suppl_count")
     if n_supplemento:
-        suppl_count = model.new_int_var(0, n_seg, "suppl_count")
         model.add(suppl_count == sum(n_supplemento))
         ex = model.new_int_var(0, 100 * n_seg, "suppl_excess")
         model.add(ex >= 100 * suppl_count - 10 * total_duties)
         pct_excess.append(ex)
+    else:
+        model.add(suppl_count == 0)
+    # Base dei tetti percentuali: i TURNI (intero/semiunico/spezzato), senza i
+    # supplementi — la stessa base con cui pct_caps_status e la relazione li
+    # misurano. Prima il modello contava anche i supplementi e poteva dare 6
+    # semiunici «nel tetto» che lo stato dichiarava fuori (6 su 36 = 16,7 %).
+    base_duties = total_duties - suppl_count
 
     if n_semi:
         semi_count = model.new_int_var(0, n_seg, "semi_count")
         model.add(semi_count == sum(n_semi))
         semi_max_pct = rules.get("semiunico", SHIFT_RULES["semiunico"]).get("maxPct", 12)
         ex = model.new_int_var(0, 100 * n_seg, "semi_excess")
-        model.add(ex >= 100 * semi_count - semi_max_pct * total_duties)
+        model.add(ex >= 100 * semi_count - semi_max_pct * base_duties)
         pct_excess.append(ex)
         if hard_pct_caps:
             # RIGIDO: la percentuale non va sforata (tolleranza di frazione di turno)
-            model.add(100 * semi_count <= int(semi_max_pct) * total_duties + tol100)
+            model.add(100 * semi_count <= int(semi_max_pct) * base_duties + tol100)
 
     if n_spezzato:
         spez_count = model.new_int_var(0, n_seg, "spez_count")
         model.add(spez_count == sum(n_spezzato))
         spez_max_pct = rules.get("spezzato", SHIFT_RULES["spezzato"]).get("maxPct", 13)
         ex = model.new_int_var(0, 100 * n_seg, "spez_excess")
-        model.add(ex >= 100 * spez_count - spez_max_pct * total_duties)
+        model.add(ex >= 100 * spez_count - spez_max_pct * base_duties)
         pct_excess.append(ex)
         if hard_pct_caps:
-            model.add(100 * spez_count <= int(spez_max_pct) * total_duties + tol100)
+            model.add(100 * spez_count <= int(spez_max_pct) * base_duties + tol100)
 
     # Cap soft combinato: semiunici + sosta inoperosa ≤ SOSTA_INOP_MAX_PCT_WITH_SEMI%
     if n_semi or n_sosta_inop:
