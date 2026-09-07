@@ -114,8 +114,13 @@ class TestCanVehicleServe:
     def test_exact_match(self):
         assert can_vehicle_serve(3, 3) is True
 
-    def test_larger_vehicle(self):
-        assert can_vehicle_serve(4, 3) is True
+    def test_larger_vehicle_forbidden(self):
+        # Il tipo dichiarato sulla linea e' un TETTO di sagoma, non una capienza
+        # minima: un autosnodato su una linea da 12m non e' uno spreco, e' un
+        # mezzo che in quella strada non passa.
+        assert can_vehicle_serve(4, 3) is False
+        assert can_vehicle_serve(3, 1) is False   # 12m su linea da pollicino
+        assert can_vehicle_serve(2, 1) is False   # 10m su linea da pollicino
 
     def test_one_level_smaller_allowed(self):
         assert can_vehicle_serve(2, 3) is True  # MAX_DOWNSIZE_LEVELS = 1

@@ -23,6 +23,11 @@ VEHICLE_TYPES = list(VEHICLE_SIZE.keys())
 
 MAX_DOWNSIZE_LEVELS = 1
 
+# Fasce di punta (ore inclusive) usate per pesare il declassamento: in punta un
+# mezzo piu' piccolo lascia gente a terra, in morbida quasi non si nota.
+DEFAULT_PEAK_WINDOWS: tuple[tuple[int, int], ...] = ((7, 9), (17, 19))
+_PEAK_WINDOWS: tuple[tuple[int, int], ...] = DEFAULT_PEAK_WINDOWS
+
 # Deadhead / idle
 MAX_DEADHEAD_KM = 30
 MAX_IDLE_AT_TERMINAL = 60      # min — oltre questo, rientro deposito
@@ -106,8 +111,11 @@ class VehicleCostRates:
     # nastro=600min, lavoro=450min → gap=150 → 150²×0.0005 = €11.25
 
     # H. Downsize penalty
-    downsize_peak_per_level_per_min: float = 0.10   # €/min/livello in ora di punta
-    downsize_offpeak_per_level_per_min: float = 0.01  # quasi zero fuori punta
+    # Il declassamento e' l'ultima spiaggia, non la norma: deve costare quanto
+    # basta perche' il solver lo eviti, ma sempre meno di un mezzo in piu'
+    # (55-18 €/giorno di solo costo fisso), altrimenti il piano ingrassa.
+    downsize_peak_per_level_per_min: float = 0.30   # €/min/livello in ora di punta
+    downsize_offpeak_per_level_per_min: float = 0.05  # tollerato in morbida
 
     # Sosta massima al capolinea prima del rientro deposito.
     # NOTA: questo valore controlla ANCHE l'ampiezza della finestra di
@@ -834,6 +842,7 @@ class VShiftTrip:
     deadhead_min: int = 0
     downsized: bool = False
     original_vehicle: str | None = None
+    required_vehicle: str = ""    # tipo dichiarato dalla linea (tetto di sagoma)
     on_demand: bool = False       # corsa a chiamata (DRT)
     variant_code: str = ""        # codice percorso (relazione corsa→percorso→linea)
     cluster_stops: list[ClusterStop] = field(default_factory=list)  # fermate intermedie in cluster
@@ -1041,16 +1050,45 @@ def estimate_deadhead(
     return round(road, 1), minutes
 
 
+def set_peak_windows(windows) -> None:
+    """Imposta le fasce di punta, come coppie [oraInizio, oraFine] inclusive.
+
+    Il feriale urbano ha due punte (mattina e sera), il festivo una sola e
+    pomeridiana: la fascia non puo' essere una costante del motore.
+    """
+    global _PEAK_WINDOWS
+    parsed: list[tuple[int, int]] = []
+    for w in windows or ():
+        try:
+            a, b = int(w[0]), int(w[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if 0 <= a <= 23 and 0 <= b <= 23 and a <= b:
+            parsed.append((a, b))
+    _PEAK_WINDOWS = tuple(parsed) if parsed else DEFAULT_PEAK_WINDOWS
+
+
+def get_peak_windows() -> tuple[tuple[int, int], ...]:
+    return _PEAK_WINDOWS
+
+
 def is_peak_hour(departure_min: int) -> bool:
     # GTFS ammette orari oltre le 24h (corse a cavallo di mezzanotte): senza il
     # modulo, una corsa "25:30" darebbe h=25 e non verrebbe mai vista come picco.
     h = (departure_min // 60) % 24
-    return (7 <= h <= 9) or (17 <= h <= 19)
+    return any(a <= h <= b for a, b in _PEAK_WINDOWS)
 
 
 def can_vehicle_serve(vehicle_size: int, required_size: int) -> bool:
-    if vehicle_size >= required_size:
-        return True
+    """Il tipo dichiarato su una linea e' insieme il mezzo GIUSTO e il suo TETTO
+    FISICO: sopra quella taglia la strada non regge (sagoma), sotto si perde
+    capienza. Un veicolo puo' quindi servire la corsa solo se non e' piu' grande
+    del richiesto e non e' piu' di MAX_DOWNSIZE_LEVELS gradini piu' piccolo.
+    Non esiste promozione: mandare un 12m su una linea da pollicino non e' uno
+    spreco, e' un mezzo che in quella strada non passa.
+    """
+    if vehicle_size > required_size:
+        return False
     return (required_size - vehicle_size) <= MAX_DOWNSIZE_LEVELS
 
 
@@ -1301,6 +1339,8 @@ def vshift_trip_to_dict(t: VShiftTrip) -> dict:
         d["stopCount"] = t.stop_count
         d["durationMin"] = t.duration_min
         d["directionId"] = t.direction_id
+        if t.required_vehicle:
+            d["requiredVehicle"] = t.required_vehicle
         if t.downsized:
             d["downsized"] = True
             d["originalVehicle"] = t.original_vehicle
