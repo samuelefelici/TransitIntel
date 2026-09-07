@@ -1088,9 +1088,15 @@ class BDSConfig:
         _stype = str(bds.get("serviceType") or "").strip().lower()
         if _stype == "urbano" and "maxGuidaPerRipresa" not in (bds.get("riprese") or {}):
             riprese.max_guida_per_ripresa = 0
+        # Regola dell'azienda: nel servizio URBANO non vale nemmeno il tetto di
+        # guida continuativa di 4h30 (RD 131): spento, salvo attivazione
+        # esplicita in bds.rd131.attivo.
+        rd131 = RD131Config.from_config(bds.get("rd131") or bds.get("cee561"))
+        if _stype == "urbano" and "attivo" not in (bds.get("rd131") or bds.get("cee561") or {}):
+            rd131.attivo = False
         return cls(
             pre_post=PrePostRules.from_config(bds.get("prePost")),
-            rd131=RD131Config.from_config(bds.get("rd131") or bds.get("cee561")),
+            rd131=rd131,
             pasto=IntervalloPastoConfig.from_config(bds.get("pasto")),
             stacco=StaccoMinimo.from_config(bds.get("stacco")),
             riprese=riprese,

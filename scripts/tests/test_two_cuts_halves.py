@@ -183,3 +183,11 @@ def test_urban_service_has_no_driving_cap_per_piece():
     assert v4.BDSConfig.from_config({"bds": {"serviceType": "urbano", "riprese": {"maxGuidaPerRipresa": 300}}}).riprese.max_guida_per_ripresa == 300
     assert v4.BDSConfig.from_config({"bds": {"serviceType": "extraurbano"}}).riprese.max_guida_per_ripresa == 270
     assert v4.BDSConfig.from_config({"bds": {}}).riprese.max_guida_per_ripresa == 270
+
+
+def test_urban_service_has_no_continuous_driving_cap():
+    """Nell'urbano la guida continuativa di 4h30 (RD 131) è spenta, salvo
+    attivazione esplicita; nell'extraurbano resta accesa."""
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "urbano"}}).rd131.attivo is False
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "urbano", "rd131": {"attivo": True}}}).rd131.attivo is True
+    assert v4.BDSConfig.from_config({"bds": {"serviceType": "extraurbano"}}).rd131.attivo is True
