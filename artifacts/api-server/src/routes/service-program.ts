@@ -2635,6 +2635,103 @@ function pruneAgentJobs(): void {
   }
 }
 
+/* ── Registro persistente dei giri ─────────────────────────────────
+ * Il registro in memoria muore a ogni deploy: gli esiti finiti sparivano
+ * («non trovato») e i giri in corso svanivano senza traccia. Ogni giro viene
+ * scritto su agent_optimize_jobs alla creazione e alla fine (esito compatto,
+ * scenario, errore) insieme alla richiesta originale, così un giro trovato
+ * «running» dopo un riavvio si dichiara interrotto e riporta i parametri
+ * con cui rilanciarlo. */
+let agentJobsTableReady: Promise<void> | null = null;
+function ensureAgentJobsTable(): Promise<void> {
+  if (!agentJobsTableReady) {
+    agentJobsTableReady = db.execute(sql`
+      CREATE TABLE IF NOT EXISTS agent_optimize_jobs (
+        id uuid PRIMARY KEY,
+        user_id uuid,
+        ps_project_id uuid,
+        mode text,
+        status text NOT NULL,
+        created_at timestamptz NOT NULL,
+        finished_at timestamptz,
+        progress jsonb,
+        params jsonb,
+        request jsonb,
+        error text,
+        scenario_id uuid,
+        dss_id uuid,
+        scenario_name text,
+        result_compact jsonb,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`).then(() => undefined).catch((e) => { agentJobsTableReady = null; throw e; });
+  }
+  return agentJobsTableReady;
+}
+
+async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promise<void> {
+  try {
+    await ensureAgentJobsTable();
+    const compact = job.status === "done" && job.result ? compactAgentResult(job.result) : null;
+    await db.execute(sql`
+      INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, finished_at,
+                                       progress, params, request, error, scenario_id, dss_id, scenario_name, result_compact, updated_at)
+      VALUES (${job.id}::uuid, ${job.userId}::uuid, ${job.psProjectId}::uuid, ${job.mode}, ${job.status},
+              to_timestamp(${job.createdAt / 1000}),
+              ${job.finishedAt ? new Date(job.finishedAt).toISOString() : null}::timestamptz,
+              ${JSON.stringify(job.progress)}::jsonb, ${JSON.stringify(job.params)}::jsonb,
+              ${request ? JSON.stringify(request) : null}::jsonb,
+              ${job.error ?? null}, ${job.scenarioId ?? null}::uuid, ${job.dssId ?? null}::uuid, ${job.scenarioName ?? null},
+              ${compact ? JSON.stringify(compact) : null}::jsonb, now())
+      ON CONFLICT (id) DO UPDATE SET
+        status = EXCLUDED.status, finished_at = EXCLUDED.finished_at, progress = EXCLUDED.progress,
+        params = EXCLUDED.params, request = COALESCE(EXCLUDED.request, agent_optimize_jobs.request),
+        error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
+        scenario_name = EXCLUDED.scenario_name,
+        result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
+        updated_at = now()`);
+  } catch { /* best-effort: il registro in memoria resta la via principale */ }
+}
+
+async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<any[]> {
+  try {
+    await ensureAgentJobsTable();
+    const r = where.id
+      ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE id = ${where.id}::uuid LIMIT 1`)
+      : where.isAdmin
+        ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs ORDER BY created_at DESC LIMIT 20`)
+        : await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE user_id = ${where.userId ?? null}::uuid ORDER BY created_at DESC LIMIT 20`);
+    return (r.rows ?? []) as any[];
+  } catch { return []; }
+}
+
+/** Vista API di una riga persistita: un giro «running» su DB ma assente dalla
+ * memoria è stato interrotto da un riavvio: lo si dichiara, con la richiesta
+ * originale per rilanciarlo con gli stessi parametri. */
+function agentJobRowView(row: any, full: boolean): Record<string, any> {
+  const interrupted = row.status === "running";
+  const createdMs = new Date(row.created_at).getTime();
+  const finishedMs = row.finished_at ? new Date(row.finished_at).getTime() : null;
+  return {
+    jobId: row.id,
+    status: interrupted ? "error" : row.status,
+    mode: row.mode,
+    psProjectId: row.ps_project_id,
+    progress: row.progress ?? null,
+    elapsedSec: Math.round(((finishedMs ?? Date.now()) - createdMs) / 1000),
+    params: row.params ?? {},
+    ...(interrupted
+      ? { error: "Giro interrotto dal riavvio del server (deploy): rilancialo con gli stessi parametri (campo request)", request: row.request ?? null }
+      : row.error ? { error: row.error } : {}),
+    ...(row.status === "done" && full ? {
+      scenarioId: row.scenario_id ?? null,
+      dssId: row.dss_id ?? null,
+      scenarioName: row.scenario_name ?? null,
+      result: row.result_compact ?? null,
+      persisted: true,
+    } : {}),
+  };
+}
+
 /** Logger che intercetta le righe PROGRESS|fase|pct|msg del solver (già
  * inoltrate su stderr→logger da spawnPythonJson) e aggiorna il job. In VCSP
  * ascoltiamo solo la fase "VCSP" (il VSP interno va 0→100 a ogni round). */
@@ -3167,6 +3264,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     };
     agentJobs.set(job.id, job);
     pruneAgentJobs();
+    void persistAgentJob(job, req.body);
 
     // Req/res sintetici: la pipeline del giro è la STESSA della fucina.
     const jobLog = agentJobLogger(job, req.log);
@@ -3289,6 +3387,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         job.error = `Giro completato ma salvataggio fallito: ${e?.message}`;
       } finally {
         job.finishedAt = Date.now();
+        void persistAgentJob(job);
       }
     });
 
@@ -3313,9 +3412,18 @@ router.post("/service-program/agent-optimize", async (req, res) => {
 });
 
 /** Stato/risultato di un giro lanciato dall'agente. */
-router.get("/service-program/agent-optimize/:jobId", (req, res) => {
+router.get("/service-program/agent-optimize/:jobId", async (req, res) => {
   const job = agentJobs.get(String(req.params.jobId));
-  if (!job) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+  if (!job) {
+    const rows = /^[0-9a-f-]{36}$/i.test(String(req.params.jobId)) ? await loadAgentJobRows({ id: String(req.params.jobId) }) : [];
+    const row = rows[0];
+    if (!row) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+    if (req.user?.id !== String(row.user_id) && req.user?.role !== "admin") {
+      res.status(403).json({ error: "Job di un altro utente" }); return;
+    }
+    res.json(agentJobRowView(row, true));
+    return;
+  }
   if (req.user?.id !== job.userId && req.user?.role !== "admin") {
     res.status(403).json({ error: "Job di un altro utente" }); return;
   }
@@ -3337,10 +3445,14 @@ router.get("/service-program/agent-optimize/:jobId", (req, res) => {
 });
 
 /** Elenco giri dell'utente (recupero jobId persi). */
-router.get("/service-program/agent-optimize", (req, res) => {
+router.get("/service-program/agent-optimize", async (req, res) => {
   const userId = req.user?.id;
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
   const isAdmin = req.user?.role === "admin";
+  const persistedRows = await loadAgentJobRows({ userId, isAdmin });
+  const persisted = persistedRows
+    .filter((r) => !agentJobs.has(String(r.id)))
+    .map((r) => agentJobRowView(r, false));
   const jobs = Array.from(agentJobs.values())
     .filter(j => isAdmin || j.userId === userId)
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -3352,7 +3464,7 @@ router.get("/service-program/agent-optimize", (req, res) => {
       scenarioId: j.scenarioId ?? null,
       ...(j.error ? { error: j.error } : {}),
     }));
-  res.json({ jobs });
+  res.json({ jobs: [...jobs, ...persisted].slice(0, 20) });
 });
 
 /* ═══════════════════════════════════════════════════════════════
