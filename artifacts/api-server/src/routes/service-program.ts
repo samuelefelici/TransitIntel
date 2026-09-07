@@ -583,30 +583,38 @@ function generateAdvisories(
     });
   }
 
-  // ──── 2. OVERSIZED VEHICLES ────
+  /* ──── 2. MEZZO PIÙ GRANDE DEL DICHIARATO ────
+   * Con la regola della sagoma il tipo del turno è la richiesta PIÙ RESTRITTIVA
+   * fra le sue corse, quindi un turno sopra il dichiarato non può più nascere:
+   * questo avviso è la rete che lo direbbe se accadesse. La versione precedente
+   * proponeva invece di declassare ogni blocco monolinea per risparmiare sul
+   * costo fisso — cioè esattamente il comportamento tolto dal motore — e
+   * spingeva l'operatore a rifare a mano il declassamento appena evitato.
+   * Quando un mezzo sembra troppo grande, l'azione giusta non è declassare il
+   * singolo turno ma rivedere la TIPOLOGIA DICHIARATA della linea, che è anche
+   * il suo tetto di sagoma. */
   for (const shift of shifts) {
-    const tripRoutes = new Set(shift.trips.filter(t => t.type === "trip").map(t => t.routeId));
-    if (tripRoutes.size === 1) {
-      const rId = [...tripRoutes][0];
-      const rTrips = tripBlocks.filter(t => t.routeId === rId);
-      // If all trips on this route could use a smaller vehicle
-      const currentSize = VEHICLE_SIZE[shift.vehicleType];
-      if (currentSize >= 3) { // 12m or autosnodato
-        const smallerType: VehicleType = currentSize === 4 ? "12m" : "10m";
-        const saving = COST_VEHICLE_FIXED_DAY[shift.vehicleType] - COST_VEHICLE_FIXED_DAY[smallerType];
-        if (saving > 5 && rTrips.length <= 15) {
-          advisories.push({
-            id: `adv-${++id}`,
-            severity: "info",
-            category: "fleet",
-            title: `${shift.vehicleId}: possibile downsizing`,
-            description: `Il veicolo ${shift.vehicleId} (${VEHICLE_LABELS[shift.vehicleType]}) serve solo la linea ${rTrips[0]?.routeName} con ${shift.tripCount} corse. Un ${VEHICLE_LABELS[smallerType]} potrebbe bastare.`,
-            impact: `Risparmio: €${saving}/giorno`,
-            action: `Valutare il carico passeggeri della linea ${rTrips[0]?.routeName}. Se il picco è sotto ${VEHICLE_CAPACITY[smallerType]} pax, usare un ${VEHICLE_LABELS[smallerType]}.`,
-            metric: saving,
-          });
-        }
-      }
+    const corse = shift.trips.filter(t => t.type === "trip");
+    const richieste = corse
+      .map(t => t.requiredVehicle)
+      .filter((v): v is VehicleType => !!v && v in VEHICLE_SIZE);
+    if (richieste.length === 0) continue;
+    const minReq = Math.min(...richieste.map(v => VEHICLE_SIZE[v]));
+    const currentSize = VEHICLE_SIZE[shift.vehicleType];
+    if (currentSize > minReq) {
+      const soffrono = corse.filter(t => t.requiredVehicle
+        && VEHICLE_SIZE[t.requiredVehicle] < currentSize);
+      const linee = [...new Set(soffrono.map(t => t.routeName).filter(Boolean))];
+      advisories.push({
+        id: `adv-${++id}`,
+        severity: "critical",
+        category: "fleet",
+        title: `${shift.vehicleId}: mezzo fuori sagoma`,
+        description: `Il turno ${shift.vehicleId} gira con un ${VEHICLE_LABELS[shift.vehicleType]}, ma serve ${soffrono.length} corse di linee dichiarate per un mezzo più piccolo (${linee.join(", ")}). Sopra la taglia dichiarata la strada non regge.`,
+        impact: "Corse assegnate a un mezzo che su quel percorso non può transitare",
+        action: `Rimpacchettare il turno separando le corse di ${linee.join(", ")}, oppure correggere la tipologia dichiarata di quelle linee in Planning Studio.`,
+        metric: soffrono.length,
+      });
     }
   }
 
