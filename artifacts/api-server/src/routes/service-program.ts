@@ -3238,7 +3238,14 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
       const wanted = Array.isArray(b.routeIds) && b.routeIds.length > 0
         ? new Set(b.routeIds.map(String)) : null;
-      const psVehicle = new Map<string, string>();
+      /* Tipologia dichiarata per linea, col suo lucchetto.
+       * Una linea che ammette UN SOLO tipo è inchiodata a quel tipo: nessun
+       * declassamento, nemmeno di un gradino. È il lucchetto della fucina,
+       * finalmente esprimibile anche dai dati di progetto e da Argos — prima
+       * `forced` era cablato a false su questo percorso e `ammesse` non
+       * arrivava a nessun solver, quindi «questa linea non scende sotto il
+       * 12 metri» non era dicibile in alcun modo. */
+      const psVehicle = new Map<string, { tipo: string; forced: boolean }>();
       try {
         // Lookup diretto per progetto (route_id GTFS = uuid ps_routes): vale
         // anche per i feed UDP scoped, dove il join su materialized_feed_id
@@ -3251,7 +3258,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         for (const row of psR.rows ?? []) {
           const vt = row.vt;
           if (vt && Array.isArray(vt.ammesse) && vt.ammesse.length > 0) {
-            psVehicle.set(String(row.id), String(vt.preferita ?? vt.ammesse[0]));
+            const ammesse = vt.ammesse.map(String);
+            psVehicle.set(String(row.id), {
+              tipo: String(vt.preferita ?? ammesse[0]),
+              forced: ammesse.length === 1,
+            });
           }
         }
       } catch { /* feed non materializzato da PS */ }
@@ -3262,9 +3273,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       for (const r of feedRoutes) {
         if (wanted && !wanted.has(r.routeId)) continue;
         const declared = psVehicle.get(r.routeId);
-        const mapped = declared && (validTypes.has(declared) ? declared : AGENT_VEHICLE_FALLBACK[declared]);
+        const mapped = declared && (validTypes.has(declared.tipo)
+          ? declared.tipo : AGENT_VEHICLE_FALLBACK[declared.tipo]);
         if (mapped) {
-          routes.push({ routeId: r.routeId, vehicleType: mapped as VehicleType, forced: false });
+          routes.push({ routeId: r.routeId, vehicleType: mapped as VehicleType,
+                        forced: !!declared?.forced });
         } else if (defaultVt) {
           routes.push({ routeId: r.routeId, vehicleType: defaultVt, forced: false });
         } else {
