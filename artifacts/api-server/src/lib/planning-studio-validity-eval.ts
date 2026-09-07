@@ -502,3 +502,65 @@ export async function isValidityUnitStale(
   }
   return false;
 }
+
+
+/**
+ * Riallinea l'insieme di corse di un'UDP al Planning Studio: rivaluta le
+ * corse attive sulle date rappresentative dell'unità (prima, mediana, ultima),
+ * nello scope di linee dell'unità, e se l'insieme è cambiato aggiorna
+ * trip_ids/trip_count. È la «UDP superata» risolta in automatico: senza
+ * questo passo un giro turnava le corse fotografate alla creazione dell'unità
+ * e ignorava quelle aggiunte o tolte dopo.
+ * Ritorna null se l'unità non esiste o non ha date rappresentative.
+ */
+export async function refreshValidityUnitTrips(
+  projectId: string,
+  unitId: string,
+): Promise<{ changed: boolean; before: number; after: number; added: number; removed: number } | null> {
+  const r = await db.execute<any>(sql`
+    SELECT trip_ids, representative_dates FROM ps_validity_units
+     WHERE id = ${unitId}::uuid AND project_id = ${projectId}::uuid LIMIT 1`);
+  const unit = r.rows?.[0];
+  if (!unit) return null;
+  const saved: string[] = [...new Set<string>(((Array.isArray(unit.trip_ids) ? unit.trip_ids : []) as any[]).map((x: any) => String(x)))];
+  const normDate = (x: any): string | null => {
+    const t = String(x ?? "");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+    if (/^\d{8}$/.test(t)) return `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}`;
+    return null;
+  };
+  const repDates = (Array.isArray(unit.representative_dates) ? unit.representative_dates : [])
+    .map(normDate).filter((d: string | null): d is string => !!d);
+  if (!repDates.length) return null;
+  const sample = [...new Set([repDates[0], repDates[Math.floor(repDates.length / 2)], repDates[repDates.length - 1]])];
+
+  // scope di linee dell'unità = le linee delle corse salvate (UDP scopata);
+  // senza corse salvate l'unità copre tutto il progetto
+  let scopeRoutes: Set<string> | null = null;
+  if (saved.length) {
+    const routesR = await db.execute<any>(sql`
+      SELECT DISTINCT route_id FROM ps_trips WHERE id = ANY(${`{${saved.join(",")}}`}::uuid[])`);
+    scopeRoutes = new Set(((routesR.rows ?? []) as any[]).map((x) => String(x.route_id)));
+  }
+  const fresh = new Set<string>();
+  for (const d of sample) {
+    const active = await computeActiveDatesByTrip({ projectId, from: d, to: d });
+    for (const id of active.keys()) fresh.add(String(id));
+  }
+  if (scopeRoutes && scopeRoutes.size && fresh.size) {
+    const idsR = await db.execute<any>(sql`
+      SELECT id::text AS id, route_id FROM ps_trips WHERE id = ANY(${`{${[...fresh].join(",")}}`}::uuid[])`);
+    const inScope = new Set(((idsR.rows ?? []) as any[]).filter((x) => scopeRoutes!.has(String(x.route_id))).map((x) => String(x.id)));
+    for (const id of [...fresh]) if (!inScope.has(id)) fresh.delete(id);
+  }
+  const savedSet = new Set(saved);
+  const added = [...fresh].filter((id) => !savedSet.has(id)).length;
+  const removed = saved.filter((id) => !fresh.has(id)).length;
+  if (!added && !removed) return { changed: false, before: saved.length, after: saved.length, added: 0, removed: 0 };
+  const list = [...fresh].sort();
+  await db.execute(sql`
+    UPDATE ps_validity_units
+       SET trip_ids = ${JSON.stringify(list)}::jsonb, trip_count = ${list.length}, updated_at = now()
+     WHERE id = ${unitId}::uuid`);
+  return { changed: true, before: saved.length, after: list.length, added, removed };
+}

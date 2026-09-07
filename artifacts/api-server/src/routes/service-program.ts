@@ -2901,6 +2901,9 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     let feedId: string | null =
       typeof b.feedId === "string" && /^[0-9a-f-]{36}$/i.test(b.feedId) ? b.feedId : null;
     let feedSource: "esplicito" | "udp" | "esercizio" | null = feedId ? "esplicito" : null;
+    // «UDP superata» risolta in automatico: l'insieme di corse dell'unità viene
+    // riallineato al Planning Studio prima di costruire il feed
+    let udpRefresh: { changed: boolean; before: number; after: number; added: number; removed: number } | null = null;
     if (!feedId) {
       // Via maestra: l'UDP (ps_validity_units). Parità con l'app: se l'unità
       // non è mai stata mandata allo scheduling, il progetto si crea QUI e il
@@ -2942,8 +2945,18 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           }
           if (sp) {
             schedProjectId = sp.id;
+            try {
+              const { refreshValidityUnitTrips } = await import("../lib/planning-studio-validity-eval");
+              udpRefresh = await refreshValidityUnitTrips(psProjectId, String(unit.id));
+              if (udpRefresh?.changed) {
+                req.log.info(`agent-optimize: UDP "${unit.name}" riallineata al Planning Studio: `
+                  + `${udpRefresh.before} → ${udpRefresh.after} corse (+${udpRefresh.added} / −${udpRefresh.removed}) → ri-materializzo`);
+              }
+            } catch (e: any) {
+              req.log.warn(`agent-optimize: riallineamento UDP saltato: ${e?.message ?? e}`);
+            }
             let fresh = false;
-            if (sp.feed_id) {
+            if (sp.feed_id && !udpRefresh?.changed) {
               try {
                 const st = await db.execute<any>(sql`
                   SELECT (SELECT uploaded_at FROM gtfs_feeds WHERE id = ${sp.feed_id}::uuid) AS synced,
@@ -3148,6 +3161,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       params: {
         date: rawDate, mode, intensity, timeLimit, serviceType,
         routes: routes.length, vehicleSource, feedSource, depots: depotsSel?.length ?? 0,
+        ...(udpRefresh ? { udpRefresh } : {}),
         ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit } : {}),
       },
     };
@@ -3288,6 +3302,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       vehicleSource,
       feedSource,
       depots: depotsSel?.length ?? 0,
+      ...(udpRefresh ? { udpRefresh } : {}),
       ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes } : {}),
       hint: "Interroga GET /service-program/agent-optimize/{jobId} per progresso e risultato (attendi ~60-90s tra un controllo e l'altro)",
     });
