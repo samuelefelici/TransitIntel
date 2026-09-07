@@ -1045,12 +1045,19 @@ class BDSConfig:
     @classmethod
     def from_config(cls, cfg: dict) -> "BDSConfig":
         bds = cfg.get("bds", {})
+        riprese = GestoreRiprese.from_config(bds.get("riprese"))
+        # Il tetto di guida per ripresa (4h30, pausa CEE 561/2006) vale per
+        # l'extraurbano: nei servizi URBANI questo vincolo non esiste. Resta
+        # attivo solo se l'azienda lo imposta esplicitamente in bds.riprese.
+        _stype = str(bds.get("serviceType") or "").strip().lower()
+        if _stype == "urbano" and "maxGuidaPerRipresa" not in (bds.get("riprese") or {}):
+            riprese.max_guida_per_ripresa = 0
         return cls(
             pre_post=PrePostRules.from_config(bds.get("prePost")),
             rd131=RD131Config.from_config(bds.get("rd131") or bds.get("cee561")),
             pasto=IntervalloPastoConfig.from_config(bds.get("pasto")),
             stacco=StaccoMinimo.from_config(bds.get("stacco")),
-            riprese=GestoreRiprese.from_config(bds.get("riprese")),
+            riprese=riprese,
             copertura=CoperturaSosteConfig.from_config(bds.get("copertura")),
             collegamento=CollegamentoConfig.from_config(bds.get("collegamento")),
         )
@@ -2599,9 +2606,9 @@ def check_riprese(
                 f"ripresa {seg.vehicle_id} durata {dur}min > max {gestore.max_durata_ripresa}min"
             )
 
-    # Guida per ripresa
+    # Guida per ripresa (0 = nessun tetto: servizi urbani)
     for seg in duty.segments:
-        if seg.driving_min > gestore.max_guida_per_ripresa:
+        if gestore.max_guida_per_ripresa > 0 and seg.driving_min > gestore.max_guida_per_ripresa:
             violations.append(
                 f"guida ripresa {seg.vehicle_id} {seg.driving_min}min > max {gestore.max_guida_per_ripresa}min"
             )
