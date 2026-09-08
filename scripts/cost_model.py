@@ -17,6 +17,11 @@ from optimizer_common import (
 )
 
 
+# Tolleranza sotto il target minimo prima di dire che un turno e' vuoto.
+# Ancorata al PAVIMENTO, non alla media della banda.
+UNDERTIME_TOLERANCE = 24   # minuti
+
+
 # ═══════════════════════════════════════════════════════════════
 #  TARIFFE (tutte in euro)
 # ═══════════════════════════════════════════════════════════════
@@ -73,6 +78,9 @@ class CostRates:
     # parcheggiava ogni turno sul fondo della banda: nel giro AL il nastro
     # medio e' stato di 367 minuti, un minuto sopra la soglia. Riempire fino
     # al tetto vero e' esattamente cio' che riduce il numero di turni.
+    # Sotto target_work_min meno questa tolleranza il turno e' troppo vuoto.
+    # Ancorata al PAVIMENTO, non alla media: cosi' alzare il tetto non
+    # trascina con se' la soglia di sottoutilizzo.
     target_work_min: int = 390              # 6h30
     target_work_max: int = 435              # 7h15 — tetto legale del turno intero
 
@@ -307,15 +315,21 @@ def compute_duty_cost(duty: Duty, rates: CostRates) -> DutyCostBreakdown:
     c.base_salary = duty.work_min * per_min
 
     # ── 8. Straordinario / sotto-orario ──
-    target_mid = (rates.target_work_min + rates.target_work_max) / 2.0
-    if duty.work_min > target_mid + 12:
-        excess = duty.work_min - target_mid
+    # Le due soglie sono INDIPENDENTI. Il pavimento dice quando un turno e'
+    # troppo vuoto, il tetto quando diventa straordinario: derivarle entrambe
+    # da una media significa che alzare il tetto alza anche il pavimento. E'
+    # l'errore costato il giro AN — portando il tetto da 402 a 435 il pavimento
+    # e' salito da 366 a 382,5, e turni perfettamente regolari da 370 minuti
+    # hanno cominciato a pagare sottoutilizzo: +411 EUR di costo guida per lo
+    # stesso identico lavoro, e nemmeno un turno risparmiato.
+    if duty.work_min > rates.target_work_max:
+        excess = duty.work_min - rates.target_work_max
         c.overtime_cost = excess * per_min * (rates.overtime_multiplier - 1)
     else:
         c.overtime_cost = 0
 
-    if duty.work_min < target_mid - 30:
-        deficit = target_mid - duty.work_min
+    if duty.work_min < rates.target_work_min - UNDERTIME_TOLERANCE:
+        deficit = rates.target_work_min - duty.work_min
         c.undertime_cost = deficit * rates.work_imbalance_per_min
     else:
         c.undertime_cost = 0
@@ -337,6 +351,11 @@ def compute_duty_cost(duty: Duty, rates: CostRates) -> DutyCostBreakdown:
     c.fragmentation_penalty = gaps_over_10 * rates.fragmentation_per_gap
 
     # ── 12. Penalità sbilanciamento ──
+    # Qui il centro della banda serve come BERSAGLIO DI FORMA — dove un turno
+    # sta bene — ed e' una cosa diversa dalle due soglie di costo qui sopra,
+    # che dicono invece quando si sconfina. Tenerli separati e' il motivo per
+    # cui questo valore si ricalcola qui invece di essere riusato da sopra.
+    target_mid = (rates.target_work_min + rates.target_work_max) / 2.0
     dev = abs(duty.work_min - target_mid)
     c.work_imbalance_penalty = dev * rates.work_imbalance_per_min
 

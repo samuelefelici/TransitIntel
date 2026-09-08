@@ -145,3 +145,30 @@ def test_la_banda_del_turno_pieno_arriva_al_tetto_legale():
     assert TARGET_WORK_LOW == r.target_work_min
     assert TARGET_WORK_HIGH == r.target_work_max
     assert abs(TARGET_WORK_MID - mid) <= 1
+
+
+def test_alzare_il_tetto_non_deve_alzare_il_pavimento():
+    """Le due soglie di costo del turno sono INDIPENDENTI.
+
+    Derivarle entrambe dalla media della banda significa che allargare il tetto
+    trascina su anche il pavimento. E' l'errore costato il giro AN: portando
+    target_work_max da 402 a 435 il pavimento e' salito da 366 a 382,5 minuti,
+    e turni perfettamente regolari da 370 minuti hanno cominciato a pagare
+    sottoutilizzo — +411 EUR di costo guida per lo stesso identico lavoro, e
+    nemmeno un turno risparmiato."""
+    from cost_model import CostRates, UNDERTIME_TOLERANCE
+
+    r = CostRates()
+    pavimento = r.target_work_min - UNDERTIME_TOLERANCE
+    assert pavimento == 366, "il pavimento deve restare dove stava"
+    assert r.target_work_max == 435, "il tetto e' quello legale"
+
+    # il pavimento dipende SOLO dal minimo: muovere il tetto non lo tocca
+    r2 = CostRates.from_config({"costRates": {"targetWorkMax": 480}})
+    assert r2.target_work_max == 480
+    assert r2.target_work_min - UNDERTIME_TOLERANCE == pavimento
+
+    # e muovere il minimo non tocca il tetto
+    r3 = CostRates.from_config({"costRates": {"targetWorkMin": 360}})
+    assert r3.target_work_max == r.target_work_max
+    assert r3.target_work_min - UNDERTIME_TOLERANCE == 336

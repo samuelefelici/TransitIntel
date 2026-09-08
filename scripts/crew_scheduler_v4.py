@@ -64,7 +64,8 @@ from optimizer_common import (
     load_input, write_output, log, report_progress,
     merge_config, parse_clusters_from_config,
 )
-from cost_model import CostRates, DutyCostBreakdown, compute_duty_cost
+from cost_model import (CostRates, DutyCostBreakdown, compute_duty_cost,
+                        UNDERTIME_TOLERANCE)
 
 
 # ----------------------------------------------------------------
@@ -2921,14 +2922,18 @@ def compute_duty_cost_v4(
     lavoro_retribuito = wc.lavoro_convenzionale
     c.base_salary = lavoro_retribuito * per_min
 
-    # 7. Straordinario
-    target_mid = (rates.target_work_min + rates.target_work_max) / 2.0
-    if lavoro_retribuito > target_mid + 12:
-        excess = lavoro_retribuito - target_mid
+    # 7. Straordinario e sotto-orario: DUE SOGLIE INDIPENDENTI.
+    # Il pavimento dice quando un turno e' troppo vuoto, il tetto quando
+    # diventa straordinario. Derivarle entrambe da una media significa che
+    # alzare il tetto alza anche il pavimento: e' l'errore costato il giro AN,
+    # dove portare il tetto da 402 a 435 ha spostato il pavimento da 366 a
+    # 382,5 e ha fatto pagare sottoutilizzo a turni regolari da 370 minuti.
+    if lavoro_retribuito > rates.target_work_max:
+        excess = lavoro_retribuito - rates.target_work_max
         c.overtime_cost = excess * per_min * (rates.overtime_multiplier - 1)
 
-    if lavoro_retribuito < target_mid - 30:
-        deficit = target_mid - lavoro_retribuito
+    if lavoro_retribuito < rates.target_work_min - UNDERTIME_TOLERANCE:
+        deficit = rates.target_work_min - lavoro_retribuito
         c.undertime_cost = deficit * rates.work_imbalance_per_min
 
     # 8. Supplemento
