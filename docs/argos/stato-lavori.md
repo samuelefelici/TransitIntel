@@ -174,7 +174,18 @@ Non c'e' un terzo ramo. Il motore non genera **mai** l'arco via deposito come *a
 
 Questo spiega anche perche' la #456 non aveva mosso nulla: prezzare bene i km a vuoto non serve se la mossa non e' fra le alternative. Non era un problema di prezzo, era un problema di **arco mancante**.
 
-**Prossimo intervento:** generare l'arco via deposito come alternativa a quello diretto quando la sosta lo consente, e lasciare che sia il costo a scegliere — a quel punto il prezzo della #456 (km al netto del corrispettivo piu' il tempo del conducente) ha finalmente qualcosa su cui decidere, e il taglio in deposito della #457 ha dove atterrare. Serve una soglia di generazione (non tutte le soste: il modello raddoppierebbe gli archi) e va misurato l'effetto sul tempo di soluzione.
+**Fatto (soglia data dall'operatore: soste oltre 30 minuti).** L'arco via deposito ora entra fra le alternative e vince solo se costa meno dell'attesa. Perche' il confronto fosse onesto mancava una voce: la regola aziendale dice che la vettura non puo' restare sola piu' di 15 minuti, quindi ogni minuto oltre quel limite lo paga qualcuno — il conducente che resta col mezzo, o un'autovettura che porta il cambio. Senza quella voce un'attesa di tre ore costava 38 € di sosta contro i 72 € di nastro che consuma davvero, e tenere il bus fuori sembrava sempre conveniente.
+
+Misura sul banco, con un rientro tipico di Ancona (10 km, 30′ di guida, 16,50 €):
+
+| sosta | aspetta | in deposito | sceglie |
+|---|---|---|---|
+| 30′ | 8,61 € | 16,50 € | aspetta |
+| 45′ | 18,81 € | 16,50 € | **deposito** |
+| 90′ | 49,41 € | 16,50 € | **deposito** |
+| 180′ | 110,61 € | 16,50 € | **deposito** |
+
+Il punto di pareggio (~40-45′) **non e' fissato a mano: esce dalla distanza del deposito**. Un capolinea vicino manda il bus a casa prima, uno lontano lo tiene fuori piu' a lungo — la stessa regola da' risposte diverse dove la citta' e' diversa.
 
 ## Il prossimo intervento (superato dal precedente)
 

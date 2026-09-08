@@ -89,6 +89,20 @@ class VehicleCostRates:
     long_idle_per_min: float = 0.15     # ~€9/h
     long_idle_threshold: int = 20       # minuti
 
+    # Sosta al capolinea oltre il limite di vettura incustodita: la regola
+    # aziendale dice che il bus non puo' restare solo piu' di UNATTENDED_BUS_MAX,
+    # quindi da li' in poi quei minuti li paga qualcuno — il conducente che
+    # resta col mezzo, o un'autovettura che porta il cambio. Prezzarli col
+    # tempo del conducente e' l'unico modo perche' il motore veda che tenere il
+    # bus fuori non e' gratis: senza, un'attesa di tre ore costa 38 EUR di sosta
+    # contro i 72 EUR di nastro che consuma davvero.
+    terminal_wait_free_min: int = 15        # = UNATTENDED_BUS_MAX
+
+    # Sopra questa sosta il motore VALUTA il rientro in deposito come
+    # alternativa al collegamento diretto (prima lo faceva solo se costretto:
+    # riposizionamento vietato dall'archivio, o sosta oltre le 4 ore).
+    depot_alternative_min_gap: int = 30      # minuti
+
     # Corrispettivo chilometrico: l'azienda incassa 2,60 EUR/km su TUTTI i km,
     # di linea E di fuorilinea. Un km a vuoto non e' quindi una perdita: e'
     # compensato. Quello che costa davvero e' il TEMPO che impegna il
@@ -221,6 +235,8 @@ class VehicleCostRates:
             "idlePerMin": "idle_per_min",
             "longIdlePerMin": "long_idle_per_min",
             "longIdleThreshold": "long_idle_threshold",
+            "terminalWaitFreeMin": "terminal_wait_free_min",
+            "depotAlternativeMinGap": "depot_alternative_min_gap",
             "downsizePeakPerLevelPerMin": "downsize_peak_per_level_per_min",
             "downsizeOffpeakPerLevelPerMin": "downsize_offpeak_per_level_per_min",
             "minDeadheadKm": "min_deadhead_km",
