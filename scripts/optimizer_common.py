@@ -301,8 +301,8 @@ class VehicleShiftCost:
 PRE_TURNO_MIN = 12
 PRE_TURNO_AUTO_MIN = 5   # pre-turno ridotto quando si usa auto aziendale
 TARGET_WORK_LOW = 390     # 6h30
-TARGET_WORK_HIGH = 435    # 7h15
-TARGET_WORK_MID = 408     # 6h48 media
+TARGET_WORK_HIGH = 435    # 7h15 — tetto legale del turno intero
+TARGET_WORK_MID = 412     # media della banda [390, 435]
 COMPANY_CARS = 5
 
 SHIFT_RULES = {

@@ -65,7 +65,7 @@ export const SERVICE_PROFILES: Record<
       spezzato: { maxNastro: 630, maxLavoro: 450, intMin: 180, intMax: 999, maxPct: 13 },
       supplemento: { maxNastro: 150, maxLavoro: 150 },
     },
-    targetWork: { low: 390, high: 435, mid: 408 },
+    targetWork: { low: 390, high: 435, mid: 412 },
   },
   // Extraurbano (Accordo Quadro 18/05/2012): unico 8h, semiunico 40'–2h59'/9h,
   // spezzato ≥3h/10h30 cap 9%, semiunici cap 39% (soft).
@@ -86,7 +86,7 @@ export const SERVICE_PROFILES: Record<
       spezzato: { maxNastro: 630, maxLavoro: 630, intMin: 180, intMax: 999, maxPct: 13 },
       supplemento: { maxNastro: 150, maxLavoro: 150 },
     },
-    targetWork: { low: 390, high: 435, mid: 408 },
+    targetWork: { low: 390, high: 435, mid: 412 },
   },
 };
 

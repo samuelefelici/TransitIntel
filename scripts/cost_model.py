@@ -64,8 +64,17 @@ class CostRates:
     supplemento_daily: float = 95.00        # costo medio turno supplemento
 
     # ── Target lavoro (min) ──
+    # Il tetto di un turno INTERO e' 435 minuti, 7h15 (SHIFT_RULES["intero"]),
+    # e fino a li' e' lavoro ordinario pagato al 100%: non c'e' straordinario
+    # da riconoscere. Tenere qui 402 (6h42) faceva partire la maggiorazione
+    # gia' a 408 minuti, cioe' 27 minuti PRIMA del tetto legale, e rendeva
+    # artificialmente caro riempire i turni. Con la banda fra sottoutilizzo e
+    # straordinario che si chiudeva a 408 e si apriva a 366, il solver
+    # parcheggiava ogni turno sul fondo della banda: nel giro AL il nastro
+    # medio e' stato di 367 minuti, un minuto sopra la soglia. Riempire fino
+    # al tetto vero e' esattamente cio' che riduce il numero di turni.
     target_work_min: int = 390              # 6h30
-    target_work_max: int = 402              # 6h42
+    target_work_max: int = 435              # 7h15 — tetto legale del turno intero
 
     # ── Autovetture aziendali disponibili ──
     company_cars: int = COMPANY_CARS
