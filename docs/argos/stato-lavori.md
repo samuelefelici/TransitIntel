@@ -78,6 +78,7 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AG | 19 | 38 | 7 ❌ | 105′ ❌ | km a vuoto pagati (#456): **nessun effetto**, 169,5 km contro 171,2 |
 | AH | 26 | 41 | **5 ✓** | **15′ ✓** | taglio in deposito ammesso (#457): regole rispettate, ma 7 vetture in piu' e 32,3% di declassate |
 | AI | 19 | 37 | 7 ❌ | 105′ ❌ | prima misura di `cambiInDeposito`: **1 su 33**. Risposta: (b) |
+| **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni BDS |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -186,6 +187,32 @@ Misura sul banco, con un rientro tipico di Ancona (10 km, 30′ di guida, 16,50 
 | 180′ | 110,61 € | 16,50 € | **deposito** |
 
 Il punto di pareggio (~40-45′) **non e' fissato a mano: esce dalla distanza del deposito**. Un capolinea vicino manda il bus a casa prima, uno lontano lo tiene fuori piu' a lungo — la stessa regola da' risposte diverse dove la citta' e' diversa.
+
+## Il giro AL: la catena si e' chiusa, e resta un solo problema
+
+Tutti e cinque i criteri dichiarati PRIMA di vedere i numeri sono stati centrati:
+
+| | previsto | AI | AL |
+|---|---|---|---|
+| km a vuoto | devono SALIRE | 163,1 | **240,4** |
+| autovetture | devono SCENDERE | 7 su 5 ❌ | **5 su 5, 0 conflitti ✓** |
+| incustodito | deve SCENDERE | 105′ ❌ | **15′ ✓** |
+| cambi in deposito | devono SALIRE | 1 su 33 | **7 su 33** |
+| nastro medio | non deve esplodere | 417′ | **367′** (sceso) |
+
+`chosenOverDirect` = **8.254 soste convertite in rientri**: la mossa e' entrata nel modello e viene usata. 17 rientri in deposito nel giorno. Restano 19 vetture — **contro le 21 del piano umano** — con 2 sole violazioni BDS, i tetti percentuali rispettati **senza rilassamento**, 0 fuori sagoma, 0 doppi declassamenti, 1/4 a zero declassate, 153 giri naturali e nessuno saltato.
+
+**Quello che manca e' uno solo, ed e' preciso.** I turni sono 42 contro i 38 del piano umano. Ma il nastro TOTALE e' praticamente identico a quello del giro AI:
+
+- AI: 15.429 minuti su 37 turni (media 417′)
+- AL: 15.414 minuti su 42 turni (media 367′)
+- piano umano: 14.659 minuti su 38 turni (media **385,8′**)
+
+Cioe': la correzione strutturale **non e' costata tempo pagato**, ha solo ridistribuito lo stesso lavoro su turni piu' corti. E i turni di AL sono meno pieni di quelli dell'operatore: 367′ contro 385,8′. Con la densita' del piano umano lo stesso lavoro starebbe in **40 turni**; al massimo di nastro consentito (435′) in **35,4**.
+
+Non e' quindi un problema di struttura ma di **densita' dei turni**, e la prima leva da provare non e' codice: sono i pesi del solver guida (`crewWeights`: `minDrivers`, `preferIntero`, `minSupplementi`). Si prova prima di scrivere.
+
+Resta fuori una regola: **4 pollicini contro il tetto di 3**. Il parametro `flotta` esiste su `ti_vcsp_run` ma questa sessione ha lo schema in cache e non puo' passarlo.
 
 ## Il prossimo intervento (superato dal precedente)
 
