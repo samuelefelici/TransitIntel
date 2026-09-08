@@ -26,7 +26,7 @@ class CostRates:
     """Tariffe unitarie per il calcolo costi, tutte in euro.  Configurabili dall'operatore."""
 
     # ── Autista ──
-    hourly_rate: float = 22.00              # €/ora retribuzione lorda + oneri
+    hourly_rate: float = 27.00              # €/ora retribuzione lorda + oneri (dato aziendale)
     overtime_multiplier: float = 1.30       # maggiorazione straordinario
     supplemento_fixed: float = 18.00        # indennità fissa turno supplemento
 
