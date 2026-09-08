@@ -1069,9 +1069,13 @@ def precompute_arc_costs(
 
         cost_euro = 0.0
 
-        # Deadhead
+        # Deadhead: km al NETTO del corrispettivo (2,60 EUR/km incassati anche
+        # sui vuoti) piu' il tempo del conducente, che e' il costo vero.
         if a.dh_km > rates.min_deadhead_km:
-            cost_euro += a.dh_km * rates.per_deadhead_km.get(vtype, 0.80) * mul_dh
+            km_netto_arc = max(0.0, rates.per_deadhead_km.get(vtype, 0.80)
+                               - rates.corrispettivo_per_km)
+            cost_euro += (a.dh_km * km_netto_arc
+                          + max(0.0, float(a.dh_min or 0)) * rates.driver_cost_per_min) * mul_dh
 
         # Idle
         idle_min = max(0, a.gap_min - max(a.dh_min, MIN_LAYOVER))
@@ -1992,6 +1996,7 @@ def chain_cost_detailed(
     service_km = sum(_estimate_trip_km(trips[i], rates) for i in chain)
 
     deadhead_km = 0.0
+    deadhead_min = 0.0
     idle_minutes = 0.0
     depot_returns = 0
     vcsp_pen = 0.0
@@ -1999,6 +2004,7 @@ def chain_cost_detailed(
         arc = arcs_lookup.get((chain[k], chain[k + 1]))
         if arc:
             deadhead_km += arc.dh_km
+            deadhead_min += max(0.0, float(arc.dh_min or 0))
             idle_minutes += _arc_idle_min(arc)
             if arc.depot_return:
                 depot_returns += 1
@@ -2011,7 +2017,12 @@ def chain_cost_detailed(
     cost = VehicleShiftCost()
     cost.fixed_daily = rates.fixed_daily.get(vtype, 42.0)
     cost.service_km_cost = service_km * rates.per_service_km.get(vtype, 0.95)
-    cost.deadhead_km_cost = deadhead_km * rates.per_deadhead_km.get(vtype, 0.80)
+    # Il km a vuoto e' compensato dal corrispettivo: resta l'eventuale quota
+    # non coperta, piu' il TEMPO che impegna il conducente. E' il tempo, non la
+    # distanza, la cosa che si spende davvero.
+    km_netto = max(0.0, rates.per_deadhead_km.get(vtype, 0.80) - rates.corrispettivo_per_km)
+    cost.deadhead_km_cost = (deadhead_km * km_netto
+                             + deadhead_min * rates.driver_cost_per_min)
 
     idle_cost = idle_minutes * rates.idle_per_min
     long_idle = max(0, idle_minutes - rates.long_idle_threshold)

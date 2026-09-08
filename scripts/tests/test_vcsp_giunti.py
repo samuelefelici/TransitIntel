@@ -149,3 +149,44 @@ class TestEscalation:
         crew = _crew([_ho("V1", 540), _ho("V2", 540)], cap=5, picco=25)
         pen, _ = vo.handover_arc_penalties(VSP, crew, escalation=vo.ESCALATION_MAX)
         assert sum(pen.values()) <= vo.CAR_CAP_TOTAL_EUR * vo.ESCALATION_MAX + 0.01
+
+
+# ═══════════════════════════════════════════════════════════════
+#  PREZZO DEI KM A VUOTO
+# ═══════════════════════════════════════════════════════════════
+
+from optimizer_common import VehicleCostRates  # noqa: E402
+
+
+class TestCostoDeiVuoti:
+    """Il corrispettivo è 2,60 €/km su TUTTI i km, di linea e di fuorilinea:
+    un km a vuoto non è una perdita, è compensato. Quello che costa davvero è
+    il tempo che impegna il conducente. Prezzare i vuoti solo a km faceva
+    fuggire il motore dai rientri in deposito — che sono però la mossa con cui
+    il conducente cambia mezzo senza autovettura."""
+
+    def test_il_km_a_vuoto_e_compensato(self):
+        r = VehicleCostRates()
+        for tipo, costo in r.per_deadhead_km.items():
+            assert costo < r.corrispettivo_per_km, (
+                f"{tipo}: un km a vuoto costa {costo} e ne rende "
+                f"{r.corrispettivo_per_km}, quindi al netto non costa nulla")
+
+    def test_il_tempo_del_conducente_e_il_costo_vero(self):
+        r = VehicleCostRates()
+        # 27 €/ora
+        assert abs(r.driver_cost_per_min * 60 - 27.0) < 0.5
+
+    def test_un_vuoto_lento_costa_piu_di_uno_veloce_a_pari_km(self):
+        r = VehicleCostRates()
+        km_netto = max(0.0, r.per_deadhead_km["12m"] - r.corrispettivo_per_km)
+        lento = 8 * km_netto + 40 * r.driver_cost_per_min
+        veloce = 8 * km_netto + 12 * r.driver_cost_per_min
+        assert lento > veloce
+
+    def test_il_rientro_in_deposito_non_e_piu_una_penale(self):
+        # I km e i minuti del rientro sono contati a parte: i 15 € di prima li
+        # contavano una seconda volta ed erano il motivo per cui il motore
+        # evitava il deposito.
+        r = VehicleCostRates()
+        assert r.per_depot_return <= 5.0
