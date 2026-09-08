@@ -80,6 +80,7 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AI | 19 | 37 | 7 ❌ | 105′ ❌ | prima misura di `cambiInDeposito`: **1 su 33**. Risposta: (b) |
 | **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni BDS |
 | AM | 20 | 43 | 5 ✓ | 15′ ✓ | pesi spinti su turni pochi e pieni: **nastro medio identico al minuto**, 367′ |
+| AN | 24 | 43 | 5 ✓ | 15′ ✓ | banda a 7h15: nastro 367→376 (previsti 400-412), **previsione sbagliata** |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -243,6 +244,38 @@ Sullo stesso lavoro (15.414 minuti di nastro misurati in AL):
 | 435′ (tetto legale) | 35,4 |
 
 Corretto: `target_work_max` 402 → 435, `TARGET_WORK_MID` 408 → 412 (media di [390, 435]), cosi' le due definizioni di «turno pieno» che convivevano nel motore — 396 in `cost_model`, 408 in `optimizer_common` — smettono di divergere. Un test lega la banda al tetto di `SHIFT_RULES`.
+
+## Il giro AN: la previsione era sbagliata, e l'errore era mio
+
+Avevo dichiarato prima della misura: nastro medio da 367′ a 400-412′, turni da 42 a meno di 38. Misurato:
+
+| | previsto | ottenuto |
+|---|---|---|
+| nastro medio | 400-412′ | **376′** (+9, il 20% dell'effetto atteso) |
+| turni | < 38 | **43** (peggio di AL) |
+| vetture | invariate (19) | **24** |
+| costo guida | in calo | **+411 €** per lo stesso lavoro |
+
+Le regole rigide hanno tenuto (auto 5 con zero conflitti, incustodito 15′, 1 sola violazione BDS, tetti non rilassati), ma il piano e' peggiore di AL sotto ogni altro aspetto.
+
+**L'errore.** Le due soglie di costo del turno erano derivate ENTRAMBE dalla media della banda:
+
+    target_mid = (min + max) / 2
+    sottoutilizzo sotto  target_mid - 30
+    straordinario sopra  target_mid + 12
+
+Alzando il tetto da 402 a 435 la media e' passata da 396 a 412,5, e **il pavimento e' salito con lei da 366 a 382,5**. Cosi' ogni turno fra 366 e 382 minuti — perfettamente regolare — ha cominciato a pagare sottoutilizzo. Ho reso il piano piu' caro senza renderlo piu' denso.
+
+**La correzione.** Le due soglie sono ora indipendenti e ancorate ai due estremi, non alla media:
+
+- sottoutilizzo sotto `target_work_min - UNDERTIME_TOLERANCE` = 390 − 24 = **366**, dov'era prima;
+- straordinario sopra `target_work_max` = **435**, il tetto legale: sotto quella soglia e' lavoro ordinario al 100%.
+
+La media della banda resta usata solo come **bersaglio di forma** (dove un turno sta bene), che e' una cosa diversa dal dire quando si sconfina. Un test verifica che muovere un estremo non trascini l'altro.
+
+**Cosa resta vero della diagnosi.** Che il solver si posava sul pavimento della banda e' un fatto misurato (367′ in AL, 367′ in AM col massimo dei pesi). Che bastasse alzare il tetto per riempire i turni, no: gli `unreachableDetails` di AN dicono che i pezzi non si uniscono per **stacco**, cioe' per come sono fatti i blocchi, non per quanto costano. La densita' e' un problema di struttura del turno macchina, non di prezzo.
+
+**AL resta il piano di riferimento**: 19 vetture, 42 turni, tutte le regole rispettate tranne il tetto dei pollicini. Scenario `d2d6ea52-d27e-46ed-b143-01e2cbbdeed1`.
 
 ## Il prossimo intervento (superato dal precedente)
 
