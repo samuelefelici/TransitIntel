@@ -118,3 +118,34 @@ class TestSelezioneFraRound:
         assert con_incustodito["unattendedOverLimit"] == 2
         assert (con_incustodito["selectionScoreEur"]
                 == pulito["selectionScoreEur"] + 2 * vo.VIOLATION_SHADOW_EUR)
+
+
+class TestEscalation:
+    """La penalità non è solo un costo, è una guida alla ricerca: finché il
+    round resta illegale sui cambi si alza il tiro, e ci si ferma appena
+    diventa legale — così si paga il minimo indispensabile."""
+
+    def test_round_legale_riconosciuto(self):
+        assert vo.round_is_legal(_crew([], cap=5, picco=5, conflitti=0)) is True
+
+    def test_tetto_auto_sfondato_non_e_legale(self):
+        assert vo.round_is_legal(_crew([], cap=5, picco=6)) is False
+
+    def test_conflitto_auto_non_e_legale(self):
+        assert vo.round_is_legal(_crew([], cap=5, picco=5, conflitti=1)) is False
+
+    def test_bus_incustodito_non_e_legale(self):
+        crew = _crew([], cap=5, picco=5, over=[{"vehicleId": "V1", "unattendedMin": 81}])
+        assert vo.round_is_legal(crew) is False
+
+    def test_l_escalation_moltiplica_la_penalita(self):
+        crew = _crew([_ho("V1", 540, unattended=81)])
+        base, _ = vo.handover_arc_penalties(VSP, crew)
+        alzata, diag = vo.handover_arc_penalties(VSP, crew, escalation=4.0)
+        assert alzata["a|b"] == base["a|b"] * 4.0
+        assert diag["escalation"] == 4.0
+
+    def test_il_tetto_di_spesa_sale_con_l_escalation_ma_resta_governato(self):
+        crew = _crew([_ho("V1", 540), _ho("V2", 540)], cap=5, picco=25)
+        pen, _ = vo.handover_arc_penalties(VSP, crew, escalation=vo.ESCALATION_MAX)
+        assert sum(pen.values()) <= vo.CAR_CAP_TOTAL_EUR * vo.ESCALATION_MAX + 0.01
