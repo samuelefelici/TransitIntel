@@ -38,6 +38,14 @@ class CostRates:
 
     # ── Trasferimenti ──
     company_car_per_use: float = 8.00       # €/trasferimento auto aziendale
+    # Le autovetture sono POCHE e non si comprano: il costo vivo di un
+    # trasferimento (8 EUR) e' meno di un rientro del bus in deposito (15 EUR
+    # + km a vuoto), quindi il motore sceglieva sempre l'auto e andava a
+    # sbattere contro il tetto invece di starne lontano. In esercizio si fa il
+    # contrario: il bus rientra e il cambio si fa in deposito. Questa
+    # maggiorazione e' il valore di scarsita' del parco, non un costo vivo: si
+    # somma nel punteggio e resta fuori dal costo dichiarato del piano.
+    company_car_scarcity_eur: float = 20.00
     taxi_base: float = 6.00                 # €/corsa taxi partenza
     taxi_per_km: float = 1.50              # €/km taxi
     taxi_per_min_wait: float = 0.40         # €/min attesa taxi

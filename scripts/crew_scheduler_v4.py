@@ -3484,9 +3484,16 @@ def _build_cpsat_model(
         else:
             pair_type_mul = WEIGHT_FACTORS["spezz"]
 
+        # Scarsita' del parco auto: entra nel PUNTEGGIO, non nel costo
+        # dichiarato del piano. Il costo vivo di un trasferimento (8 EUR) e'
+        # meno di un rientro del bus in deposito (15 EUR + km a vuoto), quindi
+        # il motore sceglieva sempre l'auto e finiva contro il tetto delle 5.
+        # In esercizio si fa l'opposto: il bus rientra e il cambio si fa in
+        # deposito, ed e' cosi' che 5 autovetture bastano per 140 turni.
+        car_score = rates.company_car_per_use + getattr(rates, "company_car_scarcity_eur", 0.0)
         cost_cents = int((hours * rates.hourly_rate * mul_cost
                          + dev * rates.work_imbalance_per_min * mul_balance
-                         + rates.company_car_per_use * mul_transfer) * COST_SCALE * pair_type_mul)
+                         + car_score * mul_transfer) * COST_SCALE * pair_type_mul)
 
         # BDS5: scalini/quadratici/cambio vettura/cambio patente sul pair
         if bds5_active():
