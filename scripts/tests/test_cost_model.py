@@ -88,13 +88,13 @@ def make_simple_duty(dep_min=420, arr_min=810, duty_type="intero") -> Duty:
 class TestCostRates:
     def test_defaults(self):
         rates = CostRates()
-        assert rates.hourly_rate == 22.0
+        assert rates.hourly_rate == 27.0
         assert rates.overtime_multiplier == 1.3
         assert rates.target_work_min == 390
 
     def test_from_config_empty(self):
         rates = CostRates.from_config({})
-        assert rates.hourly_rate == 22.0
+        assert rates.hourly_rate == 27.0
 
     def test_from_config_override(self):
         rates = CostRates.from_config({
@@ -106,7 +106,7 @@ class TestCostRates:
     def test_to_dict(self):
         d = CostRates().to_dict()
         assert "hourlyRate" in d
-        assert d["hourlyRate"] == 22.0
+        assert d["hourlyRate"] == 27.0
         assert "companyCars" in d
 
 
