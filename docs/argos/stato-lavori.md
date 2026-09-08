@@ -81,6 +81,7 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni BDS |
 | AM | 20 | 43 | 5 ✓ | 15′ ✓ | pesi spinti su turni pochi e pieni: **nastro medio identico al minuto**, 367′ |
 | AN | 24 | 43 | 5 ✓ | 15′ ✓ | banda a 7h15: nastro 367→376 (previsti 400-412), **previsione sbagliata** |
+| AO | 22 | 42 | 5 ✓ | 15′ ✓ | trasferimento vero nelle coppie: **0 violazioni BDS**, nastro 379′, costo guida piu' basso della serie |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -299,6 +300,28 @@ Effetto sull'arco massimo che un intero puo' coprire (tetto 435 minuti):
 La correzione va in **entrambe le direzioni**: libera 13 minuti dove i pezzi si appoggiano al deposito, e ne toglie 10 dove stanno su capolinea periferici, dove la costante era troppo generosa. Non e' un regalo al solver, e' il numero giusto.
 
 **Nessuna previsione sull'esito del piano, questa volta.** Dopo il giro AN — dove avevo annunciato 400-412 minuti di nastro medio e ne sono arrivati 376 — la lezione e' che l'effetto di una correzione sul piano non si deduce dal meccanismo. Quello che si puo' dire con certezza e' solo cosa cambia meccanicamente: le coppie che si appoggiano al deposito ora hanno 13 minuti in piu' di respiro, quelle periferiche 10 in meno.
+
+## Il giro AO, e perche' qui ci si ferma
+
+| giro | vetture | turni | nastro medio | violazioni BDS | costo guida | punteggio |
+|---|---|---|---|---|---|---|
+| **AL** | **19** | 42 | 367′ | 2 | 15.089,61 | 29.793,29 |
+| AM | 20 | 43 | 367′ | 1 | 15.252,46 | — |
+| AN | 24 | 43 | 376′ | 1 | 15.500,01 | 30.622,66 |
+| **AO** | 22 | 42 | **379′** | **0** | **14.818,77** | **29.475,47** |
+| piano umano | 21 | 38 | 385,8′ | — | — | — |
+
+AO e' il piano piu' pulito che il motore abbia prodotto: **zero violazioni BDS** (mai successo prima), tetti percentuali rispettati senza rilassamento, autovetture 5 con zero conflitti e nessun turno senza auto, incustodito 15′, nastro medio 379′ — il piu' vicino ai 385,8′ dell'operatore. Ha anche il **punteggio migliore** di tutta la serie e il costo guida piu' basso.
+
+**Ma non batte AL sul criterio dell'operatore**, che sono le vetture: 22 contro 19, e sopra le 21 del piano umano. E i turni restano 42.
+
+**Sei giri consecutivi (AG, AH, AI, AL, AM, AN, AO) non hanno migliorato AL sulle vetture.** Le correzioni fatte nel frattempo sono tutte difendibili una per una — erano difetti veri, dimostrati eseguendo il codice — ma la ricerca del piano migliore per tentativi successivi ha smesso di produrre. Continuare a girare le manopole senza una tesi nuova non e' un metodo: e' rumore pagato a mezz'ora per giro.
+
+**Dove siamo davvero:**
+
+- il piano da usare oggi resta **AL** (`d2d6ea52-d27e-46ed-b143-01e2cbbdeed1`): 19 vetture contro le 21 dell'operatore, tutte le regole rigide rispettate;
+- se conta di piu' la pulizia normativa che il numero di vetture, **AO** (`4202f9b3-15a6-4253-8c76-0a81ac1586be`) e' l'alternativa: zero violazioni, ma 22 vetture;
+- restano aperti gli stessi due punti di sempre: i turni guida (42 contro 38) e il tetto dei pollicini.
 
 ## Il prossimo intervento (superato dal precedente)
 
