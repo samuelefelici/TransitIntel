@@ -76,10 +76,13 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AE | 24 | 42 | 5 ✓ | 15′ ✓ | escalation delle penalità |
 | **AF** | **19** | **37** | 7 ❌ | 105′ ❌ | scarsità delle auto; miglior piano, batte quello umano su vetture e turni |
 | AG | 19 | 38 | 7 ❌ | 105′ ❌ | km a vuoto pagati (#456): **nessun effetto**, 169,5 km contro 171,2 |
+| AH | 26 | 41 | **5 ✓** | **15′ ✓** | taglio in deposito ammesso (#457): regole rispettate, ma 7 vetture in piu' e 32,3% di declassate |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
-Il giro AG ha portato il dato che mancava: `handoverModes` = **29 cambi in auto, 3 a piedi, ZERO in deposito**, su 32. Il motore non fa **mai** un cambio in deposito. Non e' una preferenza economica: e' un divieto, vedi sotto.
+**Correzione di un mio errore di lettura.** Avevo letto in `handoverModes` di AG «29 in auto, 3 a piedi, zero in deposito» e l'avevo presentata come la prova che il motore non faceva mai un cambio in deposito. Quel numero non puo' dire questo: `handoverModes` e `totalCambi` sono calcolati su `inline_handovers()` (`crew_scheduler_v3.py:1247`), che **scarta per costruzione** i cambi in deposito. Il numero vero e' `totalDepotChanges` (`crew_scheduler_v4.py:4720`), che **non era esposto da nessuna parte**: ne' dalla risposta compatta dell'api-server ne' dal cruscotto MCP. Per otto giri abbiamo giudicato alla cieca il numero che conta di piu'. Ora e' esposto in entrambi i punti.
+
+Il difetto trovato e corretto con la #457 resta reale e dimostrato eseguendo il codice (il taglio in deposito fuori cluster nasceva a −5,1 e veniva cancellato da `filter_cuts_by_cluster`): e' la prova che era sbagliata, non la conclusione.
 
 ## Scenari salvati (Cerbero → Fucina)
 
@@ -148,6 +151,14 @@ La correzione, in `analyze_vehicle_block`:
 - la penalita' radiale (`CUT_SAME_ROUTE_PENALTY`, fino a −22,5) non si applica: difende dal cambio al capolinea periferico, che costerebbe un'auto e lascerebbe il bus incustodito — al deposito non accade ne' l'una ne' l'altra cosa.
 
 `compute_car_pool` e `seg_transfer_out`/`seg_transfer_back` erano gia' corretti: una volta che il pezzo ha un bordo in deposito, l'auto non viene piu' prenotata. Nessuna modifica li'.
+
+## Il giro AH e la lettura onesta
+
+Col taglio in deposito ammesso (#457) **le due regole rigide rientrano per la prima volta**: autovetture 5 su 5 con zero conflitti e zero turni senza auto, vettura incustodita 15′ esatti. Le violazioni BDS scendono da 6 a 1, i tetti percentuali sono rispettati **senza rilassamento** (era la prima volta), e la forma dei turni migliora molto: 34 interi, 5 semiunici, 1 spezzato, 1 supplemento, nastro medio 371′ contro 414′.
+
+Ma il prezzo e' alto e va detto: **26 vetture invece di 19** (il piano umano ne usa 21), km a vuoto 214,4 contro 169,5, e soprattutto il declassamento esplode: **32,3%** contro il 17% di AG, con **5 pollicini** contro i 2-3 dichiarati dall'operatore e 8 catene spezzate. La 91 e' declassata all'83%, la 2/6 al 54%.
+
+E c'e' una spiegazione piu' banale del merito della #457: la ripartizione dei blocchi passa da 17 LUNGO / 1 MEDIO / 0 CORTO a 11 LUNGO / 4 MEDIO / **10 CORTO**. Un blocco corto non ha bisogno di nessun taglio, quindi niente cambio e niente auto. Le auto possono essere rientrate cosi', non perche' i cambi siano passati in deposito. Senza `totalDepotChanges` non si distinguono i due casi — ed e' esattamente il motivo per cui va esposto.
 
 ## Il prossimo intervento (superato dal precedente)
 

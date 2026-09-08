@@ -2956,7 +2956,13 @@ function compactAgentResult(payload: any): any {
           byType: v.crew.summary.byType ?? null,
           semiunicoPct: v.crew.summary.semiunicoPct ?? null,
           spezzatoPct: v.crew.summary.spezzatoPct ?? null,
+          // ATTENZIONE: totalCambi conta i soli cambi IN LINEA. Il cambio
+          // in deposito (chi smonta rientra guidando il bus, chi monta
+          // riparte guidandolo fuori) non costa un'autovettura e non ci
+          // finisce dentro: senza totalDepotChanges non si vede se il
+          // motore lo sta usando, e si giudica il giro alla cieca.
           totalCambi: v.crew.summary.totalCambi ?? null,
+          totalDepotChanges: v.crew.summary.totalDepotChanges ?? null,
           // Tetti percentuali dei tipi di turno (rigidi, tolleranza di frazione
           // di turno): tetto, massimo ammesso, conteggio, esito; "relaxed" =
           // nessuno scenario fattibile coi tetti rigidi
