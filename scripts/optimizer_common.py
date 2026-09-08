@@ -89,8 +89,21 @@ class VehicleCostRates:
     long_idle_per_min: float = 0.15     # ~€9/h
     long_idle_threshold: int = 20       # minuti
 
-    # E. Costo per rientro deposito
-    per_depot_return: float = 15.0
+    # Corrispettivo chilometrico: l'azienda incassa 2,60 EUR/km su TUTTI i km,
+    # di linea E di fuorilinea. Un km a vuoto non e' quindi una perdita: e'
+    # compensato. Quello che costa davvero e' il TEMPO che impegna il
+    # conducente. Prezzare i vuoti solo a km faceva fuggire il motore dai
+    # rientri in deposito — che sono pero' la mossa con cui il conducente
+    # cambia mezzo SENZA autovettura, ed e' cosi' che in esercizio 5 auto
+    # bastano per 140 turni.
+    corrispettivo_per_km: float = 2.60
+    driver_cost_per_min: float = 0.45     # 27 EUR/ora
+
+    # E. Costo per rientro deposito: sola manovra (ingresso, controlli,
+    # piazzale). I km e i minuti del rientro sono contati a parte qui sopra:
+    # i 15 EUR di prima li contavano una seconda volta, ed erano il motivo per
+    # cui il motore evitava il deposito.
+    per_depot_return: float = 3.0
 
     # E2. REGOLA DEL GIRO (linee radiali): la vettura che arriva a un capolinea
     # PERIFERICO (non nodo di interscambio) con la corsa di ritorno della stessa
