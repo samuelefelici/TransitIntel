@@ -20,6 +20,8 @@ import vehicle_scheduler_cpsat as vsp  # noqa: E402
 from optimizer_common import (VehicleCostRates, set_deadhead_matrix,  # noqa: E402
                               set_deadhead_min_matrix, dh_key)
 from test_cover_rule_2 import _vtrip  # noqa: E402
+import crew_scheduler_v4 as v4  # noqa: E402
+from test_cover_rule import CLUSTERS  # noqa: E402
 
 
 def test_attesa_al_capolinea_paga_il_conducente_oltre_il_limite():
@@ -172,3 +174,58 @@ def test_alzare_il_tetto_non_deve_alzare_il_pavimento():
     r3 = CostRates.from_config({"costRates": {"targetWorkMin": 360}})
     assert r3.target_work_max == r.target_work_max
     assert r3.target_work_min - UNDERTIME_TOLERANCE == 336
+
+
+def _seg_per_coppia(vid, start, end, first, last, sad=False, ead=False):
+    class S:
+        pass
+    s = S()
+    s.idx = abs(hash((vid, start))) % 10000
+    s.vehicle_id, s.start_min, s.end_min = vid, start, end
+    s.work_min = end - start
+    s.first_stop, s.last_stop = first, last
+    s.first_cluster = v4.match_cluster(first, CLUSTERS)
+    s.last_cluster = v4.match_cluster(last, CLUSTERS)
+    s.starts_at_depot, s.ends_at_depot = sad, ead
+    s.trips = []
+    s.lead_idle_min = 20          # la sosta ≥ 15' che l'intero pretende
+    return s
+
+
+def test_la_coppia_usa_il_trasferimento_VERO_non_una_costante():
+    """I due bordi esterni di una coppia costano quello che costano davvero.
+
+    Se il primo pezzo esce dal deposito guidando il bus e l'ultimo ci rientra
+    guidandolo, non c'e' nessun trasferimento in auto da pagare: l'overhead
+    scende da 25 a 12 minuti e l'arco massimo di un intero sale da 410 a 423.
+    Con una costante fissa bastavano una manciata di minuti inventati per far
+    scartare una coppia perfettamente regolare."""
+    from optimizer_common import SHIFT_RULES
+    rules = {k: dict(v) for k, v in SHIFT_RULES.items()}
+    tetto = SHIFT_RULES["intero"]["maxNastro"]      # 435
+
+    # coppia con arco di 420 minuti, bordi esterni ENTRAMBI in deposito
+    a = _seg_per_coppia("U1", 400, 600, "Deposito", "Piazza Cavour", sad=True)
+    b = _seg_per_coppia("U1", 620, 820, "Piazza Cavour", "Deposito", ead=True)
+    assert b.end_min - a.start_min == 420 <= tetto
+
+    # con la costante fissa (clusters=None) l'overhead e' 25: 420+25 = 445 > 435
+    assert v4._feasible_pair(a, b, rules) is None
+    # col trasferimento vero l'overhead e' 12: 420+12 = 432, la coppia sta in piedi
+    assert v4._feasible_pair(a, b, rules, CLUSTERS) == "intero"
+
+
+def test_e_stringe_dove_prima_era_troppo_generosa():
+    """La correzione non e' un regalo: sui capolinea periferici il trasferimento
+    vero e' piu' lungo della costante, e li' la coppia diventa piu' pesante."""
+    from optimizer_common import SHIFT_RULES, DEPOT_TRANSFER_CENTRAL
+    rules = {k: dict(v) for k, v in SHIFT_RULES.items()}
+
+    # Tavernelle: nodo con trasferimento 15', non 10
+    assert v4.depot_transfer_min("Tavernelle", CLUSTERS) > DEPOT_TRANSFER_CENTRAL
+    a = _seg_per_coppia("U2", 400, 600, "Tavernelle", "Tavernelle")
+    b = _seg_per_coppia("U2", 620, 805, "Tavernelle", "Tavernelle")
+    assert b.end_min - a.start_min == 405       # sotto il vecchio limite di 410
+
+    assert v4._feasible_pair(a, b, rules) == "intero"          # costante fissa: passava
+    assert v4._feasible_pair(a, b, rules, CLUSTERS) is None    # trasferimento vero: no

@@ -277,6 +277,29 @@ La media della banda resta usata solo come **bersaglio di forma** (dove un turno
 
 **AL resta il piano di riferimento**: 19 vetture, 42 turni, tutte le regole rispettate tranne il tetto dei pollicini. Scenario `d2d6ea52-d27e-46ed-b143-01e2cbbdeed1`.
 
+## Gli stacchi: la coppia usava una costante al posto del trasferimento vero
+
+Dopo il giro AN la pista si e' spostata dal prezzo alla struttura, ed e' li' che si e' trovata una cosa concreta. In `_feasible_pair` — la funzione che decide se due pezzi possono stare nello stesso turno — l'overhead ai due bordi esterni era una **costante fissa**:
+
+    nastro = (s2.end_min - s1.start_min)
+             + pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2
+
+cioe' sempre 25 minuti, comunque fossero fatti i pezzi. Ma il valore vero il motore lo conosce gia': `seg_transfer_out` e `seg_transfer_back` (`crew_scheduler_v4.py:1140-1155`) dicono che se il pezzo esce dal deposito guidando il bus, o ci rientra guidandolo, **il trasferimento e' zero**.
+
+Effetto sull'arco massimo che un intero puo' coprire (tetto 435 minuti):
+
+| bordi esterni della coppia | overhead | arco max |
+|---|---|---|
+| costante fissa (come prima) | 25′ | 410′ |
+| **entrambi in deposito** | **12′** | **423′** |
+| uno in deposito, uno a nodo centrale | 22′ | 413′ |
+| nodo centrale su entrambi | 25′ | 410′ (invariato) |
+| **nodo periferico su entrambi** | **35′** | **400′** |
+
+La correzione va in **entrambe le direzioni**: libera 13 minuti dove i pezzi si appoggiano al deposito, e ne toglie 10 dove stanno su capolinea periferici, dove la costante era troppo generosa. Non e' un regalo al solver, e' il numero giusto.
+
+**Nessuna previsione sull'esito del piano, questa volta.** Dopo il giro AN — dove avevo annunciato 400-412 minuti di nastro medio e ne sono arrivati 376 — la lezione e' che l'effetto di una correzione sul piano non si deduce dal meccanismo. Quello che si puo' dire con certezza e' solo cosa cambia meccanicamente: le coppie che si appoggiano al deposito ora hanno 13 minuti in piu' di respiro, quelle periferiche 10 in meno.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
