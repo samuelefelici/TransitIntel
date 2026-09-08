@@ -87,8 +87,15 @@ def _crew_cost_by_vehicle(crew_out: dict) -> tuple[dict, dict, dict]:
 # Non sono violazioni BDS di un turno — sono esiti del parco auto — quindi nel
 # costo-ombra per blocco pesavano ZERO: il VSP non sapeva nemmeno che
 # esistessero, e nessun numero di round poteva sistemarle.
-UNATTENDED_PENALTY_EUR = 300.0
-CAR_CAP_PENALTY_EUR = 400.0
+# Calibrate sul costo VERO di una vettura in piu' (~42 EUR/giorno di costo
+# fisso). Alla prima taratura valevano 300 e 400: al motore stavo dicendo che
+# evitare un cambio vale sette vetture, ed e' il rovescio della regola
+# aziendale — un cambio conviene se fa risparmiare un mezzo, non un mezzo se fa
+# risparmiare un cambio. Misurato: il piano rientrava in tutte le regole rigide
+# ma passava da 19 a 28 vetture. Qui la penalita' resta un pungolo che sposta
+# una corsa fra due blocchi, non una leva che li spacca.
+UNATTENDED_PENALTY_EUR = 90.0     # ~2 giornate-vettura per giunto fuori regola
+CAR_CAP_TOTAL_EUR = 150.0         # tetto COMPLESSIVO speso sul problema auto
 
 
 def _block_joints(vsp_out: dict) -> dict[str, list[tuple[int, str, str]]]:
@@ -150,12 +157,15 @@ def handover_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, flo
             n_incustodito += 1
 
     if auto_rotte > 0:
-        # I cambi che consumano un'auto sono quelli che affollano il parco:
-        # la penalita' del tetto sforato si divide fra loro.
+        # I cambi che consumano un'auto sono quelli che affollano il parco: la
+        # penalita' si divide fra loro, ma il TOTALE speso sul problema auto e'
+        # limitato — se non basta a farlo rientrare, la strada non e' spaccare
+        # altri blocchi, e' la selezione fra round (che le auto le conta gia').
         con_auto = [h for h in handovers
                     if h.get("incomingMode") == "car" or h.get("outgoingMode") == "car"]
         if con_auto:
-            quota = (CAR_CAP_PENALTY_EUR * auto_rotte) / len(con_auto)
+            totale = min(CAR_CAP_TOTAL_EUR, CAR_CAP_TOTAL_EUR / 3.0 * auto_rotte)
+            quota = totale / len(con_auto)
             for h in con_auto:
                 vid, at_min = h.get("vehicleId"), int(h.get("atMin") or 0)
                 chiave = arco_del_giunto(vid, at_min) if vid else None

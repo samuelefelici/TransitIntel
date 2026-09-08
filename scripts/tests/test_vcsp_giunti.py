@@ -68,8 +68,22 @@ class TestTettoAuto:
         crew = _crew([_ho("V1", 540), _ho("V2", 540)], cap=5, picco=7)
         pen, diag = vo.handover_arc_penalties(VSP, crew)
         assert diag["eccedenzaPicco"] == 2 and diag["autoRotte"] == 2
-        atteso = (vo.CAR_CAP_PENALTY_EUR * 2) / 2
+        atteso = min(vo.CAR_CAP_TOTAL_EUR, vo.CAR_CAP_TOTAL_EUR / 3.0 * 2) / 2
         assert pen["a|b"] == atteso and pen["x|y"] == atteso
+
+    def test_la_spesa_sul_problema_auto_e_limitata(self):
+        # Anche con un tetto sfondato di molto, il totale speso non deve
+        # arrivare a valere piu' vetture: spaccare i blocchi per evitare i
+        # cambi e' il rovescio della regola aziendale.
+        crew = _crew([_ho("V1", 540), _ho("V2", 540)], cap=5, picco=25)
+        pen, diag = vo.handover_arc_penalties(VSP, crew)
+        assert diag["autoRotte"] == 20
+        assert sum(pen.values()) <= vo.CAR_CAP_TOTAL_EUR + 0.01
+
+    def test_una_giornata_vettura_costa_molto_meno_del_giunto_ma_non_dieci(self):
+        # Riferimento: una vettura in piu' costa ~42 EUR/giorno di costo fisso.
+        assert 1.5 * 42 <= vo.UNATTENDED_PENALTY_EUR <= 3 * 42
+        assert vo.CAR_CAP_TOTAL_EUR <= 4 * 42
 
     def test_i_cambi_a_piedi_non_consumano_auto(self):
         crew = _crew([_ho("V1", 540, mode="walk"), _ho("V2", 540)], cap=5, picco=6)
