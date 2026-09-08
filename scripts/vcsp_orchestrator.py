@@ -97,6 +97,16 @@ def _crew_cost_by_vehicle(crew_out: dict) -> tuple[dict, dict, dict]:
 UNATTENDED_PENALTY_EUR = 90.0     # ~2 giornate-vettura per giunto fuori regola
 CAR_CAP_TOTAL_EUR = 150.0         # tetto COMPLESSIVO speso sul problema auto
 
+# La penalita' non e' solo un costo: e' anche una GUIDA alla ricerca. Misurato
+# su due giri identici tranne la taratura — con 300/400 EUR il piano rientrava
+# in tutte le regole rigide (28 vetture), con 90/150 nessuno dei quattro round
+# era legale (19 vetture). Una costante fissa e' quindi sbagliata in entrambi i
+# versi: cara sempre gonfia il piano, mite sempre non trova la regione dove le
+# soluzioni legali esistono. Si parte gentili e si alza il tiro solo finche' il
+# piano resta illegale, come gia' fa il ripiego sui tetti percentuali.
+ESCALATION_FACTOR = 2.5
+ESCALATION_MAX = 8.0
+
 
 def _block_joints(vsp_out: dict) -> dict[str, list[tuple[int, str, str]]]:
     """Per ogni blocco, i giunti fra corse consecutive: (minuto, tripA, tripB).
@@ -115,7 +125,18 @@ def _block_joints(vsp_out: dict) -> dict[str, list[tuple[int, str, str]]]:
     return out
 
 
-def handover_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, float], dict]:
+def round_is_legal(crew_out: dict) -> bool:
+    """Il round rispetta le due regole rigide dei cambi?"""
+    s = crew_out.get("summary") or {}
+    hm = s.get("handoverModes") or {}
+    tetto = int(s.get("companyCarsCap") or 0)
+    picco = int(s.get("companyCarsMaxSimultaneous") or 0)
+    auto_ok = int(s.get("companyCarsConflicts") or 0) == 0 and (tetto <= 0 or picco <= tetto)
+    return auto_ok and not (hm.get("overLimit") or [])
+
+
+def handover_arc_penalties(vsp_out: dict, crew_out: dict,
+                           escalation: float = 1.0) -> tuple[dict[str, float], dict]:
     """Penalita' MIRATE sui giunti dove il cambio guida rompe una regola rigida.
 
     Il costo-ombra per blocco dice al VSP «questo blocco costa troppo» e spalma
@@ -153,7 +174,7 @@ def handover_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, flo
         if not chiave:
             continue
         if int(h.get("unattendedMin") or 0) > limite:
-            penalties[chiave] = penalties.get(chiave, 0.0) + UNATTENDED_PENALTY_EUR
+            penalties[chiave] = penalties.get(chiave, 0.0) + UNATTENDED_PENALTY_EUR * escalation
             n_incustodito += 1
 
     if auto_rotte > 0:
@@ -164,7 +185,7 @@ def handover_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, flo
         con_auto = [h for h in handovers
                     if h.get("incomingMode") == "car" or h.get("outgoingMode") == "car"]
         if con_auto:
-            totale = min(CAR_CAP_TOTAL_EUR, CAR_CAP_TOTAL_EUR / 3.0 * auto_rotte)
+            totale = min(CAR_CAP_TOTAL_EUR, CAR_CAP_TOTAL_EUR / 3.0 * auto_rotte) * escalation
             quota = totale / len(con_auto)
             for h in con_auto:
                 vid, at_min = h.get("vehicleId"), int(h.get("atMin") or 0)
@@ -179,11 +200,13 @@ def handover_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, flo
         "autoRotte": auto_rotte,
         "eccedenzaPicco": eccedenza,
         "conflittiAuto": conflitti,
+        "escalation": round(escalation, 2),
     }
     return penalties, diag
 
 
-def extract_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, float], dict]:
+def extract_arc_penalties(vsp_out: dict, crew_out: dict,
+                          escalation: float = 1.0) -> tuple[dict[str, float], dict]:
     """Costi-ombra: penalità EUR sugli archi (tripIdA|tripIdB) dei blocchi costosi."""
     shifts = vsp_out.get("vehicleShifts", [])
     cost_v, viol_v, suppl_v = _crew_cost_by_vehicle(crew_out)
@@ -226,7 +249,7 @@ def extract_arc_penalties(vsp_out: dict, crew_out: dict) -> tuple[dict[str, floa
     # Ai costi-ombra per blocco si somma il puntamento sui giunti che rompono
     # una regola rigida: senza, il VSP vedeva solo «blocco caro» e non «questo
     # cambio non ha un'auto» o «qui il bus resta solo un'ora e mezza».
-    giunti_pen, giunti_diag = handover_arc_penalties(vsp_out, crew_out)
+    giunti_pen, giunti_diag = handover_arc_penalties(vsp_out, crew_out, escalation)
     for k, v in giunti_pen.items():
         penalties[k] = penalties.get(k, 0.0) + v
 
@@ -340,6 +363,7 @@ def main() -> None:
     penalties_by_round: dict[int, dict[str, float]] = {}   # penalità USATE nel round r
     rounds_kpi: list[dict] = []
     no_gain = 0
+    escalation = 1.0
     feedback_diag: list[dict] = []
     round_results: list[dict] = []               # per-round: shifts TM + crew (scelta operatore)
     best: tuple[dict, dict, int] | None = None   # (vsp_out, crew_out, round)
@@ -416,7 +440,16 @@ def main() -> None:
                 log(f"[VCSP] round {r}: nessun miglioramento ({no_gain}/{EARLY_STOP_PATIENCE}), continuo")
             else:
                 no_gain = 0
-            arc_penalties, diag = extract_arc_penalties(vsp_out, crew_out)
+            # Finche' il round resta illegale sui cambi si alza il tiro: le
+            # penalita' miti non trovano la regione dove le soluzioni legali
+            # esistono, quelle forti ci arrivano ma gonfiano il piano. Salendo
+            # solo quando serve si paga il minimo indispensabile.
+            if not round_is_legal(crew_out):
+                escalation = min(ESCALATION_MAX, escalation * ESCALATION_FACTOR)
+                log(f"[VCSP] round {r}: cambi ancora fuori regola → penalità dei giunti ×{escalation:g}")
+            elif escalation > 1.0:
+                log(f"[VCSP] round {r}: cambi in regola, penalità dei giunti ferme a ×{escalation:g}")
+            arc_penalties, diag = extract_arc_penalties(vsp_out, crew_out, escalation)
             diag["afterRound"] = r
             feedback_diag.append(diag)
             log(f"[VCSP] feedback: {diag['blocksPenalized']} blocchi penalizzati "
