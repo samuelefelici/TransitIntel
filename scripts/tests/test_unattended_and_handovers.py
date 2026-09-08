@@ -146,3 +146,52 @@ def test_run_writes_every_change_in_both_duties():
         assert d["cambiCount"] >= n_inline
         for lbl in d["vehicleHandoverLabels"]:
             assert " · In " in lbl
+
+
+def _block_depot_pass_outside_cluster():
+    """Bus U9: esce alle 06:48, corsa 07:00-08:00 Cavour→Montesicuro, RIENTRO IN
+    DEPOSITO 08:10-10:20 partendo da Montesicuro (capolinea periferico, FUORI
+    cluster), corsa 10:30-11:30 Montesicuro→Cavour, rientro finale."""
+    return {"vehicleId": "U9", "vehicleType": "12m", "category": "urbano", "trips": [
+        {"type": "deadhead", "depotLeg": "out", "deadheadMin": 12, "deadheadKm": 4.0,
+         "departureMin": 408, "arrivalMin": 420, "firstStopName": "Deposito", "lastStopName": "Piazza Cavour"},
+        _trip("U9", 0, 420, 480, "Piazza Cavour", "Montesicuro"),
+        {"type": "depot", "routeName": "Rientro deposito", "departureMin": 490, "arrivalMin": 620,
+         "firstStopName": "Montesicuro", "lastStopName": "Montesicuro"},
+        _trip("U9", 1, 630, 690, "Montesicuro", "Piazza Cavour"),
+        {"type": "deadhead", "depotLeg": "in", "deadheadMin": 14, "deadheadKm": 4.5,
+         "departureMin": 690, "arrivalMin": 704, "firstStopName": "Piazza Cavour", "lastStopName": "Deposito"},
+    ]}
+
+
+def test_depot_cut_survives_the_cluster_filter_outside_a_cluster():
+    """Il taglio al passaggio in deposito e' ammesso anche se il capolinea da cui
+    parte il rientro non e' in un cluster: chi smonta ci arriva GUIDANDO il bus e
+    chi monta riparte GUIDANDOLO fuori, quindi non serve ne' un nodo di scambio
+    ne' un'autovettura. Prima veniva generato con allows_cambio=False e cancellato
+    da filter_cuts_by_cluster: nessun cambio avveniva mai in deposito."""
+    b = v4.parse_vehicle_blocks([_block_depot_pass_outside_cluster()], CLUSTERS)[0]
+    v4.analyze_vehicle_block(b, CLUSTERS, v4.BDSConfig())
+    cut = next(c for c in b.cut_candidates if c.index == 0)
+    assert cut.stop_name == "Montesicuro" and cut.cluster_id is None
+    assert cut.allows_cambio                      # ammesso benche' fuori cluster
+    assert cut.transfer_cost_min == 0             # nessun trasferimento da pagare
+    assert cut.score > 0                          # e competitivo, non solo tollerato
+    v4.filter_cuts_by_cluster([b], {})
+    assert [c.index for c in b.cut_candidates] == [0]
+
+
+def test_depot_cut_yields_a_depot_handover_with_no_car():
+    """Il cambio che ne nasce e' in deposito: nessuna autovettura ai due bordi e
+    vettura mai incustodita."""
+    b = v4.parse_vehicle_blocks([_block_depot_pass_outside_cluster()], CLUSTERS)[0]
+    left = v4._make_segment("U9", "12m", b.trips[:1], "first", 0, CLUSTERS, block=b)
+    right = v4._make_segment("U9", "12m", b.trips[1:], "second", 0, CLUSTERS, block=b)
+    assert left.ends_at_depot and right.starts_at_depot
+    assert v4.seg_transfer_out(right, CLUSTERS) == 0
+    assert v4.seg_transfer_back(left, CLUSTERS) == 0
+    h = compute_handovers([_Duty("A001", [left]), _Duty("A002", [right])], CLUSTERS)
+    assert len(h) == 1
+    assert h[0].kind == "depot"
+    assert h[0].incoming_mode == "depot" and h[0].outgoing_mode == "depot"
+    assert h[0].unattended_min == 0

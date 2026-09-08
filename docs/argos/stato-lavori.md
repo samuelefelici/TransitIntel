@@ -75,8 +75,11 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AD | 19 | 43 | 6 ❌ | 81′ ❌ | penalità ricalibrate |
 | AE | 24 | 42 | 5 ✓ | 15′ ✓ | escalation delle penalità |
 | **AF** | **19** | **37** | 7 ❌ | 105′ ❌ | scarsità delle auto; miglior piano, batte quello umano su vetture e turni |
+| AG | 19 | 38 | 7 ❌ | 105′ ❌ | km a vuoto pagati (#456): **nessun effetto**, 169,5 km contro 171,2 |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
+
+Il giro AG ha portato il dato che mancava: `handoverModes` = **29 cambi in auto, 3 a piedi, ZERO in deposito**, su 32. Il motore non fa **mai** un cambio in deposito. Non e' una preferenza economica: e' un divieto, vedi sotto.
 
 ## Scenari salvati (Cerbero → Fucina)
 
@@ -127,7 +130,26 @@ Regole confermate dall'operatore (8 settembre):
 - la **riserva** NON e' un riempitivo di buchi: si mette su un turno intero povero di corse per avere qualcuno **disponibile** a coprire il pezzo di un assente o a spostare vetture. E' una risorsa di scorta, non un pezzo di turno;
 - la **codifica dei turni** resta la nostra (A + 3 cifre, 001-099 mattinali, 100-199 pomeridiani): il piano reale e' numerato alla vecchia maniera e non fa testo.
 
-## Il prossimo intervento, gia' individuato
+## Il quinto anello: il taglio in deposito era VIETATO (trovato col giro AG)
+
+Il prezzo dei km a vuoto (#456) era necessario ma non sufficiente: i km a vuoto non si sono mossi (169,5 contro 171,2) e le auto sono rimaste 7 su 5. Il motivo e' a monte di ogni calcolo economico.
+
+In `analyze_vehicle_block` (`crew_scheduler_v4.py`) ogni punto di taglio nasceva con:
+
+    allows_cambio = cid is not None          # cid = cluster della fermata
+
+e subito dopo `filter_cuts_by_cluster` (attiva per default, `cutOnlyAtClusters`) **cancellava** ogni candidato con `allows_cambio` falso. Il taglio al passaggio in deposito riceveva gia' il suo bonus (`CUT_DEPOT_BONUS + CUT_NO_CLUSTER_PENALTY`, cioe' l'intenzione dell'autore era chiara), ma se il capolinea da cui partiva il rientro non era in un cluster veniva **buttato via prima di poter competere**. Ad Ancona i rientri a meta' blocco partono da Montesicuro, Ospedale, Scataglini, Madonnetta: nessuno di questi e' un cluster. Da qui i cambi in deposito a zero.
+
+Misurato sul banco (capolinea periferico fuori cluster): punteggio **−5,1 e cancellato** → **17,4 e ammesso**; il cambio che ne nasce e' `depot`/`depot`, trasferimento 0, **auto 0, incustodito 0**.
+
+La correzione, in `analyze_vehicle_block`:
+- `allows_cambio = cid is not None or is_depot_cut` — un passaggio in deposito e' per definizione un punto di cambio: chi smonta ci arriva **guidando** il bus, chi monta riparte **guidandolo** fuori;
+- `transfer_cost = 0` al taglio in deposito (non c'e' nessun trasferimento da pagare);
+- la penalita' radiale (`CUT_SAME_ROUTE_PENALTY`, fino a −22,5) non si applica: difende dal cambio al capolinea periferico, che costerebbe un'auto e lascerebbe il bus incustodito — al deposito non accade ne' l'una ne' l'altra cosa.
+
+`compute_car_pool` e `seg_transfer_out`/`seg_transfer_back` erano gia' corretti: una volta che il pezzo ha un bordo in deposito, l'auto non viene piu' prenotata. Nessuna modifica li'.
+
+## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
 
