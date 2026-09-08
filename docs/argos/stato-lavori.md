@@ -79,6 +79,7 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AH | 26 | 41 | **5 ✓** | **15′ ✓** | taglio in deposito ammesso (#457): regole rispettate, ma 7 vetture in piu' e 32,3% di declassate |
 | AI | 19 | 37 | 7 ❌ | 105′ ❌ | prima misura di `cambiInDeposito`: **1 su 33**. Risposta: (b) |
 | **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni BDS |
+| AM | 20 | 43 | 5 ✓ | 15′ ✓ | pesi spinti su turni pochi e pieni: **nastro medio identico al minuto**, 367′ |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -213,6 +214,35 @@ Cioe': la correzione strutturale **non e' costata tempo pagato**, ha solo ridist
 Non e' quindi un problema di struttura ma di **densita' dei turni**, e la prima leva da provare non e' codice: sono i pesi del solver guida (`crewWeights`: `minDrivers`, `preferIntero`, `minSupplementi`). Si prova prima di scrivere.
 
 Resta fuori una regola: **4 pollicini contro il tetto di 3**. Il parametro `flotta` esiste su `ti_vcsp_run` ma questa sessione ha lo schema in cache e non puo' passarlo.
+
+## Il giro AM e la banda del turno pieno
+
+Esperimento sulle sole manopole (`crewWeights`: minDrivers 10, preferIntero 8, minSupplementi 9, qualityTarget 8), nessuna modifica al codice. I fattori sono stati applicati davvero (`weightFactors`: duty 1,25, suppl 2,25, spezz 1,31, quality 1,60) e i supplementi sono andati a zero. Ma:
+
+**il nastro medio e' rimasto 367 minuti, identico ad AL al minuto.** I turni sono saliti a 43 e le vetture a 20.
+
+E' la conferma pulita della diagnosi: i pesi non toccano la densita' dei turni, perche' il vincolo non sono i pesi.
+
+In `cost_model` la banda entro cui un turno non costa nulla di extra nasce da `target_work_min`/`target_work_max`:
+
+    target_mid = (390 + 402) / 2 = 396
+    sopra target_mid + 12 = 408  ->  maggiorazione di straordinario
+    sotto target_mid - 30 = 366  ->  costo di sottoutilizzo
+
+Banda «gratis» = **[366, 408]**, cioe' lo straordinario partiva **27 minuti prima del tetto legale del turno intero**, che e' 435 (7h15) e fino a li' e' lavoro ordinario pagato al 100% — lo dice `SHIFT_RULES["intero"]`, lo conferma l'operatore, e il frontend aveva gia' `targetWork.high = 435`. L'anomalia stava solo nel modello di costo.
+
+Il solver faceva l'unica cosa razionale: **parcheggiare ogni turno sul fondo della banda**. 367 minuti, un minuto sopra la soglia. Nella lista dei turni di AM si vede a occhio: una massa di interi da 165′, 190′, 198′, 208′, 226′, 262′... e solo una manciata sopra i 400′.
+
+Sullo stesso lavoro (15.414 minuti di nastro misurati in AL):
+
+| nastro medio | turni |
+|---|---|
+| 367′ (dove si posava) | 42,0 |
+| 385,8′ (piano umano) | 40,0 |
+| **412′ (nuova banda)** | **37,4** |
+| 435′ (tetto legale) | 35,4 |
+
+Corretto: `target_work_max` 402 → 435, `TARGET_WORK_MID` 408 → 412 (media di [390, 435]), cosi' le due definizioni di «turno pieno» che convivevano nel motore — 396 in `cost_model`, 408 in `optimizer_common` — smettono di divergere. Un test lega la banda al tetto di `SHIFT_RULES`.
 
 ## Il prossimo intervento (superato dal precedente)
 

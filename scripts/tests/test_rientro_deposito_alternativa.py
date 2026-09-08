@@ -113,3 +113,35 @@ def test_la_soglia_e_configurabile_dall_operatore():
                                        "terminalWaitFreeMin": 20})
     assert r2.depot_alternative_min_gap == 60
     assert r2.terminal_wait_free_min == 20
+
+
+def test_la_banda_del_turno_pieno_arriva_al_tetto_legale():
+    """Un turno intero puo' arrivare a 435 minuti (7h15) ed e' lavoro ordinario
+    pagato al 100%: fino a li' non c'e' straordinario da riconoscere.
+
+    Con target_work_max a 402 la maggiorazione partiva a 408 minuti, 27 prima
+    del tetto legale: la banda «gratis» fra sottoutilizzo e straordinario era
+    [366, 408] e il solver parcheggiava ogni turno sul fondo. Nel giro AL il
+    nastro medio e' stato 367 minuti, UN minuto sopra la soglia — e sono usciti
+    42 turni contro i 38 del piano dell'operatore."""
+    from cost_model import CostRates
+    from optimizer_common import (SHIFT_RULES, TARGET_WORK_LOW, TARGET_WORK_HIGH,
+                                  TARGET_WORK_MID)
+
+    tetto = SHIFT_RULES["intero"]["maxLavoro"]
+    assert tetto == 435                       # 7h15
+    r = CostRates()
+    assert r.target_work_max == tetto, "la banda deve arrivare al tetto legale"
+
+    mid = (r.target_work_min + r.target_work_max) / 2.0
+    # lo straordinario non parte prima del tetto legale del turno intero
+    assert mid + 12 <= tetto
+    # un turno da 400 minuti (6h40) e' pieno, non straordinario
+    assert 400 < mid + 12
+    # e non e' nemmeno sottoutilizzato
+    assert 400 > mid - 30
+
+    # le due definizioni di «turno pieno» nel motore non devono divergere
+    assert TARGET_WORK_LOW == r.target_work_min
+    assert TARGET_WORK_HIGH == r.target_work_max
+    assert abs(TARGET_WORK_MID - mid) <= 1
