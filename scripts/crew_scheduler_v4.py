@@ -1473,13 +1473,19 @@ def analyze_vehicle_block(
         cut_time = trips[i].arrival_min
         stop_name = trips[i].last_stop_name
         cid = match_cluster(stop_name, clusters)
-        transfer_cost = depot_transfer_min(stop_name, clusters)
+        # Passaggio in deposito fra le due corse: chi smonta ci arriva GUIDANDO
+        # il bus, chi monta riparte GUIDANDOLO fuori. Il cambio avviene dunque
+        # in deposito, non al capolinea: non serve un cluster, non serve
+        # un'autovettura e la vettura non resta mai incustodita. Vale anche se
+        # il capolinea da cui parte il rientro e' periferico e fuori cluster.
+        _leg = block_leg_between(block, trips[i], trips[i + 1])
+        is_depot_cut = _leg is not None and _leg.type == "depot"
+        transfer_cost = 0 if is_depot_cut else depot_transfer_min(stop_name, clusters)
 
         left_driving = cum_driving[i + 1]
         right_driving = total_driving - left_driving
         left_work = trips[i].arrival_min - trips[0].departure_min
-        _leg = block_leg_between(block, trips[i], trips[i + 1])
-        if (_leg is None or _leg.type != "depot") and gap <= MAX_IDLE_AT_TERMINAL:
+        if not is_depot_cut and gap <= MAX_IDLE_AT_TERMINAL:
             # cambio in linea: il montante prende il bus entro UNATTENDED_BUS_MAX
             # dal taglio e copre il resto della sosta e l'eventuale fuorilinea
             right_work = trips[-1].arrival_min - piece_start_min(block, i)
@@ -1508,7 +1514,7 @@ def analyze_vehicle_block(
             score -= CUT_NO_CLUSTER_PENALTY
         # Passaggio in deposito fra le due corse: il taglio ideale (chi smonta
         # rientra col bus, chi monta esce col bus: niente auto, mai incustodita)
-        if _leg is not None and _leg.type == "depot":
+        if is_depot_cut:
             score += CUT_DEPOT_BONUS + CUT_NO_CLUSTER_PENALTY
 
         # ── BDS Copertura Soste ──
@@ -1528,16 +1534,21 @@ def analyze_vehicle_block(
                       and trip_before.route_id == trip_after.route_id)
         diff_direction = trip_before.direction_id != trip_after.direction_id
 
-        if same_route and diff_direction:
-            score -= CUT_SAME_ROUTE_PENALTY * 1.5
-        elif same_route:
-            if not cid:
-                score -= CUT_SAME_ROUTE_PENALTY
-            elif gap < 15:
-                score -= CUT_SAME_ROUTE_PENALTY * 0.5
+        # La penalita' radiale difende dal cambio a un capolinea periferico, che
+        # costerebbe un'autovettura e lascerebbe il bus fermo senza conducente.
+        # Al passaggio in deposito nessuna delle due cose accade: la struttura
+        # della linea non c'entra piu' nulla e il taglio va lasciato competere.
+        if not is_depot_cut:
+            if same_route and diff_direction:
+                score -= CUT_SAME_ROUTE_PENALTY * 1.5
+            elif same_route:
+                if not cid:
+                    score -= CUT_SAME_ROUTE_PENALTY
+                elif gap < 15:
+                    score -= CUT_SAME_ROUTE_PENALTY * 0.5
 
-        if not same_route and not cid:
-            score -= CUT_NO_CLUSTER_PENALTY * 0.5
+            if not same_route and not cid:
+                score -= CUT_NO_CLUSTER_PENALTY * 0.5
 
         # Bilanciamento
         if total_driving > 0:
@@ -1570,7 +1581,7 @@ def analyze_vehicle_block(
             stop_name=stop_name,
             cluster_id=cid,
             score=score,
-            allows_cambio=cid is not None,
+            allows_cambio=cid is not None or is_depot_cut,
             left_driving_min=left_driving,
             left_work_min=left_work,
             right_driving_min=right_driving,

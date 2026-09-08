@@ -557,7 +557,7 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
                             <Shield className="w-3 h-3" /> Cambi solo su cluster definiti
                           </label>
                           <div className="text-[10px] text-muted-foreground">
-                            I cambi conducente possono avvenire solo ai 6 cluster definiti (Ugo Bassi, Stazione, Cavour, 4 Novembre, Tavernelle, Torrette)
+                            I cambi conducente possono avvenire solo ai 6 cluster definiti (Ugo Bassi, Stazione, Cavour, 4 Novembre, Tavernelle, Torrette). Il passaggio in deposito resta sempre ammesso: li' il cambio non richiede un nodo di scambio.
                           </div>
                         </div>
                       </div>
