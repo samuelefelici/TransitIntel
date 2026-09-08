@@ -3043,7 +3043,8 @@ def _interval_peak(ivs: list[tuple[int, int]]) -> int:
     return max(sum(1 for a, b in ivs if a <= t < b) for t in pts)
 
 
-def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
+def _feasible_pair(s1: Segment, s2: Segment, rules: dict,
+                   clusters: list[Cluster] | None = None) -> str | None:
     """Verifica se due segmenti possono formare un turno biripresa (semiunico/spezzato).
 
     Semiunico/spezzato servono per coprire i picchi (entrata/uscita scuole e uffici):
@@ -3060,10 +3061,21 @@ def _feasible_pair(s1: Segment, s2: Segment, rules: dict) -> str | None:
         if not s1.last_cluster or not s2.first_cluster:
             return None
 
-    nastro = (s2.end_min - s1.start_min
-              + pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2)
-    work = (s1.work_min + s2.work_min
-            + pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL * 2)
+    # Trasferimenti REALI ai due bordi esterni della coppia: zero se il pezzo
+    # esce dal deposito guidando il bus o ci rientra guidandolo, il tempo del
+    # nodo altrimenti. Con una costante fissa la coppia risultava piu' pesante
+    # o piu' leggera di quello che e' — e col tetto dell'intero a 435 minuti
+    # basta una manciata di minuti inventati per far scartare una coppia che
+    # sarebbe perfettamente regolare, o per accettarne una che non lo e'.
+    if clusters is not None:
+        t_out = seg_transfer_out(s1, clusters)
+        t_back = seg_transfer_back(s2, clusters)
+    else:
+        t_out = t_back = DEPOT_TRANSFER_CENTRAL
+    overhead = pre_turno_for(t_out) + t_out + t_back
+
+    nastro = (s2.end_min - s1.start_min) + overhead
+    work = (s1.work_min + s2.work_min) + overhead
 
     # RD 131/1938: verifica lavoro max oltre a nastro max
     sr_semi = rules.get("semiunico", SHIFT_RULES["semiunico"])
@@ -3850,7 +3862,7 @@ def optimize_multi_scenario(
                 continue
             if s1.end_min > s2.start_min and s2.end_min > s1.start_min:
                 continue
-            pair_type = _feasible_pair(s1, s2, rules)
+            pair_type = _feasible_pair(s1, s2, rules, clusters)
             if pair_type:
                 feasible_pairs.append((s1.idx, s2.idx, pair_type))
 
@@ -4291,7 +4303,7 @@ def greedy_fallback(
         for sa in afternoon:
             if sa.idx in used or sa.idx == sm.idx:
                 continue
-            ptype = _feasible_pair(sm, sa, rules)
+            ptype = _feasible_pair(sm, sa, rules, clusters)
             if ptype:
                 combined_work = sm.work_min + sa.work_min
                 dev = abs(combined_work + pre_turno_for(DEPOT_TRANSFER_CENTRAL) + DEPOT_TRANSFER_CENTRAL - TARGET_WORK_MID)
