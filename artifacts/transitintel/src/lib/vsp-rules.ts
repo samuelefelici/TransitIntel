@@ -31,7 +31,16 @@ export const DEFAULT_VSP: VspConfig = {
     idlePerMin: 0.08,
     longIdlePerMin: 0.15,
     longIdleThreshold: 20,
-    perDepotReturn: 15,
+    // La vettura non puo' restare sola oltre questo limite: da li' in poi
+    // l'attesa al capolinea la paga il conducente che resta col mezzo (o
+    // un'autovettura che porta il cambio).
+    terminalWaitFreeMin: 15,
+    // Sopra questa sosta il motore VALUTA il rientro in deposito come
+    // alternativa al collegamento diretto, e sceglie il piu' economico.
+    depotAlternativeMinGap: 30,
+    // Allineato al solver: i km del rientro sono compensati dal corrispettivo,
+    // resta una voce fissa piccola (era 15, quando i km si contavano lordi).
+    perDepotReturn: 3,
     targetShiftDuration: 600,
     balanceCoeff: 0.0003,
     gapCoeff: 0.0005,
@@ -130,8 +139,10 @@ export const VSP_GROUPS: GroupDef[] = [
       { path: "vehicleCosts.idlePerMin", label: "Sosta capolinea", type: "float", unit: "€/min", min: 0, max: 5, step: 0.01 },
       { path: "vehicleCosts.longIdlePerMin", label: "Sosta lunga (penalità)", type: "float", unit: "€/min", min: 0, max: 5, step: 0.01 },
       { path: "vehicleCosts.longIdleThreshold", label: "Soglia sosta lunga", type: "int", unit: "min", min: 0, max: 240 },
+      { path: "vehicleCosts.terminalWaitFreeMin", label: "Vettura sola al capolinea (max)", type: "int", unit: "min", min: 0, max: 120 },
+      { path: "vehicleCosts.depotAlternativeMinGap", label: "Sosta da cui valutare il rientro", type: "int", unit: "min", min: 0, max: 240 },
       { path: "vehicleCosts.perDepotReturn", label: "Rientro deposito", type: "float", unit: "€", min: 0, max: 200, step: 1 },
-      { path: "vehicleCosts.maxIdleAtTerminal", label: "Sosta max capolinea (no rientro)", type: "int", unit: "min", min: 0, max: 720 },
+      { path: "vehicleCosts.maxIdleAtTerminal", label: "Sosta max capolinea (rientro forzato)", type: "int", unit: "min", min: 0, max: 720 },
     ],
   },
   {

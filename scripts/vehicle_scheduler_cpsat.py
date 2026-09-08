@@ -572,7 +572,7 @@ _NORMATIVA_DROPPED = {"lineChange": 0, "internalDeadhead": 0}
 
 # Archi instradati VIA DEPOSITO perché il riposizionamento diretto è vietato
 # dall'archivio «Archi fuorilinea» (contatore per log e sommario).
-_VIA_DEPOT_ARCS = {"count": 0, "forbiddenDirect": 0}
+_VIA_DEPOT_ARCS = {"count": 0, "forbiddenDirect": 0, "chosenOverDirect": 0}
 
 
 def _via_depot_legs(ti: Trip, tj: Trip, depots: list[dict] | None) -> dict | None:
@@ -596,6 +596,34 @@ def _via_depot_legs(ti: Trip, tj: Trip, depots: list[dict] | None) -> dict | Non
         if best is None or cand["km"] < best["km"]:
             best = cand
     return best
+
+
+def terminal_wait_cost(gap_min: int, dh_min: int, rates: VehicleCostRates) -> float:
+    """Costo di far ASPETTARE il bus al capolinea fra due corse.
+
+    Alla sosta del mezzo si aggiunge la voce che mancava: la regola aziendale
+    dice che la vettura non puo' restare sola piu' di terminal_wait_free_min,
+    quindi ogni minuto oltre quel limite lo paga qualcuno — il conducente che
+    resta col mezzo, oppure un'autovettura che porta il cambio. Senza questa
+    voce un'attesa di tre ore costa 38 EUR di sosta contro i 72 EUR di nastro
+    che consuma davvero, e tenere il bus fuori sembra sempre conveniente."""
+    idle = max(0, gap_min - max(dh_min, MIN_LAYOVER))
+    cost = idle * rates.idle_per_min
+    if idle > rates.long_idle_threshold:
+        cost += (idle - rates.long_idle_threshold) * rates.long_idle_per_min
+    presidiata = max(0, idle - int(rates.terminal_wait_free_min or 0))
+    return cost + presidiata * rates.driver_cost_per_min
+
+
+def via_depot_cost(legs: dict, vtype: str, rates: VehicleCostRates) -> float:
+    """Costo di mandare il bus in deposito e rifarlo uscire: i km al netto del
+    corrispettivo, il tempo del conducente sulle due tratte e la voce fissa del
+    rientro. Le ore passate IN deposito non si pagano: il mezzo e' a casa e non
+    c'e' nessuno da tenere li' ad aspettarlo."""
+    km_netto = max(0.0, rates.per_deadhead_km.get(vtype, 0.80) - rates.corrispettivo_per_km)
+    return (float(legs["km"]) * km_netto
+            + float(legs["min"]) * rates.driver_cost_per_min
+            + rates.per_depot_return)
 
 
 def _via_depot_leg(ti: Trip, tj: Trip, depots: list[dict] | None) -> tuple[float, int] | None:
@@ -946,6 +974,24 @@ def build_compatible_arcs_fast(
                     dh_km, dh_min = legs["km"], legs["min"]
                 else:
                     legs = None
+            elif (depots and tj.departure_min - ti.arrival_min
+                    > rates.depot_alternative_min_gap):
+                # Sosta lunga ma collegamento diretto legale. Finora il rientro
+                # in deposito non veniva nemmeno generato: l'unica alternativa
+                # era tenere il bus fermo al capolinea, anche per ore. Qui la
+                # mossa entra fra le ALTERNATIVE e vince solo se costa meno,
+                # confrontata col prezzo vero dell'attesa (vedi
+                # terminal_wait_cost: oltre il limite di vettura incustodita
+                # quei minuti sono tempo di conducente).
+                _alt = _via_depot_legs(ti, tj, depots)
+                _gap = tj.departure_min - ti.arrival_min
+                if _alt is not None and _alt["min"] <= _gap and (
+                        via_depot_cost(_alt, ti.required_vehicle, rates)
+                        < terminal_wait_cost(_gap, dh_min, rates)):
+                    legs = _alt
+                    dh_km, dh_min = legs["km"], legs["min"]
+                    via_depot = True
+                    _VIA_DEPOT_ARCS["chosenOverDirect"] += 1
             if dh_km > MAX_DEADHEAD_KM and not via_depot:
                 continue
             # NORMATIVA: VIETA_CAMBI_LINEA / VIETA_VAV_INTERNI (filtri hard)
@@ -1077,11 +1123,17 @@ def precompute_arc_costs(
             cost_euro += (a.dh_km * km_netto_arc
                           + max(0.0, float(a.dh_min or 0)) * rates.driver_cost_per_min) * mul_dh
 
-        # Idle
+        # Idle. Alla sosta del mezzo si aggiunge il prezzo vero dell'attesa:
+        # oltre il limite di vettura incustodita quei minuti sono tempo di
+        # conducente (o un'autovettura che porta il cambio). In deposito no:
+        # il mezzo e' a casa e non c'e' nessuno a tenerlo d'occhio.
         idle_min = max(0, a.gap_min - max(a.dh_min, MIN_LAYOVER))
         cost_euro += idle_min * rates.idle_per_min * mul_idle
         if idle_min > rates.long_idle_threshold:
             cost_euro += (idle_min - rates.long_idle_threshold) * rates.long_idle_per_min * mul_idle
+        if not a.depot_return:
+            presidiata = max(0, idle_min - int(rates.terminal_wait_free_min or 0))
+            cost_euro += presidiata * rates.driver_cost_per_min * mul_idle
 
         # Depot return
         if a.depot_return:
@@ -1998,6 +2050,7 @@ def chain_cost_detailed(
     deadhead_km = 0.0
     deadhead_min = 0.0
     idle_minutes = 0.0
+    attesa_presidiata = 0.0
     depot_returns = 0
     vcsp_pen = 0.0
     for k in range(len(chain) - 1):
@@ -2008,6 +2061,11 @@ def chain_cost_detailed(
             idle_minutes += _arc_idle_min(arc)
             if arc.depot_return:
                 depot_returns += 1
+            else:
+                # Attesa al capolinea oltre il limite di vettura incustodita:
+                # la presidia il conducente, ed e' tempo pagato.
+                attesa_presidiata += max(
+                    0.0, _arc_idle_min(arc) - int(rates.terminal_wait_free_min or 0))
             vcsp_pen += arc.penalty_eur
 
     shift_start = trips[chain[0]].departure_min
@@ -2027,6 +2085,7 @@ def chain_cost_detailed(
     idle_cost = idle_minutes * rates.idle_per_min
     long_idle = max(0, idle_minutes - rates.long_idle_threshold)
     idle_cost += long_idle * rates.long_idle_per_min
+    idle_cost += attesa_presidiata * rates.driver_cost_per_min
     cost.idle_cost = idle_cost
 
     cost.depot_return_cost = depot_returns * rates.per_depot_return
@@ -3749,12 +3808,17 @@ def run(data: dict) -> dict:
     report_progress("VSP", 10, "Building compatibility arcs...")
     _VIA_DEPOT_ARCS["count"] = 0
     _VIA_DEPOT_ARCS["forbiddenDirect"] = 0
+    _VIA_DEPOT_ARCS["chosenOverDirect"] = 0
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None,
                                       delay_buffers=delay_buffers or None,
                                       depots=depots_data or None)
     if _VIA_DEPOT_ARCS["forbiddenDirect"]:
         log(f"  [VSP-DH-ARCHIVE] {_VIA_DEPOT_ARCS['forbiddenDirect']} coppie con riposizionamento diretto vietato, "
             f"{_VIA_DEPOT_ARCS['count']} instradate via deposito")
+    if _VIA_DEPOT_ARCS["chosenOverDirect"]:
+        log(f"  [VSP-DEPOSITO] {_VIA_DEPOT_ARCS['chosenOverDirect']} soste oltre "
+            f"{rates.depot_alternative_min_gap}' in cui il rientro in deposito costa meno "
+            f"che tenere il bus fermo al capolinea")
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
 
     # ── REGOLA DEL GIRO: capolinea del centro = nodi di interscambio PS ──

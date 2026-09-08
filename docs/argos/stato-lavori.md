@@ -77,6 +77,7 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | **AF** | **19** | **37** | 7 ❌ | 105′ ❌ | scarsità delle auto; miglior piano, batte quello umano su vetture e turni |
 | AG | 19 | 38 | 7 ❌ | 105′ ❌ | km a vuoto pagati (#456): **nessun effetto**, 169,5 km contro 171,2 |
 | AH | 26 | 41 | **5 ✓** | **15′ ✓** | taglio in deposito ammesso (#457): regole rispettate, ma 7 vetture in piu' e 32,3% di declassate |
+| AI | 19 | 37 | 7 ❌ | 105′ ❌ | prima misura di `cambiInDeposito`: **1 su 33**. Risposta: (b) |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -159,6 +160,32 @@ Col taglio in deposito ammesso (#457) **le due regole rigide rientrano per la pr
 Ma il prezzo e' alto e va detto: **26 vetture invece di 19** (il piano umano ne usa 21), km a vuoto 214,4 contro 169,5, e soprattutto il declassamento esplode: **32,3%** contro il 17% di AG, con **5 pollicini** contro i 2-3 dichiarati dall'operatore e 8 catene spezzate. La 91 e' declassata all'83%, la 2/6 al 54%.
 
 E c'e' una spiegazione piu' banale del merito della #457: la ripartizione dei blocchi passa da 17 LUNGO / 1 MEDIO / 0 CORTO a 11 LUNGO / 4 MEDIO / **10 CORTO**. Un blocco corto non ha bisogno di nessun taglio, quindi niente cambio e niente auto. Le auto possono essere rientrate cosi', non perche' i cambi siano passati in deposito. Senza `totalDepotChanges` non si distinguono i due casi — ed e' esattamente il motivo per cui va esposto.
+
+## Il giro AI: la risposta e' (b), e la causa e' a monte di ogni prezzo
+
+Primo giro con `cambiInDeposito` visibile: **1 cambio in deposito su 33** (32 in linea). AI e' tornato alla forma di AG — 19 vetture, 37 turni, blocchi 17 LUNGO / 1 MEDIO / **0 CORTO**, auto 7 su 5, incustodito 105′ — quindi la conformita' di AH veniva dallo spezzare i blocchi (10 CORTO), non dai cambi in deposito.
+
+La #457 ha tolto il divieto, ma l'occasione quasi non esiste. Il motivo e' in `precompute_arc_costs` (`vehicle_scheduler_cpsat.py:928-980`): il passaggio in deposito fra due corse viene generato in **due soli casi, entrambi forzati**:
+
+1. `dh_km >= DH_FORBIDDEN_KM` — il riposizionamento diretto e' vietato dall'archivio fuorilinea, il bus e' costretto a passare dal deposito;
+2. `gap > rates.max_idle_at_terminal` — e quella soglia vale **240 minuti**.
+
+Non c'e' un terzo ramo. Il motore non genera **mai** l'arco via deposito come *alternativa* a un collegamento diretto legale: quando il diretto esiste e la sosta sta sotto le quattro ore, l'opzione non entra nemmeno nel modello. Un bus puo' restare fermo a un capolinea fino a **quattro ore** prima che il motore consideri di mandarlo a casa — e in quelle ore serve un conducente che lo aspetti o un'autovettura che porti il cambio.
+
+Questo spiega anche perche' la #456 non aveva mosso nulla: prezzare bene i km a vuoto non serve se la mossa non e' fra le alternative. Non era un problema di prezzo, era un problema di **arco mancante**.
+
+**Fatto (soglia data dall'operatore: soste oltre 30 minuti).** L'arco via deposito ora entra fra le alternative e vince solo se costa meno dell'attesa. Perche' il confronto fosse onesto mancava una voce: la regola aziendale dice che la vettura non puo' restare sola piu' di 15 minuti, quindi ogni minuto oltre quel limite lo paga qualcuno — il conducente che resta col mezzo, o un'autovettura che porta il cambio. Senza quella voce un'attesa di tre ore costava 38 € di sosta contro i 72 € di nastro che consuma davvero, e tenere il bus fuori sembrava sempre conveniente.
+
+Misura sul banco, con un rientro tipico di Ancona (10 km, 30′ di guida, 16,50 €):
+
+| sosta | aspetta | in deposito | sceglie |
+|---|---|---|---|
+| 30′ | 8,61 € | 16,50 € | aspetta |
+| 45′ | 18,81 € | 16,50 € | **deposito** |
+| 90′ | 49,41 € | 16,50 € | **deposito** |
+| 180′ | 110,61 € | 16,50 € | **deposito** |
+
+Il punto di pareggio (~40-45′) **non e' fissato a mano: esce dalla distanza del deposito**. Un capolinea vicino manda il bus a casa prima, uno lontano lo tiene fuori piu' a lungo — la stessa regola da' risposte diverse dove la citta' e' diversa.
 
 ## Il prossimo intervento (superato dal precedente)
 
