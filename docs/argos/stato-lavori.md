@@ -539,6 +539,32 @@ Gli 80 € sono il costo di POSSESSO di un autobus per un giorno — ammortament
 
 **La sonda in AT.** Due candidati, tutti e due `head+` sulla 1/4 con il giro rigido al lavoro (andata e ritorno insieme, δ 2 e 4 minuti); nessuno toccava una coincidenza (`rejectedForCoincidence: 0`), nessuno accettato — uno bocciato dal VSP, l'altro dal punteggio. La sonda guidata dai turni non ha prodotto **nessun** candidato: le sette bi-riprese sono tutte irraggiungibili, con δ da 24 a 190 minuti o col nastro gia' pieno.
 
+## Gli strumenti nuovi (9 settembre)
+
+Fino a oggi per sapere qualcosa del quadro bisognava lanciare un giro da 45 minuti e leggere il rendiconto della sonda: ogni domanda costava un giro, e la risposta arrivava a piano gia' fatto. Da qui il «girare attorno» che l'operatore ha fatto notare. Questi strumenti rispondono in secondi e PRIMA di girare.
+
+| strumento | dove | cosa risponde |
+|---|---|---|
+| `ti_coincidences` | argos + endpoint TI | quali coincidenze fa l'orario (capolinea **e transiti**), quali perde per poco, e la traslazione di linea che le prende — col conto di quelle che rompe |
+| `ti_vcsp_compare` | argos (solo connettore) | due giri fianco a fianco sui cinque criteri, **con l'avviso se i parametri non coincidono** |
+| sonda «coincidenza» | `vcsp_probe.py` | candidati che nascono dal SERVIZIO (sposta la linea intera) e non dal piano |
+
+**La regola nuova all'accettazione**: a parita' di punteggio decide il servizio. Una coincidenza in euro non compare da nessuna parte, quindi un candidato che ne crea e non costa di piu' veniva rifiutato per pareggio. Non ha un prezzo — non compra un peggioramento — ma rompe la parita'.
+
+**Numeri scelti da Argos, da confermare con l'operatore:**
+
+- `VEHICLE_SHADOW_EUR = 80` — un autobus in servizio per un giorno (ammortamento di un 12 metri su quindici anni piu' assicurazione, bollo, manutenzione fissa). Sotto i ~40 € la scelta fra i round si ribalta.
+- `SUPPLEMENT_SHADOW_EUR = 100` — si somma all'ombra del turno.
+- `COINCIDENCE_MIN_WAIT = 2` (solo in `coincidence_analysis`) — l'attesa minima perche' il cambio sia fattibile. Il vincolo del VCSP accetta ancora da zero in su: cambiarlo cambierebbe le coincidenze da difendere, e non e' una decisione dell'agente.
+
+**Prima prova sui dati veri** (festivo, ristretto a 3, 2/6 e 21/33): la **3** anticipata di 12′ crea due relazioni — venticinque corse in coincidenza — senza romperne nessuna; la **2/6** spostata di 3′ ne crea due; la **21/33** di −3′ una. Sull'intera rete (17 linee) non e' ancora stata letta.
+
+## La trappola del merge a meta', due volte in due giorni
+
+La PR #470 e' stata mergiata al commit `573101b`, lasciando fuori la mappa delle coincidenze e la sonda che la usa — mentre `ti_coincidences` era gia' in produzione su argos e chiamava un endpoint inesistente. Rifatti sopra `main` nella #471. Era gia' successo con la #460 il giorno prima.
+
+**Regola**: dopo ogni merge, verificare con `git merge-base --is-ancestor <ultimo commit> origin/main` che ci sia dentro tutto, non solo che il branch sia allineato.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
