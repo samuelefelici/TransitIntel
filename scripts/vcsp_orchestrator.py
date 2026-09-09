@@ -272,6 +272,16 @@ def extract_arc_penalties(vsp_out: dict, crew_out: dict,
 # vcsp.dutyShadowEur / vcsp.violationShadowEur.
 DUTY_SHADOW_EUR = 200.0
 VIOLATION_SHADOW_EUR = 100.0
+# Il MEZZO in piu' non e' km in piu': e' un autobus da possedere, assicurare e
+# tenere in officina. Nel costo di esercizio quasi non si vede — nel giro AT
+# fra 30 vetture e 21 passavano 110 € — e cosi' la selezione si e' comprata
+# nove autobus per 366 €. L'ombra e' il costo di possesso di un giorno.
+VEHICLE_SHADOW_EUR = 80.0
+# Il supplemento e' un turno che l'operatore vuole evitare: nel CSP gli mette
+# il peso massimo (minSupplementi 10), ma nella selezione fra round pesava come
+# un turno pieno, e quello che il solver dei turni evitava la selezione se lo
+# ricomprava. Questa ombra si SOMMA a quella del turno.
+SUPPLEMENT_SHADOW_EUR = 100.0
 
 # Round consecutivi senza miglioramento prima di fermarsi.
 EARLY_STOP_PATIENCE = 2
@@ -313,6 +323,8 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
         "selectionScoreEur": round(
             total
             + float(duties or 0) * DUTY_SHADOW_EUR
+            + float(cs.get("totalSupplementi") or 0) * SUPPLEMENT_SHADOW_EUR
+            + float(vm.get("vehicles") or 0) * VEHICLE_SHADOW_EUR
             + float(violations or 0) * VIOLATION_SHADOW_EUR, 2),
     }
 
@@ -372,15 +384,15 @@ def main() -> None:
         crew_shift_scope = "trip"
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
-    global DUTY_SHADOW_EUR, VIOLATION_SHADOW_EUR
-    try:
-        DUTY_SHADOW_EUR = max(0.0, float(vcsp_cfg.get("dutyShadowEur", DUTY_SHADOW_EUR)))
-    except (ValueError, TypeError):
-        pass
-    try:
-        VIOLATION_SHADOW_EUR = max(0.0, float(vcsp_cfg.get("violationShadowEur", VIOLATION_SHADOW_EUR)))
-    except (ValueError, TypeError):
-        pass
+    global DUTY_SHADOW_EUR, VIOLATION_SHADOW_EUR, VEHICLE_SHADOW_EUR, SUPPLEMENT_SHADOW_EUR
+    for chiave, nome in (("dutyShadowEur", "DUTY_SHADOW_EUR"),
+                         ("violationShadowEur", "VIOLATION_SHADOW_EUR"),
+                         ("vehicleShadowEur", "VEHICLE_SHADOW_EUR"),
+                         ("supplementShadowEur", "SUPPLEMENT_SHADOW_EUR")):
+        try:
+            globals()[nome] = max(0.0, float(vcsp_cfg.get(chiave, globals()[nome])))
+        except (ValueError, TypeError):
+            pass
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
         f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min), "

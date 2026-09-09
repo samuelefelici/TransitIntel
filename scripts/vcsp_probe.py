@@ -180,7 +180,13 @@ def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
 
     out = [{"node": nodo, "fromRoute": ra, "toRoute": rb,
             "occurrences": len(coppie), "maxWaitMin": max_wait,
-            "pairs": list(coppie)}
+            "pairs": list(coppie),
+            # Gli ORARI che la realizzano, in chiaro: senza questi una relazione
+            # inattesa non si puo' controllare a mano sul quadro orario.
+            "sample": [{"fromTrip": a, "arrivo": min_to_time(arr),
+                        "toTrip": b, "partenza": min_to_time(dep),
+                        "attesaMin": dep - arr}
+                       for a, b, arr, dep in sorted(coppie, key=lambda c: c[2])[:3]]}
            for (nodo, ra, rb), coppie in rel.items() if len(coppie) >= min_occurrences]
     out.sort(key=lambda c: (-c["occurrences"], c["node"], c["fromRoute"]))
     return out
@@ -254,7 +260,7 @@ def propagate_for_coincidences(
     rt_pairs: dict[str, str], coinc_pairs: list[tuple[str, str, int, int]],
     max_wait: int = COINCIDENCE_MAX_WAIT,
     max_trips: int = COINCIDENCE_PROPAGATION_MAX_TRIPS,
-) -> dict[str, int] | None:
+) -> tuple[dict[str, int] | None, str]:
     """Invece di scartare uno spostamento che rompe una coincidenza, porta con
     se' anche la corsa in coincidenza.
 
@@ -265,31 +271,34 @@ def propagate_for_coincidences(
 
     La catena si ferma davanti a tre muri: una corsa che non regge quel delta,
     una corsa a cui la catena chiederebbe due delta diversi, e il tetto di
-    corse coinvolte. In quei casi ritorna None e il candidato si scarta come
-    prima: le coincidenze non si comprano.
+    corse coinvolte. In quei casi ritorna (None, motivo) e il candidato si
+    scarta come prima: le coincidenze non si comprano. Il motivo dice quale
+    muro: senza saperlo non si capisce dove allargare.
     """
     out = dict(shifts)
     for _ in range(max_trips):
         rotte = coincidences_broken(out, trips_by_id, coinc_pairs, max_wait)
         if not rotte:
-            return out
+            return out, "ok"
         for r in rotte:
             a, b = r["fromTrip"], r["toTrip"]
             if a in out and b in out:
-                return None            # gia' mosse tutte e due, di delta diversi
+                return None, "deltaInConflitto"
             fermo, mosso = (b, a) if a in out else (a, b)
             delta = out[mosso]
             t = trips_by_id.get(fermo)
-            if t is None or abs(delta) > flex_of_round_trip(t, rt_pairs, trips_by_id):
-                return None            # la corsa da trascinare non regge il delta
+            if t is None:
+                return None, "corsaSconosciuta"
+            if abs(delta) > flex_of_round_trip(t, rt_pairs, trips_by_id):
+                return None, "flessibilitaInsufficiente"
             aggiunta = expand_to_round_trips({fermo: delta}, rt_pairs)
             for tid, d in aggiunta.items():
                 if out.get(tid, d) != d:
-                    return None        # la stessa corsa dovrebbe slittare due volte
+                    return None, "deltaInConflitto"
             out.update(aggiunta)
             if len(out) > max_trips:
-                return None
-    return None
+                return None, "catenaTroppoLunga"
+    return None, "catenaTroppoLunga"
 
 
 def shift_coincidence_pairs(pairs: list[tuple[str, str, int, int]],
@@ -732,6 +741,7 @@ def run_probe_phase(
         "crewScope": crew_scope,
         "coincidences": [{k: v for k, v in c.items() if k != "pairs"} for c in coincidenze],
         "rejectedForCoincidence": 0, "propagatedForCoincidence": 0,
+        "propagationFailures": {},
     }
     result = {"vsp": best_vsp, "crew": best_crew, "kpi": best_kpi, "probe": section}
     if flex_trips == 0:
@@ -782,14 +792,17 @@ def run_probe_phase(
                 rotte = coincidences_broken(c["shifts"], trips_by_id, coinc_pairs)
                 if rotte:
                     # spostare il mattone accanto invece di rinunciare
-                    allargato = propagate_for_coincidences(
+                    allargato, perche = propagate_for_coincidences(
                         c["shifts"], trips_by_id, rt_pairs, coinc_pairs)
                     if allargato is None:
                         section["rejectedForCoincidence"] += 1
+                        section["propagationFailures"][perche] = (
+                            section["propagationFailures"].get(perche, 0) + 1)
                         if len(section["rejected"]) < 20:
                             section["rejected"].append({
                                 "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
                                 "why": "rompe una coincidenza",
+                                "propagationFailed": perche,
                                 "coincidenze": rotte[:3],
                             })
                         continue

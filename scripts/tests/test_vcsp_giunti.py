@@ -120,6 +120,51 @@ class TestSelezioneFraRound:
                 == pulito["selectionScoreEur"] + 2 * vo.VIOLATION_SHADOW_EUR)
 
 
+    def test_il_mezzo_in_piu_pesa_quanto_costa_possederlo(self):
+        """Nel giro AT la selezione ha preferito 30 vetture a 21 per 366 €:
+        il costo di esercizio non vede il capitale fermo in rimessa."""
+        base = {"summary": {"totalDailyCost": 100, "totalShifts": 5,
+                            "validation": {"totalViolations": 0},
+                            "companyCarsCap": 5, "companyCarsMaxSimultaneous": 5,
+                            "companyCarsConflicts": 0,
+                            "handoverModes": {"overLimit": []}}}
+        magro = vo._round_kpi(1, {"metrics": {"costEur": 100, "vehicles": 21}}, base)
+        grasso = vo._round_kpi(2, {"metrics": {"costEur": 100, "vehicles": 30}}, base)
+        assert (grasso["selectionScoreEur"]
+                == magro["selectionScoreEur"] + 9 * vo.VEHICLE_SHADOW_EUR)
+        assert vo._round_rank(magro) < vo._round_rank(grasso)
+
+    def test_il_supplemento_pesa_piu_di_un_turno_pieno(self):
+        """Quello che il solver dei turni evita, la selezione non se lo ricompra."""
+        vsp = {"metrics": {"costEur": 100, "vehicles": 10}}
+        def _k(turni, suppl):
+            return vo._round_kpi(1, vsp, {"summary": {
+                "totalDailyCost": 100, "totalShifts": turni, "totalSupplementi": suppl,
+                "validation": {"totalViolations": 0},
+                "companyCarsCap": 5, "companyCarsMaxSimultaneous": 5,
+                "companyCarsConflicts": 0, "handoverModes": {"overLimit": []}}})
+        # 35 pieni + 8 supplementi contro 43 pieni + 1: stesso numero di uomini,
+        # ma l'operatore vuole i turni interi
+        con_suppl = _k(43, 8)
+        quasi_tutti_pieni = _k(44, 1)
+        assert quasi_tutti_pieni["selectionScoreEur"] < con_suppl["selectionScoreEur"]
+
+    def test_il_giro_AT_si_sarebbe_scelto_il_round_giusto(self):
+        """I numeri veri del giro AT: round 4 (30 vetture, 8 supplementi) contro
+        round 5 (21 vetture, 1 supplemento), una violazione ciascuno."""
+        def _k(r, vetture, costo_v, turni, suppl, costo_c):
+            return vo._round_kpi(r, {"metrics": {"costEur": costo_v, "vehicles": vetture}},
+                                 {"summary": {"totalDailyCost": costo_c, "totalShifts": turni,
+                                              "totalSupplementi": suppl,
+                                              "validation": {"totalViolations": 1},
+                                              "companyCarsCap": 5, "companyCarsMaxSimultaneous": 4,
+                                              "companyCarsConflicts": 0,
+                                              "handoverModes": {"overLimit": []}}})
+        r4 = _k(4, 30, 6533.89, 43, 8, 15062.14)
+        r5 = _k(5, 21, 6423.40, 44, 1, 15338.51)
+        assert vo._round_rank(r5) < vo._round_rank(r4), "vince il piano da 21 vetture"
+
+
 class TestEscalation:
     """La penalità non è solo un costo, è una guida alla ricerca: finché il
     round resta illegale sui cambi si alza il tiro, e ci si ferma appena

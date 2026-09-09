@@ -7,7 +7,9 @@ Aggiornata al 7 settembre 2026, 14:40 UTC.
 
 - Progetto Planning Studio «Domenica Ancona»: `fe78db8e-11b9-4ac9-bdb2-a21ef9892244`, giorno-tipo festivo, data di esercizio di prova 2026-09-20, 17 linee urbane, 365 corse festive.
 - **Solo il deposito di Ancona** (`b2f3de29-aa93-4d02-adcb-b866f0581998`) in ogni giro: `depotIds` sempre valorizzato. Gli altri depositi (Jesi ecc.) hanno tratte senza arco in archivio.
-- Parametri del giro di riferimento: `date 2026-09-20, mode vcsp, serviceType urbano, companyCars 5, defaultVehicleType 12m, crewShiftScope trip, shiftPenaltyEur 1`; per il giro «a regola d'arte»: `intensity deep, rounds 3, probes 10, crewTimeLimit 600, crewSolverIntensity 3, crewMaxRounds 10, crewWeights {minDrivers 10, preferIntero 10, minSupplementi 10, qualityTarget 3, workBalance 1, minCambi 1}`.
+- Parametri del giro di riferimento: `date 2026-09-20, mode vcsp, serviceType urbano, companyCars 5, crewShiftScope trip, shiftPenaltyEur 1`; per il giro «a regola d'arte»: `intensity deep, **rounds 5, probes 6, crewTimeLimit 240**, crewSolverIntensity 3, crewMaxRounds 10, crewWeights {minDrivers 10, preferIntero 10, minSupplementi 10, qualityTarget 3, workBalance 1, minCambi 1}`.
+- **Prima di confrontare due giri, verifica i parametri di tutti e due** con `ti_vcsp_status` senza jobId (elenca i giri recenti col loro `params`). Questa riga diceva `rounds 3, probes 10, crewTimeLimit 600` mentre i giri della serie AL→AQ2 giravano con `rounds 5, probes 6, crewTimeLimit 240`: fidarsi della nota invece dei giri veri ha prodotto un confronto senza senso e una diagnosi sbagliata («varianza del solver») il 9 settembre.
+- Le corse hanno tutte una tipologia dichiarata: `defaultVehicleType` non serve, e passarlo cambia `vehicleSource` da `planning` a `planning+default`.
 
 ## Regole dell'azienda recepite nel motore
 
@@ -467,6 +469,75 @@ La 3 ha cadenza 30′ e la 21/33 cade sistematicamente a meta' dell'intervallo. 
 2. **La propagazione.** `propagate_for_coincidences`: quando uno spostamento romperebbe una coincidenza, invece di scartarlo si prova a portarsi dietro la corsa in coincidenza dello stesso δ — e ogni corsa trascinata si porta dietro il suo giro. La catena si ferma davanti a tre muri: una corsa che non regge quel δ, una corsa a cui la catena chiederebbe due δ diversi, e il tetto di 12 corse coinvolte. In quei casi si scarta come prima: le regole non si comprano.
 
 Nel rendiconto della sonda c'e' ora `propagatedForCoincidence` accanto a `rejectedForCoincidence`: quanti candidati si sono portati dietro il vicino invece di morire.
+
+## Il giro AR: le coincidenze si vedono, il piano no
+
+Scenario `7a46cc61-18fd-4ade-b2bf-4356e1bd9397`, stessi parametri di AQ2, 45 minuti.
+
+**Le coincidenze riconosciute passano da 4 a 11.** Ci sono le due che l'operatore aveva nominato, e nessuna delle due si vedeva prima:
+
+| nodo | da → a | occorrenze | perche' era invisibile |
+|---|---|---|---|
+| MADONNETTA | 2/6 → 21/33 | 4 | la 21/33 **transita**, non si ferma |
+| MADONNETTA | 21/33 → 2/6 | 3 | idem (**da verificare**, vedi sotto) |
+| POSATORA | 31 → 3 | 12 | la **31 transita** a Posatora |
+| POSATORA | 3 → 31 | 11 | idem |
+| PIAZZA CAVOUR | 11 → 2/6, 11 → 1/4, 2/6 → 11 | 4, 3, 3 | la 11 transita |
+
+A Posatora la coincidenza **c'e'**, ma non e' quella cercata: la fa la **31**, non la 21/33. La lettura di ieri (attese di 12-20 minuti fra 3 e 21/33) resta vera per quella coppia, ma il nodo non era vuoto — era la linea sbagliata.
+
+**Un numero da verificare.** Il verso MADONNETTA 21/33 → 2/6 (×3) non torna col conto a mano: il 21/33 transita alla Madonnetta al ritorno alle 09:25, 13:54, 18:24, 20:54 e la 2/6R parte ai minuti :04 e :34, quindi le attese sarebbero 39, 10, 10, 10 — tutte oltre i 5 minuti. O i dati materializzati differiscono dal quadro letto con `ti_line_timetable`, o c'e' un rumore nel riconoscimento. Il verso opposto (2/6 → 21/33, ×4) corrisponde invece al minuto.
+
+**La propagazione ha lavorato**: 6 candidati scartati per coincidenza, **2 salvati** portandosi dietro il vicino (`propagatedForCoincidence`). In AQ2 erano 14 scartati su 15 e nessuno salvato. Ma i 2 salvati sono poi stati bocciati dal punteggio: la sonda ha accettato **zero** spostamenti anche stavolta.
+
+**Il piano e' peggiore di AQ2, e ~~e' varianza del solver~~ NO: erano parametri diversi.**
+
+| giro | rounds | probes | crewTimeLimit | vetture | turni | violazioni |
+|---|---|---|---|---|---|---|
+| AQ2 | **5** | 6 | **240** | 21 | 43 | 0 |
+| AR | 3 | 10 | 600 | 29 | 43 | 2 |
+| AS | 3 | 10 | 600 | 30 | 41 | 2 |
+
+Avevo scritto che la differenza fra 21 e 29 vetture era varianza del solver. **Non lo e'**: ho lanciato AR con i parametri «di riferimento» annotati in testa a questo documento invece che con quelli effettivi di AQ2, e non li ho verificati prima di concludere. AQ2 girava con **5 round** (ecco perche' il round scelto era «il 4»), 6 sonde e 240 secondi di CSP.
+
+La prova sta nel giro AS, ripetizione esatta di AR: i round si somigliano al punto che il primo e' identico (25 vetture, 43 turni, 4 violazioni in tutti e due), il secondo da' 29 e 30 vetture con 2 violazioni in tutti e due, e in tutti e due vince il round 2. **La varianza del motore e' piccola: e' riproducibile.** Il confronto AQ2 ↔ AR non lo era.
+
+**La selezione lessicografica e' stata messa alla prova per la prima volta.** In AQ2 il round vincente aveva insieme zero violazioni e il punteggio migliore, quindi la regola non serviva. Qui no:
+
+| round | vetture | violazioni | punteggio |
+|---|---|---|---|
+| 1 | 25 | 4 | 29.769 |
+| **2 (scelto)** | **29** | **2** | 30.305 |
+| 3 | 24 | 5 | 30.475 |
+
+Ha scelto il round 2, con **il punteggio peggiore** del round 1 ma meta' delle violazioni. Col metro vecchio avrebbe vinto il round 1, con 4 violazioni. La regola funziona.
+
+## Il giro AT: il confronto giusto, e un difetto piu' grosso di quello che cercavo
+
+Scenario `9cb0f5f7-e0b4-4bff-8ccd-defe41c454f6`, parametri VERI di AQ2 (5 round, 6 sonde, CSP 240s) col codice nuovo. 28 minuti.
+
+| round | vetture | turni | suppl | violazioni | punteggio |
+|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 5 | 29.820 |
+| 2 | 30 | 45 | 2 | 5 | 31.770 |
+| 3 | **22** | 43 | **0** | 2 | 29.742 |
+| **4 (scelto)** | **30** | 43 | **8** | **1** | 30.296 |
+| 5 | **21** | 44 | 1 | **1** | 30.662 |
+
+Il codice nuovo **non ha rotto niente**: con cinque round il motore trova di nuovo i piani a 21-22 vetture che AQ2 aveva trovato (round 3 e 5). Le undici coincidenze sono le stesse identiche di AR e AS — il riconoscimento e' stabile fra i giri.
+
+**Ma la scelta fra i round e' sbagliata, e si vede a occhio nudo.** I round 4 e 5 hanno tutti e due **una** violazione, quindi la regola lessicografica passa al punteggio e vince il 4 per 366 €. Solo che il round 4 ha **30 vetture e 8 supplementi**, il round 5 ne ha **21 e 1**. Nove autobus in piu' e sette supplementi in piu', comprati per 366 €.
+
+La causa e' nel punteggio, ed e' doppia:
+
+1. **Il mezzo in piu' non costa quasi niente.** `vehicleCostEur` e' un costo di esercizio (km e ore): fra 30 vetture e 21 ci sono **110 €** di differenza (6.534 contro 6.423). Ma una vettura in piu' e' un autobus in piu' da possedere, assicurare e tenere in officina — un costo di capitale che nel punteggio non compare.
+2. **Il supplemento pesa come un turno pieno.** `DUTY_SHADOW_EUR` vale 200 € per qualunque turno; nel CSP invece l'operatore mette `minSupplementi: 10`, cioe' il massimo. Quello che il solver dei turni evita, la selezione fra round se lo ricompra.
+
+Messe tutte e due (`VEHICLE_SHADOW_EUR = 80`, `SUPPLEMENT_SHADOW_EUR = 100` che si somma all'ombra del turno; override da `vcsp.vehicleShadowEur` / `vcsp.supplementShadowEur`). Sui numeri veri del giro AT il round 5 passa a 32.442 e il round 4 a 33.496: **vince il piano da 21 vetture** con un margine di mille euro invece di perdere per 366.
+
+Gli 80 € sono il costo di POSSESSO di un autobus per un giorno — ammortamento di un 12 metri su quindici anni piu' assicurazione, bollo e manutenzione fissa — non i km. **Da confermare con l'operatore**: se il valore aziendale e' diverso si cambia una costante, e la direzione della scelta non cambia finche' resta sopra i ~40 € (sotto quella soglia i 366 € del punteggio tornano a comandare).
+
+**La sonda in AT.** Due candidati, tutti e due `head+` sulla 1/4 con il giro rigido al lavoro (andata e ritorno insieme, δ 2 e 4 minuti); nessuno toccava una coincidenza (`rejectedForCoincidence: 0`), nessuno accettato — uno bocciato dal VSP, l'altro dal punteggio. La sonda guidata dai turni non ha prodotto **nessun** candidato: le sette bi-riprese sono tutte irraggiungibili, con δ da 24 a 190 minuti o col nastro gia' pieno.
 
 ## Il prossimo intervento (superato dal precedente)
 
