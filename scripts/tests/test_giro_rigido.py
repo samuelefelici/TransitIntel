@@ -19,6 +19,7 @@ def _t(tid, route, direction, dep, arr, first, last, flex=30):
     return {"tripId": tid, "routeId": route, "directionId": direction,
             "departureMin": dep, "arrivalMin": arr,
             "firstStopId": first, "lastStopId": last,
+            "firstStopName": first, "lastStopName": last,
             "routeName": route, "flexMin": flex}
 
 
@@ -75,3 +76,53 @@ def test_il_giro_si_muove_quanto_regge_il_pezzo_piu_rigido():
     assert probe.flex_of_round_trip(trips[0], pairs, by_id) == 10
     # una corsa senza ritorno accoppiato resta libera
     assert probe.flex_of_round_trip(trips[2], pairs, by_id) == 30
+
+
+def _rete_con_coincidenza():
+    """Alla Madonnetta la 2/6 arriva e la 21/33 riparte 3 minuti dopo, quattro
+    volte nella giornata: e' una coincidenza, non un incontro casuale."""
+    trips = []
+    for k, ora in enumerate((480, 540, 600, 660)):
+        trips.append(_t("in%d" % k, "R26", 0, ora - 30, ora,
+                        "CAVOUR", "MADONNETTA  CAPOLINEA"))
+        trips.append(_t("out%d" % k, "R2133", 0, ora + 3, ora + 33,
+                       "MADONNETTA (CAPOLINEA)", "MONTESICURO"))
+    # due linee che si sfiorano una volta sola: non e' una coincidenza
+    trips.append(_t("z1", "R44", 0, 700, 730, "CAVOUR", "TAVERNELLE"))
+    trips.append(_t("z2", "R43", 0, 732, 762, "TAVERNELLE", "CAVOUR"))
+    return trips
+
+
+def test_le_coincidenze_si_riconoscono_dall_orario():
+    c = probe.detect_coincidences(_rete_con_coincidenza())
+    assert len(c) == 1, "una sola relazione sistematica"
+    assert c[0]["fromRoute"] == "R26" and c[0]["toRoute"] == "R2133"
+    assert c[0]["occurrences"] == 4
+    # il nome del nodo e' normalizzato: «MADONNETTA  CAPOLINEA» e
+    # «MADONNETTA (CAPOLINEA)» sono lo stesso posto
+    assert c[0]["node"] == "MADONNETTA"
+
+
+def test_uno_spostamento_che_rompe_la_coincidenza_viene_visto():
+    trips = _rete_con_coincidenza()
+    by_id = {t["tripId"]: t for t in trips}
+    pairs = probe.coincidence_pairs(probe.detect_coincidences(trips))
+
+    # ritardo la sola coincidenza in partenza di 10': il passeggero aspetta 13'
+    rotte = probe.coincidences_broken({"out0": +10}, by_id, pairs)
+    assert len(rotte) == 1 and rotte[0]["attesaMin"] == 13
+
+    # anticiparla la fa partire PRIMA che arrivi chi deve salirci
+    rotte = probe.coincidences_broken({"out0": -5}, by_id, pairs)
+    assert len(rotte) == 1 and rotte[0]["attesaMin"] == -2
+
+
+def test_il_giro_spostato_rigidamente_non_rompe_niente():
+    """Se le due corse slittano dello stesso delta l'attesa non cambia: e'
+    esattamente il caso del giro, e per costruzione e' innocuo."""
+    trips = _rete_con_coincidenza()
+    by_id = {t["tripId"]: t for t in trips}
+    pairs = probe.coincidence_pairs(probe.detect_coincidences(trips))
+    assert probe.coincidences_broken({"in0": +20, "out0": +20}, by_id, pairs) == []
+    # e uno spostamento che non tocca nessuna delle due non viene nemmeno guardato
+    assert probe.coincidences_broken({"z1": +25}, by_id, pairs) == []
