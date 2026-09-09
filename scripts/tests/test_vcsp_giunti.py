@@ -190,3 +190,34 @@ class TestCostoDeiVuoti:
         # evitava il deposito.
         r = VehicleCostRates()
         assert r.per_depot_return <= 5.0
+
+
+def test_le_regole_non_si_comprano():
+    """Selezione fra round: prima chi rompe MENO REGOLE, poi il punteggio.
+
+    Nel giro AP il motore ha scartato un piano da 20 vetture e ZERO violazioni
+    per uno da 26 vetture e TRE violazioni, perche' le tre gli costavano 300
+    EUR (VIOLATION_SHADOW_EUR = 100 l'una) mentre le sei vetture in piu'
+    gliene facevano risparmiare 526. Ma il tetto delle autovetture l'operatore
+    lo ha definito «inviolabile» e la normativa sui turni e' legge: un piano
+    che le rompe non e' un piano peggiore, non e' un piano.
+    """
+    import vcsp_orchestrator as orch
+
+    pulito = {"bdsViolations": 0, "selectionScoreEur": 30142.67}   # 20 vetture
+    sporco = {"bdsViolations": 3, "selectionScoreEur": 29931.57}   # 26 vetture
+
+    # il punteggio da' ragione allo sporco...
+    assert sporco["selectionScoreEur"] < pulito["selectionScoreEur"]
+    # ...ma l'ordine no: le regole vengono prima
+    assert orch._round_rank(pulito) < orch._round_rank(sporco)
+
+
+def test_fra_pari_violazioni_decide_il_punteggio():
+    import vcsp_orchestrator as orch
+    caro = {"bdsViolations": 2, "selectionScoreEur": 30000.0}
+    economico = {"bdsViolations": 2, "selectionScoreEur": 29000.0}
+    assert orch._round_rank(economico) < orch._round_rank(caro)
+    # e una violazione in meno batte mille euro di risparmio
+    meno_violazioni = {"bdsViolations": 1, "selectionScoreEur": 30000.0}
+    assert orch._round_rank(meno_violazioni) < orch._round_rank(economico)
