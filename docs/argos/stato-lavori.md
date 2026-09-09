@@ -512,6 +512,31 @@ La prova sta nel giro AS, ripetizione esatta di AR: i round si somigliano al pun
 
 Ha scelto il round 2, con **il punteggio peggiore** del round 1 ma meta' delle violazioni. Col metro vecchio avrebbe vinto il round 1, con 4 violazioni. La regola funziona.
 
+## Il giro AT: il confronto giusto, e un difetto piu' grosso di quello che cercavo
+
+Scenario `9cb0f5f7-e0b4-4bff-8ccd-defe41c454f6`, parametri VERI di AQ2 (5 round, 6 sonde, CSP 240s) col codice nuovo. 28 minuti.
+
+| round | vetture | turni | suppl | violazioni | punteggio |
+|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 5 | 29.820 |
+| 2 | 30 | 45 | 2 | 5 | 31.770 |
+| 3 | **22** | 43 | **0** | 2 | 29.742 |
+| **4 (scelto)** | **30** | 43 | **8** | **1** | 30.296 |
+| 5 | **21** | 44 | 1 | **1** | 30.662 |
+
+Il codice nuovo **non ha rotto niente**: con cinque round il motore trova di nuovo i piani a 21-22 vetture che AQ2 aveva trovato (round 3 e 5). Le undici coincidenze sono le stesse identiche di AR e AS — il riconoscimento e' stabile fra i giri.
+
+**Ma la scelta fra i round e' sbagliata, e si vede a occhio nudo.** I round 4 e 5 hanno tutti e due **una** violazione, quindi la regola lessicografica passa al punteggio e vince il 4 per 366 €. Solo che il round 4 ha **30 vetture e 8 supplementi**, il round 5 ne ha **21 e 1**. Nove autobus in piu' e sette supplementi in piu', comprati per 366 €.
+
+La causa e' nel punteggio, ed e' doppia:
+
+1. **Il mezzo in piu' non costa quasi niente.** `vehicleCostEur` e' un costo di esercizio (km e ore): fra 30 vetture e 21 ci sono **110 €** di differenza (6.534 contro 6.423). Ma una vettura in piu' e' un autobus in piu' da possedere, assicurare e tenere in officina — un costo di capitale che nel punteggio non compare.
+2. **Il supplemento pesa come un turno pieno.** `DUTY_SHADOW_EUR` vale 200 € per qualunque turno; nel CSP invece l'operatore mette `minSupplementi: 10`, cioe' il massimo. Quello che il solver dei turni evita, la selezione fra round se lo ricompra.
+
+Serve un'ombra sul MEZZO accanto a quella sul turno, e un peso proprio per i supplementi. Il valore dell'ombra sul mezzo e' una decisione dell'operatore: quanto vale un autobus in piu' in servizio per un giorno.
+
+**La sonda in AT.** Due candidati, tutti e due `head+` sulla 1/4 con il giro rigido al lavoro (andata e ritorno insieme, δ 2 e 4 minuti); nessuno toccava una coincidenza (`rejectedForCoincidence: 0`), nessuno accettato — uno bocciato dal VSP, l'altro dal punteggio. La sonda guidata dai turni non ha prodotto **nessun** candidato: le sette bi-riprese sono tutte irraggiungibili, con δ da 24 a 190 minuti o col nastro gia' pieno.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
