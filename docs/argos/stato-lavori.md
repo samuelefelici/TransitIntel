@@ -7,7 +7,9 @@ Aggiornata al 7 settembre 2026, 14:40 UTC.
 
 - Progetto Planning Studio «Domenica Ancona»: `fe78db8e-11b9-4ac9-bdb2-a21ef9892244`, giorno-tipo festivo, data di esercizio di prova 2026-09-20, 17 linee urbane, 365 corse festive.
 - **Solo il deposito di Ancona** (`b2f3de29-aa93-4d02-adcb-b866f0581998`) in ogni giro: `depotIds` sempre valorizzato. Gli altri depositi (Jesi ecc.) hanno tratte senza arco in archivio.
-- Parametri del giro di riferimento: `date 2026-09-20, mode vcsp, serviceType urbano, companyCars 5, defaultVehicleType 12m, crewShiftScope trip, shiftPenaltyEur 1`; per il giro «a regola d'arte»: `intensity deep, rounds 3, probes 10, crewTimeLimit 600, crewSolverIntensity 3, crewMaxRounds 10, crewWeights {minDrivers 10, preferIntero 10, minSupplementi 10, qualityTarget 3, workBalance 1, minCambi 1}`.
+- Parametri del giro di riferimento: `date 2026-09-20, mode vcsp, serviceType urbano, companyCars 5, crewShiftScope trip, shiftPenaltyEur 1`; per il giro «a regola d'arte»: `intensity deep, **rounds 5, probes 6, crewTimeLimit 240**, crewSolverIntensity 3, crewMaxRounds 10, crewWeights {minDrivers 10, preferIntero 10, minSupplementi 10, qualityTarget 3, workBalance 1, minCambi 1}`.
+- **Prima di confrontare due giri, verifica i parametri di tutti e due** con `ti_vcsp_status` senza jobId (elenca i giri recenti col loro `params`). Questa riga diceva `rounds 3, probes 10, crewTimeLimit 600` mentre i giri della serie AL→AQ2 giravano con `rounds 5, probes 6, crewTimeLimit 240`: fidarsi della nota invece dei giri veri ha prodotto un confronto senza senso e una diagnosi sbagliata («varianza del solver») il 9 settembre.
+- Le corse hanno tutte una tipologia dichiarata: `defaultVehicleType` non serve, e passarlo cambia `vehicleSource` da `planning` a `planning+default`.
 
 ## Regole dell'azienda recepite nel motore
 
@@ -488,14 +490,17 @@ A Posatora la coincidenza **c'e'**, ma non e' quella cercata: la fa la **31**, n
 
 **La propagazione ha lavorato**: 6 candidati scartati per coincidenza, **2 salvati** portandosi dietro il vicino (`propagatedForCoincidence`). In AQ2 erano 14 scartati su 15 e nessuno salvato. Ma i 2 salvati sono poi stati bocciati dal punteggio: la sonda ha accettato **zero** spostamenti anche stavolta.
 
-**Il piano pero' e' peggiore, e non per colpa del codice nuovo.**
+**Il piano e' peggiore di AQ2, e ~~e' varianza del solver~~ NO: erano parametri diversi.**
 
-| giro | vetture | turni | violazioni |
-|---|---|---|---|
-| AQ2 | **21** | 43 | **0** |
-| AR | 29 | 43 | 2 |
+| giro | rounds | probes | crewTimeLimit | vetture | turni | violazioni |
+|---|---|---|---|---|---|---|
+| AQ2 | **5** | 6 | **240** | 21 | 43 | 0 |
+| AR | 3 | 10 | 600 | 29 | 43 | 2 |
+| AS | 3 | 10 | 600 | 30 | 41 | 2 |
 
-La sonda non ha cambiato una sola corsa (`shiftedTrips: 0`), quindi il piano e' il prodotto di VSP+CSP esattamente come prima della modifica. La differenza fra 21 e 29 vetture a parametri identici e' **varianza del solver**, e va guardata in faccia: se due giri uguali danno 21 e 29 vetture, il confronto fra due giri singoli non dimostra niente. E' la prima volta che la serie mostra uno scarto di questa taglia.
+Avevo scritto che la differenza fra 21 e 29 vetture era varianza del solver. **Non lo e'**: ho lanciato AR con i parametri «di riferimento» annotati in testa a questo documento invece che con quelli effettivi di AQ2, e non li ho verificati prima di concludere. AQ2 girava con **5 round** (ecco perche' il round scelto era «il 4»), 6 sonde e 240 secondi di CSP.
+
+La prova sta nel giro AS, ripetizione esatta di AR: i round si somigliano al punto che il primo e' identico (25 vetture, 43 turni, 4 violazioni in tutti e due), il secondo da' 29 e 30 vetture con 2 violazioni in tutti e due, e in tutti e due vince il round 2. **La varianza del motore e' piccola: e' riproducibile.** Il confronto AQ2 ↔ AR non lo era.
 
 **La selezione lessicografica e' stata messa alla prova per la prima volta.** In AQ2 il round vincente aveva insieme zero violazioni e il punteggio migliore, quindi la regola non serviva. Qui no:
 
