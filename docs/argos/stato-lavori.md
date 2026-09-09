@@ -337,7 +337,13 @@ E i giri il motore li conosceva gia': `compute_natural_turnarounds` (`vehicle_sc
 
 Corretto: `build_round_trip_pairs` replica quella regola sui dati della sonda, `expand_to_round_trips` fa slittare andata e ritorno **dello stesso delta** (la sosta al capolinea resta identica al minuto, per costruzione) e `flex_of_round_trip` prende la flessibilita' **piu' stretta delle due** corse. Un'andata senza ritorno accoppiato resta muovibile da sola: li' la sosta non c'e'.
 
-**Resta scoperto il punto 1.** Il motore conosce solo le coincidenze coi treni; quelle fra linee non le ha da nessuna parte. Finche' non ci sono, la sonda e' cieca su quell'asse: puo' proporre uno spostamento che rompe la Madonnetta senza accorgersene. E' il prossimo pezzo da costruire.
+**Il punto 1, le coincidenze fra linee, non e' stato dichiarato: e' stato reso RICONOSCIBILE.** L'attesa massima di un passeggero in coincidenza e' 5 minuti (dato dall'operatore). Quindi: se a un nodo l'arrivo della linea A e' seguito dalla partenza della linea B entro 5 minuti, e questo succede almeno 3 volte nella giornata, quella e' una coincidenza — non un incontro casuale — e nessuno spostamento deve romperla.
+
+Riconoscerle invece di dichiararle vale due volte: non c'e' un elenco da inseguire a ogni cambio d'orario, e la regola funziona anche su una rete che non e' quella per cui e' stata scritta. Le tre che l'operatore ha nominato — 2/6 ↔ 21/33 alla Madonnetta, 3 ↔ 21/33 a Posatora, 44/43/1/4 a Tavernelle — sono nell'orario, quindi il motore le trova da solo.
+
+Il riconoscimento guarda solo **capolinea contro capolinea** (chi arriva termina li', chi parte comincia li'), non il transito: e' cio' che tiene fuori il traffico di passaggio dei nodi centrali. La verifica avviene PRIMA del re-solve: scartare li' costa nulla, scoprirlo dopo costa un minuto di solver per un candidato che l'operatore rifiuterebbe comunque. E il giro spostato rigidamente non rompe niente per costruzione: se le due corse slittano dello stesso delta, l'attesa non cambia.
+
+Il rendiconto della sonda ora riporta le coincidenze riconosciute e quanti candidati sono stati scartati per non romperle.
 
 ## Dove sta lo spreco, misurato sul giro AO
 
