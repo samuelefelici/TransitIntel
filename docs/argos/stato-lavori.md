@@ -533,7 +533,9 @@ La causa e' nel punteggio, ed e' doppia:
 1. **Il mezzo in piu' non costa quasi niente.** `vehicleCostEur` e' un costo di esercizio (km e ore): fra 30 vetture e 21 ci sono **110 €** di differenza (6.534 contro 6.423). Ma una vettura in piu' e' un autobus in piu' da possedere, assicurare e tenere in officina — un costo di capitale che nel punteggio non compare.
 2. **Il supplemento pesa come un turno pieno.** `DUTY_SHADOW_EUR` vale 200 € per qualunque turno; nel CSP invece l'operatore mette `minSupplementi: 10`, cioe' il massimo. Quello che il solver dei turni evita, la selezione fra round se lo ricompra.
 
-Serve un'ombra sul MEZZO accanto a quella sul turno, e un peso proprio per i supplementi. Il valore dell'ombra sul mezzo e' una decisione dell'operatore: quanto vale un autobus in piu' in servizio per un giorno.
+Messe tutte e due (`VEHICLE_SHADOW_EUR = 80`, `SUPPLEMENT_SHADOW_EUR = 100` che si somma all'ombra del turno; override da `vcsp.vehicleShadowEur` / `vcsp.supplementShadowEur`). Sui numeri veri del giro AT il round 5 passa a 32.442 e il round 4 a 33.496: **vince il piano da 21 vetture** con un margine di mille euro invece di perdere per 366.
+
+Gli 80 € sono il costo di POSSESSO di un autobus per un giorno — ammortamento di un 12 metri su quindici anni piu' assicurazione, bollo e manutenzione fissa — non i km. **Da confermare con l'operatore**: se il valore aziendale e' diverso si cambia una costante, e la direzione della scelta non cambia finche' resta sopra i ~40 € (sotto quella soglia i 366 € del punteggio tornano a comandare).
 
 **La sonda in AT.** Due candidati, tutti e due `head+` sulla 1/4 con il giro rigido al lavoro (andata e ritorno insieme, δ 2 e 4 minuti); nessuno toccava una coincidenza (`rejectedForCoincidence: 0`), nessuno accettato — uno bocciato dal VSP, l'altro dal punteggio. La sonda guidata dai turni non ha prodotto **nessun** candidato: le sette bi-riprese sono tutte irraggiungibili, con δ da 24 a 190 minuti o col nastro gia' pieno.
 
