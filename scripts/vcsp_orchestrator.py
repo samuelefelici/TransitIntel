@@ -326,6 +326,25 @@ def _round_rank(kpi: dict) -> tuple[int, float]:
             float(kpi.get("selectionScoreEur") or 0.0))
 
 
+def _round_without_gain(rounds_kpi: list[dict], eps: float = 0.01) -> bool:
+    """Vero se l'ultimo round non ha migliorato il precedente.
+
+    Il confronto usa lo stesso ordine della selezione — prima le regole, poi il
+    punteggio — altrimenti l'early-stop leggerebbe come «nessun miglioramento»
+    un round che ha tolto una violazione costando qualche euro in piu'.
+
+    Al primo round non c'e' un precedente con cui misurarsi: senza questo
+    controllo l'accesso a rounds_kpi[-2] solleva IndexError e il giro muore
+    dopo il round 1 (successo nel giro AQ).
+    """
+    if len(rounds_kpi) < 2:
+        return False
+    prev, cur = _round_rank(rounds_kpi[-2]), _round_rank(rounds_kpi[-1])
+    if cur[0] != prev[0]:
+        return cur[0] > prev[0]          # piu' violazioni = nessun guadagno
+    return cur[1] >= prev[1] - eps       # a pari violazioni decide il punteggio
+
+
 def main() -> None:
     t0 = time.time()
     data = load_input()
@@ -450,9 +469,7 @@ def main() -> None:
             # giunti precisi, e sciogliere un giunto costa prima di rendere.
             # Fermarsi al primo passo falso (com'era) buttava via il round che
             # sarebbe venuto dopo.
-            _prev, _cur = _round_rank(rounds_kpi[-2]), _round_rank(rounds_kpi[-1])
-            if len(rounds_kpi) >= 2 and (_cur[0] > _prev[0]
-                                         or (_cur[0] == _prev[0] and _cur[1] >= _prev[1] - 0.01)):
+            if _round_without_gain(rounds_kpi):
                 no_gain += 1
                 if no_gain >= EARLY_STOP_PATIENCE:
                     log(f"[VCSP] round {r}: {no_gain} round senza miglioramento, early-stop")

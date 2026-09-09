@@ -221,3 +221,31 @@ def test_fra_pari_violazioni_decide_il_punteggio():
     # e una violazione in meno batte mille euro di risparmio
     meno_violazioni = {"bdsViolations": 1, "selectionScoreEur": 30000.0}
     assert orch._round_rank(meno_violazioni) < orch._round_rank(economico)
+
+
+def test_early_stop_al_primo_round_non_esplode():
+    """Al primo round non c'e' un precedente con cui misurarsi.
+
+    Senza questo controllo l'accesso a rounds_kpi[-2] solleva IndexError e il
+    giro muore dopo il round 1: e' successo nel giro AQ, in produzione.
+    """
+    import vcsp_orchestrator as orch
+    assert orch._round_without_gain([]) is False
+    assert orch._round_without_gain([{"bdsViolations": 3, "selectionScoreEur": 30642.55}]) is False
+
+
+def test_early_stop_usa_lo_stesso_ordine_della_selezione():
+    import vcsp_orchestrator as orch
+    # punteggio peggiore ma UNA VIOLAZIONE IN MENO: e' un miglioramento
+    migliorato = [{"bdsViolations": 3, "selectionScoreEur": 30000.0},
+                  {"bdsViolations": 2, "selectionScoreEur": 30500.0}]
+    assert orch._round_without_gain(migliorato) is False
+    # punteggio migliore ma una violazione in piu': non e' un miglioramento
+    peggiorato = [{"bdsViolations": 2, "selectionScoreEur": 30500.0},
+                  {"bdsViolations": 3, "selectionScoreEur": 30000.0}]
+    assert orch._round_without_gain(peggiorato) is True
+    # a pari violazioni decide il punteggio
+    assert orch._round_without_gain([{"bdsViolations": 2, "selectionScoreEur": 30000.0},
+                                     {"bdsViolations": 2, "selectionScoreEur": 29000.0}]) is False
+    assert orch._round_without_gain([{"bdsViolations": 2, "selectionScoreEur": 29000.0},
+                                     {"bdsViolations": 2, "selectionScoreEur": 30000.0}]) is True

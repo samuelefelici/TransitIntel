@@ -392,6 +392,19 @@ Solo che l'operatore ha detto «intorno al 28% ci siamo», e i giri stanno al 30
 
 I due campi della sonda (`coincidences`, `rejectedForCoincidence`) non uscivano dall'api-server: esposti, stesso problema di `totalDepotChanges`.
 
+## Il giro AQ e' morto per un mio errore
+
+Il giro si e' interrotto al round 1 con `IndexError: list index out of range`. Nella correzione della selezione lessicografica avevo spostato il calcolo del confronto **sopra** il controllo sulla lunghezza della lista:
+
+    _prev, _cur = _round_rank(rounds_kpi[-2]), _round_rank(rounds_kpi[-1])
+    if len(rounds_kpi) >= 2 and (...):
+
+Il codice originale aveva il controllo dentro la stessa `if`, che in Python cortocircuita: `len(...) >= 2` veniva valutato per primo e proteggeva l'accesso. Hoistando il calcolo ho tolto quella protezione, e al primo round `rounds_kpi[-2]` non esiste.
+
+Nessun test lo copriva perche' la logica era **inline dentro `main()`**, dove un test non arriva. Ora e' estratta in `_round_without_gain`, e due test la coprono: il primo round che non deve esplodere, e l'ordine (una violazione in meno e' un miglioramento anche se il punteggio peggiora).
+
+E' il secondo errore della serie dello stesso tipo — dopo la banda del turno pieno, dove alzare il tetto aveva alzato anche il pavimento. Entrambi nascono dal toccare un'espressione senza rieseguire il pezzo che la contiene.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
