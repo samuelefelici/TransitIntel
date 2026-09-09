@@ -433,7 +433,7 @@ Quattro relazioni, tutte con 10-12 occorrenze — sistematiche, non rumore:
 
 La calibratura e' giusta: quattro, non decine. Ma **nessuna delle tre nominate dall'operatore** (2/6 ↔ 21/33 alla Madonnetta, 3 ↔ 21/33 a Posatora, 44/43/1/4 a Tavernelle) e' fra queste.
 
-Guardando i dati del progetto se ne capisce il perche': la **21/33 fa Posatora ↔ Montesicuro** e non tocca affatto la Madonnetta, mentre la 2/6 fa Cavour ↔ Madonnetta. Le due linee non condividono quel nodo *in questo orario*. E' coerente con quello che l'operatore ha detto: le corse del progetto sono diverse da quelle del servizio reale. Le coincidenze che descrive esistono nel suo servizio, non necessariamente in questi dati — motivo in piu' per riconoscerle dall'orario invece di dichiararle.
+~~Guardando i dati del progetto se ne capisce il perche': la 21/33 fa Posatora ↔ Montesicuro e non tocca affatto la Madonnetta.~~ **Sbagliato, e l'operatore l'ha corretto**: la 21/33 la Madonnetta la tocca eccome, ma **in transito**, e leggendo solo la prima e l'ultima fermata di ogni corsa quel passaggio era invisibile. Vedi la sezione seguente: i passaggi intermedi lo dicono chiaramente.
 
 ## Il vincolo morde troppo, e si vede
 
@@ -442,6 +442,31 @@ Guardando i dati del progetto se ne capisce il perche': la **21/33 fa Posatora �
 La causa e' strutturale: **le corse al confine dei pezzi di turno sono proprio quelle che portano le coincidenze**, perche' i cambi avvengono ai nodi dove le linee si incontrano. La strategia della sonda e il vincolo si scontrano per costruzione.
 
 **Il pezzo successivo e' la propagazione**: quando uno spostamento romperebbe una coincidenza, provare a spostare **anche la corsa in coincidenza** dello stesso delta, invece di scartare. E' lo stesso principio del giro rigido — muovere insieme le cose che sono legate — applicato al legame fra linee invece che fra andata e ritorno.
+
+
+## Il quadro festivo alla mano: dove le coincidenze ci sono e dove no
+
+Verifica sui dati veri del progetto (`ti_line_timetable` con i passaggi intermedi, quadro festivo del 20/09).
+
+**Posatora.** L'operatore ha ragione: e' capolinea di partenza *e* di arrivo per tutte e due le linee. La 21/33 parte da POSATORA CAPOLINEA (08:02, 12:32, 17:02, 19:32) e ci torna (09:28, 13:57, 18:27, 20:57) — l'headsign «Piazza Ugo Bassi» del ritorno e' solo l'etichetta della variante, la domenica il servizio finisce a Posatora. Quindi il motore guardava nel posto giusto. **Non trova niente perche' li' la coincidenza, in questo orario, non c'e':**
+
+| relazione | attese nella giornata |
+|---|---|
+| la 3 arriva → la 21/33 parte | 12′, 20′, 20′, 20′ |
+| la 21/33 arriva → la 3 parte | 19′, 20′, 20′, 20′ |
+
+La 3 ha cadenza 30′ e la 21/33 cade sistematicamente a meta' dell'intervallo. Soglia dell'operatore: 5 minuti.
+
+**Madonnetta.** Qui il difetto era reale. La 2/6 ha il capolinea (variante `2/6A`, 26 corse); la 21/33 ci **transita** tre minuti dopo essere partita da Posatora. Le attese sono **5 minuti esatti su tutte e quattro le corse** (2/6 arriva 08:00 → 21/33 transita 08:05; 12:30→12:35; 17:00→17:05; 19:30→19:35). Non e' un caso: e' una coincidenza costruita a mano dal pianificatore, e il motore non la vedeva. Il pericolo non era perdere un'occasione, era **romperla senza accorgersene**.
+
+**E le due sono in conflitto.** Spostando rigidamente il giro della 21/33 di +15′ si creano 7 coincidenze a Posatora ma si distruggono le 4 della Madonnetta; a δ = 0 si hanno solo quelle della Madonnetta. Nessun δ le tiene insieme: per guadagnare a Posatora bisognerebbe muovere anche la linea 3. E' la conferma sul campo di cio' che l'operatore chiede al sistema — finche' si muove un mattone solo si vince da una parte e si perde dall'altra.
+
+## Cosa e' stato messo nel motore
+
+1. **I transiti contano.** `loadTerminalTransits` porta nel payload della sonda i passaggi di ogni corsa **sui capolinea altrui** (solo quelli: gli altri transiti sono il corridoio che due linee percorrono insieme, decine di incontri e nessuna coincidenza). `detect_coincidences` li usa in tutti e due i versi, con una regola contro il rumore: **almeno un lato dev'essere un capolinea**. Gli orari che realizzano la coincidenza viaggiano con la coppia, cosi' il conto dell'attesa e' giusto sia al capolinea sia in transito.
+2. **La propagazione.** `propagate_for_coincidences`: quando uno spostamento romperebbe una coincidenza, invece di scartarlo si prova a portarsi dietro la corsa in coincidenza dello stesso δ — e ogni corsa trascinata si porta dietro il suo giro. La catena si ferma davanti a tre muri: una corsa che non regge quel δ, una corsa a cui la catena chiederebbe due δ diversi, e il tetto di 12 corse coinvolte. In quei casi si scarta come prima: le regole non si comprano.
+
+Nel rendiconto della sonda c'e' ora `propagatedForCoincidence` accanto a `rejectedForCoincidence`: quanti candidati si sono portati dietro il vicino invece di morire.
 
 ## Il prossimo intervento (superato dal precedente)
 

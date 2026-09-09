@@ -108,6 +108,36 @@ def _node_key(name: str) -> str:
     return " ".join(s.split())
 
 
+def _stop_events(t: dict) -> list[tuple[str, str, int, bool]]:
+    """Gli istanti in cui una corsa e' a disposizione del passeggero a un nodo.
+
+    ('in', nodo, minuto, capolinea?)  quando ci si puo' scendere
+    ('out', nodo, minuto, capolinea?) quando ci si puo' salire
+
+    Partenza e arrivo sono capolinea. I TRANSITI valgono in tutti e due i versi
+    e arrivano dal quadro orario (terminalTransits): a un capolinea altrui una
+    linea che passa e non si ferma li' fa coincidenza esattamente come una che
+    ci parte. E' il caso della Madonnetta, dove la 2/6 arriva al capolinea e la
+    21/33 transita: senza i transiti quella coincidenza e' invisibile.
+    """
+    ev: list[tuple[str, str, int, bool]] = []
+    arr, dep = t.get("arrivalMin"), t.get("departureMin")
+    if arr is not None and t.get("lastStopName"):
+        ev.append(("in", _node_key(t["lastStopName"]), int(arr), True))
+    if dep is not None and t.get("firstStopName"):
+        ev.append(("out", _node_key(t["firstStopName"]), int(dep), True))
+    for p in t.get("terminalTransits") or []:
+        nodo = _node_key(p.get("stopName") or "")
+        if not nodo:
+            continue
+        a, d = p.get("arrivalMin"), p.get("departureMin")
+        if a is not None:
+            ev.append(("in", nodo, int(a), False))
+        if d is not None:
+            ev.append(("out", nodo, int(d), False))
+    return ev
+
+
 def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
                         min_occurrences: int = COINCIDENCE_MIN_OCCURRENCES) -> list[dict]:
     """Le coincidenze fra linee, RICONOSCIUTE dall'orario invece che dichiarate.
@@ -121,60 +151,67 @@ def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
     elenco che cambia a ogni orario, e la regola funziona anche su una rete
     che non e' quella per cui e' stata scritta.
 
-    Ritorna una voce per relazione (nodo, linea A → linea B) con le coppie di
-    corse che la realizzano.
-    """
-    per_nodo: dict[str, dict[str, list[dict]]] = {}
-    for t in trips:
-        arr, dep = t.get("arrivalMin"), t.get("departureMin")
-        if arr is not None and t.get("lastStopName"):
-            per_nodo.setdefault(_node_key(t["lastStopName"]), {}).setdefault("in", []).append(t)
-        if dep is not None and t.get("firstStopName"):
-            per_nodo.setdefault(_node_key(t["firstStopName"]), {}).setdefault("out", []).append(t)
+    Almeno uno dei due lati deve essere un capolinea: due linee che si sfiorano
+    in transito percorrono lo stesso corridoio per chilometri e genererebbero
+    decine di incontri, nessuno dei quali e' una coincidenza da difendere.
 
-    rel: dict[tuple[str, str, str], list[tuple[str, str, int]]] = {}
+    Ritorna una voce per relazione (nodo, linea A → linea B) con le coppie di
+    corse che la realizzano e gli ORARI che la realizzano: al capolinea sono
+    quelli della corsa, in transito sono quelli del passaggio.
+    """
+    per_nodo: dict[str, dict[str, list[tuple[dict, int, bool]]]] = {}
+    for t in trips:
+        for verso, nodo, minuto, capolinea in _stop_events(t):
+            per_nodo.setdefault(nodo, {}).setdefault(verso, []).append((t, minuto, capolinea))
+
+    rel: dict[tuple[str, str, str], list[tuple[str, str, int, int]]] = {}
     for nodo, lati in per_nodo.items():
-        for ta in lati.get("in", []):
+        for ta, arr, cap_a in lati.get("in", []):
             ra = ta.get("routeName") or ta.get("routeId")
-            for tb in lati.get("out", []):
+            for tb, dep, cap_b in lati.get("out", []):
                 rb = tb.get("routeName") or tb.get("routeId")
                 if not ra or not rb or ra == rb:
                     continue
-                attesa = int(tb["departureMin"]) - int(ta["arrivalMin"])
-                if 0 <= attesa <= max_wait:
+                if not cap_a and not cap_b:
+                    continue          # transito contro transito: non e' un nodo
+                if 0 <= dep - arr <= max_wait:
                     rel.setdefault((nodo, str(ra), str(rb)), []).append(
-                        (ta["tripId"], tb["tripId"], attesa))
+                        (ta["tripId"], tb["tripId"], arr, dep))
 
     out = [{"node": nodo, "fromRoute": ra, "toRoute": rb,
             "occurrences": len(coppie), "maxWaitMin": max_wait,
-            "pairs": [(a, b) for a, b, _ in coppie]}
+            "pairs": list(coppie)}
            for (nodo, ra, rb), coppie in rel.items() if len(coppie) >= min_occurrences]
     out.sort(key=lambda c: (-c["occurrences"], c["node"], c["fromRoute"]))
     return out
 
 
-def coincidence_pairs(coincidences: list[dict]) -> list[tuple[str, str]]:
-    """Tutte le coppie di corse da non rompere, appiattite."""
+def coincidence_pairs(coincidences: list[dict]) -> list[tuple[str, str, int, int]]:
+    """Tutte le coppie di corse da non rompere, appiattite, con gli orari che
+    realizzano la coincidenza (capolinea o transito che siano)."""
     return [p for c in coincidences for p in c["pairs"]]
 
 
 def coincidences_broken(shifts: dict[str, int], trips_by_id: dict[str, dict],
-                        pairs: list[tuple[str, str]],
+                        pairs: list[tuple[str, str, int, int]],
                         max_wait: int = COINCIDENCE_MAX_WAIT) -> list[dict]:
     """Le coincidenze che questo spostamento romperebbe.
+
+    Gli orari sono quelli che REALIZZANO la coincidenza (l'arrivo al capolinea
+    o il passaggio in transito): spostare una corsa trasla anche i suoi
+    transiti dello stesso delta, quindi il conto vale in tutti e due i casi.
 
     Se le due corse slittano dello STESSO delta l'attesa non cambia: e' il caso
     del giro spostato rigidamente, che per costruzione non rompe niente.
     """
     rotte: list[dict] = []
-    for a, b in pairs:
+    for a, b, arr, dep in pairs:
         ta, tb = trips_by_id.get(a), trips_by_id.get(b)
         if not ta or not tb:
             continue
         if not shifts.get(a) and not shifts.get(b):
             continue                     # nessuna delle due si muove
-        attesa = ((int(tb["departureMin"]) + shifts.get(b, 0))
-                  - (int(ta["arrivalMin"]) + shifts.get(a, 0)))
+        attesa = (int(dep) + shifts.get(b, 0)) - (int(arr) + shifts.get(a, 0))
         if not (0 <= attesa <= max_wait):
             rotte.append({"fromTrip": a, "toTrip": b, "attesaMin": attesa,
                           "fromRoute": ta.get("routeName"), "toRoute": tb.get("routeName")})
@@ -205,6 +242,65 @@ def flex_of_round_trip(trip_dict: dict, pairs: dict[str, str],
         return own
     partner = trips_by_id.get(partner_id)
     return min(own, _flex_of(partner)) if partner else own
+
+
+# Quante corse al massimo puo' coinvolgere una catena di propagazione: oltre,
+# non si sta piu' spostando un mattone, si sta riscrivendo il quadro orario.
+COINCIDENCE_PROPAGATION_MAX_TRIPS = 12
+
+
+def propagate_for_coincidences(
+    shifts: dict[str, int], trips_by_id: dict[str, dict],
+    rt_pairs: dict[str, str], coinc_pairs: list[tuple[str, str, int, int]],
+    max_wait: int = COINCIDENCE_MAX_WAIT,
+    max_trips: int = COINCIDENCE_PROPAGATION_MAX_TRIPS,
+) -> dict[str, int] | None:
+    """Invece di scartare uno spostamento che rompe una coincidenza, porta con
+    se' anche la corsa in coincidenza.
+
+    Il CP-SAT con gli stessi mattoni non va oltre: per ottenere un risultato
+    diverso qualche mattone va spostato. Una coincidenza si conserva se le DUE
+    corse slittano dello STESSO delta — e ogni corsa trascinata si porta dietro
+    il suo giro, perche' la sosta al capolinea periferico non deve allungarsi.
+
+    La catena si ferma davanti a tre muri: una corsa che non regge quel delta,
+    una corsa a cui la catena chiederebbe due delta diversi, e il tetto di
+    corse coinvolte. In quei casi ritorna None e il candidato si scarta come
+    prima: le coincidenze non si comprano.
+    """
+    out = dict(shifts)
+    for _ in range(max_trips):
+        rotte = coincidences_broken(out, trips_by_id, coinc_pairs, max_wait)
+        if not rotte:
+            return out
+        for r in rotte:
+            a, b = r["fromTrip"], r["toTrip"]
+            if a in out and b in out:
+                return None            # gia' mosse tutte e due, di delta diversi
+            fermo, mosso = (b, a) if a in out else (a, b)
+            delta = out[mosso]
+            t = trips_by_id.get(fermo)
+            if t is None or abs(delta) > flex_of_round_trip(t, rt_pairs, trips_by_id):
+                return None            # la corsa da trascinare non regge il delta
+            aggiunta = expand_to_round_trips({fermo: delta}, rt_pairs)
+            for tid, d in aggiunta.items():
+                if out.get(tid, d) != d:
+                    return None        # la stessa corsa dovrebbe slittare due volte
+            out.update(aggiunta)
+            if len(out) > max_trips:
+                return None
+    return None
+
+
+def shift_coincidence_pairs(pairs: list[tuple[str, str, int, int]],
+                            shifts: dict[str, int]) -> list[tuple[str, str, int, int]]:
+    """Gli orari che realizzano una coincidenza seguono le corse: dopo uno
+    spostamento accettato le coppie vanno traslate, o il confronto successivo
+    userebbe orari che non esistono piu'."""
+    if not shifts:
+        return pairs
+    return [(a, b, arr + shifts.get(a, 0), dep + shifts.get(b, 0))
+            for a, b, arr, dep in pairs]
 
 
 def _service_trips(shift: dict) -> list[dict]:
@@ -550,6 +646,15 @@ def _apply_shifts(trips: list[dict], shifts: dict[str, int]) -> list[dict]:
             t["arrivalMin"] = int(t["arrivalMin"]) + d
             t["departureTime"] = min_to_time(t["departureMin"])
             t["arrivalTime"] = min_to_time(t["arrivalMin"])
+            # la corsa si porta dietro i suoi passaggi: chi transitava a un
+            # capolinea altrui ci transita d minuti dopo
+            tr = t.get("terminalTransits")
+            if tr:
+                t["terminalTransits"] = [
+                    {**p,
+                     "arrivalMin": (None if p.get("arrivalMin") is None else int(p["arrivalMin"]) + d),
+                     "departureMin": (None if p.get("departureMin") is None else int(p["departureMin"]) + d)}
+                    for p in tr]
         out.append(t)
     return out
 
@@ -626,7 +731,7 @@ def run_probe_phase(
         "disruptionEur": 0.0, "shiftPenaltyEurPerTripMin": shift_penalty_eur,
         "crewScope": crew_scope,
         "coincidences": [{k: v for k, v in c.items() if k != "pairs"} for c in coincidenze],
-        "rejectedForCoincidence": 0,
+        "rejectedForCoincidence": 0, "propagatedForCoincidence": 0,
     }
     result = {"vsp": best_vsp, "crew": best_crew, "kpi": best_kpi, "probe": section}
     if flex_trips == 0:
@@ -662,6 +767,7 @@ def run_probe_phase(
 
     while probes_run < max_probes:
         trips_by_id = {t.get("tripId"): t for t in cur_trips}
+        rt_pairs = build_round_trip_pairs(cur_trips)
         cands = ([c for c in find_crew_probe_candidates(
                       result["crew"], trips_by_id, scope=crew_scope,
                       intero_max_nastro=intero_max_nastro, semi_int_min=semi_int_min)
@@ -675,14 +781,23 @@ def run_probe_phase(
             for c in cands:
                 rotte = coincidences_broken(c["shifts"], trips_by_id, coinc_pairs)
                 if rotte:
-                    section["rejectedForCoincidence"] += 1
-                    if len(section["rejected"]) < 20:
-                        section["rejected"].append({
-                            "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
-                            "why": "rompe una coincidenza",
-                            "coincidenze": rotte[:3],
-                        })
-                    continue
+                    # spostare il mattone accanto invece di rinunciare
+                    allargato = propagate_for_coincidences(
+                        c["shifts"], trips_by_id, rt_pairs, coinc_pairs)
+                    if allargato is None:
+                        section["rejectedForCoincidence"] += 1
+                        if len(section["rejected"]) < 20:
+                            section["rejected"].append({
+                                "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
+                                "why": "rompe una coincidenza",
+                                "coincidenze": rotte[:3],
+                            })
+                        continue
+                    if frozenset(allargato.items()) in tried:
+                        continue
+                    section["propagatedForCoincidence"] += 1
+                    c = {**c, "shifts": allargato,
+                         "propagatedTrips": len(allargato) - len(c["shifts"])}
                 tenuti.append(c)
             cands = tenuti
         if probes_run == 0:
@@ -698,6 +813,8 @@ def run_probe_phase(
             shifts_txt = ", ".join(f"{tid[:8]}…{d:+d}′" for tid, d in cand["shifts"].items())
         else:
             shifts_txt = f"{len(cand['shifts'])} corse {next(iter(cand['shifts'].values())):+d}′"
+        if cand.get("propagatedTrips"):
+            shifts_txt += f", +{cand['propagatedTrips']} trascinate in coincidenza"
         if cand["kind"].startswith("crew"):
             log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
                 f"({shifts_txt}) per il turno {cand.get('duty')} (stacco {cand.get('gapMin')}′, "
@@ -794,6 +911,7 @@ def run_probe_phase(
             kpi["shiftPenaltyEur"] = _dis_new
             kpi["selectionScoreEur"] = round(_score_new, 2)
             cur_trips = probe_trips
+            coinc_pairs = shift_coincidence_pairs(coinc_pairs, cand["shifts"])
             result = {"vsp": vsp_out, "crew": crew_out, "kpi": kpi, "probe": section}
         else:
             rejected_entry["reason"] = "crew"  # la guida (o il disturbo) mangia il risparmio
