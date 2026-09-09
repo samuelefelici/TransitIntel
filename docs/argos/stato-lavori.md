@@ -323,6 +323,36 @@ AO e' il piano piu' pulito che il motore abbia prodotto: **zero violazioni BDS**
 - se conta di piu' la pulizia normativa che il numero di vetture, **AO** (`4202f9b3-15a6-4253-8c76-0a81ac1586be`) e' l'alternativa: zero violazioni, ma 22 vetture;
 - restano aperti gli stessi due punti di sempre: i turni guida (42 contro 38) e il tetto dei pollicini.
 
+## Il mattone e' il GIRO, non la corsa (regole date dall'operatore, 9 settembre)
+
+Fermata la ricerca per tentativi, l'operatore ha indicato la strada vera: il CP-SAT non arrivera' mai al risultato migliore se lavora sempre con gli stessi mattoni — vanno spostate delle corse. E ha dato i vincoli che governano lo spostamento:
+
+1. **Le coincidenze fra linee**: 2/6 ↔ 21/33 alla **Madonnetta**, 3 ↔ 21/33 a **Posatora**, 44 / 43 / 1/4 a **Tavernelle**; piu' quelle dei treni e dei cluster principali.
+2. **Andata e ritorno sono legati.** La sosta al capolinea periferico e' un cuscinetto stretto per assorbire i ritardi: se si slitta avanti l'andata bisogna slittare avanti anche il ritorno, e slittare il solo ritorno allunga la sosta.
+3. **La cadenza nel festivo non vincola**: con una corsa all'ora, spostarne una di 15 minuti non fa danno.
+
+**Il primo era un difetto, non una funzione mancante.** La sonda con `scope: "trip"` spostava UNA corsa sola — l'ultima del primo pezzo o la prima del secondo — e quindi rompeva la coppia andata-ritorno esattamente come l'operatore dice di non fare. L'altro modo che aveva, `scope: "line"`, sposta tutte le corse della linea per l'intera giornata: non rompe le coppie ma e' un randello.
+
+E i giri il motore li conosceva gia': `compute_natural_turnarounds` (`vehicle_scheduler_cpsat.py:661`) accoppia ogni arrivo a un capolinea periferico con la prima corsa della stessa linea in direzione opposta entro 30 minuti — nell'ultimo giro **153 coppie su 167 arrivi periferici**. La sonda semplicemente non le guardava.
+
+Corretto: `build_round_trip_pairs` replica quella regola sui dati della sonda, `expand_to_round_trips` fa slittare andata e ritorno **dello stesso delta** (la sosta al capolinea resta identica al minuto, per costruzione) e `flex_of_round_trip` prende la flessibilita' **piu' stretta delle due** corse. Un'andata senza ritorno accoppiato resta muovibile da sola: li' la sosta non c'e'.
+
+**Resta scoperto il punto 1.** Il motore conosce solo le coincidenze coi treni; quelle fra linee non le ha da nessuna parte. Finche' non ci sono, la sonda e' cieca su quell'asse: puo' proporre uno spostamento che rompe la Madonnetta senza accorgersene. E' il prossimo pezzo da costruire.
+
+## Dove sta lo spreco, misurato sul giro AO
+
+I 31 turni interi hanno, sotto il tetto di 7h15, **53,6 ore di capienza libera: 7,4 turni pieni di spazio vuoto**. I due supplementi da soli sono 276 minuti di nastro per **6 corse in tutto**.
+
+La sonda di oggi non puo' toccarli, per tre limiti tutti verificabili nel codice:
+
+1. guarda **solo i turni biripresa** (`find_crew_probe_candidates` scarta chi non e' semiunico o spezzato): nel giro AO sono 11 su 42, e i 31 interi dove sta la capienza non li vede mai;
+2. prova **una mossa sola** — stringere lo stacco di una biripresa per farne un intero — e non chiede mai «se sposto questa corsa, un altro turno riesce ad assorbirla?»;
+3. tetto di **30 minuti** per corsa: nel giro AN gli spostamenti necessari erano 77, 115, 133, 151, 182, 195, 276 minuti, tutti scartati prima di essere provati.
+
+La flessibilita' non manca: il motore riporta `flexTrips: 365`, cioe' tutte le corse ne hanno.
+
+**La sonda del turno povero** e' il pezzo che segue: parte dai turni con piu' margine, e per ogni loro corsa chiede quale spostamento permetterebbe a un turno vicino di assorbirla. Se tutte le corse di un turno trovano casa, quel turno si cancella — ed e' un turno intero risparmiato, non un ritocco. E' il quarto passo del metodo dell'operatore, quello che il motore oggi non fa.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.

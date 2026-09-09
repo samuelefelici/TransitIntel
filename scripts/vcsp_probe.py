@@ -25,7 +25,7 @@ from __future__ import annotations
 import time
 
 from optimizer_common import MIN_LAYOVER, MAX_DEADHEAD_KM, estimate_deadhead, min_to_time, log
-from vehicle_scheduler_cpsat import trips_vehicle_compatible
+from vehicle_scheduler_cpsat import trips_vehicle_compatible, is_center_stop
 from optimizer_common import trip_from_dict, SHIFT_RULES
 
 MAX_FLEX_MIN = 30          # tetto assoluto della flessibilità per corsa
@@ -38,6 +38,83 @@ def _flex_of(trip_dict: dict) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, min(MAX_FLEX_MIN, v))
+
+
+# Sosta massima al capolinea per considerare due corse lo STESSO GIRO. La
+# sosta al capolinea periferico e' solo un cuscinetto per i ritardi, quindi
+# oltre questo scarto non si tratta piu' di un'andata col suo ritorno.
+ROUND_TRIP_MAX_GAP = 30
+
+
+def build_round_trip_pairs(trips: list[dict], max_gap: int = ROUND_TRIP_MAX_GAP) -> dict[str, str]:
+    """Accoppia ogni ANDATA col suo RITORNO al capolinea periferico.
+
+    Stessa regola dei «giri naturali» del VSP (compute_natural_turnarounds):
+    la prima corsa della stessa linea, direzione opposta, in partenza dalla
+    fermata d'arrivo entro max_gap. La mappa e' simmetrica: da andata a ritorno
+    e viceversa.
+
+    Serve perche' la sosta al capolinea periferico e' un cuscinetto stretto,
+    calcolato per assorbire i ritardi: spostare l'andata senza il suo ritorno
+    la allunga o la accorcia, ed e' proprio la cosa che non si deve fare.
+    L'unita' che si sposta e' il GIRO, non la corsa.
+    """
+    by_route: dict[str, list[dict]] = {}
+    for t in trips:
+        rid = t.get("routeId")
+        if rid:
+            by_route.setdefault(rid, []).append(t)
+    pairs: dict[str, str] = {}
+    for t in trips:
+        last_id = t.get("lastStopId")
+        if not last_id or is_center_stop(str(last_id)):
+            continue                      # al centro la sosta non e' un vincolo
+        arr = t.get("arrivalMin")
+        if arr is None:
+            continue
+        best = None
+        for o in by_route.get(t.get("routeId"), []):
+            if o.get("tripId") == t.get("tripId"):
+                continue
+            if o.get("directionId") == t.get("directionId"):
+                continue
+            dep = o.get("departureMin")
+            if dep is None or not (0 <= int(dep) - int(arr) <= max_gap):
+                continue
+            if str(o.get("firstStopId") or "") != str(last_id):
+                continue
+            if best is None or int(dep) < int(best["departureMin"]):
+                best = o
+        if best is not None:
+            pairs[t["tripId"]] = best["tripId"]
+            pairs.setdefault(best["tripId"], t["tripId"])
+    return pairs
+
+
+def expand_to_round_trips(shifts: dict[str, int], pairs: dict[str, str]) -> dict[str, int]:
+    """Lo spostamento si applica al GIRO: se una corsa ha il suo ritorno
+    accoppiato, anche quello slitta dello STESSO delta, cosi' la sosta al
+    capolinea resta identica al minuto. Un'andata senza ritorno accoppiato
+    resta muovibile da sola: li' la sosta non c'e'."""
+    out = dict(shifts)
+    for tid, delta in shifts.items():
+        partner = pairs.get(tid)
+        if partner and partner not in out:
+            out[partner] = delta
+    return out
+
+
+def flex_of_round_trip(trip_dict: dict, pairs: dict[str, str],
+                       trips_by_id: dict[str, dict]) -> int:
+    """Flessibilita' del GIRO: la piu' stretta fra andata e ritorno. Se il
+    ritorno regge 10 minuti, il giro si muove di 10 anche se l'andata ne
+    reggerebbe 30."""
+    own = _flex_of(trip_dict)
+    partner_id = pairs.get(trip_dict.get("tripId", ""))
+    if not partner_id:
+        return own
+    partner = trips_by_id.get(partner_id)
+    return min(own, _flex_of(partner)) if partner else own
 
 
 def _service_trips(shift: dict) -> list[dict]:
@@ -99,6 +176,7 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
         if service:
             blocks.append((s.get("vehicleId"), service))
 
+    pairs = build_round_trip_pairs(list(trips_by_id.values()))
     candidates: list[dict] = []
     for vid_a, trips_a in blocks:
         ta = trips_a[-1]                       # ultima corsa di A
@@ -126,14 +204,14 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
             if not trips_vehicle_compatible(tpa, tpb):
                 continue
 
-            flex_b = _flex_of(rb)
+            flex_b = flex_of_round_trip(rb, pairs, trips_by_id)
             slack_b = 10_000
             if len(trips_b) >= 2:
                 rb2 = trips_by_id.get(trips_b[1].get("tripId"))
                 slack_b = _intra_slack(rb, rb2) if rb2 else 0
             head_room = min(flex_b, max(0, slack_b))
 
-            flex_a = _flex_of(ra)
+            flex_a = flex_of_round_trip(ra, pairs, trips_by_id)
             slack_a = 10_000
             if len(trips_a) >= 2:
                 ra0 = trips_by_id.get(trips_a[-2].get("tripId"))
@@ -141,16 +219,18 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
             tail_room = min(flex_a, max(0, slack_a))
 
             base = {"deltaNeeded": delta, "blockA": vid_a, "blockB": vid_b}
+            # Lo spostamento si applica al GIRO: andata e ritorno insieme.
             if head_room >= delta:
                 candidates.append({**base, "kind": "head+",
-                                   "shifts": {rb["tripId"]: delta}})
+                                   "shifts": expand_to_round_trips({rb["tripId"]: delta}, pairs)})
             elif tail_room >= delta:
                 candidates.append({**base, "kind": "tail-",
-                                   "shifts": {ra["tripId"]: -delta}})
+                                   "shifts": expand_to_round_trips({ra["tripId"]: -delta}, pairs)})
             elif head_room + tail_room >= delta and head_room > 0 and tail_room > 0:
                 candidates.append({**base, "kind": "split",
-                                   "shifts": {rb["tripId"]: head_room,
-                                              ra["tripId"]: -(delta - head_room)}})
+                                   "shifts": expand_to_round_trips(
+                                       {rb["tripId"]: head_room,
+                                        ra["tripId"]: -(delta - head_room)}, pairs)})
 
     candidates.sort(key=lambda c: (c["deltaNeeded"], len(c["shifts"])))
     return candidates[:max_candidates]
@@ -215,6 +295,7 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
     """
     if scope not in CREW_SHIFT_SCOPES:
         scope = "trip"
+    pairs = build_round_trip_pairs(list(trips_by_id.values()))
     route_trips: dict[str, list[dict]] = {}
     for t in trips_by_id.values():
         rid = t.get("routeId")
@@ -314,13 +395,15 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
         else:
             t1 = _edge_trip(p1, last=True)
             t2 = _edge_trip(p2, last=False)
-            f1 = _flex_of(t1) if t1 else 0
-            f2 = _flex_of(t2) if t2 else 0
+            f1 = flex_of_round_trip(t1, pairs, trips_by_id) if t1 else 0
+            f2 = flex_of_round_trip(t2, pairs, trips_by_id) if t2 else 0
             routes = sorted({r for r in ((t1 or {}).get("routeId"), (t2 or {}).get("routeId")) if r})
             if t1 and f1 >= delta_lo:
-                options.append(("crew-late", {t1["tripId"]: +_clamp(need, delta_lo, f1)}, routes))
+                options.append(("crew-late", expand_to_round_trips(
+                    {t1["tripId"]: +_clamp(need, delta_lo, f1)}, pairs), routes))
             if t2 and f2 >= delta_lo:
-                options.append(("crew-early", {t2["tripId"]: -_clamp(need, delta_lo, f2)}, routes))
+                options.append(("crew-early", expand_to_round_trips(
+                    {t2["tripId"]: -_clamp(need, delta_lo, f2)}, pairs), routes))
             if t1 and t2 and f1 > 0 and f2 > 0 and f1 + f2 >= delta_lo \
                     and t1["tripId"] != t2["tripId"]:
                 dtot = _clamp(need, delta_lo, f1 + f2)
@@ -329,7 +412,8 @@ def find_crew_probe_candidates(crew_out: dict, trips_by_id: dict[str, dict],
                 if d2 > f2:
                     d2, d1 = f2, dtot - f2
                 if d1 > 0 and d2 > 0:
-                    options.append(("crew-both", {t1["tripId"]: +d1, t2["tripId"]: -d2}, routes))
+                    options.append(("crew-both", expand_to_round_trips(
+                        {t1["tripId"]: +d1, t2["tripId"]: -d2}, pairs), routes))
             if not options:
                 skipped_unreachable += 1
                 unreachable.append({"duty": d.get("driverId"), "type": d.get("type"),
