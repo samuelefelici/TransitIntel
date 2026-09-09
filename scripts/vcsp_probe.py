@@ -357,6 +357,62 @@ def _intra_slack(prev: dict, nxt: dict) -> int:
     return int(nxt["departureMin"]) - int(prev["arrivalMin"]) - need
 
 
+def find_coincidence_probe_candidates(trips: list[dict],
+                                      max_candidates: int = 4) -> list[dict]:
+    """Candidati generati dalle OCCASIONI DEL QUADRO, non dai turni.
+
+    La sonda finora guardava solo due cose: i confini dei pezzi di turno e le
+    coppie di blocchi quasi fondibili. Sono mosse che nascono dal piano — non le
+    verra' mai in mente «sposto la linea 3 di dodici minuti», anche quando quei
+    dodici minuti creano venticinque coincidenze e non ne rompono nessuna.
+
+    Qui il candidato nasce dal SERVIZIO: traslare una linea intera del delta che
+    guadagna piu' relazioni di quante ne rompe, con la cadenza intatta e dentro
+    la flessibilita' dichiarata. Se poi convenga anche in vetture e turni lo
+    dice il solver, come per ogni altro candidato.
+    """
+    # Import qui: coincidence_analysis usa questo modulo, e in testa sarebbe
+    # un ciclo.
+    try:
+        from coincidence_analysis import line_shift_opportunities
+    except ImportError:
+        return []
+    try:
+        opportunita = line_shift_opportunities(trips)
+    except Exception:                    # noqa: BLE001 — la sonda non muore per l'analisi
+        return []
+
+    per_linea: dict[str, list[dict]] = {}
+    for t in trips:
+        r = str(t.get("routeName") or t.get("routeId") or "")
+        if r:
+            per_linea.setdefault(r, []).append(t)
+
+    out: list[dict] = []
+    for o in opportunita:
+        best = o.get("migliore") or {}
+        delta = int(best.get("deltaMin") or 0)
+        if not delta or not best.get("dentroLaFlessibilita"):
+            continue
+        corse = per_linea.get(o["route"]) or []
+        shifts = {t["tripId"]: delta for t in corse if t.get("tripId")}
+        if not shifts:
+            continue
+        out.append({
+            "kind": "coincidenza",
+            "deltaNeeded": abs(delta),
+            "shifts": shifts,
+            "blockA": o["route"], "blockB": o["route"],
+            "route": o["route"],
+            "coincidenzeCreate": int(best.get("create") or 0),
+            "coincidenzeRotte": int(best.get("rotte") or 0),
+            "relazioniCreate": best.get("relazioniCreate") or [],
+        })
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
 def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
                           max_candidates: int = 40) -> list[dict]:
     """Coppie di blocchi quasi-fondibili entro la flessibilità dichiarata.
@@ -783,6 +839,10 @@ def run_probe_phase(
                       intero_max_nastro=intero_max_nastro, semi_int_min=semi_int_min)
                   if frozenset(c["shifts"].items()) not in tried]
                  + [c for c in find_probe_candidates(result["vsp"], trips_by_id)
+                    if frozenset(c["shifts"].items()) not in tried]
+                 # In coda: nascono dal servizio, non dal piano, e si provano
+                 # quando le mosse guidate dal piano sono finite.
+                 + [c for c in find_coincidence_probe_candidates(cur_trips)
                     if frozenset(c["shifts"].items()) not in tried])
         # Scartare qui costa nulla; scoprirlo dopo il re-solve costa un minuto
         # di solver per un candidato che l'operatore rifiuterebbe comunque.
@@ -832,6 +892,12 @@ def run_probe_phase(
             log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
                 f"({shifts_txt}) per il turno {cand.get('duty')} (stacco {cand.get('gapMin')}′, "
                 f"nastro {cand.get('nastroMin')}′, linee {','.join(cand.get('routes') or [])})")
+        elif cand["kind"] == "coincidenza":
+            _rel = ", ".join(f"{r['fromRoute']}→{r['toRoute']} a {r['node']}"
+                             for r in (cand.get("relazioniCreate") or [])[:3])
+            log(f"[PROBE] {probes_run}/{max_probes}: linea {cand.get('route')} intera "
+                f"({shifts_txt}) per {cand.get('coincidenzeCreate')} coincidenze "
+                f"({_rel}), ne rompe {cand.get('coincidenzeRotte')}")
         else:
             log(f"[PROBE] {probes_run}/{max_probes}: {cand['kind']} δ={cand['deltaNeeded']}′ "
                 f"({shifts_txt}) per fondere {cand['blockA']}+{cand['blockB']}")
@@ -891,7 +957,14 @@ def run_probe_phase(
         _dis_new = _disruption(new_total)
         _score_new = _base_new + _dis_new
         _score_old = cur_base_score + _dis_old
-        if _score_new < _score_old - COST_EPS:
+        # A parita' di punteggio decide il servizio: un candidato che crea
+        # coincidenze e non costa di piu' e' un guadagno che il punteggio non
+        # sa vedere, perche' in euro una coincidenza non compare. Non ha un
+        # prezzo — non si compra un peggioramento — ma rompe il pareggio.
+        _crea_coincidenze = int(cand.get("coincidenzeCreate") or 0) > int(cand.get("coincidenzeRotte") or 0)
+        _meglio = (_score_new < _score_old - COST_EPS
+                   or (_crea_coincidenze and _score_new <= _score_old + COST_EPS))
+        if _meglio:
             gain = result["kpi"]["totalCostEur"] - kpi["totalCostEur"]
             log(f"[PROBE]   ACCETTATO: €{result['kpi']['totalCostEur']} → "
                 f"€{kpi['totalCostEur']} (−€{gain:.2f}), "
@@ -901,6 +974,9 @@ def run_probe_phase(
                 f"(disturbo €{_dis_old:.0f} → €{_dis_new:.0f})")
             section["accepted"].append({
                 "kind": cand["kind"], "deltaNeeded": cand["deltaNeeded"],
+                "route": cand.get("route"),
+                "coincidenzeCreate": cand.get("coincidenzeCreate") or 0,
+                "coincidenzeRotte": cand.get("coincidenzeRotte") or 0,
                 "duty": cand.get("duty"), "gapMin": cand.get("gapMin"),
                 "shifts": _shift_details(cand["shifts"], trips_by_id),
                 "mergedBlocks": [cand["blockA"], cand["blockB"]],

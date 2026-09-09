@@ -29,7 +29,7 @@ def _sfiorata(attesa=20, n=4, flex=30):
     trips = []
     for k in range(n):
         ora = 480 + k * 120
-        trips.append(_t(f"a3_{k}", "3", 0, ora - 22, ora, "CAVOUR", "POSATORA CAPOLINEA"))
+        trips.append(_t(f"a3_{k}", "3", 0, ora - 22, ora, "CAVOUR", "POSATORA CAPOLINEA", flex=flex))
         trips.append(_t(f"a21_{k}", "21/33", 0, ora + attesa, ora + attesa + 30,
                         "POSATORA CAPOLINEA", "MONTESICURO", flex=flex))
     return trips
@@ -105,3 +105,36 @@ def test_l_analisi_dichiara_se_i_passaggi_mancano():
                                      "departureMin": 500}]
     con = ca.analyze({"trips": trips})
     assert con["corseConPassaggi"] == 1 and "ATTENZIONE" not in con["nota"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  La sonda che usa la mappa
+# ─────────────────────────────────────────────────────────────────────────────
+
+import vcsp_probe as probe  # noqa: E402
+
+
+def test_la_sonda_propone_la_traslazione_di_linea():
+    """Il candidato nasce dal SERVIZIO: la sonda guardava solo i confini dei
+    pezzi di turno e le fusioni di blocchi, e non le sarebbe mai venuto in mente
+    di spostare una linea intera."""
+    trips = _sfiorata(attesa=20)
+    cands = probe.find_coincidence_probe_candidates(trips)
+    assert cands, "l'occasione a Posatora deve diventare un candidato"
+    c = cands[0]
+    assert c["kind"] == "coincidenza"
+    assert c["coincidenzeCreate"] >= 1 and c["coincidenzeRotte"] == 0
+    # tutte le corse della linea si spostano dello STESSO delta: la cadenza resta
+    delta = set(c["shifts"].values())
+    assert len(delta) == 1
+    assert len(c["shifts"]) == len([t for t in trips if t["routeName"] == c["route"]])
+
+
+def test_una_linea_inchiodata_non_diventa_un_candidato():
+    """Fuori dalla flessibilita' dichiarata non e' una proposta, e' un sogno."""
+    assert probe.find_coincidence_probe_candidates(_sfiorata(attesa=20, flex=2)) == []
+
+
+def test_senza_occasioni_la_sonda_non_inventa_niente():
+    trips = [_t("x", "L1", 0, 480, 510, "A", "B"), _t("y", "L2", 0, 900, 930, "C", "D")]
+    assert probe.find_coincidence_probe_candidates(trips) == []

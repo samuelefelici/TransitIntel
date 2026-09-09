@@ -3229,6 +3229,8 @@ function compactAgentResult(payload: any): any {
           // tetto): senza il motivo non si sa dove allargare.
           propagationFailures: v.probe.propagationFailures ?? null,
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
+          // I candidati «coincidenza» spostano una linea intera: nel rendiconto
+          // portano la linea e le relazioni comprate.
           accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
             const { shifts, ...rest } = a ?? {};
             return { ...rest, ...summarizeShifts(Array.isArray(shifts) ? shifts : []) };
